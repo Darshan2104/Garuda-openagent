@@ -3,6 +3,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.permissions import PermissionEngine
 from garuda.core.verifier import CompletionVerifier
 from garuda.model.protocol import Model
+from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import Tool, ToolContext
 from garuda.types import (
     DEFAULT_SYSTEM_PROMPT,
@@ -48,15 +49,22 @@ class DefaultAgent:
         config: AgentConfig | None = None,
         events: EventStore | None = None,
         permissions: PermissionEngine | None = None,
+        hooks: HookRegistry | None = None,
+        subagent_runner=None,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
+        hooks = hooks or HookRegistry()
         events.append(EventType.SESSION_START, {"task": task, "model": model.model_name})
 
         tool_map = {tool.name: tool for tool in tools}
         if config.allowed_tools:
-            tool_map = {name: tool_map[name] for name in config.allowed_tools if name in tool_map}
+            allowed = set(config.allowed_tools)
+            for tool in tools:
+                if tool.name.startswith("mcp__"):
+                    allowed.add(tool.name)
+            tool_map = {name: tool_map[name] for name in allowed if name in tool_map}
             tools = list(tool_map.values())
 
         system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -75,7 +83,22 @@ class DefaultAgent:
         )
         events.append(EventType.USER_MESSAGE, {"content": task})
 
-        ctx = ToolContext(session_id=events.session_id, agent_profile=self._profile_name, model=model)
+        if subagent_runner is None and "invoke_subagent" in tool_map:
+            from garuda.core.subagent import SubagentRunner
+
+            subagent_runner = SubagentRunner(
+                model=model,
+                env=env,
+                permissions=permissions,
+                events=events,
+            )
+
+        ctx = ToolContext(
+            session_id=events.session_id,
+            agent_profile=self._profile_name,
+            model=model,
+            subagent_runner=subagent_runner,
+        )
         final_message = ""
 
         for turn in range(1, config.max_turns + 1):
@@ -110,7 +133,7 @@ class DefaultAgent:
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
-                        call, task, context, env, model, config, events, turn
+                        call, task, context, env, config, events, turn
                     )
                     if completed is not None:
                         return completed
@@ -129,7 +152,22 @@ class DefaultAgent:
                     )
                     continue
 
+                hook_context = {"turn": turn, "session_id": events.session_id}
+                call = await hooks.run_before_tool(call, hook_context)
+                if call is None:
+                    context.append(
+                        Message(
+                            role=Role.TOOL,
+                            content="Tool call blocked by hook",
+                            name="hook",
+                            tool_call_id="blocked",
+                        )
+                    )
+                    continue
+
                 tool_result = await self._execute_tool(call, tool_map, env, ctx, context)
+                tool_result = await hooks.run_after_tool(call, tool_result, hook_context)
+
                 events.append(EventType.TOOL_CALL, {"name": call.name, "arguments": call.arguments})
                 events.append(
                     EventType.TOOL_RESULT,
@@ -157,7 +195,6 @@ class DefaultAgent:
         task: str,
         context: ContextManager,
         env: Environment,
-        model: Model,
         config: AgentConfig,
         events: EventStore,
         turn: int,

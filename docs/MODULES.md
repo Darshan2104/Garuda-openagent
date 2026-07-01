@@ -83,10 +83,10 @@ workspace ──┬── tools ──┘
 
 | # | Module | Path | Status | Depends On | Exit Criteria |
 |---|--------|------|--------|------------|---------------|
-| M20 | **MCP client** | `garuda/tools/mcp.py` | ⬜ | M4 | Connect stdio MCP servers |
-| M21 | **Plugin hooks** | `garuda/plugins/hooks.py` | ⬜ | M6 | before/after tool lifecycle |
-| M22 | **Subagent handoff** | `garuda/core/subagent.py` | ⬜ | M8, M12 | Fork context, return summary |
-| M23 | **Task complete tool** | `garuda/tools/task_complete.py` | ⬜ | M10 | Triggers verifier |
+| M20 | **MCP client** | `garuda/mcp/` | ✅ | M4 | Connect stdio MCP servers |
+| M21 | **Plugin hooks** | `garuda/plugins/hooks.py` | ✅ | M6 | before/after tool lifecycle |
+| M22 | **Subagent handoff** | `garuda/core/subagent.py` | ✅ | M8, M12 | Fork context, return summary |
+| M23 | **Task complete tool** | `garuda/tools/task_complete.py` | ✅ | M10 | Triggers verifier |
 
 **Phase 4 exit:** Custom YAML agent profile + MCP tool in Docker.
 
@@ -120,9 +120,9 @@ workspace ──┬── tools ──┘
 
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23)
 
-**Next up:** Phase 4 (M20–M23) — MCP, plugins, subagents
+**Next up:** Phase 5 (M24–M28) — Harbor/ATIF eval adapter
 
 ---
 

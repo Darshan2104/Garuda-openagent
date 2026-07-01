@@ -22,6 +22,7 @@ class AgentProfile:
     enable_three_step_summary: bool = True
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
+    mcp_config_path: str | None = None
 
     def to_agent_config(self) -> AgentConfig:
         return AgentConfig(
@@ -36,6 +37,7 @@ class AgentProfile:
             enable_three_step_summary=self.enable_three_step_summary,
             workspace_kind=self.workspace_kind,
             docker_image=self.docker_image,
+            mcp_config_path=self.mcp_config_path,
         )
 
 
@@ -71,5 +73,6 @@ def load_profile(name: str, extra_dir: Path | None = None) -> AgentProfile:
                 enable_three_step_summary=data.get("enable_three_step_summary", True),
                 workspace_kind=data.get("workspace_kind", "local"),
                 docker_image=data.get("docker_image", "ubuntu:22.04"),
+                mcp_config_path=data.get("mcp_config_path"),
             )
     raise FileNotFoundError(f"Agent profile not found: {name}")

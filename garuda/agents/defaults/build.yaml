@@ -14,11 +14,14 @@ tools:
   - tmux_exec
   - tmux_capture
   - image_read
+  - invoke_subagent
   - task_complete
+mcp_config_path: null
 tool_rules:
   task_complete: allow
 system_prompt: |
   You are Garuda build agent. Implement tasks using tools.
   Use bash for one-shot commands and tmux_exec for interactive or long-running terminal work.
+  Use invoke_subagent with profile explore or plan for isolated research tasks.
   Inspect the environment before changing files.
   When fully done, call task_complete with a summary and verification commands.

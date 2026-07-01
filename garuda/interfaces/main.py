@@ -1,8 +1,3 @@
-import argparse
-import asyncio
-import json
-import os
-import sys
 from pathlib import Path
 
 from garuda.agents.loader import load_profile
@@ -11,7 +6,8 @@ from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.interfaces.cli import chat_loop
 from garuda.model.litellm_model import LitellmModel
-from garuda.tools import tools_for_names
+from garuda.plugins.hooks import HookRegistry
+from garuda.tools import build_toolkit
 from garuda.types import AgentConfig, AgentResult
 from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.factory import create_workspace
@@ -24,10 +20,10 @@ async def _resolve_environment(
     workspace_root: str,
     docker_image: str,
 ) -> tuple[Environment, object | None]:
-  workspace = await create_workspace(workspace_kind, workspace_root, docker_image=docker_image)
-  if isinstance(workspace, DockerWorkspace):
-    return workspace.get_environment(), workspace
-  return workspace, workspace
+    workspace = await create_workspace(workspace_kind, workspace_root, docker_image=docker_image)
+    if isinstance(workspace, DockerWorkspace):
+        return workspace.get_environment(), workspace
+    return workspace, workspace
 
 
 async def _cleanup_workspace(handle: object | None) -> None:
@@ -51,6 +47,8 @@ async def run_agent_task(
     emit_json: bool = False,
     workspace_kind: str = "local",
     docker_image: str = "ubuntu:22.04",
+    hooks: HookRegistry | None = None,
+    mcp_manager=None,
 ) -> AgentResult:
     env, handle = await _resolve_environment(workspace_kind, workspace, docker_image)
     try:
@@ -62,16 +60,24 @@ async def run_agent_task(
             config=config,
             events=events,
             permissions=permissions,
+            hooks=hooks,
         )
     finally:
         await _cleanup_workspace(handle)
+        if mcp_manager is not None:
+            await mcp_manager.close()
     if emit_json:
         for event in events.get_all():
+            import json
+
             print(json.dumps(event))
     return result
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser():
+    import argparse
+    import os
+
     parser = argparse.ArgumentParser(prog="garuda", description="Garuda Open Agent harness")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -89,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--docker-image", default="ubuntu:22.04")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
+    run_parser.add_argument("--mcp-config", help="Path to MCP servers YAML config")
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
     run_parser.add_argument("--max-turns", type=int)
     run_parser.add_argument("--no-verifier", action="store_true")
@@ -103,12 +110,15 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
     chat_parser.add_argument("--agent", default="build")
     chat_parser.add_argument("--agents-dir")
+    chat_parser.add_argument("--mcp-config")
     chat_parser.add_argument("--json", action="store_true")
 
     return parser
 
 
-async def run_task(args: argparse.Namespace) -> int:
+async def run_task(args) -> int:
+    import sys
+
     task = args.task
     if args.file:
         task = Path(args.file).read_text(encoding="utf-8")
@@ -128,12 +138,13 @@ async def run_task(args: argparse.Namespace) -> int:
         config.enable_three_step_summary = False
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
+    mcp_path = args.mcp_config or config.mcp_config_path
 
     model = LitellmModel(model_name=args.model)
     permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
     agent = DefaultAgent(profile_name=profile.name)
     events = EventStore()
-    tools = tools_for_names(profile.tools)
+    tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
 
     result = await run_agent_task(
         task=task,
@@ -147,6 +158,7 @@ async def run_task(args: argparse.Namespace) -> int:
         emit_json=args.json,
         workspace_kind=args.workspace_kind,
         docker_image=args.docker_image,
+        mcp_manager=mcp_manager,
     )
 
     if args.trajectory:
@@ -157,6 +169,9 @@ async def run_task(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    import asyncio
+    import sys
+
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "run":

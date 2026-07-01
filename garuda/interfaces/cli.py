@@ -7,7 +7,7 @@ from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.interfaces.main import run_agent_task
 from garuda.model.litellm_model import LitellmModel
-from garuda.tools import tools_for_names
+from garuda.tools import build_toolkit
 
 
 async def stdin_approval(action: str) -> bool:
@@ -22,12 +22,13 @@ async def chat_loop(args) -> int:
     config = profile.to_agent_config()
     config.workspace_kind = getattr(args, "workspace_kind", "local")
     config.docker_image = getattr(args, "docker_image", "ubuntu:22.04")
+    mcp_path = getattr(args, "mcp_config", None) or config.mcp_config_path
     permissions = PermissionEngine(
         mode=profile.permission_mode,
         tool_rules=profile.tool_rules,
         approval_handler=stdin_approval if profile.permission_mode == "smart" else None,
     )
-    tools = tools_for_names(profile.tools)
+    tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
     agent = DefaultAgent(profile_name=profile.name)
 
     print(f"Garuda chat — agent={profile.name} model={args.model} workspace={config.workspace_kind}")
@@ -37,6 +38,8 @@ async def chat_loop(args) -> int:
         print("task> ", end="", flush=True)
         task = await asyncio.to_thread(input)
         if not task.strip():
+            if mcp_manager:
+                await mcp_manager.close()
             print("Bye.")
             return 0
 
@@ -52,5 +55,6 @@ async def chat_loop(args) -> int:
             emit_json=args.json,
             workspace_kind=config.workspace_kind,
             docker_image=config.docker_image,
+            mcp_manager=mcp_manager,
         )
         print(f"\n{result.final_message}\n")

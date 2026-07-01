@@ -1,0 +1,6 @@
+servers:
+  - name: echo
+    transport: stdio
+    command: python3
+    args:
+      - /workspace/tests/fixtures/mcp_echo_server.py
