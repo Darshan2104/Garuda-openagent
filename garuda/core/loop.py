@@ -52,6 +52,7 @@ class DefaultAgent:
         hooks: HookRegistry | None = None,
         subagent_runner=None,
         agents_dir=None,
+        context: ContextManager | None = None,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
@@ -68,21 +69,22 @@ class DefaultAgent:
             tool_map = {name: tool_map[name] for name in allowed if name in tool_map}
             tools = list(tool_map.values())
 
-        system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
-        context = ContextManager(
-            model=model,
-            max_output_bytes=config.max_output_bytes,
-            proactive_threshold=config.proactive_summarize_threshold,
-            max_context_tokens=config.max_context_tokens,
-            enable_three_step_summary=config.enable_three_step_summary,
-            task=task,
-        )
-        context.seed(
-            [
-                Message(role=Role.SYSTEM, content=system_prompt),
-                Message(role=Role.USER, content=task),
-            ]
-        )
+        if context is None:
+            system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
+            context = ContextManager(
+                model=model,
+                max_output_bytes=config.max_output_bytes,
+                proactive_threshold=config.proactive_summarize_threshold,
+                max_context_tokens=config.max_context_tokens,
+                enable_three_step_summary=config.enable_three_step_summary,
+                task=task,
+            )
+            context.seed(
+                [
+                    Message(role=Role.SYSTEM, content=system_prompt),
+                    Message(role=Role.USER, content=task),
+                ]
+            )
         events.append(EventType.USER_MESSAGE, {"content": task})
 
         if subagent_runner is None and "invoke_subagent" in tool_map:
@@ -95,6 +97,7 @@ class DefaultAgent:
                 agents_dir=agents_dir,
                 skills_dirs=config.skills_dirs,
                 workspace_root=getattr(env, "workspace_root", None),
+                parent_messages=context.get_messages(),
             )
 
         ctx = ToolContext(

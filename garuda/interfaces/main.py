@@ -54,6 +54,7 @@ def build_parser():
     chat_parser.add_argument("--agent", default="build")
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
+    chat_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
     chat_parser.add_argument("--json", action="store_true")
 
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
@@ -69,6 +70,8 @@ def build_parser():
     )
     serve_parser.add_argument("--docker-image", default="ubuntu:22.04")
     serve_parser.add_argument("--docker-host")
+    serve_parser.add_argument("--agents-dir")
+    serve_parser.add_argument("--mcp-config")
 
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
@@ -221,6 +224,8 @@ async def run_serve(args) -> int:
         workspace_kind=args.workspace_kind,
         docker_image=args.docker_image,
         docker_host=args.docker_host,
+        agents_dir=args.agents_dir,
+        mcp_config=args.mcp_config,
     )
     await serve(config)
     return 0

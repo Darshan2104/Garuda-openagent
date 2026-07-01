@@ -6,10 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from garuda.agents.loader import load_profile
+from garuda.agents.loader import list_profiles
+from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
-from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
 
@@ -24,6 +23,8 @@ class ServerConfig:
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     docker_host: str | None = None
+    agents_dir: str | None = None
+    mcp_config: str | None = None
 
 
 class JsonRpcServer:
@@ -43,9 +44,12 @@ class JsonRpcServer:
             elif method == "run":
                 result = await self._run(params)
             elif method == "list_agents":
-                from garuda.agents.loader import list_profiles
-
-                result = {"agents": list_profiles()}
+                agents_dir = params.get("agents_dir", self._config.agents_dir)
+                result = {
+                    "agents": list_profiles(
+                        extra_dir=Path(agents_dir) if agents_dir else None
+                    )
+                }
             else:
                 raise ValueError(f"Unknown method: {method}")
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -74,21 +78,23 @@ class JsonRpcServer:
         agent_name = params.get("agent", self._config.agent)
         mode = params.get("mode", "standard")
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
+        workspace = params.get("workspace", self._config.workspace)
+        agents_dir = params.get("agents_dir", self._config.agents_dir)
+        mcp_config = params.get("mcp_config", self._config.mcp_config)
+        agents_path = Path(agents_dir) if agents_dir else None
 
-        profile = load_profile(agent_name)
-        config = profile.to_agent_config()
-        config.mode = mode
+        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+            agent_name,
+            workspace=workspace,
+            agents_dir=agents_path,
+            mcp_config_path=mcp_config,
+            mode=mode,
+        )
         config.workspace_kind = workspace_kind
         config.docker_image = params.get("docker_image", self._config.docker_image)
 
         model = LitellmModel(model_name=model_name)
-        permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
-        agent = create_agent(profile.name, mode=mode)
         events = EventStore()
-
-        from garuda.tools import build_toolkit
-
-        tools, mcp_manager = await build_toolkit(profile.tools, config.mcp_config_path)
         result = await run_agent_task(
             task=task,
             model=model,
@@ -96,12 +102,13 @@ class JsonRpcServer:
             tools=tools,
             config=config,
             permissions=permissions,
-            workspace=params.get("workspace", self._config.workspace),
+            workspace=workspace,
             events=events,
             workspace_kind=workspace_kind,
             docker_image=config.docker_image,
             docker_host=params.get("docker_host", self._config.docker_host),
             mcp_manager=mcp_manager,
+            agents_dir=agents_path,
         )
 
         return {
