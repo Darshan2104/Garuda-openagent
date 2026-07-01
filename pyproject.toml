@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garuda-openagent"
-version = "0.5.0"
+version = "1.0.0"
 description = "Universal provider-agnostic agent harness for terminal and software engineering tasks"
 readme = "README.md"
 license = { text = "MIT" }
@@ -23,6 +23,7 @@ dev = [
 eval = [
     "harbor>=0.16.0",
 ]
+server = []
 
 [project.scripts]
 garuda = "garuda.interfaces.main:main"
@@ -32,7 +33,7 @@ where = ["."]
 include = ["garuda*"]
 
 [tool.setuptools.package-data]
-garuda = ["agents/defaults/*.yaml"]
+garuda = ["agents/defaults/*.yaml", "config/defaults/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

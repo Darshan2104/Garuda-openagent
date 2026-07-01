@@ -2,76 +2,12 @@ from pathlib import Path
 
 from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore
-from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
+from garuda.core.rigorous import create_agent
 from garuda.interfaces.cli import chat_loop
+from garuda.interfaces.runner import cleanup_workspace, resolve_environment, run_agent_task
 from garuda.model.litellm_model import LitellmModel
-from garuda.plugins.hooks import HookRegistry
 from garuda.tools import build_toolkit
-from garuda.types import AgentConfig, AgentResult
-from garuda.workspace.docker import DockerWorkspace
-from garuda.workspace.factory import create_workspace
-from garuda.workspace.protocol import Environment
-from garuda.workspace.tmux import TmuxEnvironment
-
-
-async def _resolve_environment(
-    workspace_kind: str,
-    workspace_root: str,
-    docker_image: str,
-) -> tuple[Environment, object | None]:
-    workspace = await create_workspace(workspace_kind, workspace_root, docker_image=docker_image)
-    if isinstance(workspace, DockerWorkspace):
-        return workspace.get_environment(), workspace
-    return workspace, workspace
-
-
-async def _cleanup_workspace(handle: object | None) -> None:
-    if handle is None:
-        return
-    if isinstance(handle, DockerWorkspace):
-        await handle.stop()
-    elif isinstance(handle, TmuxEnvironment):
-        await handle.stop()
-
-
-async def run_agent_task(
-    task: str,
-    model,
-    agent: DefaultAgent,
-    tools,
-    config: AgentConfig,
-    permissions: PermissionEngine,
-    workspace: str,
-    events: EventStore,
-    emit_json: bool = False,
-    workspace_kind: str = "local",
-    docker_image: str = "ubuntu:22.04",
-    hooks: HookRegistry | None = None,
-    mcp_manager=None,
-) -> AgentResult:
-    env, handle = await _resolve_environment(workspace_kind, workspace, docker_image)
-    try:
-        result = await agent.run(
-            task=task,
-            model=model,
-            env=env,
-            tools=tools,
-            config=config,
-            events=events,
-            permissions=permissions,
-            hooks=hooks,
-        )
-    finally:
-        await _cleanup_workspace(handle)
-        if mcp_manager is not None:
-            await mcp_manager.close()
-    if emit_json:
-        for event in events.get_all():
-            import json
-
-            print(json.dumps(event))
-    return result
 
 
 def build_parser():
@@ -88,15 +24,17 @@ def build_parser():
     run_parser.add_argument("--workspace", default=".", help="Workspace root directory")
     run_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "tmux", "docker"],
+        choices=["local", "sandbox", "tmux", "docker", "remote"],
         default="local",
         help="Execution environment type",
     )
     run_parser.add_argument("--docker-image", default="ubuntu:22.04")
+    run_parser.add_argument("--docker-host", help="Remote Docker daemon host (DOCKER_HOST)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
     run_parser.add_argument("--mcp-config", help="Path to MCP servers YAML config")
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
+    run_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
     run_parser.add_argument("--max-turns", type=int)
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
@@ -106,14 +44,66 @@ def build_parser():
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
     chat_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
     chat_parser.add_argument("--workspace", default=".")
-    chat_parser.add_argument("--workspace-kind", choices=["local", "tmux", "docker"], default="local")
+    chat_parser.add_argument(
+        "--workspace-kind",
+        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        default="local",
+    )
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
+    chat_parser.add_argument("--docker-host")
     chat_parser.add_argument("--agent", default="build")
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
     chat_parser.add_argument("--json", action="store_true")
 
+    serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    serve_parser.add_argument("--agent", default="build")
+    serve_parser.add_argument("--workspace", default=".")
+    serve_parser.add_argument(
+        "--workspace-kind",
+        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        default="local",
+    )
+    serve_parser.add_argument("--docker-image", default="ubuntu:22.04")
+    serve_parser.add_argument("--docker-host")
+
+    recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
+    recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
+    recipe_run = recipe_sub.add_parser("run", help="Execute a recipe file")
+    recipe_run.add_argument("recipe", help="Path to recipe YAML")
+    recipe_run.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    recipe_run.add_argument("--workspace", default=".")
+    recipe_run.add_argument(
+        "--workspace-kind",
+        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        default="local",
+    )
+    recipe_run.add_argument("--docker-image", default="ubuntu:22.04")
+    recipe_run.add_argument("--docker-host")
+    recipe_run.add_argument("--agents-dir")
+    recipe_run.add_argument("--mcp-config")
+    recipe_run.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Recipe parameter (repeatable)",
+    )
+
     return parser
+
+
+def _parse_params(pairs: list[str]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for item in pairs:
+        if "=" not in item:
+            raise ValueError(f"Invalid --param (expected KEY=VALUE): {item}")
+        key, value = item.split("=", 1)
+        params[key.strip()] = value.strip()
+    return params
 
 
 async def run_task(args) -> int:
@@ -128,6 +118,7 @@ async def run_task(args) -> int:
 
     profile = load_profile(args.agent, extra_dir=Path(args.agents_dir) if args.agents_dir else None)
     config = profile.to_agent_config()
+    config.mode = args.mode
     if args.max_turns is not None:
         config.max_turns = args.max_turns
     if args.permission_mode:
@@ -138,11 +129,12 @@ async def run_task(args) -> int:
         config.enable_three_step_summary = False
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
+    config.docker_host = args.docker_host
     mcp_path = args.mcp_config or config.mcp_config_path
 
     model = LitellmModel(model_name=args.model)
     permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
-    agent = DefaultAgent(profile_name=profile.name)
+    agent = create_agent(profile.name, mode=config.mode)
     events = EventStore()
     tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
 
@@ -158,6 +150,7 @@ async def run_task(args) -> int:
         emit_json=args.json,
         workspace_kind=args.workspace_kind,
         docker_image=args.docker_image,
+        docker_host=args.docker_host,
         mcp_manager=mcp_manager,
     )
 
@@ -166,6 +159,63 @@ async def run_task(args) -> int:
     if not args.json:
         print(result.final_message)
     return 0 if result.success else 1
+
+
+async def run_recipe_command(args) -> int:
+    import sys
+
+    from garuda.config.recipes import load_recipe, run_recipe
+
+    try:
+        params = _parse_params(args.param)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    recipe = load_recipe(args.recipe)
+    model = LitellmModel(model_name=args.model)
+    env, handle = await resolve_environment(
+        args.workspace_kind,
+        args.workspace,
+        args.docker_image,
+        docker_host=args.docker_host,
+    )
+    events = EventStore()
+    try:
+        results = await run_recipe(
+            recipe,
+            params,
+            model=model,
+            env=env,
+            workspace=args.workspace,
+            events=events,
+            agents_dir=Path(args.agents_dir) if args.agents_dir else None,
+            mcp_config_path=args.mcp_config,
+        )
+    finally:
+        await cleanup_workspace(handle)
+
+    for index, result in enumerate(results, start=1):
+        print(f"--- Step {index} ({'ok' if result.success else 'failed'}) ---")
+        print(result.final_message)
+    return 0 if results and results[-1].success else 1
+
+
+async def run_serve(args) -> int:
+    from garuda.interfaces.server import ServerConfig, serve
+
+    config = ServerConfig(
+        host=args.host,
+        port=args.port,
+        model=args.model,
+        agent=args.agent,
+        workspace=args.workspace,
+        workspace_kind=args.workspace_kind,
+        docker_image=args.docker_image,
+        docker_host=args.docker_host,
+    )
+    await serve(config)
+    return 0
 
 
 def main() -> None:
@@ -178,5 +228,9 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_task(args)))
     if args.command == "chat":
         raise SystemExit(asyncio.run(chat_loop(args)))
+    if args.command == "serve":
+        raise SystemExit(asyncio.run(run_serve(args)))
+    if args.command == "recipe" and args.recipe_command == "run":
+        raise SystemExit(asyncio.run(run_recipe_command(args)))
     parser.print_help()
     raise SystemExit(1)

@@ -5,7 +5,7 @@ from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
-from garuda.interfaces.main import run_agent_task
+from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
 

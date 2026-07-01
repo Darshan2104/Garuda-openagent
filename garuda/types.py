@@ -56,6 +56,7 @@ class AgentConfig:
     enable_three_step_summary: bool = True
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
+    docker_host: str | None = None
     mcp_config_path: str | None = None
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None

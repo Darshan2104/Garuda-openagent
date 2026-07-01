@@ -1,0 +1,16 @@
+name: fix-and-test
+description: Analyze an issue, implement a fix, and run tests
+parameters:
+  - name: issue
+    type: string
+    required: true
+  - name: test_command
+    type: string
+    default: "pytest"
+steps:
+  - agent: plan
+    prompt: "Analyze this issue and propose a fix plan: {{issue}}"
+  - agent: build
+    prompt: "Implement the fix for: {{issue}}"
+  - agent: build
+    prompt: "Run {{test_command}} and fix any failures related to: {{issue}}"

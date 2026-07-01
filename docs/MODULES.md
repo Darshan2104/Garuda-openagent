@@ -110,19 +110,19 @@ workspace ──┬── tools ──┘
 
 | # | Module | Path | Status | Depends On |
 |---|--------|------|--------|------------|
-| M29 | Recipes | `garuda/config/recipes.py` | ⬜ | M12 |
-| M30 | RigorousAgent | `garuda/core/rigorous.py` | ⬜ | M10, M17 |
-| M31 | IDE server | `garuda/interfaces/server.py` | ⬜ | M6 |
-| M32 | OS sandbox | `garuda/workspace/sandbox.py` | ⬜ | M3 |
-| M33 | Remote workspace | `garuda/workspace/remote.py` | ⬜ | M19 |
+| M29 | Recipes | `garuda/config/recipes.py` | ✅ | M12 |
+| M30 | RigorousAgent | `garuda/core/rigorous.py` | ✅ | M10, M17 |
+| M31 | IDE server | `garuda/interfaces/server.py` | ✅ | M6 |
+| M32 | OS sandbox | `garuda/workspace/sandbox.py` | ✅ | M3 |
+| M33 | Remote workspace | `garuda/workspace/remote.py` | ✅ | M19 |
 
 ---
 
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33)
 
-**Next up:** Phase 6 (M29–M33) — Recipes, RigorousAgent, IDE server, sandboxes
+**Status:** All 33 modules complete — Garuda v1.0.0
 
 ---
 
