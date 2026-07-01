@@ -60,6 +60,9 @@ class AgentConfig:
     mcp_config_path: str | None = None
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None
+    max_context_tokens: int = 128_000
+    skills: list[str] | None = None
+    skills_dirs: list[str] | None = None
 
 
 @dataclass

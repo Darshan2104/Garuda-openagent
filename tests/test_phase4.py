@@ -151,7 +151,6 @@ async def test_invoke_subagent_tool(tmp_path):
     runner = SubagentRunner(
         model=explore_model,
         env=env,
-        permissions=PermissionEngine(mode="auto"),
         events=events,
     )
     agent = DefaultAgent()

@@ -51,6 +51,7 @@ class DefaultAgent:
         permissions: PermissionEngine | None = None,
         hooks: HookRegistry | None = None,
         subagent_runner=None,
+        agents_dir=None,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
@@ -72,6 +73,7 @@ class DefaultAgent:
             model=model,
             max_output_bytes=config.max_output_bytes,
             proactive_threshold=config.proactive_summarize_threshold,
+            max_context_tokens=config.max_context_tokens,
             enable_three_step_summary=config.enable_three_step_summary,
             task=task,
         )
@@ -89,8 +91,10 @@ class DefaultAgent:
             subagent_runner = SubagentRunner(
                 model=model,
                 env=env,
-                permissions=permissions,
                 events=events,
+                agents_dir=agents_dir,
+                skills_dirs=config.skills_dirs,
+                workspace_root=getattr(env, "workspace_root", None),
             )
 
         ctx = ToolContext(

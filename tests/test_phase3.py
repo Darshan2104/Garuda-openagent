@@ -102,7 +102,9 @@ async def test_context_manager_three_step_summary():
     )
     changed = await manager.maybe_summarize()
     assert changed
-    assert len(manager.get_messages()) <= 3
+    messages = manager.get_messages()
+    assert len(messages) <= 4
+    assert any("Conversation summary" in m.content for m in messages)
 
 
 @pytest.mark.asyncio

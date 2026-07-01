@@ -6,7 +6,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 
 > **Core thesis:** The harness is the product, not the model.
 
-**Version:** 1.0.0 · **Python:** 3.12+ · **License:** MIT
+**Version:** 1.1.0 · **Python:** 3.12+ · **License:** MIT
 
 ---
 
@@ -15,8 +15,11 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | Area | Capabilities |
 |------|--------------|
 | **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, etc.) |
-| **Tools** | `bash`, `read_file`, `write_file`, `apply_patch`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `task_complete` |
-| **Agents** | Built-in profiles: `build`, `plan`, `explore`, `harbor` — customizable via YAML |
+| **Tools** | `bash`, `read_file`, `write_file`, `apply_patch`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `task_complete` + MCP |
+| **Agents** | YAML or **agent.md** profiles: `build`, `plan`, `explore`, `reviewer`, `harbor` |
+| **Skills** | Universal `SKILL.md` format — auto-injected into system prompt |
+| **Subagents** | Main agent spins up isolated subagents via `invoke_subagent` |
+| **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes, completion verifier, optional OS sandbox (bubblewrap) |
 | **Context** | Output shaping, proactive + 3-step summarization |
@@ -37,6 +40,9 @@ cd Garuda-openagent
 
 # Core + dev tools
 pip install -e ".[dev]"
+
+# Add document tools (PDF, Excel)
+pip install -e ".[docs]"
 
 # Add Harbor eval support (optional)
 pip install -e ".[eval]"
@@ -186,7 +192,122 @@ Profiles live in `garuda/agents/defaults/` (or your `--agents-dir`).
 | **build** | Read/write/exec | All core + MCP | Implementation, fixes |
 | **plan** | Read-only | `bash`, `read_file` | Analysis and planning |
 | **explore** | Read-only | `bash`, `read_file` | Fast codebase search (subagent) |
+| **reviewer** | Read-only | `bash`, `read_file` | Code review (subagent, agent.md) |
 | **harbor** | YOLO eval | bash, files, patch, `task_complete` | Harbor benchmarks |
+
+### agent.md (OpenCode-compatible)
+
+Place markdown agents in `.garuda/agents/` or `garuda/agents/defaults/`:
+
+```markdown
+---
+name: my-coder
+description: Full-stack coding agent
+permission_mode: smart
+tools:
+  - bash
+  - read_file
+  - write_file
+  - apply_patch
+  - invoke_subagent
+path_rules:
+  deny:
+    - "**/.env"
+    - "**/secrets/*"
+bash_rules:
+  ask:
+    - "sudo .*"
+---
+
+You are an expert software engineer...
+```
+
+```bash
+garuda run -t "..." --agent my-coder --agents-dir .garuda/agents
+```
+
+### Skills (universal SKILL.md format)
+
+Add skills under `.garuda/skills/` or `skills/`:
+
+```markdown
+---
+name: pdf-processing
+description: Extract and analyze PDF documents
+---
+
+# PDF Processing
+
+When reading PDFs, use read_pdf first. Summarize page by page...
+```
+
+Skills are discovered automatically and injected into the build agent system prompt. Restrict with `skills:` in agent config.
+
+### Subagents
+
+The main `build` agent can delegate to isolated subagents:
+
+```bash
+# Agent calls: invoke_subagent(profile="explore", task="find auth flow")
+# Also available: plan, reviewer
+```
+
+Subagents get their own permissions, event log, and tool set per profile.
+
+### Software Agent SDK
+
+```python
+import asyncio
+from garuda.sdk import SoftwareAgent
+
+async def main():
+    agent = SoftwareAgent(workspace=".", model="openai/gpt-4o-mini", agent="build")
+    result = await agent.run("List Python files and summarize structure")
+    print(result.final_message)
+
+asyncio.run(main())
+```
+
+Multi-turn conversations:
+
+```python
+from garuda.sdk import Conversation
+
+async def main():
+    chat = Conversation(workspace=".", model="openai/gpt-4o-mini")
+    r1 = await chat.run("Find all API routes")
+    r2 = await chat.run("Add tests for the auth routes")
+    await chat.close()
+```
+
+### Custom tools
+
+```python
+from garuda.tools.registry import register_tool
+from garuda.tools.protocol import ToolContext
+from garuda.types import ToolResult
+
+class HelloTool:
+    name = "hello"
+    description = "Say hello"
+    parameters = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+
+    async def execute(self, arguments, env, ctx: ToolContext) -> ToolResult:
+        return ToolResult(tool_call_id="", content=f"Hello {arguments['name']}")
+
+register_tool(HelloTool())
+```
+
+Add tool name to agent profile `tools:` list and optional `tool_rules:`.
+
+### Document files (PDF, Excel)
+
+```bash
+pip install -e ".[docs]"
+garuda run -t "Summarize report.pdf" --agent build
+```
+
+Tools: `read_pdf`, `read_spreadsheet` (`.xlsx`, `.csv`)
 
 ### Custom agent YAML
 
@@ -221,10 +342,12 @@ Connect stdio MCP servers via a YAML config:
 ```yaml
 # .garuda/mcp.yaml
 servers:
-  - name: my-server
+  - name: filesystem
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+    env:
+      TOKEN: ${MY_TOKEN}   # env var interpolation
 ```
 
 ```bash
@@ -255,6 +378,21 @@ MCP tools are namespaced as `mcp__<server>__<tool>`.
 | `auto` | Auto-approve most tool calls |
 | `readonly` | Deny writes and patches |
 | `yolo` | Allow everything (eval/sandboxed use only) |
+
+Configure per-agent in YAML/agent.md:
+
+```yaml
+permission_mode: smart
+tool_rules:
+  write_file: allow
+  bash: allow
+path_rules:
+  deny: ["**/.env", "**/id_rsa"]
+  ask: ["**/package-lock.json"]
+bash_rules:
+  deny: ["rm -rf /"]
+  ask: ["sudo .*"]
+```
 
 The `task_complete` tool triggers a **completion verifier** that checks summary quality and optional verification commands before accepting task completion.
 
@@ -320,7 +458,7 @@ pytest tests/ -v
 pytest tests/test_phase6.py -v
 ```
 
-**Current test status:** 35 passed, 1 skipped (`docker` not available in some CI environments).
+**Current test status:** 45 passed, 1 skipped (`docker` not available in some CI environments).
 
 ---
 

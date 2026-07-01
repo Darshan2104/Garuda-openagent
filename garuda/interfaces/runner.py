@@ -54,6 +54,7 @@ async def run_agent_task(
     docker_host: str | None = None,
     hooks: HookRegistry | None = None,
     mcp_manager=None,
+    agents_dir=None,
 ) -> AgentResult:
     env, handle = await resolve_environment(
         workspace_kind, workspace, docker_image, docker_host=docker_host
@@ -68,6 +69,7 @@ async def run_agent_task(
             events=events,
             permissions=permissions,
             hooks=hooks,
+            agents_dir=agents_dir,
         )
     finally:
         await cleanup_workspace(handle)

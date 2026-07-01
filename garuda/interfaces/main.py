@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from garuda.agents.loader import load_profile
+from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
@@ -130,13 +130,20 @@ async def run_task(args) -> int:
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host
+    config.system_prompt = resolve_system_prompt(profile, args.workspace)
     mcp_path = args.mcp_config or config.mcp_config_path
 
     model = LitellmModel(model_name=args.model)
-    permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
+    permissions = PermissionEngine(
+        mode=config.permission_mode,
+        tool_rules=profile.tool_rules,
+        path_rules=profile.path_rules,
+        bash_rules=profile.bash_rules,
+    )
     agent = create_agent(profile.name, mode=config.mode)
     events = EventStore()
     tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
+    agents_dir = Path(args.agents_dir) if args.agents_dir else None
 
     result = await run_agent_task(
         task=task,
@@ -152,6 +159,7 @@ async def run_task(args) -> int:
         docker_image=args.docker_image,
         docker_host=args.docker_host,
         mcp_manager=mcp_manager,
+        agents_dir=agents_dir,
     )
 
     if args.trajectory:

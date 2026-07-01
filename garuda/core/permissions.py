@@ -1,5 +1,7 @@
+import fnmatch
 import re
 from enum import Enum
+from pathlib import Path
 from typing import Awaitable, Callable
 
 ApprovalHandler = Callable[[str], Awaitable[bool]]
@@ -33,11 +35,19 @@ class PermissionEngine:
         self,
         mode: str = "smart",
         tool_rules: dict[str, str] | None = None,
+        path_rules: dict[str, list[str]] | None = None,
+        bash_rules: dict[str, list[str]] | None = None,
         approval_handler: ApprovalHandler | None = None,
     ):
         self._mode = mode
         self._tool_rules = tool_rules or {}
+        self._path_rules = path_rules or {}
+        self._bash_rules = bash_rules or {}
         self._approval_handler = approval_handler
+        self._deny_paths = self._path_rules.get("deny", [])
+        self._ask_paths = self._path_rules.get("ask", [])
+        self._deny_bash = [re.compile(p) for p in self._bash_rules.get("deny", [])]
+        self._ask_bash = [re.compile(p) for p in self._bash_rules.get("ask", [])]
 
     @property
     def mode(self) -> str:
@@ -56,9 +66,27 @@ class PermissionEngine:
             return PermissionDecision.ALLOW
         return PermissionDecision.ALLOW
 
+    def _path_matches(self, path: str, pattern: str) -> bool:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        normalized = pattern.removeprefix("**/")
+        return fnmatch.fnmatch(path, normalized) or Path(path).name == normalized
+
+    def _match_path_rules(self, path: str) -> PermissionDecision | None:
+        for pattern in self._deny_paths:
+            if self._path_matches(path, pattern):
+                return PermissionDecision.DENY
+        for pattern in self._ask_paths:
+            if self._path_matches(path, pattern):
+                return PermissionDecision.ASK
+        return None
+
     def check_path(self, path: str, operation: str) -> PermissionDecision:
         if self._mode in ("auto", "yolo"):
             return PermissionDecision.ALLOW
+        rule = self._match_path_rules(path)
+        if rule:
+            return rule
         if self._mode == "readonly" and operation in ("write", "patch"):
             return PermissionDecision.DENY
         return PermissionDecision.ALLOW
@@ -68,10 +96,10 @@ class PermissionEngine:
             return PermissionDecision.ALLOW
         if self._mode == "readonly":
             return PermissionDecision.DENY
-        for pattern in DENY_COMMAND_PATTERNS:
+        for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.DENY
-        for pattern in ASK_COMMAND_PATTERNS:
+        for pattern in self._ask_bash + ASK_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.ASK
         return PermissionDecision.ALLOW
@@ -83,10 +111,8 @@ class PermissionEngine:
 
         if tool_name == "bash":
             decision = self.check_command(arguments.get("command", ""))
-        elif tool_name == "write_file":
-            decision = self.check_path(arguments.get("path", ""), "write")
-        elif tool_name == "apply_patch":
-            decision = self.check_path(arguments.get("path", ""), "patch")
+        elif tool_name in ("write_file", "apply_patch", "read_file", "read_pdf", "read_spreadsheet"):
+            decision = self.check_path(arguments.get("path", ""), "write" if tool_name == "write_file" else "read")
 
         if decision == PermissionDecision.DENY:
             return False, f"Permission denied for {tool_name}"

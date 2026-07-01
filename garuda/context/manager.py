@@ -15,6 +15,7 @@ class ContextManager:
         max_context_tokens: int = 128_000,
         enable_three_step_summary: bool = True,
         task: str = "",
+        keep_recent_turns: int = 12,
     ):
         self._model = model
         self._max_output_bytes = max_output_bytes
@@ -22,6 +23,7 @@ class ContextManager:
         self._max_context_tokens = max_context_tokens
         self._enable_three_step_summary = enable_three_step_summary
         self._task = task
+        self._keep_recent_turns = keep_recent_turns
         self._messages: list[Message] = []
 
     def seed(self, messages: list[Message]) -> None:
@@ -39,7 +41,7 @@ class ContextManager:
     def shape_observation(self, output: str) -> str:
         return shape_observation(output, self._max_output_bytes)
 
-    def fork(self) -> "ContextManager":
+    def fork(self, *, include_history: bool = True) -> "ContextManager":
         forked = ContextManager(
             model=self._model,
             max_output_bytes=self._max_output_bytes,
@@ -47,14 +49,20 @@ class ContextManager:
             max_context_tokens=self._max_context_tokens,
             enable_three_step_summary=self._enable_three_step_summary,
             task=self._task,
+            keep_recent_turns=self._keep_recent_turns,
         )
-        forked._messages = deepcopy(self._messages)
+        if include_history:
+            forked._messages = deepcopy(self._messages)
         return forked
 
+    def _estimate_tokens(self) -> int:
+        return self._model.count_tokens(self._messages)
+
     async def maybe_summarize(self) -> bool:
-        used = self._model.count_tokens(self._messages)
+        used = self._estimate_tokens()
         free = self._max_context_tokens - used
-        if free >= self._proactive_threshold:
+        turn_pairs = sum(1 for m in self._messages if m.role == Role.ASSISTANT)
+        if free >= self._proactive_threshold and turn_pairs < self._keep_recent_turns * 2:
             return False
 
         if self._enable_three_step_summary:
@@ -64,6 +72,7 @@ class ContextManager:
 
         system = self._messages[0] if self._messages and self._messages[0].role == Role.SYSTEM else None
         task = next((m for m in self._messages if m.role == Role.USER), None)
+        recent = self._recent_messages()
         rebuilt: list[Message] = []
         if system:
             rebuilt.append(system)
@@ -75,8 +84,28 @@ class ContextManager:
                 content=f"Conversation summary (context compacted):\n{summary}",
             )
         )
+        rebuilt.extend(recent)
         self._messages = rebuilt
         return True
+
+    def _recent_messages(self) -> list[Message]:
+        if self._keep_recent_turns <= 0:
+            return []
+        collected: list[Message] = []
+        turns = 0
+        skipped_seed_user = False
+        for message in reversed(self._messages):
+            if message.role == Role.SYSTEM:
+                continue
+            if message.role == Role.USER and not skipped_seed_user:
+                skipped_seed_user = True
+                continue
+            if message.role == Role.ASSISTANT:
+                turns += 1
+            collected.append(message)
+            if turns >= self._keep_recent_turns:
+                break
+        return list(reversed(collected))
 
     def _compact_summary(self) -> str:
         lines: list[str] = []
