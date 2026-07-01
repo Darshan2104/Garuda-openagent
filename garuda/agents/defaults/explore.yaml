@@ -1,0 +1,16 @@
+name: explore
+description: Fast read-only codebase exploration
+permission_mode: readonly
+mode: standard
+max_turns: 50
+tools:
+  - bash
+  - read_file
+tool_rules:
+  write_file: deny
+  apply_patch: deny
+  task_complete: allow
+system_prompt: |
+  You are Garuda explore agent. Quickly search and read the codebase.
+  Return concise findings. Do not modify anything.
+  End with task_complete listing key files and findings.

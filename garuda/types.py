@@ -47,8 +47,10 @@ class ExecResult:
 class AgentConfig:
     max_turns: int = 200
     mode: str = "standard"
-    permission_mode: str = "auto"
+    permission_mode: str = "smart"
     max_output_bytes: int = 30_720
+    proactive_summarize_threshold: int = 8000
+    enable_verifier: bool = True
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None
 
@@ -63,6 +65,6 @@ class AgentResult:
 
 
 DEFAULT_SYSTEM_PROMPT = """You are Garuda, a capable software engineering agent.
-You solve tasks by using tools: bash commands, reading files, and writing files.
+You solve tasks by using tools: bash commands, reading files, writing files, and applying patches.
 Think step by step. Use tools to inspect the environment before making changes.
-When the task is fully complete, respond with a clear summary of what you did."""
+When the task is fully complete, call the task_complete tool with a clear summary."""

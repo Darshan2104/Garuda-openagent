@@ -13,6 +13,9 @@ class EventType(str, Enum):
     MODEL_RESPONSE = "model_response"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    PERMISSION_ASK = "permission_ask"
+    VERIFICATION = "verification"
+    SUMMARIZATION = "summarization"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
 

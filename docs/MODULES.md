@@ -53,12 +53,12 @@ workspace ──┬── tools ──┘
 
 | # | Module | Path | Status | Depends On | Exit Criteria |
 |---|--------|------|--------|------------|---------------|
-| M8 | **Context manager** | `garuda/context/` | ⬜ | M2, M6 | Output caps, head/tail shaping |
-| M9 | **Permissions** | `garuda/core/permissions.py` | ⬜ | M4 | allow/deny/ask per tool/command |
-| M10 | **Completion verifier** | `garuda/core/verifier.py` | ⬜ | M2, M6 | Checklist gate on `task_complete` |
-| M11 | **Patch tool** | `garuda/tools/patch.py` | ⬜ | M3 | Unified diff apply |
-| M12 | **Agent profiles** | `garuda/agents/` | ⬜ | M6, M9 | Load `build`/`plan`/`explore` from YAML |
-| M13 | **Interactive CLI** | `garuda/interfaces/cli.py` | ⬜ | M6, M9 | TUI with permission prompts |
+| M8 | **Context manager** | `garuda/context/` | ✅ | M2, M6 | Output caps, head/tail shaping |
+| M9 | **Permissions** | `garuda/core/permissions.py` | ✅ | M4 | allow/deny/ask per tool/command |
+| M10 | **Completion verifier** | `garuda/core/verifier.py` | ✅ | M2, M6 | Checklist gate on `task_complete` |
+| M11 | **Patch tool** | `garuda/tools/patch.py` | ✅ | M3 | Unified diff apply |
+| M12 | **Agent profiles** | `garuda/agents/` | ✅ | M6, M9 | Load `build`/`plan`/`explore` from YAML |
+| M13 | **Interactive CLI** | `garuda/interfaces/cli.py` | ✅ | M6, M9 | TUI with permission prompts |
 
 **Phase 2 exit:** Multi-turn task with permissions and completion verification.
 
@@ -120,9 +120,9 @@ workspace ──┬── tools ──┘
 
 ## Current Sprint
 
-**Building now:** Phase 1 (M1–M7)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13)
 
-**Next up:** Phase 2 (M8–M13)
+**Next up:** Phase 3 (M14–M19) — tmux, marker polling, summarizer, docker
 
 ---
 

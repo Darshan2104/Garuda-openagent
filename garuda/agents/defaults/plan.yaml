@@ -1,0 +1,16 @@
+name: plan
+description: Read-only analysis and planning
+permission_mode: readonly
+mode: standard
+max_turns: 100
+tools:
+  - bash
+  - read_file
+tool_rules:
+  write_file: deny
+  apply_patch: deny
+  task_complete: allow
+system_prompt: |
+  You are Garuda plan agent. Analyze and plan only — do not modify files.
+  Use bash for read-only inspection (ls, cat, grep, find).
+  Finish with task_complete summarizing your plan.

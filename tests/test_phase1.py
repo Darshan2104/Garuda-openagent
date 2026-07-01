@@ -39,7 +39,16 @@ async def test_default_agent_with_script_model(tmp_path: Path):
                     ToolCall(id="1", name="write_file", arguments={"path": "out.txt", "content": "ok"}),
                 ],
             ),
-            ModelResponse(content="Task complete. Wrote out.txt.", tool_calls=[]),
+            ModelResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="2",
+                        name="task_complete",
+                        arguments={"summary": "Wrote out.txt with content ok."},
+                    ),
+                ],
+            ),
         ]
     )
     agent = DefaultAgent()
@@ -48,7 +57,7 @@ async def test_default_agent_with_script_model(tmp_path: Path):
         model=model,
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=5),
+        config=AgentConfig(max_turns=5, enable_verifier=True),
     )
     assert result.success
     assert (tmp_path / "out.txt").read_text() == "ok"

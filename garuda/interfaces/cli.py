@@ -1,0 +1,52 @@
+import asyncio
+from pathlib import Path
+
+from garuda.agents.loader import load_profile
+from garuda.core.events import EventStore
+from garuda.core.loop import DefaultAgent
+from garuda.core.permissions import PermissionEngine
+from garuda.interfaces.runner import run_agent_task
+from garuda.model.litellm_model import LitellmModel
+from garuda.tools import tools_for_names
+
+
+async def stdin_approval(action: str) -> bool:
+    print(f"\n[garuda] Approve {action}? [y/N]: ", end="", flush=True)
+    answer = await asyncio.to_thread(input)
+    return answer.strip().lower() in ("y", "yes")
+
+
+async def chat_loop(args) -> int:
+    model = LitellmModel(model_name=args.model)
+    profile = load_profile(args.agent, extra_dir=Path(args.agents_dir) if args.agents_dir else None)
+    config = profile.to_agent_config()
+    permissions = PermissionEngine(
+        mode=profile.permission_mode,
+        tool_rules=profile.tool_rules,
+        approval_handler=stdin_approval if profile.permission_mode == "smart" else None,
+    )
+    tools = tools_for_names(profile.tools)
+    agent = DefaultAgent(profile_name=profile.name)
+
+    print(f"Garuda chat — agent={profile.name} model={args.model}")
+    print("Enter a task (empty line to quit).\n")
+
+    while True:
+        print("task> ", end="", flush=True)
+        task = await asyncio.to_thread(input)
+        if not task.strip():
+            print("Bye.")
+            return 0
+
+        result = await run_agent_task(
+            task=task.strip(),
+            model=model,
+            agent=agent,
+            tools=tools,
+            config=config,
+            permissions=permissions,
+            workspace=args.workspace,
+            events=EventStore(),
+            emit_json=args.json,
+        )
+        print(f"\n{result.final_message}\n")

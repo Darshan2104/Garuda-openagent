@@ -1,7 +1,7 @@
-import json
-import uuid
-
+from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
+from garuda.core.permissions import PermissionEngine
+from garuda.core.verifier import CompletionVerifier
 from garuda.model.protocol import Model
 from garuda.tools.protocol import Tool, ToolContext
 from garuda.types import (
@@ -11,6 +11,7 @@ from garuda.types import (
     Message,
     Role,
     ToolCall,
+    ToolResult,
 )
 from garuda.workspace.protocol import Environment
 
@@ -29,19 +30,10 @@ def _tools_schema(tools: list[Tool]) -> list[dict]:
     ]
 
 
-def _shape_output(text: str, max_bytes: int) -> str:
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    half = max_bytes // 2
-    head = encoded[:half].decode("utf-8", errors="ignore")
-    tail = encoded[-half:].decode("utf-8", errors="ignore")
-    return f"{head}\n\n...[truncated]...\n\n{tail}"
-
-
 class DefaultAgent:
     def __init__(self, profile_name: str = "build"):
         self._profile_name = profile_name
+        self._verifier = CompletionVerifier()
 
     @property
     def profile_name(self) -> str:
@@ -55,9 +47,11 @@ class DefaultAgent:
         tools: list[Tool],
         config: AgentConfig | None = None,
         events: EventStore | None = None,
+        permissions: PermissionEngine | None = None,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
+        permissions = permissions or PermissionEngine(mode=config.permission_mode)
         events.append(EventType.SESSION_START, {"task": task, "model": model.model_name})
 
         tool_map = {tool.name: tool for tool in tools}
@@ -66,54 +60,84 @@ class DefaultAgent:
             tools = list(tool_map.values())
 
         system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
-        messages: list[Message] = [
-            Message(role=Role.SYSTEM, content=system_prompt),
-            Message(role=Role.USER, content=task),
-        ]
+        context = ContextManager(
+            model=model,
+            max_output_bytes=config.max_output_bytes,
+            proactive_threshold=config.proactive_summarize_threshold,
+        )
+        context.seed(
+            [
+                Message(role=Role.SYSTEM, content=system_prompt),
+                Message(role=Role.USER, content=task),
+            ]
+        )
         events.append(EventType.USER_MESSAGE, {"content": task})
 
         ctx = ToolContext(session_id=events.session_id, agent_profile=self._profile_name)
         final_message = ""
 
         for turn in range(1, config.max_turns + 1):
-            response = await model.complete(messages, tools=_tools_schema(tools))
+            if await context.maybe_summarize():
+                events.append(EventType.SUMMARIZATION, {"turn": turn})
+
+            response = await model.complete(
+                context.get_messages(),
+                tools=_tools_schema(tools),
+            )
             events.append(
                 EventType.MODEL_RESPONSE,
                 {
                     "content": response.content,
                     "tool_calls": [
-                        {"name": c.name, "arguments": c.arguments} for c in response.tool_calls
+                        {"name": call.name, "arguments": call.arguments}
+                        for call in response.tool_calls
                     ],
                 },
             )
 
             if response.content:
-                messages.append(Message(role=Role.ASSISTANT, content=response.content))
+                context.append(Message(role=Role.ASSISTANT, content=response.content))
 
             if not response.tool_calls:
                 final_message = response.content or ""
-                if self._is_completion_message(final_message):
+                if not config.enable_verifier and self._is_completion_message(final_message):
                     events.append(EventType.SESSION_END, {"success": True, "turns": turn})
-                    return AgentResult(
-                        success=True,
-                        final_message=final_message,
-                        messages=messages,
-                        turns=turn,
-                        metadata={"session_id": events.session_id, "events": events.get_all()},
-                    )
+                    return self._result(True, final_message, context, turn, events)
                 continue
 
             for call in response.tool_calls:
-                tool_result = await self._execute_tool(call, tool_map, env, ctx, config.max_output_bytes)
-                events.append(
-                    EventType.TOOL_CALL,
-                    {"name": call.name, "arguments": call.arguments},
-                )
+                if call.name == "task_complete":
+                    completed = await self._handle_task_complete(
+                        call, task, context, env, model, config, events, turn
+                    )
+                    if completed is not None:
+                        return completed
+                    continue
+
+                allowed, denial_reason = await permissions.evaluate_tool_call(call.name, call.arguments)
+                if not allowed:
+                    events.append(EventType.PERMISSION_ASK, {"approved": False, "reason": denial_reason})
+                    context.append(
+                        Message(
+                            role=Role.TOOL,
+                            content=denial_reason or "Permission denied",
+                            name=call.name,
+                            tool_call_id=call.id,
+                        )
+                    )
+                    continue
+
+                tool_result = await self._execute_tool(call, tool_map, env, ctx, context)
+                events.append(EventType.TOOL_CALL, {"name": call.name, "arguments": call.arguments})
                 events.append(
                     EventType.TOOL_RESULT,
-                    {"name": call.name, "content": tool_result.content, "is_error": tool_result.is_error},
+                    {
+                        "name": call.name,
+                        "content": tool_result.content,
+                        "is_error": tool_result.is_error,
+                    },
                 )
-                messages.append(
+                context.append(
                     Message(
                         role=Role.TOOL,
                         content=tool_result.content,
@@ -123,13 +147,46 @@ class DefaultAgent:
                 )
 
         events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})
-        return AgentResult(
-            success=False,
-            final_message=final_message or "Max turns exceeded",
-            messages=messages,
-            turns=config.max_turns,
-            metadata={"session_id": events.session_id, "events": events.get_all()},
+        return self._result(False, final_message or "Max turns exceeded", context, config.max_turns, events)
+
+    async def _handle_task_complete(
+        self,
+        call: ToolCall,
+        task: str,
+        context: ContextManager,
+        env: Environment,
+        model: Model,
+        config: AgentConfig,
+        events: EventStore,
+        turn: int,
+    ) -> AgentResult | None:
+        summary = call.arguments.get("summary", "")
+        verification_commands = call.arguments.get("verification_commands") or []
+        result = await self._verifier.verify_with_commands(
+            task=task,
+            summary=summary,
+            verification_commands=verification_commands,
+            env=env,
+            config=config,
         )
+        events.append(
+            EventType.VERIFICATION,
+            {"approved": result.approved, "checklist": result.checklist, "feedback": result.feedback},
+        )
+        if result.approved:
+            events.append(EventType.SESSION_END, {"success": True, "turns": turn})
+            return self._result(True, summary, context, turn, events)
+
+        feedback = result.feedback or "Completion verification failed."
+        context.append(
+            Message(
+                role=Role.TOOL,
+                content=feedback,
+                name="task_complete",
+                tool_call_id=call.id,
+            )
+        )
+        return None
 
     async def _execute_tool(
         self,
@@ -137,10 +194,8 @@ class DefaultAgent:
         tool_map: dict[str, Tool],
         env: Environment,
         ctx: ToolContext,
-        max_output_bytes: int,
-    ):
-        from garuda.types import ToolResult
-
+        context: ContextManager,
+    ) -> ToolResult:
         tool = tool_map.get(call.name)
         if tool is None:
             return ToolResult(
@@ -150,8 +205,24 @@ class DefaultAgent:
             )
         result = await tool.execute(call.arguments, env, ctx)
         result.tool_call_id = call.id
-        result.content = _shape_output(result.content, max_output_bytes)
+        result.content = context.shape_observation(result.content)
         return result
+
+    def _result(
+        self,
+        success: bool,
+        final_message: str,
+        context: ContextManager,
+        turns: int,
+        events: EventStore,
+    ) -> AgentResult:
+        return AgentResult(
+            success=success,
+            final_message=final_message,
+            messages=context.get_messages(),
+            turns=turns,
+            metadata={"session_id": events.session_id, "events": events.get_all()},
+        )
 
     def _is_completion_message(self, text: str) -> bool:
         lowered = text.lower()

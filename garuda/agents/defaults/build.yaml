@@ -1,0 +1,17 @@
+name: build
+description: Full-access agent for implementation work
+permission_mode: smart
+mode: standard
+max_turns: 200
+tools:
+  - bash
+  - read_file
+  - write_file
+  - apply_patch
+  - task_complete
+tool_rules:
+  task_complete: allow
+system_prompt: |
+  You are Garuda build agent. Implement tasks using tools.
+  Inspect the environment before changing files.
+  When fully done, call task_complete with a summary and verification commands.
