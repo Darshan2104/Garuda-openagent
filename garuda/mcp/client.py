@@ -1,4 +1,5 @@
 import json
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +10,8 @@ from mcp.client.stdio import stdio_client
 from garuda.mcp.config import McpServerConfig, load_mcp_config
 from garuda.tools.protocol import Tool, ToolContext
 from garuda.types import ToolResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,6 +65,11 @@ class McpClientManager:
             return
         for server in servers:
             if server.transport != "stdio":
+                logger.warning(
+                    "Skipping non-stdio MCP server %s (transport=%s)",
+                    server.name,
+                    server.transport,
+                )
                 continue
             params = StdioServerParameters(
                 command=server.command,

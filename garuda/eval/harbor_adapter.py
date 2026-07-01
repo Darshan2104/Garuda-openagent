@@ -6,16 +6,15 @@ from typing import Any, override
 
 import yaml
 
-from garuda.agents.loader import load_profile
+from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
-from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.eval.atif_export import events_to_atif, save_atif_trajectory
 from garuda.eval.harbor_environment import HarborEnvironmentAdapter
 from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import ModelResponse
 from garuda.tools import build_toolkit
-from garuda.types import AgentConfig, Message
+from garuda.types import Message
 
 try:
     from harbor.agents.base import BaseAgent
@@ -120,27 +119,35 @@ class GarudaHarborAgent(BaseAgent):
         context: AgentContext,
     ) -> None:
         adapter = HarborEnvironmentAdapter(environment)
-        await adapter.resolve_workspace_root()
+        workspace_root = await adapter.resolve_workspace_root()
 
-        profile = load_profile(self._agent_profile)
-        config = profile.to_agent_config()
+        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+            self._agent_profile,
+            workspace=workspace_root,
+            mode="standard",
+        )
         config.enable_verifier = True
         config.workspace_kind = "local"
         if self._max_turns is not None:
             config.max_turns = self._max_turns
         if self._permission_mode:
             config.permission_mode = self._permission_mode
+            permissions = PermissionEngine(
+                mode=config.permission_mode,
+                tool_rules=profile.tool_rules,
+                path_rules=profile.path_rules,
+                bash_rules=profile.bash_rules,
+            )
 
         if not self.model_name:
             raise ValueError("GarudaHarborAgent requires --model (provider/model_name)")
 
         model = _UsageTrackingModel(LitellmModel(model_name=self.model_name))
-        permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
         events = EventStore()
-        agent = DefaultAgent(profile_name=profile.name)
 
         mcp_path = await self._write_mcp_config()
-        tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
+        if mcp_path:
+            tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
 
         result = await agent.run(
             task=instruction,

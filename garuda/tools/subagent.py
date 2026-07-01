@@ -17,6 +17,11 @@ class InvokeSubagentTool:
                 "description": "Subagent profile name (explore, plan, or custom)",
             },
             "task": {"type": "string", "description": "Task for the subagent"},
+            "fork_context": {
+                "type": "boolean",
+                "description": "Include parent conversation history in the subagent context",
+                "default": False,
+            },
         },
         "required": ["profile", "task"],
     }
@@ -37,7 +42,8 @@ class InvokeSubagentTool:
 
         profile = arguments["profile"]
         task = arguments["task"]
-        result = await ctx.subagent_runner.run(profile, task)
+        fork_context = bool(arguments.get("fork_context", False))
+        result = await ctx.subagent_runner.run(profile, task, fork_parent_context=fork_context)
         summary = format_subagent_summary(profile, result)
         return ToolResult(
             tool_call_id="",

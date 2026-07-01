@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.plugins.hooks import HookRegistry
@@ -55,6 +56,8 @@ async def run_agent_task(
     hooks: HookRegistry | None = None,
     mcp_manager=None,
     agents_dir=None,
+    context: ContextManager | None = None,
+    close_mcp: bool = True,
 ) -> AgentResult:
     env, handle = await resolve_environment(
         workspace_kind, workspace, docker_image, docker_host=docker_host
@@ -70,10 +73,11 @@ async def run_agent_task(
             permissions=permissions,
             hooks=hooks,
             agents_dir=agents_dir,
+            context=context,
         )
     finally:
         await cleanup_workspace(handle)
-        if mcp_manager is not None:
+        if close_mcp and mcp_manager is not None:
             await mcp_manager.close()
     if emit_json:
         for event in events.get_all():

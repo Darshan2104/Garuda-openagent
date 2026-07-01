@@ -7,14 +7,11 @@ from typing import Any
 
 import yaml
 
-from garuda.agents.loader import load_profile
+from garuda.agents.loader import resolve_system_prompt
+from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
-from garuda.core.loop import DefaultAgent
-from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
 from garuda.model.protocol import Model
-from garuda.tools import build_toolkit
-from garuda.types import AgentConfig, AgentResult
+from garuda.types import AgentResult
 from garuda.workspace.protocol import Environment
 
 _TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
@@ -118,14 +115,15 @@ async def run_recipe(
         if prior_context:
             prompt = f"{prompt}\n\n## Prior step output\n{prior_context}"
 
-        profile = load_profile(step.agent, extra_dir=agents_dir)
-        config = profile.to_agent_config()
-        config.mode = step.mode
-        if step.agent == "plan":
-            config.enable_verifier = False
-        permissions = PermissionEngine(mode=config.permission_mode, tool_rules=profile.tool_rules)
-        tools, mcp_manager = await build_toolkit(profile.tools, mcp_config_path)
-        agent = create_agent(profile.name, mode=step.mode)
+        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+            step.agent,
+            workspace=workspace,
+            agents_dir=agents_dir,
+            mcp_config_path=mcp_config_path,
+            mode=step.mode,
+        )
+        config.enable_verifier = step.agent != "plan"
+        config.system_prompt = resolve_system_prompt(profile, workspace)
 
         result = await agent.run(
             task=prompt,
@@ -135,6 +133,7 @@ async def run_recipe(
             config=config,
             events=events,
             permissions=permissions,
+            agents_dir=agents_dir,
         )
         if mcp_manager is not None:
             await mcp_manager.close()

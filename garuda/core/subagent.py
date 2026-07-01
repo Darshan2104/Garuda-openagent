@@ -1,7 +1,9 @@
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from garuda.agents.loader import load_profile
+from garuda.agents.loader import load_profile, resolve_system_prompt
+from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.permissions import PermissionEngine
 from garuda.model.protocol import Model
@@ -22,8 +24,13 @@ class SubagentRunner:
     fork_parent_context: bool = False
     parent_messages: list[Message] | None = None
 
-    async def run(self, profile_name: str, task: str) -> AgentResult:
-        from garuda.agents.loader import resolve_system_prompt
+    async def run(
+        self,
+        profile_name: str,
+        task: str,
+        *,
+        fork_parent_context: bool | None = None,
+    ) -> AgentResult:
         from garuda.core.loop import DefaultAgent
 
         profile = load_profile(profile_name, extra_dir=self.agents_dir)
@@ -45,6 +52,25 @@ class SubagentRunner:
         sub_events = EventStore()
         agent = DefaultAgent(profile_name=profile.name)
 
+        use_fork = self.fork_parent_context if fork_parent_context is None else fork_parent_context
+        context: ContextManager | None = None
+        if use_fork and self.parent_messages:
+            context = ContextManager(
+                model=self.model,
+                max_output_bytes=config.max_output_bytes,
+                proactive_threshold=config.proactive_summarize_threshold,
+                max_context_tokens=config.max_context_tokens,
+                enable_three_step_summary=False,
+                task=task,
+            )
+            context.seed(deepcopy(self.parent_messages))
+            context.append(
+                Message(
+                    role=Role.USER,
+                    content=f"[subagent:{profile_name}] {task}",
+                )
+            )
+
         result = await agent.run(
             task=task,
             model=self.model,
@@ -53,6 +79,7 @@ class SubagentRunner:
             config=config,
             events=sub_events,
             permissions=permissions,
+            context=context,
         )
         if mcp_manager is not None:
             await mcp_manager.close()
