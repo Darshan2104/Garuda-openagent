@@ -5,7 +5,7 @@ from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
-from garuda.interfaces.runner import run_agent_task
+from garuda.interfaces.main import run_agent_task
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import tools_for_names
 
@@ -20,6 +20,8 @@ async def chat_loop(args) -> int:
     model = LitellmModel(model_name=args.model)
     profile = load_profile(args.agent, extra_dir=Path(args.agents_dir) if args.agents_dir else None)
     config = profile.to_agent_config()
+    config.workspace_kind = getattr(args, "workspace_kind", "local")
+    config.docker_image = getattr(args, "docker_image", "ubuntu:22.04")
     permissions = PermissionEngine(
         mode=profile.permission_mode,
         tool_rules=profile.tool_rules,
@@ -28,7 +30,7 @@ async def chat_loop(args) -> int:
     tools = tools_for_names(profile.tools)
     agent = DefaultAgent(profile_name=profile.name)
 
-    print(f"Garuda chat — agent={profile.name} model={args.model}")
+    print(f"Garuda chat — agent={profile.name} model={args.model} workspace={config.workspace_kind}")
     print("Enter a task (empty line to quit).\n")
 
     while True:
@@ -48,5 +50,7 @@ async def chat_loop(args) -> int:
             workspace=args.workspace,
             events=EventStore(),
             emit_json=args.json,
+            workspace_kind=config.workspace_kind,
+            docker_image=config.docker_image,
         )
         print(f"\n{result.final_message}\n")

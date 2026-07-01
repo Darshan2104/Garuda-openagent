@@ -68,12 +68,12 @@ workspace ──┬── tools ──┘
 
 | # | Module | Path | Status | Depends On | Exit Criteria |
 |---|--------|------|--------|------------|---------------|
-| M14 | **Tmux environment** | `garuda/workspace/tmux.py` | ⬜ | M3 | Persistent tmux session |
-| M15 | **Tmux tools** | `garuda/tools/tmux.py` | ⬜ | M14 | `tmux_send`, `tmux_capture` |
-| M16 | **Marker polling** | `garuda/workspace/tmux.py` | ⬜ | M14 | `__CMDEND__` early completion |
-| M17 | **Summarizer** | `garuda/context/summarizer.py` | ⬜ | M8 | 3-step proactive summarization |
-| M18 | **Image read** | `garuda/tools/image_read.py` | ⬜ | M2 | Multimodal file analysis |
-| M19 | **Docker workspace** | `garuda/workspace/docker.py` | ⬜ | M3 | Container-isolated execution |
+| M14 | **Tmux environment** | `garuda/workspace/tmux.py` | ✅ | M3 | Persistent tmux session |
+| M15 | **Tmux tools** | `garuda/tools/tmux.py` | ✅ | M14 | `tmux_exec`, `tmux_capture` |
+| M16 | **Marker polling** | `garuda/workspace/tmux.py` | ✅ | M14 | `__CMDEND__` early completion |
+| M17 | **Summarizer** | `garuda/context/summarizer.py` | ✅ | M8 | 3-step proactive summarization |
+| M18 | **Image read** | `garuda/tools/image_read.py` | ✅ | M2 | Multimodal file analysis |
+| M19 | **Docker workspace** | `garuda/workspace/docker.py` | ✅ | M3 | Container-isolated execution |
 
 **Phase 3 exit:** Interactive terminal task (pager, server, menu) via tmux.
 
@@ -120,9 +120,9 @@ workspace ──┬── tools ──┘
 
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19)
 
-**Next up:** Phase 3 (M14–M19) — tmux, marker polling, summarizer, docker
+**Next up:** Phase 4 (M20–M23) — MCP, plugins, subagents
 
 ---
 

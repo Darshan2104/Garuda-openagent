@@ -17,6 +17,11 @@ class AgentProfile:
     system_prompt: str | None = None
     tool_rules: dict[str, str] | None = None
     max_turns: int = 200
+    enable_tmux: bool = True
+    marker_polling: bool = True
+    enable_three_step_summary: bool = True
+    workspace_kind: str = "local"
+    docker_image: str = "ubuntu:22.04"
 
     def to_agent_config(self) -> AgentConfig:
         return AgentConfig(
@@ -26,6 +31,11 @@ class AgentProfile:
             system_prompt=self.system_prompt or DEFAULT_SYSTEM_PROMPT,
             allowed_tools=self.tools,
             enable_verifier=True,
+            enable_tmux=self.enable_tmux,
+            marker_polling=self.marker_polling,
+            enable_three_step_summary=self.enable_three_step_summary,
+            workspace_kind=self.workspace_kind,
+            docker_image=self.docker_image,
         )
 
 
@@ -56,5 +66,10 @@ def load_profile(name: str, extra_dir: Path | None = None) -> AgentProfile:
                 system_prompt=data.get("system_prompt"),
                 tool_rules=data.get("tool_rules"),
                 max_turns=data.get("max_turns", 200),
+                enable_tmux=data.get("enable_tmux", True),
+                marker_polling=data.get("marker_polling", True),
+                enable_three_step_summary=data.get("enable_three_step_summary", True),
+                workspace_kind=data.get("workspace_kind", "local"),
+                docker_image=data.get("docker_image", "ubuntu:22.04"),
             )
     raise FileNotFoundError(f"Agent profile not found: {name}")

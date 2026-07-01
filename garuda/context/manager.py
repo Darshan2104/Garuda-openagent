@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from garuda.context.shaper import shape_observation
+from garuda.context.summarizer import summarize_three_step
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
@@ -12,15 +13,22 @@ class ContextManager:
         max_output_bytes: int = 30_720,
         proactive_threshold: int = 8000,
         max_context_tokens: int = 128_000,
+        enable_three_step_summary: bool = True,
+        task: str = "",
     ):
         self._model = model
         self._max_output_bytes = max_output_bytes
         self._proactive_threshold = proactive_threshold
         self._max_context_tokens = max_context_tokens
+        self._enable_three_step_summary = enable_three_step_summary
+        self._task = task
         self._messages: list[Message] = []
 
     def seed(self, messages: list[Message]) -> None:
         self._messages = list(messages)
+        task_message = next((m for m in messages if m.role == Role.USER), None)
+        if task_message:
+            self._task = task_message.content
 
     def append(self, message: Message) -> None:
         self._messages.append(message)
@@ -37,6 +45,8 @@ class ContextManager:
             max_output_bytes=self._max_output_bytes,
             proactive_threshold=self._proactive_threshold,
             max_context_tokens=self._max_context_tokens,
+            enable_three_step_summary=self._enable_three_step_summary,
+            task=self._task,
         )
         forked._messages = deepcopy(self._messages)
         return forked
@@ -46,7 +56,12 @@ class ContextManager:
         free = self._max_context_tokens - used
         if free >= self._proactive_threshold:
             return False
-        summary = self._compact_summary()
+
+        if self._enable_three_step_summary:
+            summary = await summarize_three_step(self._model, self._messages, self._task)
+        else:
+            summary = self._compact_summary()
+
         system = self._messages[0] if self._messages and self._messages[0].role == Role.SYSTEM else None
         task = next((m for m in self._messages if m.role == Role.USER), None)
         rebuilt: list[Message] = []

@@ -51,6 +51,11 @@ class AgentConfig:
     max_output_bytes: int = 30_720
     proactive_summarize_threshold: int = 8000
     enable_verifier: bool = True
+    enable_tmux: bool = True
+    marker_polling: bool = True
+    enable_three_step_summary: bool = True
+    workspace_kind: str = "local"
+    docker_image: str = "ubuntu:22.04"
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None
 

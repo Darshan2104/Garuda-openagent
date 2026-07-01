@@ -64,6 +64,8 @@ class DefaultAgent:
             model=model,
             max_output_bytes=config.max_output_bytes,
             proactive_threshold=config.proactive_summarize_threshold,
+            enable_three_step_summary=config.enable_three_step_summary,
+            task=task,
         )
         context.seed(
             [
@@ -73,7 +75,7 @@ class DefaultAgent:
         )
         events.append(EventType.USER_MESSAGE, {"content": task})
 
-        ctx = ToolContext(session_id=events.session_id, agent_profile=self._profile_name)
+        ctx = ToolContext(session_id=events.session_id, agent_profile=self._profile_name, model=model)
         final_message = ""
 
         for turn in range(1, config.max_turns + 1):
