@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garuda-openagent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Universal provider-agnostic agent harness for terminal and software engineering tasks"
 readme = "README.md"
 license = { text = "MIT" }
@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+]
+eval = [
+    "harbor>=0.16.0",
 ]
 
 [project.scripts]

@@ -1,0 +1,30 @@
+# Harbor job config for Terminal-Bench 2.0 with Garuda
+#
+# Usage:
+#   harbor run -c garuda/eval/benchmarks/terminal_bench/job.yaml \
+#     --model openai/gpt-4o-mini
+#
+# Or with explicit agent import:
+#   harbor run -d terminal-bench@2.0 \
+#     --agent garuda.eval.harbor_adapter:GarudaHarborAgent \
+#     --model openai/gpt-4o-mini
+
+job_name: garuda-terminal-bench-2.0
+n_concurrent_trials: 4
+
+agents:
+  - import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
+    model_name: openai/gpt-4o-mini
+    kwargs:
+      agent_profile: harbor
+      permission_mode: yolo
+
+datasets:
+  - name: terminal-bench
+    version: "2.0"
+
+environment:
+  type: docker
+
+verifier:
+  disable: false

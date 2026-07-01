@@ -1,0 +1,21 @@
+# Harbor job config for SpreadsheetBench (eval only)
+#
+# Requires a registered Harbor dataset. Adjust name/version to match registry.
+
+job_name: garuda-spreadsheet-bench
+n_concurrent_trials: 2
+
+agents:
+  - import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
+    model_name: openai/gpt-4o-mini
+    kwargs:
+      agent_profile: harbor
+      permission_mode: yolo
+      max_turns: 150
+
+datasets:
+  - name: spreadsheet-bench
+    version: "1.0"
+
+environment:
+  type: docker

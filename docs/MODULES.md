@@ -96,11 +96,11 @@ workspace ──┬── tools ──┘
 
 | # | Module | Path | Status | Depends On | Exit Criteria |
 |---|--------|------|--------|------------|---------------|
-| M24 | **ATIF export** | `garuda/eval/atif_export.py` | ⬜ | M5 | EventStore → ATIF JSON |
-| M25 | **Harbor adapter** | `garuda/eval/harbor_adapter.py` | ⬜ | M6, M19 | `BaseAgent` implementation |
-| M26 | **TB benchmarks** | `garuda/eval/benchmarks/` | ⬜ | M25 | Harbor run configs |
-| M27 | **Spreadsheet eval** | `garuda/eval/benchmarks/spreadsheet/` | ⬜ | M25 | SpreadsheetBench adapter (eval only) |
-| M28 | **PDF eval** | `garuda/eval/benchmarks/pdf/` | ⬜ | M25 | OfficeQA adapter (eval only) |
+| M24 | **ATIF export** | `garuda/eval/atif_export.py` | ✅ | M5 | EventStore → ATIF JSON |
+| M25 | **Harbor adapter** | `garuda/eval/harbor_adapter.py` | ✅ | M6, M19 | `BaseAgent` implementation |
+| M26 | **TB benchmarks** | `garuda/eval/benchmarks/` | ✅ | M25 | Harbor run configs |
+| M27 | **Spreadsheet eval** | `garuda/eval/benchmarks/spreadsheet/` | ✅ | M25 | SpreadsheetBench adapter (eval only) |
+| M28 | **PDF eval** | `garuda/eval/benchmarks/pdf/` | ✅ | M25 | OfficeQA adapter (eval only) |
 
 **Phase 5 exit:** Score on Terminal-Bench 2.0 via Harbor with ATIF logs.
 
@@ -120,9 +120,9 @@ workspace ──┬── tools ──┘
 
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28)
 
-**Next up:** Phase 5 (M24–M28) — Harbor/ATIF eval adapter
+**Next up:** Phase 6 (M29–M33) — Recipes, RigorousAgent, IDE server, sandboxes
 
 ---
 

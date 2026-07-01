@@ -1,0 +1,23 @@
+name: harbor
+description: Harbor benchmark profile with unrestricted tool access
+permission_mode: yolo
+mode: standard
+max_turns: 200
+enable_tmux: false
+marker_polling: false
+enable_three_step_summary: true
+workspace_kind: local
+tools:
+  - bash
+  - read_file
+  - write_file
+  - apply_patch
+  - task_complete
+mcp_config_path: null
+tool_rules:
+  task_complete: allow
+system_prompt: |
+  You are Garuda, evaluated on a Harbor benchmark inside an isolated container.
+  Complete the task autonomously using bash and file tools.
+  Inspect the environment before making changes.
+  When fully done, call task_complete with a summary and verification commands.

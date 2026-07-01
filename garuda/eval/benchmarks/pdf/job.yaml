@@ -1,0 +1,18 @@
+# Harbor job config for OfficeQA / PDF eval (eval only)
+
+job_name: garuda-officeqa
+n_concurrent_trials: 2
+
+agents:
+  - import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
+    model_name: openai/gpt-4o-mini
+    kwargs:
+      agent_profile: harbor
+      permission_mode: yolo
+
+datasets:
+  - name: officeqa
+    version: "1.0"
+
+environment:
+  type: docker
