@@ -73,7 +73,57 @@ class ContextManager:
             return self._last_prompt_tokens
         return self._model.count_tokens(self._messages)
 
+    def usage_fraction(self) -> float:
+        if self._max_context_tokens <= 0:
+            return 0.0
+        return self._used_tokens() / self._max_context_tokens
+
+    MICROCOMPACT_FRACTION = 0.75
+    PRUNE_MIN_CHARS = 500
+
+    def _microcompact(self) -> int:
+        """Prune bulky tool outputs outside the recent window, in place.
+
+        Keeps the message structure (and thus provider prompt-cache prefixes)
+        intact — only old tool-result *contents* are replaced with stubs.
+        Returns the number of messages pruned.
+        """
+        # Find the index where the recent window starts (keep_recent_turns
+        # assistant turns from the end); prune only before it.
+        turns = 0
+        boundary = 0
+        for index in range(len(self._messages) - 1, -1, -1):
+            if self._messages[index].role == Role.ASSISTANT:
+                turns += 1
+                if turns >= self._keep_recent_turns:
+                    boundary = index
+                    break
+        pruned = 0
+        for message in self._messages[:boundary]:
+            if (
+                message.role == Role.TOOL
+                and len(message.content or "") > self.PRUNE_MIN_CHARS
+                and not message.metadata.get("pruned")
+            ):
+                original_len = len(message.content)
+                message.content = (
+                    f"[tool output pruned to save context: was {original_len} chars. "
+                    "Re-run the tool if this output is needed again.]"
+                )
+                message.metadata["pruned"] = True
+                pruned += 1
+        return pruned
+
     async def maybe_summarize(self) -> bool:
+        if self.usage_fraction() < self.MICROCOMPACT_FRACTION:
+            return False
+
+        # Stage 1: cache-friendly in-place pruning of old tool outputs.
+        if self._microcompact() > 0:
+            self._last_prompt_tokens = None
+            return True
+
+        # Stage 2: nothing left to prune — full summarize-and-rebuild.
         free = self._max_context_tokens - self._used_tokens()
         if free >= self._proactive_threshold:
             return False
