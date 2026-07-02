@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DeepEval (auto-created if deepeval is imported)
+.deepeval/
