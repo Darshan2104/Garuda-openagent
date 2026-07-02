@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from garuda.types import Message
 
@@ -21,10 +21,19 @@ class EventType(str, Enum):
 
 
 class EventStore:
-    def __init__(self, session_id: str | None = None, persist_path: str | Path | None = None):
+    def __init__(
+        self,
+        session_id: str | None = None,
+        persist_path: str | Path | None = None,
+        on_append: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self.session_id = session_id or str(uuid.uuid4())
         self._events: list[dict[str, Any]] = []
         self._persist_path: Path | None = None
+        # Optional subscriber invoked after each append. Lets a live tracer (or
+        # any observer) react to events without the agent loop knowing. It is
+        # always wrapped in try/except and can never break appends.
+        self._on_append = on_append
         if persist_path:
             self.attach_persistence(persist_path)
 
@@ -46,6 +55,12 @@ class EventStore:
                 with self._persist_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(event, default=str) + "\n")
             except OSError:
+                pass
+        if self._on_append is not None:
+            try:
+                self._on_append(event)
+            except Exception:
+                # Observers must never break the event trail.
                 pass
 
     def get_all(self) -> list[dict[str, Any]]:
