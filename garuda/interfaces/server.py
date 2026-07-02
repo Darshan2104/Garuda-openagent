@@ -9,8 +9,12 @@ from typing import Any
 from garuda.agents.loader import list_profiles
 from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
+from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
+
+UNAUTHORIZED_CODE = -32001
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 @dataclass
@@ -25,6 +29,17 @@ class ServerConfig:
     docker_host: str | None = None
     agents_dir: str | None = None
     mcp_config: str | None = None
+    token: str | None = None
+
+
+def ensure_secure_config(config: ServerConfig) -> None:
+    """Refuse to bind a non-loopback host without a bearer token configured."""
+    if not config.token and config.host not in LOOPBACK_HOSTS:
+        raise ValueError(
+            f"Refusing to serve on non-loopback host {config.host!r} without authentication. "
+            "Set a bearer token via --token or the GARUDA_SERVE_TOKEN env var, "
+            "or bind to 127.0.0.1."
+        )
 
 
 class JsonRpcServer:
@@ -33,16 +48,44 @@ class JsonRpcServer:
     def __init__(self, config: ServerConfig):
         self._config = config
 
-    async def handle(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _authorized(self, headers: dict[str, str] | None) -> bool:
+        if not self._config.token:
+            return True
+        provided = ""
+        for key, value in (headers or {}).items():
+            if key.lower() == "authorization":
+                provided = value.strip()
+                break
+        return provided == f"Bearer {self._config.token}"
+
+    async def handle(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         req_id = payload.get("id")
         method = payload.get("method")
         params = payload.get("params") or {}
+
+        if not self._authorized(headers):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": UNAUTHORIZED_CODE,
+                    "message": "Unauthorized: missing or invalid bearer token",
+                },
+            }
 
         try:
             if method == "health":
                 result = await self._health()
             elif method == "run":
                 result = await self._run(params)
+            elif method == "sessions":
+                result = {
+                    "sessions": SessionStore().list_sessions(limit=int(params.get("limit", 20)))
+                }
             elif method == "list_agents":
                 agents_dir = params.get("agents_dir", self._config.agents_dir)
                 result = {
@@ -109,6 +152,7 @@ class JsonRpcServer:
             docker_host=params.get("docker_host", self._config.docker_host),
             mcp_manager=mcp_manager,
             agents_dir=agents_path,
+            resume=params.get("resume"),
         )
 
         return {
@@ -120,6 +164,7 @@ class JsonRpcServer:
         }
 
     async def serve(self) -> None:
+        ensure_secure_config(self._config)
         server = await asyncio.start_server(
             self._connection_handler,
             self._config.host,
@@ -138,18 +183,25 @@ class JsonRpcServer:
         try:
             raw = await reader.readuntil(b"\r\n\r\n")
             header, _, body_bytes = raw.partition(b"\r\n\r\n")
-            if b"Content-Length:" in header:
-                for line in header.split(b"\r\n"):
-                    if line.lower().startswith(b"content-length:"):
-                        length = int(line.split(b":", 1)[1].strip())
-                        body_bytes += await reader.readexactly(length)
-                        break
+            headers: dict[str, str] = {}
+            for line in header.split(b"\r\n")[1:]:
+                if b":" in line:
+                    key, _, value = line.partition(b":")
+                    headers[key.decode("utf-8", "replace").strip().lower()] = value.decode(
+                        "utf-8", "replace"
+                    ).strip()
+            length = int(headers.get("content-length", 0))
+            if length and len(body_bytes) < length:
+                body_bytes += await reader.readexactly(length - len(body_bytes))
             payload = json.loads(body_bytes.decode("utf-8"))
-            response = await self.handle(payload)
-            body = json.dumps(response).encode("utf-8")
+            response = await self.handle(payload, headers=headers)
+            status = b"HTTP/1.1 200 OK"
+            if response.get("error", {}).get("code") == UNAUTHORIZED_CODE:
+                status = b"HTTP/1.1 401 Unauthorized"
+            body = json.dumps(response, default=str).encode("utf-8")
             writer.write(
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/json\r\n"
+                status
+                + b"\r\nContent-Type: application/json\r\n"
                 + f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
                 + body
             )
