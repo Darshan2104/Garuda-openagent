@@ -30,6 +30,7 @@ ASK_COMMAND_PATTERNS = [
 # Tools whose primary argument is a shell command that must be screened.
 COMMAND_TOOLS = {
     "bash": "command",
+    "bash_background": "command",
     "tmux_exec": "command",
 }
 
@@ -39,7 +40,7 @@ WRITE_TOOLS = {"write_file", "edit"}
 # File-operation tools that only read.
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet"}
 
-READONLY_DENIED_TOOLS = {"write_file", "edit", "tmux_exec"}
+READONLY_DENIED_TOOLS = {"write_file", "edit", "tmux_exec", "bash_background", "kill_task"}
 
 
 class PermissionEngine:

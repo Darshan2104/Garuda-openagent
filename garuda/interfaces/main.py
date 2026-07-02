@@ -286,3 +286,7 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_recipe_command(args)))
     parser.print_help()
     raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

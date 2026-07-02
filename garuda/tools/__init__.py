@@ -12,6 +12,7 @@ from garuda.tools.subagent import InvokeSubagentTool
 from garuda.tools.task_complete import TaskCompleteTool
 from garuda.tools.tmux import TmuxCaptureTool, TmuxExecTool
 from garuda.tools.todo import TodoTool
+from garuda.tools.web import WebFetchTool, WebSearchTool
 
 __all__ = [
     "BashBackgroundTool",
@@ -32,6 +33,8 @@ __all__ = [
     "TmuxCaptureTool",
     "TmuxExecTool",
     "TodoTool",
+    "WebFetchTool",
+    "WebSearchTool",
     "WriteFileTool",
     "build_toolkit",
     "default_tools",
@@ -54,6 +57,8 @@ def _bootstrap_registry() -> None:
         GlobTool(),
         LsTool(),
         TodoTool(),
+        WebFetchTool(),
+        WebSearchTool(),
         TaskCompleteTool(),
         TmuxExecTool(),
         TmuxCaptureTool(),
@@ -82,6 +87,8 @@ def default_tools() -> list[Tool]:
             "glob",
             "ls",
             "todo",
+            "web_fetch",
+            "web_search",
             "tmux_exec",
             "tmux_capture",
             "image_read",

@@ -18,6 +18,8 @@ tools:
   - glob
   - ls
   - todo
+  - web_fetch
+  - web_search
   - tmux_exec
   - tmux_capture
   - image_read

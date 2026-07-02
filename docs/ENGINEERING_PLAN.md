@@ -150,13 +150,25 @@ feature built on the current loop inherits the same failure modes.
 
 ## 3. Engineering plan (phased, brainstorm-ready)
 
-> **Status update (2026-07-02, branch `fix/phase-a-correctness`):** Phase A landed in full
+> **Status update 2 (2026-07-02, later):** Build continued. Now landed: **B2** background
+> bash (bash_background/task_output/kill_task), **B4** web_fetch + web_search, **B6** turn/
+> context budget reminders, **C3** microcompaction (in-place tool-output pruning before full
+> summarize), **D1** session persistence + `--resume` + `garuda sessions`, **D3** hooks from
+> `.garuda/settings.yaml` with lifecycle events, **D4** AGENTS.md project memory, **D5** skills
+> progressive disclosure, **D6** server bearer auth + Conversation env inheritance + chat
+> workspace reuse, **D7** MCP fault isolation/timeouts/name sanitization (echo test fixed),
+> **E1** evidence-based LLM verifier with git evidence, **E2** rigorous repair loop, **E3**
+> repetition detection, **E5** command allow-prefix rules. Test suite: **157 passing, 0
+> failures** (3 tmux skips — tmux not installed locally). **Verified live end-to-end** against
+> Gemini 2.5 Flash: multi-turn tool use, LLM-verified completion, session persisted, resumed
+> session continued with full context; web_fetch verified against a live URL. Remaining
+> backlog: D2 streaming TUI, C4/C5 condenser interface, E4 sandbox hardening, B5 parallel
+> tool calls, F2/F3 observability + Terminal-Bench baseline.
+>
+> **Status update 1 (2026-07-02, branch `fix/phase-a-correctness`):** Phase A landed in full
 > (A1–A8), plus quick wins B1 (grep/glob/ls), B3 (todo tool), C1 (usage-driven compaction),
 > and C2 (Anthropic cache_control). Decisions taken: string-replace `edit` is the only edit
 > primitive (`apply_patch` deleted); the text-parser/bash-fence fallback was cut entirely.
-> Test suite: 93 passing, 9 new tmux-logic tests, 10 provider-conformance tests,
-> 10 permission-closure tests. Known remaining failure: `test_mcp_client_loads_echo_tool`
-> (pre-existing MCP client initialize timeout — tracked under D7).
 
 Effort scale: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
 
