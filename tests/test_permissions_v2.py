@@ -110,3 +110,52 @@ async def test_verifier_runs_allowed_commands(tmp_path: Path):
         permissions=engine,
     )
     assert result.approved
+
+
+async def test_allow_prefixes_skip_ask_patterns():
+    engine = PermissionEngine(
+        mode="smart",
+        bash_rules={
+            "ask": ["^git "],
+            "allow_prefixes": ["git status", "npm test"],
+        },
+    )
+    # Prefixed commands are allowed immediately, bypassing the ask regex.
+    for command in ("git status", "git status --short", "  npm test -- --watch=false"):
+        allowed, reason = await engine.evaluate_tool_call("bash", {"command": command})
+        assert allowed, f"{command!r} should be allowed: {reason}"
+    # A non-matching git command still hits the ask pattern (no handler -> denied).
+    allowed, reason = await engine.evaluate_tool_call("bash", {"command": "git push"})
+    assert not allowed
+    assert "Approval required" in (reason or "")
+
+
+async def test_allow_prefix_requires_word_boundary():
+    engine = PermissionEngine(
+        mode="smart",
+        bash_rules={"ask": ["^git status"], "allow_prefixes": ["git status"]},
+    )
+    # "git statusx" does not match the prefix, so the ask rule applies.
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "git statusx --evil"})
+    assert not allowed
+
+
+async def test_deny_patterns_beat_allow_prefixes():
+    engine = PermissionEngine(
+        mode="smart",
+        bash_rules={"deny": ["--force"], "allow_prefixes": ["git push"]},
+    )
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "git push --force origin main"})
+    assert not allowed
+    # Built-in deny patterns also still win over allow prefixes.
+    engine2 = PermissionEngine(mode="smart", bash_rules={"allow_prefixes": ["rm"]})
+    allowed, _ = await engine2.evaluate_tool_call("bash", {"command": "rm -rf /"})
+    assert not allowed
+
+
+async def test_bash_rules_backward_compatible_without_allow_prefixes():
+    engine = PermissionEngine(mode="smart", bash_rules={"deny": ["forbidden"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "echo forbidden"})
+    assert not allowed
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "echo fine"})
+    assert allowed

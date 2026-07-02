@@ -43,6 +43,22 @@ READONLY_DENIED_TOOLS = {"write_file", "edit", "tmux_exec"}
 
 
 class PermissionEngine:
+    """Policy engine screening tool calls, file paths, and shell commands.
+
+    ``bash_rules`` supports three keys:
+
+    - ``deny``: list of regexes; a match denies the command. Deny always wins.
+    - ``allow_prefixes``: list of literal command prefixes (e.g. ``"git status"``,
+      ``"npm test"``). After stripping leading whitespace, a command that equals
+      an allowed prefix or starts with it followed by whitespace is ALLOWED
+      immediately, skipping the ask patterns.
+    - ``ask``: list of regexes; a match requires interactive approval.
+
+    Evaluation order for commands: deny (custom + built-in) -> allow_prefixes ->
+    ask (custom + built-in) -> default allow. So a denied pattern can never be
+    bypassed by an allow prefix.
+    """
+
     def __init__(
         self,
         mode: str = "smart",
@@ -60,6 +76,9 @@ class PermissionEngine:
         self._ask_paths = self._path_rules.get("ask", [])
         self._deny_bash = [re.compile(p) for p in self._bash_rules.get("deny", [])]
         self._ask_bash = [re.compile(p) for p in self._bash_rules.get("ask", [])]
+        self._allow_prefixes = [
+            p.strip() for p in self._bash_rules.get("allow_prefixes", []) if p and p.strip()
+        ]
 
     @property
     def mode(self) -> str:
@@ -111,10 +130,21 @@ class PermissionEngine:
         for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.DENY
+        if self._matches_allow_prefix(command):
+            return PermissionDecision.ALLOW
         for pattern in self._ask_bash + ASK_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.ASK
         return PermissionDecision.ALLOW
+
+    def _matches_allow_prefix(self, command: str) -> bool:
+        stripped = command.lstrip()
+        for prefix in self._allow_prefixes:
+            if stripped == prefix:
+                return True
+            if stripped.startswith(prefix) and stripped[len(prefix)].isspace():
+                return True
+        return False
 
     async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
         decision = self.check_tool(tool_name)
