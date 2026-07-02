@@ -5,6 +5,7 @@ from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteEnvironment, RemoteWorkspace
 from garuda.workspace.sandbox import SandboxEnvironment
+from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment
 
 
@@ -13,12 +14,13 @@ def create_environment(
     workspace_root: str | Path,
     docker_image: str = "ubuntu:22.04",
     docker_host: str | None = None,
+    sandbox_policy: SandboxPolicy | None = None,
 ) -> Environment:
     root = Path(workspace_root).resolve()
     if kind == "local":
         return LocalEnvironment(workspace_root=root)
     if kind == "sandbox":
-        return SandboxEnvironment(workspace_root=root)
+        return SandboxEnvironment(workspace_root=root, policy=sandbox_policy)
     if kind == "tmux":
         return TmuxEnvironment(workspace_root=root)
     if kind == "docker":
@@ -33,22 +35,26 @@ async def create_workspace(
     workspace_root: str | Path,
     docker_image: str = "ubuntu:22.04",
     docker_host: str | None = None,
+    sandbox_policy: SandboxPolicy | None = None,
+    docker_limits: DockerLimits | None = None,
 ) -> LocalEnvironment | SandboxEnvironment | TmuxEnvironment | DockerWorkspace | RemoteWorkspace:
     root = Path(workspace_root).resolve()
     if kind == "local":
         return LocalEnvironment(workspace_root=root)
     if kind == "sandbox":
-        return SandboxEnvironment(workspace_root=root)
+        return SandboxEnvironment(workspace_root=root, policy=sandbox_policy)
     if kind == "tmux":
         env = TmuxEnvironment(workspace_root=root)
         await env.start()
         return env
     if kind == "docker":
-        workspace = DockerWorkspace(workspace_root=root, image=docker_image)
+        workspace = DockerWorkspace(workspace_root=root, image=docker_image, limits=docker_limits)
         await workspace.start()
         return workspace
     if kind == "remote":
-        workspace = RemoteWorkspace(workspace_root=root, image=docker_image, docker_host=docker_host)
+        workspace = RemoteWorkspace(
+            workspace_root=root, image=docker_image, docker_host=docker_host, limits=docker_limits
+        )
         await workspace.start()
         return workspace
     raise ValueError(f"Unknown workspace kind: {kind}")

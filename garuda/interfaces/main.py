@@ -30,6 +30,24 @@ def build_parser():
     )
     run_parser.add_argument("--docker-image", default="ubuntu:22.04")
     run_parser.add_argument("--docker-host", help="Remote Docker daemon host (DOCKER_HOST)")
+    run_parser.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="Allow network egress inside the OS sandbox (sandbox kind denies it by default)",
+    )
+    run_parser.add_argument(
+        "--no-network",
+        action="store_true",
+        help="Disable network egress for docker/remote containers (default: bridged)",
+    )
+    run_parser.add_argument(
+        "--allow-unsandboxed",
+        action="store_true",
+        help="Run --workspace-kind sandbox unconfined if no OS sandbox backend is available "
+        "(default: fail loudly)",
+    )
+    run_parser.add_argument("--docker-memory", default="2g", help="Container memory limit (e.g. 2g)")
+    run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
     run_parser.add_argument("--mcp-config", help="Path to MCP servers YAML config")
@@ -168,6 +186,11 @@ async def run_task(args) -> int:
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host
+    config.sandbox_allow_network = getattr(args, "allow_network", False)
+    config.sandbox_require = not getattr(args, "allow_unsandboxed", False)
+    config.docker_network = "none" if getattr(args, "no_network", False) else "bridge"
+    config.docker_memory = getattr(args, "docker_memory", "2g")
+    config.docker_cpus = getattr(args, "docker_cpus", "2")
     config.system_prompt = resolve_system_prompt(profile, args.workspace)
     mcp_path = args.mcp_config or config.mcp_config_path
 

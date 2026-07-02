@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from garuda.types import ExecResult
+from garuda.workspace.sandbox_policy import DockerLimits
 
 
 class RemoteWorkspace:
@@ -20,11 +21,13 @@ class RemoteWorkspace:
         image: str = "ubuntu:22.04",
         container_name: str | None = None,
         docker_host: str | None = None,
+        limits: "DockerLimits | None" = None,
     ):
         self._workspace_host = Path(workspace_root).resolve()
         self._image = image
         self._container_name = container_name or f"garuda-remote-{uuid.uuid4().hex[:8]}"
         self._docker_host = docker_host or os.environ.get("DOCKER_HOST")
+        self._limits = limits or DockerLimits()
         self._container_id: str | None = None
         self._environment: RemoteEnvironment | None = None
 
@@ -56,6 +59,7 @@ class RemoteWorkspace:
             f"{self._workspace_host}:/workspace",
             "-w",
             "/workspace",
+            *self._limits.to_run_args(),
             self._image,
             "sleep",
             "infinity",

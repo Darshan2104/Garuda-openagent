@@ -12,7 +12,27 @@ from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
+from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment
+
+
+def _sandbox_policy_from_config(config: AgentConfig | None) -> SandboxPolicy | None:
+    if config is None:
+        return None
+    return SandboxPolicy(
+        allow_network=config.sandbox_allow_network,
+        require_sandbox=config.sandbox_require,
+    )
+
+
+def _docker_limits_from_config(config: AgentConfig | None) -> DockerLimits | None:
+    if config is None:
+        return None
+    return DockerLimits(
+        memory=config.docker_memory,
+        cpus=config.docker_cpus,
+        network=config.docker_network,
+    )
 
 
 async def resolve_environment(
@@ -20,12 +40,15 @@ async def resolve_environment(
     workspace_root: str,
     docker_image: str,
     docker_host: str | None = None,
+    config: AgentConfig | None = None,
 ) -> tuple[Environment, object | None]:
     workspace = await create_workspace(
         workspace_kind,
         workspace_root,
         docker_image=docker_image,
         docker_host=docker_host,
+        sandbox_policy=_sandbox_policy_from_config(config),
+        docker_limits=_docker_limits_from_config(config),
     )
     if isinstance(workspace, DockerWorkspace):
         return workspace.get_environment(), workspace
@@ -121,7 +144,7 @@ async def run_agent_task(
         hooks = build_hook_registry(workspace)
 
     env, handle = await resolve_environment(
-        workspace_kind, workspace, docker_image, docker_host=docker_host
+        workspace_kind, workspace, docker_image, docker_host=docker_host, config=config
     )
     result: AgentResult | None = None
     await hooks.on_session_start(task=task, session_id=events.session_id)

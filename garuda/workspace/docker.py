@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from garuda.types import ExecResult
+from garuda.workspace.sandbox_policy import DockerLimits
 
 
 class DockerWorkspace:
@@ -14,10 +15,12 @@ class DockerWorkspace:
         workspace_root: str | Path,
         image: str = "ubuntu:22.04",
         container_name: str | None = None,
+        limits: "DockerLimits | None" = None,
     ):
         self._workspace_host = Path(workspace_root).resolve()
         self._image = image
         self._container_name = container_name or f"garuda-{uuid.uuid4().hex[:8]}"
+        self._limits = limits or DockerLimits()
         self._container_id: str | None = None
         self._environment: DockerEnvironment | None = None
 
@@ -39,6 +42,7 @@ class DockerWorkspace:
             f"{self._workspace_host}:/workspace",
             "-w",
             "/workspace",
+            *self._limits.to_run_args(),
             self._image,
             "sleep",
             "infinity",

@@ -35,6 +35,7 @@ class LocalEnvironment:
         command: str,
         timeout: float | None = 120.0,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult:
         workdir = Path(cwd) if cwd else self._workspace_root
         start = time.monotonic()
@@ -44,6 +45,7 @@ class LocalEnvironment:
             cwd=str(workdir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(

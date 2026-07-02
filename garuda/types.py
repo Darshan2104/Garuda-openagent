@@ -59,6 +59,11 @@ class AgentConfig:
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     docker_host: str | None = None
+    sandbox_allow_network: bool = False
+    sandbox_require: bool = True
+    docker_network: str = "bridge"
+    docker_memory: str | None = "2g"
+    docker_cpus: str | None = "2"
     mcp_config_path: str | None = None
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None
