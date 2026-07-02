@@ -8,7 +8,8 @@ from garuda.core.verifier import CompletionVerifier
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools, tools_for_names
-from garuda.tools.patch import apply_unified_patch
+from garuda.tools.edit import EditTool
+from garuda.tools.protocol import ToolContext
 from garuda.types import AgentConfig, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
@@ -32,14 +33,18 @@ async def test_permission_engine_denies_rm_rf_root():
     assert engine.check_command("rm -rf /") == PermissionDecision.DENY
 
 
-def test_apply_unified_patch():
-    original = "hello\nworld\n"
-    patch = """@@ -1,2 +1,2 @@
- hello
--world
-+garuda
-"""
-    updated = apply_unified_patch(original, patch)
+@pytest.mark.asyncio
+async def test_edit_tool_replaces_string(tmp_path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("greeting.txt", "hello\nworld\n")
+    tool = EditTool()
+    result = await tool.execute(
+        {"path": "greeting.txt", "old_string": "world", "new_string": "garuda"},
+        env,
+        ToolContext(session_id="test"),
+    )
+    assert not result.is_error
+    updated = await env.read_file("greeting.txt")
     assert "garuda" in updated
     assert "world" not in updated
 

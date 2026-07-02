@@ -23,6 +23,13 @@ class SubagentRunner:
     max_turns: int = 50
     fork_parent_context: bool = False
     parent_messages: list[Message] | None = None
+    parent_context: ContextManager | None = None
+
+    def _parent_snapshot(self) -> list[Message] | None:
+        """Live view of the parent conversation at invoke time, not construction time."""
+        if self.parent_context is not None:
+            return self.parent_context.get_messages()
+        return self.parent_messages
 
     async def run(
         self,
@@ -53,8 +60,9 @@ class SubagentRunner:
         agent = DefaultAgent(profile_name=profile.name)
 
         use_fork = self.fork_parent_context if fork_parent_context is None else fork_parent_context
+        parent_snapshot = self._parent_snapshot()
         context: ContextManager | None = None
-        if use_fork and self.parent_messages:
+        if use_fork and parent_snapshot:
             context = ContextManager(
                 model=self.model,
                 max_output_bytes=config.max_output_bytes,
@@ -63,7 +71,7 @@ class SubagentRunner:
                 enable_three_step_summary=False,
                 task=task,
             )
-            context.seed(deepcopy(self.parent_messages))
+            context.seed(deepcopy(parent_snapshot))
             context.append(
                 Message(
                     role=Role.USER,
@@ -71,18 +79,20 @@ class SubagentRunner:
                 )
             )
 
-        result = await agent.run(
-            task=task,
-            model=self.model,
-            env=self.env,
-            tools=tools,
-            config=config,
-            events=sub_events,
-            permissions=permissions,
-            context=context,
-        )
-        if mcp_manager is not None:
-            await mcp_manager.close()
+        try:
+            result = await agent.run(
+                task=task,
+                model=self.model,
+                env=self.env,
+                tools=tools,
+                config=config,
+                events=sub_events,
+                permissions=permissions,
+                context=context,
+            )
+        finally:
+            if mcp_manager is not None:
+                await mcp_manager.close()
 
         self.events.append(
             EventType.USER_MESSAGE,

@@ -1,18 +1,39 @@
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
+MAX_HISTORY_MESSAGES = 200
+MAX_MESSAGE_CHARS = 2000
+
+
+def _render_history(messages: list[Message]) -> str:
+    lines: list[str] = []
+    for message in messages[-MAX_HISTORY_MESSAGES:]:
+        if message.role == Role.SYSTEM:
+            continue
+        content = (message.content or "")[:MAX_MESSAGE_CHARS]
+        line = f"{message.role.value}: {content}"
+        if message.tool_calls:
+            calls = "; ".join(
+                f"{call.name}({str(call.arguments)[:300]})" for call in message.tool_calls
+            )
+            line = f"{line}\n  -> called: {calls}"
+        lines.append(line)
+    return "\n".join(lines)
+
 
 async def summarize_three_step(model: Model, messages: list[Message], task: str) -> str:
-    history_text = "\n".join(
-        f"{message.role.value}: {message.content[:800]}" for message in messages[-60:]
-    )
+    history_text = _render_history(messages)
 
     summary_response = await model.complete(
         [
             Message(role=Role.SYSTEM, content="Summarize the agent conversation for context compaction."),
             Message(
                 role=Role.USER,
-                content=f"Task:\n{task}\n\nHistory:\n{history_text}\n\nWrite a concise summary.",
+                content=(
+                    f"Task:\n{task}\n\nHistory:\n{history_text}\n\n"
+                    "Write a concise summary covering: what has been tried, what worked, "
+                    "what failed, current state of files/environment, and what remains to do."
+                ),
             ),
         ]
     )
@@ -20,10 +41,20 @@ async def summarize_three_step(model: Model, messages: list[Message], task: str)
 
     question_response = await model.complete(
         [
-            Message(role=Role.SYSTEM, content="Identify missing details in a conversation summary."),
+            Message(
+                role=Role.SYSTEM,
+                content=(
+                    "You check conversation summaries for completeness. Compare the summary "
+                    "against the actual history and list important details the summary omits."
+                ),
+            ),
             Message(
                 role=Role.USER,
-                content=f"Task:\n{task}\n\nSummary:\n{summary}\n\nList key unanswered questions.",
+                content=(
+                    f"Task:\n{task}\n\nHistory:\n{history_text}\n\nSummary:\n{summary}\n\n"
+                    "List the key facts from the history that are missing from the summary, "
+                    "phrased as questions."
+                ),
             ),
         ]
     )

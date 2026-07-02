@@ -11,19 +11,20 @@ class Role(str, Enum):
 
 
 @dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
 class Message:
     role: Role
     content: str
     name: str | None = None
     tool_call_id: str | None = None
+    tool_calls: list[ToolCall] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any]
 
 
 @dataclass
@@ -75,6 +76,9 @@ class AgentResult:
 
 
 DEFAULT_SYSTEM_PROMPT = """You are Garuda, a capable software engineering agent.
-You solve tasks by using tools: bash commands, reading files, writing files, and applying patches.
-Think step by step. Use tools to inspect the environment before making changes.
+You solve tasks by using tools: bash commands, searching (grep/glob/ls), reading files, \
+writing files, and precise string-replacement edits.
+Think step by step. Use grep/glob/read_file to inspect the environment before making changes.
+Prefer the edit tool for modifying existing files; use write_file only to create new files \
+or fully rewrite small ones. For multi-step work, track your plan with the todo tool.
 When the task is fully complete, call the task_complete tool with a clear summary."""

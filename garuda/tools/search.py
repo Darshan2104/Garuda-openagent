@@ -1,0 +1,174 @@
+import shlex
+
+from garuda.tools.protocol import ToolContext
+from garuda.types import ToolResult
+from garuda.workspace.protocol import Environment
+
+DEFAULT_GREP_MAX_RESULTS = 100
+GLOB_MAX_RESULTS = 200
+
+
+class GrepTool:
+    name = "grep"
+    description = (
+        "Search file contents for a regular expression (extended regex, like `grep -E`). "
+        "Returns matching lines as path:line:content. Use glob to filter filenames "
+        "(e.g. '*.py') and path to scope the search to a directory or file."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Extended regular expression to search for"},
+            "path": {
+                "type": "string",
+                "description": "Directory or file to search (default '.')",
+            },
+            "glob": {
+                "type": "string",
+                "description": "Filename filter, e.g. '*.py' (optional)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": f"Maximum matching lines to return (default {DEFAULT_GREP_MAX_RESULTS})",
+            },
+        },
+        "required": ["pattern"],
+    }
+
+    async def execute(
+        self,
+        arguments: dict,
+        env: Environment,
+        ctx: ToolContext,
+    ) -> ToolResult:
+        pattern = arguments["pattern"]
+        path = arguments.get("path") or "."
+        glob = arguments.get("glob")
+        max_results = arguments.get("max_results") or DEFAULT_GREP_MAX_RESULTS
+        if max_results < 1:
+            max_results = 1
+
+        command = "grep -rn -E --exclude-dir=.git"
+        if glob:
+            command += f" --include={shlex.quote(glob)}"
+        command += f" -e {shlex.quote(pattern)} -- {shlex.quote(path)}"
+
+        result = await env.execute(command)
+        if result.exit_code == 1 and not result.stdout.strip():
+            return ToolResult(
+                tool_call_id="",
+                content=f"No matches found for {pattern}",
+            )
+        if result.exit_code not in (0, 1):
+            return ToolResult(
+                tool_call_id="",
+                content=f"grep failed (exit {result.exit_code}): {result.stderr.strip()}",
+                is_error=True,
+            )
+
+        lines = result.stdout.splitlines()
+        capped = len(lines) > max_results
+        if capped:
+            lines = lines[:max_results]
+        output = "\n".join(lines)
+        if capped:
+            output += f"\n(results capped at {max_results})"
+        return ToolResult(tool_call_id="", content=output)
+
+
+class GlobTool:
+    name = "glob"
+    description = (
+        "Find files by name pattern. Supports simple globs like '*.py' "
+        "(matched anywhere under the base path) and path globs like 'src/**/*.ts'. "
+        "Returns matching file paths, one per line."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern, e.g. '**/*.py', '*.md', or 'src/*.ts'",
+            },
+            "path": {
+                "type": "string",
+                "description": "Base directory to search from (default '.')",
+            },
+        },
+        "required": ["pattern"],
+    }
+
+    async def execute(
+        self,
+        arguments: dict,
+        env: Environment,
+        ctx: ToolContext,
+    ) -> ToolResult:
+        pattern = arguments["pattern"]
+        base = arguments.get("path") or "."
+
+        if "/" not in pattern:
+            # Bare filename glob: match anywhere under the base path.
+            matcher = f"-name {shlex.quote(pattern)}"
+        else:
+            # Path glob. In `find -path`, `*` matches `/` too, so `**` collapses
+            # naturally: `src/**/*.py` -> `./src/**.py` matches any depth,
+            # including direct children.
+            converted = pattern.replace("**/", "*")
+            if not converted.startswith(("./", "/", "*")):
+                converted = "./" + converted
+            matcher = f"-path {shlex.quote(converted)}"
+
+        command = (
+            f"cd {shlex.quote(base)} && "
+            f"find . -type f {matcher} -not -path '*/.git/*' | sort"
+        )
+        result = await env.execute(command)
+        if result.exit_code != 0:
+            return ToolResult(
+                tool_call_id="",
+                content=f"glob failed (exit {result.exit_code}): {result.stderr.strip()}",
+                is_error=True,
+            )
+
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return ToolResult(tool_call_id="", content=f"No files matched pattern {pattern}")
+        capped = len(lines) > GLOB_MAX_RESULTS
+        if capped:
+            lines = lines[:GLOB_MAX_RESULTS]
+        output = "\n".join(lines)
+        if capped:
+            output += f"\n(results capped at {GLOB_MAX_RESULTS})"
+        return ToolResult(tool_call_id="", content=output)
+
+
+class LsTool:
+    name = "ls"
+    description = "List directory contents (like `ls -la`)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Directory or file to list (default '.')",
+            },
+        },
+        "required": [],
+    }
+
+    async def execute(
+        self,
+        arguments: dict,
+        env: Environment,
+        ctx: ToolContext,
+    ) -> ToolResult:
+        path = arguments.get("path") or "."
+        result = await env.execute(f"ls -la {shlex.quote(path)}")
+        if result.exit_code != 0:
+            return ToolResult(
+                tool_call_id="",
+                content=f"ls failed (exit {result.exit_code}): {result.stderr.strip()}",
+                is_error=True,
+            )
+        return ToolResult(tool_call_id="", content=result.stdout)

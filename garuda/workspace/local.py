@@ -6,8 +6,13 @@ from garuda.types import ExecResult
 
 
 class LocalEnvironment:
-    def __init__(self, workspace_root: str | Path | None = None):
+    def __init__(
+        self,
+        workspace_root: str | Path | None = None,
+        confine_to_workspace: bool = True,
+    ):
         self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
+        self._confine_to_workspace = confine_to_workspace
 
     @property
     def workspace_root(self) -> str:
@@ -15,9 +20,15 @@ class LocalEnvironment:
 
     def _resolve_path(self, path: str) -> Path:
         candidate = Path(path)
-        if candidate.is_absolute():
-            return candidate
-        return self._workspace_root / candidate
+        if not candidate.is_absolute():
+            candidate = self._workspace_root / candidate
+        resolved = candidate.resolve()
+        if self._confine_to_workspace and not resolved.is_relative_to(self._workspace_root):
+            raise PermissionError(
+                f"Path {path} is outside the workspace root {self._workspace_root}. "
+                "Pass an explicit workspace or disable confinement."
+            )
+        return resolved
 
     async def execute(
         self,
@@ -34,10 +45,25 @@ class LocalEnvironment:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout,
-        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            process.kill()
+            try:
+                await process.wait()
+            except ProcessLookupError:
+                pass
+            duration_ms = int((time.monotonic() - start) * 1000)
+            return ExecResult(
+                stdout="",
+                stderr=f"Command timed out after {timeout}s and was killed.",
+                exit_code=124,
+                duration_ms=duration_ms,
+                truncated=True,
+            )
         duration_ms = int((time.monotonic() - start) * 1000)
         return ExecResult(
             stdout=stdout_bytes.decode(errors="replace"),

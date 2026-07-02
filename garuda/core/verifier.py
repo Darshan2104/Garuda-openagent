@@ -1,7 +1,11 @@
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from garuda.types import AgentConfig
 from garuda.workspace.protocol import Environment
+
+if TYPE_CHECKING:
+    from garuda.core.permissions import PermissionEngine
 
 
 @dataclass
@@ -19,6 +23,7 @@ class CompletionVerifier:
         verification_commands: list[str],
         env: Environment,
         config: AgentConfig,
+        permissions: "PermissionEngine | None" = None,
     ) -> VerificationResult:
         if not config.enable_verifier:
             return VerificationResult(approved=True, checklist={"disabled": True})
@@ -42,6 +47,20 @@ class CompletionVerifier:
             )
 
         for index, command in enumerate(verification_commands):
+            if permissions is not None:
+                allowed, denial_reason = await permissions.evaluate_tool_call(
+                    "bash", {"command": command}
+                )
+                if not allowed:
+                    checklist[f"verify_cmd_{index}"] = False
+                    return VerificationResult(
+                        approved=False,
+                        checklist=checklist,
+                        feedback=(
+                            f"Verification command denied by permission policy: {command}"
+                            + (f" ({denial_reason})" if denial_reason else "")
+                        ),
+                    )
             result = await env.execute(command)
             key = f"verify_cmd_{index}"
             checklist[key] = result.exit_code == 0

@@ -1,10 +1,11 @@
 import asyncio
+import shlex
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
 from garuda.types import ExecResult
-from garuda.workspace.local import LocalEnvironment
 
 
 class DockerWorkspace:
@@ -87,7 +88,7 @@ class DockerEnvironment:
         cwd: str | None = None,
     ) -> ExecResult:
         workdir = cwd or self._workspace_root
-        shell = f"cd {workdir} && {command}"
+        shell = f"cd {shlex.quote(workdir)} && {command}"
         start = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             "docker",
@@ -99,10 +100,24 @@ class DockerEnvironment:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout,
-        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            process.kill()
+            try:
+                await process.wait()
+            except ProcessLookupError:
+                pass
+            return ExecResult(
+                stdout="",
+                stderr=f"Command timed out after {timeout}s and was killed.",
+                exit_code=124,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                truncated=True,
+            )
         duration_ms = int((time.monotonic() - start) * 1000)
         return ExecResult(
             stdout=stdout_bytes.decode(errors="replace"),
@@ -113,13 +128,14 @@ class DockerEnvironment:
 
     async def read_file(self, path: str) -> str:
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
-        result = await self.execute(f"cat {target}")
+        result = await self.execute(f"cat {shlex.quote(target)}")
+        if result.exit_code != 0:
+            raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
         return result.stdout
 
     async def write_file(self, path: str, content: str) -> None:
-        local = LocalEnvironment()
-        temp = Path("/tmp") / f"garuda-upload-{uuid.uuid4().hex}.txt"
-        await local.write_file(str(temp), content)
+        temp = Path(tempfile.gettempdir()) / f"garuda-upload-{uuid.uuid4().hex}.txt"
+        await asyncio.to_thread(temp.write_text, content, encoding="utf-8")
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
         process = await asyncio.create_subprocess_exec(
             "docker",

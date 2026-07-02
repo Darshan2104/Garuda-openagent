@@ -27,7 +27,19 @@ ASK_COMMAND_PATTERNS = [
     re.compile(r"\bcurl\b.*\|\s*bash", re.IGNORECASE),
 ]
 
-READONLY_DENIED_TOOLS = {"write_file", "apply_patch"}
+# Tools whose primary argument is a shell command that must be screened.
+COMMAND_TOOLS = {
+    "bash": "command",
+    "tmux_exec": "command",
+}
+
+# File-operation tools that modify the filesystem.
+WRITE_TOOLS = {"write_file", "edit"}
+
+# File-operation tools that only read.
+READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet"}
+
+READONLY_DENIED_TOOLS = {"write_file", "edit", "tmux_exec"}
 
 
 class PermissionEngine:
@@ -109,10 +121,11 @@ class PermissionEngine:
         if decision == PermissionDecision.DENY:
             return False, f"Permission denied for tool: {tool_name}"
 
-        if tool_name == "bash":
-            decision = self.check_command(arguments.get("command", ""))
-        elif tool_name in ("write_file", "apply_patch", "read_file", "read_pdf", "read_spreadsheet"):
-            decision = self.check_path(arguments.get("path", ""), "write" if tool_name == "write_file" else "read")
+        if tool_name in COMMAND_TOOLS:
+            decision = self.check_command(arguments.get(COMMAND_TOOLS[tool_name], ""))
+        elif tool_name in WRITE_TOOLS | READ_TOOLS:
+            operation = "write" if tool_name in WRITE_TOOLS else "read"
+            decision = self.check_path(arguments.get("path", ""), operation)
 
         if decision == PermissionDecision.DENY:
             return False, f"Permission denied for {tool_name}"

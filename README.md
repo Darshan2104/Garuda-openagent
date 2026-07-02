@@ -14,14 +14,14 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 
 | Area | Capabilities |
 |------|--------------|
-| **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, etc.) |
-| **Tools** | `bash`, `read_file`, `write_file`, `apply_patch`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `task_complete` + MCP |
+| **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, etc.) — retries/backoff, request timeouts, Anthropic prompt caching |
+| **Tools** | `bash`, `edit` (string replace), `read_file` (line-numbered, offset/limit), `write_file`, `grep`, `glob`, `ls`, `todo`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `task_complete` + MCP |
 | **Agents** | YAML or **agent.md** profiles: `build`, `plan`, `explore`, `reviewer`, `harbor` |
 | **Skills** | Universal `SKILL.md` format — auto-injected into system prompt |
 | **Subagents** | Main agent spins up isolated subagents via `invoke_subagent` |
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
-| **Safety** | Permission modes, completion verifier, optional OS sandbox (bubblewrap) |
+| **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement, permission-screened verification commands, completion verifier, optional OS sandbox (bubblewrap) |
 | **Context** | Output shaping, proactive + 3-step summarization |
 | **Extensibility** | MCP servers, plugin hooks, YAML recipes, subagent handoff |
 | **Modes** | `standard` (fast) or `rigorous` (plan → execute → critic) |
@@ -208,7 +208,7 @@ tools:
   - bash
   - read_file
   - write_file
-  - apply_patch
+  - edit
   - invoke_subagent
 path_rules:
   deny:

@@ -45,6 +45,7 @@ class RigorousAgent:
         hooks: HookRegistry | None = None,
         subagent_runner=None,
         agents_dir=None,
+        context=None,
     ) -> AgentResult:
         config = config or AgentConfig(mode="rigorous")
         events = events or EventStore()
@@ -88,6 +89,7 @@ class RigorousAgent:
             hooks=hooks,
             subagent_runner=subagent_runner,
             agents_dir=agents_dir,
+            context=context,
         )
 
         approved, feedback = await self._critic_review(task, plan_result.final_message, exec_result, model)

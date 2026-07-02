@@ -11,7 +11,11 @@ tools:
   - bash
   - read_file
   - write_file
-  - apply_patch
+  - edit
+  - grep
+  - glob
+  - ls
+  - todo
   - task_complete
 mcp_config_path: null
 tool_rules:

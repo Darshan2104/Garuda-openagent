@@ -1,7 +1,10 @@
+import logging
+
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.permissions import PermissionEngine
 from garuda.core.verifier import CompletionVerifier
+from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import Model
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import Tool, ToolContext
@@ -15,6 +18,18 @@ from garuda.types import (
     ToolResult,
 )
 from garuda.workspace.protocol import Environment
+
+logger = logging.getLogger(__name__)
+
+CONTINUE_NUDGE = (
+    "You responded without calling a tool. If the task is finished, call task_complete "
+    "with a summary; otherwise continue working using the available tools."
+)
+
+
+def _accumulate_usage(totals: dict[str, int], usage: dict[str, int]) -> None:
+    for key, value in (usage or {}).items():
+        totals[key] = totals.get(key, 0) + int(value)
 
 
 def _tools_schema(tools: list[Tool]) -> list[dict]:
@@ -97,7 +112,7 @@ class DefaultAgent:
                 agents_dir=agents_dir,
                 skills_dirs=config.skills_dirs,
                 workspace_root=getattr(env, "workspace_root", None),
-                parent_messages=context.get_messages(),
+                parent_context=context,
             )
 
         ctx = ToolContext(
@@ -107,43 +122,81 @@ class DefaultAgent:
             subagent_runner=subagent_runner,
         )
         final_message = ""
+        usage_totals: dict[str, int] = {}
 
         for turn in range(1, config.max_turns + 1):
             if await context.maybe_summarize():
                 events.append(EventType.SUMMARIZATION, {"turn": turn})
 
-            response = await model.complete(
-                context.get_messages(),
-                tools=_tools_schema(tools),
-            )
+            try:
+                response = await model.complete(
+                    context.get_messages(),
+                    tools=_tools_schema(tools),
+                )
+            except Exception as exc:
+                logger.exception("Model call failed after retries")
+                events.append(
+                    EventType.SESSION_END,
+                    {"success": False, "reason": "model_error", "error": f"{type(exc).__name__}: {exc}"},
+                )
+                return self._result(
+                    False,
+                    f"Model call failed: {type(exc).__name__}: {exc}",
+                    context,
+                    turn,
+                    events,
+                    usage_totals,
+                )
+
+            _accumulate_usage(usage_totals, response.usage)
+            context.note_usage(response.usage)
             events.append(
                 EventType.MODEL_RESPONSE,
                 {
                     "content": response.content,
                     "tool_calls": [
-                        {"name": call.name, "arguments": call.arguments}
+                        {"id": call.id, "name": call.name, "arguments": call.arguments}
                         for call in response.tool_calls
                     ],
+                    "usage": response.usage,
                 },
             )
 
-            if response.content:
-                context.append(Message(role=Role.ASSISTANT, content=response.content))
+            if response.content or response.tool_calls:
+                context.append(
+                    Message(
+                        role=Role.ASSISTANT,
+                        content=response.content or "",
+                        tool_calls=list(response.tool_calls) or None,
+                    )
+                )
 
             if not response.tool_calls:
                 final_message = response.content or ""
-                if not config.enable_verifier and self._is_completion_message(final_message):
+                if not config.enable_verifier:
                     events.append(EventType.SESSION_END, {"success": True, "turns": turn})
-                    return self._result(True, final_message, context, turn, events)
+                    return self._result(True, final_message, context, turn, events, usage_totals)
+                context.append(Message(role=Role.USER, content=CONTINUE_NUDGE))
                 continue
 
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
-                        call, task, context, env, config, events, turn
+                        call, task, context, env, config, events, turn, usage_totals, permissions
                     )
                     if completed is not None:
                         return completed
+                    continue
+
+                if TOOL_ARG_PARSE_ERROR_KEY in call.arguments:
+                    context.append(
+                        Message(
+                            role=Role.TOOL,
+                            content=call.arguments[TOOL_ARG_PARSE_ERROR_KEY],
+                            name=call.name,
+                            tool_call_id=call.id,
+                        )
+                    )
                     continue
 
                 allowed, denial_reason = await permissions.evaluate_tool_call(call.name, call.arguments)
@@ -160,25 +213,31 @@ class DefaultAgent:
                     continue
 
                 hook_context = {"turn": turn, "session_id": events.session_id}
-                call = await hooks.run_before_tool(call, hook_context)
-                if call is None:
+                hooked_call = await hooks.run_before_tool(call, hook_context)
+                if hooked_call is None:
                     context.append(
                         Message(
                             role=Role.TOOL,
                             content="Tool call blocked by hook",
-                            name="hook",
-                            tool_call_id="blocked",
+                            name=call.name,
+                            tool_call_id=call.id,
                         )
                     )
                     continue
+                hooked_call.id = call.id
+                call = hooked_call
 
+                events.append(
+                    EventType.TOOL_CALL,
+                    {"id": call.id, "name": call.name, "arguments": call.arguments},
+                )
                 tool_result = await self._execute_tool(call, tool_map, env, ctx, context)
                 tool_result = await hooks.run_after_tool(call, tool_result, hook_context)
 
-                events.append(EventType.TOOL_CALL, {"name": call.name, "arguments": call.arguments})
                 events.append(
                     EventType.TOOL_RESULT,
                     {
+                        "tool_call_id": call.id,
                         "name": call.name,
                         "content": tool_result.content,
                         "is_error": tool_result.is_error,
@@ -194,7 +253,9 @@ class DefaultAgent:
                 )
 
         events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})
-        return self._result(False, final_message or "Max turns exceeded", context, config.max_turns, events)
+        return self._result(
+            False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
+        )
 
     async def _handle_task_complete(
         self,
@@ -205,6 +266,8 @@ class DefaultAgent:
         config: AgentConfig,
         events: EventStore,
         turn: int,
+        usage_totals: dict[str, int] | None = None,
+        permissions: PermissionEngine | None = None,
     ) -> AgentResult | None:
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
@@ -214,6 +277,7 @@ class DefaultAgent:
             verification_commands=verification_commands,
             env=env,
             config=config,
+            permissions=permissions,
         )
         events.append(
             EventType.VERIFICATION,
@@ -221,7 +285,7 @@ class DefaultAgent:
         )
         if result.approved:
             events.append(EventType.SESSION_END, {"success": True, "turns": turn})
-            return self._result(True, summary, context, turn, events)
+            return self._result(True, summary, context, turn, events, usage_totals)
 
         feedback = result.feedback or "Completion verification failed."
         context.append(
@@ -249,9 +313,17 @@ class DefaultAgent:
                 content=f"Unknown tool: {call.name}",
                 is_error=True,
             )
-        result = await tool.execute(call.arguments, env, ctx)
+        try:
+            result = await tool.execute(call.arguments, env, ctx)
+        except Exception as exc:
+            logger.warning("Tool %s raised %s: %s", call.name, type(exc).__name__, exc)
+            result = ToolResult(
+                tool_call_id=call.id,
+                content=f"Tool '{call.name}' failed: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
         result.tool_call_id = call.id
-        result.content = context.shape_observation(result.content)
+        result.content = context.shape_observation(result.content, is_error=result.is_error)
         return result
 
     def _result(
@@ -261,16 +333,16 @@ class DefaultAgent:
         context: ContextManager,
         turns: int,
         events: EventStore,
+        usage_totals: dict[str, int] | None = None,
     ) -> AgentResult:
         return AgentResult(
             success=success,
             final_message=final_message,
             messages=context.get_messages(),
             turns=turns,
-            metadata={"session_id": events.session_id, "events": events.get_all()},
+            metadata={
+                "session_id": events.session_id,
+                "events": events.get_all(),
+                "usage": dict(usage_totals or {}),
+            },
         )
-
-    def _is_completion_message(self, text: str) -> bool:
-        lowered = text.lower()
-        markers = ("task complete", "done.", "finished", "completed the task")
-        return any(marker in lowered for marker in markers)

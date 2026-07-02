@@ -6,9 +6,12 @@ max_turns: 100
 tools:
   - bash
   - read_file
+  - grep
+  - glob
+  - ls
 tool_rules:
   write_file: deny
-  apply_patch: deny
+  edit: deny
   task_complete: allow
 system_prompt: |
   You are Garuda plan agent. Analyze and plan only — do not modify files.

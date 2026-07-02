@@ -10,7 +10,11 @@ tools:
   - bash
   - read_file
   - write_file
-  - apply_patch
+  - edit
+  - grep
+  - glob
+  - ls
+  - todo
   - tmux_exec
   - tmux_capture
   - image_read

@@ -1,20 +1,25 @@
 from garuda.mcp.client import McpClientManager
 from garuda.tools.bash import BashTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
+from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
 from garuda.tools.image_read import ImageReadTool
-from garuda.tools.patch import ApplyPatchTool
 from garuda.tools.protocol import Tool
 from garuda.tools.registry import list_tool_names, register_tool, tools_for_names
+from garuda.tools.search import GlobTool, GrepTool, LsTool
 from garuda.tools.subagent import InvokeSubagentTool
 from garuda.tools.task_complete import TaskCompleteTool
 from garuda.tools.tmux import TmuxCaptureTool, TmuxExecTool
+from garuda.tools.todo import TodoTool
 
 __all__ = [
-    "ApplyPatchTool",
     "BashTool",
+    "EditTool",
+    "GlobTool",
+    "GrepTool",
     "ImageReadTool",
     "InvokeSubagentTool",
+    "LsTool",
     "McpClientManager",
     "ReadFileTool",
     "ReadPdfTool",
@@ -22,6 +27,7 @@ __all__ = [
     "TaskCompleteTool",
     "TmuxCaptureTool",
     "TmuxExecTool",
+    "TodoTool",
     "WriteFileTool",
     "build_toolkit",
     "default_tools",
@@ -36,7 +42,11 @@ def _bootstrap_registry() -> None:
         BashTool(),
         ReadFileTool(),
         WriteFileTool(),
-        ApplyPatchTool(),
+        EditTool(),
+        GrepTool(),
+        GlobTool(),
+        LsTool(),
+        TodoTool(),
         TaskCompleteTool(),
         TmuxExecTool(),
         TmuxCaptureTool(),
@@ -57,7 +67,11 @@ def default_tools() -> list[Tool]:
             "bash",
             "read_file",
             "write_file",
-            "apply_patch",
+            "edit",
+            "grep",
+            "glob",
+            "ls",
+            "todo",
             "tmux_exec",
             "tmux_capture",
             "image_read",

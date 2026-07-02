@@ -1,6 +1,6 @@
-def shape_observation(text: str, max_bytes: int) -> str:
+def shape_observation(text: str, max_bytes: int, is_error: bool = False) -> str:
     if not text:
-        return "Command ran successfully with no output."
+        return "(command failed with no output)" if is_error else "(no output)"
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
