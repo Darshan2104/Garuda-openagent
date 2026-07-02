@@ -139,8 +139,31 @@ def load_profile(name: str, extra_dir: Path | None = None) -> AgentProfile:
     raise FileNotFoundError(f"Agent profile not found: {name}")
 
 
+# Maximum characters of AGENTS.md/GARUDA.md content injected into the system prompt.
+PROJECT_MEMORY_MAX_CHARS = 8000
+
+# Project-memory file names checked in the workspace root; first found wins.
+PROJECT_MEMORY_FILENAMES = ("AGENTS.md", "GARUDA.md")
+
+
+def _project_memory_block(workspace_root: str | Path) -> str:
+    """Return a prompt block from AGENTS.md/GARUDA.md in the workspace root, or ""."""
+    root = Path(workspace_root)
+    for name in PROJECT_MEMORY_FILENAMES:
+        candidate = root / name
+        try:
+            if not candidate.is_file():
+                continue
+            content = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        content = content[:PROJECT_MEMORY_MAX_CHARS]
+        return f"\n\n## Project instructions (from {name})\n{content}"
+    return ""
+
+
 def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | None = None) -> str:
-    """Build system prompt with optional skill injection."""
+    """Build system prompt with optional skill injection and project memory."""
     from garuda.skills.loader import discover_skills, format_skills_prompt, load_skill
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -157,6 +180,7 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
         allowed = set(profile.skills)
         discovered = [s for s in discovered if s.name in allowed]
     skills_block = format_skills_prompt(discovered)
-    if not skills_block:
-        return base
-    return f"{base}\n\n{skills_block}"
+    prompt = f"{base}\n\n{skills_block}" if skills_block else base
+    if workspace_root:
+        prompt += _project_memory_block(workspace_root)
+    return prompt
