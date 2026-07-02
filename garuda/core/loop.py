@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -37,6 +38,21 @@ REPEAT_NUDGE = (
 REPEAT_THRESHOLD = 3
 
 CONTEXT_WARNING_FRACTION = 0.8
+
+# Tools with no side effects, safe to run concurrently within one model response.
+PARALLEL_SAFE_TOOLS = frozenset(
+    {
+        "read_file",
+        "grep",
+        "glob",
+        "ls",
+        "read_pdf",
+        "read_spreadsheet",
+        "web_fetch",
+        "web_search",
+        "task_output",
+    }
+)
 
 
 def _turn_budget_notice(turn: int, max_turns: int) -> str | None:
@@ -128,6 +144,7 @@ class DefaultAgent:
                 max_context_tokens=config.max_context_tokens,
                 enable_three_step_summary=config.enable_three_step_summary,
                 task=task,
+                condenser=config.condenser,
             )
             context.seed(
                 [
@@ -234,6 +251,17 @@ class DefaultAgent:
                 context.append(Message(role=Role.USER, content=CONTINUE_NUDGE))
                 continue
 
+            if len(response.tool_calls) > 1 and all(
+                c.name in PARALLEL_SAFE_TOOLS and TOOL_ARG_PARSE_ERROR_KEY not in c.arguments
+                for c in response.tool_calls
+            ):
+                await self._run_parallel_reads(
+                    response.tool_calls, tool_map, env, ctx, context, permissions, hooks, events, turn
+                )
+                last_signature = None
+                repeat_count = 0
+                continue
+
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
@@ -325,6 +353,73 @@ class DefaultAgent:
         return self._result(
             False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
         )
+
+    async def _run_parallel_reads(
+        self,
+        calls: list[ToolCall],
+        tool_map: dict[str, Tool],
+        env: Environment,
+        ctx: ToolContext,
+        context: ContextManager,
+        permissions: PermissionEngine,
+        hooks: HookRegistry,
+        events: EventStore,
+        turn: int,
+    ) -> None:
+        """Execute a batch of read-only tool calls concurrently, preserving the
+        transcript order of results and each call's tool_call_id pairing.
+
+        Permission checks and before-hooks run sequentially (deterministic
+        ordering of denials); only the side-effect-free executions are gathered.
+        """
+        plan: list[tuple] = []  # ("msg", Message) | ("exec", call, hook_context)
+        for call in calls:
+            allowed, denial_reason = await permissions.evaluate_tool_call(call.name, call.arguments)
+            if not allowed:
+                events.append(EventType.PERMISSION_ASK, {"approved": False, "reason": denial_reason})
+                plan.append(
+                    ("msg", Message(role=Role.TOOL, content=denial_reason or "Permission denied",
+                                    name=call.name, tool_call_id=call.id))
+                )
+                continue
+            hook_context = {"turn": turn, "session_id": events.session_id}
+            hooked_call = await hooks.run_before_tool(call, hook_context)
+            if hooked_call is None:
+                plan.append(
+                    ("msg", Message(role=Role.TOOL, content="Tool call blocked by hook",
+                                    name=call.name, tool_call_id=call.id))
+                )
+                continue
+            hooked_call.id = call.id
+            plan.append(("exec", hooked_call, hook_context))
+
+        exec_indices = [i for i, entry in enumerate(plan) if entry[0] == "exec"]
+        results = await asyncio.gather(
+            *(self._execute_tool(plan[i][1], tool_map, env, ctx, context) for i in exec_indices)
+        )
+        result_by_index = dict(zip(exec_indices, results))
+
+        for i, entry in enumerate(plan):
+            if entry[0] == "msg":
+                context.append(entry[1])
+                continue
+            _, call, hook_context = entry
+            tool_result = await hooks.run_after_tool(call, result_by_index[i], hook_context)
+            events.append(
+                EventType.TOOL_CALL, {"id": call.id, "name": call.name, "arguments": call.arguments}
+            )
+            events.append(
+                EventType.TOOL_RESULT,
+                {
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": tool_result.content,
+                    "is_error": tool_result.is_error,
+                },
+            )
+            context.append(
+                Message(role=Role.TOOL, content=tool_result.content, name=call.name, tool_call_id=call.id)
+            )
 
     async def _handle_task_complete(
         self,

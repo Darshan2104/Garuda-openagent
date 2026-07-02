@@ -56,6 +56,7 @@ class AgentConfig:
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True
+    condenser: str = "microcompact"
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     docker_host: str | None = None

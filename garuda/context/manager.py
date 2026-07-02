@@ -1,8 +1,13 @@
 import logging
 from copy import deepcopy
 
+from garuda.context.condenser import (
+    Condenser,
+    CondenserContext,
+    MicrocompactCondenser,
+    make_condenser,
+)
 from garuda.context.shaper import shape_observation
-from garuda.context.summarizer import summarize_three_step
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
@@ -19,6 +24,7 @@ class ContextManager:
         enable_three_step_summary: bool = True,
         task: str = "",
         keep_recent_turns: int = 12,
+        condenser: Condenser | str | None = None,
     ):
         self._model = model
         self._max_output_bytes = max_output_bytes
@@ -29,6 +35,9 @@ class ContextManager:
         self._keep_recent_turns = keep_recent_turns
         self._messages: list[Message] = []
         self._last_prompt_tokens: int | None = None
+        if isinstance(condenser, str):
+            condenser = make_condenser(condenser)
+        self._condenser: Condenser = condenser or MicrocompactCondenser()
 
     def seed(self, messages: list[Message]) -> None:
         self._messages = list(messages)
@@ -49,7 +58,7 @@ class ContextManager:
         """Record provider-reported prompt tokens from the last response.
 
         Provider counts include tool schemas and message framing that local
-        estimates miss, so they take priority for the compaction trigger.
+        estimates miss, so they take priority for the condensation trigger.
         """
         if usage and usage.get("prompt_tokens"):
             self._last_prompt_tokens = usage["prompt_tokens"]
@@ -63,6 +72,7 @@ class ContextManager:
             enable_three_step_summary=self._enable_three_step_summary,
             task=self._task,
             keep_recent_turns=self._keep_recent_turns,
+            condenser=self._condenser,
         )
         if include_history:
             forked._messages = deepcopy(self._messages)
@@ -78,125 +88,23 @@ class ContextManager:
             return 0.0
         return self._used_tokens() / self._max_context_tokens
 
-    MICROCOMPACT_FRACTION = 0.75
-    PRUNE_MIN_CHARS = 500
-
-    def _microcompact(self) -> int:
-        """Prune bulky tool outputs outside the recent window, in place.
-
-        Keeps the message structure (and thus provider prompt-cache prefixes)
-        intact — only old tool-result *contents* are replaced with stubs.
-        Returns the number of messages pruned.
-        """
-        # Find the index where the recent window starts (keep_recent_turns
-        # assistant turns from the end); prune only before it.
-        turns = 0
-        boundary = 0
-        for index in range(len(self._messages) - 1, -1, -1):
-            if self._messages[index].role == Role.ASSISTANT:
-                turns += 1
-                if turns >= self._keep_recent_turns:
-                    boundary = index
-                    break
-        pruned = 0
-        for message in self._messages[:boundary]:
-            if (
-                message.role == Role.TOOL
-                and len(message.content or "") > self.PRUNE_MIN_CHARS
-                and not message.metadata.get("pruned")
-            ):
-                original_len = len(message.content)
-                message.content = (
-                    f"[tool output pruned to save context: was {original_len} chars. "
-                    "Re-run the tool if this output is needed again.]"
-                )
-                message.metadata["pruned"] = True
-                pruned += 1
-        return pruned
-
     async def maybe_summarize(self) -> bool:
-        if self.usage_fraction() < self.MICROCOMPACT_FRACTION:
-            return False
-
-        # Stage 1: cache-friendly in-place pruning of old tool outputs.
-        if self._microcompact() > 0:
-            self._last_prompt_tokens = None
-            return True
-
-        # Stage 2: nothing left to prune — full summarize-and-rebuild.
-        free = self._max_context_tokens - self._used_tokens()
-        if free >= self._proactive_threshold:
-            return False
-
-        summary = await self._build_summary()
-
-        system = self._messages[0] if self._messages and self._messages[0].role == Role.SYSTEM else None
-        task = next((m for m in self._messages if m.role == Role.USER), None)
-        recent = self._recent_messages(exclude={id(system), id(task)})
-        rebuilt: list[Message] = []
-        if system:
-            rebuilt.append(system)
-        if task:
-            rebuilt.append(task)
-        rebuilt.append(
-            Message(
-                role=Role.USER,
-                content=f"Conversation summary (context compacted):\n{summary}",
-            )
+        """Ask the condenser whether/how to shrink history; apply if it does."""
+        cx = CondenserContext(
+            messages=self._messages,
+            model=self._model,
+            task=self._task,
+            used_tokens=self._used_tokens(),
+            max_context_tokens=self._max_context_tokens,
+            proactive_threshold=self._proactive_threshold,
+            keep_recent_turns=self._keep_recent_turns,
+            enable_three_step_summary=self._enable_three_step_summary,
         )
-        rebuilt.extend(recent)
-        self._messages = rebuilt
-        # Provider count now reflects the pre-compaction prompt; invalidate it
-        # so the next trigger uses a fresh estimate until the next response.
+        new_messages = await self._condenser.condense(cx)
+        if new_messages is None:
+            return False
+        self._messages = new_messages
+        # The provider count reflected the pre-condensation prompt; invalidate
+        # it so the next trigger uses a fresh estimate until the next response.
         self._last_prompt_tokens = None
         return True
-
-    async def _build_summary(self) -> str:
-        if self._enable_three_step_summary:
-            try:
-                return await summarize_three_step(self._model, self._messages, self._task)
-            except Exception as exc:
-                logger.warning(
-                    "Three-step summarization failed (%s: %s); falling back to compact summary",
-                    type(exc).__name__,
-                    exc,
-                )
-        return self._compact_summary()
-
-    def _recent_messages(self, exclude: set[int] | None = None) -> list[Message]:
-        """Last N assistant turns, keeping tool-call/result pairing intact.
-
-        Walks back until enough assistant turns are collected, then drops any
-        leading TOOL messages whose assistant tool-call turn fell outside the
-        window (an orphaned tool result is an invalid sequence for providers).
-        """
-        if self._keep_recent_turns <= 0:
-            return []
-        exclude = exclude or set()
-        collected: list[Message] = []
-        turns = 0
-        for message in reversed(self._messages):
-            if message.role == Role.SYSTEM or id(message) in exclude:
-                continue
-            if message.role == Role.ASSISTANT:
-                turns += 1
-            collected.append(message)
-            if turns >= self._keep_recent_turns:
-                break
-        recent = list(reversed(collected))
-        while recent and recent[0].role == Role.TOOL:
-            recent.pop(0)
-        return recent
-
-    def _compact_summary(self) -> str:
-        lines: list[str] = []
-        for message in self._messages[-40:]:
-            prefix = message.role.value
-            snippet = (message.content or "")[:500]
-            if message.tool_calls:
-                calls = ", ".join(
-                    f"{call.name}({str(call.arguments)[:200]})" for call in message.tool_calls
-                )
-                snippet = f"{snippet} [tool calls: {calls}]".strip()
-            lines.append(f"- {prefix}: {snippet}")
-        return "\n".join(lines)
