@@ -5,6 +5,30 @@
 
 ---
 
+## Status update 3 (2026-07-02, latest) — Phase E4 + remaining backlog
+
+Landed and committed since update 2:
+- **E4** hardened OS sandbox — macOS Seatbelt + Linux bwrap backends, `--clearenv`/
+  `--unshare-net`, targeted binds, subprocess env scrubbing, loud failure when no
+  backend, docker/remote resource + network limits. **Live-verified on macOS**
+  (write confinement, env scrub, network deny). Commit `5fde893`.
+- **C4/C5** pluggable condenser interface (microcompact / recent-window / summarizing),
+  selectable via `AgentConfig.condenser`. Commit `1aa0a85`.
+- **B5** parallel execution of read-only tool calls (concurrent when a response is all
+  parallel-safe reads; ordered results, id pairing preserved). Commit `1aa0a85`.
+- **F2** OpenInference/OTel tracing (zero hard dependency; events→span tree). Commit `97b328a`.
+- **F3** harness ablation runner (variant matrix, ground-truth grading, comparison table).
+  **Live-verified on Gemini 2.5 Flash** (6 runs). Commit `97b328a`.
+- **D2** streaming model API + rich TUI — see final commit.
+
+Test suite: 203+ passing, 0 failures (3 tmux skips — tmux not installed locally).
+Remaining/optional: full Terminal-Bench-via-Harbor scoring (needs the Harbor + docker
+stack and a frontier API key; the ablation runner covers the harness-comparison need
+locally), true end-to-end token streaming into the agent loop (D2 ships the streaming
+model API + rich rendering; wiring live tokens through `loop.py` is a follow-up).
+
+---
+
 ## 0. Verdict
 
 The RFC and architecture are genuinely good — the landscape analysis is accurate, the protocol-based

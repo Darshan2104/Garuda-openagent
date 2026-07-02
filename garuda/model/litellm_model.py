@@ -1,11 +1,13 @@
 import asyncio
+import inspect
 import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
 import litellm
 
-from garuda.model.protocol import ModelResponse
+from garuda.model.protocol import ModelResponse, StreamDelta
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,45 @@ def _parse_tool_calls(raw_calls: list) -> list[ToolCall]:
         call_id = call.id if hasattr(call, "id") else call.get("id", str(uuid.uuid4()))
         parsed.append(ToolCall(id=call_id, name=name, arguments=arguments))
     return parsed
+
+
+def _stream_deltas_from_chunk(chunk) -> list[StreamDelta]:
+    """Translate one litellm streaming chunk into zero or more StreamDeltas."""
+    deltas: list[StreamDelta] = []
+    choices = getattr(chunk, "choices", None) or []
+    if not choices:
+        return deltas
+    delta = getattr(choices[0], "delta", None)
+    if delta is None:
+        return deltas
+    content = getattr(delta, "content", None)
+    if content:
+        deltas.append(StreamDelta(content_delta=content))
+    for tc in getattr(delta, "tool_calls", None) or []:
+        fn = getattr(tc, "function", None)
+        deltas.append(
+            StreamDelta(
+                tool_call_delta={
+                    "index": getattr(tc, "index", 0) or 0,
+                    "id": getattr(tc, "id", None),
+                    "name": getattr(fn, "name", None) if fn is not None else None,
+                    "arguments": getattr(fn, "arguments", None) if fn is not None else None,
+                }
+            )
+        )
+    return deltas
+
+
+def _merge_tool_fragment(tool_frags: dict[int, dict], frag: dict) -> None:
+    """Fold a streamed tool-call fragment into per-index accumulators."""
+    index = frag.get("index", 0) or 0
+    slot = tool_frags.setdefault(index, {"id": None, "name": None, "arguments": ""})
+    if frag.get("id"):
+        slot["id"] = frag["id"]
+    if frag.get("name"):
+        slot["name"] = frag["name"]
+    if frag.get("arguments"):
+        slot["arguments"] += frag["arguments"]
 
 
 def _extract_usage(response) -> dict[str, int]:
@@ -143,13 +184,19 @@ class LitellmModel:
                 break
         return messages
 
-    async def complete(
+    def _build_kwargs(
         self,
         messages: list[Message],
         tools: list[dict] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> ModelResponse:
+    ) -> dict:
+        """Build the litellm request kwargs shared by ``complete`` and ``stream``.
+
+        This is the single source of truth for message serialization,
+        cache-control breakpoints, auth, tool wiring, and sampling params so the
+        blocking and streaming paths never drift apart.
+        """
         litellm_messages = [_message_to_litellm(m) for m in messages]
         if self._supports_cache_control():
             litellm_messages = self._apply_cache_control(litellm_messages)
@@ -169,6 +216,16 @@ class LitellmModel:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        return kwargs
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ModelResponse:
+        kwargs = self._build_kwargs(messages, tools, temperature, max_tokens)
 
         response = await self._complete_with_retries(kwargs)
         choice = response.choices[0]
@@ -206,6 +263,69 @@ class LitellmModel:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
         raise last_exc  # type: ignore[misc]
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamDelta]:
+        """Yield incremental deltas from a streaming completion.
+
+        Establishing the stream (the initial ``acompletion`` call) is retried via
+        the same backoff as ``complete``; once the first byte flows, iteration
+        errors are surfaced to the caller rather than retried, since a partial
+        response cannot be safely restarted.
+        """
+        kwargs = self._build_kwargs(messages, tools, temperature, max_tokens)
+        kwargs["stream"] = True
+        response_stream = await self._complete_with_retries(kwargs)
+        async for chunk in response_stream:
+            for delta in _stream_deltas_from_chunk(chunk):
+                yield delta
+        yield StreamDelta(done=True)
+
+    async def complete_streaming(
+        self,
+        messages: list[Message],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        on_delta=None,
+    ) -> ModelResponse:
+        """Consume ``stream`` into a full ModelResponse.
+
+        Accumulates content and tool-call fragments while invoking the optional
+        ``on_delta(text)`` callback (sync or async) for each text chunk, so a
+        caller can render tokens live and still receive the assembled response.
+        """
+        content_parts: list[str] = []
+        tool_frags: dict[int, dict] = {}
+        async for delta in self.stream(messages, tools, temperature, max_tokens):
+            if delta.content_delta:
+                content_parts.append(delta.content_delta)
+                if on_delta is not None:
+                    result = on_delta(delta.content_delta)
+                    if inspect.isawaitable(result):
+                        await result
+            if delta.tool_call_delta:
+                _merge_tool_fragment(tool_frags, delta.tool_call_delta)
+
+        content = "".join(content_parts) or None
+        raw_calls = [
+            {
+                "id": slot["id"] or str(uuid.uuid4()),
+                "function": {"name": slot["name"] or "", "arguments": slot["arguments"] or "{}"},
+            }
+            for _, slot in sorted(tool_frags.items())
+        ]
+        return ModelResponse(
+            content=content,
+            tool_calls=_parse_tool_calls(raw_calls),
+            raw={"model": self._model_name, "streamed": True},
+            usage={},
+        )
 
     def count_tokens(self, messages: list[Message]) -> int:
         try:

@@ -1,10 +1,12 @@
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment
 from garuda.interfaces.session import AgentSession
+from garuda.interfaces.tui import ChatRenderer
 from garuda.plugins.hooks import build_hook_registry
 from garuda.types import AgentResult
 
@@ -15,11 +17,49 @@ async def stdin_approval(action: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _emit_new_events(events, offset: int) -> int:
+def _drain_events(
+    renderer: ChatRenderer,
+    events,
+    offset: int,
+    *,
+    render: bool,
+    emit_json: bool,
+) -> int:
+    """Push events appended since ``offset`` to the renderer and/or JSONL stdout.
+
+    Called repeatedly while a turn runs so tool calls and results surface live.
+    Returns the new offset.
+    """
     all_events = events.get_all()
     for event in all_events[offset:]:
-        print(json.dumps(event, default=str))
+        if emit_json:
+            print(json.dumps(event, default=str))
+        if render:
+            _render_event(renderer, event)
     return len(all_events)
+
+
+def _render_event(renderer: ChatRenderer, event: dict) -> None:
+    etype = event.get("type")
+    payload = event.get("payload") or {}
+    if etype == "model_response":
+        content = payload.get("content")
+        if content:
+            renderer.on_assistant_delta(content)
+    elif etype == "tool_call":
+        name = payload.get("name", "")
+        args = payload.get("arguments") or {}
+        if name == "todo":
+            renderer.on_todo(args.get("todos") or [])
+        else:
+            renderer.on_tool_call(name, args)
+    elif etype == "tool_result":
+        name = payload.get("name", "")
+        if name == "todo":
+            return  # already shown as a todo panel from the tool_call
+        renderer.on_tool_result(
+            name, payload.get("content", ""), bool(payload.get("is_error"))
+        )
 
 
 async def chat_loop(args) -> int:
@@ -61,15 +101,19 @@ async def chat_loop(args) -> int:
     session.events.attach_persistence(events_path)
     hooks = build_hook_registry(args.workspace)
 
-    print(
-        f"Garuda chat — agent={session.profile.name} model={args.model} "
-        f"workspace={session.config.workspace_kind}"
+    # JSONL mode must keep stdout machine-readable, so rich rendering is off there.
+    render = not args.json
+    renderer = ChatRenderer(use_rich=render)
+    renderer.header(
+        model=args.model,
+        agent=session.profile.name,
+        workspace=session.config.workspace_kind,
+        session_id=session.events.session_id,
     )
-    print("Enter a task (empty line to quit).\n")
 
     await hooks.on_session_start(task="(interactive chat)", session_id=session.events.session_id)
     last_result: AgentResult | None = None
-    events_emitted = 0
+    offset = len(session.events.get_all())
     try:
         while True:
             print("task> ", end="", flush=True)
@@ -82,22 +126,41 @@ async def chat_loop(args) -> int:
                 break
 
             context = session.prepare_context(task.strip())
-            result = await session.agent.run(
-                task=task.strip(),
-                model=session.model,
-                env=env,
-                tools=session.tools,
-                config=session.config,
-                events=session.events,
-                permissions=session.permissions,
-                hooks=hooks,
-                agents_dir=session.agents_dir,
-                context=context,
+            run_task = asyncio.create_task(
+                session.agent.run(
+                    task=task.strip(),
+                    model=session.model,
+                    env=env,
+                    tools=session.tools,
+                    config=session.config,
+                    events=session.events,
+                    permissions=session.permissions,
+                    hooks=hooks,
+                    agents_dir=session.agents_dir,
+                    context=context,
+                )
+            )
+            # Run the turn in the background and drain events as they arrive so
+            # tool calls/results render live under a "thinking" spinner.
+            status = renderer.thinking() if render else contextlib.nullcontext()
+            try:
+                with status:
+                    while not run_task.done():
+                        offset = _drain_events(
+                            renderer, session.events, offset, render=render, emit_json=args.json
+                        )
+                        await asyncio.sleep(0.05)
+                result = await run_task
+            except BaseException:
+                run_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await run_task
+                raise
+            offset = _drain_events(
+                renderer, session.events, offset, render=render, emit_json=args.json
             )
             last_result = result
-            if args.json:
-                events_emitted = _emit_new_events(session.events, events_emitted)
-            print(f"\n{result.final_message}\n")
+            renderer.on_done(result.final_message)
     except KeyboardInterrupt:
         print()
     finally:
