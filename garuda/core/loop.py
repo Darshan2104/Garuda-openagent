@@ -1,3 +1,4 @@
+import json
 import logging
 
 from garuda.context.manager import ContextManager
@@ -25,6 +26,40 @@ CONTINUE_NUDGE = (
     "You responded without calling a tool. If the task is finished, call task_complete "
     "with a summary; otherwise continue working using the available tools."
 )
+
+REPEAT_NUDGE = (
+    "You have now executed the exact same tool call {count} times in a row with identical "
+    "arguments. Repeating it again is unlikely to change the outcome. Step back, reconsider "
+    "your approach, and try something different (different arguments, a different tool, or "
+    "inspect the environment to understand why it is not working)."
+)
+
+REPEAT_THRESHOLD = 3
+
+CONTEXT_WARNING_FRACTION = 0.8
+
+
+def _turn_budget_notice(turn: int, max_turns: int) -> str | None:
+    remaining = max_turns - turn
+    if remaining == max(1, max_turns // 4):
+        return (
+            f"[budget] {remaining} of {max_turns} turns remain. Prioritize finishing the core "
+            "task; avoid exploratory detours and call task_complete once the work is verified."
+        )
+    if remaining == 5:
+        return (
+            "[budget] Only 5 turns remain. Wrap up now: make the smallest change that "
+            "completes the task and call task_complete with a summary."
+        )
+    return None
+
+
+def _call_signature(call: ToolCall) -> str:
+    try:
+        args = json.dumps(call.arguments, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        args = str(call.arguments)
+    return f"{call.name}:{args}"
 
 
 def _accumulate_usage(totals: dict[str, int], usage: dict[str, int]) -> None:
@@ -123,10 +158,30 @@ class DefaultAgent:
         )
         final_message = ""
         usage_totals: dict[str, int] = {}
+        last_signature: str | None = None
+        repeat_count = 0
+        context_warned = False
 
         for turn in range(1, config.max_turns + 1):
             if await context.maybe_summarize():
                 events.append(EventType.SUMMARIZATION, {"turn": turn})
+
+            budget_notice = _turn_budget_notice(turn, config.max_turns)
+            if budget_notice:
+                context.append(Message(role=Role.USER, content=budget_notice))
+            if not context_warned and context.usage_fraction() >= CONTEXT_WARNING_FRACTION:
+                context_warned = True
+                context.append(
+                    Message(
+                        role=Role.USER,
+                        content=(
+                            "[budget] The context window is over "
+                            f"{int(CONTEXT_WARNING_FRACTION * 100)}% full. Be economical: avoid "
+                            "re-reading large files, prefer targeted grep/read with offsets, and "
+                            "summarize instead of dumping output."
+                        ),
+                    )
+                )
 
             try:
                 response = await model.complete(
@@ -182,7 +237,8 @@ class DefaultAgent:
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
-                        call, task, context, env, config, events, turn, usage_totals, permissions
+                        call, task, context, env, config, events, turn, usage_totals,
+                        permissions, model,
                     )
                     if completed is not None:
                         return completed
@@ -252,6 +308,19 @@ class DefaultAgent:
                     )
                 )
 
+                signature = _call_signature(call)
+                if signature == last_signature:
+                    repeat_count += 1
+                else:
+                    last_signature = signature
+                    repeat_count = 1
+                if repeat_count >= REPEAT_THRESHOLD:
+                    context.append(
+                        Message(role=Role.USER, content=REPEAT_NUDGE.format(count=repeat_count))
+                    )
+                    repeat_count = 0
+                    last_signature = None
+
         events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})
         return self._result(
             False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
@@ -268,6 +337,7 @@ class DefaultAgent:
         turn: int,
         usage_totals: dict[str, int] | None = None,
         permissions: PermissionEngine | None = None,
+        model: Model | None = None,
     ) -> AgentResult | None:
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
@@ -278,6 +348,8 @@ class DefaultAgent:
             env=env,
             config=config,
             permissions=permissions,
+            model=model if config.enable_llm_verifier else None,
+            messages=context.get_messages(),
         )
         events.append(
             EventType.VERIFICATION,

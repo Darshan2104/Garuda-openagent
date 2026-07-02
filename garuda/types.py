@@ -52,6 +52,7 @@ class AgentConfig:
     max_output_bytes: int = 30_720
     proactive_summarize_threshold: int = 8000
     enable_verifier: bool = True
+    enable_llm_verifier: bool = True
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True
