@@ -1,6 +1,9 @@
+# Path is relative to the repo root: the test loads this config via a
+# repo-root-relative path, so the test run's cwd is already the repo root.
+# (A hardcoded /workspace/... path here previously broke the test outside containers.)
 servers:
   - name: echo
     transport: stdio
     command: python3
     args:
-      - /workspace/tests/fixtures/mcp_echo_server.py
+      - tests/fixtures/mcp_echo_server.py

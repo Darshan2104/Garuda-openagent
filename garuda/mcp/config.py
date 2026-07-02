@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -6,13 +7,21 @@ from typing import Any
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
 def _interpolate(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
-        return os.environ.get(key, "")
+        if key not in os.environ:
+            logger.warning(
+                "MCP config references undefined environment variable ${%s}; substituting empty string",
+                key,
+            )
+            return ""
+        return os.environ[key]
 
     return _ENV_PATTERN.sub(replace, value)
 
