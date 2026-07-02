@@ -52,12 +52,16 @@ async def test_run_recipe_steps(tmp_path):
                     ToolCall(id="2", name="task_complete", arguments={"summary": "Applied auth patch and verified tests."}),
                 ],
             ),
+            # LLM verifier verdict for the step-2 completion.
+            ModelResponse(content="APPROVED: patch applied and verified.", tool_calls=[]),
             ModelResponse(
                 content=None,
                 tool_calls=[
                     ToolCall(id="3", name="task_complete", arguments={"summary": "Ran pytest successfully after auth fix."}),
                 ],
             ),
+            # LLM verifier verdict for the step-3 completion.
+            ModelResponse(content="APPROVED: tests ran successfully.", tool_calls=[]),
         ]
     )
     results = await run_recipe(
@@ -103,7 +107,9 @@ async def test_rigorous_agent_plan_execute_critic(tmp_path):
         model=model,
         env=env,
         tools=tools_for_names(["write_file", "task_complete"]),
-        config=AgentConfig(max_turns=10, enable_verifier=True, permission_mode="yolo"),
+        config=AgentConfig(
+            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo"
+        ),
         events=EventStore(),
     )
     assert result.success

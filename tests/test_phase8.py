@@ -99,12 +99,16 @@ async def test_conversation_carries_llm_context(tmp_path):
                     ToolCall(id="1", name="task_complete", arguments={"summary": "turn one done"})
                 ],
             ),
+            # LLM verifier verdict for turn one.
+            ModelResponse(content="APPROVED: turn one complete.", tool_calls=[]),
             ModelResponse(
                 content=None,
                 tool_calls=[
                     ToolCall(id="2", name="task_complete", arguments={"summary": "turn two done"})
                 ],
             ),
+            # LLM verifier verdict for turn two.
+            ModelResponse(content="APPROVED: turn two complete.", tool_calls=[]),
         ]
     )
 
