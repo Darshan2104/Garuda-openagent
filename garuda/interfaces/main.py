@@ -40,6 +40,11 @@ def build_parser():
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
     run_parser.add_argument("--trajectory", help="Save event trajectory to JSONL file")
+    run_parser.add_argument(
+        "--resume",
+        metavar="ID",
+        help="Resume a saved session (full id, unique prefix, or 'latest')",
+    )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
     chat_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
@@ -72,6 +77,14 @@ def build_parser():
     serve_parser.add_argument("--docker-host")
     serve_parser.add_argument("--agents-dir")
     serve_parser.add_argument("--mcp-config")
+    serve_parser.add_argument(
+        "--token",
+        default=os.environ.get("GARUDA_SERVE_TOKEN"),
+        help="Bearer token required on requests (or set GARUDA_SERVE_TOKEN)",
+    )
+
+    sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
+    sessions_parser.add_argument("--limit", type=int, default=20)
 
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
@@ -107,6 +120,28 @@ def _parse_params(pairs: list[str]) -> dict[str, str]:
         key, value = item.split("=", 1)
         params[key.strip()] = value.strip()
     return params
+
+
+def run_sessions(args) -> int:
+    from garuda.core.sessions import SessionStore
+
+    sessions = SessionStore().list_sessions(limit=args.limit)
+    if not sessions:
+        print("No saved sessions.")
+        return 0
+    print(f"{'ID':<10} {'STATUS':<8} {'TURNS':>5}  {'UPDATED':<32} TASK")
+    for meta in sessions:
+        task = " ".join((meta.get("task") or "").split())
+        if len(task) > 60:
+            task = task[:57] + "..."
+        print(
+            f"{meta.get('session_id', '')[:8]:<10} "
+            f"{meta.get('status', '?'):<8} "
+            f"{meta.get('turns', 0):>5}  "
+            f"{meta.get('updated_at', ''):<32} "
+            f"{task}"
+        )
+    return 0
 
 
 async def run_task(args) -> int:
@@ -163,6 +198,7 @@ async def run_task(args) -> int:
         docker_host=args.docker_host,
         mcp_manager=mcp_manager,
         agents_dir=agents_dir,
+        resume=args.resume,
     )
 
     if args.trajectory:
@@ -226,6 +262,7 @@ async def run_serve(args) -> int:
         docker_host=args.docker_host,
         agents_dir=args.agents_dir,
         mcp_config=args.mcp_config,
+        token=args.token,
     )
     await serve(config)
     return 0
@@ -243,6 +280,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(chat_loop(args)))
     if args.command == "serve":
         raise SystemExit(asyncio.run(run_serve(args)))
+    if args.command == "sessions":
+        raise SystemExit(run_sessions(args))
     if args.command == "recipe" and args.recipe_command == "run":
         raise SystemExit(asyncio.run(run_recipe_command(args)))
     parser.print_help()

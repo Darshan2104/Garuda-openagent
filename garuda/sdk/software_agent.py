@@ -43,8 +43,18 @@ class SoftwareAgent:
         """Register a custom tool available to all SDK runs."""
         register_tool(tool, replace=replace)
 
-    async def run(self, task: str, *, events: EventStore | None = None) -> AgentResult:
-        """Execute a task and return the agent result."""
+    async def run(
+        self,
+        task: str,
+        *,
+        events: EventStore | None = None,
+        resume: str | None = None,
+    ) -> AgentResult:
+        """Execute a task and return the agent result.
+
+        Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
+        seed the run with a prior session's conversation.
+        """
         profile = load_profile(self.agent_name, extra_dir=self.agents_dir)
         config = profile.to_agent_config()
         config.mode = self.mode
@@ -79,6 +89,7 @@ class SoftwareAgent:
             docker_host=self.docker_host,
             mcp_manager=mcp_manager,
             agents_dir=self.agents_dir,
+            resume=resume,
         )
 
     def conversation(self) -> "Conversation":
@@ -91,4 +102,7 @@ class SoftwareAgent:
             agents_dir=self.agents_dir,
             mcp_config=self.mcp_config,
             mode=self.mode,
+            workspace_kind=self.workspace_kind,
+            docker_image=self.docker_image,
+            docker_host=self.docker_host,
         )
