@@ -1,4 +1,5 @@
 from garuda.mcp.client import McpClientManager
+from garuda.tools.background import BashBackgroundTool, KillTaskTool, TaskOutputTool
 from garuda.tools.bash import BashTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
@@ -13,8 +14,11 @@ from garuda.tools.tmux import TmuxCaptureTool, TmuxExecTool
 from garuda.tools.todo import TodoTool
 
 __all__ = [
+    "BashBackgroundTool",
     "BashTool",
     "EditTool",
+    "KillTaskTool",
+    "TaskOutputTool",
     "GlobTool",
     "GrepTool",
     "ImageReadTool",
@@ -40,6 +44,9 @@ __all__ = [
 def _bootstrap_registry() -> None:
     for tool in [
         BashTool(),
+        BashBackgroundTool(),
+        TaskOutputTool(),
+        KillTaskTool(),
         ReadFileTool(),
         WriteFileTool(),
         EditTool(),
@@ -65,6 +72,9 @@ def default_tools() -> list[Tool]:
     return tools_for_names(
         [
             "bash",
+            "bash_background",
+            "task_output",
+            "kill_task",
             "read_file",
             "write_file",
             "edit",
