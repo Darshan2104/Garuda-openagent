@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.context.manager import ContextManager
@@ -24,6 +25,10 @@ class SubagentRunner:
     fork_parent_context: bool = False
     parent_messages: list[Message] | None = None
     parent_context: ContextManager | None = None
+    # Inherited from the parent so ASK decisions and lifecycle hooks behave the
+    # same inside a subagent (otherwise ASK auto-denies and hooks are dropped).
+    approval_handler: Any = None
+    hooks: Any = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -51,6 +56,7 @@ class SubagentRunner:
             tool_rules=profile.tool_rules,
             path_rules=profile.path_rules,
             bash_rules=profile.bash_rules,
+            approval_handler=self.approval_handler,
         )
         tools, mcp_manager = await build_toolkit(
             profile.tools,
@@ -88,6 +94,7 @@ class SubagentRunner:
                 config=config,
                 events=sub_events,
                 permissions=permissions,
+                hooks=self.hooks,
                 context=context,
             )
         finally:

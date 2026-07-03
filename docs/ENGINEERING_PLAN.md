@@ -64,6 +64,32 @@ Test suite: **241 passing**, 0 failures (3 tmux skips). Still open from §6/§7/
 buffer retrieval, full RLM mode), D7b/D7c (HTTP/SSE transport, config merge, `garuda mcp list`),
 H2/H3/H4 (verifier hardening, tool-failure steering, answer disambiguation).
 
+## Status update 5 (2026-07-04) — review-driven hardening
+
+From an external review of the matured codebase (core, tools, workspace, permissions, verifier,
+MCP, subagent):
+
+- **P0 MCP call robustness** — `McpRemoteTool.execute` wraps `call_tool` in a timeout + try/except;
+  a hung/failing MCP server returns an error observation instead of hanging/crashing the turn.
+- **P0 bash** — `timeout`/`cwd` params exposed; failure-with-no-output no longer says "successfully".
+- **P1 verifier fails CLOSED (H2)** — LLM verdict retries once then rejects on error; unparseable
+  verdict rejects (was: approve on both); robust markdown-tolerant parse; evidence window 300→1200;
+  general (not SWE-only) persona; numeric-contradiction hint; optional `answer_check(env)` domain
+  grader hook. **LLM judge is now opt-in** (`enable_llm_verifier` defaults False): it costs a model
+  call per completion and fails closed, so it's a deliberate choice; deterministic checks (summary,
+  permission-screened commands, `answer_check`) stay on by default.
+- **P1 subagents** — inherit the parent's `approval_handler` (ASK no longer auto-denies inside a
+  subagent) and `hooks` (lifecycle hooks now fire in subagents).
+- **P1 streaming usage** — `stream()` requests `stream_options={"include_usage": True}` and
+  `complete_streaming` captures it, so streamed/TUI sessions get token/cost accounting.
+- **P2** — `finish_reason == "length"` truncation surfaced to the loop as a note; MCP tool-name
+  collisions de-duplicated (no silent shadowing). Verified all interfaces attach event persistence.
+
+Test suite: **257 passing**, 0 failures (3 tmux skips). Live-verified end-to-end on Gemini 2.5 Flash.
+Not changed (by design): `bash` in smart mode still default-allows non-denylisted commands — that
+confinement is delegated to the OS sandbox (E4) + `allow_prefixes` (E5), not the regex denylist.
+Remaining: H3/H4 (tool-failure steering, answer disambiguation), G2/G3, D7b/D7c.
+
 ---
 
 ## 0. Verdict

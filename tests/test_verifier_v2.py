@@ -89,7 +89,8 @@ async def test_llm_verdict_rejects_with_feedback(tmp_path):
     assert "no tests were run" in (result.feedback or "")
 
 
-async def test_llm_verdict_parse_noise_approves_with_warning(tmp_path, caplog):
+async def test_llm_verdict_parse_noise_rejects_fail_closed(tmp_path, caplog):
+    # An unparseable verdict must fail CLOSED (reject), not rubber-stamp.
     env = LocalEnvironment(workspace_root=tmp_path)
     model = ScriptModel([ModelResponse(content="Well, it looks mostly fine I guess.", tool_calls=[])])
     verifier = CompletionVerifier()
@@ -102,12 +103,13 @@ async def test_llm_verdict_parse_noise_approves_with_warning(tmp_path, caplog):
             config=AgentConfig(enable_verifier=True),
             model=model,
         )
-    assert result.approved
+    assert not result.approved
     assert result.checklist.get("llm_verdict_unparseable") is True
-    assert any("APPROVED/REJECTED" in record.message for record in caplog.records)
+    assert "unclear" in (result.feedback or "")
 
 
-async def test_llm_verdict_model_error_falls_back_to_approval(tmp_path):
+async def test_llm_verdict_model_error_rejects_fail_closed(tmp_path):
+    # A verifier that can't be reached (after one retry) must reject, not approve.
     env = LocalEnvironment(workspace_root=tmp_path)
     verifier = CompletionVerifier()
     result = await verifier.verify_with_commands(
@@ -118,8 +120,9 @@ async def test_llm_verdict_model_error_falls_back_to_approval(tmp_path):
         config=AgentConfig(enable_verifier=True),
         model=ExplodingModel(),
     )
-    assert result.approved
+    assert not result.approved
     assert result.checklist.get("llm_verdict_error") is True
+    assert "could not be reached" in (result.feedback or "")
 
 
 async def test_non_llm_checks_still_run_before_llm(tmp_path):

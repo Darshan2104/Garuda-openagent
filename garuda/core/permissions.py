@@ -85,6 +85,10 @@ class PermissionEngine:
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def approval_handler(self) -> "ApprovalHandler | None":
+        return self._approval_handler
+
     def check_tool(self, tool_name: str) -> PermissionDecision:
         if tool_name in self._tool_rules:
             return PermissionDecision(self._tool_rules[tool_name])

@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # Timeout (seconds) for each server's initialize() and list_tools() handshakes.
 MCP_HANDSHAKE_TIMEOUT = 10.0
 
+# Timeout (seconds) for a single MCP tool invocation.
+MCP_CALL_TIMEOUT = 120.0
+
 # Maximum length of an exposed MCP tool name.
 MCP_TOOL_NAME_MAX_LEN = 64
 
@@ -36,9 +39,12 @@ class McpRemoteTool:
     description: str
     parameters: dict[str, Any]
     _session: ClientSession
+    name_override: str | None = None
 
     @property
     def name(self) -> str:
+        if self.name_override:
+            return self.name_override
         return sanitize_tool_name(f"mcp__{self.server_name}__{self.tool_name}")
 
     async def execute(
@@ -47,7 +53,25 @@ class McpRemoteTool:
         env: object,
         ctx: ToolContext,
     ) -> ToolResult:
-        result = await self._session.call_tool(self.tool_name, arguments)
+        # A hung or failing MCP server must not hang or crash the agent turn:
+        # bound the call with a timeout and return an error observation instead.
+        try:
+            result = await asyncio.wait_for(
+                self._session.call_tool(self.tool_name, arguments),
+                timeout=MCP_CALL_TIMEOUT,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            return ToolResult(
+                tool_call_id="",
+                content=f"MCP tool {self.tool_name!r} timed out after {MCP_CALL_TIMEOUT:.0f}s.",
+                is_error=True,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_call_id="",
+                content=f"MCP tool {self.tool_name!r} failed: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
         parts: list[str] = []
         for block in result.content:
             text = getattr(block, "text", None)
@@ -122,17 +146,28 @@ class McpClientManager:
                 logger.debug("Error closing failed MCP server %s", server.name, exc_info=True)
             raise
         await self._stack.enter_async_context(server_stack)
+        existing = {t.name for t in self._tools}
         for tool in listed.tools:
             schema = tool.inputSchema if hasattr(tool, "inputSchema") else {"type": "object", "properties": {}}
-            self._tools.append(
-                McpRemoteTool(
-                    server_name=server.name,
-                    tool_name=tool.name,
-                    description=tool.description or tool.name,
-                    parameters=schema,
-                    _session=session,
-                )
+            remote = McpRemoteTool(
+                server_name=server.name,
+                tool_name=tool.name,
+                description=tool.description or tool.name,
+                parameters=schema,
+                _session=session,
             )
+            # Two long names can sanitize/truncate to the same exposed name; suffix
+            # collisions so a later tool never silently shadows an earlier one.
+            if remote.name in existing:
+                suffix = f"_{len(self._tools)}"
+                remote.name_override = remote.name[: MCP_TOOL_NAME_MAX_LEN - len(suffix)] + suffix
+                logger.warning(
+                    "MCP tool name collision for %s; exposing as %s",
+                    remote.name,
+                    remote.name_override,
+                )
+            existing.add(remote.name)
+            self._tools.append(remote)
 
     def get_tools(self) -> list[Tool]:
         return list(self._tools)

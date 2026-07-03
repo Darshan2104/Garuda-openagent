@@ -24,6 +24,7 @@ class StreamDelta:
 
     content_delta: str = ""
     tool_call_delta: dict | None = None
+    usage: dict[str, int] | None = None
     done: bool = False
 
 

@@ -52,7 +52,15 @@ class AgentConfig:
     max_output_bytes: int = 30_720
     proactive_summarize_threshold: int = 8000
     enable_verifier: bool = True
-    enable_llm_verifier: bool = True
+    # LLM-judge verification is opt-in: it costs a model call per completion and,
+    # by design, fails CLOSED (rejects on error/unclear verdict), so enabling it
+    # is a deliberate choice. Deterministic checks (summary, permission-screened
+    # verification commands, answer_check) always run when enable_verifier is on.
+    enable_llm_verifier: bool = False
+    # Optional domain grader called before the LLM verdict: answer_check(env) ->
+    # VerificationResult | None (None = no opinion). Set programmatically by
+    # profiles/eval runners; not loadable from YAML.
+    answer_check: Any = None
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True

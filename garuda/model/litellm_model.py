@@ -280,10 +280,16 @@ class LitellmModel:
         """
         kwargs = self._build_kwargs(messages, tools, temperature, max_tokens)
         kwargs["stream"] = True
+        # Ask the provider to emit a final usage chunk so streamed runs still get
+        # token/cost accounting (otherwise usage is lost for TUI sessions).
+        kwargs["stream_options"] = {"include_usage": True}
         response_stream = await self._complete_with_retries(kwargs)
         async for chunk in response_stream:
             for delta in _stream_deltas_from_chunk(chunk):
                 yield delta
+            usage = _extract_usage(chunk)
+            if usage:
+                yield StreamDelta(usage=usage)
         yield StreamDelta(done=True)
 
     async def complete_streaming(
@@ -302,6 +308,7 @@ class LitellmModel:
         """
         content_parts: list[str] = []
         tool_frags: dict[int, dict] = {}
+        usage: dict[str, int] = {}
         async for delta in self.stream(messages, tools, temperature, max_tokens):
             if delta.content_delta:
                 content_parts.append(delta.content_delta)
@@ -311,6 +318,8 @@ class LitellmModel:
                         await result
             if delta.tool_call_delta:
                 _merge_tool_fragment(tool_frags, delta.tool_call_delta)
+            if delta.usage:
+                usage = delta.usage
 
         content = "".join(content_parts) or None
         raw_calls = [
@@ -324,7 +333,7 @@ class LitellmModel:
             content=content,
             tool_calls=_parse_tool_calls(raw_calls),
             raw={"model": self._model_name, "streamed": True},
-            usage={},
+            usage=usage,
         )
 
     def count_tokens(self, messages: list[Message]) -> int:

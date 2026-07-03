@@ -1,4 +1,6 @@
+import inspect
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -18,7 +20,37 @@ EVIDENCE_COMMAND_TIMEOUT = 10.0
 EVIDENCE_MESSAGE_WINDOW = 15
 
 # Per-message content truncation when rendering conversation evidence.
-EVIDENCE_CONTENT_CHARS = 300
+EVIDENCE_CONTENT_CHARS = 1200
+
+# Ratio above which two numbers in the summary are flagged as possibly contradictory.
+CONTRADICTION_RATIO = 10.0
+
+_NUMBER_RE = re.compile(r"-?\d[\d,]*\.?\d*")
+
+
+def _significant_numbers(text: str) -> list[float]:
+    values: list[float] = []
+    for token in _NUMBER_RE.findall(text or ""):
+        try:
+            value = abs(float(token.replace(",", "")))
+        except ValueError:
+            continue
+        if value != 0:
+            values.append(value)
+    return values
+
+
+def has_numeric_contradiction(text: str, ratio: float = CONTRADICTION_RATIO) -> bool:
+    """True if two numbers in ``text`` differ by more than ``ratio``×.
+
+    Used only as a soft hint to the LLM verifier (not a hard gate): it is
+    deliberately permissive, so the judge — which understands context like
+    '1000 files in 5 seconds' — makes the final call.
+    """
+    numbers = _significant_numbers(text)
+    if len(numbers) < 2:
+        return False
+    return max(numbers) / min(numbers) > ratio
 
 
 async def gather_git_evidence(env: Environment) -> str:
@@ -136,6 +168,26 @@ class CompletionVerifier:
                     ),
                 )
 
+        # Optional domain grader (research/coding/eval profiles plug in their own
+        # correctness check without core knowing the benchmark). A returned
+        # VerificationResult is authoritative; None means "no opinion".
+        answer_check = getattr(config, "answer_check", None)
+        if callable(answer_check):
+            try:
+                verdict = answer_check(env)
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+            except Exception:
+                logger.exception("answer_check hook raised; rejecting to fail closed")
+                checklist["answer_check_error"] = True
+                return VerificationResult(
+                    approved=False,
+                    checklist=checklist,
+                    feedback="Completion rejected: answer_check hook failed.",
+                )
+            if verdict is not None:
+                return verdict
+
         if model is not None:
             return await self._llm_verdict(
                 task=task,
@@ -159,9 +211,9 @@ class CompletionVerifier:
     ) -> VerificationResult:
         """One LLM call producing a structured APPROVED/REJECTED verdict.
 
-        Never raises: on model errors or unparseable replies we fall back to
-        approving based on the non-LLM checks (with a logged warning) so a
-        flaky verifier cannot brick completions.
+        Fails **closed**: on model errors (after one retry) or an unparseable
+        reply, the completion is rejected with feedback, because this is the
+        completion gate — a broken verifier must not rubber-stamp wrong answers.
         """
         git_evidence = await gather_git_evidence(env)
         conversation = render_messages_compact(messages or [])
@@ -174,41 +226,64 @@ class CompletionVerifier:
             prompt_parts.append(f"## Git evidence from the workspace\n{git_evidence}")
         if conversation:
             prompt_parts.append(f"## Recent conversation (most recent last)\n{conversation}")
+        if has_numeric_contradiction(summary):
+            prompt_parts.append(
+                "## Caution\nThe summary contains numbers that differ by more than 10x. "
+                "If these are competing candidate answers, the completion is ambiguous — "
+                "REJECT and ask the agent to disambiguate. If they are unrelated (e.g. counts "
+                "vs durations), ignore this note."
+            )
         prompt_parts.append(
             "## Checklist\n"
             "Evaluate the completion against this checklist:\n"
-            "1. Are the task requirements met?\n"
-            "2. Was the work actually verified (tests or commands run, results observed)?\n"
-            "3. Are there any signs of premature completion (unfinished steps, unverified claims)?\n\n"
+            "1. Are the task requirements met (correct answer / artifact present)?\n"
+            "2. Was the work actually verified (tests or commands run, results observed) — "
+            "not just asserted?\n"
+            "3. Are units, scale, and magnitude plausible and internally consistent?\n"
+            "4. Any signs of premature completion (unfinished steps, unverified claims)?\n\n"
             "Your reply MUST start with exactly APPROVED or REJECTED: <reason>."
         )
 
-        try:
-            response = await model.complete(
-                [
-                    Message(
-                        role=Role.SYSTEM,
-                        content=(
-                            "You are a completion verifier for a software engineering agent. "
-                            "Judge strictly based on the evidence provided. Reply starting with "
-                            "exactly APPROVED or REJECTED: <reason>."
-                        ),
-                    ),
-                    Message(role=Role.USER, content="\n\n".join(prompt_parts)),
-                ]
-            )
-        except Exception:
-            logger.exception(
-                "LLM verifier call failed; approving based on non-LLM checks"
-            )
-            checklist["llm_verdict_error"] = True
-            return VerificationResult(approved=True, checklist=checklist)
+        verifier_messages = [
+            Message(
+                role=Role.SYSTEM,
+                content=(
+                    "You are a strict task-completion verifier (for coding, research, and ops "
+                    "tasks alike). Judge only on the evidence provided. Reply starting with "
+                    "exactly APPROVED or REJECTED: <reason>."
+                ),
+            ),
+            Message(role=Role.USER, content="\n\n".join(prompt_parts)),
+        ]
 
+        response = None
+        for attempt in range(2):  # one retry, then fail closed
+            try:
+                response = await model.complete(verifier_messages)
+                break
+            except Exception:
+                logger.warning("LLM verifier call failed (attempt %d/2)", attempt + 1, exc_info=True)
+        if response is None:
+            checklist["llm_verdict_error"] = True
+            return VerificationResult(
+                approved=False,
+                checklist=checklist,
+                feedback="Completion rejected: the verifier could not be reached to confirm the work.",
+            )
+
+        # Robust parse: strip markdown/whitespace, inspect the first non-empty line.
         text = (response.content or "").strip()
-        if text.upper().startswith("APPROVED"):
+        first_line = ""
+        for line in text.splitlines():
+            stripped = line.strip().strip("#*_`> ").strip()
+            if stripped:
+                first_line = stripped
+                break
+        upper = first_line.upper()
+        if upper.startswith("APPROVED"):
             checklist["llm_verdict"] = True
             return VerificationResult(approved=True, checklist=checklist)
-        if text.upper().startswith("REJECTED"):
+        if upper.startswith("REJECTED"):
             checklist["llm_verdict"] = False
             return VerificationResult(
                 approved=False,
@@ -217,8 +292,15 @@ class CompletionVerifier:
             )
 
         logger.warning(
-            "LLM verifier reply did not start with APPROVED/REJECTED; treating as approval. Reply: %.200s",
+            "LLM verifier reply did not start with APPROVED/REJECTED; rejecting to fail closed. Reply: %.200s",
             text,
         )
         checklist["llm_verdict_unparseable"] = True
-        return VerificationResult(approved=True, checklist=checklist)
+        return VerificationResult(
+            approved=False,
+            checklist=checklist,
+            feedback=(
+                "Completion rejected: verifier verdict was unclear. Re-state the outcome and how "
+                "it was verified, then call task_complete again."
+            ),
+        )

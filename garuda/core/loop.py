@@ -165,6 +165,8 @@ class DefaultAgent:
                 skills_dirs=config.skills_dirs,
                 workspace_root=getattr(env, "workspace_root", None),
                 parent_context=context,
+                approval_handler=permissions.approval_handler,
+                hooks=hooks,
             )
 
         buffer = None
@@ -250,6 +252,20 @@ class DefaultAgent:
                         role=Role.ASSISTANT,
                         content=response.content or "",
                         tool_calls=list(response.tool_calls) or None,
+                    )
+                )
+
+            # Tell the model when its own response was cut off at max_tokens, so it
+            # doesn't treat a truncated answer (or truncated tool-call args) as final.
+            if response.raw.get("finish_reason") == "length":
+                events.append(EventType.MODEL_RESPONSE, {"truncated": True, "turn": turn})
+                context.append(
+                    Message(
+                        role=Role.USER,
+                        content=(
+                            "[note] Your previous response was truncated at the output-token limit. "
+                            "Continue where you left off, or make the remaining work more concise."
+                        ),
                     )
                 )
 

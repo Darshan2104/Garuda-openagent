@@ -56,7 +56,8 @@ def test_supports_streaming_false_for_plain_object():
 
 
 def test_litellm_build_kwargs_parity(monkeypatch):
-    """complete() and stream() must build identical kwargs except the stream flag."""
+    """complete() and stream() must build identical base kwargs; stream() adds
+    only `stream` and `stream_options` (for usage accounting)."""
     captured: list[dict] = []
 
     async def fake_acompletion(**kwargs):
@@ -94,9 +95,11 @@ def test_litellm_build_kwargs_parity(monkeypatch):
 
     complete_kwargs, stream_kwargs = captured[0], captured[1]
     assert stream_kwargs.get("stream") is True
+    assert stream_kwargs.get("stream_options") == {"include_usage": True}
     assert "stream" not in complete_kwargs
-    stream_without_flag = {k: v for k, v in stream_kwargs.items() if k != "stream"}
-    assert stream_without_flag == complete_kwargs
+    assert "stream_options" not in complete_kwargs
+    stream_base = {k: v for k, v in stream_kwargs.items() if k not in ("stream", "stream_options")}
+    assert stream_base == complete_kwargs
 
 
 def test_litellm_complete_streaming_assembles_response(monkeypatch):
