@@ -36,6 +36,9 @@ stack and a frontier API key; the ablation runner covers the harness-comparison 
 locally), true end-to-end token streaming into the agent loop (D2 ships the streaming
 model API + rich rendering; wiring live tokens through `loop.py` is a follow-up).
 
+**Planned next (not started):** §6 RLM-style tool output buffer; §7 MCP JSON/auto-discovery
+(Cursor/Claude-style `mcpServers` dict + conventional config paths). See unchecked todos in §6.5 and §7.4.
+
 ---
 
 ## 0. Verdict
@@ -128,6 +131,7 @@ feature built on the current loop inherits the same failure modes.
   (summarizer exception kills the run); commands invisible because tool_calls aren't stored.
 - **Pluggable condenser interface** (OpenHands-style) instead of one hardcoded strategy.
 - Persist full tool outputs to disk on truncation and tell the model where to find them.
+  → **Expanded in §6** (RLM-style buffer + retrieval tools; replaces blind truncation).
 
 ### 2.5 Product surfaces
 - **Session persistence + `--resume`** — `EventStore.load` exists but nothing uses it. No session
@@ -177,7 +181,8 @@ feature built on the current loop inherits the same failure modes.
   in Phoenix/Langfuse etc., and is a differentiator few open harnesses do well.
 - MCP: only stdio (config parses `url` but nothing uses it) — add streamable-HTTP/SSE + auth
   headers; per-server error isolation (one bad server currently aborts all); timeouts on
-  initialize/list_tools; tool-name sanitization (OpenAI 64-char cap).
+  initialize/list_tools; tool-name sanitization (OpenAI 64-char cap). **JSON `mcpServers`
+  dict + auto-discovery** → expanded in §7.
 
 ---
 
@@ -249,7 +254,7 @@ Effort scale: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
 | D4. `AGENTS.md` project-memory loading (hierarchical) + `# remember`-style append | S |
 | D5. Skills v2: progressive disclosure (index in prompt, body on demand), `allowed-tools`, arguments, bundled scripts; slash commands | M |
 | D6. Server v2: bearer auth, SSE streaming, session registry; fix chat workspace reuse; fix `Conversation` env inheritance | M |
-| D7. MCP: streamable-HTTP + auth headers, per-server fault isolation + timeouts, `.mcp.json` compat, name sanitization | M |
+| D7. MCP ergonomics + transport — see §7: `.mcp.json` / `mcpServers` dict compat, auto-discovery, then streamable-HTTP + auth | M |
 
 ### Phase E — Verification & safety that actually verify
 | Item | Effort |
@@ -268,9 +273,16 @@ Effort scale: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
 | F3. Terminal-Bench 2.0 baseline run + ablation harness (verifier on/off, rigorous on/off, caching on/off, budget hints on/off) — publish the table | L |
 | F4. Cost/latency dashboard from trajectories | S |
 
+### Phase G — RLM-style tool output buffer (see §6 for full spec)
+| Item | Effort |
+|------|--------|
+| G1. `ToolOutputBuffer` + stub injection in loop + `buffer_grep` / `buffer_slice` / `buffer_list` | M |
+| G2. `buffer_query` sub-LLM chunk retrieval + optional auto-inject | M |
+| G3. Full RLM REPL mode + long-context benchmark | L |
+
 ### Suggested sequencing
-A (all) → B1–B3 + C1–C2 (cheap, high leverage) → D1–D3 → C3–C5 → E → B4–B6 + D4–D7 → F.
-Phases B/C and D can run in parallel tracks once A lands.
+A (all) → B1–B3 + C1–C2 (cheap, high leverage) → D1–D3 → C3–C5 → **G1** → E → B4–B6 + D4–D7 → F → G2 → G3 (optional).
+Phases B/C and D can run in parallel tracks once A lands. **G1** pairs with C3 microcompact (stub + buffer pointer).
 
 ---
 
@@ -292,3 +304,305 @@ Phases B/C and D can run in parallel tracks once A lands.
 5. **Do we keep `rigorous` mode** as a separate agent class, or decompose into composable hooks (planner hook + critic hook + repair loop) so any profile can opt in?
 6. **Text-parser fallback**: keep supporting non-tool-calling models at all, or cut scope? (It caused the bash-fence footgun.)
 7. **Language**: any appetite for a Rust core later (Codex path), or commit to Python and optimize (uvloop, msgspec)?
+8. **Tool-output strategy**: keep head/tail truncation as default safety valve, or flip to buffer-first (stub in context + retrieval tools) for all outputs over N bytes? Recommendation: buffer-first above threshold; truncation only for preview lines. See §6.
+
+---
+
+## 6. RLM-style tool output buffer (planned — pick up next)
+
+**Status:** Not started · **Added:** 2026-07-03
+**Motivation:** Brainstorm on `ContextManager` / tool-level shaping (2026-07-03).
+
+### 6.1 Problem — truncation is lossy
+
+Today Garuda shrinks context at **two** layers:
+
+| Layer | Where | What happens | Information loss |
+|-------|-------|--------------|------------------|
+| **Per-tool shaping** | `context/shaper.py` → `loop.py:_execute_tool` | Every tool result truncated to ~30KB (head + tail) before append | **Middle bytes gone forever** — especially bad for ephemeral `bash` output |
+| **Microcompact pruning** | `context/condenser.py` | Old tool outputs outside recent window stubbed with "re-run the tool" | Full text gone from history; re-run may not reproduce same output |
+
+**Partial mitigations today (not a buffer):**
+- `grep` / `read_file` offset/limit re-fetch from **filesystem** — works for files, not for one-shot bash logs
+- 3-step LLM summarization — lossy compression, not retrieval
+- Condenser rebuild keeps last ~12 turns — middle history dropped or summarized
+
+**Verdict:** For large or ephemeral tool output, head/tail truncation is the wrong default. The harness should **retain full output externally** and inject only **stubs + retrieval affordances** into the token window.
+
+### 6.2 Reference — Recursive Language Models (RLM)
+
+[RLM paper](https://arxiv.org/abs/2512.24601) · [reference impl](https://github.com/alexzhang13/rlm)
+
+Core idea (different from Garuda's current linear loop):
+
+```
+Traditional:  [system + task + FULL/truncated tool output + history] → LLM every turn
+
+RLM-style:    tool output → external buffer (potentially huge)
+              LLM uses code / sub-calls to grep, slice, filter buffer
+              Only relevant chunks enter context per turn
+```
+
+Garuda is well-positioned: already has `bash`, `grep`, subagents, event store, session dirs, harness-first design. Buffer belongs in the **harness**, not the model.
+
+### 6.3 Proposed architecture
+
+```text
+Tool execute → full output → ToolOutputBuffer.store(tool_call_id, content)
+                          → session dir: ~/.garuda/sessions/<id>/buffers/<tool_call_id>.txt
+
+Context message (instead of truncated body):
+  [buffer:abc123 | 84,291 chars | bash exit=1]
+  Preview (first N lines): ...
+  Use buffer_grep(id, pattern) or buffer_slice(id, start, end) to inspect.
+
+LLM turn → optional retrieval tools → read from buffer → inject only needed slices
+```
+
+**Design principles:**
+- **Buffer-first above threshold** — store full output; context gets stub + pointer, not head/tail chop
+- **Explicit retrieval tools** — auditable, no magic auto-inject in v1 (optional in Phase 2)
+- **Session-scoped storage** — align with existing `~/.garuda/sessions/<uuid>/` layout
+- **Events JSONL** — log `buffer_id`, `size_bytes`, `truncated_in_context: false` for ATIF/debugging
+- **Replace, don't duplicate** — `shape_observation` becomes preview-only or bypassed when buffered
+
+### 6.4 Comparison vs current & vs other agents
+
+| Approach | Info fidelity | Context tokens | Agent effort | Garuda today |
+|----------|---------------|----------------|--------------|--------------|
+| Head/tail truncate | Low | Fixed cap | Passive | **Default** |
+| Microcompact stub | Medium | Lower | Must re-run tool | After 75% usage |
+| LLM 3-step summarize | Medium (lossy) | Lower | Passive | Last resort |
+| **RLM buffer + retrieve** | **High** | Low in history; pay on pull | Active (grep/slice) | **Not built** |
+| Re-read from disk | High (files only) | On demand | Active | Via `read_file`/`grep` |
+
+Other agents: Cursor/OpenHands condense lossily; SWE-agent re-reads files; **no mainstream coding harness fully implements RLM yet** — opportunity for Garuda differentiator.
+
+### 6.5 Phased implementation
+
+Effort scale unchanged: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
+
+#### Phase G1 — Tool output buffer + retrieval tools (M)
+
+Goal: Stop losing middle bytes on large/ephemeral tool output.
+
+- [ ] **`ToolOutputBuffer` module** (`garuda/context/buffer.py` or `garuda/core/buffer.py`)
+  - [ ] `store(session_id, tool_call_id, content) -> BufferRef` (path + size + preview)
+  - [ ] `read`, `grep`, `slice` by `tool_call_id`
+  - [ ] Session-scoped paths under `~/.garuda/sessions/<id>/buffers/`
+  - [ ] Config: `buffer_threshold_bytes` (default: same as current `max_output_bytes` or higher)
+
+- [ ] **Wire into `loop.py:_execute_tool`**
+  - [ ] If `len(content) > threshold`: store full body in buffer; append stub message to context
+  - [ ] If under threshold: keep inline (no buffer overhead)
+  - [ ] Pass `session_id` / buffer root through `ToolContext`
+
+- [ ] **New tools**
+  - [ ] `buffer_grep(buffer_id, pattern, ...)` — ripgrep over stored output
+  - [ ] `buffer_slice(buffer_id, start_line, end_line)` — line-range read
+  - [ ] `buffer_list` — list buffers for current session (id, tool name, size, preview)
+
+- [ ] **Update `shape_observation` / `ContextManager`**
+  - [ ] Preview-only mode: first N lines in stub, not head/tail truncation of what enters history
+  - [ ] Document interaction with microcompact (pruned stubs should retain `buffer_id` pointer)
+
+- [ ] **Agent profiles** — add buffer tools to `build.yaml` (and optionally `plan`/`explore`)
+
+- [ ] **Tests**
+  - [ ] Large bash output: middle line recoverable via `buffer_grep`
+  - [ ] Small output: no buffer file created
+  - [ ] Resume session: buffers still addressable by id
+
+- [ ] **Docs** — README + overview HTML section on buffer vs truncation
+
+#### Phase G2 — RLM-lite: semantic chunk retrieval (M)
+
+Goal: Agent doesn't have to know grep patterns; harness helps pull relevant excerpts.
+
+- [ ] **`buffer_query(buffer_id, question)`** — sub-LLM scans chunks (map-reduce over buffer), returns relevant excerpts + line refs
+- [ ] **Chunking strategy** — split buffer into ~2–4K char chunks with overlap; index by line range
+- [ ] **Optional auto-inject (feature-flagged)** — before `model.complete`, if last assistant message references a `buffer_id`, inject top-k chunks (embedding or keyword match). Default off.
+- [ ] **Cost guard** — max sub-calls per turn; cap total retrieved bytes per model call
+- [ ] **Tests** — "find the AssertionError in pytest log" without agent writing grep
+
+#### Phase G3 — Full RLM mode (L, optional)
+
+Goal: Align with RLM paper REPL instantiation for extreme long-context tasks.
+
+- [ ] **`--mode rlm` or `condenser: rlm`** — REPL-first loop variant
+- [ ] **Buffers as REPL variables** — e.g. Python REPL in sandbox with `context_abc123` str + helper `llm_query(text) -> str`
+- [ ] **Recursive sub-calls** — map to existing `invoke_subagent` or dedicated `llm_query` primitive
+- [ ] **Benchmark** — OOLONG-style or internal long-log task; compare vs truncate-default and vs G1-only
+
+### 6.6 Integration with existing context stack
+
+| Existing piece | Change when G1 lands |
+|----------------|----------------------|
+| `shape_observation` | Preview in stub only; full body in buffer |
+| `MicrocompactCondenser` | Stub replaces content but **keep `metadata.buffer_id`** so agent can still retrieve |
+| `summarize_three_step` | Summarizer input can reference buffer previews; optional: summarize from buffer file not truncated history |
+| `EventStore` | New fields: `buffer_id`, `buffer_bytes`, `buffered: true` on `tool_result` events |
+| ATIF export | Attribute full output path for eval/debug (not necessarily inline in trajectory) |
+
+### 6.7 Open questions (resolve before G1)
+
+1. **Threshold**: buffer everything >30KB (current cap) or lower (e.g. 8KB) to save tokens earlier?
+2. **Retention**: delete buffers on session end, or keep for `--resume` indefinitely?
+3. **Security**: buffer files may contain secrets from bash — same permission rules as workspace? scrub on disk?
+4. **MCP tool outputs**: buffer MCP results the same as built-in tools?
+5. **G1 vs C3 item**: C3 planned "on-disk full output pointer" — G1 **is** that item, done properly with retrieval tools.
+
+### 6.8 Suggested sequencing (add to §3)
+
+Insert after Phase C context work (C3 microcompact is complementary):
+
+**C3 (stub pruning) + G1 (buffer + retrieve)** → C4/C5 → … → G2 → G3 optional.
+
+G1 is **P1 product quality** for any task with large test logs, build output, or `grep` with many matches — not blocked on P0 if harness already runs on real providers.
+
+### 6.9 North-star metrics (buffer track)
+
+| Metric | Today | Target (after G1) |
+|--------|-------|-------------------|
+| Recoverable bytes from large bash output | 0% (middle truncated) | 100% via buffer tools |
+| Context tokens per 50KB tool result | ~30KB inline | ~500 char stub + on-demand retrieval |
+| Agent re-runs due to "lost" log lines | Unknown | −80% on log-heavy tasks |
+| RLM-mode long-context benchmark | N/A | Baseline after G3 |
+
+---
+
+## 7. MCP config ergonomics — JSON dict + auto-discovery (planned — pick up next)
+
+**Status:** Partially done (stdio client, fault isolation, name sanitization, `${ENV}` in YAML) · **Added:** 2026-07-03
+**Motivation:** MCP setup should feel as easy as Cursor / Claude Desktop — drop a JSON dict in a
+conventional file and have the harness load it without extra flags.
+
+### 7.1 Current state
+
+| Aspect | Garuda today | Cursor / Claude Desktop / VS Code |
+|--------|--------------|-----------------------------------|
+| Format | **YAML only** (`yaml.safe_load` in `mcp/config.py`) | **JSON** (`mcpServers` dict) |
+| Structure | `servers:` **list** with explicit `name` | `mcpServers:` **dict** keyed by server name |
+| Discovery | **Manual** — `--mcp-config` or `mcp_config_path` in agent profile | Auto-reads `.cursor/mcp.json`, `claude_desktop_config.json`, etc. |
+| Transport | **stdio only** (non-stdio entries logged and skipped) | stdio + HTTP/SSE in many clients |
+| Already works | `${VAR}` env interpolation, per-server fault isolation, `mcp__server__tool` namespacing | — |
+
+**Loader today** (`garuda/mcp/config.py`):
+
+```python
+data = yaml.safe_load(Path(path).read_text())
+servers = data.get("servers", [])  # list only; no mcpServers dict
+```
+
+**Wiring:** `build_toolkit(..., mcp_config_path)` → `McpClientManager.from_config(path)` — only runs when a path is explicitly provided.
+
+### 7.2 Target formats (all normalize to `list[McpServerConfig]`)
+
+**Garuda YAML (existing):**
+
+```yaml
+servers:
+  - name: github
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+```
+
+**Cursor / Claude Desktop JSON (to support):**
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  }
+}
+```
+
+**Conversion rule:** dict key → `McpServerConfig.name`; omit `transport` → default `stdio`.
+
+Optional top-level aliases to accept: `mcp_servers` (snake_case), nested under `mcp` key (some editors).
+
+### 7.3 Auto-discovery (conventional paths)
+
+When `--mcp-config` is **not** passed and agent profile has `mcp_config_path: null`, resolve in order (first file wins):
+
+1. `{workspace}/.garuda/mcp.json`
+2. `{workspace}/.garuda/mcp.yaml`
+3. `{workspace}/.cursor/mcp.json` (drop-in compat for repos already using Cursor)
+4. `{GARUDA_GLOBAL_SETTINGS dir}/mcp.json` or `~/.garuda/mcp.json` (global fallback)
+
+Log at INFO which file was loaded. If none found, MCP disabled (current behavior).
+
+**Do not** auto-read `claude_desktop_config.json` from macOS app support — wrong scope (user-global, mixed with unrelated keys); document manual copy or symlink instead.
+
+### 7.4 Phased todos
+
+#### D7a — JSON dict compat + auto-discovery (S–M, do first)
+
+- [ ] **`load_mcp_config(path)`** — branch on extension: `.json` → `json.load`, `.yaml`/`.yml` → `yaml.safe_load`
+- [ ] **`_parse_mcp_servers(data) -> list[dict]`** — accept:
+  - [ ] `servers` (list, current YAML)
+  - [ ] `mcpServers` (dict, Cursor/Claude style)
+  - [ ] `mcp_servers` (dict, snake_case alias)
+- [ ] **`_dict_to_server_configs(entries)`** — normalize dict entries: `name` from key or `name` field; default `transport: stdio`
+- [ ] **`resolve_mcp_config(workspace, explicit_path)`** — explicit path wins; else run discovery list from §7.3
+- [ ] **Wire discovery** into `prepare_agent_run`, `garuda run` / `chat` / `serve`, `SoftwareAgent`, `Conversation` (single helper, no duplicated logic)
+- [ ] **Agent profile** — `mcp_config_path` still overrides discovery when set
+- [ ] **Tests** (`tests/test_mcp_v2.py` or new `test_mcp_config.py`):
+  - [ ] JSON `mcpServers` dict → same tools as equivalent YAML list
+  - [ ] Auto-discovery picks `.garuda/mcp.json` when present
+  - [ ] `.cursor/mcp.json` discovery in workspace
+  - [ ] Malformed JSON / empty dict → clear error or skip with log (no crash)
+- [ ] **Fixtures** — `tests/fixtures/mcp_echo.json` mirroring `mcp_echo.yaml`
+- [ ] **README** — document JSON format, discovery order, Cursor config copy-paste example
+
+#### D7b — HTTP/SSE transport (M, after D7a)
+
+- [ ] Implement streamable-HTTP / SSE client in `mcp/client.py` (today `url` field parsed but skipped)
+- [ ] Config fields: `url`, `headers`, `auth` / bearer token via `${VAR}`
+- [ ] Per-server connect timeout (handshake timeout exists for stdio)
+- [ ] Tests with mock HTTP MCP server or recorded fixture
+
+#### D7c — Polish (S)
+
+- [ ] Merge project + global configs (union servers by name; project overrides global) — optional, flag-gated
+- [ ] `garuda mcp list` CLI — show discovered config path + registered tool names (debug UX)
+- [ ] Document env-var interpolation parity for JSON string values
+
+### 7.5 Code touch points
+
+| File | Change |
+|------|--------|
+| `garuda/mcp/config.py` | JSON load, `mcpServers` dict parse, `resolve_mcp_config()` |
+| `garuda/agents/setup.py` | Use `resolve_mcp_config(workspace, mcp_config_path)` |
+| `garuda/interfaces/main.py` | Pass workspace into MCP resolution |
+| `garuda/sdk/software_agent.py` | Same |
+| `garuda/interfaces/server.py` | Optional `mcp_config` param unchanged; discovery when omitted |
+| `README.md` | JSON + auto-discovery section |
+
+### 7.6 Open questions
+
+1. **Merge vs first-wins:** discovery stops at first file, or merge `.garuda/mcp.json` + `~/.garuda/mcp.json`?
+2. **`.cursor/mcp.json`:** always try, or opt-in via `GARUDA_CURSOR_MCP_COMPAT=1`?
+3. **Invalid server entry:** skip entry vs fail entire config load?
+4. **JSON comments:** strict `json.load` only, or allow JSONC (trailing commas) for hand-edited files?
+
+### 7.7 Suggested sequencing
+
+**D7a** (JSON + auto-discovery) is independent of §6 G1 — good quick win for onboarding.
+Ship before **D7b** (HTTP). Fits in track **D4–D7** alongside product surfaces.
+
+### 7.8 North-star metrics (MCP ergonomics)
+
+| Metric | Today | Target (after D7a) |
+|--------|-------|-------------------|
+| Config formats supported | YAML list only | YAML list + JSON `mcpServers` dict |
+| Steps to enable MCP | Create YAML + pass `--mcp-config` | Drop `.garuda/mcp.json` in repo, run `garuda run` |
+| Cursor config reuse | Manual rewrite | Copy `.cursor/mcp.json` as-is |
+| Time to first MCP tool call | ~5 min (read docs) | ~1 min (copy known JSON) |
