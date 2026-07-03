@@ -146,6 +146,35 @@ still the top open item; see §4 north-star):
 Test suite: **300 passing**, 0 failures (3 tmux skips); +37 new tests. Still open: G3 (full RLM
 REPL mode) and the T1 real-provider (Anthropic/OpenAI) live validation — the top remaining item.
 
+## Status update 8 (2026-07-04) — agent-quality track begins: reasoning / extended thinking
+
+New direction (recorded): the goal is the **agent's intrinsic capability** to win on any benchmark,
+not eval infrastructure. Audit found the biggest untapped lever was **reasoning/extended-thinking
+support — previously zero**. Landed:
+
+- **Model layer** (`litellm_model.py`): `reasoning_effort` (minimal|low|medium|high, cross-provider)
+  and `thinking_budget_tokens` (explicit Anthropic budget) knobs on `LitellmModel`; `_apply_reasoning`
+  attaches `reasoning_effort` or `thinking={type:enabled,budget_tokens}` (with max_tokens headroom +
+  temperature stripped for Anthropic) and sets `drop_params=True` so a shared profile is safe on a
+  non-reasoning model. Captures `reasoning_content` + `thinking_blocks` from responses
+  (`_normalize_thinking_blocks` coerces pydantic→dict).
+- **Cross-turn preservation** (the subtle part): the loop stashes `thinking_blocks` on the assistant
+  `Message.metadata`; `_message_to_litellm(..., include_thinking=True)` echoes them back **only for
+  Anthropic + reasoning-on**, so interleaved thinking survives across tool-call rounds (required by
+  Anthropic) without sending blocks to providers that reject them.
+- **Config/CLI**: `AgentConfig.reasoning_effort` / `thinking_budget_tokens`, profile YAML fields,
+  `garuda run --reasoning-effort/--thinking-budget`; threaded through run/chat/SDK model construction.
+- **Streaming**: `StreamDelta` carries `reasoning_delta`/`thinking_blocks`; `complete_streaming`
+  accumulates them (best-effort — loop uses `complete()`).
+
+Verified: **live on Gemini 2.5 Flash** (2622 chars reasoning_content + 1 thinking block captured,
+multi-step problem solved correctly); `drop_params` deterministically strips `reasoning_effort` for
+`gpt-4o-mini` (confirmed via `get_optional_params`). Test suite **311 passing**, +11 reasoning tests.
+
+Remaining agent-quality levers (all requested): behavior + system-prompt tuning, tool
+reliability/coverage, context/cache quality. (Note: the OpenAI key in the dev env is invalid — an
+env issue, not code; Anthropic thinking round-trip still wants a live key to confirm end-to-end.)
+
 ---
 
 ## 0. Verdict

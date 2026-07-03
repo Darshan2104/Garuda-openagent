@@ -65,7 +65,11 @@ class SoftwareAgent:
         config.system_prompt = resolve_system_prompt(profile, self.workspace)
         mcp_paths = resolve_mcp_config_paths(self.workspace, self.mcp_config or config.mcp_config_path)
 
-        model = LitellmModel(model_name=self.model_name)
+        model = LitellmModel(
+            model_name=self.model_name,
+            reasoning_effort=config.reasoning_effort,
+            thinking_budget_tokens=config.thinking_budget_tokens,
+        )
         permissions = PermissionEngine(
             mode=config.permission_mode,
             tool_rules=profile.tool_rules,

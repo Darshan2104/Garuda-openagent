@@ -59,6 +59,16 @@ def build_parser():
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
     run_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
     run_parser.add_argument("--max-turns", type=int)
+    run_parser.add_argument(
+        "--reasoning-effort",
+        choices=["minimal", "low", "medium", "high"],
+        help="Enable extended thinking at this effort (cross-provider)",
+    )
+    run_parser.add_argument(
+        "--thinking-budget",
+        type=int,
+        help="Anthropic extended-thinking budget in tokens (enables thinking)",
+    )
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
@@ -245,6 +255,10 @@ async def run_task(args) -> int:
         config.enable_verifier = False
     if args.no_three_step_summary:
         config.enable_three_step_summary = False
+    if getattr(args, "reasoning_effort", None):
+        config.reasoning_effort = args.reasoning_effort
+    if getattr(args, "thinking_budget", None):
+        config.thinking_budget_tokens = args.thinking_budget
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host
@@ -256,7 +270,11 @@ async def run_task(args) -> int:
     config.system_prompt = resolve_system_prompt(profile, args.workspace)
     mcp_paths = resolve_mcp_config_paths(args.workspace, args.mcp_config or config.mcp_config_path)
 
-    model = LitellmModel(model_name=args.model)
+    model = LitellmModel(
+        model_name=args.model,
+        reasoning_effort=config.reasoning_effort,
+        thinking_budget_tokens=config.thinking_budget_tokens,
+    )
     permissions = PermissionEngine(
         mode=config.permission_mode,
         tool_rules=profile.tool_rules,

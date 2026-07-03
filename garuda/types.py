@@ -77,6 +77,11 @@ class AgentConfig:
     docker_cpus: str | None = "2"
     mcp_config_path: str | None = None
     system_prompt: str | None = None
+    # Extended thinking: reasoning_effort is the cross-provider knob
+    # (minimal|low|medium|high); thinking_budget_tokens sets an explicit Anthropic
+    # thinking budget. Either enables reasoning; None keeps it off.
+    reasoning_effort: str | None = None
+    thinking_budget_tokens: int | None = None
     allowed_tools: list[str] | None = None
     max_context_tokens: int = 128_000
     skills: list[str] | None = None

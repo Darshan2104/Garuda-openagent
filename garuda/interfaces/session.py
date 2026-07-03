@@ -66,7 +66,11 @@ class AgentSession:
         return cls(
             profile=profile,
             config=config,
-            model=LitellmModel(model_name=model),
+            model=LitellmModel(
+                model_name=model,
+                reasoning_effort=config.reasoning_effort,
+                thinking_budget_tokens=config.thinking_budget_tokens,
+            ),
             permissions=permissions,
             tools=tools,
             mcp_manager=mcp_manager,

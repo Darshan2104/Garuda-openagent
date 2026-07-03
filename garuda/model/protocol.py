@@ -11,6 +11,12 @@ class ModelResponse:
     tool_calls: list[Any]
     raw: dict[str, Any] = field(default_factory=dict)
     usage: dict[str, int] = field(default_factory=dict)
+    # Extended-thinking output. ``reasoning_content`` is the human-readable
+    # reasoning text; ``thinking_blocks`` are the provider's structured blocks
+    # (with signatures) that must be echoed back on the next request to preserve
+    # interleaved thinking across tool-call turns (Anthropic).
+    reasoning_content: str | None = None
+    thinking_blocks: list[dict] | None = None
 
 
 @dataclass
@@ -25,6 +31,8 @@ class StreamDelta:
     content_delta: str = ""
     tool_call_delta: dict | None = None
     usage: dict[str, int] | None = None
+    reasoning_delta: str = ""
+    thinking_blocks: list[dict] | None = None
     done: bool = False
 
 

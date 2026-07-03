@@ -31,6 +31,8 @@ class AgentProfile:
     skills: list[str] | None = None
     skills_dirs: list[str] | None = None
     subagent: bool = False
+    reasoning_effort: str | None = None
+    thinking_budget_tokens: int | None = None
     source_path: Path | None = None
 
     def to_agent_config(self) -> AgentConfig:
@@ -52,6 +54,8 @@ class AgentProfile:
             mcp_config_path=self.mcp_config_path,
             skills=self.skills,
             skills_dirs=self.skills_dirs,
+            reasoning_effort=self.reasoning_effort,
+            thinking_budget_tokens=self.thinking_budget_tokens,
         )
 
 
@@ -105,6 +109,8 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         skills=data.get("skills"),
         skills_dirs=data.get("skills_dirs"),
         subagent=data.get("subagent", False),
+        reasoning_effort=data.get("reasoning_effort"),
+        thinking_budget_tokens=data.get("thinking_budget_tokens"),
         source_path=source,
     )
 

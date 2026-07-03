@@ -245,26 +245,31 @@ class DefaultAgent:
 
             _accumulate_usage(usage_totals, response.usage)
             context.note_usage(response.usage)
-            events.append(
-                EventType.MODEL_RESPONSE,
-                {
-                    "content": response.content,
-                    "tool_calls": [
-                        {"id": call.id, "name": call.name, "arguments": call.arguments}
-                        for call in response.tool_calls
-                    ],
-                    "usage": response.usage,
-                },
-            )
+            event_payload = {
+                "content": response.content,
+                "tool_calls": [
+                    {"id": call.id, "name": call.name, "arguments": call.arguments}
+                    for call in response.tool_calls
+                ],
+                "usage": response.usage,
+            }
+            if response.reasoning_content:
+                event_payload["reasoning"] = response.reasoning_content
+            events.append(EventType.MODEL_RESPONSE, event_payload)
 
-            if response.content or response.tool_calls:
-                context.append(
-                    Message(
-                        role=Role.ASSISTANT,
-                        content=response.content or "",
-                        tool_calls=list(response.tool_calls) or None,
-                    )
+            if response.content or response.tool_calls or response.thinking_blocks:
+                assistant_msg = Message(
+                    role=Role.ASSISTANT,
+                    content=response.content or "",
+                    tool_calls=list(response.tool_calls) or None,
                 )
+                # Retain thinking blocks so they can be echoed back next turn
+                # (interleaved thinking must survive across tool-call rounds).
+                if response.thinking_blocks:
+                    assistant_msg.metadata["thinking_blocks"] = response.thinking_blocks
+                if response.reasoning_content:
+                    assistant_msg.metadata["reasoning_content"] = response.reasoning_content
+                context.append(assistant_msg)
 
             # Tell the model when its own response was cut off at max_tokens, so it
             # doesn't treat a truncated answer (or truncated tool-call args) as final.

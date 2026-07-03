@@ -37,11 +37,38 @@ def _serialize_tool_calls(tool_calls: list[ToolCall]) -> list[dict]:
     ]
 
 
-def _message_to_litellm(message: Message) -> dict:
+def _normalize_thinking_blocks(blocks) -> list[dict] | None:
+    """Coerce litellm thinking blocks (pydantic models or dicts) into plain dicts.
+
+    Plain dicts are JSON-serializable (for events/sessions) and can be echoed back
+    verbatim on the next request to preserve interleaved thinking.
+    """
+    if not blocks:
+        return None
+    normalized: list[dict] = []
+    for block in blocks:
+        if isinstance(block, dict):
+            normalized.append(block)
+        elif hasattr(block, "model_dump"):
+            normalized.append(block.model_dump(exclude_none=True))
+        elif hasattr(block, "__dict__"):
+            normalized.append({k: v for k, v in vars(block).items() if v is not None})
+    return normalized or None
+
+
+def _message_to_litellm(message: Message, include_thinking: bool = False) -> dict:
     if message.role == Role.ASSISTANT:
         payload: dict = {"role": "assistant", "content": message.content or None}
         if message.tool_calls:
             payload["tool_calls"] = _serialize_tool_calls(message.tool_calls)
+        # Echo back the provider's thinking blocks so interleaved thinking is
+        # preserved across tool-call turns (required by Anthropic when a prior
+        # assistant turn produced thinking + tool_use). Only for providers that
+        # accept them on the way back in — others don't need/allow it.
+        if include_thinking:
+            blocks = message.metadata.get("thinking_blocks")
+            if blocks:
+                payload["thinking_blocks"] = blocks
         return payload
     if message.role == Role.TOOL:
         return {
@@ -84,6 +111,12 @@ def _stream_deltas_from_chunk(chunk) -> list[StreamDelta]:
     content = getattr(delta, "content", None)
     if content:
         deltas.append(StreamDelta(content_delta=content))
+    reasoning = getattr(delta, "reasoning_content", None)
+    if reasoning:
+        deltas.append(StreamDelta(reasoning_delta=reasoning))
+    tblocks = _normalize_thinking_blocks(getattr(delta, "thinking_blocks", None))
+    if tblocks:
+        deltas.append(StreamDelta(thinking_blocks=tblocks))
     for tc in getattr(delta, "tool_calls", None) or []:
         fn = getattr(tc, "function", None)
         deltas.append(
@@ -140,6 +173,8 @@ class LitellmModel:
         max_retries: int = 3,
         request_timeout: float = 600.0,
         enable_prompt_caching: bool = True,
+        reasoning_effort: str | None = None,
+        thinking_budget_tokens: int | None = None,
     ):
         self._model_name = model_name
         self._api_key = api_key
@@ -147,6 +182,21 @@ class LitellmModel:
         self._max_retries = max_retries
         self._request_timeout = request_timeout
         self._enable_prompt_caching = enable_prompt_caching
+        # Extended-thinking knobs. ``reasoning_effort`` (minimal|low|medium|high)
+        # is litellm's cross-provider knob; ``thinking_budget_tokens`` sets an
+        # explicit Anthropic thinking budget. Either enables reasoning.
+        self._reasoning_effort = reasoning_effort
+        self._thinking_budget_tokens = thinking_budget_tokens
+
+    @classmethod
+    def from_config(cls, model_name: str, config, **overrides) -> "LitellmModel":
+        """Build a model, pulling reasoning knobs off an AgentConfig when present."""
+        params = {
+            "reasoning_effort": getattr(config, "reasoning_effort", None),
+            "thinking_budget_tokens": getattr(config, "thinking_budget_tokens", None),
+        }
+        params.update(overrides)
+        return cls(model_name=model_name, **params)
 
     @property
     def model_name(self) -> str:
@@ -156,11 +206,15 @@ class LitellmModel:
     def supports_tool_calling(self) -> bool:
         return True
 
-    def _supports_cache_control(self) -> bool:
-        if not self._enable_prompt_caching:
-            return False
+    def _is_anthropic(self) -> bool:
         name = self._model_name.lower()
         return name.startswith("anthropic/") or "claude" in name
+
+    def _reasoning_enabled(self) -> bool:
+        return bool(self._reasoning_effort or self._thinking_budget_tokens)
+
+    def _supports_cache_control(self) -> bool:
+        return self._enable_prompt_caching and self._is_anthropic()
 
     def _apply_cache_control(self, messages: list[dict]) -> list[dict]:
         """Mark the system prompt and the last message as Anthropic cache breakpoints.
@@ -197,7 +251,8 @@ class LitellmModel:
         cache-control breakpoints, auth, tool wiring, and sampling params so the
         blocking and streaming paths never drift apart.
         """
-        litellm_messages = [_message_to_litellm(m) for m in messages]
+        include_thinking = self._is_anthropic() and self._reasoning_enabled()
+        litellm_messages = [_message_to_litellm(m, include_thinking=include_thinking) for m in messages]
         if self._supports_cache_control():
             litellm_messages = self._apply_cache_control(litellm_messages)
         kwargs: dict = {
@@ -216,7 +271,27 @@ class LitellmModel:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        self._apply_reasoning(kwargs)
         return kwargs
+
+    def _apply_reasoning(self, kwargs: dict) -> None:
+        """Attach extended-thinking params. ``drop_params`` lets litellm silently
+        ignore them on models that don't support reasoning, so the same profile
+        works across a reasoning and a non-reasoning model without 400s."""
+        if not self._reasoning_enabled():
+            return
+        if self._thinking_budget_tokens:
+            budget = self._thinking_budget_tokens
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Anthropic requires max_tokens > thinking budget; ensure headroom.
+            current_max = kwargs.get("max_tokens")
+            if current_max is None or current_max <= budget:
+                kwargs["max_tokens"] = budget + 4096
+            # Anthropic rejects temperature != 1 when thinking is on.
+            kwargs.pop("temperature", None)
+        elif self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        kwargs["drop_params"] = True
 
     async def complete(
         self,
@@ -232,6 +307,8 @@ class LitellmModel:
         message = choice.message
         content = message.content
         tool_calls = _parse_tool_calls(message.tool_calls or [])
+        reasoning_content = getattr(message, "reasoning_content", None)
+        thinking_blocks = _normalize_thinking_blocks(getattr(message, "thinking_blocks", None))
 
         return ModelResponse(
             content=content,
@@ -241,6 +318,8 @@ class LitellmModel:
                 "finish_reason": getattr(choice, "finish_reason", None),
             },
             usage=_extract_usage(response),
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks,
         )
 
     async def _complete_with_retries(self, kwargs: dict):
@@ -307,6 +386,8 @@ class LitellmModel:
         caller can render tokens live and still receive the assembled response.
         """
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        thinking_blocks: list[dict] | None = None
         tool_frags: dict[int, dict] = {}
         usage: dict[str, int] = {}
         async for delta in self.stream(messages, tools, temperature, max_tokens):
@@ -316,6 +397,12 @@ class LitellmModel:
                     result = on_delta(delta.content_delta)
                     if inspect.isawaitable(result):
                         await result
+            if delta.reasoning_delta:
+                reasoning_parts.append(delta.reasoning_delta)
+            if delta.thinking_blocks:
+                # Streamed thinking blocks arrive assembled per chunk; keep the
+                # latest complete set (loop uses complete(), so this is best-effort).
+                thinking_blocks = delta.thinking_blocks
             if delta.tool_call_delta:
                 _merge_tool_fragment(tool_frags, delta.tool_call_delta)
             if delta.usage:
@@ -334,6 +421,8 @@ class LitellmModel:
             tool_calls=_parse_tool_calls(raw_calls),
             raw={"model": self._model_name, "streamed": True},
             usage=usage,
+            reasoning_content="".join(reasoning_parts) or None,
+            thinking_blocks=thinking_blocks,
         )
 
     def count_tokens(self, messages: list[Message]) -> int:
