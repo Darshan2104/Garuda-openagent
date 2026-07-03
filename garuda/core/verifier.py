@@ -1,4 +1,5 @@
 import inspect
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -51,6 +52,68 @@ def has_numeric_contradiction(text: str, ratio: float = CONTRADICTION_RATIO) -> 
     if len(numbers) < 2:
         return False
     return max(numbers) / min(numbers) > ratio
+
+
+_APPROVE_WORDS = ("approve", "pass", "yes", "true", "ok", "accept")
+_REJECT_WORDS = ("reject", "fail", "no", "false", "deny")
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Best-effort pull a single JSON object out of a model reply.
+
+    Tries the whole string, then a ```json fenced block, then the widest
+    ``{...}`` span. Returns ``None`` if nothing parses to a dict.
+    """
+    candidates: list[str] = [text]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1))
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def parse_verdict(text: str) -> tuple[bool | None, str]:
+    """Parse a verifier reply into ``(approved, reason)``.
+
+    Prefers a structured JSON object ``{"verdict": "APPROVED"|"REJECTED",
+    "reason": "..."}``; falls back to a leading ``APPROVED``/``REJECTED`` token so
+    plain-text replies still work. Returns ``(None, "")`` when neither shape is
+    present, so the caller can fail closed.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None, ""
+
+    obj = _extract_json_object(text)
+    if obj is not None and "verdict" in obj:
+        verdict = str(obj.get("verdict", "")).strip().lower()
+        reason = str(obj.get("reason", "")).strip()
+        if verdict.startswith(_APPROVE_WORDS):
+            return True, reason
+        if verdict.startswith(_REJECT_WORDS):
+            return False, reason
+
+    # Plain-text fallback: only the first non-empty (markdown-stripped) line counts.
+    for line in text.splitlines():
+        stripped = line.strip().strip("#*_`> ").strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if upper.startswith("APPROVED"):
+            return True, stripped
+        if upper.startswith("REJECTED"):
+            return False, stripped
+        break
+    return None, ""
 
 
 async def gather_git_evidence(env: Environment) -> str:
@@ -252,7 +315,8 @@ class CompletionVerifier:
             "not just asserted?\n"
             "3. Are units, scale, and magnitude plausible and internally consistent?\n"
             "4. Any signs of premature completion (unfinished steps, unverified claims)?\n\n"
-            "Your reply MUST start with exactly APPROVED or REJECTED: <reason>."
+            'Reply with a single JSON object and nothing else:\n'
+            '{"verdict": "APPROVED" or "REJECTED", "reason": "<one concise sentence>"}'
         )
 
         verifier_messages = [
@@ -260,8 +324,8 @@ class CompletionVerifier:
                 role=Role.SYSTEM,
                 content=(
                     "You are a strict task-completion verifier (for coding, research, and ops "
-                    "tasks alike). Judge only on the evidence provided. Reply starting with "
-                    "exactly APPROVED or REJECTED: <reason>."
+                    "tasks alike). Judge only on the evidence provided. Reply with a JSON object "
+                    '{"verdict": "APPROVED" or "REJECTED", "reason": "..."} and nothing else.'
                 ),
             ),
             Message(role=Role.USER, content="\n\n".join(prompt_parts)),
@@ -282,28 +346,22 @@ class CompletionVerifier:
                 feedback="Completion rejected: the verifier could not be reached to confirm the work.",
             )
 
-        # Robust parse: strip markdown/whitespace, inspect the first non-empty line.
+        # Prefer a structured JSON verdict; fall back to an APPROVED/REJECTED prefix.
         text = (response.content or "").strip()
-        first_line = ""
-        for line in text.splitlines():
-            stripped = line.strip().strip("#*_`> ").strip()
-            if stripped:
-                first_line = stripped
-                break
-        upper = first_line.upper()
-        if upper.startswith("APPROVED"):
+        approved, reason = parse_verdict(text)
+        if approved is True:
             checklist["llm_verdict"] = True
             return VerificationResult(approved=True, checklist=checklist)
-        if upper.startswith("REJECTED"):
+        if approved is False:
             checklist["llm_verdict"] = False
             return VerificationResult(
                 approved=False,
                 checklist=checklist,
-                feedback=f"Completion rejected by verifier: {text}",
+                feedback=f"Completion rejected by verifier: {reason or text}",
             )
 
         logger.warning(
-            "LLM verifier reply did not start with APPROVED/REJECTED; rejecting to fail closed. Reply: %.200s",
+            "LLM verifier reply was not a parseable verdict; rejecting to fail closed. Reply: %.200s",
             text,
         )
         checklist["llm_verdict_unparseable"] = True

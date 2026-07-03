@@ -15,6 +15,41 @@ from garuda.model.script_model import ScriptModel
 from garuda.types import ToolCall
 
 
+def test_builtin_suite_graders_roundtrip(tmp_path: Path):
+    """Each built-in task's setup+check agrees with a correct/incorrect artifact."""
+    from garuda.eval.ablation import BUILTIN_TASKS
+
+    by_id = {t.id: t for t in BUILTIN_TASKS}
+    assert {"find_value", "edit_greeting", "sum_numbers"} <= set(by_id)
+
+    # find_value: correct value passes, wrong value fails.
+    ws = tmp_path / "fv"
+    ws.mkdir()
+    by_id["find_value"].setup(ws)
+    assert not by_id["find_value"].check(ws)  # nothing written yet
+    (ws / "answer.txt").write_text("sk-abc123xyz\n")
+    assert by_id["find_value"].check(ws)
+    (ws / "answer.txt").write_text("wrong\n")
+    assert not by_id["find_value"].check(ws)
+
+    # edit_greeting: must swap hello->goodbye with no leftover 'hello'.
+    ws = tmp_path / "ed"
+    ws.mkdir()
+    by_id["edit_greeting"].setup(ws)
+    assert not by_id["edit_greeting"].check(ws)  # still says hello
+    (ws / "greeting.py").write_text('print("goodbye")\n')
+    assert by_id["edit_greeting"].check(ws)
+
+    # sum_numbers: sum(1..20) == 210.
+    ws = tmp_path / "sm"
+    ws.mkdir()
+    by_id["sum_numbers"].setup(ws)
+    (ws / "sum.txt").write_text("210\n")
+    assert by_id["sum_numbers"].check(ws)
+    (ws / "sum.txt").write_text("209\n")
+    assert not by_id["sum_numbers"].check(ws)
+
+
 def test_summarize_and_table():
     results = [
         VariantResult("baseline", "t1", True, True, 3, 100, 20, 120, 500),

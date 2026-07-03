@@ -193,7 +193,9 @@ async def test_default_agent_uses_provided_context(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mcp_client_warns_on_non_stdio(caplog):
+async def test_mcp_client_skips_remote_without_url(caplog):
+    # http/sse transports are now supported (D7b); an sse/http entry with no url
+    # is a config error and is skipped (per-server fault isolation), not started.
     caplog.set_level(logging.WARNING)
     manager = McpClientManager()
     await manager.start(
@@ -202,7 +204,8 @@ async def test_mcp_client_warns_on_non_stdio(caplog):
         ]
     )
     assert manager.get_tools() == []
-    assert "Skipping non-stdio MCP server remote" in caplog.text
+    assert "remote" in caplog.text
+    assert "no url" in caplog.text
 
 
 @pytest.mark.asyncio

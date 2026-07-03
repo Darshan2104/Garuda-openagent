@@ -6,7 +6,7 @@ from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.cli import chat_loop
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment, run_agent_task
-from garuda.mcp.config import resolve_mcp_config
+from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
 
@@ -109,6 +109,21 @@ def build_parser():
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
 
+    mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_list = mcp_sub.add_parser(
+        "list", help="Show resolved MCP config path(s) and the tools each server exposes"
+    )
+    mcp_list.add_argument("--workspace", default=".")
+    mcp_list.add_argument(
+        "--mcp-config", help="Explicit config path (skips auto-discovery/merge)"
+    )
+    mcp_list.add_argument(
+        "--no-connect",
+        action="store_true",
+        help="Only show configured servers; do not connect to enumerate tools",
+    )
+
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
     recipe_run = recipe_sub.add_parser("run", help="Execute a recipe file")
@@ -167,6 +182,48 @@ def run_sessions(args) -> int:
     return 0
 
 
+async def run_mcp_list(args) -> int:
+    """Show which MCP config file(s) resolve and the tools each server exposes."""
+    from garuda.mcp.config import load_and_merge_mcp_configs, resolve_mcp_config_paths
+
+    paths = resolve_mcp_config_paths(args.workspace, args.mcp_config)
+    if not paths:
+        print("No MCP config found (looked for .garuda/mcp.json|yaml, .cursor/mcp.json, ~/.garuda/mcp.json).")
+        return 0
+
+    print("Resolved MCP config path(s):")
+    for path in paths:
+        print(f"  {path}")
+
+    servers = load_and_merge_mcp_configs(paths)
+    if not servers:
+        print("\nNo servers defined in the resolved config.")
+        return 0
+
+    print(f"\n{len(servers)} server(s) configured:")
+    for server in servers:
+        target = server.url or f"{server.command} {' '.join(server.args)}".strip()
+        print(f"  - {server.name} [{server.transport}] {target}")
+
+    if args.no_connect:
+        return 0
+
+    from garuda.tools import build_toolkit
+
+    print("\nConnecting to enumerate tools...")
+    tools, manager = await build_toolkit([], paths)
+    try:
+        mcp_tools = [t for t in tools if t.name.startswith("mcp__")]
+        if not mcp_tools:
+            print("  (no tools registered — servers may have failed to start; check logs)")
+        for tool in mcp_tools:
+            print(f"  {tool.name}")
+    finally:
+        if manager is not None:
+            await manager.close()
+    return 0
+
+
 async def run_task(args) -> int:
     import sys
 
@@ -197,7 +254,7 @@ async def run_task(args) -> int:
     config.docker_memory = getattr(args, "docker_memory", "2g")
     config.docker_cpus = getattr(args, "docker_cpus", "2")
     config.system_prompt = resolve_system_prompt(profile, args.workspace)
-    mcp_path = resolve_mcp_config(args.workspace, args.mcp_config or config.mcp_config_path)
+    mcp_paths = resolve_mcp_config_paths(args.workspace, args.mcp_config or config.mcp_config_path)
 
     model = LitellmModel(model_name=args.model)
     permissions = PermissionEngine(
@@ -208,7 +265,7 @@ async def run_task(args) -> int:
     )
     agent = create_agent(profile.name, mode=config.mode)
     events = EventStore()
-    tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
+    tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
     agents_dir = Path(args.agents_dir) if args.agents_dir else None
 
     result = await run_agent_task(
@@ -310,6 +367,11 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_serve(args)))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
+    if args.command == "mcp":
+        if args.mcp_command == "list":
+            raise SystemExit(asyncio.run(run_mcp_list(args)))
+        parser.parse_args(["mcp", "--help"])
+        raise SystemExit(1)
     if args.command == "recipe" and args.recipe_command == "run":
         raise SystemExit(asyncio.run(run_recipe_command(args)))
     parser.print_help()

@@ -35,6 +35,33 @@ class McpServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+# Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
+_TRANSPORT_ALIASES = {
+    "stdio": "stdio",
+    "http": "http",
+    "streamable-http": "http",
+    "streamable_http": "http",
+    "streamablehttp": "http",
+    "streamable": "http",
+    "sse": "sse",
+}
+
+
+def normalize_transport(raw: str | None, has_url: bool = False) -> str:
+    """Canonicalize a transport label to one of ``stdio`` / ``http`` / ``sse``.
+
+    When no transport is given, infer ``http`` if a ``url`` is present (the
+    Cursor/Claude convention: a ``url`` entry is a remote server) else ``stdio``.
+    Unknown labels are passed through lower-cased so the client can reject them
+    loudly rather than silently mis-routing.
+    """
+    if not raw:
+        return "http" if has_url else "stdio"
+    key = raw.strip().lower()
+    return _TRANSPORT_ALIASES.get(key, key)
 
 
 def _parse_mcp_servers(data: Any) -> list[dict]:
@@ -112,14 +139,28 @@ def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
             command = _interpolate(str(entry.get("command", "") or ""))
             args = [_interpolate(str(a)) for a in (entry.get("args") or [])]
             env = {k: _interpolate(str(v)) for k, v in (entry.get("env") or {}).items()}
+            raw_url = entry.get("url")
+            url = _interpolate(str(raw_url)) if raw_url else None
+            headers = {
+                k: _interpolate(str(v)) for k, v in (entry.get("headers") or {}).items()
+            }
+            # A bearer token can be given as `auth`/`token`/`bearer` shorthand
+            # instead of a full Authorization header.
+            token = entry.get("auth") or entry.get("token") or entry.get("bearer")
+            if token and "Authorization" not in headers:
+                headers["Authorization"] = f"Bearer {_interpolate(str(token))}"
+            transport = normalize_transport(
+                entry.get("transport") or entry.get("type"), has_url=bool(url)
+            )
             configs.append(
                 McpServerConfig(
                     name=name,
-                    transport=entry.get("transport", "stdio"),
+                    transport=transport,
                     command=command,
                     args=args,
                     env=env,
-                    url=entry.get("url"),
+                    url=url,
+                    headers=headers,
                 )
             )
         except Exception as exc:
@@ -172,31 +213,78 @@ def _global_mcp_dir() -> Path:
     return Path.home() / ".garuda"
 
 
-def resolve_mcp_config(workspace: str | Path, explicit_path: str | None = None) -> str | None:
-    """Resolve which MCP config file to load.
+def _mcp_merge_enabled() -> bool:
+    return os.environ.get("GARUDA_MCP_MERGE", "").strip().lower() in ("1", "true", "yes", "on")
 
-    An explicit path (from ``--mcp-config`` or a profile's ``mcp_config_path``)
-    always wins. Otherwise the first existing conventional file is used:
+
+def resolve_mcp_config_paths(
+    workspace: str | Path, explicit_path: str | None = None
+) -> list[str]:
+    """Resolve the ordered list of MCP config files to load.
+
+    An explicit path (``--mcp-config`` or a profile's ``mcp_config_path``) always
+    wins and is used alone. Otherwise the conventional locations are consulted:
 
       1. ``{workspace}/.garuda/mcp.json``
       2. ``{workspace}/.garuda/mcp.yaml``
       3. ``{workspace}/.cursor/mcp.json`` (drop-in compat for Cursor repos)
       4. ``{global}/mcp.json`` (``GARUDA_GLOBAL_SETTINGS`` dir or ``~/.garuda``)
 
-    Returns the path string, logging at INFO which file was chosen, or ``None``
-    when nothing is found (MCP stays disabled — the current behavior).
+    Default behavior is **first project file wins** (a single path), preserving the
+    original semantics. When ``GARUDA_MCP_MERGE`` is set, the first project-scope
+    file (1–3) **and** the global file (4) are both returned so their servers merge
+    (project entries win on name collisions — see :func:`load_and_merge_mcp_configs`).
+    Returns ``[]`` when nothing is found (MCP stays disabled).
     """
     if explicit_path:
-        return explicit_path
+        return [explicit_path]
     ws = Path(workspace)
-    candidates = [
+    project_candidates = [
         ws / ".garuda" / "mcp.json",
         ws / ".garuda" / "mcp.yaml",
         ws / ".cursor" / "mcp.json",
-        _global_mcp_dir() / "mcp.json",
     ]
-    for candidate in candidates:
-        if candidate.is_file():
+    global_candidate = _global_mcp_dir() / "mcp.json"
+
+    project = next((c for c in project_candidates if c.is_file()), None)
+    has_global = global_candidate.is_file()
+
+    if _mcp_merge_enabled():
+        chosen = [p for p in (project, global_candidate if has_global else None) if p]
+    else:
+        chosen = [project] if project else ([global_candidate] if has_global else [])
+
+    # De-dupe while preserving order (project before global).
+    seen: set[str] = set()
+    paths: list[str] = []
+    for candidate in chosen:
+        s = str(candidate)
+        if s not in seen:
+            seen.add(s)
+            paths.append(s)
             logger.info("Loading MCP config from %s", candidate)
-            return str(candidate)
-    return None
+    return paths
+
+
+def resolve_mcp_config(workspace: str | Path, explicit_path: str | None = None) -> str | None:
+    """First MCP config path (backward-compatible single-path resolver).
+
+    Prefer :func:`resolve_mcp_config_paths` for callers that support project+global
+    merge; this thin wrapper returns just the first resolved path (or ``None``).
+    """
+    paths = resolve_mcp_config_paths(workspace, explicit_path)
+    return paths[0] if paths else None
+
+
+def load_and_merge_mcp_configs(paths: list[str | Path]) -> list[McpServerConfig]:
+    """Load several config files and merge their servers, union by name.
+
+    Earlier paths win on name collisions (callers pass project-scope files before
+    the global one), so a repo-local server definition overrides a global one of
+    the same name.
+    """
+    by_name: dict[str, McpServerConfig] = {}
+    for path in paths:
+        for cfg in load_mcp_config(path):
+            by_name.setdefault(cfg.name, cfg)
+    return list(by_name.values())

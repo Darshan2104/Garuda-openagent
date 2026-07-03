@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 
 from garuda.tools.background import BashBackgroundTool, KillTaskTool, TaskOutputTool
 from garuda.tools.bash import BashTool
-from garuda.tools.buffer_tools import BufferGrepTool, BufferListTool, BufferSliceTool
+from garuda.tools.buffer_tools import (
+    BufferGrepTool,
+    BufferListTool,
+    BufferQueryTool,
+    BufferSliceTool,
+)
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
@@ -29,6 +34,7 @@ __all__ = [
     "BashTool",
     "BufferGrepTool",
     "BufferListTool",
+    "BufferQueryTool",
     "BufferSliceTool",
     "EditTool",
     "KillTaskTool",
@@ -82,6 +88,7 @@ def _bootstrap_registry() -> None:
         BufferGrepTool(),
         BufferSliceTool(),
         BufferListTool(),
+        BufferQueryTool(),
     ]:
         register_tool(tool, replace=True)
 
@@ -108,6 +115,7 @@ def default_tools() -> list[Tool]:
             "buffer_grep",
             "buffer_slice",
             "buffer_list",
+            "buffer_query",
             "tmux_exec",
             "tmux_capture",
             "image_read",
@@ -121,14 +129,20 @@ def default_tools() -> list[Tool]:
 
 async def build_toolkit(
     names: list[str] | None,
-    mcp_config_path: str | None = None,
+    mcp_config_path: str | list[str] | None = None,
 ) -> tuple[list[Tool], "McpClientManager | None"]:
     from garuda.mcp.client import McpClientManager
 
     tools = tools_for_names(names)
     manager: McpClientManager | None = None
-    if mcp_config_path:
-        manager = await McpClientManager.from_config(mcp_config_path)
+    # Accept either a single path (back-compat) or an ordered list of paths to
+    # merge (project + global). Empty/None means MCP stays disabled.
+    if isinstance(mcp_config_path, str):
+        paths = [mcp_config_path]
+    else:
+        paths = [p for p in (mcp_config_path or []) if p]
+    if paths:
+        manager = await McpClientManager.from_paths(paths)
         tools = tools + manager.get_tools()
     return tools, manager
 

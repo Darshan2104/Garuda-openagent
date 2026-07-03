@@ -107,6 +107,45 @@ Gemini 2.5 Flash. Remaining: G2/G3 (semantic buffer retrieval, full RLM mode), D
 MCP transport, config merge, `garuda mcp list`); H4's structured-JSON verifier verdict (§2.3) left
 as a follow-up since robust markdown-prefix parsing already handles it.
 
+## Status update 7 (2026-07-04) — D7b/D7c + structured verdict + G2 + F3 (offline)
+
+Follow-on batch after the H-track close-out (T1 real-provider validation deliberately deferred —
+still the top open item; see §4 north-star):
+
+- **D7b MCP HTTP/SSE transport** (§7.4) — `mcp/client.py` now opens `streamablehttp_client` /
+  `sse_client` (both present in the `mcp` pkg) in addition to stdio; `_open_transport` selects by
+  transport. Config (`mcp/config.py`) gains `headers`, infers transport from `url`/`type`
+  (Cursor/Claude convention: a `url` entry ⇒ `http`), and accepts `auth`/`token`/`bearer`
+  shorthand → `Authorization: Bearer …`. Per-server connect timeout (30s). **Live-caught bug**
+  (mocks missed it): a failed HTTP connect surfaces `CancelledError` from the transport's inner
+  anyio task group — a `BaseException` that escaped `start()`'s `except Exception` and would crash
+  the whole run. Fixed with a guarded `except asyncio.CancelledError` (re-raises only on genuine
+  self-cancellation via `task.cancelling()`); regression test connects real transports to a dead
+  port and asserts survival.
+- **D7c MCP polish** (§7.4) — `resolve_mcp_config_paths` + `load_and_merge_mcp_configs`: with
+  `GARUDA_MCP_MERGE=1`, project and global configs merge (union by name, **project wins**); default
+  stays first-project-wins single path. `build_toolkit` accepts a path or a list. New `garuda mcp
+  list` CLI shows the resolved path(s), configured servers, and (unless `--no-connect`) the tools
+  each server exposes. All shared setup paths (run/chat/serve/SDK/recipes) route through the plural
+  resolver; `resolve_mcp_config` kept as a back-compat wrapper.
+- **Structured verifier verdict** (§2.3 / H4 leftover) — the LLM judge is now asked for
+  `{"verdict": "APPROVED"|"REJECTED", "reason": "…"}`; `parse_verdict` reads JSON (raw, fenced, or
+  embedded in prose) and **falls back** to the APPROVED/REJECTED prefix so plain replies still work.
+  Still fails closed on unparseable/errored replies.
+- **G2 buffer_query** (§6.5) — `buffer_query(buffer_id, question)`: a helper model map-reduces over
+  line-numbered buffer chunks (capped: 8 chunks / 6 KB excerpts) and returns relevant lines + a
+  synthesized answer with line refs. Registered + added to the build profile; uses `ctx.model`
+  (already wired by the loop). **Live-verified on Gemini 2.5 Flash**: found the one FATAL line in a
+  120-line log and answered with the timestamp + cited line.
+- **F3 (offline slice)** — the headline Terminal-Bench number needs the Harbor+Docker stack and a
+  frontier key (same gate as T1), so the offline proxy — the ablation runner — was hardened: added
+  buried-value **search**, in-place **edit**, and integer **sum** tasks (ground-truth graded) so it
+  exercises the tool families TB stresses. Terminal-Bench README documents the ablation runner as
+  the recommended docker-free pre-flight.
+
+Test suite: **300 passing**, 0 failures (3 tmux skips); +37 new tests. Still open: G3 (full RLM
+REPL mode) and the T1 real-provider (Anthropic/OpenAI) live validation — the top remaining item.
+
 ---
 
 ## 0. Verdict

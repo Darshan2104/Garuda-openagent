@@ -7,7 +7,7 @@ from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
-from garuda.mcp.config import resolve_mcp_config
+from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit, register_tool
 from garuda.tools.protocol import Tool
@@ -63,7 +63,7 @@ class SoftwareAgent:
         config.docker_image = self.docker_image
         config.docker_host = self.docker_host
         config.system_prompt = resolve_system_prompt(profile, self.workspace)
-        mcp_path = resolve_mcp_config(self.workspace, self.mcp_config or config.mcp_config_path)
+        mcp_paths = resolve_mcp_config_paths(self.workspace, self.mcp_config or config.mcp_config_path)
 
         model = LitellmModel(model_name=self.model_name)
         permissions = PermissionEngine(
@@ -74,7 +74,7 @@ class SoftwareAgent:
         )
         agent = create_agent(profile.name, mode=self.mode)
         events = events or EventStore()
-        tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
+        tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
 
         return await run_agent_task(
             task=task,

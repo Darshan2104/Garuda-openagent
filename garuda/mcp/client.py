@@ -7,9 +7,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
-from garuda.mcp.config import McpServerConfig, load_mcp_config
+from garuda.mcp.config import (
+    McpServerConfig,
+    load_and_merge_mcp_configs,
+    load_mcp_config,
+    normalize_transport,
+)
 from garuda.tools.protocol import Tool, ToolContext
 from garuda.types import ToolResult
 
@@ -17,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 # Timeout (seconds) for each server's initialize() and list_tools() handshakes.
 MCP_HANDSHAKE_TIMEOUT = 10.0
+
+# Connect/handshake timeout (seconds) for HTTP/SSE transports.
+MCP_HTTP_CONNECT_TIMEOUT = 30.0
 
 # Timeout (seconds) for a single MCP tool invocation.
 MCP_CALL_TIMEOUT = 120.0
@@ -99,19 +109,19 @@ class McpClientManager:
         await manager.start(load_mcp_config(path))
         return manager
 
+    @classmethod
+    async def from_paths(cls, paths: list[str]) -> "McpClientManager":
+        """Load and merge several config files (project + global) into one manager."""
+        manager = cls()
+        await manager.start(load_and_merge_mcp_configs(paths))
+        return manager
+
     async def start(self, servers: list[McpServerConfig]) -> None:
         """Connect to each configured server. A failing server is logged and skipped
         so one broken server cannot take down the others."""
         if self._started:
             return
         for server in servers:
-            if server.transport != "stdio":
-                logger.warning(
-                    "Skipping non-stdio MCP server %s (transport=%s)",
-                    server.name,
-                    server.transport,
-                )
-                continue
             try:
                 await self._start_server(server)
             except Exception as exc:
@@ -121,19 +131,61 @@ class McpClientManager:
                     type(exc).__name__,
                     exc,
                 )
+            except asyncio.CancelledError:
+                # HTTP/SSE transports run their own anyio task group; a failed
+                # connect can surface as CancelledError from that *inner* scope.
+                # If our own task wasn't actually cancelled, isolate this server
+                # like any other failure instead of aborting every server. If we
+                # were genuinely cancelled (e.g. Ctrl-C), re-raise.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() > 0:
+                    raise
+                logger.warning(
+                    "MCP server %s failed to start (cancelled during connect); skipping it",
+                    server.name,
+                )
         self._started = True
 
+    async def _open_transport(self, server: McpServerConfig, server_stack: AsyncExitStack):
+        """Open the configured transport and return its ``(read, write)`` streams.
+
+        stdio launches a subprocess; ``http`` (streamable-HTTP) and ``sse`` connect
+        to a remote ``url`` with optional ``headers`` (e.g. bearer auth). An unknown
+        transport raises so the caller logs and skips the server rather than hanging.
+        """
+        transport = normalize_transport(server.transport, has_url=bool(server.url))
+        if transport == "stdio":
+            params = StdioServerParameters(
+                command=server.command,
+                args=server.args,
+                env=server.env or None,
+            )
+            read, write = await server_stack.enter_async_context(stdio_client(params))
+            return read, write
+        if transport in ("http", "sse"):
+            if not server.url:
+                raise ValueError(
+                    f"MCP server {server.name!r} uses transport={transport} but has no url"
+                )
+            headers = server.headers or None
+            if transport == "http":
+                ctx = streamablehttp_client(
+                    server.url, headers=headers, timeout=MCP_HTTP_CONNECT_TIMEOUT
+                )
+                # streamable-HTTP yields a third element (a session-id getter) we don't need.
+                read, write, *_ = await server_stack.enter_async_context(ctx)
+                return read, write
+            ctx = sse_client(server.url, headers=headers, timeout=MCP_HTTP_CONNECT_TIMEOUT)
+            read, write = await server_stack.enter_async_context(ctx)
+            return read, write
+        raise ValueError(f"Unknown MCP transport {transport!r} for server {server.name!r}")
+
     async def _start_server(self, server: McpServerConfig) -> None:
-        params = StdioServerParameters(
-            command=server.command,
-            args=server.args,
-            env=server.env or None,
-        )
         # Per-server exit stack: on failure only this server's resources are
         # torn down; on success ownership moves to the manager's stack.
         server_stack = AsyncExitStack()
         try:
-            read, write = await server_stack.enter_async_context(stdio_client(params))
+            read, write = await self._open_transport(server, server_stack)
             session = await server_stack.enter_async_context(ClientSession(read, write))
             await asyncio.wait_for(session.initialize(), MCP_HANDSHAKE_TIMEOUT)
             listed = await asyncio.wait_for(session.list_tools(), MCP_HANDSHAKE_TIMEOUT)

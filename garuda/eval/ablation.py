@@ -208,6 +208,44 @@ def _check_hello(workspace: Path) -> bool:
     return target.exists() and target.read_text().strip() == "hi"
 
 
+# --- search: find a value buried in a noisy config (exercises grep/read) ------
+
+def _setup_find_value(workspace: Path) -> None:
+    lines = [f"NOISE_{i}=x{i}" for i in range(40)]
+    lines.insert(23, "API_KEY=sk-abc123xyz")
+    (workspace / "config.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _check_find_value(workspace: Path) -> bool:
+    target = workspace / "answer.txt"
+    return target.exists() and target.read_text().strip() == "sk-abc123xyz"
+
+
+# --- edit: modify an existing file in place (exercises the edit tool) ---------
+
+def _setup_edit(workspace: Path) -> None:
+    (workspace / "greeting.py").write_text('print("hello")\n', encoding="utf-8")
+
+
+def _check_edit(workspace: Path) -> bool:
+    target = workspace / "greeting.py"
+    if not target.exists():
+        return False
+    body = target.read_text()
+    return 'print("goodbye")' in body and "hello" not in body
+
+
+# --- compute: sum integers from a file (exercises bash + verification) --------
+
+def _setup_sum(workspace: Path) -> None:
+    (workspace / "numbers.txt").write_text("\n".join(str(n) for n in range(1, 21)) + "\n", encoding="utf-8")
+
+
+def _check_sum(workspace: Path) -> bool:
+    target = workspace / "sum.txt"
+    return target.exists() and target.read_text().strip() == "210"  # sum(1..20)
+
+
 BUILTIN_TASKS = [
     AblationTask(
         id="create_file",
@@ -219,6 +257,24 @@ BUILTIN_TASKS = [
         prompt="Count the number of lines in data.txt and write just that number into count.txt.",
         setup=_setup_count,
         check=_check_count,
+    ),
+    AblationTask(
+        id="find_value",
+        prompt="Find the value of API_KEY in config.env and write just that value into answer.txt.",
+        setup=_setup_find_value,
+        check=_check_find_value,
+    ),
+    AblationTask(
+        id="edit_greeting",
+        prompt='Edit greeting.py so it prints "goodbye" instead of "hello". Do not add new print statements.',
+        setup=_setup_edit,
+        check=_check_edit,
+    ),
+    AblationTask(
+        id="sum_numbers",
+        prompt="Compute the sum of the integers in numbers.txt and write just the sum into sum.txt.",
+        setup=_setup_sum,
+        check=_check_sum,
     ),
 ]
 

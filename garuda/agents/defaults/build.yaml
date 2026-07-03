@@ -23,6 +23,7 @@ tools:
   - buffer_grep
   - buffer_slice
   - buffer_list
+  - buffer_query
   - tmux_exec
   - tmux_capture
   - image_read
