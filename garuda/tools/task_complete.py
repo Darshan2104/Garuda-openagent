@@ -18,6 +18,14 @@ class TaskCompleteTool:
                 "items": {"type": "string"},
                 "description": "Optional commands to run before accepting completion",
             },
+            "answer_rationale": {
+                "type": "string",
+                "description": (
+                    "If you considered more than one candidate answer/approach, state which you "
+                    "chose and why the alternatives were rejected. Helps verification confirm the "
+                    "final answer is unambiguous."
+                ),
+            },
         },
         "required": ["summary"],
     }

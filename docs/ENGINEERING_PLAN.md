@@ -88,7 +88,24 @@ MCP, subagent):
 Test suite: **257 passing**, 0 failures (3 tmux skips). Live-verified end-to-end on Gemini 2.5 Flash.
 Not changed (by design): `bash` in smart mode still default-allows non-denylisted commands — that
 confinement is delegated to the OS sandbox (E4) + `allow_prefixes` (E5), not the regex denylist.
-Remaining: H3/H4 (tool-failure steering, answer disambiguation), G2/G3, D7b/D7c.
+
+## Status update 6 (2026-07-04) — H3 + H4
+
+- **H3 tool-failure steering** — the loop tracks a consecutive-failure streak across tool steps
+  (sequential and parallel paths); after 3 all-error steps it injects a steering nudge ("try a
+  different tool/path, e.g. bash with an explicit path") and emits a `failure_streak`/`steered`
+  event. A step with any success resets the streak. Complements E3 repetition detection (identical
+  calls) — H3 catches "different args, all failing". Build profile now documents the bash fallback.
+- **H4 answer disambiguation** — `task_complete` gains an optional `answer_rationale` field; it's
+  threaded into the verifier and surfaced in the LLM-judge prompt. When the summary shows numbers
+  differing by >10x, the judge is told to REJECT-and-disambiguate if no rationale was given, or to
+  accept only if the rationale justifies the choice. (Kept as a judge signal, not a brittle hard
+  gate, to avoid false-rejecting cases like "1000 files in 5 seconds".)
+
+Test suite: **263 passing**, 0 failures (3 tmux skips). Live-verified recovery-after-failure on
+Gemini 2.5 Flash. Remaining: G2/G3 (semantic buffer retrieval, full RLM mode), D7b/D7c (HTTP/SSE
+MCP transport, config merge, `garuda mcp list`); H4's structured-JSON verifier verdict (§2.3) left
+as a follow-up since robust markdown-prefix parsing already handles it.
 
 ---
 

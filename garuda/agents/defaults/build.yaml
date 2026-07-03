@@ -42,6 +42,9 @@ system_prompt: |
   and tmux_exec for interactive terminal work.
   Prefer edit for modifying files; use grep/glob/ls to explore before reading whole files.
   Track multi-step work with the todo tool.
+  Prefer grep/read_file for bounded search, but if a structured tool errors or returns nothing
+  unexpectedly, fall back to bash with an explicit path rather than retrying the same call.
   Use invoke_subagent with profile explore, plan, or reviewer for isolated research and review tasks.
   Inspect the environment before changing files.
-  When fully done, call task_complete with a summary and verification commands.
+  When fully done, call task_complete with a summary and verification commands. If you weighed
+  more than one candidate answer, use answer_rationale to state which you chose and why.

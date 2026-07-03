@@ -118,6 +118,7 @@ class CompletionVerifier:
         permissions: "PermissionEngine | None" = None,
         model: "Model | None" = None,
         messages: list[Message] | None = None,
+        answer_rationale: str | None = None,
     ) -> VerificationResult:
         if not config.enable_verifier:
             return VerificationResult(approved=True, checklist={"disabled": True})
@@ -196,6 +197,7 @@ class CompletionVerifier:
                 model=model,
                 messages=messages,
                 checklist=checklist,
+                answer_rationale=answer_rationale,
             )
 
         return VerificationResult(approved=True, checklist=checklist)
@@ -208,6 +210,7 @@ class CompletionVerifier:
         model: "Model",
         messages: list[Message] | None,
         checklist: dict[str, bool],
+        answer_rationale: str | None = None,
     ) -> VerificationResult:
         """One LLM call producing a structured APPROVED/REJECTED verdict.
 
@@ -222,17 +225,25 @@ class CompletionVerifier:
             f"## Task\n{task}",
             f"## Agent's completion summary\n{summary}",
         ]
+        if answer_rationale:
+            prompt_parts.append(f"## Agent's rationale for the chosen answer\n{answer_rationale}")
         if git_evidence:
             prompt_parts.append(f"## Git evidence from the workspace\n{git_evidence}")
         if conversation:
             prompt_parts.append(f"## Recent conversation (most recent last)\n{conversation}")
         if has_numeric_contradiction(summary):
-            prompt_parts.append(
+            note = (
                 "## Caution\nThe summary contains numbers that differ by more than 10x. "
-                "If these are competing candidate answers, the completion is ambiguous — "
-                "REJECT and ask the agent to disambiguate. If they are unrelated (e.g. counts "
-                "vs durations), ignore this note."
+                "If these are competing candidate answers, the completion is ambiguous"
             )
+            if answer_rationale:
+                note += " — accept only if the rationale above clearly justifies the chosen one."
+            else:
+                note += (
+                    " and no answer_rationale was provided — REJECT and ask the agent to "
+                    "disambiguate. If the numbers are unrelated (e.g. counts vs durations), ignore this."
+                )
+            prompt_parts.append(note)
         prompt_parts.append(
             "## Checklist\n"
             "Evaluate the completion against this checklist:\n"

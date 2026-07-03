@@ -37,6 +37,16 @@ REPEAT_NUDGE = (
 
 REPEAT_THRESHOLD = 3
 
+# After this many consecutive failing tool steps (all errors, any arguments),
+# steer the model toward a different approach.
+FAILURE_STREAK_THRESHOLD = 3
+
+FAILURE_STEER_NUDGE = (
+    "The last {count} tool calls all failed. Stop repeating the same approach: re-check your "
+    "assumptions, try a different tool or path (for example fall back to `bash` with an explicit "
+    "path if a structured tool keeps failing), or inspect the environment to find out why."
+)
+
 CONTEXT_WARNING_FRACTION = 0.8
 
 # Tools with no side effects, safe to run concurrently within one model response.
@@ -189,6 +199,7 @@ class DefaultAgent:
         usage_totals: dict[str, int] = {}
         last_signature: str | None = None
         repeat_count = 0
+        failure_streak = 0
         context_warned = False
 
         for turn in range(1, config.max_turns + 1):
@@ -281,8 +292,16 @@ class DefaultAgent:
                 c.name in PARALLEL_SAFE_TOOLS and TOOL_ARG_PARSE_ERROR_KEY not in c.arguments
                 for c in response.tool_calls
             ):
-                await self._run_parallel_reads(
+                n_results, n_errors = await self._run_parallel_reads(
                     response.tool_calls, tool_map, env, ctx, context, permissions, hooks, events, turn
+                )
+                failure_streak = self._record_failure_streak(
+                    failure_streak,
+                    had_error=n_errors > 0,
+                    had_success=(n_results - n_errors) > 0,
+                    context=context,
+                    events=events,
+                    turn=turn,
                 )
                 last_signature = None
                 repeat_count = 0
@@ -362,6 +381,11 @@ class DefaultAgent:
                     )
                 )
 
+                failure_streak = self._record_failure_streak(
+                    failure_streak, tool_result.is_error, not tool_result.is_error,
+                    context, events, turn,
+                )
+
                 signature = _call_signature(call)
                 if signature == last_signature:
                     repeat_count += 1
@@ -380,6 +404,33 @@ class DefaultAgent:
             False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
         )
 
+    def _record_failure_streak(
+        self,
+        streak: int,
+        had_error: bool,
+        had_success: bool,
+        context: ContextManager,
+        events: EventStore,
+        turn: int,
+    ) -> int:
+        """Update the consecutive-failure streak for a tool step and steer if stuck.
+
+        A step with any success resets the streak; an all-error step increments it.
+        At the threshold a steering nudge is injected and the streak resets.
+        """
+        if had_success:
+            return 0
+        if had_error:
+            streak += 1
+        if streak >= FAILURE_STREAK_THRESHOLD:
+            context.append(Message(role=Role.USER, content=FAILURE_STEER_NUDGE.format(count=streak)))
+            events.append(
+                EventType.TOOL_RESULT,
+                {"failure_streak": streak, "steered": True, "turn": turn},
+            )
+            return 0
+        return streak
+
     async def _run_parallel_reads(
         self,
         calls: list[ToolCall],
@@ -391,12 +442,13 @@ class DefaultAgent:
         hooks: HookRegistry,
         events: EventStore,
         turn: int,
-    ) -> None:
+    ) -> tuple[int, int]:
         """Execute a batch of read-only tool calls concurrently, preserving the
         transcript order of results and each call's tool_call_id pairing.
 
         Permission checks and before-hooks run sequentially (deterministic
         ordering of denials); only the side-effect-free executions are gathered.
+        Returns ``(n_results, n_errors)`` for failure-streak tracking.
         """
         plan: list[tuple] = []  # ("msg", Message) | ("exec", call, hook_context)
         for call in calls:
@@ -425,12 +477,17 @@ class DefaultAgent:
         )
         result_by_index = dict(zip(exec_indices, results))
 
+        n_results = 0
+        n_errors = 0
         for i, entry in enumerate(plan):
             if entry[0] == "msg":
                 context.append(entry[1])
                 continue
             _, call, hook_context = entry
             tool_result = await hooks.run_after_tool(call, result_by_index[i], hook_context)
+            n_results += 1
+            if tool_result.is_error:
+                n_errors += 1
             events.append(
                 EventType.TOOL_CALL, {"id": call.id, "name": call.name, "arguments": call.arguments}
             )
@@ -446,6 +503,7 @@ class DefaultAgent:
             context.append(
                 Message(role=Role.TOOL, content=tool_result.content, name=call.name, tool_call_id=call.id)
             )
+        return n_results, n_errors
 
     async def _handle_task_complete(
         self,
@@ -462,6 +520,7 @@ class DefaultAgent:
     ) -> AgentResult | None:
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
+        answer_rationale = call.arguments.get("answer_rationale")
         result = await self._verifier.verify_with_commands(
             task=task,
             summary=summary,
@@ -471,6 +530,7 @@ class DefaultAgent:
             permissions=permissions,
             model=model if config.enable_llm_verifier else None,
             messages=context.get_messages(),
+            answer_rationale=answer_rationale,
         )
         events.append(
             EventType.VERIFICATION,
