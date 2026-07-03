@@ -5,6 +5,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from garuda.eval.costs import duration_ms, estimate_cost, merge_usage
+
 
 def events_to_atif(
     events: list[dict[str, Any]],
@@ -37,14 +39,26 @@ def events_to_atif(
     task = instruction
     success: bool | None = None
     turns: int | None = None
+    session_start_ts: str | None = None
+    session_end_ts: str | None = None
+    if model_name is None:
+        for event in events:
+            if event.get("type") == "session_start":
+                model_name = event.get("payload", {}).get("model") or model_name
 
     for event in events:
         payload = event.get("payload", {})
-        if event.get("type") == "session_start" and not task:
-            task = payload.get("task")
+        if event.get("type") == "session_start":
+            session_start_ts = session_start_ts or event.get("timestamp")
+            if not task:
+                task = payload.get("task")
         if event.get("type") == "session_end":
             success = payload.get("success")
             turns = payload.get("turns")
+            session_end_ts = event.get("timestamp")
+
+    # Accumulate per-step token usage into a lossless total.
+    usage_totals: dict[str, int] = {}
 
     steps: list[dict[str, Any]] = []
     step_id = 1
@@ -79,6 +93,22 @@ def events_to_atif(
             }
             if tool_calls:
                 current_agent_step["tool_calls"] = tool_calls
+            usage = payload.get("usage") or {}
+            if usage:
+                merge_usage(usage_totals, usage)
+                # Only the fields the ATIF Metrics schema permits.
+                step_metrics: dict[str, Any] = {}
+                if usage.get("prompt_tokens"):
+                    step_metrics["prompt_tokens"] = usage["prompt_tokens"]
+                if usage.get("completion_tokens"):
+                    step_metrics["completion_tokens"] = usage["completion_tokens"]
+                if usage.get("cache_read_tokens"):
+                    step_metrics["cached_tokens"] = usage["cache_read_tokens"]
+                step_cost = estimate_cost(model_name, usage)
+                if step_cost is not None:
+                    step_metrics["cost_usd"] = step_cost
+                if step_metrics:
+                    current_agent_step["metrics"] = step_metrics
             steps.append(current_agent_step)
             step_id += 1
             continue
@@ -87,6 +117,7 @@ def events_to_atif(
             _append_tool_result(
                 current_agent_step,
                 tool_name=payload.get("name", "unknown"),
+                tool_call_id=payload.get("tool_call_id"),
                 content=payload.get("content", ""),
                 is_error=payload.get("is_error", False),
             )
@@ -125,17 +156,43 @@ def events_to_atif(
         steps.append(_user_step(1, task or "(no events recorded)", None))
 
     final_metrics: dict[str, Any] = {"total_steps": len(steps)}
-    if prompt_tokens is not None:
-        final_metrics["total_prompt_tokens"] = prompt_tokens
-    if completion_tokens is not None:
-        final_metrics["total_completion_tokens"] = completion_tokens
+    # Prefer explicit args (caller-provided aggregates); otherwise derive from
+    # the per-step usage accumulated above so trajectories are self-contained.
+    total_prompt = prompt_tokens if prompt_tokens is not None else usage_totals.get("prompt_tokens")
+    total_completion = (
+        completion_tokens if completion_tokens is not None else usage_totals.get("completion_tokens")
+    )
+    if total_prompt is not None:
+        final_metrics["total_prompt_tokens"] = total_prompt
+    if total_completion is not None:
+        final_metrics["total_completion_tokens"] = total_completion
+    if usage_totals.get("cache_read_tokens"):
+        final_metrics["total_cached_tokens"] = usage_totals["cache_read_tokens"]
+
+    if cost_usd is None:
+        cost_usd = estimate_cost(
+            model_name,
+            {
+                "prompt_tokens": total_prompt or 0,
+                "completion_tokens": total_completion or 0,
+            },
+        )
     if cost_usd is not None:
         final_metrics["total_cost_usd"] = cost_usd
+
+    # Non-standard aggregates live under the schema's `extra` dict.
     extra: dict[str, Any] = {}
     if success is not None:
         extra["success"] = success
     if turns is not None:
         extra["turns"] = turns
+    if usage_totals.get("total_tokens"):
+        extra["total_tokens"] = usage_totals["total_tokens"]
+    if usage_totals.get("cache_creation_tokens"):
+        extra["cache_creation_tokens"] = usage_totals["cache_creation_tokens"]
+    session_duration = duration_ms(session_start_ts, session_end_ts)
+    if session_duration is not None:
+        extra["duration_ms"] = session_duration
     if extra:
         final_metrics["extra"] = extra
 
@@ -193,17 +250,25 @@ def _append_tool_result(
     agent_step: dict[str, Any],
     *,
     tool_name: str,
+    tool_call_id: str | None = None,
     content: str,
     is_error: bool,
 ) -> None:
     observation = agent_step.setdefault("observation", {"results": []})
     results = observation.setdefault("results", [])
-    source_call_id = None
     tool_calls = agent_step.get("tool_calls") or []
-    for call in tool_calls:
-        if call.get("function_name") == tool_name:
-            source_call_id = call.get("tool_call_id")
-            break
+    source_call_id = None
+    # Prefer exact id match (correct even when a tool is called twice in one turn).
+    if tool_call_id:
+        for call in tool_calls:
+            if call.get("tool_call_id") == tool_call_id:
+                source_call_id = tool_call_id
+                break
+    if source_call_id is None:
+        for call in tool_calls:
+            if call.get("function_name") == tool_name:
+                source_call_id = call.get("tool_call_id")
+                break
     if source_call_id is None and tool_calls:
         source_call_id = tool_calls[min(len(results), len(tool_calls) - 1)].get("tool_call_id")
 

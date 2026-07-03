@@ -21,7 +21,16 @@ Landed and committed since update 2:
   **Live-verified on Gemini 2.5 Flash** (6 runs). Commit `97b328a`.
 - **D2** streaming model API + rich TUI — see final commit.
 
-Test suite: 203+ passing, 0 failures (3 tmux skips — tmux not installed locally).
+Also landed:
+- **F1** lossless ATIF — per-step token usage + estimated cost on each model step,
+  tool-result attribution by `tool_call_id` (correct when a tool is called twice in one
+  turn), auto-aggregated totals + session duration, and real `total_cost_usd` computed via
+  litellm pricing (the previously-dead cost path). Validates against the real Harbor schema.
+- **F4** cost/latency dashboard (`python -m garuda.eval.dashboard`) over the session store
+  and/or ATIF files. **Live-verified** across the persisted Gemini sessions (real tokens,
+  cost, duration, aggregated totals).
+
+Test suite: 210 passing, 0 failures (3 tmux skips — tmux not installed locally).
 Remaining/optional: full Terminal-Bench-via-Harbor scoring (needs the Harbor + docker
 stack and a frontier API key; the ablation runner covers the harness-comparison need
 locally), true end-to-end token streaming into the agent loop (D2 ships the streaming
