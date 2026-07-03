@@ -175,6 +175,22 @@ Remaining agent-quality levers (all requested): behavior + system-prompt tuning,
 reliability/coverage, context/cache quality. (Note: the OpenAI key in the dev env is invalid — an
 env issue, not code; Anthropic thinking round-trip still wants a live key to confirm end-to-end.)
 
+## Status update 9 (2026-07-04) — agent-quality: behavior & prompts
+
+Rewrote the core operating prompts from terse SWE-only blurbs into a tight, general-agent operating
+manual (`build.yaml` + `DEFAULT_SYSTEM_PROMPT`) encoding the behaviors that separate strong agents on
+any benchmark: **understand-first, read-before-edit, plan multi-step work, verify-before-finish, be
+persistent/adaptive on failure, work efficiently with context (buffer tools), follow the task's exact
+output format (exact-match matters), and ground every claim in tool evidence.** Kept general across
+coding/research/QA/ops rather than SWE-specific.
+
+The loop's behavioral machinery was already solid and left intact: verifier repair loop (rejection
+feedback re-injected, agent retries), last text answer preserved as the final message before nudging,
+repetition detection (E3), failure steering (H3), turn/context budget reminders (B6). No test asserts
+on prompt text, so this is a pure quality change. **Live-verified on Gemini 2.5 Flash**: a
+search→read→exact-write task completed correctly in 5 turns (exact-match answer written). Suite: 311
+passing.
+
 ---
 
 ## 0. Verdict
