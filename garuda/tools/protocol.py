@@ -6,6 +6,7 @@ from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
+    from garuda.core.buffer import ToolOutputBuffer
     from garuda.core.subagent import SubagentRunner
 
 
@@ -15,6 +16,7 @@ class ToolContext:
     agent_profile: str = "build"
     model: Model | None = None
     subagent_runner: "SubagentRunner | None" = None
+    buffer: "ToolOutputBuffer | None" = None
 
 
 @runtime_checkable

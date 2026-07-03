@@ -48,10 +48,24 @@ class GrepTool:
         if max_results < 1:
             max_results = 1
 
-        command = "grep -rn -E --exclude-dir=.git"
-        if glob:
-            command += f" --include={shlex.quote(glob)}"
-        command += f" -e {shlex.quote(pattern)} -- {shlex.quote(path)}"
+        q_path = shlex.quote(path)
+        q_pattern = shlex.quote(pattern)
+        include = f" --include={shlex.quote(glob)}" if glob else ""
+        # Branch on file vs directory so single-file and symlinked targets work
+        # reliably across GNU and BSD/macOS grep. Directories (incl. symlinks to
+        # dirs) use `-R` with a trailing slash — BSD grep won't descend into a
+        # symlink-to-dir given directly, but the trailing slash forces it. Single
+        # files use plain `grep -nH` (no recursion; `-r <file>` is unreliable on
+        # BSD). `-H` keeps the path:line:content shape even for one file. Net: the
+        # grep tool reaches the same paths as `bash grep`, symlinks included.
+        command = (
+            f"p={q_path}; "
+            f'if [ -d "$p" ]; then '
+            f'grep -RnH -E{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
+            f"else "
+            f'grep -nH -E -e {q_pattern} -- "$p"; '
+            f"fi"
+        )
 
         result = await env.execute(command)
         if result.exit_code == 1 and not result.stdout.strip():
@@ -60,9 +74,13 @@ class GrepTool:
                 content=f"No matches found for {pattern}",
             )
         if result.exit_code not in (0, 1):
+            stderr = result.stderr.strip()
+            hint = ""
+            if "No such file" in stderr:
+                hint = f" (path {path!r} does not exist or is not readable)"
             return ToolResult(
                 tool_call_id="",
-                content=f"grep failed (exit {result.exit_code}): {result.stderr.strip()}",
+                content=f"grep failed (exit {result.exit_code}): {stderr}{hint}",
                 is_error=True,
             )
 
@@ -119,9 +137,11 @@ class GlobTool:
                 converted = "./" + converted
             matcher = f"-path {shlex.quote(converted)}"
 
+        # `-L` follows symlinks so a symlinked directory under the base is
+        # traversed (matches shell globbing / bash reach).
         command = (
             f"cd {shlex.quote(base)} && "
-            f"find . -type f {matcher} -not -path '*/.git/*' | sort"
+            f"find -L . -type f {matcher} -not -path '*/.git/*' | sort"
         )
         result = await env.execute(command)
         if result.exit_code != 0:

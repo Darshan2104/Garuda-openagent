@@ -37,7 +37,32 @@ locally), true end-to-end token streaming into the agent loop (D2 ships the stre
 model API + rich rendering; wiring live tokens through `loop.py` is a follow-up).
 
 **Planned next (not started):** §6 RLM-style tool output buffer; §7 MCP JSON/auto-discovery
-(Cursor/Claude-style `mcpServers` dict + conventional config paths). See unchecked todos in §6.5 and §7.4.
+(Cursor/Claude-style `mcpServers` dict + conventional config paths); §8 tool/verifier robustness
+(from multi-harness trace review). See unchecked todos in §6.5, §7.4, and §8.4.
+
+## Status update 4 (2026-07-03) — H1 + G1 + D7a
+
+- **H1** (§8, P0) search/read tool correctness: `grep` now branches file-vs-dir and uses `-R`
+  + trailing-slash so single files and symlinked paths match reliably on GNU/BSD (was silent
+  "no matches"); honest error when a path is unreadable; `glob` follows symlinks (`find -L`);
+  `read_file`/`grep` share one **lexical** confinement resolver (`workspace/paths.py`) so they
+  reach the same in-workspace-relative paths as `bash` while still blocking `..`/absolute escapes.
+- **G1** (§6) RLM-style tool-output buffer: `core/buffer.py` stores full tool output in the session
+  dir and injects a compact stub (preview + pointer); `buffer_grep`/`buffer_slice`/`buffer_list`
+  retrieve on demand. Wired into `loop._execute_tool` (buffers above `buffer_threshold_bytes`,
+  default 30 KB; shaping now inside the try/except). No more lost middle bytes on large/ephemeral
+  output. **Live-verified on Gemini 2.5 Flash**: 58 KB `seq` output buffered, agent retrieved a
+  middle line via `buffer_slice` and answered correctly. (Live testing caught a real bug — Gemini's
+  ~1KB tool-call ids overflowed the filename limit; fixed with short hashed buffer ids.)
+- **D7a** (§7) MCP JSON + auto-discovery: `load_mcp_config` accepts JSON `mcpServers` dict (+ `servers`
+  list, `mcp_servers` alias, nested `mcp`), auto-discovers `.garuda/mcp.json` → `.garuda/mcp.yaml`
+  → `.cursor/mcp.json` → global; empty/malformed configs no longer crash (fixes a P1). **Live-verified**
+  discovery + `${VAR}` interpolation. Also fixed a pre-existing `tools ↔ mcp.client` circular import
+  (lazy import + module `__getattr__`), so `import garuda.mcp.client` and `test_mcp_v2` work standalone.
+
+Test suite: **241 passing**, 0 failures (3 tmux skips). Still open from §6/§7/§8: G2/G3 (semantic
+buffer retrieval, full RLM mode), D7b/D7c (HTTP/SSE transport, config merge, `garuda mcp list`),
+H2/H3/H4 (verifier hardening, tool-failure steering, answer disambiguation).
 
 ---
 
@@ -80,7 +105,9 @@ feature built on the current loop inherits the same failure modes.
 
 ### 2.1 Tool suite (biggest capability gap)
 - **`grep` / `glob` / `ls` tools** — model must shell out today. Ripgrep-backed search with
-  bounded output is one of the highest-leverage tools in every SOTA harness.
+  bounded output is one of the highest-leverage tools in every SOTA harness. **B1 landed** but
+  **H1 (§8)** remains: `-r` on single files + symlinked paths can false-negative on macOS;
+  must match `bash` reliability before declaring search done.
 - **`edit` (string-replace) tool** — the workhorse edit primitive everywhere. Whole-file
   `write_file` + fragile unified diff is the worst of both worlds. Pair with:
 - **`read_file` with line numbers + offset/limit** — required for reliable editing and for
@@ -155,7 +182,9 @@ feature built on the current loop inherits the same failure modes.
 ### 2.6 Verification & rigorous mode (currently theater)
 - Verifier is **self-graded**: agent picks its own `verification_commands` (or none → a 10-char
   summary passes). Make it evidence-based: verifier sees `git diff` + transcript tail, runs
-  *harness-chosen* checks (tests/build), uses structured output.
+  *harness-chosen* checks (tests/build), uses structured output. **E1 landed** but **H2 (§8)**
+  remains: trivial verify commands, truncated verdict context, approve-on-LLM-error, and no
+  detection of contradictory numeric candidates in the transcript.
 - Critic sees only the agent's self-report text — give it the diff and transcript.
 - **No repair loop**: critic rejection just marks failure. Add bounded feedback→retry cycles.
 - Plan phase has no reliable termination (keyword heuristic); "Max turns exceeded" can get pasted
@@ -281,8 +310,9 @@ Effort scale: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
 | G3. Full RLM REPL mode + long-context benchmark | L |
 
 ### Suggested sequencing
-A (all) → B1–B3 + C1–C2 (cheap, high leverage) → D1–D3 → C3–C5 → **G1** → E → B4–B6 + D4–D7 → F → G2 → G3 (optional).
+A (all) → B1–B3 + C1–C2 (cheap, high leverage) → D1–D3 → C3–C5 → **H1** → **G1** → E + **H2–H3** → B4–B6 + D4–D7 → F → **H4** → G2 → G3 (optional).
 Phases B/C and D can run in parallel tracks once A lands. **G1** pairs with C3 microcompact (stub + buffer pointer).
+**H1** (§8) should land before or with G1 — buffer retrieval and corpus search both depend on reliable `grep`/`read_file`.
 
 ---
 
@@ -606,3 +636,147 @@ Ship before **D7b** (HTTP). Fits in track **D4–D7** alongside product surfaces
 | Steps to enable MCP | Create YAML + pass `--mcp-config` | Drop `.garuda/mcp.json` in repo, run `garuda run` |
 | Cursor config reuse | Manual rewrite | Copy `.cursor/mcp.json` as-is |
 | Time to first MCP tool call | ~5 min (read docs) | ~1 min (copy known JSON) |
+
+---
+
+## 8. Tool & verifier robustness (general — from harness trace review)
+
+**Status:** Not started · **Added:** 2026-07-03
+**Motivation:** Side-by-side trace review (Garuda vs Goose vs OpenCode) on research-heavy
+tasks surfaced **harness bugs that are not benchmark-specific**. They affect any run where:
+
+- Data lives under workspace-relative **symlinks** (common for large corpora, monorepo fixtures,
+  shared asset dirs).
+- The model uses the **`grep` tool** on a single file or symlinked tree.
+- **`read_file`** and **`bash`** are both available but enforce different path rules.
+- **`task_complete`** verification must catch plausible-but-wrong final answers.
+
+Goose/OpenCode avoid several of these by shelling out exclusively; Garuda's dedicated tools
+must be at least as reliable or the agent wastes turns recovering via `bash`.
+
+### 8.1 Confirmed failure modes (general)
+
+| # | Failure | Where | Symptom |
+|---|---------|-------|---------|
+| H-a | **`grep -rn` on files / symlinked paths** | `tools/search.py` | BSD/macOS `grep -r` returns **zero matches** on symlinked files while `grep -n` and `bash grep` succeed → model sees false "No matches found" |
+| H-b | **`read_file` vs `bash` path policy mismatch** | `workspace/local.py:_resolve_path` | `read_file` resolves symlinks and rejects targets outside workspace root; `bash` reads through the link → two tools, two realities |
+| H-c | **Verifier approves wrong answers** | `core/verifier.py`, `tools/task_complete.py` | Agent computes multiple interpretations, picks the wrong one; `verification_commands` only `cat answer.txt`; LLM verifier is SWE-tuned, sees truncated transcript, **defaults to approve on LLM error** |
+| H-d | **No steering after repeated tool failures** | `core/loop.py` (missing) | Agent burns turns on dead-end `grep`/`read_file` before discovering `bash` works — recovery depends on model luck |
+| H-e | **Ambiguous numeric completion** | verifier + loop | Agent explores competing formulas/interpretations, commits without disambiguation; no harness signal that magnitudes disagree |
+
+**Out of scope here (benchmark/eval harness only):** copying/symlinking eval corpora into `app/`,
+running domain-specific graders (e.g. OfficeQA `score_answer`) inside the agent loop, or
+per-benchmark workspace layout — those belong in the eval runner, not core Garuda.
+
+### 8.2 Design principles
+
+1. **Tool parity** — if `bash` can read/search a workspace-relative path, `read_file` / `grep`
+   must succeed on the same path (or fail with an actionable, consistent error).
+2. **Fail loud, recover fast** — false "no matches" is worse than an error; repeated failures
+   should trigger harness steering (system reminders), not silent churn.
+3. **Verifier is skeptical** — completion checks validate *correctness evidence*, not just
+   "summary present + file exists". Fail closed when evidence is missing or contradictory.
+4. **Domain-agnostic** — improvements apply to coding, research, and ops tasks; domain graders
+   plug in via profile hooks, not hardcoded benchmark logic.
+
+### 8.3 Phased implementation
+
+Effort scale unchanged: S = ≤1 day, M = 2–4 days, L = 1–2 weeks.
+
+#### Phase H1 — Search & read tool correctness (P0, M)
+
+Goal: `grep` and `read_file` are trustworthy on symlinks and single files.
+
+- [ ] **GrepTool: drop `-r` for file targets** — when `path` is a file, use `grep -nH -E` (or
+  ripgrep equivalent); reserve `-r`/`-R` for directories only
+- [ ] **GrepTool: symlink policy** — for directory search, use `rg --follow` or `grep -R` with
+  documented behavior; add `follow_symlinks: bool` config (default: follow within workspace)
+- [ ] **GrepTool: honest empty results** — when exit 1 + empty stdout, message should distinguish
+  "pattern not found" vs "path unreadable / skipped (symlink?)"; never silently equate the two
+- [ ] **`_resolve_path` logical confinement** — confine on the **workspace-relative path** before
+  symlink resolution, or maintain an allowlist of in-workspace symlink prefixes (e.g. `corpus/`);
+  align `read_file`, `write_file`, `grep`, `glob` on one resolver
+- [ ] **`additional_dirs` escape hatch** — document and test explicit extra roots for symlink
+  targets that must remain outside the workspace tree
+- [ ] **Tests** (`tests/test_tools_v2.py` or new `test_workspace_symlinks.py`):
+  - [ ] symlinked file inside workspace → `grep` + `read_file` both succeed
+  - [ ] single-file `grep` returns matches (regression for `-r` on file)
+  - [ ] absolute path outside workspace still rejected
+
+#### Phase H2 — Completion verifier hardening (P1, M)
+
+Goal: `task_complete` rejects incomplete, unverified, or internally contradictory answers.
+
+Builds on E1 (evidence-based verifier) but closes gaps seen in trace review.
+
+- [ ] **Artifact checks** — if the task instruction names an output file (e.g. `answer.txt`),
+  verifier fails when missing/empty before LLM verdict
+- [ ] **Verification command quality** — reject `task_complete` when `verification_commands` are
+  trivially non-validating (e.g. only `cat <file>` with no recompute); inject checklist feedback
+  asking for a check that exercises the claimed result
+- [ ] **Transcript contradiction detection** — scan recent assistant/tool messages for multiple
+  final numeric candidates differing by >10× (or configurable ratio); reject with feedback to
+  disambiguate before resubmitting
+- [ ] **Richer LLM verdict context** — raise `EVIDENCE_CONTENT_CHARS`, include `answer.txt`
+  body (or tail of transcript where answer was derived) in verifier prompt; keep within token budget
+- [ ] **General verifier persona** — system prompt is "task completion verifier", not
+  "software engineering agent only"; checklist covers unit/scale plausibility and formula consistency
+- [ ] **Fail closed on verifier LLM error** — replace approve-on-exception default with
+  `approved=False` + `checklist["llm_verdict_error"]=True` (or single retry, then reject)
+- [ ] **Profile hook: `answer_check`** — optional `AgentConfig.answer_check: Callable[[Environment], VerificationResult]`
+  so profiles (research, coding, eval) can plug domain validation without core knowing the benchmark
+- [ ] **Tests**:
+  - [ ] wrong answer with only `cat answer.txt` → rejected
+  - [ ] summary mentions two conflicting magnitudes → rejected
+  - [ ] LLM verifier exception → rejected (not auto-approved)
+
+#### Phase H3 — Tool-failure steering & observability (P1, S–M)
+
+Goal: harness helps the model recover when structured tools lie or error.
+
+Extends B6 (budget reminders) and E3 (paralysis detection).
+
+- [ ] **Consecutive-failure counter** — track per-tool streak of `is_error` or grep empty-results;
+  after N (default 3), inject system reminder: "structured tool failing — try `bash` equivalent
+  or alternate path"
+- [ ] **Paralysis detector extension (E3)** — hash `(tool_name, arguments)` for repeated identical
+  failing calls; escalate nudge text
+- [ ] **Event / ATIF fields** — `tool_failure_streak`, `recovery_tool` when next turn switches
+  tool family after failures (e.g. `grep` → `bash`); surfaces in dashboard for regression tracking
+- [ ] **Agent profile system guidance** — document in default profiles: prefer `grep`/`read_file`
+  for bounded search; on confinement or empty-search errors, fall back to `bash` with explicit path
+- [ ] **Tests** — simulated 3× grep miss → reminder injected; identical failing call 4× → E3 nudge
+
+#### Phase H4 — Answer disambiguation & completion hygiene (P2, M)
+
+Goal: reduce premature commit when the agent explored multiple interpretations.
+
+- [ ] **`task_complete` schema extension** — optional `answer_rationale` / `rejected_alternatives`
+  fields; verifier checks rationale present when transcript shows >1 candidate
+- [ ] **Loop guard** — if agent calls `write_file` on answer artifact then `task_complete` in same
+  turn with no intervening validation command, verifier suggests adding a recompute step
+- [ ] **Structured output for verifier verdict** — replace `APPROVED`/`REJECTED` prefix parsing
+  with JSON schema (ties to §2.3 structured output item)
+- [ ] **Tests** — agent summary lists two formulas; missing rationale → reject
+
+### 8.4 Suggested sequencing
+
+**H1** (tool correctness) is **P0** and unblocks trustworthy search/read on symlinks — do before or
+in parallel with **G1** (buffer), since buffer retrieval also depends on `grep` working.
+
+Recommended order:
+
+**H1 → H2 → H3 → H4**, interleaved with existing **E1/E3** items where noted.
+
+H1 does not depend on §6 or §7. H2's `answer_check` hook is the general extension point for
+eval runners that want to call external graders without baking benchmark logic into core.
+
+### 8.5 North-star metrics (robustness track)
+
+| Metric | Today | Target (after H1–H3) |
+|--------|-------|----------------------|
+| `grep` false-negative rate on symlinked in-workspace files | observed non-zero | 0% |
+| `read_file` / `bash` disagree on same workspace-relative path | yes (symlinks) | never |
+| Wrong answer approved by `task_complete` when contradictory evidence in transcript | observed | 0% (H2) |
+| Turns wasted on recovery after structured tool failure | untracked | −50% via H3 reminders |
+| Runs depending on model learning to ignore `grep` tool | common | unnecessary after H1 |

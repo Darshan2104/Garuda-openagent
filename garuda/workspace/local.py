@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 from garuda.types import ExecResult
+from garuda.workspace.paths import resolve_workspace_path
 
 
 class LocalEnvironment:
@@ -19,16 +20,7 @@ class LocalEnvironment:
         return str(self._workspace_root)
 
     def _resolve_path(self, path: str) -> Path:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self._workspace_root / candidate
-        resolved = candidate.resolve()
-        if self._confine_to_workspace and not resolved.is_relative_to(self._workspace_root):
-            raise PermissionError(
-                f"Path {path} is outside the workspace root {self._workspace_root}. "
-                "Pass an explicit workspace or disable confinement."
-            )
-        return resolved
+        return resolve_workspace_path(self._workspace_root, path, self._confine_to_workspace)
 
     async def execute(
         self,

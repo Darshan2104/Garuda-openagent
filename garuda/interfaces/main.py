@@ -6,6 +6,7 @@ from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.cli import chat_loop
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment, run_agent_task
+from garuda.mcp.config import resolve_mcp_config
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
 
@@ -50,7 +51,11 @@ def build_parser():
     run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
-    run_parser.add_argument("--mcp-config", help="Path to MCP servers YAML config")
+    run_parser.add_argument(
+        "--mcp-config",
+        help="Path to MCP servers config (YAML or JSON); auto-discovered from "
+        ".garuda/mcp.json|yaml or .cursor/mcp.json when omitted",
+    )
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
     run_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
     run_parser.add_argument("--max-turns", type=int)
@@ -192,7 +197,7 @@ async def run_task(args) -> int:
     config.docker_memory = getattr(args, "docker_memory", "2g")
     config.docker_cpus = getattr(args, "docker_cpus", "2")
     config.system_prompt = resolve_system_prompt(profile, args.workspace)
-    mcp_path = args.mcp_config or config.mcp_config_path
+    mcp_path = resolve_mcp_config(args.workspace, args.mcp_config or config.mcp_config_path)
 
     model = LitellmModel(model_name=args.model)
     permissions = PermissionEngine(

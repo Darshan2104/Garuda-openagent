@@ -167,11 +167,21 @@ class DefaultAgent:
                 parent_context=context,
             )
 
+        buffer = None
+        if config.buffer_tool_output:
+            from garuda.core.buffer import ToolOutputBuffer
+
+            buffer = ToolOutputBuffer(
+                session_id=events.session_id,
+                threshold_bytes=config.buffer_threshold_bytes,
+            )
+
         ctx = ToolContext(
             session_id=events.session_id,
             agent_profile=self._profile_name,
             model=model,
             subagent_runner=subagent_runner,
+            buffer=buffer,
         )
         final_message = ""
         usage_totals: dict[str, int] = {}
@@ -482,16 +492,39 @@ class DefaultAgent:
             )
         try:
             result = await tool.execute(call.arguments, env, ctx)
+            content = result.content if isinstance(result.content, str) else str(result.content)
+            result.content = self._shape_or_buffer(content, call, ctx, context, result.is_error)
         except Exception as exc:
             logger.warning("Tool %s raised %s: %s", call.name, type(exc).__name__, exc)
             result = ToolResult(
                 tool_call_id=call.id,
-                content=f"Tool '{call.name}' failed: {type(exc).__name__}: {exc}",
+                content=context.shape_observation(
+                    f"Tool '{call.name}' failed: {type(exc).__name__}: {exc}", is_error=True
+                ),
                 is_error=True,
             )
         result.tool_call_id = call.id
-        result.content = context.shape_observation(result.content, is_error=result.is_error)
         return result
+
+    def _shape_or_buffer(self, content, call, ctx, context, is_error):
+        """Large output → store full body in the buffer + return a stub; else shape inline.
+
+        Never lets a buffer failure crash the turn — falls back to head/tail shaping.
+        """
+        buffer = getattr(ctx, "buffer", None)
+        if buffer is not None and content and buffer.exceeds(content):
+            try:
+                import hashlib
+
+                from garuda.core.buffer import format_buffer_stub
+
+                # Short, provider-agnostic id (some providers' tool_call ids are ~1KB).
+                buffer_id = "buf_" + hashlib.sha1(call.id.encode("utf-8")).hexdigest()[:10]
+                ref = buffer.store(buffer_id, content, tool_name=call.name, is_error=is_error)
+                return format_buffer_stub(ref)
+            except Exception as exc:
+                logger.warning("Buffer store failed for %s: %s; falling back to truncation", call.name, exc)
+        return context.shape_observation(content, is_error=is_error)
 
     def _result(
         self,

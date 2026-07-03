@@ -20,6 +20,9 @@ tools:
   - todo
   - web_fetch
   - web_search
+  - buffer_grep
+  - buffer_slice
+  - buffer_list
   - tmux_exec
   - tmux_capture
   - image_read

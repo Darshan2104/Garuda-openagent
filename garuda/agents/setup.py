@@ -5,6 +5,7 @@ from pathlib import Path
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
+from garuda.mcp.config import resolve_mcp_config
 from garuda.tools import build_toolkit
 from garuda.types import AgentConfig
 
@@ -23,7 +24,7 @@ async def prepare_agent_run(
     config = profile.to_agent_config()
     config.mode = mode
     config.system_prompt = resolve_system_prompt(profile, workspace)
-    mcp_path = mcp_config_path or config.mcp_config_path
+    mcp_path = resolve_mcp_config(workspace, mcp_config_path or config.mcp_config_path)
     permissions = PermissionEngine(
         mode=config.permission_mode,
         tool_rules=profile.tool_rules,

@@ -103,7 +103,7 @@ garuda run -f task.md [options]
 | `--docker-host` | Remote Docker daemon (`DOCKER_HOST`, e.g. `tcp://host:2375`) |
 | `--mode` | `standard` · `rigorous` · `readonly` |
 | `--permission-mode` | `auto` · `smart` · `readonly` · `yolo` |
-| `--mcp-config` | Path to MCP servers YAML |
+| `--mcp-config` | Path to MCP servers config (YAML or JSON); auto-discovered when omitted |
 | `--max-turns` | Max agent turns |
 | `--no-verifier` | Disable completion verification gate |
 | `--no-three-step-summary` | Disable 3-step context summarization |
@@ -340,22 +340,63 @@ garuda run -t "..." --agent my-agent --agents-dir .garuda/agents
 
 ## MCP integration
 
-Connect stdio MCP servers via a YAML config:
+Connect stdio MCP servers via a YAML **or** JSON config. Both formats normalize
+to the same set of servers, and `${VAR}` env interpolation works in string
+values (command / args / env) for both.
+
+**Garuda YAML** — a `servers:` list with explicit `name`:
 
 ```yaml
 # .garuda/mcp.yaml
 servers:
   - name: filesystem
-    transport: stdio
+    transport: stdio            # optional, defaults to stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
     env:
-      TOKEN: ${MY_TOKEN}   # env var interpolation
+      TOKEN: ${MY_TOKEN}        # env var interpolation
 ```
 
-```bash
-garuda run -t "Use MCP tools" --mcp-config .garuda/mcp.yaml
+**Cursor / Claude Desktop JSON** — an `mcpServers` dict keyed by name (the key
+becomes the server name; `transport` defaults to `stdio`):
+
+```json
+// .garuda/mcp.json  (or .cursor/mcp.json)
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+      "env": { "TOKEN": "${MY_TOKEN}" }
+    }
+  }
+}
 ```
+
+The snake_case alias `mcp_servers` is also accepted. If you already use Cursor,
+copy your `.cursor/mcp.json` into the repo as-is — Garuda reads it directly.
+
+### Auto-discovery
+
+Pass `--mcp-config <path>` (or set `mcp_config_path` in an agent profile) to load
+a specific file. When neither is set, Garuda auto-discovers the **first existing**
+of these (which file it loaded is logged at INFO):
+
+1. `{workspace}/.garuda/mcp.json`
+2. `{workspace}/.garuda/mcp.yaml`
+3. `{workspace}/.cursor/mcp.json`  (drop-in Cursor compat)
+4. `~/.garuda/mcp.json`  (global fallback; honors `GARUDA_GLOBAL_SETTINGS`)
+
+So dropping `.garuda/mcp.json` into a repo is enough — no flag required:
+
+```bash
+garuda run -t "Use MCP tools"                         # auto-discovers
+garuda run -t "Use MCP tools" --mcp-config custom.json  # explicit override
+```
+
+If none are found, MCP is simply disabled. macOS `claude_desktop_config.json` is
+**not** auto-read (wrong scope) — copy or symlink it to one of the paths above if
+you want it.
 
 MCP tools are namespaced as `mcp__<server>__<tool>`.
 

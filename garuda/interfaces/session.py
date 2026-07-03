@@ -9,6 +9,7 @@ from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
+from garuda.mcp.config import resolve_mcp_config
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
 from garuda.types import AgentConfig, Message, Role
@@ -53,7 +54,7 @@ class AgentSession:
         config.docker_image = docker_image
         config.docker_host = docker_host
         config.system_prompt = resolve_system_prompt(profile, workspace)
-        mcp_path = mcp_config_path or config.mcp_config_path
+        mcp_path = resolve_mcp_config(workspace, mcp_config_path or config.mcp_config_path)
         permissions = PermissionEngine(
             mode=profile.permission_mode,
             tool_rules=profile.tool_rules,

@@ -57,6 +57,8 @@ class AgentConfig:
     marker_polling: bool = True
     enable_three_step_summary: bool = True
     condenser: str = "microcompact"
+    buffer_tool_output: bool = True
+    buffer_threshold_bytes: int = 30_720
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     docker_host: str | None = None
