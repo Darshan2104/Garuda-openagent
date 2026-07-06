@@ -101,7 +101,21 @@ def _normalize_thinking_blocks(blocks) -> list[dict] | None:
     return normalized or None
 
 
-def _message_to_litellm(message: Message, include_thinking: bool = False) -> dict:
+def _with_images(content: str, images: list[str]) -> list[dict]:
+    """Build a content-block list: the text plus one image_url block per image."""
+    blocks: list[dict] = [{"type": "text", "text": content or ""}]
+    for uri in images:
+        blocks.append({"type": "image_url", "image_url": {"url": uri}})
+    return blocks
+
+
+def _message_to_litellm(
+    message: Message, include_thinking: bool = False, include_images: bool = False
+) -> dict:
+    # A message carrying images renders as a multimodal content-block list (user
+    # role only — portable across OpenAI/Anthropic; tool-role images aren't).
+    if include_images and message.images and message.role in (Role.USER, Role.SYSTEM):
+        return {"role": message.role.value, "content": _with_images(message.content, message.images)}
     if message.role == Role.ASSISTANT:
         payload: dict = {"role": "assistant", "content": message.content or None}
         if message.tool_calls:
@@ -232,6 +246,7 @@ class LitellmModel:
         # explicit Anthropic thinking budget. Either enables reasoning.
         self._reasoning_effort = reasoning_effort
         self._thinking_budget_tokens = thinking_budget_tokens
+        self._vision_support: bool | None = None
 
     @classmethod
     def from_config(cls, model_name: str, config, **overrides) -> "LitellmModel":
@@ -254,6 +269,15 @@ class LitellmModel:
     def _is_anthropic(self) -> bool:
         name = self._model_name.lower()
         return name.startswith("anthropic/") or "claude" in name
+
+    def _supports_vision(self) -> bool:
+        """Whether the model accepts image content blocks (cached)."""
+        if self._vision_support is None:
+            try:
+                self._vision_support = bool(litellm.supports_vision(model=self._model_name))
+            except Exception:
+                self._vision_support = False
+        return self._vision_support
 
     def _reasoning_enabled(self) -> bool:
         return bool(self._reasoning_effort or self._thinking_budget_tokens)
@@ -297,7 +321,11 @@ class LitellmModel:
         blocking and streaming paths never drift apart.
         """
         include_thinking = self._is_anthropic() and self._reasoning_enabled()
-        litellm_messages = [_message_to_litellm(m, include_thinking=include_thinking) for m in messages]
+        include_images = self._supports_vision()
+        litellm_messages = [
+            _message_to_litellm(m, include_thinking=include_thinking, include_images=include_images)
+            for m in messages
+        ]
         if self._supports_cache_control():
             litellm_messages = self._apply_cache_control(litellm_messages)
         kwargs: dict = {

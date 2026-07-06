@@ -79,7 +79,8 @@ async def test_image_read_uses_env(tmp_path: Path):
         {"path": "pic.png"}, LocalEnvironment(workspace_root=tmp_path), ToolContext(session_id="s", model=None)
     )
     assert not res.is_error
-    assert "Image loaded" in res.content  # base64 read succeeded, no model to analyze
+    assert "Loaded image" in res.content  # base64 read succeeded
+    assert res.images and res.images[0].startswith("data:image/png;base64,")  # attached for the model
 
 
 async def test_image_read_missing_file(tmp_path: Path):

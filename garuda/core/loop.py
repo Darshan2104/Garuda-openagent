@@ -371,6 +371,7 @@ class DefaultAgent:
                     last_signature = None
                 continue
 
+            turn_images: list[str] = []
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
@@ -452,6 +453,9 @@ class DefaultAgent:
                     )
                 )
 
+                if tool_result.images:
+                    turn_images.extend(tool_result.images)
+
                 failure_streak = self._record_failure_streak(
                     failure_streak, tool_result.is_error, not tool_result.is_error,
                     pending_notes, events, turn,
@@ -468,6 +472,19 @@ class DefaultAgent:
                     pending_notes.append(REPEAT_NUDGE.format(count=repeat_count))
                     repeat_count = 0
                     last_signature = None
+
+            # Surface any images returned by this turn's tools to the model as a
+            # (portable) user image message, appended after all tool results so the
+            # tool_calls/result block stays contiguous. Dropped by the model layer
+            # for non-vision models.
+            if turn_images:
+                context.append(
+                    Message(
+                        role=Role.USER,
+                        content=f"[{len(turn_images)} image(s) returned by tools]",
+                        images=turn_images,
+                    )
+                )
 
         if emit_session_events:
             events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})

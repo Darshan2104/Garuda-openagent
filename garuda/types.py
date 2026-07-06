@@ -25,6 +25,9 @@ class Message:
     tool_call_id: str | None = None
     tool_calls: list[ToolCall] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Image data URIs to send alongside the text (for vision models). Serialized as
+    # image_url content blocks; dropped for non-vision models.
+    images: list[str] | None = None
 
 
 @dataclass
@@ -33,6 +36,8 @@ class ToolResult:
     content: str
     is_error: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Image data URIs a tool wants the (vision-capable) model to actually see.
+    images: list[str] = field(default_factory=list)
 
 
 @dataclass
