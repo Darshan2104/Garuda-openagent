@@ -47,6 +47,12 @@ FAILURE_STEER_NUDGE = (
     "path if a structured tool keeps failing), or inspect the environment to find out why."
 )
 
+TASK_COMPLETE_STUCK_NUDGE = (
+    "task_complete has now been rejected {count} times in a row. Do not just resubmit — "
+    "address the specific verifier feedback above (run the missing checks, fix the gap, or "
+    "disambiguate the answer) before calling task_complete again."
+)
+
 CONTEXT_WARNING_FRACTION = 0.8
 
 # Tools with no side effects, safe to run concurrently within one model response.
@@ -86,6 +92,12 @@ def _call_signature(call: ToolCall) -> str:
     except (TypeError, ValueError):
         args = str(call.arguments)
     return f"{call.name}:{args}"
+
+
+def _batch_signature(calls: list[ToolCall]) -> str:
+    """Order-independent signature for a parallel tool batch, so an identical
+    repeated batch is caught by the same repetition detector as a single call."""
+    return "||".join(sorted(_call_signature(c) for c in calls))
 
 
 def _accumulate_usage(totals: dict[str, int], usage: dict[str, int]) -> None:
@@ -130,21 +142,32 @@ class DefaultAgent:
         agents_dir=None,
         context: ContextManager | None = None,
         checkpoint=None,
+        buffer=None,
+        emit_session_events: bool = True,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
         hooks = hooks or HookRegistry()
-        events.append(EventType.SESSION_START, {"task": task, "model": model.model_name})
+        # Inner runs (rigorous plan/executor attempts, subagents) share the parent's
+        # event store; suppressing their session_start/end avoids nested/duplicate
+        # SESSION_END success events that confuse trajectory consumers.
+        if emit_session_events:
+            events.append(EventType.SESSION_START, {"task": task, "model": model.model_name})
 
         tool_map = {tool.name: tool for tool in tools}
         if config.allowed_tools:
             allowed = set(config.allowed_tools)
+            # Always keep task_complete (a verifier-gated run can never finish without
+            # it) and MCP tools (their names aren't in the static profile list).
+            allowed.add("task_complete")
             for tool in tools:
                 if tool.name.startswith("mcp__"):
                     allowed.add(tool.name)
-            tool_map = {name: tool_map[name] for name in allowed if name in tool_map}
-            tools = list(tool_map.values())
+            # Filter in the original order so the tool-schema sequence is deterministic
+            # across runs (a stable prefix keeps prompt caching warm).
+            tools = [t for t in tools if t.name in allowed]
+            tool_map = {t.name: t for t in tools}
 
         if context is None:
             system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -165,6 +188,16 @@ class DefaultAgent:
             )
         events.append(EventType.USER_MESSAGE, {"content": task})
 
+        # A caller (e.g. a forked subagent) may pass its parent's buffer so inherited
+        # [buffer:...] stubs resolve; otherwise create one for this session.
+        if buffer is None and config.buffer_tool_output:
+            from garuda.core.buffer import ToolOutputBuffer
+
+            buffer = ToolOutputBuffer(
+                session_id=events.session_id,
+                threshold_bytes=config.buffer_threshold_bytes,
+            )
+
         if subagent_runner is None and "invoke_subagent" in tool_map:
             from garuda.core.subagent import SubagentRunner
 
@@ -176,17 +209,9 @@ class DefaultAgent:
                 skills_dirs=config.skills_dirs,
                 workspace_root=getattr(env, "workspace_root", None),
                 parent_context=context,
+                parent_buffer=buffer,
                 approval_handler=permissions.approval_handler,
                 hooks=hooks,
-            )
-
-        buffer = None
-        if config.buffer_tool_output:
-            from garuda.core.buffer import ToolOutputBuffer
-
-            buffer = ToolOutputBuffer(
-                session_id=events.session_id,
-                threshold_bytes=config.buffer_threshold_bytes,
             )
 
         ctx = ToolContext(
@@ -201,6 +226,7 @@ class DefaultAgent:
         last_signature: str | None = None
         repeat_count = 0
         failure_streak = 0
+        tc_rejections = 0
         context_warned = False
         # Harness/steering notes (truncation, repetition, failure-streak) are queued
         # here and flushed at the TOP of the next turn rather than appended inline.
@@ -250,10 +276,11 @@ class DefaultAgent:
                 )
             except Exception as exc:
                 logger.exception("Model call failed after retries")
-                events.append(
-                    EventType.SESSION_END,
-                    {"success": False, "reason": "model_error", "error": f"{type(exc).__name__}: {exc}"},
-                )
+                if emit_session_events:
+                    events.append(
+                        EventType.SESSION_END,
+                        {"success": False, "reason": "model_error", "error": f"{type(exc).__name__}: {exc}"},
+                    )
                 return self._result(
                     False,
                     f"Model call failed: {type(exc).__name__}: {exc}",
@@ -306,7 +333,8 @@ class DefaultAgent:
             if not response.tool_calls:
                 final_message = response.content or ""
                 if not config.enable_verifier:
-                    events.append(EventType.SESSION_END, {"success": True, "turns": turn})
+                    if emit_session_events:
+                        events.append(EventType.SESSION_END, {"success": True, "turns": turn})
                     return self._result(True, final_message, context, turn, events, usage_totals)
                 context.append(Message(role=Role.USER, content=CONTINUE_NUDGE))
                 continue
@@ -326,18 +354,36 @@ class DefaultAgent:
                     events=events,
                     turn=turn,
                 )
-                last_signature = None
-                repeat_count = 0
+                tc_rejections = 0
+                # Detect an identical parallel batch repeated turn after turn (a common
+                # stuck pattern) the same way single-call repetition is caught.
+                signature = _batch_signature(response.tool_calls)
+                if signature == last_signature:
+                    repeat_count += 1
+                else:
+                    last_signature = signature
+                    repeat_count = 1
+                if repeat_count >= REPEAT_THRESHOLD:
+                    pending_notes.append(REPEAT_NUDGE.format(count=repeat_count))
+                    repeat_count = 0
+                    last_signature = None
                 continue
 
             for call in response.tool_calls:
                 if call.name == "task_complete":
                     completed = await self._handle_task_complete(
                         call, task, context, env, config, events, turn, usage_totals,
-                        permissions, model,
+                        permissions, model, emit_session_events,
                     )
                     if completed is not None:
                         return completed
+                    # Rejected: steer if the model keeps resubmitting instead of
+                    # acting on the verifier feedback (task_complete is otherwise
+                    # exempt from the repeat/failure detectors).
+                    tc_rejections += 1
+                    if tc_rejections >= REPEAT_THRESHOLD:
+                        pending_notes.append(TASK_COMPLETE_STUCK_NUDGE.format(count=tc_rejections))
+                        tc_rejections = 0
                     continue
 
                 if TOOL_ARG_PARSE_ERROR_KEY in call.arguments:
@@ -408,6 +454,7 @@ class DefaultAgent:
                     failure_streak, tool_result.is_error, not tool_result.is_error,
                     pending_notes, events, turn,
                 )
+                tc_rejections = 0  # progress made; reset the completion-retry counter
 
                 signature = _call_signature(call)
                 if signature == last_signature:
@@ -420,7 +467,8 @@ class DefaultAgent:
                     repeat_count = 0
                     last_signature = None
 
-        events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})
+        if emit_session_events:
+            events.append(EventType.SESSION_END, {"success": False, "reason": "max_turns"})
         return self._result(
             False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
         )
@@ -539,6 +587,7 @@ class DefaultAgent:
         usage_totals: dict[str, int] | None = None,
         permissions: PermissionEngine | None = None,
         model: Model | None = None,
+        emit_session_events: bool = True,
     ) -> AgentResult | None:
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
@@ -559,7 +608,8 @@ class DefaultAgent:
             {"approved": result.approved, "checklist": result.checklist, "feedback": result.feedback},
         )
         if result.approved:
-            events.append(EventType.SESSION_END, {"success": True, "turns": turn})
+            if emit_session_events:
+                events.append(EventType.SESSION_END, {"success": True, "turns": turn})
             return self._result(True, summary, context, turn, events, usage_totals)
 
         feedback = result.feedback or "Completion verification failed."

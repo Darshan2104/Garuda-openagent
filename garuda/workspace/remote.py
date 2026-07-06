@@ -114,7 +114,15 @@ class RemoteEnvironment:
         cwd: str | None = None,
     ) -> ExecResult:
         workdir = cwd or self._workspace_root
-        shell = f"cd {shlex.quote(workdir)} && {command}"
+        # Bound the command container-side (see docker.py) so a killed client can't
+        # leave the remote command running.
+        inner = f"cd {shlex.quote(workdir)} && {command}"
+        if timeout is not None:
+            shell = f"timeout --kill-after=5s {int(timeout)}s bash -lc {shlex.quote(inner)}"
+            client_timeout: float | None = timeout + 15
+        else:
+            shell = inner
+            client_timeout = None
         start = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *self._docker_base,
@@ -129,7 +137,7 @@ class RemoteEnvironment:
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
-                timeout=timeout,
+                timeout=client_timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
             process.kill()

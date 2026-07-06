@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
@@ -13,6 +15,8 @@ from garuda.tools import tools_for_names
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.protocol import Environment
+
+logger = logging.getLogger(__name__)
 
 # How many times the executor is re-run with critic feedback after a rejection.
 MAX_REPAIR_ROUNDS = 2
@@ -96,6 +100,7 @@ class RigorousAgent:
             events=events,
             permissions=plan_permissions,
             hooks=hooks,
+            emit_session_events=False,  # rigorous emits its own single session span
         )
         events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
 
@@ -111,6 +116,11 @@ class RigorousAgent:
 
         for attempt in range(MAX_REPAIR_ROUNDS + 1):
             build_agent = DefaultAgent(profile_name=self._profile_name)
+            # When a context is reused across repair rounds, run() won't re-seed the
+            # task, so the critic feedback (folded into current_task) must be appended
+            # explicitly or the retry re-sees only the history it already "finished".
+            if context is not None and attempt > 0:
+                context.append(Message(role=Role.USER, content=current_task))
             exec_result = await build_agent.run(
                 task=current_task,
                 model=model,
@@ -124,6 +134,7 @@ class RigorousAgent:
                 agents_dir=agents_dir,
                 context=context,
                 checkpoint=checkpoint,
+                emit_session_events=False,  # rigorous emits its own single session span
             )
 
             approved, feedback = await self._critic_review(
@@ -163,17 +174,23 @@ class RigorousAgent:
         ]
         if git_evidence:
             user_parts.append(f"Git evidence from the workspace:\n{git_evidence}")
-        response = await model.complete(
-            [
-                Message(
-                    role=Role.SYSTEM,
-                    content=(
-                        "You are a critical reviewer for a software engineering agent. "
-                        "Decide if the work satisfies the task. Reply with APPROVED or "
-                        "REJECTED: <reason>."
+        try:
+            response = await model.complete(
+                [
+                    Message(
+                        role=Role.SYSTEM,
+                        content=(
+                            "You are a critical reviewer for a software engineering agent. "
+                            "Decide if the work satisfies the task. Reply with APPROVED or "
+                            "REJECTED: <reason>."
+                        ),
                     ),
-                ),
-                Message(role=Role.USER, content="\n\n".join(user_parts)),
-            ]
-        )
+                    Message(role=Role.USER, content="\n\n".join(user_parts)),
+                ]
+            )
+        except Exception as exc:
+            # A critic that can't be reached must not crash the whole rigorous run
+            # (discarding a completed execution). Fail closed: treat as not-approved.
+            logger.warning("Critic model call failed: %s", exc, exc_info=True)
+            return False, f"critic could not be reached ({type(exc).__name__})"
         return _parse_critic_verdict(response.content or "")

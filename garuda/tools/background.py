@@ -1,11 +1,13 @@
 """Background process tools: start long-running commands, poll output, kill.
 
-Implemented through ``env.execute`` (nohup + log file under .garuda-tasks/ in
-the workspace), so the same mechanism works in local, docker, and remote
-environments. State is keyed by (session_id, task_id) because registry tool
-instances are shared across sessions.
+Implemented through ``env.execute`` (setsid + log file under /tmp/garuda-tasks/),
+so the same mechanism works in local, docker, and remote environments. Logs live
+in /tmp — NOT the workspace — so they never pollute a ``git diff`` / glob of the
+project. State is keyed by (session_id, task_id) because registry tool instances
+are shared across sessions.
 """
 
+import logging
 import shlex
 import uuid
 from dataclasses import dataclass
@@ -14,8 +16,33 @@ from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
-TASKS_DIR = ".garuda-tasks"
+logger = logging.getLogger(__name__)
+
+# Kept out of the workspace so background logs don't show up as untracked files.
+TASKS_DIR = "/tmp/garuda-tasks"
 MAX_OUTPUT_BYTES = 20_000
+
+
+async def reap_session(session_id: str, env: Environment) -> int:
+    """Kill any still-running background tasks for a session (called at run end).
+
+    Prevents host orphans in the local workspace where nothing else tears the
+    process down; for docker/remote the container teardown also handles it, so
+    this is best-effort and never raises.
+    """
+    keys = [k for k in list(_TASKS) if k[0] == session_id]
+    for key in keys:
+        task = _TASKS.pop(key, None)
+        if task is None:
+            continue
+        try:
+            await env.execute(
+                f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
+                timeout=10.0,
+            )
+        except Exception:
+            logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
+    return len(keys)
 
 
 @dataclass
@@ -38,7 +65,7 @@ class BashBackgroundTool:
     description = (
         "Start a long-running command in the background (servers, watchers, slow builds). "
         "Returns a task_id; use task_output to poll its output and kill_task to stop it. "
-        "Output is captured to a log file in the workspace."
+        "Output is captured to a log file under /tmp (not the workspace)."
     )
     parameters = {
         "type": "object",
@@ -52,11 +79,15 @@ class BashBackgroundTool:
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
-        # NB: ';' not '&&' before nohup — 'A && B &' would background the whole
-        # chain and keep the launcher's stdout pipe open until B exits.
+        # Use setsid where available (Linux, containers) so the command is its own
+        # session/process-group leader and kill_task can reap the whole tree via
+        # `kill -- -$pid`. macOS ships no setsid, so fall back to a plain background
+        # launch there. ';' not '&&' so the whole chain isn't backgrounded (which
+        # would hold the launcher's stdout pipe open until it exits).
         launcher = (
-            f"mkdir -p {TASKS_DIR}; "
-            f"nohup sh -c {shlex.quote(command)} > {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
+            f"mkdir -p {shlex.quote(TASKS_DIR)}; "
+            f"if command -v setsid >/dev/null 2>&1; then _s=setsid; else _s=; fi; "
+            f"$_s sh -c {shlex.quote(command)} > {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
         )
         result = await env.execute(launcher, timeout=15.0)
         pid = result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else ""
@@ -141,7 +172,13 @@ class KillTaskTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        await env.execute(f"kill {task.pid} 2>/dev/null; sleep 0.2; kill -9 {task.pid} 2>/dev/null || true", timeout=15.0)
+        # Negative pid targets the whole process group (setsid leader + children);
+        # the plain-pid KILL is a fallback for the leader itself.
+        await env.execute(
+            f"kill -TERM -{task.pid} 2>/dev/null; sleep 0.2; "
+            f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
+            timeout=15.0,
+        )
         _TASKS.pop(key, None)
         return ToolResult(
             tool_call_id="",

@@ -9,8 +9,27 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.permissions import PermissionEngine
 from garuda.model.protocol import Model
 from garuda.tools import build_toolkit
-from garuda.types import AgentResult, Message, Role
+from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentResult, Message, Role
 from garuda.workspace.protocol import Environment
+
+
+def _drop_incomplete_tail(messages: list[Message]) -> list[Message]:
+    """Trim a trailing turn whose assistant tool_calls aren't all answered.
+
+    At invoke_subagent time the parent has appended its assistant tool_calls
+    message but not yet the tool results (invoke_subagent is mid-execution), so
+    the snapshot ends on an assistant turn with unanswered tool_calls. Seeding
+    that verbatim makes the subagent's first request an invalid sequence (a 400).
+    """
+    msgs = list(messages)
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].role == Role.ASSISTANT and msgs[i].tool_calls:
+            answered = {m.tool_call_id for m in msgs[i + 1 :] if m.role == Role.TOOL}
+            needed = {c.id for c in msgs[i].tool_calls}
+            if not needed.issubset(answered):
+                return msgs[:i]
+            break
+    return msgs
 
 
 @dataclass
@@ -29,6 +48,9 @@ class SubagentRunner:
     # same inside a subagent (otherwise ASK auto-denies and hooks are dropped).
     approval_handler: Any = None
     hooks: Any = None
+    # Parent's tool-output buffer, shared into a forked subagent so inherited
+    # [buffer:...] stubs resolve (they live under the parent's session dir).
+    parent_buffer: Any = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -68,6 +90,7 @@ class SubagentRunner:
         use_fork = self.fork_parent_context if fork_parent_context is None else fork_parent_context
         parent_snapshot = self._parent_snapshot()
         context: ContextManager | None = None
+        shared_buffer = None
         if use_fork and parent_snapshot:
             context = ContextManager(
                 model=self.model,
@@ -77,13 +100,24 @@ class SubagentRunner:
                 enable_three_step_summary=False,
                 task=task,
             )
-            context.seed(deepcopy(parent_snapshot))
+            snapshot = _drop_incomplete_tail(deepcopy(parent_snapshot))
+            # Run under the subagent's OWN persona, not the parent's leading system msg.
+            sub_system = Message(
+                role=Role.SYSTEM, content=config.system_prompt or DEFAULT_SYSTEM_PROMPT
+            )
+            if snapshot and snapshot[0].role == Role.SYSTEM:
+                snapshot[0] = sub_system
+            else:
+                snapshot.insert(0, sub_system)
+            context.seed(snapshot)
             context.append(
                 Message(
                     role=Role.USER,
                     content=f"[subagent:{profile_name}] {task}",
                 )
             )
+            # Share the parent buffer so inherited stubs are retrievable.
+            shared_buffer = self.parent_buffer
 
         try:
             result = await agent.run(
@@ -96,6 +130,7 @@ class SubagentRunner:
                 permissions=permissions,
                 hooks=self.hooks,
                 context=context,
+                buffer=shared_buffer,
             )
         finally:
             if mcp_manager is not None:

@@ -1,9 +1,27 @@
 import asyncio
+import os
+import signal
 import time
 from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.paths import resolve_workspace_path
+
+
+def _kill_process_tree(process: "asyncio.subprocess.Process") -> None:
+    """Kill the whole process group so a timed-out command's children die too.
+
+    The subprocess is launched as a session leader (start_new_session=True), so its
+    PID is its process-group id; killpg reaps grandchildren (node/pytest/etc.) that
+    a bare process.kill() would orphan (holding ports/locks/CPU for the rest of the run).
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
 
 
 class LocalEnvironment:
@@ -29,7 +47,14 @@ class LocalEnvironment:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> ExecResult:
-        workdir = Path(cwd) if cwd else self._workspace_root
+        # A relative cwd resolves against the workspace root (not the harness
+        # process cwd), matching docker/remote semantics; an absolute cwd is honored
+        # as-is for the trusted local env.
+        if cwd:
+            cwd_path = Path(cwd)
+            workdir = cwd_path if cwd_path.is_absolute() else (self._workspace_root / cwd_path)
+        else:
+            workdir = self._workspace_root
         start = time.monotonic()
 
         process = await asyncio.create_subprocess_shell(
@@ -38,6 +63,7 @@ class LocalEnvironment:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            start_new_session=True,  # own process group, so timeout can kill children
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -45,7 +71,7 @@ class LocalEnvironment:
                 timeout=timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
-            process.kill()
+            _kill_process_tree(process)
             try:
                 await process.wait()
             except ProcessLookupError:

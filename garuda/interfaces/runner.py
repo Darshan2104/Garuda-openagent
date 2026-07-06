@@ -163,6 +163,14 @@ async def run_agent_task(
             checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
         )
     finally:
+        # Kill any background tasks this session left running before tearing down
+        # the workspace (essential for the local env, where nothing else reaps them).
+        try:
+            from garuda.tools.background import reap_session
+
+            await reap_session(events.session_id, env)
+        except Exception:
+            pass
         await cleanup_workspace(handle)
         if close_mcp and mcp_manager is not None:
             await mcp_manager.close()
