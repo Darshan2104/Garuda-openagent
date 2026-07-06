@@ -160,6 +160,7 @@ async def run_agent_task(
             hooks=hooks,
             agents_dir=agents_dir,
             context=context,
+            checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
         )
     finally:
         await cleanup_workspace(handle)

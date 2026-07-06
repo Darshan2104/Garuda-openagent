@@ -10,9 +10,12 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
-    "litellm>=1.50.0",
+    # >=1.63: reasoning_effort, thinking param, and assistant thinking_blocks
+    # round-trip must exist or extended thinking silently no-ops.
+    "litellm>=1.63.0",
     "pyyaml>=6.0",
-    "mcp>=1.0.0",
+    # >=1.9: streamablehttp_client / sse_client transports used by mcp/client.py.
+    "mcp>=1.9.0",
 ]
 
 [project.optional-dependencies]

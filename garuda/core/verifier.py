@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Timeout (seconds) for each evidence-gathering git command.
 EVIDENCE_COMMAND_TIMEOUT = 10.0
 
+# Timeout (seconds) for each agent-supplied verification command. Bounded so a
+# command that never returns (e.g. a test runner entering watch mode) can't hang
+# the completion gate indefinitely.
+VERIFICATION_COMMAND_TIMEOUT = 300.0
+
 # How many trailing conversation messages are rendered for the LLM verdict.
 EVIDENCE_MESSAGE_WINDOW = 15
 
@@ -219,7 +224,19 @@ class CompletionVerifier:
                             + (f" ({denial_reason})" if denial_reason else "")
                         ),
                     )
-            result = await env.execute(command)
+            try:
+                result = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
+            except Exception as exc:
+                checklist[f"verify_cmd_{index}"] = False
+                return VerificationResult(
+                    approved=False,
+                    checklist=checklist,
+                    feedback=(
+                        f"Verification command could not be run ({type(exc).__name__}: {exc}): "
+                        f"{command}. Provide a command that completes within "
+                        f"{int(VERIFICATION_COMMAND_TIMEOUT)}s."
+                    ),
+                )
             key = f"verify_cmd_{index}"
             checklist[key] = result.exit_code == 0
             if result.exit_code != 0:

@@ -129,6 +129,7 @@ class DefaultAgent:
         subagent_runner=None,
         agents_dir=None,
         context: ContextManager | None = None,
+        checkpoint=None,
     ) -> AgentResult:
         config = config or AgentConfig()
         events = events or EventStore()
@@ -201,10 +202,29 @@ class DefaultAgent:
         repeat_count = 0
         failure_streak = 0
         context_warned = False
+        # Harness/steering notes (truncation, repetition, failure-streak) are queued
+        # here and flushed at the TOP of the next turn rather than appended inline.
+        # Appending them mid-turn would insert a user message between an assistant
+        # tool_calls message and its tool results, which providers reject (400).
+        pending_notes: list[str] = []
 
         for turn in range(1, config.max_turns + 1):
             if await context.maybe_summarize():
                 events.append(EventType.SUMMARIZATION, {"turn": turn})
+
+            # Flush notes queued on the previous turn, now that its tool-result block
+            # is complete and contiguous with its assistant message.
+            for note in pending_notes:
+                context.append(Message(role=Role.USER, content=note))
+            pending_notes.clear()
+
+            # Checkpoint the conversation so a crash/kill mid-run is still resumable
+            # from the last completed turn (best-effort; never break the run).
+            if checkpoint is not None:
+                try:
+                    checkpoint(context.get_messages())
+                except Exception:
+                    logger.warning("Session checkpoint failed", exc_info=True)
 
             budget_notice = _turn_budget_notice(turn, config.max_turns)
             if budget_notice:
@@ -275,14 +295,12 @@ class DefaultAgent:
             # doesn't treat a truncated answer (or truncated tool-call args) as final.
             if response.raw.get("finish_reason") == "length":
                 events.append(EventType.MODEL_RESPONSE, {"truncated": True, "turn": turn})
-                context.append(
-                    Message(
-                        role=Role.USER,
-                        content=(
-                            "[note] Your previous response was truncated at the output-token limit. "
-                            "Continue where you left off, or make the remaining work more concise."
-                        ),
-                    )
+                # Deferred (not appended now): a truncated response often carries a
+                # partial tool call, so appending here would split the tool_calls/
+                # tool-result pair. Delivered at the top of the next turn instead.
+                pending_notes.append(
+                    "[note] Your previous response was truncated at the output-token limit. "
+                    "Continue where you left off, or make the remaining work more concise."
                 )
 
             if not response.tool_calls:
@@ -304,7 +322,7 @@ class DefaultAgent:
                     failure_streak,
                     had_error=n_errors > 0,
                     had_success=(n_results - n_errors) > 0,
-                    context=context,
+                    pending_notes=pending_notes,
                     events=events,
                     turn=turn,
                 )
@@ -388,7 +406,7 @@ class DefaultAgent:
 
                 failure_streak = self._record_failure_streak(
                     failure_streak, tool_result.is_error, not tool_result.is_error,
-                    context, events, turn,
+                    pending_notes, events, turn,
                 )
 
                 signature = _call_signature(call)
@@ -398,9 +416,7 @@ class DefaultAgent:
                     last_signature = signature
                     repeat_count = 1
                 if repeat_count >= REPEAT_THRESHOLD:
-                    context.append(
-                        Message(role=Role.USER, content=REPEAT_NUDGE.format(count=repeat_count))
-                    )
+                    pending_notes.append(REPEAT_NUDGE.format(count=repeat_count))
                     repeat_count = 0
                     last_signature = None
 
@@ -414,21 +430,22 @@ class DefaultAgent:
         streak: int,
         had_error: bool,
         had_success: bool,
-        context: ContextManager,
+        pending_notes: list[str],
         events: EventStore,
         turn: int,
     ) -> int:
         """Update the consecutive-failure streak for a tool step and steer if stuck.
 
         A step with any success resets the streak; an all-error step increments it.
-        At the threshold a steering nudge is injected and the streak resets.
+        At the threshold a steering nudge is queued (delivered at the next turn's top,
+        so it never splits a tool_calls/tool-result pair) and the streak resets.
         """
         if had_success:
             return 0
         if had_error:
             streak += 1
         if streak >= FAILURE_STREAK_THRESHOLD:
-            context.append(Message(role=Role.USER, content=FAILURE_STEER_NUDGE.format(count=streak)))
+            pending_notes.append(FAILURE_STEER_NUDGE.format(count=streak))
             events.append(
                 EventType.TOOL_RESULT,
                 {"failure_streak": streak, "steered": True, "turn": turn},

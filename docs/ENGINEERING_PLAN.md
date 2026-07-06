@@ -229,6 +229,41 @@ cache tradeoff:
 Suite: **318 passing**, +3 context tests. This closes the four agent-quality levers requested
 (reasoning, behavior/prompts, tool reliability, context/cache).
 
+## Status update 12 (2026-07-06) — Tier-1 correctness fixes (from full-codebase review)
+
+A fresh four-way parallel review (core/context, tools/workspace, model/verifier, MCP/interfaces)
+surfaced a cluster of run-ending bugs. Fixed the verified Tier-1 set:
+
+- **Loop message-sequence (severe):** the `finish_reason=="length"` truncation note and the
+  repetition/failure steering nudges were appended *between* an assistant `tool_calls` message and
+  its tool results — an invalid sequence providers reject with a 400 that aborts the whole run. All
+  such harness notes are now **queued and flushed at the top of the next turn** (`pending_notes`),
+  keeping every tool-call/tool-result block contiguous. `_record_failure_streak` queues instead of
+  appending inline.
+- **Permissions (two real holes):** (a) a configured tool-level `ask` (`tool_rules={bash: ask}`) was
+  silently overwritten by the command screen — now the tool and command/path decisions are combined
+  with the **stricter** winning; (b) `allow_prefixes` fast-path accepted shell-chained tails
+  (`git status && curl … | bash`) — now a chained/redirected/substituted remainder falls through to
+  the deny/ask patterns. Removed a dead `task_complete` branch.
+- **Verifier:** agent-supplied `verification_commands` now run with a 300s timeout inside try/except
+  (was unbounded — a test entering watch mode hung the completion gate forever).
+- **Events:** `save()` now uses `default=str` (matched `append()`; snapshot previously crashed on
+  datetime/Path payloads); `load()` tolerates a torn final line (crash-safety); a swallowed persist
+  `OSError` is now logged.
+- **Sessions (crash-resumability):** `messages.json` is now checkpointed **atomically every turn**
+  via a `checkpoint` hook threaded through `run()`/rigorous/runner — a crashed/killed run is
+  resumable from its last completed turn (previously only `finish()` wrote it, so any interrupted run
+  was unresumable despite the crash-safe event log). `finish()`/meta writes are atomic too.
+- **Pins:** `litellm>=1.63` (reasoning would silently no-op below it) and `mcp>=1.9` (HTTP/SSE
+  transports).
+
+Suite: **326 passing**, +8 tests. Remaining from the review (Tier 2, not yet done): model-layer retry
+resilience (429/Retry-After, APIError, jitter, max_retries=0 raises None), process-group kill on
+timeout (bash/docker orphans), background-task reaping, `image_read`/`web_fetch` confinement + SSRF,
+sandbox `cwd` write-escape, `serve` loopback-RCE hardening, resume buffer re-pointing, serve/recipe
+dropping reasoning+hooks+persistence, and the capability upgrades (multimodal content blocks,
+persistent shell, ripgrep context lines, post-edit diagnostics).
+
 ---
 
 ## 0. Verdict

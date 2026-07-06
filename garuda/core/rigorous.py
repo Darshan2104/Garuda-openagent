@@ -72,6 +72,7 @@ class RigorousAgent:
         subagent_runner=None,
         agents_dir=None,
         context=None,
+        checkpoint=None,
     ) -> AgentResult:
         config = config or AgentConfig(mode="rigorous")
         events = events or EventStore()
@@ -122,6 +123,7 @@ class RigorousAgent:
                 subagent_runner=subagent_runner,
                 agents_dir=agents_dir,
                 context=context,
+                checkpoint=checkpoint,
             )
 
             approved, feedback = await self._critic_review(

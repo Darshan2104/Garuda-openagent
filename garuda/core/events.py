@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -6,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from garuda.types import Message
+
+logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
@@ -55,7 +58,9 @@ class EventStore:
                 with self._persist_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(event, default=str) + "\n")
             except OSError:
-                pass
+                # Don't let a full/again-unwritable disk break the run, but surface
+                # it once so a silently-stopped trajectory isn't a mystery.
+                logger.warning("Failed to persist event to %s", self._persist_path, exc_info=True)
         if self._on_append is not None:
             try:
                 self._on_append(event)
@@ -69,15 +74,25 @@ class EventStore:
     def save(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        lines = [json.dumps(event) for event in self._events]
+        # default=str mirrors append(): payloads may carry datetime/Path/exception
+        # objects that are not natively JSON-serializable. Without it, save() would
+        # crash on exactly the events the incremental append path persisted fine.
+        lines = [json.dumps(event, default=str) for event in self._events]
         target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> "EventStore":
         store = cls()
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
-            if line.strip():
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
                 store._events.append(json.loads(line))
+            except json.JSONDecodeError:
+                # A crash mid-write can leave a torn final line; skip it rather than
+                # making the whole crash-safe trajectory unreadable.
+                logger.warning("Skipping malformed event on line %d of %s", lineno, path)
         if store._events:
             store.session_id = store._events[0].get("session_id", store.session_id)
         return store

@@ -24,6 +24,13 @@ def default_sessions_root() -> Path:
     return Path.home() / ".garuda" / "sessions"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write via a temp file + os.replace so a crash mid-write can't corrupt the target."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def message_to_dict(message: Message) -> dict:
     payload: dict = {"role": message.role.value, "content": message.content}
     if message.name:
@@ -120,13 +127,27 @@ class SessionStore:
         )
         return self.events_path(session_id)
 
+    def checkpoint_messages(self, session_id: str, messages: list[Message]) -> None:
+        """Atomically persist the current message list mid-run.
+
+        Called each turn so a crashed/killed session is still resumable from its
+        last completed turn (previously messages.json was written only at finish(),
+        so any interrupted run was unresumable despite the crash-safe event log).
+        """
+        directory = self.session_dir(session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(
+            directory / "messages.json",
+            json.dumps([message_to_dict(m) for m in messages], indent=2, default=str),
+        )
+
     def finish(self, session_id: str, result: AgentResult) -> None:
         """Persist the final message state and update meta."""
         directory = self.session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "messages.json").write_text(
+        _atomic_write_text(
+            directory / "messages.json",
             json.dumps([message_to_dict(m) for m in result.messages], indent=2, default=str),
-            encoding="utf-8",
         )
         meta_path = directory / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
@@ -140,14 +161,13 @@ class SessionStore:
                 "usage": result.metadata.get("usage", {}),
             }
         )
-        meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
 
     def load_messages(self, session_id: str) -> list[Message]:
         path = self.session_dir(session_id) / "messages.json"
         if not path.exists():
             raise FileNotFoundError(
-                f"Session {session_id} has no saved messages at {path}. "
-                "Only finished sessions can be resumed."
+                f"Session {session_id} has no saved messages at {path}."
             )
         return [message_from_dict(p) for p in json.loads(path.read_text(encoding="utf-8"))]
 

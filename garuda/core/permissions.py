@@ -13,6 +13,23 @@ class PermissionDecision(str, Enum):
     ASK = "ask"
 
 
+_DECISION_PRECEDENCE = {
+    PermissionDecision.ALLOW: 0,
+    PermissionDecision.ASK: 1,
+    PermissionDecision.DENY: 2,
+}
+
+
+def _strictest(*decisions: PermissionDecision) -> PermissionDecision:
+    """Return the strictest decision (DENY > ASK > ALLOW)."""
+    return max(decisions, key=lambda d: _DECISION_PRECEDENCE[d])
+
+
+# Shell metacharacters that chain/redirect/substitute a second command. A command
+# containing any of these must not ride behind an allow-prefix fast-path.
+_SHELL_CHAIN_RE = re.compile(r"[;|&\n<>]|\$\(|`")
+
+
 DENY_COMMAND_PATTERNS = [
     re.compile(r"rm\s+-rf\s+/", re.IGNORECASE),
     re.compile(r"mkfs\.", re.IGNORECASE),
@@ -98,8 +115,6 @@ class PermissionEngine:
             if tool_name in READONLY_DENIED_TOOLS:
                 return PermissionDecision.DENY
             return PermissionDecision.ALLOW
-        if tool_name == "task_complete":
-            return PermissionDecision.ALLOW
         return PermissionDecision.ALLOW
 
     def _path_matches(self, path: str, pattern: str) -> bool:
@@ -148,19 +163,28 @@ class PermissionEngine:
             if stripped == prefix:
                 return True
             if stripped.startswith(prefix) and stripped[len(prefix)].isspace():
-                return True
+                # Only fast-path an allow-prefix when the remainder is plain args.
+                # A chained/redirected/substituted tail (git status && curl … | bash)
+                # must fall through to the deny/ask patterns instead of being allowed.
+                if not _SHELL_CHAIN_RE.search(stripped[len(prefix):]):
+                    return True
         return False
 
     async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
-        decision = self.check_tool(tool_name)
-        if decision == PermissionDecision.DENY:
+        tool_decision = self.check_tool(tool_name)
+        if tool_decision == PermissionDecision.DENY:
             return False, f"Permission denied for tool: {tool_name}"
 
+        # A tool-level rule (e.g. tool_rules={"bash": "ask"}) and the command/path
+        # screen are combined with the STRICTER winning — the command screen must
+        # never silently downgrade a configured tool-level ASK to ALLOW.
+        detail_decision = PermissionDecision.ALLOW
         if tool_name in COMMAND_TOOLS:
-            decision = self.check_command(arguments.get(COMMAND_TOOLS[tool_name], ""))
+            detail_decision = self.check_command(arguments.get(COMMAND_TOOLS[tool_name], ""))
         elif tool_name in WRITE_TOOLS | READ_TOOLS:
             operation = "write" if tool_name in WRITE_TOOLS else "read"
-            decision = self.check_path(arguments.get("path", ""), operation)
+            detail_decision = self.check_path(arguments.get("path", ""), operation)
+        decision = _strictest(tool_decision, detail_decision)
 
         if decision == PermissionDecision.DENY:
             return False, f"Permission denied for {tool_name}"
