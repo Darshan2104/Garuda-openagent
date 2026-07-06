@@ -1,7 +1,10 @@
 import asyncio
+import email.utils
 import inspect
 import json
 import logging
+import random
+import time
 import uuid
 from collections.abc import AsyncIterator
 
@@ -14,13 +17,55 @@ logger = logging.getLogger(__name__)
 
 TOOL_ARG_PARSE_ERROR_KEY = "__tool_arg_parse_error__"
 
-_RETRYABLE_EXCEPTIONS = (
+# Exception classes that are always transient and worth retrying.
+_RETRYABLE_EXCEPTION_TYPES = (
     litellm.RateLimitError,
     litellm.APIConnectionError,
     litellm.InternalServerError,
     litellm.ServiceUnavailableError,
     litellm.Timeout,
 )
+
+# HTTP statuses that are transient even when litellm maps them to a generic
+# APIError (e.g. Cloudflare 520–524, overloaded 529). 4xx like 400/401/403/404
+# and ContextWindowExceeded are deliberately excluded — retrying them is futile.
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529})
+
+# Upper bound on any single backoff/Retry-After sleep.
+_MAX_RETRY_SLEEP = 60.0
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """True if the exception is a transient failure worth retrying."""
+    if isinstance(exc, _RETRYABLE_EXCEPTION_TYPES):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and status in _RETRYABLE_STATUS_CODES
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Extract a server-provided Retry-After (seconds or HTTP-date), capped."""
+    val = getattr(exc, "retry_after", None)
+    if isinstance(val, (int, float)) and val > 0:
+        return min(float(val), _MAX_RETRY_SLEEP)
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    raw = None
+    if headers is not None:
+        try:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:
+            raw = None
+    if raw is None:
+        return None
+    try:
+        return min(float(raw), _MAX_RETRY_SLEEP)
+    except (TypeError, ValueError):
+        try:
+            when = email.utils.parsedate_to_datetime(str(raw))
+            secs = when.timestamp() - time.time()
+            return min(secs, _MAX_RETRY_SLEEP) if secs > 0 else None
+        except Exception:
+            return None
 
 
 def _serialize_tool_calls(tool_calls: list[ToolCall]) -> list[dict]:
@@ -170,7 +215,7 @@ class LitellmModel:
         model_name: str,
         api_key: str | None = None,
         api_base: str | None = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
         request_timeout: float = 600.0,
         enable_prompt_caching: bool = True,
         reasoning_effort: str | None = None,
@@ -323,24 +368,34 @@ class LitellmModel:
         )
 
     async def _complete_with_retries(self, kwargs: dict):
+        # At least one attempt even if max_retries is 0 (otherwise the loop body
+        # never runs and we would `raise None`).
+        attempts = max(1, self._max_retries)
         delay = 1.0
         last_exc: Exception | None = None
-        for attempt in range(1, self._max_retries + 1):
+        for attempt in range(1, attempts + 1):
             try:
                 return await litellm.acompletion(**kwargs)
-            except _RETRYABLE_EXCEPTIONS as exc:
+            except Exception as exc:
+                # Non-transient errors (400/401/404, context-window, etc.) fail fast.
+                if not _is_retryable(exc):
+                    raise
                 last_exc = exc
-                if attempt == self._max_retries:
+                if attempt == attempts:
                     break
+                retry_after = _retry_after_seconds(exc)
+                base = retry_after if retry_after is not None else min(delay, _MAX_RETRY_SLEEP)
+                # Full-ish jitter so parallel subagents don't retry in lockstep.
+                wait = base + random.uniform(0, min(base, 1.0))
                 logger.warning(
                     "Model call failed (%s), retry %d/%d in %.1fs",
                     type(exc).__name__,
                     attempt,
-                    self._max_retries - 1,
-                    delay,
+                    attempts - 1,
+                    wait,
                 )
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30.0)
+                await asyncio.sleep(wait)
+                delay = min(delay * 2, _MAX_RETRY_SLEEP)
         raise last_exc  # type: ignore[misc]
 
     async def stream(
@@ -390,23 +445,29 @@ class LitellmModel:
         thinking_blocks: list[dict] | None = None
         tool_frags: dict[int, dict] = {}
         usage: dict[str, int] = {}
-        async for delta in self.stream(messages, tools, temperature, max_tokens):
-            if delta.content_delta:
-                content_parts.append(delta.content_delta)
-                if on_delta is not None:
-                    result = on_delta(delta.content_delta)
-                    if inspect.isawaitable(result):
-                        await result
-            if delta.reasoning_delta:
-                reasoning_parts.append(delta.reasoning_delta)
-            if delta.thinking_blocks:
-                # Streamed thinking blocks arrive assembled per chunk; keep the
-                # latest complete set (loop uses complete(), so this is best-effort).
-                thinking_blocks = delta.thinking_blocks
-            if delta.tool_call_delta:
-                _merge_tool_fragment(tool_frags, delta.tool_call_delta)
-            if delta.usage:
-                usage = delta.usage
+        try:
+            async for delta in self.stream(messages, tools, temperature, max_tokens):
+                if delta.content_delta:
+                    content_parts.append(delta.content_delta)
+                    if on_delta is not None:
+                        result = on_delta(delta.content_delta)
+                        if inspect.isawaitable(result):
+                            await result
+                if delta.reasoning_delta:
+                    reasoning_parts.append(delta.reasoning_delta)
+                if delta.thinking_blocks:
+                    # Streamed thinking blocks arrive assembled per chunk; keep the
+                    # latest complete set (loop uses complete(), so this is best-effort).
+                    thinking_blocks = delta.thinking_blocks
+                if delta.tool_call_delta:
+                    _merge_tool_fragment(tool_frags, delta.tool_call_delta)
+                if delta.usage:
+                    usage = delta.usage
+        except Exception:
+            # A stream that dies mid-response cannot be safely resumed; fall back to
+            # a fresh non-streaming completion rather than returning a partial answer.
+            logger.warning("Streaming failed mid-response; retrying without streaming", exc_info=True)
+            return await self.complete(messages, tools, temperature, max_tokens)
 
         content = "".join(content_parts) or None
         raw_calls = [

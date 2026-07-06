@@ -53,10 +53,32 @@ def test_refuses_public_host_without_token():
         ensure_secure_config(ServerConfig(host="0.0.0.0", token=None))
 
 
-def test_allows_public_host_with_token_and_loopback_without():
-    ensure_secure_config(ServerConfig(host="0.0.0.0", token="sekrit"))
-    ensure_secure_config(ServerConfig(host="127.0.0.1", token=None))
-    ensure_secure_config(ServerConfig(host="localhost", token=None))
+def test_public_host_with_explicit_token_ok():
+    cfg = ServerConfig(host="0.0.0.0", token="sekrit")
+    ensure_secure_config(cfg)
+    assert cfg.token == "sekrit"
+
+
+def test_loopback_auto_generates_token():
+    # Loopback with no token must NOT be left unauthenticated (local-RCE surface):
+    # a strong token is generated for the session.
+    for host in ("127.0.0.1", "localhost", "::1"):
+        cfg = ServerConfig(host=host, token=None)
+        ensure_secure_config(cfg)
+        assert cfg.token and len(cfg.token) >= 20
+
+
+@pytest.mark.asyncio
+async def test_rejects_browser_origin():
+    # A request carrying an Origin header (i.e. from a browser) is refused even
+    # with a valid token — CSRF / DNS-rebinding defense-in-depth.
+    server = JsonRpcServer(ServerConfig(token="sekrit"))
+    response = await server.handle(
+        dict(HEALTH),
+        headers={"authorization": "Bearer sekrit", "origin": "http://evil.example"},
+    )
+    assert response["error"]["code"] == UNAUTHORIZED_CODE
+    assert "cross-origin" in response["error"]["message"]
 
 
 @pytest.mark.asyncio

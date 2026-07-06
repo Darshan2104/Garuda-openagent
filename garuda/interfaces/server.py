@@ -1,7 +1,10 @@
 """JSON-RPC HTTP server for IDE and automation integrations."""
 
 import asyncio
+import hmac
 import json
+import logging
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,8 +16,15 @@ from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
 
+logger = logging.getLogger(__name__)
+
 UNAUTHORIZED_CODE = -32001
+PARSE_ERROR_CODE = -32700
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+# Drop a client that hasn't sent a complete request within this many seconds
+# (slow-loris protection).
+REQUEST_READ_TIMEOUT = 30.0
 
 
 @dataclass
@@ -33,13 +43,27 @@ class ServerConfig:
 
 
 def ensure_secure_config(config: ServerConfig) -> None:
-    """Refuse to bind a non-loopback host without a bearer token configured."""
-    if not config.token and config.host not in LOOPBACK_HOSTS:
+    """Guarantee the server is authenticated before it accepts connections.
+
+    A non-loopback bind still requires an explicit token (auto-generating one for
+    an internet-facing port is a footgun). For loopback, a token is auto-generated
+    and printed so the endpoint is not an unauthenticated local-RCE surface — any
+    local process or a malicious web page the developer visits could otherwise
+    drive it.
+    """
+    if config.token:
+        return
+    if config.host not in LOOPBACK_HOSTS:
         raise ValueError(
             f"Refusing to serve on non-loopback host {config.host!r} without authentication. "
             "Set a bearer token via --token or the GARUDA_SERVE_TOKEN env var, "
             "or bind to 127.0.0.1."
         )
+    config.token = secrets.token_urlsafe(32)
+    print(
+        "[garuda serve] No token configured; generated one for this session.\n"
+        f"  Authorization: Bearer {config.token}"
+    )
 
 
 class JsonRpcServer:
@@ -56,7 +80,15 @@ class JsonRpcServer:
             if key.lower() == "authorization":
                 provided = value.strip()
                 break
-        return provided == f"Bearer {self._config.token}"
+        # Constant-time compare so the token can't be recovered by timing.
+        return hmac.compare_digest(provided, f"Bearer {self._config.token}")
+
+    @staticmethod
+    def _has_browser_origin(headers: dict[str, str] | None) -> bool:
+        """True if the request carries an Origin header — i.e. it came from a
+        browser. Programmatic clients (IDE, curl, SDK) don't set Origin; rejecting
+        it blocks cross-site CSRF / DNS-rebinding attempts as defense-in-depth."""
+        return any(k.lower() == "origin" for k in (headers or {}))
 
     async def handle(
         self,
@@ -67,6 +99,15 @@ class JsonRpcServer:
         method = payload.get("method")
         params = payload.get("params") or {}
 
+        if self._has_browser_origin(headers):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": UNAUTHORIZED_CODE,
+                    "message": "Unauthorized: cross-origin (browser) requests are not allowed",
+                },
+            }
         if not self._authorized(headers):
             return {
                 "jsonrpc": "2.0",
@@ -136,7 +177,11 @@ class JsonRpcServer:
         config.workspace_kind = workspace_kind
         config.docker_image = params.get("docker_image", self._config.docker_image)
 
-        model = LitellmModel(model_name=model_name)
+        model = LitellmModel(
+            model_name=model_name,
+            reasoning_effort=config.reasoning_effort,
+            thinking_budget_tokens=config.thinking_budget_tokens,
+        )
         events = EventStore()
         result = await run_agent_task(
             task=task,
@@ -181,7 +226,13 @@ class JsonRpcServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            raw = await reader.readuntil(b"\r\n\r\n")
+            try:
+                raw = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"), timeout=REQUEST_READ_TIMEOUT
+                )
+            except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+                # Slow-loris, oversized header line, or torn request: drop it.
+                return
             header, _, body_bytes = raw.partition(b"\r\n\r\n")
             headers: dict[str, str] = {}
             for line in header.split(b"\r\n")[1:]:
@@ -190,11 +241,28 @@ class JsonRpcServer:
                     headers[key.decode("utf-8", "replace").strip().lower()] = value.decode(
                         "utf-8", "replace"
                     ).strip()
-            length = int(headers.get("content-length", 0))
+            length = int(headers.get("content-length", 0) or 0)
             if length and len(body_bytes) < length:
-                body_bytes += await reader.readexactly(length - len(body_bytes))
-            payload = json.loads(body_bytes.decode("utf-8"))
-            response = await self.handle(payload, headers=headers)
+                try:
+                    body_bytes += await asyncio.wait_for(
+                        reader.readexactly(length - len(body_bytes)), timeout=REQUEST_READ_TIMEOUT
+                    )
+                except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+                    return
+            try:
+                payload = json.loads(body_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                response = await self.handle(payload, headers=headers)
+            else:
+                # Malformed body or a JSON scalar/array: return a proper parse error
+                # instead of letting payload.get(...) raise and silently drop the socket.
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": PARSE_ERROR_CODE, "message": "Parse error: body must be a JSON object"},
+                }
             status = b"HTTP/1.1 200 OK"
             if response.get("error", {}).get("code") == UNAUTHORIZED_CODE:
                 status = b"HTTP/1.1 401 Unauthorized"

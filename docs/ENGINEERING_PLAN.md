@@ -264,6 +264,29 @@ sandbox `cwd` write-escape, `serve` loopback-RCE hardening, resume buffer re-poi
 dropping reasoning+hooks+persistence, and the capability upgrades (multimodal content blocks,
 persistent shell, ripgrep context lines, post-edit diagnostics).
 
+## Status update 13 (2026-07-06) — Tier-2: model resilience + serve hardening
+
+- **Model-layer retry resilience** (biggest reliability delta vs top harnesses — one transient 429
+  used to end a whole run): `_is_retryable` now also retries transient HTTP statuses (408/409/425/
+  429/500/502/503/504/520–524/529) on a generic `APIError`, while 400/401/403/404 and
+  context-window errors **fail fast**. Server `Retry-After` is honored (seconds or HTTP-date, capped
+  60s), backoff has jitter (no subagent thundering herd), the default budget is raised (max_retries
+  5), and `max_retries=0` no longer `raise None`s (`TypeError`). `complete_streaming` **falls back to
+  a non-streaming `complete()`** if the stream dies mid-response instead of returning a partial.
+- **`serve` security hardening** (was an unauthenticated loopback host-RCE reachable from a browser):
+  a bearer token is **auto-generated + printed for loopback** (non-loopback still requires an
+  explicit token), token comparison is **constant-time** (`hmac.compare_digest`), requests carrying
+  an **`Origin` header are rejected** (CSRF / DNS-rebinding defense-in-depth), the read path has a
+  **30s timeout** (slow-loris) and tolerates oversized/torn requests, and a malformed/non-object JSON
+  body returns a proper `-32700` parse error instead of silently dropping the socket. Also fixed
+  `serve` dropping the profile's reasoning knobs (C2).
+
+Suite: **335 passing**, +9 tests. Still open from the review: process-group kill on timeout
+(bash/docker orphans), background-task reaping, `image_read`/`web_fetch` confinement + SSRF, sandbox
+`cwd` write-escape, resume buffer re-pointing, recipe hooks/persistence, profile `mode` honoring, and
+the capability upgrades (multimodal content blocks, persistent shell, ripgrep context lines,
+post-edit diagnostics).
+
 ---
 
 ## 0. Verdict
