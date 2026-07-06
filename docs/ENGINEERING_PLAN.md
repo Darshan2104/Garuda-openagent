@@ -341,6 +341,32 @@ Suite: 358 passing (4 skipped), +10 tests.
 
 ---
 
+## Status update 16 (2026-07-06) — capability upgrades (the 4 enhancements)
+
+Implemented the four capability items previously listed as remaining:
+
+- **Ripgrep-style grep** — `grep` gains `context`/`before_context`/`after_context` (→ `-C`/`-B`/`-A`)
+  and `output_mode` (`content` | `files_with_matches`→`-l` | `count`→`-c`); portable via system grep,
+  keeps the file-vs-dir branching and path:line:content shape.
+- **Post-edit diagnostics** — `tools/diagnostics.check_syntax` runs a fast, side-effect-free check
+  after edit/write_file (`.py` via `ast.parse`, `.json`, `.yaml`, via `env`) and appends a
+  syntax-error note so the model gets immediate feedback. Gated by `AgentConfig.post_edit_diagnostics`
+  (default on; `--no-post-edit-diagnostics` to disable).
+- **Multimodal tool-result content blocks** — `ToolResult.images` / `Message.images` carry image
+  data URIs; the model layer renders them as `image_url` blocks **gated on `litellm.supports_vision`**
+  (dropped for non-vision models); the loop appends a portable user image message after a turn's tool
+  results. `image_read` now attaches the actual image for the main model to view.
+- **Persistent stateful shell** — `workspace/shell.PersistentShell` keeps one `bash` alive
+  (marker-framed protocol, merged stderr, SIGINT-on-timeout with respawn fallback);
+  `LocalEnvironment.persistent_execute` owns one; `bash` uses it when `AgentConfig.persistent_shell`
+  is on (opt-in, `--persistent-shell`, local env), so cwd/env/venv persist across calls. Closed in
+  the runner's cleanup.
+
+Suite: **380 passing** (4 skipped), +30 tests across the four. **Fireworks smokes** (gpt-oss-120b):
+search→write and write-code→run-via-persistent-shell→write-result both correct in 6 turns.
+
+---
+
 ## 0. Verdict
 
 > **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton

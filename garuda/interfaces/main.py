@@ -74,6 +74,16 @@ def build_parser():
         type=int,
         help="Anthropic extended-thinking budget in tokens (enables thinking)",
     )
+    run_parser.add_argument(
+        "--persistent-shell",
+        action="store_true",
+        help="Keep one shell alive across bash calls so cwd/env/venv persist (local env)",
+    )
+    run_parser.add_argument(
+        "--no-post-edit-diagnostics",
+        action="store_true",
+        help="Disable the syntax check run after edit/write_file",
+    )
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
@@ -265,6 +275,10 @@ async def run_task(args) -> int:
         config.reasoning_effort = args.reasoning_effort
     if getattr(args, "thinking_budget", None):
         config.thinking_budget_tokens = args.thinking_budget
+    if getattr(args, "persistent_shell", False):
+        config.persistent_shell = True
+    if getattr(args, "no_post_edit_diagnostics", False):
+        config.post_edit_diagnostics = False
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host

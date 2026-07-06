@@ -186,6 +186,12 @@ async def run_agent_task(
             await reap_session(events.session_id, env)
         except Exception:
             pass
+        # Close a persistent shell if the local env opened one.
+        if hasattr(env, "aclose"):
+            try:
+                await env.aclose()
+            except Exception:
+                logger.warning("Failed to close persistent shell", exc_info=True)
         await cleanup_workspace(handle)
         if close_mcp and mcp_manager is not None:
             await mcp_manager.close()

@@ -32,6 +32,7 @@ class LocalEnvironment:
     ):
         self._workspace_root = Path(workspace_root or Path.cwd()).resolve()
         self._confine_to_workspace = confine_to_workspace
+        self._shell = None  # lazily-created PersistentShell (opt-in stateful bash)
 
     @property
     def workspace_root(self) -> str:
@@ -91,6 +92,30 @@ class LocalEnvironment:
             exit_code=process.returncode or 0,
             duration_ms=duration_ms,
         )
+
+    async def persistent_execute(
+        self, command: str, timeout: float | None = 120.0, cwd: str | None = None
+    ) -> ExecResult:
+        """Run in a long-lived shell that keeps cwd/env/venv across calls.
+
+        A per-call ``cwd`` runs in a subshell so it doesn't move the session's own
+        working directory (matching the stateless tool's per-call cwd semantics).
+        """
+        if self._shell is None:
+            import os
+
+            from garuda.workspace.shell import PersistentShell
+
+            self._shell = PersistentShell(cwd=str(self._workspace_root), env=dict(os.environ))
+        if cwd:
+            command = f"( cd {Path(cwd).as_posix()!r} && {command} )"
+        return await self._shell.run(command, timeout=timeout)
+
+    async def aclose(self) -> None:
+        """Tear down the persistent shell if one was created."""
+        if self._shell is not None:
+            await self._shell.close()
+            self._shell = None
 
     async def read_file(self, path: str) -> str:
         target = self._resolve_path(path)

@@ -39,7 +39,12 @@ class BashTool:
             kwargs["timeout"] = float(timeout)
         if cwd:
             kwargs["cwd"] = cwd
-        result = await env.execute(command, **kwargs)
+        # Persistent mode (opt-in, local env): reuse a long-lived shell so cwd/env
+        # persist across calls. Falls back to per-call execution otherwise.
+        if getattr(ctx, "persistent_shell", False) and hasattr(env, "persistent_execute"):
+            result = await env.persistent_execute(command, **kwargs)
+        else:
+            result = await env.execute(command, **kwargs)
 
         failed = result.exit_code != 0
         if not result.stdout and not result.stderr:
