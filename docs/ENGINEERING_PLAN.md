@@ -207,6 +207,28 @@ gaps on `edit` — the tool the agent leans on most:
 
 Suite: **316 passing**, +6 tool tests.
 
+## Status update 11 (2026-07-06) — agent-quality: context/cache quality
+
+Audited the context stack (usage-driven trigger via provider tokens, pluggable condensers,
+microcompaction). It was already strong; fixed a real quality bug against §6.6 and clarified the
+cache tradeoff:
+
+- **Microcompaction now preserves buffer retrieval pointers.** Previously, pruning a bulky *old*
+  tool output replaced it with a generic "re-run the tool" stub — which **destroyed the
+  `buffer:<id>` pointer** for outputs captured by the G1 tool-output buffer, stranding data that
+  was still on disk. `microcompact_messages` now detects a buffer id (in metadata or the stub text)
+  and keeps a retrieval pointer ("...retained in buffer:<id> — retrieve with
+  buffer_grep/buffer_slice"), so pruned-but-buffered output stays reachable. This is the §6.6
+  "keep `metadata.buffer_id` so the agent can still retrieve" item, done properly.
+- **Honest cache accounting.** Corrected the "cache-friendly / stable prefix" claim: pruning in
+  place does reset the prompt cache from the first pruned message. The real benefit is that it is
+  cheaper than a full summarize (no LLM call; message structure + tool_call ids stay valid), and
+  prunes are batched (all eligible at once) and triggered only at high usage, so cache-miss events
+  stay rare.
+
+Suite: **318 passing**, +3 context tests. This closes the four agent-quality levers requested
+(reasoning, behavior/prompts, tool reliability, context/cache).
+
 ---
 
 ## 0. Verdict

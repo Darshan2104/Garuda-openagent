@@ -4,9 +4,13 @@ A `Condenser` decides, given the current conversation and a token-budget signal,
 whether and how to shrink history. Strategies are swappable so callers can trade
 fidelity for cost/latency:
 
-* `MicrocompactCondenser` (default) — cache-friendly: first prunes bulky *old*
-  tool outputs in place (stable prefix, good for prompt caching), and only when
-  there is nothing left to prune does it fall back to a full LLM summarize.
+* `MicrocompactCondenser` (default) — cheaper than summarizing: first prunes bulky
+  *old* tool outputs in place (no LLM call; message structure and tool_call ids stay
+  valid), and only when there is nothing left to prune does it fall back to a full
+  LLM summarize. A prune event resets the prompt cache from the first pruned message,
+  so prunes are batched (all eligible outputs at once) and triggered infrequently
+  (only at high usage) to keep cache-miss events rare. Buffered outputs keep their
+  `buffer:<id>` retrieval pointer through pruning.
 * `RecentWindowCondenser` — no LLM: keep system + task + last N turns, drop the
   middle. Cheapest, lossy (OpenHands "recent events" style).
 * `SummarizingCondenser` — always full 3-step summarize-and-rebuild.
@@ -16,6 +20,7 @@ unchanged this turn.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -24,6 +29,9 @@ from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
 logger = logging.getLogger(__name__)
+
+# Matches the id in a `[buffer:<id> | ... ]` stub produced by the tool-output buffer.
+_BUFFER_ID_RE = re.compile(r"\[buffer:([^\s|\]]+)")
 
 
 @dataclass
@@ -89,10 +97,24 @@ def microcompact_messages(
             and not message.metadata.get("pruned")
         ):
             original_len = len(message.content)
-            message.content = (
-                f"[tool output pruned to save context: was {original_len} chars. "
-                "Re-run the tool if this output is needed again.]"
-            )
+            # If this output was captured in the tool-output buffer, keep the
+            # retrieval pointer so the agent can still pull it back after pruning
+            # (losing it would strand data that IS still available on disk).
+            buffer_id = message.metadata.get("buffer_id")
+            if not buffer_id:
+                match = _BUFFER_ID_RE.search(message.content or "")
+                buffer_id = match.group(1) if match else None
+            if buffer_id:
+                message.content = (
+                    f"[tool output pruned to save context: was {original_len} chars. "
+                    f'Full output retained in buffer:{buffer_id} — retrieve with '
+                    f'buffer_grep/buffer_slice(buffer_id="{buffer_id}").]'
+                )
+            else:
+                message.content = (
+                    f"[tool output pruned to save context: was {original_len} chars. "
+                    "Re-run the tool if this output is needed again.]"
+                )
             message.metadata["pruned"] = True
             pruned += 1
     return pruned

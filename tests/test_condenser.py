@@ -63,6 +63,54 @@ async def test_microcompact_prunes_then_summarizes():
     assert pruned
 
 
+def test_microcompact_preserves_buffer_pointer_in_content():
+    from garuda.context.condenser import microcompact_messages
+
+    stub = (
+        "[buffer:buf_abc123 | 84291 bytes | 900 lines tool=bash]\n"
+        "Full output stored; showing the first 20 lines.\n"
+        + ("log line\n" * 100)
+    )
+    messages = [
+        Message(role=Role.SYSTEM, content="sys"),
+        Message(role=Role.USER, content="task"),
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c0", name="bash", arguments={})]),
+        Message(role=Role.TOOL, content=stub, name="bash", tool_call_id="c0"),
+        # recent window (kept)
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c1", name="bash", arguments={})]),
+        Message(role=Role.TOOL, content="recent", name="bash", tool_call_id="c1"),
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c2", name="bash", arguments={})]),
+        Message(role=Role.TOOL, content="recent2", name="bash", tool_call_id="c2"),
+    ]
+    pruned = microcompact_messages(messages, keep_recent_turns=2)
+    assert pruned == 1
+    stubbed = messages[3].content
+    assert "pruned" in stubbed
+    assert "buffer:buf_abc123" in stubbed  # retrieval pointer survives
+    assert "buffer_grep/buffer_slice" in stubbed
+
+
+def test_microcompact_preserves_buffer_pointer_from_metadata():
+    from garuda.context.condenser import microcompact_messages
+
+    msg = Message(
+        role=Role.TOOL, content="x" * 2000, name="bash", tool_call_id="c0",
+        metadata={"buffer_id": "buf_meta99"},
+    )
+    messages = [
+        Message(role=Role.SYSTEM, content="sys"),
+        Message(role=Role.USER, content="task"),
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c0", name="bash", arguments={})]),
+        msg,
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c1", name="bash", arguments={})]),
+        Message(role=Role.TOOL, content="recent", name="bash", tool_call_id="c1"),
+        Message(role=Role.ASSISTANT, content="", tool_calls=[ToolCall(id="c2", name="bash", arguments={})]),
+        Message(role=Role.TOOL, content="recent2", name="bash", tool_call_id="c2"),
+    ]
+    microcompact_messages(messages, keep_recent_turns=2)
+    assert "buffer:buf_meta99" in msg.content
+
+
 async def test_recent_window_drops_middle_without_llm():
     cm = _cm(RecentWindowCondenser(trigger_fraction=0.5))
     msgs = _history(8)
