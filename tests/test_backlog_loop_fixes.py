@@ -137,6 +137,72 @@ def test_seed_preserves_explicit_task():
     assert cm._task == "MY_SUBAGENT_TASK"  # not clobbered by parent's first user msg
 
 
+# --- E2E: forked subagent through a full parent turn (#3/#4/#5 integration) --
+
+def _assert_valid_tool_sequence(messages: list[Message]) -> None:
+    """Every assistant tool_calls turn must be immediately followed by tool
+    results covering all its ids (the invariant real providers 400 on)."""
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.role == Role.ASSISTANT and m.tool_calls:
+            # task_complete is terminal — it never gets a tool result appended.
+            needed = {c.id for c in m.tool_calls if c.name != "task_complete"}
+            j = i + 1
+            answered = set()
+            while j < len(messages) and messages[j].role == Role.TOOL:
+                answered.add(messages[j].tool_call_id)
+                j += 1
+            assert needed <= answered, f"dangling tool_calls {needed - answered} at index {i}"
+            i = j
+        else:
+            i += 1
+
+
+class _SeqValidatingModel:
+    """Validates message-sequence validity on every call (shared by parent+subagent)."""
+
+    model_name = "test/seq"
+    supports_tool_calling = True
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.i = 0
+
+    async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+        _assert_valid_tool_sequence(messages)  # raises if the fork left a dangling tool_call
+        r = self._responses[min(self.i, len(self._responses) - 1)]
+        self.i += 1
+        return r
+
+    def count_tokens(self, messages):
+        return 0
+
+
+async def test_forked_subagent_e2e_no_dangling_tool_call(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    model = _SeqValidatingModel([
+        # parent turn 1: delegate to a forked subagent (mid-turn tool_call)
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            id="s1", name="invoke_subagent",
+            arguments={"profile": "explore", "task": "look around", "fork_context": True},
+        )]),
+        # subagent turn 1: complete (its seeded context must be a valid sequence)
+        _tc("Subagent explored and reports the layout in full detail."),
+        # parent turn 2: complete
+        _tc("Parent finished using the subagent's findings."),
+    ])
+    result = await DefaultAgent().run(
+        task="delegate then finish", model=model, env=env, tools=default_tools(),
+        config=AgentConfig(max_turns=6),
+    )
+    assert result.success
+    # The parent's own transcript is a valid sequence (invoke_subagent answered).
+    _assert_valid_tool_sequence(result.messages)
+    # And the model was called at least 3 times (parent, subagent, parent) with no raise.
+    assert model.i >= 3
+
+
 # --- background reaping -----------------------------------------------------
 
 async def test_reap_session_kills_and_clears():

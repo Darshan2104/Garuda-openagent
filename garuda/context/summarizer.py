@@ -4,6 +4,41 @@ from garuda.types import Message, Role
 MAX_HISTORY_MESSAGES = 200
 MAX_MESSAGE_CHARS = 2000
 
+_STATE_SYSTEM = (
+    "You maintain a compact STRUCTURED STATE of an agent's progress that survives context "
+    "compaction. Update the existing state with new information from the transcript, PRESERVING "
+    "still-relevant prior facts (do not drop them). Keep exactly these sections:\n"
+    "## Objective\n## Files changed\n## Key findings\n## Failed approaches\n## Open TODOs\n"
+    "## Current status\n"
+    "Be concise and factual. Output ONLY the updated state, nothing else."
+)
+
+
+async def summarize_incremental(
+    model: Model, prior_state: str, messages: list[Message], task: str
+) -> str:
+    """Fold new transcript into a running structured state (one model call).
+
+    Unlike a full re-summarize, this preserves prior structured facts and merges,
+    so quality doesn't drift over many compactions and the input stays bounded
+    (after the first rebuild, only a small window is fed back in)."""
+    transcript = _render_history(messages)
+    prior = prior_state.strip() or "(no state yet — create it)"
+    response = await model.complete(
+        [
+            Message(role=Role.SYSTEM, content=_STATE_SYSTEM),
+            Message(
+                role=Role.USER,
+                content=(
+                    f"Task:\n{task}\n\nCurrent state:\n{prior}\n\n"
+                    f"New transcript to fold in:\n{transcript}\n\n"
+                    "Return the full updated structured state."
+                ),
+            ),
+        ]
+    )
+    return (response.content or "").strip() or prior_state
+
 
 def _render_history(messages: list[Message]) -> str:
     lines: list[str] = []

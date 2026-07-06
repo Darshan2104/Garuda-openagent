@@ -1,7 +1,12 @@
 """Tests for MCP fault isolation, tool-name sanitization, and env interpolation."""
 
+import sys
+from pathlib import Path
+
 from garuda.mcp.client import McpClientManager, sanitize_tool_name
 from garuda.mcp.config import McpServerConfig, load_mcp_config
+
+_ECHO_SERVER = str(Path(__file__).parent / "fixtures" / "mcp_echo_server.py")
 
 
 def test_sanitize_tool_name_replaces_bad_chars():
@@ -29,8 +34,8 @@ async def test_failing_server_is_isolated():
         McpServerConfig(
             name="echo",
             transport="stdio",
-            command="python3",
-            args=["tests/fixtures/mcp_echo_server.py"],
+            command=sys.executable,  # same interpreter running the tests, not a PATH "python3"
+            args=[_ECHO_SERVER],  # absolute, so CWD-independent
         ),
     ]
     manager = McpClientManager()

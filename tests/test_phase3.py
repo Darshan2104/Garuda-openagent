@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 
 import pytest
 
@@ -107,10 +108,23 @@ async def test_context_manager_three_step_summary():
     assert any("Conversation summary" in m.content for m in messages)
 
 
+def _docker_available() -> bool:
+    """True only if the docker CLI exists AND the daemon is reachable — a present
+    CLI with a dead daemon must skip, not fail."""
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=10
+        ).returncode == 0
+    except Exception:
+        return False
+
+
 @pytest.mark.asyncio
 async def test_docker_workspace_lifecycle(tmp_path):
-    if shutil.which("docker") is None:
-        pytest.skip("docker not installed")
+    if not _docker_available():
+        pytest.skip("docker daemon not available")
     workspace = DockerWorkspace(workspace_root=tmp_path)
     await workspace.start()
     env = workspace.get_environment()

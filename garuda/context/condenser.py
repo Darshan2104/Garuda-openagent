@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from garuda.context.summarizer import summarize_three_step
+from garuda.context.summarizer import summarize_incremental, summarize_three_step
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
@@ -203,6 +203,9 @@ class MicrocompactCondenser:
         self.microcompact_fraction = microcompact_fraction
         self.prune_min_chars = prune_min_chars
         self._last_summary_len = 0
+        # Running structured state, maintained incrementally across compactions so
+        # summary quality doesn't drift over long horizons (vs re-deriving prose).
+        self._state = ""
 
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
         if cx.usage_fraction < self.microcompact_fraction:
@@ -218,10 +221,26 @@ class MicrocompactCondenser:
             and cx.usage_fraction < _CRITICAL_FRACTION
         ):
             return None
-        summary = await build_summary(cx)
+        summary = await self._summarize(cx)
         rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
         self._last_summary_len = len(rebuilt)
         return rebuilt
+
+    async def _summarize(self, cx: CondenserContext) -> str:
+        """Incrementally fold the history into a persisted structured state (falls
+        back to the LLM-free compact summary on error or when LLM summary is off)."""
+        if not cx.enable_three_step_summary:
+            return compact_summary(cx.messages)
+        try:
+            self._state = await summarize_incremental(cx.model, self._state, cx.messages, cx.task)
+            return self._state
+        except Exception as exc:
+            logger.warning(
+                "Incremental summarize failed (%s: %s); using compact summary",
+                type(exc).__name__,
+                exc,
+            )
+            return compact_summary(cx.messages)
 
 
 class RecentWindowCondenser:

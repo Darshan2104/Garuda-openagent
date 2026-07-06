@@ -315,16 +315,51 @@ project policy — not Google/Gemini, and never a full-dataset eval.
 
 ---
 
+## Status update 15 (2026-07-06) — post-review small gaps
+
+Closed the residual gaps flagged after the backlog sweep:
+
+- **Env-dependent test failures fixed/guarded** so CI without those backends stays green: the docker
+  test now checks daemon reachability (`docker info`), not just CLI presence; the MCP echo test uses
+  `sys.executable` + an absolute fixture path (was a hardcoded `python3` + CWD-relative path); the
+  Seatbelt network-deny test (macOS-version-fragile) is opt-in via `GARUDA_LIVE_SANDBOX=1`. MCP
+  discovery was already isolated by the conftest.
+- **End-to-end forked-subagent test** — a sequence-validating model runs `invoke_subagent(fork_
+  context=True)` through a full parent turn and asserts the subagent's seeded context is a valid
+  message sequence (would catch a regression of the dangling-tool_call fix, which `ScriptModel` can't).
+- **`format_subagent_summary` now returns structured evidence** — files changed (from write_file/
+  edit calls) and retrievable buffer ids, not just `final_message`, so the parent doesn't redo the
+  subagent's discovery.
+- **Incremental structured summarizer** — `summarize_incremental` folds new transcript into a
+  persisted structured state (Objective / Files changed / Key findings / Failed approaches / Open
+  TODOs / Current status), preserving prior facts instead of re-deriving prose every compaction; the
+  MicrocompactCondenser maintains this state (LLM-free `compact_summary` remains the fallback). This
+  replaces the re-summarize cliff's *guard* with a better *algorithm*.
+- **§0 verdict de-staled** (below).
+
+Suite: 358 passing (4 skipped), +10 tests.
+
+---
+
 ## 0. Verdict
 
-The RFC and architecture are genuinely good — the landscape analysis is accurate, the protocol-based
-layering is right, and the module boundaries are clean. But **v1.1.0 is not "33/33 modules complete";
-it is a well-shaped skeleton with several load-bearing bugs.** The most important one means the
-harness almost certainly cannot run a multi-turn tool-use task against a real OpenAI/Anthropic
-endpoint today: it has only ever been exercised end-to-end via `ScriptModel` in tests.
+> **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton
+> with several load-bearing bugs" that "almost certainly cannot run a multi-turn tool-use task
+> against a real provider." **That is now stale.** Since then the Phase-A correctness sprint and the
+> full multi-reviewer audit (status updates 12–15) landed: the message-sequence invariant is
+> enforced, error containment + retry resilience are in, the loop/subagent/rigorous/context/tool
+> findings are fixed, and the harness has been exercised end-to-end against live providers
+> (Gemini earlier, now Fireworks per policy) — not just `ScriptModel`. Current state: **a working
+> harness at 358 passing tests** with the known review backlog closed. The remaining open items are
+> capability upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
+> diagnostics) and a live Anthropic thinking-round-trip confirmation — not correctness blockers.
 
-Rule for everything below: **fix correctness (P0) before adding anything**, because every new
-feature built on the current loop inherits the same failure modes.
+*Original v1.1.0 verdict (historical):* The RFC and architecture are genuinely good — the landscape
+analysis is accurate, the protocol-based layering is right, and the module boundaries are clean. But
+v1.1.0 was not "33/33 modules complete"; it was a well-shaped skeleton with several load-bearing
+bugs, the most important of which meant the harness could not reliably run a multi-turn tool-use task
+against a real provider (it had only ever been exercised end-to-end via `ScriptModel`). The rule at
+the time: **fix correctness (P0) before adding anything** — since honored across the phases above.
 
 ---
 

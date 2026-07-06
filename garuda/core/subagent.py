@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,8 +150,34 @@ class SubagentRunner:
         return result
 
 
+_SUMMARY_BUFFER_RE = re.compile(r"\[buffer:([^\s|\]]+)")
+
+
 def format_subagent_summary(profile_name: str, result: AgentResult) -> str:
-    return (
-        f"Subagent @{profile_name} finished (success={result.success}, turns={result.turns}):\n"
-        f"{result.final_message}"
-    )
+    """Distill a subagent run into structured evidence for the parent.
+
+    Returns the final message plus the files it changed and any retrievable buffer
+    ids, so the parent can act on the subagent's work without re-discovering it.
+    """
+    files: list[str] = []
+    buffers: list[str] = []
+    for message in result.messages:
+        for call in message.tool_calls or []:
+            if call.name in ("write_file", "edit"):
+                path = call.arguments.get("path")
+                if path and path not in files:
+                    files.append(path)
+        if message.role == Role.TOOL and message.content:
+            for bid in _SUMMARY_BUFFER_RE.findall(message.content):
+                if bid not in buffers:
+                    buffers.append(bid)
+
+    parts = [f"Subagent @{profile_name} finished (success={result.success}, turns={result.turns})."]
+    if files:
+        parts.append("Files changed: " + ", ".join(files[:30]))
+    if buffers:
+        parts.append(
+            "Retrievable buffers (buffer_grep/buffer_slice): " + ", ".join(buffers[:10])
+        )
+    parts.append("Summary:\n" + (result.final_message or "(no summary)"))
+    return "\n".join(parts)
