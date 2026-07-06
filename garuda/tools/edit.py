@@ -5,6 +5,33 @@ from garuda.workspace.protocol import Environment
 _SNIPPET_CONTEXT_LINES = 2
 
 
+def _normalize_ws(text: str) -> str:
+    """Collapse each line to its stripped form for whitespace-insensitive comparison."""
+    return "\n".join(line.strip() for line in text.splitlines())
+
+
+def _normalize_eol(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _no_match_hint(content: str, old_string: str) -> str:
+    """Explain a likely reason ``old_string`` was not found, when we can spot one.
+
+    The dominant edit failure is a copy that differs only in indentation/whitespace
+    or line endings; a bare 'not found' sends the model in circles. Point it at the
+    real fix instead.
+    """
+    if _normalize_eol(old_string) in _normalize_eol(content):
+        return " A match exists but line endings differ (the file may use CRLF); read the file and copy its exact bytes."
+    normalized = _normalize_ws(old_string)
+    if normalized and normalized in _normalize_ws(content):
+        return (
+            " A near-match exists that differs only in leading/trailing whitespace or indentation. "
+            "Re-read the file and copy old_string exactly, including its indentation."
+        )
+    return " Re-read the file to copy the exact text (whitespace included); it may have changed or never matched."
+
+
 def _snippet_around(content: str, position: int) -> str:
     """Return a few lines of `content` surrounding character offset `position`."""
     lines = content.splitlines()
@@ -69,6 +96,16 @@ class EditTool:
         new_string = arguments["new_string"]
         replace_all = bool(arguments.get("replace_all", False))
 
+        if old_string == "":
+            return ToolResult(
+                tool_call_id="",
+                content=(
+                    "old_string must be non-empty. To create a file or replace its whole "
+                    "contents, use the write_file tool instead."
+                ),
+                is_error=True,
+            )
+
         if old_string == new_string:
             return ToolResult(
                 tool_call_id="",
@@ -92,7 +129,7 @@ class EditTool:
         if count == 0:
             return ToolResult(
                 tool_call_id="",
-                content=f"old_string not found in {path}",
+                content=f"old_string not found in {path}.{_no_match_hint(content, old_string)}",
                 is_error=True,
             )
         if count > 1 and not replace_all:

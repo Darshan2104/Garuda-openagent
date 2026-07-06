@@ -191,6 +191,22 @@ on prompt text, so this is a pure quality change. **Live-verified on Gemini 2.5 
 search→read→exact-write task completed correctly in 5 turns (exact-match answer written). Suite: 311
 passing.
 
+## Status update 10 (2026-07-06) — agent-quality: tool reliability
+
+Audited the workhorse tools; `read_file` (cat -n, offset/limit, truncation, EOF guards) and `edit`
+(exact-match, uniqueness, snippet feedback) were already strong. Closed the remaining reliability
+gaps on `edit` — the tool the agent leans on most:
+
+- **Near-miss diagnostics** — the #1 edit failure is an `old_string` that differs only in
+  indentation/whitespace or line endings, which previously gave a bare "not found" and sent the
+  model in circles. `edit` now diagnoses it: detects a whitespace-normalized or CRLF/LF near-match
+  and tells the model exactly what to fix (re-read and copy the exact bytes/indentation).
+- **Empty `old_string` guard** — was silently treated as "occurs N times"; now a clear error
+  pointing at write_file.
+- **`write_file`** confirmation now reports line count alongside bytes (better observation signal).
+
+Suite: **316 passing**, +6 tool tests.
+
 ---
 
 ## 0. Verdict

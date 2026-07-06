@@ -101,6 +101,65 @@ async def test_edit_replace_all(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_edit_empty_old_string_rejected(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("a.txt", "hello\n")
+    tool = EditTool()
+    result = await tool.execute(
+        {"path": "a.txt", "old_string": "", "new_string": "x"}, env, CTX
+    )
+    assert result.is_error
+    assert "non-empty" in result.content
+    assert "write_file" in result.content
+    assert await env.read_file("a.txt") == "hello\n"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_edit_near_miss_whitespace_hint(tmp_path: Path):
+    # Tab-indented in the file, space-indented old_string -> not a literal substring,
+    # but a whitespace-only near-miss the hint should catch.
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("app.py", "def main():\n\treturn 1\n")  # tab indent
+    tool = EditTool()
+    result = await tool.execute(
+        {"path": "app.py", "old_string": "    return 1", "new_string": "    return 2"},  # spaces
+        env,
+        CTX,
+    )
+    assert result.is_error
+    assert "whitespace or indentation" in result.content
+    assert await env.read_file("app.py") == "def main():\n\treturn 1\n"  # untouched
+
+
+def test_no_match_hint_line_endings():
+    # LocalEnvironment normalizes CRLF on write, so exercise the branch directly
+    # (relevant for envs/files that preserve CRLF).
+    from garuda.tools.edit import _no_match_hint
+
+    hint = _no_match_hint("alpha\r\nbeta\r\n", "alpha\nbeta")
+    assert "line endings differ" in hint
+
+
+def test_no_match_hint_whitespace():
+    from garuda.tools.edit import _no_match_hint
+
+    hint = _no_match_hint("def f():\n\treturn 1\n", "    return 1")
+    assert "whitespace or indentation" in hint
+
+
+@pytest.mark.asyncio
+async def test_write_file_reports_lines(tmp_path: Path):
+    from garuda.tools.files import WriteFileTool
+
+    env = LocalEnvironment(workspace_root=tmp_path)
+    result = await WriteFileTool().execute(
+        {"path": "x.txt", "content": "a\nb\nc\n"}, env, CTX
+    )
+    assert not result.is_error
+    assert "3 lines" in result.content
+
+
+@pytest.mark.asyncio
 async def test_read_file_line_numbers(tmp_path: Path):
     env = LocalEnvironment(workspace_root=tmp_path)
     await env.write_file("nums.txt", "alpha\nbeta\ngamma\n")
