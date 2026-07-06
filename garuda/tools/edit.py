@@ -158,4 +158,10 @@ class EditTool:
         message = f"Edited {path} ({replacements} replacement{plural})"
         if snippet:
             message += f"\n\nSnippet of new content:\n{snippet}"
+        if getattr(ctx, "post_edit_diagnostics", True):
+            from garuda.tools.diagnostics import check_syntax
+
+            problem = await check_syntax(env, path)
+            if problem:
+                message += f"\n\n⚠ Syntax check failed after edit:\n{problem}"
         return ToolResult(tool_call_id="", content=message)

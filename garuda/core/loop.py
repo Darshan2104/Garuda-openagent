@@ -220,6 +220,8 @@ class DefaultAgent:
             model=model,
             subagent_runner=subagent_runner,
             buffer=buffer,
+            post_edit_diagnostics=config.post_edit_diagnostics,
+            persistent_shell=config.persistent_shell,
         )
         final_message = ""
         usage_totals: dict[str, int] = {}

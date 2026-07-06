@@ -17,6 +17,8 @@ class ToolContext:
     model: Model | None = None
     subagent_runner: "SubagentRunner | None" = None
     buffer: "ToolOutputBuffer | None" = None
+    post_edit_diagnostics: bool = True
+    persistent_shell: bool = False
 
 
 @runtime_checkable

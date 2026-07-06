@@ -8,6 +8,15 @@ DEFAULT_GREP_MAX_RESULTS = 100
 GLOB_MAX_RESULTS = 200
 
 
+def _ctx_int(value) -> int:
+    """Coerce a context-line argument to a non-negative int (0 when absent/invalid)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, n)
+
+
 class GrepTool:
     name = "grep"
     description = (
@@ -27,9 +36,27 @@ class GrepTool:
                 "type": "string",
                 "description": "Filename filter, e.g. '*.py' (optional)",
             },
+            "context": {
+                "type": "integer",
+                "description": "Lines of context to show before AND after each match (grep -C)",
+            },
+            "before_context": {
+                "type": "integer",
+                "description": "Lines of context before each match (grep -B)",
+            },
+            "after_context": {
+                "type": "integer",
+                "description": "Lines of context after each match (grep -A)",
+            },
+            "output_mode": {
+                "type": "string",
+                "enum": ["content", "files_with_matches", "count"],
+                "description": "content (default): matching lines; files_with_matches: just file "
+                "paths; count: match count per file",
+            },
             "max_results": {
                 "type": "integer",
-                "description": f"Maximum matching lines to return (default {DEFAULT_GREP_MAX_RESULTS})",
+                "description": f"Maximum output lines to return (default {DEFAULT_GREP_MAX_RESULTS})",
             },
         },
         "required": ["pattern"],
@@ -47,23 +74,46 @@ class GrepTool:
         max_results = arguments.get("max_results") or DEFAULT_GREP_MAX_RESULTS
         if max_results < 1:
             max_results = 1
+        output_mode = arguments.get("output_mode") or "content"
 
         q_path = shlex.quote(path)
         q_pattern = shlex.quote(pattern)
         include = f" --include={shlex.quote(glob)}" if glob else ""
+
+        # Output-mode flags: -l lists files, -c counts per file; both suppress the
+        # per-line context flags. Otherwise apply -A/-B/-C context (ripgrep-style).
+        if output_mode == "files_with_matches":
+            mode_flags = " -l"
+            line_flags = "-H"  # -l ignores -n; keep -H harmless
+        elif output_mode == "count":
+            mode_flags = " -c"
+            line_flags = "-H"
+        else:
+            mode_flags = ""
+            line_flags = "-nH"
+            ctx_c = _ctx_int(arguments.get("context"))
+            ctx_b = _ctx_int(arguments.get("before_context"))
+            ctx_a = _ctx_int(arguments.get("after_context"))
+            if ctx_c:
+                mode_flags += f" -C {ctx_c}"
+            else:
+                if ctx_b:
+                    mode_flags += f" -B {ctx_b}"
+                if ctx_a:
+                    mode_flags += f" -A {ctx_a}"
+
         # Branch on file vs directory so single-file and symlinked targets work
         # reliably across GNU and BSD/macOS grep. Directories (incl. symlinks to
         # dirs) use `-R` with a trailing slash — BSD grep won't descend into a
         # symlink-to-dir given directly, but the trailing slash forces it. Single
         # files use plain `grep -nH` (no recursion; `-r <file>` is unreliable on
-        # BSD). `-H` keeps the path:line:content shape even for one file. Net: the
-        # grep tool reaches the same paths as `bash grep`, symlinks included.
+        # BSD). `-H` keeps the path:line:content shape even for one file.
         command = (
             f"p={q_path}; "
             f'if [ -d "$p" ]; then '
-            f'grep -RnH -E{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
+            f'grep -R {line_flags} -E{mode_flags}{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
             f"else "
-            f'grep -nH -E -e {q_pattern} -- "$p"; '
+            f'grep {line_flags} -E{mode_flags} -e {q_pattern} -- "$p"; '
             f"fi"
         )
 

@@ -82,6 +82,11 @@ class AgentConfig:
     # thinking budget. Either enables reasoning; None keeps it off.
     reasoning_effort: str | None = None
     thinking_budget_tokens: int | None = None
+    # Run a fast syntax check after edit/write_file and surface any error to the model.
+    post_edit_diagnostics: bool = True
+    # Persist shell state (cwd/env/venv) across bash calls via a long-lived session
+    # (local env only; opt-in). Off by default to keep bash fully isolated per call.
+    persistent_shell: bool = False
     allowed_tools: list[str] | None = None
     max_context_tokens: int = 128_000
     skills: list[str] | None = None

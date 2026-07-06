@@ -222,6 +222,53 @@ async def test_grep_caps_results(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_grep_context_lines(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("f.txt", "line-a\nline-b\nNEEDLE\nline-d\nline-e\n")
+    tool = GrepTool()
+    result = await tool.execute({"pattern": "NEEDLE", "context": 1}, env, CTX)
+    assert not result.is_error
+    # -C 1 -> the match plus one line before and after.
+    assert "NEEDLE" in result.content
+    assert "line-b" in result.content
+    assert "line-d" in result.content
+    assert "line-a" not in result.content  # outside the context window
+
+
+@pytest.mark.asyncio
+async def test_grep_before_after_context(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("f.txt", "before1\nHIT\nafter1\nafter2\n")
+    tool = GrepTool()
+    result = await tool.execute({"pattern": "HIT", "before_context": 1, "after_context": 2}, env, CTX)
+    assert "before1" in result.content
+    assert "after1" in result.content and "after2" in result.content
+
+
+@pytest.mark.asyncio
+async def test_grep_files_with_matches(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("a.py", "needle here\n")
+    await env.write_file("b.py", "needle again\nand more needle\n")
+    tool = GrepTool()
+    result = await tool.execute({"pattern": "needle", "output_mode": "files_with_matches"}, env, CTX)
+    assert not result.is_error
+    assert "a.py" in result.content and "b.py" in result.content
+    # File list, not per-line content -> no line numbers / duplicate lines.
+    assert "needle again" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_grep_count_mode(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("c.txt", "x\nx\nx\n")
+    tool = GrepTool()
+    result = await tool.execute({"pattern": "x", "output_mode": "count"}, env, CTX)
+    assert not result.is_error
+    assert "3" in result.content
+
+
+@pytest.mark.asyncio
 async def test_glob_patterns(tmp_path: Path):
     env = LocalEnvironment(workspace_root=tmp_path)
     await env.write_file("top.py", "x = 1\n")

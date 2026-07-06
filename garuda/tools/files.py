@@ -104,9 +104,15 @@ class WriteFileTool:
         ctx: ToolContext,
     ) -> ToolResult:
         content = arguments["content"]
-        await env.write_file(arguments["path"], content)
+        path = arguments["path"]
+        await env.write_file(path, content)
         size = len(content.encode("utf-8"))
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-        return ToolResult(
-            tool_call_id="", content=f"Wrote {arguments['path']} ({size} bytes, {line_count} lines)"
-        )
+        message = f"Wrote {path} ({size} bytes, {line_count} lines)"
+        if getattr(ctx, "post_edit_diagnostics", True):
+            from garuda.tools.diagnostics import check_syntax
+
+            problem = await check_syntax(env, path)
+            if problem:
+                message += f"\n\n⚠ Syntax check failed after write:\n{problem}"
+        return ToolResult(tool_call_id="", content=message)
