@@ -41,7 +41,7 @@ class AgentSession:
         workspace: str,
         agents_dir: Path | None = None,
         mcp_config_path: str | None = None,
-        mode: str = "standard",
+        mode: str | None = None,
         approval_handler: ApprovalHandler | None = None,
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
@@ -49,7 +49,8 @@ class AgentSession:
     ) -> "AgentSession":
         profile = load_profile(agent_name, extra_dir=agents_dir)
         config = profile.to_agent_config()
-        config.mode = mode
+        if mode:  # else honor the profile's own mode
+            config.mode = mode
         config.workspace_kind = workspace_kind
         config.docker_image = docker_image
         config.docker_host = docker_host
@@ -75,7 +76,7 @@ class AgentSession:
             tools=tools,
             mcp_manager=mcp_manager,
             agents_dir=agents_dir,
-            agent=create_agent(profile.name, mode=mode),
+            agent=create_agent(profile.name, mode=config.mode),
         )
 
     def prepare_context(self, task: str) -> ContextManager:

@@ -287,6 +287,32 @@ Suite: **335 passing**, +9 tests. Still open from the review: process-group kill
 the capability upgrades (multimodal content blocks, persistent shell, ripgrep context lines,
 post-edit diagnostics).
 
+## Status update 14 (2026-07-06) — context, confinement/security, and interface backlog
+
+Completes the review backlog (Groups F/B/C, on top of A/D/E in update 13):
+
+- **Context (F):** #13 the microcompact condenser no longer re-summarizes every turn after a
+  rebuild — it requires real message growth before summarizing again (unless usage is critically
+  high), killing the 3-LLM-calls-per-turn cliff. #15 buffer paths are collision-safe (distinct ids
+  that sanitize to the same stem get a hash suffix — no silent overwrite) and stale buffer dirs
+  (>14d) are pruned best-effort to bound disk growth.
+- **Confinement/security (B):** `image_read` reads bytes **through the environment** (`base64 <`
+  file) so it works in docker/remote and reaches the same files as bash (was reading the harness
+  host FS — broken in containers, unconfined locally). `web_fetch` gets an **SSRF guard** (refuses
+  hosts resolving to private/loopback/link-local/reserved addresses — closes the cloud-metadata /
+  localhost egress hole), a **total fetch deadline** (45s, not just per-socket), and a **hard byte
+  cap** (5 MB). The **sandbox `cwd` write-escape** is closed: a model-supplied cwd is clamped to
+  inside the workspace before it becomes a writable bind/subpath.
+- **Interfaces (C):** resumed sessions **copy the prior session's buffers** into the new session
+  dir so inherited `[buffer:...]` stubs resolve. Recipes now build and pass a **HookRegistry** (a
+  repo's before_tool guard was previously ignored under `garuda recipe run`). The profile **`mode`
+  field is honored** — run/chat/serve/SDK/recipes only override it when a mode is explicitly given,
+  so a `mode: rigorous` profile is no longer silently downgraded to standard.
+
+Suite: **353 passing**, +18 tests. **Fireworks smoke** (gpt-oss-120b): a search→exact-write task
+completed correctly in 6 turns. Live testing now uses the Fireworks API (small samples only), per
+project policy — not Google/Gemini, and never a full-dataset eval.
+
 ---
 
 ## 0. Verdict

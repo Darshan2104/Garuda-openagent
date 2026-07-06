@@ -27,7 +27,7 @@ class SoftwareAgent:
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
-        mode: str = "standard",
+        mode: str | None = None,
     ):
         self.workspace = str(workspace)
         self.model_name = model
@@ -58,7 +58,8 @@ class SoftwareAgent:
         """
         profile = load_profile(self.agent_name, extra_dir=self.agents_dir)
         config = profile.to_agent_config()
-        config.mode = self.mode
+        if self.mode:  # else honor the profile's own mode
+            config.mode = self.mode
         config.workspace_kind = self.workspace_kind
         config.docker_image = self.docker_image
         config.docker_host = self.docker_host
@@ -76,7 +77,7 @@ class SoftwareAgent:
             path_rules=profile.path_rules,
             bash_rules=profile.bash_rules,
         )
-        agent = create_agent(profile.name, mode=self.mode)
+        agent = create_agent(profile.name, mode=config.mode)
         events = events or EventStore()
         tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
 

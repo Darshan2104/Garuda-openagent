@@ -4,9 +4,11 @@ Not registered in garuda.tools.__init__ yet; registration is wired separately.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,9 +23,40 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "Garuda-agent/1.1"
 REQUEST_TIMEOUT = 30.0
+# Hard ceiling on the whole fetch so a slow-drip server can't hold the turn open
+# indefinitely (urlopen's timeout is only per-socket-operation).
+TOTAL_FETCH_DEADLINE = 45.0
 DEFAULT_MAX_BYTES = 100_000
+# Absolute cap so a huge max_bytes can't trigger a multi-hundred-MB read.
+MAX_FETCH_BYTES_CAP = 5_000_000
 DEFAULT_MAX_RESULTS = 5
 MAX_SNIPPET_CHARS = 300
+
+
+def _ssrf_error(url: str) -> str | None:
+    """Block fetches that resolve to non-public addresses (cloud metadata,
+    localhost services, internal networks). Best-effort SSRF guard."""
+    host = urllib.parse.urlparse(url).hostname
+    if not host:
+        return "Invalid URL (missing host)."
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return None  # let the fetch surface a normal DNS error
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        ):
+            return (
+                f"Refusing to fetch {url}: host resolves to a non-public address ({ip}). "
+                "web_fetch is restricted to public internet endpoints."
+            )
+    return None
 
 # Content types (besides text/*) we are willing to return as text.
 _TEXTUAL_TYPES = {
@@ -121,6 +154,9 @@ def validate_http_url(url: str) -> str | None:
 
 def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
     """GET the URL. Returns (error, text). Runs in a worker thread."""
+    ssrf = _ssrf_error(url)
+    if ssrf:
+        return (ssrf, "")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
@@ -130,7 +166,7 @@ def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
             charset = response.headers.get_content_charset() or "utf-8"
             # Read a bounded amount: enough raw bytes to fill max_bytes of text
             # even after HTML tag stripping, without slurping huge responses.
-            raw = response.read(max(max_bytes * 10, 1_000_000))
+            raw = response.read(min(max(max_bytes * 10, 1_000_000), MAX_FETCH_BYTES_CAP * 10))
     except urllib.error.HTTPError as exc:
         return (f"HTTP error {exc.code} fetching {url}: {exc.reason}", "")
     except urllib.error.URLError as exc:
@@ -181,9 +217,19 @@ class WebFetchTool:
             max_bytes = int(arguments.get("max_bytes") or DEFAULT_MAX_BYTES)
         except (TypeError, ValueError):
             max_bytes = DEFAULT_MAX_BYTES
-        max_bytes = max(1, max_bytes)
+        max_bytes = min(max(1, max_bytes), MAX_FETCH_BYTES_CAP)
 
-        error, text = await asyncio.to_thread(_blocking_fetch, url.strip(), max_bytes)
+        try:
+            error, text = await asyncio.wait_for(
+                asyncio.to_thread(_blocking_fetch, url.strip(), max_bytes),
+                timeout=TOTAL_FETCH_DEADLINE,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            return ToolResult(
+                tool_call_id="",
+                content=f"Timed out fetching {url} after {TOTAL_FETCH_DEADLINE:.0f}s (total deadline).",
+                is_error=True,
+            )
         if error:
             return ToolResult(tool_call_id="", content=error, is_error=True)
         if not text.strip():

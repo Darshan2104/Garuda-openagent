@@ -10,17 +10,44 @@ so retrieval works in-process regardless of the execution environment.
 """
 
 import hashlib
+import logging
 import re
+import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.core.sessions import default_sessions_root
+
+logger = logging.getLogger(__name__)
 
 MAX_FILENAME_STEM = 120
 
 PREVIEW_LINES = 20
 PREVIEW_MAX_CHARS = 1500
 DEFAULT_THRESHOLD_BYTES = 30_720
+
+# Best-effort retention: buffer dirs untouched for longer than this are pruned so
+# on-disk buffers don't grow without bound across sessions. Well beyond any normal
+# resume window, and only the buffers/ subdir is removed (session metadata stays).
+BUFFER_RETENTION_SECONDS = 14 * 24 * 3600
+
+
+def _prune_old_buffer_dirs(sessions_root: Path) -> None:
+    """Remove stale ``<session>/buffers`` dirs (best-effort; never raises)."""
+    try:
+        if not sessions_root.exists():
+            return
+        cutoff = time.time() - BUFFER_RETENTION_SECONDS
+        for session_dir in sessions_root.iterdir():
+            buffers = session_dir / "buffers"
+            try:
+                if buffers.is_dir() and buffers.stat().st_mtime < cutoff:
+                    shutil.rmtree(buffers, ignore_errors=True)
+            except OSError:
+                continue
+    except Exception:
+        logger.debug("Buffer retention prune failed", exc_info=True)
 
 
 @dataclass
@@ -60,7 +87,12 @@ class ToolOutputBuffer:
     ):
         self.session_id = session_id
         self.threshold_bytes = threshold_bytes
-        self._root = Path(root) if root else default_sessions_root() / session_id / "buffers"
+        if root:
+            self._root = Path(root)
+        else:
+            sessions_root = default_sessions_root()
+            self._root = sessions_root / session_id / "buffers"
+            _prune_old_buffer_dirs(sessions_root)  # bound cross-session disk growth
         self._refs: dict[str, BufferRef] = {}
 
     def exceeds(self, content: str) -> bool:
@@ -70,8 +102,12 @@ class ToolOutputBuffer:
         # Keep the stem filesystem-safe and bounded — some providers (Gemini)
         # return very long tool-call ids that would exceed the OS name limit.
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", buffer_id) or "buffer"
-        if len(safe) > MAX_FILENAME_STEM:
-            safe = hashlib.sha1(buffer_id.encode("utf-8")).hexdigest()
+        # If sanitization changed the id (e.g. "a/b" and "a_b" both -> "a_b") or it
+        # overflows the name limit, disambiguate with a hash of the RAW id so two
+        # distinct buffers can never collide onto one file (silent overwrite).
+        if safe != buffer_id or len(safe) > MAX_FILENAME_STEM:
+            digest = hashlib.sha1(buffer_id.encode("utf-8")).hexdigest()[:12]
+            safe = f"{safe[:MAX_FILENAME_STEM]}_{digest}" if len(safe) <= MAX_FILENAME_STEM else digest
         return self._root / f"{safe}.txt"
 
     def store(self, buffer_id: str, content: str, tool_name: str = "", is_error: bool = False) -> BufferRef:

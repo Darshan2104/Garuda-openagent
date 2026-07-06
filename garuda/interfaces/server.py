@@ -160,7 +160,7 @@ class JsonRpcServer:
 
         model_name = params.get("model", self._config.model)
         agent_name = params.get("agent", self._config.agent)
-        mode = params.get("mode", "standard")
+        mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
         workspace = params.get("workspace", self._config.workspace)
         agents_dir = params.get("agents_dir", self._config.agents_dir)

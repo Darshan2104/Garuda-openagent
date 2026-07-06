@@ -1,6 +1,5 @@
-import base64
 import mimetypes
-from pathlib import Path
+import shlex
 
 import litellm
 
@@ -35,17 +34,24 @@ class ImageReadTool:
     ) -> ToolResult:
         path = arguments["path"]
         question = arguments.get("question", "Describe this image in detail.")
-        file_path = Path(path)
-        if not file_path.is_absolute():
-            file_path = Path(env.workspace_root) / file_path
-        if not file_path.exists():
-            return ToolResult(tool_call_id="", content=f"Image not found: {path}", is_error=True)
 
-        mime_type, _ = mimetypes.guess_type(str(file_path))
+        mime_type, _ = mimetypes.guess_type(path)
         if not mime_type or not mime_type.startswith("image/"):
             return ToolResult(tool_call_id="", content=f"Not an image file: {path}", is_error=True)
 
-        encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        # Read the bytes through the environment (base64), so it works for docker/
+        # remote workspaces (where workspace_root is a container path) and reaches
+        # the same files as bash — instead of reading the harness host filesystem.
+        # `base64 < file` reads stdin, which is portable (macOS base64 rejects a
+        # positional filename; GNU accepts both).
+        result = await env.execute(f"base64 < {shlex.quote(path)}", timeout=30.0)
+        if result.exit_code != 0:
+            return ToolResult(
+                tool_call_id="", content=f"Image not found or unreadable: {path}", is_error=True
+            )
+        encoded = "".join(result.stdout.split())
+        if not encoded:
+            return ToolResult(tool_call_id="", content=f"Image is empty: {path}", is_error=True)
         if ctx.model is None:
             return ToolResult(
                 tool_call_id="",

@@ -105,7 +105,12 @@ async def run_recipe(
     mcp_config_path: str | None = None,
 ) -> list[AgentResult]:
     """Execute each recipe step sequentially, passing context forward."""
+    from garuda.plugins.hooks import build_hook_registry
+
     events = events or EventStore()
+    # Recipes must enforce the same lifecycle/safety hooks as run/chat/serve — a
+    # repo's before_tool guard was previously ignored under `garuda recipe run`.
+    hooks = build_hook_registry(workspace)
     resolved = resolve_recipe_params(recipe, params)
     results: list[AgentResult] = []
     prior_context = ""
@@ -133,6 +138,7 @@ async def run_recipe(
             config=config,
             events=events,
             permissions=permissions,
+            hooks=hooks,
             agents_dir=agents_dir,
         )
         if mcp_manager is not None:

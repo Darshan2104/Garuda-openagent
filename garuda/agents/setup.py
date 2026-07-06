@@ -16,13 +16,16 @@ async def prepare_agent_run(
     workspace: str,
     agents_dir: Path | None = None,
     mcp_config_path: str | None = None,
-    mode: str = "standard",
+    mode: str | None = None,
     approval_handler=None,
 ) -> tuple[AgentProfile, AgentConfig, PermissionEngine, list, object, object | None]:
     """Load profile, resolve skills, build toolkit, and return run dependencies."""
     profile = load_profile(agent_name, extra_dir=agents_dir)
     config = profile.to_agent_config()
-    config.mode = mode
+    # Only override the profile's own mode when a caller explicitly asked for one,
+    # so a `mode: rigorous` profile isn't silently downgraded to standard.
+    if mode:
+        config.mode = mode
     config.system_prompt = resolve_system_prompt(profile, workspace)
     mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
     permissions = PermissionEngine(
@@ -33,5 +36,5 @@ async def prepare_agent_run(
         approval_handler=approval_handler,
     )
     tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
-    agent = create_agent(profile.name, mode=mode)
+    agent = create_agent(profile.name, mode=config.mode)
     return profile, config, permissions, tools, agent, mcp_manager

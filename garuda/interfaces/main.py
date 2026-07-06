@@ -57,7 +57,12 @@ def build_parser():
         ".garuda/mcp.json|yaml or .cursor/mcp.json when omitted",
     )
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
-    run_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
+    run_parser.add_argument(
+        "--mode",
+        choices=["standard", "rigorous", "readonly"],
+        default=None,
+        help="Override the agent profile's mode (defaults to the profile's own)",
+    )
     run_parser.add_argument("--max-turns", type=int)
     run_parser.add_argument(
         "--reasoning-effort",
@@ -92,7 +97,7 @@ def build_parser():
     chat_parser.add_argument("--agent", default="build")
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
-    chat_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default="standard")
+    chat_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default=None)
     chat_parser.add_argument("--json", action="store_true")
 
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
@@ -246,7 +251,8 @@ async def run_task(args) -> int:
 
     profile = load_profile(args.agent, extra_dir=Path(args.agents_dir) if args.agents_dir else None)
     config = profile.to_agent_config()
-    config.mode = args.mode
+    if args.mode:  # else keep the profile's own mode
+        config.mode = args.mode
     if args.max_turns is not None:
         config.max_turns = args.max_turns
     if args.permission_mode:

@@ -189,12 +189,20 @@ async def build_summary(cx: CondenserContext) -> str:
 
 # --- strategies --------------------------------------------------------------
 
+# Once a summary rebuild happens, don't summarize again until the conversation has
+# grown by at least this many messages — unless usage is critically high — so we
+# don't pay a 3-call summarize every single turn (the "re-summarize cliff").
+_RESUMMARIZE_MIN_GROWTH = 8
+_CRITICAL_FRACTION = 0.92
+
+
 class MicrocompactCondenser:
     """Prune old tool outputs first (cache-friendly); summarize as last resort."""
 
     def __init__(self, microcompact_fraction: float = 0.75, prune_min_chars: int = PRUNE_MIN_CHARS):
         self.microcompact_fraction = microcompact_fraction
         self.prune_min_chars = prune_min_chars
+        self._last_summary_len = 0
 
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
         if cx.usage_fraction < self.microcompact_fraction:
@@ -203,8 +211,17 @@ class MicrocompactCondenser:
             return list(cx.messages)
         if cx.free_tokens >= cx.proactive_threshold:
             return None
+        # Guard against re-summarizing every turn after a rebuild (nothing left to
+        # prune, still over threshold): require real growth, unless we're critical.
+        if (
+            len(cx.messages) <= self._last_summary_len + _RESUMMARIZE_MIN_GROWTH
+            and cx.usage_fraction < _CRITICAL_FRACTION
+        ):
+            return None
         summary = await build_summary(cx)
-        return _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        self._last_summary_len = len(rebuilt)
+        return rebuilt
 
 
 class RecentWindowCondenser:

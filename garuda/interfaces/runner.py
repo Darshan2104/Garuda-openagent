@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
+
+logger = logging.getLogger(__name__)
 from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment
 
@@ -139,6 +142,18 @@ async def run_agent_task(
     events.attach_persistence(events_path)
     if resumed_from:
         update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
+        # Copy the prior session's tool-output buffers into the new session dir so
+        # inherited [buffer:...] stubs in the resumed conversation still resolve
+        # (buffers are keyed to the session id, which changes on resume).
+        try:
+            import shutil
+
+            src = store.session_dir(resumed_from) / "buffers"
+            dst = store.session_dir(events.session_id) / "buffers"
+            if src.is_dir() and not dst.exists():
+                shutil.copytree(src, dst)
+        except Exception:
+            logger.warning("Failed to copy resumed session buffers", exc_info=True)
 
     if hooks is None:
         hooks = build_hook_registry(workspace)

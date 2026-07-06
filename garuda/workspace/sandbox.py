@@ -8,11 +8,14 @@ Unlike a naive wrapper, this environment:
 * blocks network egress by default (``--unshare-net`` / ``deny network*``).
 """
 
+import logging
 import os
 from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.local import LocalEnvironment
+
+logger = logging.getLogger(__name__)
 from garuda.workspace.sandbox_policy import (
     SandboxPolicy,
     SandboxUnavailableError,
@@ -55,13 +58,32 @@ class SandboxEnvironment:
     def _clean_env(self) -> dict[str, str]:
         return build_clean_env(self._policy, dict(os.environ))
 
+    def _confine_cwd(self, cwd: str | None) -> str:
+        """Clamp a model-supplied cwd to inside the workspace.
+
+        The workdir becomes a writable bind (bwrap) / write subpath (Seatbelt), so an
+        unconfined cwd like /Users/x/.ssh would defeat write confinement — the whole
+        point of the sandbox. A cwd escaping the workspace is ignored.
+        """
+        if not cwd:
+            return self._workspace_root
+        root = Path(self._workspace_root).resolve()
+        candidate = Path(cwd)
+        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            logger.warning("Ignoring sandbox cwd %r: outside the workspace", cwd)
+            return self._workspace_root
+        return str(resolved)
+
     def _wrap(self, command: str, cwd: str | None) -> tuple[str, dict[str, str] | None]:
         """Return (shell_command, subprocess_env) for the chosen backend.
 
         The returned env is the scrubbed env for the launcher process; bwrap
         additionally re-applies it inside the namespace via ``--setenv``.
         """
-        workdir = cwd or self._workspace_root
+        workdir = self._confine_cwd(cwd)
         clean_env = self._clean_env()
         if self._backend == "bwrap":
             from shutil import which
