@@ -19,8 +19,10 @@ from garuda.workspace.sandbox_policy import (
 )
 
 HAS_SEATBELT = platform.system() == "Darwin" and shutil.which("sandbox-exec") is not None
-# Seatbelt network enforcement varies across macOS versions, so the live network
-# test is opt-in (set GARUDA_LIVE_SANDBOX=1) to keep the default suite deterministic.
+# Live Seatbelt behavior — network enforcement *and* filesystem/env confinement —
+# varies across macOS versions, so any test that actually invokes `sandbox-exec`
+# is opt-in (set GARUDA_LIVE_SANDBOX=1) to keep the default suite deterministic and
+# green on every host. The pure profile-builder tests below always run.
 LIVE_SANDBOX = os.environ.get("GARUDA_LIVE_SANDBOX") == "1"
 
 
@@ -127,7 +129,10 @@ def test_sandbox_allows_unconfined_when_not_required(monkeypatch, tmp_path: Path
 
 # --- live Seatbelt (macOS only) ---------------------------------------------
 
-@pytest.mark.skipif(not HAS_SEATBELT, reason="sandbox-exec not available")
+@pytest.mark.skipif(
+    not (HAS_SEATBELT and LIVE_SANDBOX),
+    reason="live seatbelt confinement varies by macOS version (set GARUDA_LIVE_SANDBOX=1)",
+)
 async def test_seatbelt_write_confined_to_workspace(tmp_path: Path):
     env = SandboxEnvironment(workspace_root=tmp_path)
     assert env.backend == "seatbelt"
@@ -140,7 +145,10 @@ async def test_seatbelt_write_confined_to_workspace(tmp_path: Path):
     assert outside.exit_code != 0
 
 
-@pytest.mark.skipif(not HAS_SEATBELT, reason="sandbox-exec not available")
+@pytest.mark.skipif(
+    not (HAS_SEATBELT and LIVE_SANDBOX),
+    reason="live seatbelt env scrubbing varies by macOS version (set GARUDA_LIVE_SANDBOX=1)",
+)
 async def test_seatbelt_env_scrubbed(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SUPER_SECRET_TOKEN", "leak-me")
     env = SandboxEnvironment(workspace_root=tmp_path)

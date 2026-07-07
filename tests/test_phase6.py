@@ -1,8 +1,20 @@
 import json
+import os
+import platform
+import shutil
 from importlib import resources
 from pathlib import Path
 
 import pytest
+
+# Live Seatbelt execution (macOS `sandbox-exec`) varies by OS version, so skip the
+# live-execution path unless opted in — matching tests/test_sandbox_v2.py. On Linux
+# (bwrap or unconfined) the test still runs.
+_LIVE_SEATBELT_ONLY = (
+    platform.system() == "Darwin"
+    and shutil.which("sandbox-exec") is not None
+    and os.environ.get("GARUDA_LIVE_SANDBOX") != "1"
+)
 
 from garuda.config.recipes import load_recipe, render_template, resolve_recipe_params, run_recipe
 from garuda.core.events import EventStore
@@ -122,6 +134,10 @@ def test_create_agent_modes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    _LIVE_SEATBELT_ONLY,
+    reason="live seatbelt execution varies by macOS version (set GARUDA_LIVE_SANDBOX=1)",
+)
 async def test_sandbox_environment_execute(tmp_path):
     env = SandboxEnvironment(workspace_root=tmp_path)
     result = await env.execute("echo sandbox-ok")
