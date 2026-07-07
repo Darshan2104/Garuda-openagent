@@ -63,7 +63,9 @@ def _render_event(renderer: ChatRenderer, event: dict) -> None:
 
 
 async def chat_loop(args) -> int:
-    agents_dir = Path(args.agents_dir) if args.agents_dir else None
+    from garuda.config.agent_home import resolve_agents_dir
+
+    agents_dir = resolve_agents_dir(args.workspace, args.agents_dir)
     from garuda.agents.loader import load_profile
 
     profile = load_profile(args.agent, extra_dir=agents_dir)

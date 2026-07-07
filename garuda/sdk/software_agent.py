@@ -56,7 +56,10 @@ class SoftwareAgent:
         Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
         seed the run with a prior session's conversation.
         """
-        profile = load_profile(self.agent_name, extra_dir=self.agents_dir)
+        from garuda.config.agent_home import resolve_agents_dir
+
+        agents_dir = resolve_agents_dir(self.workspace, self.agents_dir)
+        profile = load_profile(self.agent_name, extra_dir=agents_dir)
         config = profile.to_agent_config()
         if self.mode:  # else honor the profile's own mode
             config.mode = self.mode
@@ -94,7 +97,7 @@ class SoftwareAgent:
             docker_image=self.docker_image,
             docker_host=self.docker_host,
             mcp_manager=mcp_manager,
-            agents_dir=self.agents_dir,
+            agents_dir=agents_dir,
             resume=resume,
         )
 

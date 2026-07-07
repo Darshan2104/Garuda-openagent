@@ -163,9 +163,13 @@ class JsonRpcServer:
         mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
         workspace = params.get("workspace", self._config.workspace)
+        from garuda.config.agent_home import resolve_agents_dir
+
         agents_dir = params.get("agents_dir", self._config.agents_dir)
         mcp_config = params.get("mcp_config", self._config.mcp_config)
-        agents_path = Path(agents_dir) if agents_dir else None
+        # Default the profiles dir to the workspace's `.agent/agents` when unset,
+        # so both the top-level run and any forked subagents resolve custom profiles.
+        agents_path = resolve_agents_dir(workspace, agents_dir)
 
         profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
             agent_name,

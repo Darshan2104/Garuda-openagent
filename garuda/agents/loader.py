@@ -176,10 +176,18 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
     skill_dirs: list[Path] = []
     if workspace_root:
         root = Path(workspace_root)
-        skill_dirs.extend([root / ".garuda" / "skills", root / "skills", root / ".skills"])
+        # `.agent/skills` is the primary convention; the rest are back-compat.
+        skill_dirs.extend(
+            [
+                root / ".agent" / "skills",
+                root / ".garuda" / "skills",
+                root / "skills",
+                root / ".skills",
+            ]
+        )
     if profile.skills_dirs:
         skill_dirs.extend(Path(d) for d in profile.skills_dirs)
-    skill_dirs.extend([Path(".garuda/skills"), Path("skills")])
+    skill_dirs.extend([Path(".agent/skills"), Path(".garuda/skills"), Path("skills")])
 
     discovered = discover_skills(*skill_dirs)
     if profile.skills:

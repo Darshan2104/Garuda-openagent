@@ -225,10 +225,12 @@ def resolve_mcp_config_paths(
     An explicit path (``--mcp-config`` or a profile's ``mcp_config_path``) always
     wins and is used alone. Otherwise the conventional locations are consulted:
 
-      1. ``{workspace}/.garuda/mcp.json``
-      2. ``{workspace}/.garuda/mcp.yaml``
-      3. ``{workspace}/.cursor/mcp.json`` (drop-in compat for Cursor repos)
-      4. ``{global}/mcp.json`` (``GARUDA_GLOBAL_SETTINGS`` dir or ``~/.garuda``)
+      1. ``{workspace}/.agent/mcp.json`` (primary convention)
+      2. ``{workspace}/.agent/mcp.yaml``
+      3. ``{workspace}/.garuda/mcp.json`` (back-compat)
+      4. ``{workspace}/.garuda/mcp.yaml``
+      5. ``{workspace}/.cursor/mcp.json`` (drop-in compat for Cursor repos)
+      6. ``{global}/mcp.json`` (``GARUDA_GLOBAL_SETTINGS`` dir or ``~/.garuda``)
 
     Default behavior is **first project file wins** (a single path), preserving the
     original semantics. When ``GARUDA_MCP_MERGE`` is set, the first project-scope
@@ -240,6 +242,9 @@ def resolve_mcp_config_paths(
         return [explicit_path]
     ws = Path(workspace)
     project_candidates = [
+        # `.agent/` is the primary convention; `.garuda/` and `.cursor/` are back-compat.
+        ws / ".agent" / "mcp.json",
+        ws / ".agent" / "mcp.yaml",
         ws / ".garuda" / "mcp.json",
         ws / ".garuda" / "mcp.yaml",
         ws / ".cursor" / "mcp.json",

@@ -259,7 +259,10 @@ async def run_task(args) -> int:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
 
-    profile = load_profile(args.agent, extra_dir=Path(args.agents_dir) if args.agents_dir else None)
+    from garuda.config.agent_home import resolve_agents_dir
+
+    agents_dir = resolve_agents_dir(args.workspace, args.agents_dir)
+    profile = load_profile(args.agent, extra_dir=agents_dir)
     config = profile.to_agent_config()
     if args.mode:  # else keep the profile's own mode
         config.mode = args.mode
@@ -304,7 +307,6 @@ async def run_task(args) -> int:
     agent = create_agent(profile.name, mode=config.mode)
     events = EventStore()
     tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
-    agents_dir = Path(args.agents_dir) if args.agents_dir else None
 
     result = await run_agent_task(
         task=task,
@@ -334,6 +336,7 @@ async def run_task(args) -> int:
 async def run_recipe_command(args) -> int:
     import sys
 
+    from garuda.config.agent_home import resolve_agents_dir
     from garuda.config.recipes import load_recipe, run_recipe
 
     try:
@@ -359,7 +362,7 @@ async def run_recipe_command(args) -> int:
             env=env,
             workspace=args.workspace,
             events=events,
-            agents_dir=Path(args.agents_dir) if args.agents_dir else None,
+            agents_dir=resolve_agents_dir(args.workspace, args.agents_dir),
             mcp_config_path=args.mcp_config,
         )
     finally:

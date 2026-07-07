@@ -20,6 +20,11 @@ async def prepare_agent_run(
     approval_handler=None,
 ) -> tuple[AgentProfile, AgentConfig, PermissionEngine, list, object, object | None]:
     """Load profile, resolve skills, build toolkit, and return run dependencies."""
+    from garuda.config.agent_home import resolve_agents_dir
+
+    # Default the profiles dir to the project's `.agent/agents` (or `.garuda/agents`)
+    # when the caller didn't pass one. Idempotent: an explicit dir is kept as-is.
+    agents_dir = resolve_agents_dir(workspace, agents_dir)
     profile = load_profile(agent_name, extra_dir=agents_dir)
     config = profile.to_agent_config()
     # Only override the profile's own mode when a caller explicitly asked for one,

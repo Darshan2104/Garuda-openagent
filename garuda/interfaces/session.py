@@ -47,6 +47,9 @@ class AgentSession:
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
     ) -> "AgentSession":
+        from garuda.config.agent_home import resolve_agents_dir
+
+        agents_dir = resolve_agents_dir(workspace, agents_dir)
         profile = load_profile(agent_name, extra_dir=agents_dir)
         config = profile.to_agent_config()
         if mode:  # else honor the profile's own mode
