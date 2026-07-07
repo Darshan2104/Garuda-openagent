@@ -171,6 +171,7 @@ async def build_toolkit(
     registry: "ToolRegistry | None" = None,
     workspace: str | None = None,
     load_project_tools: bool | None = None,
+    mcp_servers: list[str] | None = None,
 ) -> tuple[list[Tool], "McpClientManager | None"]:
     """Resolve a run's tool list from names, custom tools, and MCP servers.
 
@@ -200,7 +201,7 @@ async def build_toolkit(
     else:
         paths = [p for p in (mcp_config_path or []) if p]
     if paths:
-        manager = await McpClientManager.from_paths(paths)
+        manager = await McpClientManager.from_paths(paths, allowed_servers=mcp_servers)
         tools = tools + manager.get_tools()
     return tools, manager
 

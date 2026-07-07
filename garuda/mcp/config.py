@@ -213,8 +213,27 @@ def _global_mcp_dir() -> Path:
     return Path.home() / ".garuda"
 
 
-def _mcp_merge_enabled() -> bool:
-    return os.environ.get("GARUDA_MCP_MERGE", "").strip().lower() in ("1", "true", "yes", "on")
+def _mcp_merge_enabled(workspace: str | Path | None = None) -> bool:
+    """Whether to merge project + global MCP configs (default: yes).
+
+    Precedence: the ``GARUDA_MCP_MERGE`` env var (truthy/falsey) wins; else a
+    project ``settings.yaml: mcp_merge: <bool>``; else the default (merge on).
+    """
+    raw = os.environ.get("GARUDA_MCP_MERGE", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if workspace is not None:
+        try:
+            from garuda.config.agent_home import resolve_agent_home
+
+            val = resolve_agent_home(workspace).settings.get("mcp_merge")
+            if isinstance(val, bool):
+                return val
+        except Exception:
+            logger.debug("Failed to read mcp_merge setting", exc_info=True)
+    return True
 
 
 def resolve_mcp_config_paths(
@@ -232,10 +251,11 @@ def resolve_mcp_config_paths(
       5. ``{workspace}/.cursor/mcp.json`` (drop-in compat for Cursor repos)
       6. ``{global}/mcp.json`` (``GARUDA_GLOBAL_SETTINGS`` dir or ``~/.garuda``)
 
-    Default behavior is **first project file wins** (a single path), preserving the
-    original semantics. When ``GARUDA_MCP_MERGE`` is set, the first project-scope
-    file (1–3) **and** the global file (4) are both returned so their servers merge
-    (project entries win on name collisions — see :func:`load_and_merge_mcp_configs`).
+    Default behavior now **merges**: the first project-scope file (1–5) and the
+    global file (6) are both returned so their servers combine (project entries
+    win on name collisions — see :func:`load_and_merge_mcp_configs`). Set
+    ``GARUDA_MCP_MERGE=0`` (or ``mcp_merge: false`` in the project's settings.yaml)
+    to force the legacy single-file behavior (first project file, else global).
     Returns ``[]`` when nothing is found (MCP stays disabled).
     """
     if explicit_path:
@@ -254,7 +274,7 @@ def resolve_mcp_config_paths(
     project = next((c for c in project_candidates if c.is_file()), None)
     has_global = global_candidate.is_file()
 
-    if _mcp_merge_enabled():
+    if _mcp_merge_enabled(workspace):
         chosen = [p for p in (project, global_candidate if has_global else None) if p]
     else:
         chosen = [project] if project else ([global_candidate] if has_global else [])

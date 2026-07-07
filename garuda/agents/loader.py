@@ -28,6 +28,7 @@ class AgentProfile:
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
+    mcp_servers: list[str] | None = None
     skills: list[str] | None = None
     skills_dirs: list[str] | None = None
     subagent: bool = False
@@ -106,6 +107,7 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         workspace_kind=data.get("workspace_kind", "local"),
         docker_image=data.get("docker_image", "ubuntu:22.04"),
         mcp_config_path=data.get("mcp_config_path"),
+        mcp_servers=data.get("mcp_servers"),
         skills=data.get("skills"),
         skills_dirs=data.get("skills_dirs"),
         subagent=data.get("subagent", False),

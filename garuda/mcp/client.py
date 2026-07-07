@@ -110,10 +110,21 @@ class McpClientManager:
         return manager
 
     @classmethod
-    async def from_paths(cls, paths: list[str]) -> "McpClientManager":
-        """Load and merge several config files (project + global) into one manager."""
+    async def from_paths(
+        cls, paths: list[str], allowed_servers: list[str] | None = None
+    ) -> "McpClientManager":
+        """Load and merge several config files (project + global) into one manager.
+
+        When ``allowed_servers`` is given, only servers whose name is in the list
+        are connected — filtering happens *before* connecting so excluded servers
+        never launch a subprocess or open a socket.
+        """
         manager = cls()
-        await manager.start(load_and_merge_mcp_configs(paths))
+        servers = load_and_merge_mcp_configs(paths)
+        if allowed_servers is not None:
+            allow = set(allowed_servers)
+            servers = [s for s in servers if s.name in allow]
+        await manager.start(servers)
         return manager
 
     async def start(self, servers: list[McpServerConfig]) -> None:

@@ -49,6 +49,7 @@ async def prepare_agent_run(
         extra_tools=extra_tools,
         workspace=workspace,
         load_project_tools=load_project_tools,
+        mcp_servers=profile.mcp_servers,
     )
     agent = create_agent(profile.name, mode=config.mode)
     return profile, config, permissions, tools, agent, mcp_manager

@@ -97,6 +97,7 @@ class SoftwareAgent:
             extra_tools=self._extra_tools,
             workspace=self.workspace,
             load_project_tools=self._load_project_tools,
+            mcp_servers=profile.mcp_servers,
         )
 
         return await run_agent_task(

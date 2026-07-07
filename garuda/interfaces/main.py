@@ -318,6 +318,7 @@ async def run_task(args) -> int:
         mcp_paths,
         workspace=args.workspace,
         load_project_tools=getattr(args, "load_project_tools", None),
+        mcp_servers=profile.mcp_servers,
     )
 
     result = await run_agent_task(

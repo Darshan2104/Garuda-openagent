@@ -16,6 +16,9 @@ def load_agent_md(path: str | Path) -> AgentProfile:
     skills = meta.get("skills")
     if isinstance(skills, str):
         skills = [skills]
+    mcp_servers = meta.get("mcp_servers")
+    if isinstance(mcp_servers, str):
+        mcp_servers = [mcp_servers]
     return AgentProfile(
         name=meta.get("name", target.stem),
         description=meta.get("description", ""),
@@ -36,6 +39,7 @@ def load_agent_md(path: str | Path) -> AgentProfile:
         workspace_kind=meta.get("workspace_kind", "local"),
         docker_image=meta.get("docker_image", "ubuntu:22.04"),
         mcp_config_path=meta.get("mcp_config_path"),
+        mcp_servers=mcp_servers,
         skills=skills,
         skills_dirs=meta.get("skills_dirs"),
         subagent=meta.get("subagent", False),

@@ -30,13 +30,32 @@ def _global(tmp_path: Path, monkeypatch, servers: dict) -> None:
     monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(gdir / "settings.yaml"))
 
 
-def test_default_first_wins_single_path(tmp_path: Path, monkeypatch):
+def test_default_merges_project_and_global(tmp_path: Path, monkeypatch):
+    # Merge is now the default (B2): both project and global are returned.
     monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    ws = _project(tmp_path, {"a": {"command": "echo"}})
+    _global(tmp_path, monkeypatch, {"b": {"command": "echo"}})
+    paths = resolve_mcp_config_paths(ws)
+    assert len(paths) == 2
+    assert paths[0].endswith(".garuda/mcp.json")  # project first (wins)
+
+
+def test_merge_disabled_via_env_single_path(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GARUDA_MCP_MERGE", "0")
     ws = _project(tmp_path, {"a": {"command": "echo"}})
     _global(tmp_path, monkeypatch, {"b": {"command": "echo"}})
     paths = resolve_mcp_config_paths(ws)
     assert len(paths) == 1
     assert paths[0].endswith(".garuda/mcp.json")
+
+
+def test_merge_disabled_via_settings_yaml(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    ws = _project(tmp_path, {"a": {"command": "echo"}})
+    _global(tmp_path, monkeypatch, {"b": {"command": "echo"}})
+    (ws / ".garuda" / "settings.yaml").write_text("mcp_merge: false\n", encoding="utf-8")
+    paths = resolve_mcp_config_paths(ws)
+    assert len(paths) == 1  # settings.yaml disables the merge default
 
 
 def test_merge_returns_project_and_global(tmp_path: Path, monkeypatch):
@@ -50,6 +69,8 @@ def test_merge_returns_project_and_global(tmp_path: Path, monkeypatch):
 
 def test_singular_resolver_backcompat(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    # Isolate from any real ~/.garuda/mcp.json on the host.
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(tmp_path / "noglobal" / "settings.yaml"))
     ws = _project(tmp_path, {"a": {"command": "echo"}})
     assert resolve_mcp_config(ws).endswith(".garuda/mcp.json")
     assert resolve_mcp_config(tmp_path / "empty") is None
@@ -77,6 +98,7 @@ def test_merge_union_project_overrides_global(tmp_path: Path):
 
 async def test_mcp_list_no_connect(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(tmp_path / "noglobal" / "settings.yaml"))
     ws = _project(tmp_path, {"github": {"url": "https://x/mcp"}})
     args = SimpleNamespace(workspace=str(ws), mcp_config=None, no_connect=True)
     rc = await run_mcp_list(args)
