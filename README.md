@@ -81,6 +81,103 @@ garuda run -t "Create hello.txt" --trajectory run.jsonl
 
 ---
 
+## How to use Garuda
+
+Five ways to drive the agent — pick the one that fits. The exhaustive flag list is in [CLI reference](#cli-reference) below.
+
+### 1. Install
+
+```bash
+cd Garuda-openagent
+pip install -e .          # Python 3.12+; installs the `garuda` command
+```
+
+### 2. Give it a model + API key
+
+Garuda talks to any provider through [LiteLLM](https://github.com/BerriAI/litellm), so you set the provider's own env var and pass a `provider/model` string:
+
+```bash
+export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY, FIREWORKS_AI_API_KEY, ...
+export GARUDA_MODEL="anthropic/claude-sonnet-5"   # optional default; else pass --model
+```
+
+Model examples: `openai/gpt-4o-mini` (built-in default), `anthropic/claude-sonnet-5`, `fireworks_ai/accounts/fireworks/models/gpt-oss-120b`.
+
+### 3. Run a task (headless — the common case)
+
+```bash
+garuda run -t "Add a --json flag to cli.py and a test for it" \
+  --model anthropic/claude-sonnet-5 \
+  --workspace .
+```
+
+Handy flags: `-f task.md` (read task from file), `--agent <profile>` (`build` default; also `explore`, `plan`, `reviewer`), `--permission-mode {auto,smart,readonly,yolo}`, `--mode rigorous` (plan → execute → critic), `--max-turns N`, `--json` (stream events), `--resume latest` (continue a prior session).
+
+### 4. Interactive session
+
+```bash
+garuda chat --model anthropic/claude-sonnet-5
+```
+
+Enter tasks at the `task>` prompt; in `smart` mode it asks before risky actions and streams tokens live.
+
+### 5. Use it from Python (SDK)
+
+```python
+import asyncio
+from garuda.sdk import SoftwareAgent
+
+async def main():
+    agent = SoftwareAgent(workspace=".", model="anthropic/claude-sonnet-5", agent="build")
+    # register a custom tool for just this agent (per-instance, not global):
+    # agent.register_tool(MyTool())
+    result = await agent.run("Fix the failing test in tests/test_foo.py")
+    print(result.success, result.final_message)
+
+asyncio.run(main())
+```
+
+For multi-turn context, use `from garuda.sdk import Conversation` (see [Software Agent SDK](#software-agent-sdk)).
+
+### 6. Run it as a service (job queue)
+
+```bash
+garuda serve --host 127.0.0.1 --port 8765 --max-jobs 4
+```
+
+`submit` a task → get a `job_id`, then poll `status` / `events` (cursor-based, incremental) / `result`, or `cancel`. A bearer token is auto-generated and printed for loopback binds. See [`garuda serve`](#garuda-serve--json-rpc-ide-server).
+
+### 7. Configure a project with `.agent/`
+
+Drop a single folder at your workspace root and Garuda picks everything up automatically:
+
+```
+.agent/
+  agents/        # custom + sub-agent profiles (build.yaml, researcher.yaml, ...)
+  skills/        # SKILL.md files (progressive-disclosure instructions)
+  tools/         # *.py custom tools  (opt-in: settings.yaml → load_project_tools: true)
+  mcp.json       # MCP servers (merged with the global ~/.agent/mcp.json)
+  settings.yaml  # load_project_tools, mcp_merge, ...
+```
+
+- **Custom tool** → a `.py` exporting `TOOLS = [...]` (or `get_tools()` / `register(registry)`), enabled via `settings.yaml` or `garuda run --load-project-tools` (imports run repo code, so it's off by default).
+- **MCP servers** → listed in `.agent/mcp.json`; restrict a profile to a subset with `mcp_servers: [name, ...]` in the profile.
+- **Skills / sub-agent profiles** → `.agent/skills/<name>/SKILL.md` and `.agent/agents/<name>.yaml`; discovered the same standard way.
+
+> `.agent/` is the standard convention; `.garuda/` still works everywhere as a back-compat alias.
+
+### Handy extras
+
+```bash
+garuda sessions            # list recent runs (resume any with --resume <id|latest>)
+garuda mcp list            # show resolved MCP config + the tools each server exposes
+garuda recipe run flow.yaml -p key=value   # run a multi-step YAML workflow
+```
+
+**Fastest start:** `pip install -e .`, `export ANTHROPIC_API_KEY=...`, then `garuda run -t "your task" --model anthropic/claude-sonnet-5`.
+
+---
+
 ## CLI reference
 
 ### `garuda run` — headless task execution
@@ -137,8 +234,11 @@ Enter tasks at the `task>` prompt. Permission prompts appear in `smart` mode.
 ### `garuda serve` — JSON-RPC IDE server
 
 ```bash
-garuda serve --host 127.0.0.1 --port 8765
+garuda serve --host 127.0.0.1 --port 8765 \
+  --max-jobs 4 --model-max-concurrency 8
 ```
+
+`--max-jobs` caps concurrent jobs; `--model-max-concurrency` caps in-flight model calls per provider across all jobs (0 = unlimited). On a loopback bind a bearer token is auto-generated and printed; set one explicitly with `--token` / `GARUDA_SERVE_TOKEN`.
 
 Send HTTP POST requests with JSON-RPC 2.0 bodies:
 
@@ -148,16 +248,29 @@ curl -s -X POST http://127.0.0.1:8765 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"health","id":1}'
 
-# Run a task
+# Blocking run (holds the connection until done, returns all events)
 curl -s -X POST http://127.0.0.1:8765 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"run","params":{"task":"List files"},"id":2}'
+
+# Async job: submit, then poll status / events / result
+curl -s -X POST http://127.0.0.1:8765 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"submit","params":{"task":"List files"},"id":3}'
+# -> {"result":{"job_id":"...","state":"queued","session_id":"..."}}
 ```
 
 | Method | Description |
 |--------|-------------|
 | `health` | Server status and version |
-| `run` | Execute a task (`params.task`, optional `model`, `agent`, `mode`) |
+| `run` | Blocking: execute a task and return the full event list (`params.task`, optional `model`, `agent`, `mode`) |
+| `submit` | Enqueue a task, return `{job_id, state, session_id}` immediately |
+| `status` | Job state, turn count, event count (`params.job_id`) |
+| `events` | Incremental events since `params.cursor`; returns a new `cursor` |
+| `result` | Final result once done (`ready`, `success`, `final_message`, `events`) |
+| `cancel` | Cancel a queued/running job |
+| `jobs` | List submitted jobs |
+| `sessions` | List recent saved sessions |
 | `list_agents` | List available agent profile names |
 
 ### `garuda recipe` — YAML workflows
