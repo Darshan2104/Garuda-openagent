@@ -29,6 +29,7 @@ class SoftwareAgent:
         docker_host: str | None = None,
         mode: str | None = None,
         extra_tools: list[Tool] | None = None,
+        load_project_tools: bool | None = None,
     ):
         self.workspace = str(workspace)
         self.model_name = model
@@ -40,6 +41,7 @@ class SoftwareAgent:
         self.docker_host = docker_host
         self.mode = mode
         self._extra_tools: list[Tool] = list(extra_tools or [])
+        self._load_project_tools = load_project_tools
 
     def register_tool(self, tool: Tool, *, replace: bool = False) -> None:
         """Register a custom tool for this agent's runs only.
@@ -90,7 +92,11 @@ class SoftwareAgent:
         agent = create_agent(profile.name, mode=config.mode)
         events = events or EventStore()
         tools, mcp_manager = await build_toolkit(
-            profile.tools, mcp_paths, extra_tools=self._extra_tools
+            profile.tools,
+            mcp_paths,
+            extra_tools=self._extra_tools,
+            workspace=self.workspace,
+            load_project_tools=self._load_project_tools,
         )
 
         return await run_agent_task(

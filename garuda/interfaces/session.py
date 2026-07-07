@@ -66,7 +66,7 @@ class AgentSession:
             bash_rules=profile.bash_rules,
             approval_handler=approval_handler,
         )
-        tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
+        tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths, workspace=workspace)
         return cls(
             profile=profile,
             config=config,

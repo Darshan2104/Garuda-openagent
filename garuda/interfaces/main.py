@@ -54,7 +54,14 @@ def build_parser():
     run_parser.add_argument(
         "--mcp-config",
         help="Path to MCP servers config (YAML or JSON); auto-discovered from "
-        ".garuda/mcp.json|yaml or .cursor/mcp.json when omitted",
+        ".agent/mcp.json|yaml, .garuda/mcp.json|yaml or .cursor/mcp.json when omitted",
+    )
+    run_parser.add_argument(
+        "--load-project-tools",
+        action="store_true",
+        default=None,
+        help="Import custom tools from .agent/tools/*.py (runs repo code; "
+        "overrides the load_project_tools setting)",
     )
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
     run_parser.add_argument(
@@ -306,7 +313,12 @@ async def run_task(args) -> int:
     )
     agent = create_agent(profile.name, mode=config.mode)
     events = EventStore()
-    tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
+    tools, mcp_manager = await build_toolkit(
+        profile.tools,
+        mcp_paths,
+        workspace=args.workspace,
+        load_project_tools=getattr(args, "load_project_tools", None),
+    )
 
     result = await run_agent_task(
         task=task,

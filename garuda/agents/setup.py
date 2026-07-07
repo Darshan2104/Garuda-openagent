@@ -20,6 +20,7 @@ async def prepare_agent_run(
     mode: str | None = None,
     approval_handler=None,
     extra_tools: list[Tool] | None = None,
+    load_project_tools: bool | None = None,
 ) -> tuple[AgentProfile, AgentConfig, PermissionEngine, list, object, object | None]:
     """Load profile, resolve skills, build toolkit, and return run dependencies."""
     from garuda.config.agent_home import resolve_agents_dir
@@ -42,6 +43,12 @@ async def prepare_agent_run(
         bash_rules=profile.bash_rules,
         approval_handler=approval_handler,
     )
-    tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths, extra_tools=extra_tools)
+    tools, mcp_manager = await build_toolkit(
+        profile.tools,
+        mcp_paths,
+        extra_tools=extra_tools,
+        workspace=workspace,
+        load_project_tools=load_project_tools,
+    )
     agent = create_agent(profile.name, mode=config.mode)
     return profile, config, permissions, tools, agent, mcp_manager
