@@ -205,12 +205,15 @@ def _global_mcp_dir() -> Path:
 
     Mirrors the convention in ``garuda.plugins.hooks.global_settings_path``:
     ``GARUDA_GLOBAL_SETTINGS`` points at the global settings *file*, so the
-    global config directory is its parent. Falls back to ``~/.garuda``.
+    global config directory is its parent. Falls back to the standard global
+    home (``~/.agent`` with ``~/.garuda`` back-compat).
     """
     override = os.environ.get("GARUDA_GLOBAL_SETTINGS")
     if override:
         return Path(override).expanduser().parent
-    return Path.home() / ".garuda"
+    from garuda.config.agent_home import global_home_dir
+
+    return global_home_dir()
 
 
 def _mcp_merge_enabled(workspace: str | Path | None = None) -> bool:
@@ -260,18 +263,18 @@ def resolve_mcp_config_paths(
     """
     if explicit_path:
         return [explicit_path]
+    from garuda.config.agent_home import resolve_agent_home
+
     ws = Path(workspace)
-    project_candidates = [
-        # `.agent/` is the primary convention; `.garuda/` and `.cursor/` are back-compat.
-        ws / ".agent" / "mcp.json",
-        ws / ".agent" / "mcp.yaml",
-        ws / ".garuda" / "mcp.json",
-        ws / ".garuda" / "mcp.yaml",
-        ws / ".cursor" / "mcp.json",
-    ]
+    # `.agent/mcp.*` then `.garuda/mcp.*` come from the shared agent home (one
+    # definition of the convention roots); `.cursor/mcp.json` is editor compat.
+    project_files = list(resolve_agent_home(ws).mcp_paths)
+    cursor = ws / ".cursor" / "mcp.json"
+    if cursor.is_file():
+        project_files.append(str(cursor))
     global_candidate = _global_mcp_dir() / "mcp.json"
 
-    project = next((c for c in project_candidates if c.is_file()), None)
+    project = project_files[0] if project_files else None
     has_global = global_candidate.is_file()
 
     if _mcp_merge_enabled(workspace):

@@ -38,7 +38,7 @@ class SubagentRunner:
     model: Model
     env: Environment
     events: EventStore
-    agents_dir: Path | None = None
+    agents_dir: Path | list[Path] | None = None
     skills_dirs: list[str] | None = None
     workspace_root: str | None = None
     max_turns: int = 50

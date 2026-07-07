@@ -397,6 +397,30 @@ submit→poll(cursor)→result all correct.
 
 ---
 
+## Status update 18 (2026-07-07) — unify all discovery through `AgentHome`
+
+Made **every** asset type resolve its `.agent/` (and back-compat `.garuda/`) paths through the one
+`AgentHome` resolver, instead of each subsystem hardcoding its own list — so skills and sub-agent
+profiles now follow the *same* standard method as tools/MCP.
+
+- **Sub-agent profiles search all roots** — `load_profile`/`list_profiles` accept an ordered dir
+  list; `resolve_agents_dirs()` returns `.agent/agents` then `.garuda/agents` (`.agent` wins). The
+  resolved list threads through CLI/serve/SDK/recipe → `run_agent_task` → forked subagents, so a
+  subagent finds `.agent/agents/<name>` the same way the top-level agent does.
+- **Skills** discovery now comes from `AgentHome.skills_dirs` (dropped the ad-hoc `skills`/`.skills`
+  inline fallbacks); **MCP** project candidates come from `AgentHome.mcp_paths` (+ `.cursor` compat).
+- **Global home standardized** — `global_home_dir()` prefers `~/.agent`, falls back to `~/.garuda`
+  (keeps existing installs working), defaults to `~/.agent`. Used by global MCP config, hook
+  settings, and the session store; env overrides (`GARUDA_*`) still win.
+- Hooks also read `<ws>/.agent/settings.yaml`; the `build` profile no longer hardcodes
+  `.garuda/skills` (auto-discovered now). `.garuda/` remains a first-class back-compat alias
+  everywhere — defined once, in `AGENT_HOME_DIRS`.
+
+Suite: **444 passing** (4 skipped), +8 tests. **Fireworks smoke**: a custom sub-agent profile in
+`.agent/agents/` + a `.agent/skills` skill were discovered and the subagent invoked end-to-end.
+
+---
+
 ## 0. Verdict
 
 > **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton
@@ -406,7 +430,7 @@ submit→poll(cursor)→result all correct.
 > enforced, error containment + retry resilience are in, the loop/subagent/rigorous/context/tool
 > findings are fixed, and the harness has been exercised end-to-end against live providers
 > (Gemini earlier, now Fireworks per policy) — not just `ScriptModel`. Current state: **a working
-> harness at ~436 passing tests** with the known review backlog closed, **the four capability
+> harness at ~444 passing tests** with the known review backlog closed, **the four capability
 > upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
 > diagnostics) landed** (status update 16), **and the P1 scalability triad + `.agent/` project
 > config landed** (status update 17: scoped tool registry, per-provider model governor, job-queue

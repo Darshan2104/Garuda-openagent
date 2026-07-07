@@ -260,21 +260,26 @@ def global_settings_path() -> Path:
     override = os.environ.get("GARUDA_GLOBAL_SETTINGS")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".garuda" / "settings.yaml"
+    from garuda.config.agent_home import global_home_dir
+
+    return global_home_dir() / "settings.yaml"
 
 
 def build_hook_registry(workspace_root: str | Path | None = None) -> HookRegistry:
     """Build a HookRegistry from global then project settings files.
 
-    Loads ``~/.garuda/settings.yaml`` (override path with the
-    ``GARUDA_GLOBAL_SETTINGS`` env var) first, then
-    ``<workspace>/.garuda/settings.yaml`` — project hook lists are merged
-    after (and thus run after) the global ones.
+    Loads the global ``settings.yaml`` (``~/.agent`` standard, ``~/.garuda``
+    back-compat; override path with ``GARUDA_GLOBAL_SETTINGS``) first, then the
+    project ``<workspace>/.agent/settings.yaml`` (and ``.garuda`` back-compat) —
+    project hook lists are merged after (and thus run after) the global ones.
     """
+    from garuda.config.agent_home import resolve_agent_home
+
     registry = HookRegistry()
     paths = [global_settings_path()]
     if workspace_root:
-        paths.append(Path(workspace_root) / ".garuda" / "settings.yaml")
+        for root in resolve_agent_home(workspace_root).roots:
+            paths.append(root / "settings.yaml")
     for path in paths:
         if not path.is_file():
             continue

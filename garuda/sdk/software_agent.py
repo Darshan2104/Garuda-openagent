@@ -65,9 +65,9 @@ class SoftwareAgent:
         Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
         seed the run with a prior session's conversation.
         """
-        from garuda.config.agent_home import resolve_agents_dir
+        from garuda.config.agent_home import resolve_agents_dirs
 
-        agents_dir = resolve_agents_dir(self.workspace, self.agents_dir)
+        agents_dir = resolve_agents_dirs(self.workspace, self.agents_dir)
         profile = load_profile(self.agent_name, extra_dir=agents_dir)
         config = profile.to_agent_config()
         if self.mode:  # else honor the profile's own mode

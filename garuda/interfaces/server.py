@@ -179,7 +179,7 @@ class JsonRpcServer:
         if not task:
             raise ValueError("params.task is required")
 
-        from garuda.config.agent_home import resolve_agents_dir
+        from garuda.config.agent_home import resolve_agents_dirs
 
         model_name = params.get("model", self._config.model)
         agent_name = params.get("agent", self._config.agent)
@@ -188,9 +188,10 @@ class JsonRpcServer:
         workspace = params.get("workspace", self._config.workspace)
         agents_dir = params.get("agents_dir", self._config.agents_dir)
         mcp_config = params.get("mcp_config", self._config.mcp_config)
-        # Default the profiles dir to the workspace's `.agent/agents` when unset,
-        # so both the top-level run and any forked subagents resolve custom profiles.
-        agents_path = resolve_agents_dir(workspace, agents_dir)
+        # Default the profiles dirs to the workspace's `.agent/agents` (then
+        # `.garuda/agents`) when unset, so both the top-level run and any forked
+        # subagents resolve custom profiles the same standard way.
+        agents_path = resolve_agents_dirs(workspace, agents_dir)
 
         profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
             agent_name,

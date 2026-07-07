@@ -232,7 +232,10 @@ async def run_mcp_list(args) -> int:
 
     paths = resolve_mcp_config_paths(args.workspace, args.mcp_config)
     if not paths:
-        print("No MCP config found (looked for .garuda/mcp.json|yaml, .cursor/mcp.json, ~/.garuda/mcp.json).")
+        print(
+            "No MCP config found (looked for .agent/mcp.json|yaml, .garuda/mcp.json|yaml, "
+            ".cursor/mcp.json, and the global ~/.agent/mcp.json)."
+        )
         return 0
 
     print("Resolved MCP config path(s):")
@@ -278,9 +281,9 @@ async def run_task(args) -> int:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
 
-    from garuda.config.agent_home import resolve_agents_dir
+    from garuda.config.agent_home import resolve_agents_dirs
 
-    agents_dir = resolve_agents_dir(args.workspace, args.agents_dir)
+    agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
     profile = load_profile(args.agent, extra_dir=agents_dir)
     config = profile.to_agent_config()
     if args.mode:  # else keep the profile's own mode
@@ -361,7 +364,7 @@ async def run_task(args) -> int:
 async def run_recipe_command(args) -> int:
     import sys
 
-    from garuda.config.agent_home import resolve_agents_dir
+    from garuda.config.agent_home import resolve_agents_dirs
     from garuda.config.recipes import load_recipe, run_recipe
 
     try:
@@ -387,7 +390,7 @@ async def run_recipe_command(args) -> int:
             env=env,
             workspace=args.workspace,
             events=events,
-            agents_dir=resolve_agents_dir(args.workspace, args.agents_dir),
+            agents_dir=resolve_agents_dirs(args.workspace, args.agents_dir),
             mcp_config_path=args.mcp_config,
         )
     finally:

@@ -47,6 +47,16 @@ class AgentHome:
         return _first_dir(r / "agents" for r in self.roots)
 
     @property
+    def agents_dirs(self) -> list[Path]:
+        """``<root>/agents`` for every root, precedence order (``.agent`` first).
+
+        Existence is checked by the profile loader per candidate, so both
+        ``.agent/agents`` and ``.garuda/agents`` are searched — matching how
+        skills merge across roots.
+        """
+        return [r / "agents" for r in self.roots]
+
+    @property
     def skills_dirs(self) -> list[Path]:
         """``<root>/skills`` for every root (existence checked by the discoverer)."""
         return [r / "skills" for r in self.roots]
@@ -115,10 +125,49 @@ def resolve_agent_home(workspace: str | Path) -> AgentHome:
 def resolve_agents_dir(
     workspace: str | Path, explicit: str | Path | None = None
 ) -> Path | None:
-    """Profiles directory: an explicit ``--agents-dir`` wins, else the home's ``agents/``.
+    """Profiles directory (single): an explicit ``--agents-dir`` wins, else the
+    home's first ``agents/``. Prefer :func:`resolve_agents_dirs` for new call
+    sites so both ``.agent`` and ``.garuda`` are searched.
 
     Idempotent — safe to call at an entry point and again inside shared setup.
     """
     if explicit:
         return Path(explicit)
     return resolve_agent_home(workspace).agents_dir
+
+
+def resolve_agents_dirs(
+    workspace: str | Path,
+    explicit: str | Path | list[str | Path] | None = None,
+) -> list[Path]:
+    """Ordered profiles dirs: explicit ``--agents-dir`` wins (kept as-is), else the
+    home's ``.agent/agents`` then ``.garuda/agents``.
+
+    Idempotent for lists so it can be re-applied inside shared setup. This is the
+    standard resolver — profiles, like skills, search every convention root.
+    """
+    if explicit:
+        if isinstance(explicit, (list, tuple)):
+            return [Path(p) for p in explicit]
+        return [Path(explicit)]
+    return resolve_agent_home(workspace).agents_dirs
+
+
+# --- Global (user-level) home, mirroring the project convention -----------------
+
+GLOBAL_HOME_DIRS = (".agent", ".garuda")
+
+
+def global_home_dir() -> Path:
+    """The user-level home dir: ``~/.agent`` (standard) with ``~/.garuda`` back-compat.
+
+    Prefers an existing ``~/.garuda`` when ``~/.agent`` is absent so existing
+    installs keep their global settings/sessions; otherwise defaults to the new
+    ``~/.agent`` standard. Callers that honor an explicit env override should apply
+    it before falling back here.
+    """
+    home = Path.home()
+    for name in GLOBAL_HOME_DIRS:
+        if (home / name).is_dir():
+            return home / name
+    return home / ".agent"

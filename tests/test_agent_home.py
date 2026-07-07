@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from garuda.config.agent_home import resolve_agent_home, resolve_agents_dir
+from garuda.config.agent_home import (
+    global_home_dir,
+    resolve_agent_home,
+    resolve_agents_dir,
+    resolve_agents_dirs,
+)
 
 
 def test_empty_workspace_has_no_home(tmp_path: Path):
@@ -103,3 +108,99 @@ def test_skills_discovered_from_agent_folder(tmp_path: Path):
     prompt = resolve_system_prompt(profile, tmp_path)
     assert "greet" in prompt
     assert "say hello" in prompt
+
+
+def _write_skill(root: Path, name: str):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: from {root.parent.name}\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def test_skills_merge_across_roots_agent_wins(tmp_path: Path):
+    from garuda.agents.loader import AgentProfile, resolve_system_prompt
+
+    # same skill name in both roots; .agent should win, .garuda-only skill still shows
+    _write_skill(tmp_path / ".agent" / "skills", "shared")
+    _write_skill(tmp_path / ".garuda" / "skills", "shared")
+    _write_skill(tmp_path / ".garuda" / "skills", "legacy_only")
+    prompt = resolve_system_prompt(AgentProfile(name="t", system_prompt="BASE"), tmp_path)
+    assert "from .agent" in prompt  # .agent's "shared" won (discover dedups by name, first wins)
+    assert "legacy_only" in prompt  # a .garuda-only skill is still discovered
+
+
+# --- profiles: same standard method (search all roots, .agent wins) -------------
+
+
+def _write_profile(root: Path, name: str, mode: str):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"{name}.yaml").write_text(f"name: {name}\nmode: {mode}\n", encoding="utf-8")
+
+
+def test_agents_dirs_lists_both_roots_in_order(tmp_path: Path):
+    (tmp_path / ".agent" / "agents").mkdir(parents=True)
+    (tmp_path / ".garuda" / "agents").mkdir(parents=True)
+    home = resolve_agent_home(tmp_path)
+    assert home.agents_dirs == [
+        tmp_path / ".agent" / "agents",
+        tmp_path / ".garuda" / "agents",
+    ]
+
+
+def test_resolve_agents_dirs_precedence(tmp_path: Path):
+    (tmp_path / ".agent" / "agents").mkdir(parents=True)
+    (tmp_path / ".garuda" / "agents").mkdir(parents=True)
+    # explicit (single or list) wins as-is
+    assert resolve_agents_dirs(tmp_path, "/x") == [Path("/x")]
+    assert resolve_agents_dirs(tmp_path, ["/x", "/y"]) == [Path("/x"), Path("/y")]
+    # else both home roots, .agent first
+    assert resolve_agents_dirs(tmp_path, None) == [
+        tmp_path / ".agent" / "agents",
+        tmp_path / ".garuda" / "agents",
+    ]
+
+
+def test_load_profile_searches_both_roots_agent_wins(tmp_path: Path):
+    from garuda.agents.loader import load_profile
+
+    _write_profile(tmp_path / ".agent" / "agents", "myrig", "rigorous")
+    _write_profile(tmp_path / ".garuda" / "agents", "myrig", "standard")  # shadowed
+    _write_profile(tmp_path / ".garuda" / "agents", "legacy", "standard")
+
+    dirs = resolve_agents_dirs(tmp_path, None)
+    # .agent/agents wins for a name present in both
+    assert load_profile("myrig", extra_dir=dirs).mode == "rigorous"
+    # a profile only in .garuda/agents is still found (same standard search)
+    assert load_profile("legacy", extra_dir=dirs).mode == "standard"
+
+
+def test_list_profiles_accepts_dir_list(tmp_path: Path):
+    from garuda.agents.loader import list_profiles
+
+    _write_profile(tmp_path / ".agent" / "agents", "alpha", "standard")
+    _write_profile(tmp_path / ".garuda" / "agents", "beta", "standard")
+    names = list_profiles(resolve_agents_dirs(tmp_path, None))
+    assert {"alpha", "beta"} <= set(names)
+
+
+# --- global home: ~/.agent standard, ~/.garuda back-compat ----------------------
+
+
+def test_global_home_prefers_agent(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".garuda").mkdir()
+    assert global_home_dir() == tmp_path / ".agent"
+
+
+def test_global_home_falls_back_to_garuda(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    (tmp_path / ".garuda").mkdir()  # only legacy exists
+    assert global_home_dir() == tmp_path / ".garuda"
+
+
+def test_global_home_defaults_to_agent_when_neither_exists(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert global_home_dir() == tmp_path / ".agent"

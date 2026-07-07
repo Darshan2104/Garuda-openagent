@@ -165,3 +165,16 @@ plus live Fireworks smokes for the model-facing paths.
 **Net capability:** a project drops tools, MCP servers, skills, and profiles into one `.agent/`
 folder and the agent uses them; the process no longer holds global tool state, so a job-queue
 server can run heterogeneous configs concurrently under a provider-RPM cap.
+
+### 6a. Follow-up — unified discovery (status update 18)
+
+Every asset type now resolves its paths through the single `AgentHome` resolver (roots defined once
+in `AGENT_HOME_DIRS = (".agent", ".garuda")`), so skills and **sub-agent profiles** follow the same
+standard method as tools/MCP:
+- `load_profile`/`list_profiles` accept an ordered dir list; `resolve_agents_dirs()` returns
+  `.agent/agents` then `.garuda/agents` and threads through to forked subagents.
+- Skills use `AgentHome.skills_dirs`; MCP project candidates use `AgentHome.mcp_paths`.
+- `global_home_dir()` standardizes the user-level dir on `~/.agent` (with `~/.garuda` fallback) for
+  global MCP config, hook settings, and the session store.
+
+`.garuda/` stays a first-class back-compat alias — defined in one place, not scattered.

@@ -31,9 +31,8 @@ tools:
   - read_spreadsheet
   - invoke_subagent
   - task_complete
-skills_dirs:
-  - .garuda/skills
-  - skills
+# Skills are auto-discovered from the project's .agent/skills (and .garuda/skills
+# for back-compat); add extra dirs here only for non-standard locations.
 mcp_config_path: null
 tool_rules:
   task_complete: allow

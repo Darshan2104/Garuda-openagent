@@ -82,10 +82,19 @@ def _profile_names_in_dir(directory: Path) -> set[str]:
     return names
 
 
-def list_profiles(extra_dir: Path | None = None) -> list[str]:
+def _as_dir_list(extra_dir: Path | list[Path] | None) -> list[Path]:
+    """Normalize an ``extra_dir`` (single, list, or None) to a list of dirs."""
+    if extra_dir is None:
+        return []
+    if isinstance(extra_dir, (list, tuple)):
+        return [Path(d) for d in extra_dir]
+    return [Path(extra_dir)]
+
+
+def list_profiles(extra_dir: Path | list[Path] | None = None) -> list[str]:
     names = _profile_names_in_dir(_defaults_dir())
-    if extra_dir:
-        names.update(_profile_names_in_dir(extra_dir))
+    for directory in _as_dir_list(extra_dir):
+        names.update(_profile_names_in_dir(directory))
     return sorted(names)
 
 
@@ -120,17 +129,22 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
     )
 
 
-def load_profile(name: str, extra_dir: Path | None = None) -> AgentProfile:
-    """Load agent profile from YAML or agent.md (OpenCode-compatible)."""
+def load_profile(name: str, extra_dir: Path | list[Path] | None = None) -> AgentProfile:
+    """Load agent profile from YAML or agent.md (OpenCode-compatible).
+
+    ``extra_dir`` may be a single dir or an ordered list (e.g. ``.agent/agents``
+    then ``.garuda/agents``); earlier dirs win. Built-in defaults are the final
+    fallback.
+    """
     from garuda.agents.md_loader import load_agent_md
 
     candidates: list[Path] = []
-    if extra_dir:
+    for directory in _as_dir_list(extra_dir):
         candidates.extend(
             [
-                extra_dir / f"{name}.yaml",
-                extra_dir / f"{name}.md",
-                extra_dir / f"{name}" / "agent.md",
+                directory / f"{name}.yaml",
+                directory / f"{name}.md",
+                directory / f"{name}" / "agent.md",
             ]
         )
     candidates.extend(
@@ -201,19 +215,13 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
     skill_dirs: list[Path] = []
     if workspace_root:
-        root = Path(workspace_root)
-        # `.agent/skills` is the primary convention; the rest are back-compat.
-        skill_dirs.extend(
-            [
-                root / ".agent" / "skills",
-                root / ".garuda" / "skills",
-                root / "skills",
-                root / ".skills",
-            ]
-        )
+        # Standard discovery: the `.agent/skills` (and back-compat `.garuda/skills`)
+        # dirs resolved from the same agent-home used for profiles/tools/MCP.
+        from garuda.config.agent_home import resolve_agent_home
+
+        skill_dirs.extend(resolve_agent_home(workspace_root).skills_dirs)
     if profile.skills_dirs:
         skill_dirs.extend(Path(d) for d in profile.skills_dirs)
-    skill_dirs.extend([Path(".agent/skills"), Path(".garuda/skills"), Path("skills")])
 
     discovered = discover_skills(*skill_dirs)
     if profile.skills:

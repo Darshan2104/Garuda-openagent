@@ -29,7 +29,7 @@ class AgentSession:
     agent: object
     events: EventStore = field(default_factory=EventStore)
     mcp_manager: object | None = None
-    agents_dir: Path | None = None
+    agents_dir: Path | list[Path] | None = None
     context: ContextManager | None = None
 
     @classmethod
@@ -39,7 +39,7 @@ class AgentSession:
         agent_name: str,
         model: str,
         workspace: str,
-        agents_dir: Path | None = None,
+        agents_dir: Path | list[Path] | None = None,
         mcp_config_path: str | None = None,
         mode: str | None = None,
         approval_handler: ApprovalHandler | None = None,
@@ -47,9 +47,9 @@ class AgentSession:
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
     ) -> "AgentSession":
-        from garuda.config.agent_home import resolve_agents_dir
+        from garuda.config.agent_home import resolve_agents_dirs
 
-        agents_dir = resolve_agents_dir(workspace, agents_dir)
+        agents_dir = resolve_agents_dirs(workspace, agents_dir)
         profile = load_profile(agent_name, extra_dir=agents_dir)
         config = profile.to_agent_config()
         if mode:  # else honor the profile's own mode

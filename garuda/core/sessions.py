@@ -1,6 +1,7 @@
 """Persistent session store: conversation state on disk, resumable across runs.
 
-Layout (default root ``~/.garuda/sessions``, override with ``GARUDA_SESSIONS_DIR``):
+Layout (default root ``~/.agent/sessions``, ``~/.garuda/sessions`` back-compat;
+override with ``GARUDA_SESSIONS_DIR``):
 
     <root>/<session_id>/
         meta.json        # task, model, agent, workspace, status, timestamps
@@ -21,7 +22,9 @@ def default_sessions_root() -> Path:
     override = os.environ.get("GARUDA_SESSIONS_DIR")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".garuda" / "sessions"
+    from garuda.config.agent_home import global_home_dir
+
+    return global_home_dir() / "sessions"
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
