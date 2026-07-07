@@ -19,7 +19,8 @@ class Skill:
 
     def to_index_line(self) -> str:
         location = str(self.path) if self.path else "(no file)"
-        return f"- {self.name} ({location}): {self.description}"
+        tools = f" [tools: {', '.join(self.allowed_tools)}]" if self.allowed_tools else ""
+        return f"- {self.name} ({location}){tools}: {self.description}"
 
 
 def _parse_allowed_tools(value: object) -> list[str] | None:
@@ -86,5 +87,7 @@ def format_skills_prompt(skills: list[Skill], full_body: bool = False) -> str:
     return (
         "## Available skills\n"
         + "\n".join(lines)
-        + "\n\nTo use a skill, read its file with read_file(<path>) first and follow its instructions."
+        + "\n\nTo use a skill, read its file with read_file(<path>) first and follow its "
+        "instructions. When a skill lists specific tools in [tools: ...], restrict yourself "
+        "to those tools while carrying out that skill."
     )

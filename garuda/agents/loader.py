@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -5,6 +6,8 @@ from pathlib import Path
 import yaml
 
 from garuda.types import AgentConfig, DEFAULT_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -170,6 +173,27 @@ def _project_memory_block(workspace_root: str | Path) -> str:
     return ""
 
 
+def _warn_unsatisfiable_skill_tools(skills, granted_tools: list[str] | None) -> None:
+    """Warn when a skill's ``allowed-tools`` reference tools the profile doesn't grant.
+
+    ``granted_tools=None`` means the profile grants all built-ins, so nothing to
+    check. ``mcp__*`` names are skipped (MCP tool names aren't known statically).
+    """
+    if granted_tools is None:
+        return
+    granted = set(granted_tools)
+    for skill in skills:
+        for tool in skill.allowed_tools or []:
+            if tool.startswith("mcp__"):
+                continue
+            if tool not in granted:
+                logger.warning(
+                    "Skill %r lists allowed tool %r which the agent profile does not grant",
+                    skill.name,
+                    tool,
+                )
+
+
 def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | None = None) -> str:
     """Build system prompt with optional skill injection and project memory."""
     from garuda.skills.loader import discover_skills, format_skills_prompt, load_skill
@@ -195,6 +219,7 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
     if profile.skills:
         allowed = set(profile.skills)
         discovered = [s for s in discovered if s.name in allowed]
+    _warn_unsatisfiable_skill_tools(discovered, profile.tools)
     skills_block = format_skills_prompt(discovered)
     prompt = f"{base}\n\n{skills_block}" if skills_block else base
     if workspace_root:
