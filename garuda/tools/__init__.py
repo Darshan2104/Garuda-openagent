@@ -18,7 +18,13 @@ from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.protocol import Tool
-from garuda.tools.registry import list_tool_names, register_tool, tools_for_names
+from garuda.tools.registry import (
+    ToolRegistry,
+    builtin_registry,
+    list_tool_names,
+    register_tool,
+    tools_for_names,
+)
 from garuda.tools.search import GlobTool, GrepTool, LsTool
 from garuda.tools.subagent import InvokeSubagentTool
 from garuda.tools.task_complete import TaskCompleteTool
@@ -52,10 +58,12 @@ __all__ = [
     "TmuxCaptureTool",
     "TmuxExecTool",
     "TodoTool",
+    "ToolRegistry",
     "WebFetchTool",
     "WebSearchTool",
     "WriteFileTool",
     "build_toolkit",
+    "builtin_registry",
     "default_tools",
     "list_tool_names",
     "register_tool",
@@ -130,10 +138,27 @@ def default_tools() -> list[Tool]:
 async def build_toolkit(
     names: list[str] | None,
     mcp_config_path: str | list[str] | None = None,
+    *,
+    extra_tools: list[Tool] | None = None,
+    registry: "ToolRegistry | None" = None,
 ) -> tuple[list[Tool], "McpClientManager | None"]:
+    """Resolve a run's tool list from names, custom tools, and MCP servers.
+
+    Built-ins resolve from the shared base registry. When ``extra_tools`` (custom
+    tools) are given — or an explicit ``registry`` is passed — selection happens
+    against a per-run *layer* so these additions never mutate the shared base or
+    leak into other runs in the same process.
+    """
     from garuda.mcp.client import McpClientManager
 
-    tools = tools_for_names(names)
+    if registry is None:
+        if extra_tools:
+            registry = builtin_registry().layer()
+            for tool in extra_tools:
+                registry.register(tool, replace=True)
+        else:
+            registry = builtin_registry()
+    tools = registry.select(names)
     manager: McpClientManager | None = None
     # Accept either a single path (back-compat) or an ordered list of paths to
     # merge (project + global). Empty/None means MCP stays disabled.

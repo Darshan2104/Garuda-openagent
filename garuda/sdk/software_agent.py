@@ -9,7 +9,7 @@ from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
-from garuda.tools import build_toolkit, register_tool
+from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentResult
 
@@ -28,6 +28,7 @@ class SoftwareAgent:
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
         mode: str | None = None,
+        extra_tools: list[Tool] | None = None,
     ):
         self.workspace = str(workspace)
         self.model_name = model
@@ -38,11 +39,17 @@ class SoftwareAgent:
         self.docker_image = docker_image
         self.docker_host = docker_host
         self.mode = mode
+        self._extra_tools: list[Tool] = list(extra_tools or [])
 
-    @staticmethod
-    def register_tool(tool: Tool, *, replace: bool = False) -> None:
-        """Register a custom tool available to all SDK runs."""
-        register_tool(tool, replace=replace)
+    def register_tool(self, tool: Tool, *, replace: bool = False) -> None:
+        """Register a custom tool for this agent's runs only.
+
+        Scoped to this instance (not the process-global registry), so two agents
+        in one process can carry different custom tools without clashing.
+        """
+        if not replace and any(t.name == tool.name for t in self._extra_tools):
+            raise ValueError(f"Tool already registered: {tool.name}")
+        self._extra_tools = [t for t in self._extra_tools if t.name != tool.name] + [tool]
 
     async def run(
         self,
@@ -82,7 +89,9 @@ class SoftwareAgent:
         )
         agent = create_agent(profile.name, mode=config.mode)
         events = events or EventStore()
-        tools, mcp_manager = await build_toolkit(profile.tools, mcp_paths)
+        tools, mcp_manager = await build_toolkit(
+            profile.tools, mcp_paths, extra_tools=self._extra_tools
+        )
 
         return await run_agent_task(
             task=task,
