@@ -137,6 +137,18 @@ def build_parser():
         default=os.environ.get("GARUDA_SERVE_TOKEN"),
         help="Bearer token required on requests (or set GARUDA_SERVE_TOKEN)",
     )
+    serve_parser.add_argument(
+        "--max-jobs",
+        type=int,
+        default=4,
+        help="Max concurrent jobs for submit/status/result (default 4)",
+    )
+    serve_parser.add_argument(
+        "--model-max-concurrency",
+        type=int,
+        default=0,
+        help="Cap concurrent model calls per provider across jobs (0 = unlimited)",
+    )
 
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
@@ -402,6 +414,8 @@ async def run_serve(args) -> int:
         agents_dir=args.agents_dir,
         mcp_config=args.mcp_config,
         token=args.token,
+        max_jobs=getattr(args, "max_jobs", 4),
+        model_max_concurrency=getattr(args, "model_max_concurrency", 0),
     )
     await serve(config)
     return 0

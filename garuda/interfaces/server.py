@@ -13,6 +13,7 @@ from garuda.agents.loader import list_profiles
 from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
 from garuda.core.sessions import SessionStore
+from garuda.interfaces.jobs import Job, JobManager
 from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
 
@@ -40,6 +41,8 @@ class ServerConfig:
     agents_dir: str | None = None
     mcp_config: str | None = None
     token: str | None = None
+    max_jobs: int = 4
+    model_max_concurrency: int = 0
 
 
 def ensure_secure_config(config: ServerConfig) -> None:
@@ -71,6 +74,7 @@ class JsonRpcServer:
 
     def __init__(self, config: ServerConfig):
         self._config = config
+        self._job_manager: JobManager | None = None
 
     def _authorized(self, headers: dict[str, str] | None) -> bool:
         if not self._config.token:
@@ -123,6 +127,18 @@ class JsonRpcServer:
                 result = await self._health()
             elif method == "run":
                 result = await self._run(params)
+            elif method == "submit":
+                result = await self._submit(params)
+            elif method == "status":
+                result = self._status(params)
+            elif method == "events":
+                result = self._job_events(params)
+            elif method == "result":
+                result = self._result(params)
+            elif method == "cancel":
+                result = self._cancel(params)
+            elif method == "jobs":
+                result = self._list_jobs(params)
             elif method == "sessions":
                 result = {
                     "sessions": SessionStore().list_sessions(limit=int(params.get("limit", 20)))
@@ -153,18 +169,23 @@ class JsonRpcServer:
             pkg_version = "unknown"
         return {"status": "ok", "version": pkg_version}
 
-    async def _run(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _execute(self, params: dict[str, Any], events: EventStore):
+        """Build run dependencies from params and execute one agent task.
+
+        Shared by the blocking ``run`` and the async job queue. The caller owns
+        the ``events`` store so a submitted job can poll it incrementally.
+        """
         task = params.get("task")
         if not task:
             raise ValueError("params.task is required")
+
+        from garuda.config.agent_home import resolve_agents_dir
 
         model_name = params.get("model", self._config.model)
         agent_name = params.get("agent", self._config.agent)
         mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
         workspace = params.get("workspace", self._config.workspace)
-        from garuda.config.agent_home import resolve_agents_dir
-
         agents_dir = params.get("agents_dir", self._config.agents_dir)
         mcp_config = params.get("mcp_config", self._config.mcp_config)
         # Default the profiles dir to the workspace's `.agent/agents` when unset,
@@ -186,8 +207,7 @@ class JsonRpcServer:
             reasoning_effort=config.reasoning_effort,
             thinking_budget_tokens=config.thinking_budget_tokens,
         )
-        events = EventStore()
-        result = await run_agent_task(
+        return await run_agent_task(
             task=task,
             model=model,
             agent=agent,
@@ -204,6 +224,10 @@ class JsonRpcServer:
             resume=params.get("resume"),
         )
 
+    async def _run(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Blocking run: execute to completion and return the full event list."""
+        events = EventStore()
+        result = await self._execute(params, events)
         return {
             "success": result.success,
             "final_message": result.final_message,
@@ -212,8 +236,95 @@ class JsonRpcServer:
             "events": events.get_all(),
         }
 
+    # --- Job queue (submit → poll/stream → result/cancel) ---------------------
+
+    def _jobs(self) -> "JobManager":
+        if self._job_manager is None:
+            self._job_manager = JobManager(max_jobs=self._config.max_jobs)
+        return self._job_manager
+
+    def _require_job(self, params: dict[str, Any]) -> "Job":
+        job_id = params.get("job_id")
+        if not job_id:
+            raise ValueError("params.job_id is required")
+        job = self._jobs().get(job_id)
+        if job is None:
+            raise ValueError(f"Unknown job_id: {job_id}")
+        return job
+
+    async def _submit(self, params: dict[str, Any]) -> dict[str, Any]:
+        task = params.get("task")
+        if not task:
+            raise ValueError("params.task is required")
+        events = EventStore()
+        job = self._jobs().submit(
+            lambda j: self._execute(params, j.events),
+            task=task,
+            events=events,
+        )
+        return {"job_id": job.id, "state": job.state.value, "session_id": job.session_id}
+
+    def _status(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._require_job(params)
+        return {
+            "job_id": job.id,
+            "state": job.state.value,
+            "done": job.done,
+            "session_id": job.session_id,
+            "turns": job.result.turns if job.result else 0,
+            "error": job.error,
+            "event_count": job.events.count(),
+        }
+
+    def _job_events(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._require_job(params)
+        cursor = int(params.get("cursor", 0) or 0)
+        new_events = job.events.get_since(cursor)
+        return {
+            "job_id": job.id,
+            "state": job.state.value,
+            "done": job.done,
+            "events": new_events,
+            "cursor": cursor + len(new_events),
+        }
+
+    def _result(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._require_job(params)
+        if not job.done:
+            return {"job_id": job.id, "state": job.state.value, "ready": False}
+        return {
+            "job_id": job.id,
+            "state": job.state.value,
+            "ready": True,
+            "success": job.result.success if job.result else False,
+            "final_message": job.result.final_message if job.result else "",
+            "turns": job.result.turns if job.result else 0,
+            "session_id": job.session_id,
+            "error": job.error,
+            "events": job.events.get_all(),
+        }
+
+    def _cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        job = self._require_job(params)
+        cancelled = self._jobs().cancel(job.id)
+        return {"job_id": job.id, "cancelling": cancelled, "state": job.state.value}
+
+    def _list_jobs(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "jobs": [
+                {"job_id": j.id, "state": j.state.value, "task": j.task[:120]}
+                for j in self._jobs().list()
+            ]
+        }
+
     async def serve(self) -> None:
         ensure_secure_config(self._config)
+        if self._config.model_max_concurrency:
+            # Cap concurrent provider calls across all in-flight jobs (pairs with
+            # the job-concurrency semaphore to bound total provider load).
+            from garuda.model.governor import set_max_concurrency
+
+            set_max_concurrency(self._config.model_max_concurrency)
         server = await asyncio.start_server(
             self._connection_handler,
             self._config.host,

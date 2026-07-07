@@ -71,6 +71,19 @@ class EventStore:
     def get_all(self) -> list[dict[str, Any]]:
         return list(self._events)
 
+    def get_since(self, cursor: int) -> list[dict[str, Any]]:
+        """Events appended after ``cursor`` (an index into the event list).
+
+        Enables cursor-based incremental polling: a client passes back the cursor
+        returned last time to receive only newly-appended events.
+        """
+        if cursor < 0:
+            cursor = 0
+        return list(self._events[cursor:])
+
+    def count(self) -> int:
+        return len(self._events)
+
     def save(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
