@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 
 import litellm
 
+from garuda.model.governor import get_governor, provider_of
 from garuda.model.protocol import ModelResponse, StreamDelta
 from garuda.types import Message, Role, ToolCall
 
@@ -401,9 +402,14 @@ class LitellmModel:
         attempts = max(1, self._max_retries)
         delay = 1.0
         last_exc: Exception | None = None
+        governor = get_governor()
+        provider = provider_of(self._model_name)
         for attempt in range(1, attempts + 1):
             try:
-                return await litellm.acompletion(**kwargs)
+                # Acquire the slot per attempt so a request sleeping on backoff
+                # releases its slot instead of starving the rest of the fleet.
+                async with governor.slot(provider):
+                    return await litellm.acompletion(**kwargs)
             except Exception as exc:
                 # Non-transient errors (400/401/404, context-window, etc.) fail fast.
                 if not _is_retryable(exc):
