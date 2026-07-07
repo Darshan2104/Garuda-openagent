@@ -139,9 +139,29 @@ Each step ships with tests and keeps the suite green. Docs (`ENGINEERING_PLAN.md
 
 ---
 
-## 5. Open decision
+## 5. Decision (resolved)
 
 **Custom-tool trust model** — auto-importing `.agent/tools/*.py` runs repo code at startup.
-Options: (a) opt-in flag, off by default (recommended); (b) always on (matches MCP's implicit
-process launch, but riskier on a dev host); (c) explicit per-file allowlist in `settings.yaml`.
-Recommendation: **(a)** — safe default, one flag to enable.
+**Decided: (a) opt-in flag, off by default.** Enabled via `settings.yaml load_project_tools: true`,
+the `--load-project-tools` CLI flag, or the SDK `load_project_tools` param.
+
+---
+
+## 6. Status — shipped ✅ (2026-07-07)
+
+All seven items landed on `main`, each with tests and a green suite (436 passed, 4 skipped),
+plus live Fireworks smokes for the model-facing paths.
+
+| Item | Commit | Notes |
+|------|--------|-------|
+| §1 `.agent/` home | `3ad3173` | resolver + `.garuda` alias; threaded through all entry points |
+| C1 scoped registry | `f134e7d` | `ToolRegistry` layers; base non-pollution smoke ✅ |
+| B1 file-based tools | `77b9607` | opt-in `.agent/tools/*.py`; discovery smoke ✅ |
+| B2 MCP wiring | `9354932` | merge-by-default + per-profile `mcp_servers` allowlist |
+| B3 skills | `a14d91a` | `.agent/skills` + `allowed-tools` surfaced/validated |
+| C3 governor | `b5a6594` | per-provider cap; per-attempt acquire |
+| C2 job server | `e76ceab` | submit/status/events(cursor)/result/cancel; live smoke ✅ |
+
+**Net capability:** a project drops tools, MCP servers, skills, and profiles into one `.agent/`
+folder and the agent uses them; the process no longer holds global tool state, so a job-queue
+server can run heterogeneous configs concurrently under a provider-RPM cap.

@@ -368,6 +368,35 @@ search→write and write-code→run-via-persistent-shell→write-result both cor
 
 ---
 
+## Status update 17 (2026-07-07) — config `.agent/` home + P1 scalability triad
+
+Closed the P1 scalability items from the senior review and made every asset a project can
+supply (tools, MCP servers, skills, profiles) discoverable from one `.agent/` folder. Full
+design + per-item commits in [`CONFIG_SCALABILITY_PLAN.md`](CONFIG_SCALABILITY_PLAN.md).
+
+- **`.agent/` project home** — `config/agent_home.py` resolves `agents/`, `skills/`, `tools/`,
+  `mcp.*`, `settings.yaml` (with `.garuda/` as a back-compat alias); threaded through CLI
+  run/chat/recipe, serve, Session, SDK, and `prepare_agent_run`.
+- **Scoped tool registry (P1)** — `ToolRegistry` with a shared built-in base + per-run layers;
+  `build_toolkit`/`prepare_agent_run` take `extra_tools`/`registry`; module-level functions kept
+  as back-compat shims. Custom tools no longer mutate process-global state → safe concurrent runs.
+- **File-based custom tools** — opt-in `.agent/tools/*.py` (`TOOLS`/`get_tools()`/`register()`),
+  loaded into the per-run layer (`load_project_tools` setting / `--load-project-tools` / SDK param).
+- **MCP wiring** — `.agent/mcp.*` conventions; project→global merge is now the default
+  (`GARUDA_MCP_MERGE=0` or `mcp_merge:false` to disable); per-profile `mcp_servers` allowlist filters
+  *before* connecting.
+- **Skills** — `.agent/skills` discovery; `allowed-tools` surfaced in the index + validated at load.
+- **Model-concurrency governor (P1)** — `model/governor.py` caps concurrent calls per provider
+  (per-attempt acquire); `GARUDA_MODEL_MAX_CONCURRENCY` / serve `--model-max-concurrency`.
+- **Job-queue server (P1)** — `interfaces/jobs.py` `JobManager`; JSON-RPC `submit`/`status`/
+  `events`(cursor)/`result`/`cancel`/`jobs` with a concurrency cap; blocking `run` retained.
+
+Suite: **436 passing** (4 skipped), +56 tests. **Fireworks smokes** (gpt-oss-120b): per-instance
+custom tool (registry not polluted), `.agent/tools` discovery, and full job-queue
+submit→poll(cursor)→result all correct.
+
+---
+
 ## 0. Verdict
 
 > **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton
@@ -377,11 +406,13 @@ search→write and write-code→run-via-persistent-shell→write-result both cor
 > enforced, error containment + retry resilience are in, the loop/subagent/rigorous/context/tool
 > findings are fixed, and the harness has been exercised end-to-end against live providers
 > (Gemini earlier, now Fireworks per policy) — not just `ScriptModel`. Current state: **a working
-> harness at ~380 passing tests** with the known review backlog closed **and the four capability
+> harness at ~436 passing tests** with the known review backlog closed, **the four capability
 > upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
-> diagnostics) landed** (status update 16). No correctness blockers remain. (The live Anthropic
-> extended-thinking round-trip check was descoped 2026-07-07 — the feature is implemented and
-> unit-tested; a live confirmation is no longer tracked.)
+> diagnostics) landed** (status update 16), **and the P1 scalability triad + `.agent/` project
+> config landed** (status update 17: scoped tool registry, per-provider model governor, job-queue
+> server; one-folder tools/MCP/skills/profiles). No correctness or P1 scalability blockers remain.
+> (The live Anthropic extended-thinking round-trip check was descoped 2026-07-07 — the feature is
+> implemented and unit-tested; a live confirmation is no longer tracked.)
 
 *Original v1.1.0 verdict (historical):* The RFC and architecture are genuinely good — the landscape
 analysis is accurate, the protocol-based layering is right, and the module boundaries are clean. But
