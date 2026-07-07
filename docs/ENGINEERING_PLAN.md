@@ -173,7 +173,8 @@ multi-step problem solved correctly); `drop_params` deterministically strips `re
 
 Remaining agent-quality levers (all requested): behavior + system-prompt tuning, tool
 reliability/coverage, context/cache quality. (Note: the OpenAI key in the dev env is invalid — an
-env issue, not code; Anthropic thinking round-trip still wants a live key to confirm end-to-end.)
+env issue, not code. The Anthropic thinking round-trip is implemented + unit-tested; a live
+end-to-end confirmation of it was **descoped 2026-07-07** and is no longer a tracked item.)
 
 ## Status update 9 (2026-07-04) — agent-quality: behavior & prompts
 
@@ -376,9 +377,11 @@ search→write and write-code→run-via-persistent-shell→write-result both cor
 > enforced, error containment + retry resilience are in, the loop/subagent/rigorous/context/tool
 > findings are fixed, and the harness has been exercised end-to-end against live providers
 > (Gemini earlier, now Fireworks per policy) — not just `ScriptModel`. Current state: **a working
-> harness at 358 passing tests** with the known review backlog closed. The remaining open items are
-> capability upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
-> diagnostics) and a live Anthropic thinking-round-trip confirmation — not correctness blockers.
+> harness at ~380 passing tests** with the known review backlog closed **and the four capability
+> upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
+> diagnostics) landed** (status update 16). No correctness blockers remain. (The live Anthropic
+> extended-thinking round-trip check was descoped 2026-07-07 — the feature is implemented and
+> unit-tested; a live confirmation is no longer tracked.)
 
 *Original v1.1.0 verdict (historical):* The RFC and architecture are genuinely good — the landscape
 analysis is accurate, the protocol-based layering is right, and the module boundaries are clean. But
