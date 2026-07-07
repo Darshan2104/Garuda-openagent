@@ -121,6 +121,9 @@ class GarudaHarborAgent(BaseAgent):
         adapter = HarborEnvironmentAdapter(environment)
         workspace_root = await adapter.resolve_workspace_root()
 
+        # Benchmarks always run the standard loop: the plan→execute→critic
+        # (rigorous) mode multiplies turns/cost and isn't what we're scoring, so
+        # a `mode: rigorous` line in the profile is intentionally overridden here.
         profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
             self._agent_profile,
             workspace=workspace_root,
