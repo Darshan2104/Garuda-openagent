@@ -25,7 +25,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement, permission-screened verification commands, completion verifier, hardened OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
-| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, turn/context budget reminders, repetition detection |
+| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
 | **Extensibility** | MCP servers, plugin hooks, YAML recipes, subagent handoff |
 | **Modes** | `standard` (fast) or `rigorous` (plan → execute → critic) |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC IDE server |

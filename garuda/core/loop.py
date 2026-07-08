@@ -55,6 +55,15 @@ TASK_COMPLETE_STUCK_NUDGE = (
 
 CONTEXT_WARNING_FRACTION = 0.8
 
+CONTEXT_WARNING_NUDGE = (
+    "[budget] The context window is over {percent}% full. Be economical: avoid re-reading "
+    "large files, prefer targeted grep/read with offsets, and summarize instead of dumping "
+    "output. Older messages will be compacted soon — before that happens, write durable "
+    "notes (current plan, key findings, decisions, remaining steps, important paths) to a "
+    "scratch file in the workspace (e.g. `.agent_notes.md`) so you can re-read them after "
+    "compaction."
+)
+
 # Tools with no side effects, safe to run concurrently within one model response.
 PARALLEL_SAFE_TOOLS = frozenset(
     {
@@ -169,6 +178,18 @@ class DefaultAgent:
             tools = [t for t in tools if t.name in allowed]
             tool_map = {t.name: t for t in tools}
 
+        # A caller (e.g. a forked subagent) may pass its parent's buffer so inherited
+        # [buffer:...] stubs resolve; otherwise create one for this session. Created
+        # before the context manager so condensation can demote pruned/dropped
+        # history into it instead of destroying it.
+        if buffer is None and config.buffer_tool_output:
+            from garuda.core.buffer import ToolOutputBuffer
+
+            buffer = ToolOutputBuffer(
+                session_id=events.session_id,
+                threshold_bytes=config.buffer_threshold_bytes,
+            )
+
         if context is None:
             system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
             context = ContextManager(
@@ -179,6 +200,7 @@ class DefaultAgent:
                 enable_three_step_summary=config.enable_three_step_summary,
                 task=task,
                 condenser=config.condenser,
+                buffer=buffer,
             )
             context.seed(
                 [
@@ -186,17 +208,9 @@ class DefaultAgent:
                     Message(role=Role.USER, content=task),
                 ]
             )
+        else:
+            context.attach_buffer(buffer)
         events.append(EventType.USER_MESSAGE, {"content": task})
-
-        # A caller (e.g. a forked subagent) may pass its parent's buffer so inherited
-        # [buffer:...] stubs resolve; otherwise create one for this session.
-        if buffer is None and config.buffer_tool_output:
-            from garuda.core.buffer import ToolOutputBuffer
-
-            buffer = ToolOutputBuffer(
-                session_id=events.session_id,
-                threshold_bytes=config.buffer_threshold_bytes,
-            )
 
         if subagent_runner is None and "invoke_subagent" in tool_map:
             from garuda.core.subagent import SubagentRunner
@@ -262,11 +276,8 @@ class DefaultAgent:
                 context.append(
                     Message(
                         role=Role.USER,
-                        content=(
-                            "[budget] The context window is over "
-                            f"{int(CONTEXT_WARNING_FRACTION * 100)}% full. Be economical: avoid "
-                            "re-reading large files, prefer targeted grep/read with offsets, and "
-                            "summarize instead of dumping output."
+                        content=CONTEXT_WARNING_NUDGE.format(
+                            percent=int(CONTEXT_WARNING_FRACTION * 100)
                         ),
                     )
                 )

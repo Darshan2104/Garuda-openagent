@@ -1,5 +1,8 @@
+import hashlib
+import json
 import logging
 from copy import deepcopy
+from typing import TYPE_CHECKING
 
 from garuda.context.condenser import (
     Condenser,
@@ -10,6 +13,9 @@ from garuda.context.condenser import (
 from garuda.context.shaper import shape_observation
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
+
+if TYPE_CHECKING:
+    from garuda.core.buffer import ToolOutputBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +29,38 @@ def _estimate_tokens(message: Message) -> int:
     return n
 
 
+def render_archive_transcript(messages: list[Message]) -> str:
+    """Render dropped messages as a grep-friendly plain-text transcript.
+
+    Line-oriented on purpose (one header per message, raw content below) so
+    buffer_grep/buffer_slice work well against it. Image payloads are omitted.
+    """
+    lines = [
+        "Conversation segment compacted out of the live context.",
+        "Format: one '--- [n] <role> ---' header per message, full content below.",
+        "",
+    ]
+    for index, message in enumerate(messages, start=1):
+        header = f"--- [{index}] {message.role.value}"
+        if message.name:
+            header += f" tool={message.name}"
+        if message.tool_call_id:
+            header += f" tool_call_id={message.tool_call_id}"
+        lines.append(header + " ---")
+        for call in message.tool_calls or []:
+            try:
+                args = json.dumps(call.arguments, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                args = str(call.arguments)
+            lines.append(f"[tool call] {call.name}({args[:2000]})")
+        if message.images:
+            lines.append(f"[{len(message.images)} image(s) omitted from archive]")
+        if message.content:
+            lines.append(message.content)
+        lines.append("")
+    return "\n".join(lines)
+
+
 class ContextManager:
     def __init__(
         self,
@@ -34,6 +72,7 @@ class ContextManager:
         task: str = "",
         keep_recent_turns: int = 12,
         condenser: Condenser | str | None = None,
+        buffer: "ToolOutputBuffer | None" = None,
     ):
         self._model = model
         self._max_output_bytes = max_output_bytes
@@ -43,6 +82,8 @@ class ContextManager:
         self._task = task
         self._keep_recent_turns = keep_recent_turns
         self._messages: list[Message] = []
+        self._buffer = buffer
+        self._archive_seq = 0
         self._last_prompt_tokens: int | None = None
         # Estimated tokens appended since the last provider count, so the
         # condensation trigger reflects this turn's tool results instead of lagging
@@ -67,6 +108,12 @@ class ContextManager:
         self._messages.append(message)
         if self._last_prompt_tokens is not None:
             self._pending_tokens += _estimate_tokens(message)
+
+    def attach_buffer(self, buffer: "ToolOutputBuffer | None") -> None:
+        """Late-bind the session buffer (callers that reuse a context across runs
+        create the buffer after the context exists). Never clobbers an existing one."""
+        if buffer is not None and self._buffer is None:
+            self._buffer = buffer
 
     def get_messages(self) -> list[Message]:
         return list(self._messages)
@@ -94,6 +141,7 @@ class ContextManager:
             task=self._task,
             keep_recent_turns=self._keep_recent_turns,
             condenser=self._condenser,
+            buffer=self._buffer,
         )
         if include_history:
             forked._messages = deepcopy(self._messages)
@@ -120,13 +168,62 @@ class ContextManager:
             proactive_threshold=self._proactive_threshold,
             keep_recent_turns=self._keep_recent_turns,
             enable_three_step_summary=self._enable_three_step_summary,
+            buffer=self._buffer,
         )
         new_messages = await self._condenser.condense(cx)
         if new_messages is None:
             return False
+        self._archive_dropped(new_messages)
         self._messages = new_messages
         # The provider count reflected the pre-condensation prompt; invalidate
         # it so the next trigger uses a fresh estimate until the next response.
         self._last_prompt_tokens = None
         self._pending_tokens = 0
         return True
+
+    def _archive_dropped(self, new_messages: list[Message]) -> None:
+        """Archive messages the condenser dropped into the session buffer, and leave
+        a retrieval pointer in the surviving history.
+
+        Works for any condenser: dropped = in the old list but not the new one
+        (in-place prunes keep the same objects, so a prune archives nothing here).
+        Best-effort — an archive failure must never break condensation.
+        """
+        if self._buffer is None:
+            return
+        kept_ids = {id(m) for m in new_messages}
+        dropped = [m for m in self._messages if id(m) not in kept_ids]
+        if not dropped:
+            return
+        try:
+            rendered = render_archive_transcript(dropped)
+            digest = hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:8]
+            self._archive_seq += 1
+            buffer_id = f"archive_{self._archive_seq}_{digest}"
+            self._buffer.store(buffer_id, rendered, tool_name="context_archive")
+        except Exception:
+            logger.warning("Failed to archive compacted context", exc_info=True)
+            return
+        pointer = (
+            f"[context-archive] {len(dropped)} earlier messages were compacted out of "
+            f"context. Their full transcript is archived in buffer:{buffer_id} — recover "
+            f'details with buffer_grep(buffer_id="{buffer_id}", pattern="...") or '
+            f'buffer_slice(buffer_id="{buffer_id}", start_line=N, end_line=M).'
+        )
+        # Attach the pointer to the message the condenser just created (the summary),
+        # or, for condensers that drop without summarizing, insert it after the task.
+        old_ids = {id(m) for m in self._messages}
+        summary = next(
+            (m for m in new_messages if id(m) not in old_ids and m.role == Role.USER), None
+        )
+        if summary is not None:
+            summary.content = f"{summary.content}\n\n{pointer}"
+            return
+        insert_at = 0
+        for index, message in enumerate(new_messages):
+            if message.role == Role.USER:
+                insert_at = index + 1
+                break
+            if message.role == Role.SYSTEM:
+                insert_at = index + 1
+        new_messages.insert(insert_at, Message(role=Role.USER, content=pointer))

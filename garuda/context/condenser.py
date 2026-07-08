@@ -19,14 +19,18 @@ Each strategy's `condense` returns a NEW message list, or None to leave history
 unchanged this turn.
 """
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from garuda.context.summarizer import summarize_incremental, summarize_three_step
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
+
+if TYPE_CHECKING:
+    from garuda.core.buffer import ToolOutputBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,9 @@ class CondenserContext:
     proactive_threshold: int
     keep_recent_turns: int
     enable_three_step_summary: bool = True
+    # Session tool-output buffer, when available. Condensers use it to demote
+    # content to disk instead of destroying it (retrievable via buffer_grep/slice).
+    buffer: "ToolOutputBuffer | None" = None
 
     @property
     def free_tokens(self) -> int:
@@ -81,7 +88,10 @@ def _window_boundary(messages: list[Message], keep_recent_turns: int) -> int:
 
 
 def microcompact_messages(
-    messages: list[Message], keep_recent_turns: int, prune_min_chars: int = PRUNE_MIN_CHARS
+    messages: list[Message],
+    keep_recent_turns: int,
+    prune_min_chars: int = PRUNE_MIN_CHARS,
+    buffer: "ToolOutputBuffer | None" = None,
 ) -> int:
     """Prune bulky tool outputs outside the recent window, in place.
 
@@ -104,6 +114,18 @@ def microcompact_messages(
             if not buffer_id:
                 match = _BUFFER_ID_RE.search(message.content or "")
                 buffer_id = match.group(1) if match else None
+            if not buffer_id and buffer is not None:
+                # Demote, don't destroy: outputs below the live buffering threshold
+                # were never stored, and re-running the tool is not always possible
+                # (stateful commands). Same id derivation as the loop's stubs, so
+                # ids stay short and can never collide with an already-stored one.
+                try:
+                    seed = message.tool_call_id or message.content
+                    store_id = "buf_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+                    buffer.store(store_id, message.content, tool_name=message.name or "")
+                    buffer_id = store_id
+                except Exception:
+                    logger.warning("Prune-time buffer store failed", exc_info=True)
             if buffer_id:
                 message.content = (
                     f"[tool output pruned to save context: was {original_len} chars. "
@@ -210,7 +232,7 @@ class MicrocompactCondenser:
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
         if cx.usage_fraction < self.microcompact_fraction:
             return None
-        if microcompact_messages(cx.messages, cx.keep_recent_turns, self.prune_min_chars) > 0:
+        if microcompact_messages(cx.messages, cx.keep_recent_turns, self.prune_min_chars, cx.buffer) > 0:
             return list(cx.messages)
         if cx.free_tokens >= cx.proactive_threshold:
             return None
