@@ -3,8 +3,8 @@
 Hooks come from two places:
 
 1. Programmatic registration (``register_before_tool`` etc.) — used by SDK callers.
-2. YAML settings files (``.garuda/settings.yaml`` in the workspace, plus the
-   global ``~/.garuda/settings.yaml``) declaring shell-command hooks::
+2. YAML settings files (``.agent/settings.yaml``, ``.garuda/settings.yaml`` back-compat)
+   declaring shell-command hooks::
 
        hooks:
          before_tool:
@@ -22,13 +22,17 @@ Shell-command hooks receive the JSON-serialized event on stdin and run with a
 30s timeout. For ``before_tool`` hooks an exit code of 2 blocks the tool call;
 any other nonzero exit code is logged and the call is allowed. Hook errors and
 timeouts never crash the agent run.
+
+The GLOBAL settings file (``~/.agent/settings.yaml``) always loads. A PROJECT's
+own settings file only loads its hook commands when the global settings opt in
+via ``trust_project_hooks: true`` — see :func:`build_hook_registry` and the
+trust-boundary note in :mod:`garuda.config.agent_home`.
 """
 
 import asyncio
 import fnmatch
 import json
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,39 +261,62 @@ class HookRegistry:
 
 
 def global_settings_path() -> Path:
-    override = os.environ.get("GARUDA_GLOBAL_SETTINGS")
-    if override:
-        return Path(override).expanduser()
-    from garuda.config.agent_home import global_home_dir
+    from garuda.config.agent_home import global_settings_path as _global_settings_path
 
-    return global_home_dir() / "settings.yaml"
+    return _global_settings_path()
 
 
 def build_hook_registry(workspace_root: str | Path | None = None) -> HookRegistry:
-    """Build a HookRegistry from global then project settings files.
+    """Build a HookRegistry from the global settings file, plus project settings
+    files if the user has explicitly trusted them.
 
-    Loads the global ``settings.yaml`` (``~/.agent`` standard, ``~/.garuda``
-    back-compat; override path with ``GARUDA_GLOBAL_SETTINGS``) first, then the
-    project ``<workspace>/.agent/settings.yaml`` (and ``.garuda`` back-compat) —
-    project hook lists are merged after (and thus run after) the global ones.
+    The global ``settings.yaml`` (``~/.agent`` standard, ``~/.garuda`` back-compat;
+    override path with ``GARUDA_GLOBAL_SETTINGS``) always loads — it's user-authored.
+    Project ``<workspace>/.agent/settings.yaml`` (and ``.garuda`` back-compat) can
+    declare hook commands too, but a *cloned repo's own config* must not be able to
+    self-authorize running arbitrary shell commands at session start / around every
+    tool call — so project hook commands only load when the user has opted in
+    globally via ``trust_project_hooks: true`` (mirrors ``load_project_tools``; see
+    :mod:`garuda.config.agent_home`). When present but untrusted, they're skipped
+    with a warning rather than silently dropped.
     """
     from garuda.config.agent_home import resolve_agent_home
 
     registry = HookRegistry()
-    paths = [global_settings_path()]
-    if workspace_root:
-        for root in resolve_agent_home(workspace_root).roots:
-            paths.append(root / "settings.yaml")
-    for path in paths:
-        if not path.is_file():
-            continue
+    global_path = global_settings_path()
+    if global_path.is_file():
         try:
-            registry.extend_from_config(path)
+            registry.extend_from_config(global_path)
         except Exception as exc:
             logger.warning(
                 "Failed to load hooks config %s (%s: %s); skipping",
-                path,
+                global_path,
                 type(exc).__name__,
                 exc,
             )
+
+    if workspace_root:
+        home = resolve_agent_home(workspace_root)
+        project_paths = [root / "settings.yaml" for root in home.roots]
+        project_paths = [p for p in project_paths if p.is_file()]
+        if project_paths and not home.trust_project_hooks:
+            logger.warning(
+                "Ignoring hook commands in %s: project-declared shell-command hooks "
+                "are untrusted by default (a cloned repo could otherwise run arbitrary "
+                "commands at session start). Set trust_project_hooks: true in the "
+                "global settings.yaml (%s) to enable them for workspaces you trust.",
+                ", ".join(str(p) for p in project_paths),
+                global_path,
+            )
+        else:
+            for path in project_paths:
+                try:
+                    registry.extend_from_config(path)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load hooks config %s (%s: %s); skipping",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
     return registry

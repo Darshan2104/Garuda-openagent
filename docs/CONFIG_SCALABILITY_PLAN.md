@@ -178,3 +178,16 @@ standard method as tools/MCP:
   global MCP config, hook settings, and the session store.
 
 `.garuda/` stays a first-class back-compat alias — defined in one place, not scattered.
+
+### 6b. Follow-up — trust anchor tightened (status update 20, 2026-07-08)
+
+A security review found that §5's decision, as shipped, let a *project's own* `.agent/settings.yaml`
+satisfy the "opt-in flag" — meaning a cloned repo could self-enable `load_project_tools` (and,
+separately, hook shell commands) just by shipping that key, with no user consent at all. Tightened:
+`load_project_tools` and the new `trust_project_hooks` are now read from the **global**
+`settings.yaml` only (`~/.agent/settings.yaml`, never the workspace's own) — a project can still be
+enabled per-run via `--load-project-tools`/SDK flag, or permanently via the user's own global
+config, but never by itself. MCP auto-discovery (B2) was deliberately left as-is (not gated the same
+way) since that's the explicitly-requested "drop your own mcp.json in and it works" UX for a user's
+own repos, and gating it would regress that feature; noted as a residual, accepted risk for the
+cloned-untrusted-repo case specifically.

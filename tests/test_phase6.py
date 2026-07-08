@@ -129,7 +129,11 @@ async def test_rigorous_agent_plan_execute_critic(tmp_path):
 
 
 def test_create_agent_modes():
-    assert isinstance(create_agent("build", "standard").__class__.__name__, str)
+    from garuda.core.loop import DefaultAgent
+
+    standard = create_agent("build", "standard")
+    assert isinstance(standard, DefaultAgent)
+    assert not isinstance(standard, RigorousAgent)
     assert isinstance(create_agent("build", "rigorous"), RigorousAgent)
 
 

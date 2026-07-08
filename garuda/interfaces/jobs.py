@@ -74,11 +74,10 @@ class JobManager:
 
     async def _run_job(self, job: Job, runner: JobRunner) -> None:
         try:
-            # Stay QUEUED until a concurrency slot frees. A cancel before the slot
-            # is acquired surfaces here as CancelledError -> CANCELLED.
+            # Stays QUEUED until a concurrency slot frees. A cancel while queued
+            # raises CancelledError right at this await (before the body below
+            # ever runs) -> handled by the except clause as CANCELLED.
             async with self._sem:
-                if job.state == JobState.CANCELLED:
-                    return
                 job.state = JobState.RUNNING
                 job.result = await runner(job)
                 job.state = JobState.SUCCEEDED

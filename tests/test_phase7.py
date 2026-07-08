@@ -12,7 +12,6 @@ from garuda.core.permissions import PermissionEngine
 from garuda.mcp.config import load_mcp_config
 from garuda.skills.loader import discover_skills, format_skills_prompt, load_skill
 from garuda.tools.registry import list_tool_names, register_tool
-from garuda.tools.task_complete import TaskCompleteTool
 
 
 def test_parse_frontmatter():
@@ -81,9 +80,27 @@ def test_mcp_env_interpolation(tmp_path, monkeypatch):
 
 
 def test_tool_registry_register():
-    tool = TaskCompleteTool()
-    register_tool(tool, replace=True)
-    assert "task_complete" in list_tool_names()
+    from garuda.tools.registry import get_tool, unregister_tool
+    from garuda.types import ToolResult
+
+    class _ProbeTool:
+        name = "test_registry_probe_tool"
+        description = "probe tool for registration round-trip"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, arguments, env, ctx):
+            return ToolResult(tool_call_id="", content="ok")
+
+    assert "test_registry_probe_tool" not in list_tool_names()
+    register_tool(_ProbeTool())
+    try:
+        assert "test_registry_probe_tool" in list_tool_names()
+        assert get_tool("test_registry_probe_tool") is not None
+        with pytest.raises(ValueError):
+            register_tool(_ProbeTool())  # already registered, no replace=True
+    finally:
+        unregister_tool("test_registry_probe_tool")
+    assert "test_registry_probe_tool" not in list_tool_names()
 
 
 def test_document_tools_registered():

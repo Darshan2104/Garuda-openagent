@@ -441,6 +441,67 @@ without the opt-in). Also de-staled §1 (P0 table marked resolved).
 
 ---
 
+## Status update 20 (2026-07-08) — trust-boundary hardening + test-quality fixes
+
+A fresh senior-engineer review (4 parallel subagents over core loop, concurrency/server, security,
+and tests/docs) surfaced genuine findings; the docs-drift items were discarded per direction (README
+is known-stale) and the code findings were verified and fixed:
+
+- **Trust anchor for project-sourced code execution (the headline finding).** Running `garuda`
+  inside a cloned repo let that repo's own `.agent/settings.yaml` self-enable two code-execution
+  paths: `load_project_tools` (imports `.agent/tools/*.py`) and hook shell commands
+  (`before_tool`/`session_start`/etc., which fire with **no permission-engine gate at all**). Both
+  are now sourced from the **global** `settings.yaml` only (`AgentHome.load_project_tools`,
+  `AgentHome.trust_project_hooks` — new — in `garuda/config/agent_home.py`); a project's own
+  settings file can no longer self-authorize either. `garuda/plugins/hooks.py::build_hook_registry`
+  logs a clear warning (naming the setting) when project hooks are present but untrusted rather than
+  silently dropping them. MCP auto-discovery (`.agent/mcp.json`, `.cursor/mcp.json`) was **not**
+  gated the same way — that's the B2 feature users explicitly asked for to configure their own
+  repos, and stdio MCP servers already imply running a configured program; flagged as a residual,
+  accepted risk rather than regressed.
+- **Sandbox file-tool symlink escape** — `SandboxEnvironment.read_file`/`write_file` bypassed the OS
+  sandbox entirely (only `execute()` was wrapped) and used lexical-only path confinement, so an
+  in-workspace symlink (e.g. `docs -> ~/.ssh`) could read/write outside the workspace despite
+  `--workspace-kind sandbox`. Fixed: `_confine_real_path` re-resolves symlinks and re-checks
+  confinement, specific to this backend (`garuda/workspace/sandbox.py`).
+  `LocalEnvironment`/unsandboxed mode is unchanged (bash is equally unconfined there, so lexical
+  parity still holds).
+- **Seatbelt file-read: verified, not patched.** Empirically tested on this host: an unfiltered
+  `(allow file-read*)` beats any later/more-specific `(deny file-read* (subpath ...))` regardless of
+  declaration order, so a denylist bolted on top would be a silent no-op. A read *allowlist* tight
+  enough to matter (mirroring bwrap's `ro_paths`) crashed basic `echo`/`bash`/`python3` (`SIGABRT`)
+  in testing — properly scoping this is genuinely hard on macOS (dyld needs broad library access)
+  and version-fragile. Rather than ship a placebo control, corrected the module docstrings
+  (`sandbox.py`, `sandbox_policy.py`) to state the real guarantee: env scrubbing and network denial
+  hold on both backends; on macOS, on-disk secret reads outside the workspace are **not** confined.
+- **Packaging bug** — `pyproject.toml` package-data only globbed `agents/defaults/*.yaml`, dropping
+  `reviewer.md` (an `agent.md`-style profile) from any non-editable install. Added the `*.md` glob.
+- **Job-manager dead code** — `_run_job`'s `if job.state == JobState.CANCELLED: return` inside the
+  semaphore block was unreachable (a cancel-while-queued raises `CancelledError` at the semaphore
+  await itself, before that line is ever reached); removed, with a new
+  `test_job_cancel_while_queued` covering the real path instead.
+- **Tautological tests fixed**: `test_create_agent_modes` (asserted `isinstance(x.__class__.__name__,
+  str)` — true for any object) now asserts `standard` returns a `DefaultAgent`, not a
+  `RigorousAgent`. `test_tool_registry_register` registered `TaskCompleteTool` (already registered at
+  import, so the test passed even if `register_tool` were a no-op) — now uses a fresh probe tool,
+  checks the not-yet-registered → registered → unregistered round-trip, and checks the
+  no-replace-without-flag `ValueError`. Added `ToolRegistry.unregister`/`unregister_tool` for
+  test teardown (small, natural inverse of `register`).
+- **New end-to-end concurrency test** — every existing job test stubbed `_execute`, so the flagship
+  "heterogeneous configs run concurrently in one process" claim (status update 17) was only unit
+  -tested piecewise. `test_concurrent_jobs_with_heterogeneous_tools_do_not_leak`
+  (`tests/test_server_jobs.py`) submits two jobs from two workspaces — each with its own
+  `.agent/tools/*.py` custom tool — through the **real** `prepare_agent_run`/`build_toolkit`
+  pipeline, runs them concurrently via `asyncio.gather`, and asserts each job saw only its own
+  workspace's tool with neither leaking into the other job or the shared base registry.
+
+Suite: **450 passing** (7 skipped, 0 failed), +9 tests. Live Fireworks smoke was attempted but the
+key in this shell was invalid/expired (environment issue, not a regression — the harness caught it
+cleanly via the existing model-error path rather than crashing); the local suite already exercises
+every changed path including a real end-to-end job run, so this was not pursued further.
+
+---
+
 ## 0. Verdict
 
 > **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton
@@ -450,13 +511,16 @@ without the opt-in). Also de-staled §1 (P0 table marked resolved).
 > enforced, error containment + retry resilience are in, the loop/subagent/rigorous/context/tool
 > findings are fixed, and the harness has been exercised end-to-end against live providers
 > (Gemini earlier, now Fireworks per policy) — not just `ScriptModel`. Current state: **a working
-> harness at ~441 passing tests** (7 skipped by default — 3 tmux + 4 live-Seatbelt behind
+> harness at ~450 passing tests** (7 skipped by default — 3 tmux + 4 live-Seatbelt behind
 > `GARUDA_LIVE_SANDBOX=1`; deterministic/green on any host) with the known review backlog closed,
 > **the four capability
 > upgrades (multimodal content blocks, persistent shell, ripgrep context lines, post-edit
-> diagnostics) landed** (status update 16), **and the P1 scalability triad + `.agent/` project
+> diagnostics) landed** (status update 16), **the P1 scalability triad + `.agent/` project
 > config landed** (status update 17: scoped tool registry, per-provider model governor, job-queue
-> server; one-folder tools/MCP/skills/profiles). No correctness or P1 scalability blockers remain.
+> server; one-folder tools/MCP/skills/profiles), **and a trust-boundary hardening pass closed the
+> untrusted-repo code-execution gaps** (status update 20: `load_project_tools`/hook commands are now
+> a global-settings-only trust anchor; sandboxed file tools no longer bypass symlink confinement).
+> No correctness or P1 scalability blockers remain.
 > (The live Anthropic extended-thinking round-trip check was descoped 2026-07-07 — the feature is
 > implemented and unit-tested; a live confirmation is no longer tracked.)
 

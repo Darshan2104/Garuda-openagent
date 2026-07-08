@@ -3,9 +3,20 @@
 Unlike a naive wrapper, this environment:
 * fails loudly when no backend is available (unless ``require_sandbox=False``),
   instead of silently running unconfined;
-* scrubs the subprocess environment down to a passthrough allowlist so secrets
-  are never exposed to sandboxed commands;
+* scrubs the subprocess *environment* down to a passthrough allowlist, so a
+  sandboxed command's env never contains the harness's API keys/tokens;
 * blocks network egress by default (``--unshare-net`` / ``deny network*``).
+
+**Known gap (macOS/Seatbelt only).** Env scrubbing and network denial are real
+guarantees on both backends. File-*read* confinement is not: bwrap only ro-binds
+an explicit allowlist (``ro_paths``), but Seatbelt's SBPL has no working
+allow-then-deny-subpath override for ``file-read*`` (verified empirically — an
+unfiltered ``(allow file-read*)`` beats any later/more-specific deny), and a
+read-only allowlist tight enough to deny arbitrary host paths breaks basic exec
+(dyld needs broad library access) in a way that's fragile across macOS versions.
+So on macOS, a sandboxed command *can* read on-disk secrets outside the
+workspace (e.g. ``~/.ssh``) even though it can't exfiltrate them over the
+network (denied by default) or via env (scrubbed). See ``build_seatbelt_profile``.
 """
 
 import logging
@@ -110,8 +121,33 @@ class SandboxEnvironment:
             wrapped, timeout=timeout, cwd=self._workspace_root, env=env
         )
 
+    def _confine_real_path(self, path: str) -> None:
+        """Re-check confinement against the *resolved* (symlink-following) path.
+
+        ``execute()`` is confined at the syscall level regardless of symlinks — a
+        mount namespace (bwrap) or Seatbelt subpath rule only exposes the real
+        target, not whatever the workspace-relative name lexically looks like.
+        ``read_file``/``write_file`` don't route through the OS sandbox at all, so
+        an in-workspace symlink pointing outside the workspace (e.g. ``docs ->
+        ~/.ssh``) would otherwise bypass the confinement ``--workspace-kind
+        sandbox`` promises. Resolve and re-check here, specifically for this
+        backend — unsandboxed ``LocalEnvironment`` keeps its existing lexical-only
+        behavior, matching ``bash`` there (which is equally unconfined).
+        """
+        root = Path(self._workspace_root).resolve()
+        candidate = Path(path)
+        full = candidate if candidate.is_absolute() else root / candidate
+        resolved = full.resolve()
+        if resolved != root and not resolved.is_relative_to(root):
+            raise PermissionError(
+                f"Path {path!r} resolves outside the sandboxed workspace root {root} "
+                "(possibly via a symlink); refusing."
+            )
+
     async def read_file(self, path: str) -> str:
+        self._confine_real_path(path)
         return await self._inner.read_file(path)
 
     async def write_file(self, path: str, content: str) -> None:
+        self._confine_real_path(path)
         return await self._inner.write_file(path, content)

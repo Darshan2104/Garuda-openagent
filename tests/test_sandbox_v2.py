@@ -127,6 +127,54 @@ def test_sandbox_allows_unconfined_when_not_required(monkeypatch, tmp_path: Path
     assert not env.is_sandboxed()
 
 
+# --- file-tool symlink confinement (pure path logic, no backend required) ----
+#
+# execute() is confined at the syscall level (mount namespace / Seatbelt subpath
+# rules resolve symlinks themselves), but read_file/write_file bypass the OS
+# sandbox entirely and only had lexical confinement — an in-workspace symlink
+# pointing outside the workspace could read/write arbitrary host files despite
+# --workspace-kind sandbox. These tests don't need sandbox-exec/bwrap present.
+
+
+async def test_sandbox_read_file_blocks_symlink_escape(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP SECRET", encoding="utf-8")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "escape").symlink_to(outside)
+
+    env = SandboxEnvironment(workspace_root=workspace, policy=SandboxPolicy(require_sandbox=False))
+    with pytest.raises(PermissionError):
+        await env.read_file("escape/secret.txt")
+
+
+async def test_sandbox_write_file_blocks_symlink_escape(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "escape").symlink_to(outside)
+
+    env = SandboxEnvironment(workspace_root=workspace, policy=SandboxPolicy(require_sandbox=False))
+    with pytest.raises(PermissionError):
+        await env.write_file("escape/pwned.txt", "pwned")
+    assert not (outside / "pwned.txt").exists()
+
+
+async def test_sandbox_file_tools_allow_in_workspace_paths(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("fine", encoding="utf-8")
+
+    env = SandboxEnvironment(workspace_root=workspace, policy=SandboxPolicy(require_sandbox=False))
+    assert await env.read_file("ok.txt") == "fine"
+    await env.write_file("new.txt", "written")
+    assert (workspace / "new.txt").read_text(encoding="utf-8") == "written"
+
+
 # --- live Seatbelt (macOS only) ---------------------------------------------
 
 @pytest.mark.skipif(

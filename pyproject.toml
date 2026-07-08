@@ -48,7 +48,7 @@ where = ["."]
 include = ["garuda*"]
 
 [tool.setuptools.package-data]
-garuda = ["agents/defaults/*.yaml", "config/defaults/*.yaml"]
+garuda = ["agents/defaults/*.yaml", "agents/defaults/*.md", "config/defaults/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

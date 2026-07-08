@@ -155,20 +155,7 @@ async def test_programmatic_hook_exception_does_not_crash():
     await registry.on_session_end({"success": True})
 
 
-def test_build_hook_registry_merges_global_and_project(tmp_path, monkeypatch):
-    global_settings = tmp_path / "global-settings.yaml"
-    _write_config(
-        global_settings,
-        """
-hooks:
-  before_tool:
-    - match: "*"
-      command: "echo global"
-""",
-    )
-    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_settings))
-
-    workspace = tmp_path / "project"
+def _write_project_hooks(workspace):
     (workspace / ".garuda").mkdir(parents=True)
     _write_config(
         workspace / ".garuda" / "settings.yaml",
@@ -182,9 +169,52 @@ hooks:
 """,
     )
 
+
+def test_build_hook_registry_merges_global_and_project_when_trusted(tmp_path, monkeypatch):
+    global_settings = tmp_path / "global-settings.yaml"
+    _write_config(
+        global_settings,
+        """
+trust_project_hooks: true
+hooks:
+  before_tool:
+    - match: "*"
+      command: "echo global"
+""",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_settings))
+
+    workspace = tmp_path / "project"
+    _write_project_hooks(workspace)
+
     registry = build_hook_registry(workspace)
     assert len(registry.before_tool) == 2  # global + project merged
     assert len(registry.session_end) == 1
+
+
+def test_build_hook_registry_ignores_untrusted_project_hooks(tmp_path, monkeypatch):
+    """Security regression: a cloned repo's own settings.yaml must not be able to
+    self-authorize running its shell-command hooks (before_tool/session_start
+    fire with no permission gate at all). Without trust_project_hooks: true in
+    the GLOBAL settings, project hook commands are skipped."""
+    global_settings = tmp_path / "global-settings.yaml"
+    _write_config(
+        global_settings,
+        """
+hooks:
+  before_tool:
+    - match: "*"
+      command: "echo global"
+""",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_settings))
+
+    workspace = tmp_path / "project"
+    _write_project_hooks(workspace)
+
+    registry = build_hook_registry(workspace)
+    assert len(registry.before_tool) == 1  # only the global hook
+    assert registry.session_end == []  # project-only hook, not loaded
 
 
 def test_build_hook_registry_without_settings(tmp_path):

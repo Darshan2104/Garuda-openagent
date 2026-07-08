@@ -59,10 +59,45 @@ def test_settings_merge_agent_overrides_garuda(tmp_path: Path):
         "shared: from_agent\n", encoding="utf-8"
     )
     home = resolve_agent_home(tmp_path)
-    # .agent overrides the shared key; .garuda-only keys survive
+    # .agent overrides the shared key; .garuda-only keys survive in the raw merge...
     assert home.settings["shared"] == "from_agent"
     assert home.settings["load_project_tools"] is True
-    assert home.load_project_tools is True
+    # ...but load_project_tools is a trust anchor: it's read from GLOBAL settings
+    # only, so a project's own settings.yaml can never self-enable it (a cloned
+    # repo shipping this key must not be able to authorize its own code to run).
+    assert home.load_project_tools is False
+
+
+def test_load_project_tools_ignores_project_settings_but_honors_global(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "settings.yaml").write_text(
+        "load_project_tools: true\n", encoding="utf-8"
+    )
+    # Project alone can't enable it...
+    assert resolve_agent_home(tmp_path).load_project_tools is False
+
+    # ...but the user's global settings.yaml can.
+    global_settings = tmp_path.parent / "global-settings.yaml"
+    global_settings.write_text("load_project_tools: true\n", encoding="utf-8")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_settings))
+    assert resolve_agent_home(tmp_path).load_project_tools is True
+
+
+def test_trust_project_hooks_ignores_project_settings_but_honors_global(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "settings.yaml").write_text(
+        "trust_project_hooks: true\n", encoding="utf-8"
+    )
+    assert resolve_agent_home(tmp_path).trust_project_hooks is False
+
+    global_settings = tmp_path.parent / "global-settings2.yaml"
+    global_settings.write_text("trust_project_hooks: true\n", encoding="utf-8")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_settings))
+    assert resolve_agent_home(tmp_path).trust_project_hooks is True
 
 
 def test_mcp_paths_first_file_per_root(tmp_path: Path):

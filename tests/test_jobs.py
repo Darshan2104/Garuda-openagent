@@ -55,6 +55,37 @@ async def test_job_cancel_while_running():
     assert job.state == JobState.CANCELLED
 
 
+async def test_job_cancel_while_queued():
+    mgr = JobManager(max_jobs=1)
+    release = asyncio.Event()
+    ran: list[str] = []
+
+    async def blocker(job):
+        ran.append("blocker-started")
+        await release.wait()
+        return _result()
+
+    async def queued_runner(job):
+        ran.append("queued-ran")  # must never happen: cancelled before its slot frees
+        return _result()
+
+    holder = mgr.submit(blocker, task="holder", events=EventStore())
+    queued = mgr.submit(queued_runner, task="queued", events=EventStore())
+    await asyncio.sleep(0.02)  # let the holder acquire the single slot
+    assert holder.state == JobState.RUNNING
+    assert queued.state == JobState.QUEUED
+
+    assert mgr.cancel(queued.id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await queued._task
+    assert queued.state == JobState.CANCELLED
+    assert "queued-ran" not in ran  # never got the slot
+
+    release.set()
+    await holder._task
+    assert holder.state == JobState.SUCCEEDED
+
+
 async def test_concurrency_cap_queues_excess():
     mgr = JobManager(max_jobs=1)
     release = asyncio.Event()

@@ -9,18 +9,27 @@ a single place and picked up automatically::
       skills/          # SKILL.md files
       tools/           # *.py modules exporting custom Garuda tools (opt-in)
       mcp.json         # (or mcp.yaml) MCP server definitions
-      settings.yaml    # optional per-project defaults / trust flags
+      settings.yaml    # optional per-project defaults
 
 ``.agent/`` is the primary convention; ``.garuda/`` is a back-compat alias whose
 contents apply underneath (``.agent/`` wins on conflict). This module only
 *resolves* the layout; the existing loaders (profiles, skills, MCP) consume the
 resolved subpaths.
+
+**Trust boundary.** A project's own ``settings.yaml`` is workspace-controlled —
+running ``garuda`` inside a cloned repo must not let that repo's own config
+authorize the harness to execute the repo's code. So anything that runs
+arbitrary code (``load_project_tools``, project hook commands — see
+:mod:`garuda.plugins.hooks`) is gated on the GLOBAL ``settings.yaml``
+(``global_settings_path()``), which only the user controls, never on the
+project-level ``settings`` merged here.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -39,7 +48,8 @@ class AgentHome:
 
     workspace: Path
     roots: tuple[Path, ...]  # existing home dirs, precedence order (.agent before .garuda)
-    settings: dict
+    settings: dict  # merged PROJECT settings.yaml (workspace-controlled)
+    global_settings: dict = field(default_factory=dict)  # user-level settings.yaml (trust anchor)
 
     @property
     def agents_dir(self) -> Path | None:
@@ -80,12 +90,26 @@ class AgentHome:
 
     @property
     def load_project_tools(self) -> bool:
-        """Opt-in flag (``settings.yaml``) for importing ``.agent/tools/*.py``.
+        """Opt-in flag for importing ``.agent/tools/*.py`` (executes repo code).
 
-        Off by default: importing project modules executes repo code, so it must
-        be explicitly enabled per project.
+        Sourced from the GLOBAL settings.yaml only (``~/.agent/settings.yaml``),
+        never the project's own ``settings.yaml`` — otherwise a cloned repo could
+        self-enable execution of its own tool modules just by shipping this key.
+        A user who trusts a given project should set it globally, or pass the
+        per-run ``--load-project-tools`` / SDK ``load_project_tools`` override.
         """
-        return bool(self.settings.get("load_project_tools", False))
+        return bool(self.global_settings.get("load_project_tools", False))
+
+    @property
+    def trust_project_hooks(self) -> bool:
+        """Opt-in flag (GLOBAL settings.yaml only) for running shell-command hooks
+        declared in a project's own ``settings.yaml``.
+
+        Same trust-boundary reasoning as :attr:`load_project_tools`: a
+        ``before_tool``/``session_start`` hook is an arbitrary shell command, so a
+        cloned repo's own config must not be able to self-authorize running it.
+        """
+        return bool(self.global_settings.get("trust_project_hooks", False))
 
 
 def _first_dir(candidates) -> Path | None:
@@ -119,7 +143,12 @@ def resolve_agent_home(workspace: str | Path) -> AgentHome:
     """Resolve the ``.agent/`` (and back-compat ``.garuda/``) home for a workspace."""
     ws = Path(workspace)
     roots = tuple(ws / name for name in AGENT_HOME_DIRS if (ws / name).is_dir())
-    return AgentHome(workspace=ws, roots=roots, settings=_load_settings(roots))
+    return AgentHome(
+        workspace=ws,
+        roots=roots,
+        settings=_load_settings(roots),
+        global_settings=_load_global_settings(),
+    )
 
 
 def resolve_agents_dir(
@@ -171,3 +200,28 @@ def global_home_dir() -> Path:
         if (home / name).is_dir():
             return home / name
     return home / ".agent"
+
+
+def global_settings_path() -> Path:
+    """Path to the user-level ``settings.yaml`` — the trust anchor for anything that
+    executes code sourced from a *project's own* config (``load_project_tools``,
+    project hook commands): those flags are honored only when set here, never in
+    the workspace's own ``settings.yaml``, so a cloned repo cannot self-authorize
+    running its own code. Override with ``GARUDA_GLOBAL_SETTINGS``.
+    """
+    override = os.environ.get("GARUDA_GLOBAL_SETTINGS")
+    if override:
+        return Path(override).expanduser()
+    return global_home_dir() / "settings.yaml"
+
+
+def _load_global_settings() -> dict:
+    path = global_settings_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning("Failed to parse global agent settings %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}

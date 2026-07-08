@@ -178,6 +178,15 @@ def build_seatbelt_profile(workdir: str, policy: SandboxPolicy) -> str:
     Denies everything by default, allows process exec and full read, confines
     writes to the workspace plus a small set of runtime paths, and denies
     network egress unless ``allow_network`` is set.
+
+    File reads are intentionally NOT scoped down: Seatbelt has no working
+    allow-then-deny-subpath override for ``file-read*`` (an unfiltered
+    ``(allow file-read*)`` beats any later, more-specific deny — verified
+    empirically), and a read allowlist tight enough to matter (denying e.g.
+    ``~/.ssh``) breaks basic command execution because dyld needs broad library
+    access, in a way that varies across macOS versions. So this backend confines
+    writes and network only; see the module docstring in ``sandbox.py`` for the
+    resulting on-disk-secret-read gap.
     """
     writable = [workdir, *[p for p in policy.writable_paths]]
     subpaths = "\n  ".join(f'(subpath "{_sbpl_quote(p)}")' for p in writable)

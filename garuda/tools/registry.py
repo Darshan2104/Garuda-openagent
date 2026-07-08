@@ -25,6 +25,10 @@ class ToolRegistry:
             raise ValueError(f"Tool already registered: {tool.name}")
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool from this layer, if present. Base entries are untouched."""
+        self._tools.pop(name, None)
+
     def get(self, name: str) -> Tool | None:
         tool = self._tools.get(name)
         if tool is not None:
@@ -89,6 +93,11 @@ def builtin_registry() -> ToolRegistry:
 def register_tool(tool: Tool, *, replace: bool = False) -> None:
     """Register a tool into the shared base. Set replace=True to override built-ins."""
     _default.register(tool, replace=replace)
+
+
+def unregister_tool(name: str) -> None:
+    """Remove a tool from the shared base, if present."""
+    _default.unregister(name)
 
 
 def get_tool(name: str) -> Tool | None:
