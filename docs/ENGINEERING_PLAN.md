@@ -441,6 +441,48 @@ without the opt-in). Also de-staled §1 (P0 table marked resolved).
 
 ---
 
+## Status update 21 (2026-07-11) — turn-reducing capability pass (cheaper + faster + more general)
+
+A landscape scan of the July-2026 top agents (Terminal-Bench 2.0: NexAU-AHE, LemonHarness, Codex
+CLI, Terminus-KIRA; SWE-bench: R2E-Gym/CodeMonkeys/Trae) informed a deliberate choice: **skip
+benchmark-specific test-time scaling (best-of-N + verifier selection)** — it's expensive and
+high-latency, and the goal is a general harness, not a benchmark-tuned one. Instead we optimized the
+existing single-pass loop along the one axis that makes it simultaneously cheaper, lower-latency,
+and more capable on *any* task: **cutting wasted turns** (each turn is a full model round-trip).
+
+- **Environment bootstrap snapshot (`garuda/core/bootstrap.py`, new).** A fresh agent otherwise
+  spends its first 2–5 turns rediscovering the same facts on every task (OS, language runtimes,
+  package managers, cwd contents, git state). We now probe that **once** at session start with a
+  single bounded, read-only, POSIX-sh command and fold the result into the first-turn system prompt.
+  One `env.execute` round-trip (not N) keeps latency flat across local/docker/remote; the result is
+  cached on the `env` instance so a rigorous plan+execute pair probes at most once. Best-effort — a
+  probe that fails/times out yields no snapshot, never an error. Directly attacks Terminal-Bench's
+  #1 failure mode ("executable not found", 24.1%) and Stanford Meta-Harness's headline finding
+  (environment bootstrapping, +~1.7pp, saves 2–5 turns). Gated by `AgentConfig.bootstrap_environment`
+  (default on) and `garuda run --no-bootstrap`; emits an `ENVIRONMENT_SNAPSHOT` event for trace
+  observability (useful signal for the Evolver outer loop).
+- **Wider parallel read batching.** `PARALLEL_SAFE_TOOLS` now includes the read-only `buffer_*`
+  tools and `image_read` alongside the existing reads, and the build/default prompts explicitly tell
+  the model that independent reads run in parallel — one turn does the work of many. This activates
+  machinery the loop already had (`_run_parallel_reads`) that the model wasn't being told to use.
+- **Broadened post-edit diagnostics (`garuda/tools/diagnostics.py`).** Kept the cheap/fast/single-
+  file/best-effort contract but added a real syntax gate for shell (`bash -n`, `sh -n` fallback) and
+  JavaScript (`node --check`, no tsconfig needed) on top of the existing Python/JSON/YAML checks.
+  Catching a syntax error at edit time instead of at the next test run removes a debug round-trip.
+  Unavailable tools (exit 127) are treated as "no opinion" so a missing interpreter never becomes a
+  false positive.
+
+Deliberately **not** done (recorded so the decision is legible): best-of-N/verifier-selection
+(cost/latency), semantic-search indexes (grep-first won industry-wide; Claude Code reverted its
+vector DB), and alternate edit formats like hashline/V4A (string-replace is right for the target
+models). Time-budget awareness, long-term-memory-file re-injection, diff-aware verifier/critic, and
+anchored summarization remain as cheap follow-ups.
+
+Suite: **469 passing** (7 skipped, 0 failed), +10 tests (`tests/test_optimizations_v2.py`). All
+changes are config-gated and default-safe; no signature changes to the agent run path.
+
+---
+
 ## Status update 20 (2026-07-08) — trust-boundary hardening + test-quality fixes
 
 A fresh senior-engineer review (4 parallel subagents over core loop, concurrency/server, security,
@@ -519,8 +561,11 @@ every changed path including a real end-to-end job run, so this was not pursued 
 > config landed** (status update 17: scoped tool registry, per-provider model governor, job-queue
 > server; one-folder tools/MCP/skills/profiles), **and a trust-boundary hardening pass closed the
 > untrusted-repo code-execution gaps** (status update 20: `load_project_tools`/hook commands are now
-> a global-settings-only trust anchor; sandboxed file tools no longer bypass symlink confinement).
-> No correctness or P1 scalability blockers remain.
+> a global-settings-only trust anchor; sandboxed file tools no longer bypass symlink confinement),
+> **and a turn-reducing capability pass landed** (status update 21: session-start environment
+> bootstrap snapshot, wider parallel read batching, broadened post-edit diagnostics — all aimed at
+> fewer model round-trips, so cheaper + lower-latency + more generally capable). Suite now at **~469
+> passing tests**. No correctness or P1 scalability blockers remain.
 > (The live Anthropic extended-thinking round-trip check was descoped 2026-07-07 — the feature is
 > implemented and unit-tested; a live confirmation is no longer tracked.)
 

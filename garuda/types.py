@@ -89,6 +89,11 @@ class AgentConfig:
     thinking_budget_tokens: int | None = None
     # Run a fast syntax check after edit/write_file and surface any error to the model.
     post_edit_diagnostics: bool = True
+    # Probe the environment once at session start (OS, runtimes, package managers,
+    # cwd, git) and fold it into the first-turn system prompt so the agent skips
+    # redundant discovery turns. Cheap, benchmark-agnostic; off only when the caller
+    # wants a fully cold start.
+    bootstrap_environment: bool = True
     # Persist shell state (cwd/env/venv) across bash calls via a long-lived session
     # (local env only; opt-in). Off by default to keep bash fully isolated per call.
     persistent_shell: bool = False
@@ -113,7 +118,8 @@ genuinely done and verified. Do not stop early or hand back partial work.
 
 Operating principles:
 1. Understand first — use grep/glob/ls and read_file to inspect the environment before acting; \
-never guess a path, value, or fact you can check.
+never guess a path, value, or fact you can check. When several reads are independent, request \
+them together in one response — read-only tools run in parallel, saving turns.
 2. Read before you edit — read the exact region you will change; prefer the edit tool for changes \
 and write_file only for new files or a full small rewrite.
 3. Plan multi-step work with the todo tool and keep it current.

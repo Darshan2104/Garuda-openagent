@@ -91,6 +91,12 @@ def build_parser():
         action="store_true",
         help="Disable the syntax check run after edit/write_file",
     )
+    run_parser.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Skip the session-start environment probe (cold start; the agent "
+        "discovers the environment itself)",
+    )
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
@@ -304,6 +310,8 @@ async def run_task(args) -> int:
         config.persistent_shell = True
     if getattr(args, "no_post_edit_diagnostics", False):
         config.post_edit_diagnostics = False
+    if getattr(args, "no_bootstrap", False):
+        config.bootstrap_environment = False
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host

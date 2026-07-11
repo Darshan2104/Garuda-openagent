@@ -65,6 +65,8 @@ CONTEXT_WARNING_NUDGE = (
 )
 
 # Tools with no side effects, safe to run concurrently within one model response.
+# Batching independent reads into one turn is a direct latency/cost win (one model
+# round-trip instead of N), so every genuinely read-only tool belongs here.
 PARALLEL_SAFE_TOOLS = frozenset(
     {
         "read_file",
@@ -73,9 +75,14 @@ PARALLEL_SAFE_TOOLS = frozenset(
         "ls",
         "read_pdf",
         "read_spreadsheet",
+        "image_read",
         "web_fetch",
         "web_search",
         "task_output",
+        "buffer_grep",
+        "buffer_slice",
+        "buffer_list",
+        "buffer_query",
     }
 )
 
@@ -192,6 +199,16 @@ class DefaultAgent:
 
         if context is None:
             system_prompt = config.system_prompt or DEFAULT_SYSTEM_PROMPT
+            # Probe the environment once and fold the snapshot into the first-turn
+            # system prompt so the model skips 2-5 turns of "what am I working with"
+            # discovery. Cached on env, so rigorous plan/execute probe at most once.
+            if config.bootstrap_environment:
+                from garuda.core.bootstrap import environment_snapshot
+
+                snapshot = await environment_snapshot(env)
+                if snapshot:
+                    system_prompt = f"{system_prompt}\n\n{snapshot}"
+                    events.append(EventType.ENVIRONMENT_SNAPSHOT, {"chars": len(snapshot)})
             context = ContextManager(
                 model=model,
                 max_output_bytes=config.max_output_bytes,

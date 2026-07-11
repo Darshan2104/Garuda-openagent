@@ -21,6 +21,7 @@ class EventType(str, Enum):
     SUMMARIZATION = "summarization"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    ENVIRONMENT_SNAPSHOT = "environment_snapshot"
 
 
 class EventStore:
