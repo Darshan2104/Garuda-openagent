@@ -1,7 +1,6 @@
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
@@ -13,10 +12,10 @@ from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
-
-logger = logging.getLogger(__name__)
 from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment
+
+logger = logging.getLogger(__name__)
 
 
 def _sandbox_policy_from_config(config: AgentConfig | None) -> SandboxPolicy | None:

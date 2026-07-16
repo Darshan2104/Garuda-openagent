@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from garuda.workspace.docker import DockerEnvironment, DockerWorkspace
+from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.protocol import Environment
-from garuda.workspace.remote import RemoteEnvironment, RemoteWorkspace
+from garuda.workspace.remote import RemoteWorkspace
 from garuda.workspace.sandbox import SandboxEnvironment
 from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment

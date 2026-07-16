@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
@@ -210,7 +210,7 @@ def _warn_unsatisfiable_skill_tools(skills, granted_tools: list[str] | None) -> 
 
 def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | None = None) -> str:
     """Build system prompt with optional skill injection and project memory."""
-    from garuda.skills.loader import discover_skills, format_skills_prompt, load_skill
+    from garuda.skills.loader import discover_skills, format_skills_prompt
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
     skill_dirs: list[Path] = []

@@ -441,7 +441,6 @@ async def run_serve(args) -> int:
 
 def main() -> None:
     import asyncio
-    import sys
 
     parser = build_parser()
     args = parser.parse_args()

@@ -25,8 +25,6 @@ from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.local import LocalEnvironment
-
-logger = logging.getLogger(__name__)
 from garuda.workspace.sandbox_policy import (
     SandboxPolicy,
     SandboxUnavailableError,
@@ -38,6 +36,8 @@ from garuda.workspace.sandbox_policy import (
     detect_sandbox_backend,
     to_shell_string,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxEnvironment:

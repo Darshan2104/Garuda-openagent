@@ -1,6 +1,7 @@
 """High-level Software Agent SDK entry point."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.core.events import EventStore
@@ -12,6 +13,11 @@ from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentResult
+
+if TYPE_CHECKING:
+    # Only for the return-type annotation on conversation(); the runtime import
+    # stays inside the method to avoid a circular import with garuda.sdk.conversation.
+    from garuda.sdk.conversation import Conversation
 
 
 class SoftwareAgent:

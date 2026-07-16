@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import json
-from pathlib import Path
 
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment
