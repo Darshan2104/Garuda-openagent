@@ -544,6 +544,45 @@ every changed path including a real end-to-end job run, so this was not pursued 
 
 ---
 
+## Status update 22 (2026-07-16) — grok-build-informed edit/search reliability
+
+Four capability upgrades from a review of xAI's `grok-build` harness, all aimed at the biggest
+silent turn-sink on coding/terminal benchmarks: *mechanical edit/search friction*. Each is
+best-effort and fail-safe — it can rescue a good outcome but never breaks an edit/search that
+already works.
+
+- **Anchored edits with shift recovery** (`tools/edit.py`) — the edit matcher is now layered:
+  exact → strip pasted `read_file` line-number prefixes → CRLF/LF normalization → per-line
+  indentation-flexible (re-anchored to the file's real indentation). Every layer is
+  **unique-match-only** and bails to a precise error on ambiguity or an unsafe tab/space
+  re-indent, so it never silently applies a wrong edit. `resolve_edit` is the shared entry point.
+  Recoveries are flagged in the result ("verify the snippet"). This turns the most common edit
+  misses — which used to cost a re-read + retry — into a single successful call.
+- **`multi_edit` tool** (`tools/multi_edit.py`) — several find/replace edits to ONE file in a
+  single call, applied in order (edit *k* sees edit *k-1*'s result) and **atomically** (any miss
+  → nothing written, the failing edit index reported). Reuses `resolve_edit`, so the recovery
+  layers apply here too. Registered in the base registry + `build`/`harbor` profiles; classed as a
+  write tool in permissions (path rules + `readonly` mode apply). Collapses the common "one fix
+  touches 3–5 spots" pattern from N model round-trips to one.
+- **Ripgrep-backed `grep`** (`tools/search.py`) — `grep` now prefers the `rg` binary when present
+  (gitignore/.ignore-aware, skips hidden + `.git`, far faster on large trees) and falls back to
+  `grep -E` otherwise, chosen in one shell command so it works across local/docker/remote. Output
+  shape, output modes, and context flags are unchanged (update 16's flags still map 1:1). New
+  `no_ignore` arg restores a grep-like full sweep. Default ignore-awareness cuts `node_modules`/
+  build-dir noise out of results.
+- **Semantic post-edit lint** (`tools/diagnostics.py`) — on top of the existing syntax check, a
+  fast single-file lint (Python via `ruff --isolated`, high-signal `E9,F821,F822,F823` — undefined
+  names / use-before-assign, *not* style/unused nags) runs when syntax is clean and surfaces real
+  bugs before the model spends a test run finding them. Unified `post_edit_report` helper now backs
+  `edit`/`write_file`/`multi_edit`. Gated by `AgentConfig.post_edit_lint` (default on;
+  `--no-post-edit-lint`); silent when ruff is absent.
+
+Suite: **504 passing** (7 skipped, 0 failed), +~40 tests across the four (`test_edit_anchored.py`,
+`test_multi_edit.py`, `test_search_rg.py`, extended `test_diagnostics.py`). `ruff check` clean on all
+changed files. rg + ruff present locally, so their integration tests ran (not skipped).
+
+---
+
 ## 0. Verdict
 
 > **Updated 2026-07-06.** The original verdict below described v1.1.0 as "a well-shaped skeleton

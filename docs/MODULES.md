@@ -118,11 +118,27 @@ workspace ──┬── tools ──┘
 
 ---
 
+## Phase 7 — Edit/Search Reliability (grok-build-informed)
+
+Capability upgrades from a review of xAI's `grok-build` harness, targeting wasted turns on
+mechanical edit/search friction. See ENGINEERING_PLAN.md status update 22.
+
+| # | Module | Path | Status | Depends On | Exit Criteria |
+|---|--------|------|--------|------------|---------------|
+| M34 | **Anchored edits** | `garuda/tools/edit.py` | ✅ | M11 | `resolve_edit` layered matcher: line-number-prefix / CRLF / indentation recovery, unique-match-only |
+| M35 | **Multi-edit tool** | `garuda/tools/multi_edit.py` | ✅ | M34 | `multi_edit` applies N atomic, sequential edits to one file |
+| M36 | **Ripgrep-backed grep** | `garuda/tools/search.py` | ✅ | M4 | prefer `rg` (gitignore-aware) with `grep -E` fallback; `no_ignore` escape hatch |
+| M37 | **Semantic post-edit lint** | `garuda/tools/diagnostics.py` | ✅ | M11 | `check_lint` (ruff, undefined-name class) + unified `post_edit_report` |
+
+**Phase 7 exit:** edit/search friction reduced; 504 tests passing, ruff-clean.
+
+---
+
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33), Phase 7 (M34–M37)
 
-**Status:** All 33 modules complete — Garuda v1.0.0
+**Status:** All 37 modules complete — Garuda v1.1.0
 
 ---
 

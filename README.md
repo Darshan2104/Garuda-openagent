@@ -15,7 +15,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | Area | Capabilities |
 |------|--------------|
 | **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, `fireworks_ai/…`, etc.) — retries/backoff, request timeouts, Anthropic prompt caching, extended thinking (`--reasoning-effort` cross-provider, `--thinking-budget` for Anthropic), per-provider concurrency governor |
-| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace), `read_file` (line-numbered, offset/limit), `write_file`, `grep`, `glob`, `ls`, `todo`, `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `task_complete` + MCP |
+| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace with shift recovery — auto-recovers from pasted line-number prefixes, CRLF/LF, and indentation drift), `multi_edit` (several atomic edits to one file in one call), `read_file` (line-numbered, offset/limit), `write_file`, `grep` (ripgrep when available — gitignore-aware — else `grep -E`), `glob`, `ls`, `todo`, `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `task_complete` + MCP |
 | **Sessions** | Every run persists to `~/.agent/sessions/` (`~/.garuda` back-compat, `GARUDA_SESSIONS_DIR` override); `garuda sessions` lists, `garuda run --resume <id\|latest>` continues with full context |
 | **Hooks** | Lifecycle + tool shell-command hooks from the **global** `~/.agent/settings.yaml` (exit 2 blocks the tool call); hooks in a project's own `settings.yaml` run only if you set `trust_project_hooks: true` globally — a cloned repo can't self-authorize running its commands |
 | **Project memory** | `AGENTS.md` / `GARUDA.md` in the workspace root is injected as project instructions |
@@ -25,7 +25,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **Subagents** | Main agent spins up isolated subagents via `invoke_subagent` |
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
-| **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
+| **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
 | **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE), plugin hooks, YAML recipes, subagent handoff |
 | **Modes** | `standard` (fast), `rigorous` (plan → execute → critic), `readonly` |
@@ -212,6 +212,7 @@ garuda run -f task.md [options]
 | `--thinking-budget` | Anthropic extended-thinking budget in tokens |
 | `--persistent-shell` | Keep one shell alive across bash calls (cwd/env/venv persist; local env) |
 | `--no-post-edit-diagnostics` | Disable the syntax check run after `edit`/`write_file` |
+| `--no-post-edit-lint` | Disable the fast semantic lint (Python/ruff) run after `edit`/`write_file` |
 | `--no-verifier` | Disable completion verification gate |
 | `--no-three-step-summary` | Disable 3-step context summarization |
 | `--json` | Print JSONL events to stdout |
