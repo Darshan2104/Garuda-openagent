@@ -581,6 +581,31 @@ Suite: **504 passing** (7 skipped, 0 failed), +~40 tests across the four (`test_
 `test_multi_edit.py`, `test_search_rg.py`, extended `test_diagnostics.py`). `ruff check` clean on all
 changed files. rg + ruff present locally, so their integration tests ran (not skipped).
 
+## Status update 23 (2026-07-17) — token efficiency & context management
+
+Two more grok-build-informed ideas, chosen against the goal of a **less token-hungry** harness
+that **manages state properly** (the Medium ideas — parallel writes, subagent worktree isolation —
+were deferred: the first saves wall-clock but not tokens, the second serves neither goal and is the
+riskiest).
+
+- **Lazy MCP tool discovery** (`tools/discovery.py`) — when connected servers expose more than
+  `GARUDA_MCP_MAX_DIRECT_TOOLS` tools (default 10; env-overridable), `build_toolkit` stops injecting
+  every tool schema and instead exposes `search_tool(query)` + `use_tool(name, arguments)`. Below the
+  threshold, behavior is unchanged (non-breaking). `search_tool` returns names + descriptions +
+  compact arg summaries so the model can call `use_tool` correctly. The loop keeps both meta-tools
+  through the `allowed_tools` filter (like `task_complete`) and treats `search_tool` as parallel-safe.
+  Direct token win: N MCP schemas → 2 small meta-tool schemas.
+- **Goal orchestration + post-compaction state re-pinning** (`tools/goal.py`, `core/loop.py`) — new
+  `update_goal` tool holds a single north-star objective (+ optional short plan) per session. After a
+  compaction fires, the loop re-pins the current **goal *and* todo list** as compact messages so they
+  survive summarization — fixing a real gap (todos were stored but never re-surfaced, so the model
+  lost its task list on compaction and re-derived it, wasting turns/tokens). `render_todos` is now
+  shared between the tool and the loop. Added to `build`/`harbor` profiles and the planning principle
+  in the system prompts.
+
+Suite: **524 passing** (7 skipped, 0 failed), +20 tests (`test_tool_discovery.py`, `test_goal.py`).
+`ruff check` clean on all changed files.
+
 ---
 
 ## 0. Verdict

@@ -15,7 +15,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | Area | Capabilities |
 |------|--------------|
 | **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, `fireworks_ai/…`, etc.) — retries/backoff, request timeouts, Anthropic prompt caching, extended thinking (`--reasoning-effort` cross-provider, `--thinking-budget` for Anthropic), per-provider concurrency governor |
-| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace with shift recovery — auto-recovers from pasted line-number prefixes, CRLF/LF, and indentation drift), `multi_edit` (several atomic edits to one file in one call), `read_file` (line-numbered, offset/limit), `write_file`, `grep` (ripgrep when available — gitignore-aware — else `grep -E`), `glob`, `ls`, `todo`, `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `task_complete` + MCP |
+| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace with shift recovery — auto-recovers from pasted line-number prefixes, CRLF/LF, and indentation drift), `multi_edit` (several atomic edits to one file in one call), `read_file` (line-numbered, offset/limit), `write_file`, `grep` (ripgrep when available — gitignore-aware — else `grep -E`), `glob`, `ls`, `todo`, `update_goal` (north-star objective, re-pinned across compaction), `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `task_complete` + MCP (`search_tool`/`use_tool` lazy discovery when many are present) |
 | **Sessions** | Every run persists to `~/.agent/sessions/` (`~/.garuda` back-compat, `GARUDA_SESSIONS_DIR` override); `garuda sessions` lists, `garuda run --resume <id\|latest>` continues with full context |
 | **Hooks** | Lifecycle + tool shell-command hooks from the **global** `~/.agent/settings.yaml` (exit 2 blocks the tool call); hooks in a project's own `settings.yaml` run only if you set `trust_project_hooks: true` globally — a cloned repo can't self-authorize running its commands |
 | **Project memory** | `AGENTS.md` / `GARUDA.md` in the workspace root is injected as project instructions |
@@ -26,8 +26,8 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
-| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
-| **Extensibility** | MCP servers (stdio, HTTP, SSE), plugin hooks, YAML recipes, subagent handoff |
+| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
+| **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
 | **Modes** | `standard` (fast), `rigorous` (plan → execute → critic), `readonly` |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
 | **Evaluation** | Harbor adapter + ATIF-v1.7 trajectory export |
@@ -552,6 +552,14 @@ available and a repo can add its own. Set `GARUDA_MCP_MERGE=0` (or
 `mcp_merge: false` in the project's `settings.yaml`) for the legacy single-file
 behavior. Which files loaded is logged at INFO — or just run `garuda mcp list`.
 
+**Lazy discovery (token-lean).** When the connected servers expose more than
+`GARUDA_MCP_MAX_DIRECT_TOOLS` tools (default 10), Garuda stops injecting every tool
+schema into the prompt and instead exposes two meta-tools — `search_tool(query)` to
+find tools by keyword and `use_tool(name, arguments)` to invoke one. This keeps
+requests small no matter how many MCP tools are connected. Below the threshold, tools
+are listed directly as before. Set the threshold to a large number to always list
+directly.
+
 So dropping `.agent/mcp.json` into a repo is enough — no flag required:
 
 ```bash
@@ -698,7 +706,7 @@ pytest tests/ -v
 GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 ```
 
-**Current test status:** 459 passed, 7 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 524 passed, 7 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 
@@ -711,6 +719,7 @@ GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 | `GARUDA_GLOBAL_SETTINGS` | Path to the global `settings.yaml` (default `~/.agent/settings.yaml`) — the trust anchor for `load_project_tools` / `trust_project_hooks` |
 | `GARUDA_SESSIONS_DIR` | Session store location (default `~/.agent/sessions`) |
 | `GARUDA_MCP_MERGE` | `0` to disable project+global MCP config merging |
+| `GARUDA_MCP_MAX_DIRECT_TOOLS` | Above this many MCP tools, expose them via `search_tool`/`use_tool` instead of listing all schemas (default 10) |
 | `GARUDA_MODEL_MAX_CONCURRENCY` | Cap concurrent model calls per provider (governor) |
 | `GARUDA_SERVE_TOKEN` | Bearer token for `garuda serve` |
 | `GARUDA_TRACING` | Enable OTLP tracing |

@@ -134,11 +134,24 @@ mechanical edit/search friction. See ENGINEERING_PLAN.md status update 22.
 
 ---
 
+## Phase 8 — Token Efficiency & Context Management (grok-build-informed)
+
+Reduce token usage and keep long tasks on-track. See ENGINEERING_PLAN.md status update 23.
+
+| # | Module | Path | Status | Depends On | Exit Criteria |
+|---|--------|------|--------|------------|---------------|
+| M38 | **Lazy tool discovery** | `garuda/tools/discovery.py` | ✅ | M20 | `search_tool`/`use_tool` replace raw MCP schemas above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) |
+| M39 | **Goal orchestration + state re-pinning** | `garuda/tools/goal.py` | ✅ | M8 | `update_goal` tool; loop re-pins goal + todos after compaction so they survive summarization |
+
+**Phase 8 exit:** leaner prompts with many MCP tools; goal/todos persist across compaction; 524 tests passing, ruff-clean.
+
+---
+
 ## Current Sprint
 
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33), Phase 7 (M34–M37)
+**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33), Phase 7 (M34–M37), Phase 8 (M38–M39)
 
-**Status:** All 37 modules complete — Garuda v1.1.0
+**Status:** All 39 modules complete — Garuda v1.1.0
 
 ---
 
