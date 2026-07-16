@@ -17,6 +17,7 @@ from garuda.tools.buffer_tools import (
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
+from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.protocol import Tool
 from garuda.tools.registry import (
@@ -54,6 +55,7 @@ __all__ = [
     "InvokeSubagentTool",
     "LsTool",
     "McpClientManager",
+    "MultiEditTool",
     "ReadFileTool",
     "ReadPdfTool",
     "ReadSpreadsheetTool",
@@ -83,6 +85,7 @@ def _bootstrap_registry() -> None:
         ReadFileTool(),
         WriteFileTool(),
         EditTool(),
+        MultiEditTool(),
         GrepTool(),
         GlobTool(),
         LsTool(),
@@ -117,6 +120,7 @@ def default_tools() -> list[Tool]:
             "read_file",
             "write_file",
             "edit",
+            "multi_edit",
             "grep",
             "glob",
             "ls",

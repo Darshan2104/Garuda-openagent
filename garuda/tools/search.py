@@ -17,12 +17,96 @@ def _ctx_int(value) -> int:
     return max(0, n)
 
 
+def _rg_variant(
+    q_pattern: str, q_path: str, glob: str | None, output_mode: str,
+    context: int, before: int, after: int, no_ignore: bool,
+) -> str:
+    """ripgrep command producing the same ``path:line:content`` shape as grep.
+
+    Respects .gitignore/.ignore and skips hidden files by default — the point of
+    preferring rg (no node_modules/build/.git noise, and far faster on big trees).
+    ``no_ignore`` restores a grep-like full sweep (but still skips the .git dir).
+    """
+    flags = ["rg", "--color=never", "--no-heading", "-H"]
+    if no_ignore:
+        flags += ["--no-ignore", "--hidden", "-g", shlex.quote("!.git")]
+    if glob:
+        flags += ["-g", shlex.quote(glob)]
+    if output_mode == "files_with_matches":
+        flags.append("-l")
+    elif output_mode == "count":
+        flags.append("-c")
+    else:
+        flags.append("-n")
+        if context:
+            flags += ["-C", str(context)]
+        else:
+            if before:
+                flags += ["-B", str(before)]
+            if after:
+                flags += ["-A", str(after)]
+    flags += ["-e", q_pattern, "--", q_path]
+    return " ".join(flags)
+
+
+def _grep_variant(
+    q_pattern: str, q_path: str, glob: str | None, output_mode: str,
+    context: int, before: int, after: int,
+) -> str:
+    """GNU/BSD grep command (the fallback when ripgrep is not installed)."""
+    include = f" --include={shlex.quote(glob)}" if glob else ""
+    if output_mode == "files_with_matches":
+        mode_flags = " -l"
+        line_flags = "-H"
+    elif output_mode == "count":
+        mode_flags = " -c"
+        line_flags = "-H"
+    else:
+        mode_flags = ""
+        line_flags = "-nH"
+        if context:
+            mode_flags += f" -C {context}"
+        else:
+            if before:
+                mode_flags += f" -B {before}"
+            if after:
+                mode_flags += f" -A {after}"
+    # Branch on file vs directory so single-file and symlinked targets work
+    # reliably across GNU and BSD/macOS grep. Directories (incl. symlinks to
+    # dirs) use `-R` with a trailing slash — BSD grep won't descend into a
+    # symlink-to-dir given directly, but the trailing slash forces it. Single
+    # files use plain `grep -nH` (no recursion; `-r <file>` is unreliable on BSD).
+    return (
+        f"p={q_path}; "
+        f'if [ -d "$p" ]; then '
+        f'grep -R {line_flags} -E{mode_flags}{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
+        f"else "
+        f'grep {line_flags} -E{mode_flags} -e {q_pattern} -- "$p"; '
+        f"fi"
+    )
+
+
+def _build_search_command(
+    pattern: str, path: str, glob: str | None, output_mode: str,
+    context: int, before: int, after: int, no_ignore: bool,
+) -> str:
+    """Prefer ripgrep when present, fall back to grep — chosen in one shell command
+    so it works uniformly across local/docker/remote without an extra round-trip."""
+    q_path = shlex.quote(path)
+    q_pattern = shlex.quote(pattern)
+    rg = _rg_variant(q_pattern, q_path, glob, output_mode, context, before, after, no_ignore)
+    grep = _grep_variant(q_pattern, q_path, glob, output_mode, context, before, after)
+    return f"if command -v rg >/dev/null 2>&1; then {rg}; else {grep}; fi"
+
+
 class GrepTool:
     name = "grep"
     description = (
-        "Search file contents for a regular expression (extended regex, like `grep -E`). "
-        "Returns matching lines as path:line:content. Use glob to filter filenames "
-        "(e.g. '*.py') and path to scope the search to a directory or file."
+        "Search file contents for a regular expression (uses ripgrep when available, "
+        "else `grep -E`). Returns matching lines as path:line:content. Use glob to filter "
+        "filenames (e.g. '*.py') and path to scope the search to a directory or file. "
+        "By default excludes files ignored by .gitignore/.ignore and hidden files; set "
+        "no_ignore to search everything."
     )
     parameters = {
         "type": "object",
@@ -48,10 +132,16 @@ class GrepTool:
                 "type": "integer",
                 "description": "Lines of context after each match (grep -A)",
             },
+            "no_ignore": {
+                "type": "boolean",
+                "description": "Search all files, including .gitignore/.ignore'd and hidden ones "
+                "(default false: ignore-aware, like a developer's ripgrep). The .git dir is "
+                "always skipped.",
+            },
             "output_mode": {
                 "type": "string",
                 "enum": ["content", "files_with_matches", "count"],
-                "description": "content (default): matching lines; files_with_matches: just file "
+                "description": "content (default): matching lines; files_with_matches: just file"
                 "paths; count: match count per file",
             },
             "max_results": {
@@ -75,48 +165,14 @@ class GrepTool:
         if max_results < 1:
             max_results = 1
         output_mode = arguments.get("output_mode") or "content"
+        no_ignore = bool(arguments.get("no_ignore", False))
+        context = _ctx_int(arguments.get("context"))
+        before = _ctx_int(arguments.get("before_context"))
+        after = _ctx_int(arguments.get("after_context"))
 
-        q_path = shlex.quote(path)
-        q_pattern = shlex.quote(pattern)
-        include = f" --include={shlex.quote(glob)}" if glob else ""
-
-        # Output-mode flags: -l lists files, -c counts per file; both suppress the
-        # per-line context flags. Otherwise apply -A/-B/-C context (ripgrep-style).
-        if output_mode == "files_with_matches":
-            mode_flags = " -l"
-            line_flags = "-H"  # -l ignores -n; keep -H harmless
-        elif output_mode == "count":
-            mode_flags = " -c"
-            line_flags = "-H"
-        else:
-            mode_flags = ""
-            line_flags = "-nH"
-            ctx_c = _ctx_int(arguments.get("context"))
-            ctx_b = _ctx_int(arguments.get("before_context"))
-            ctx_a = _ctx_int(arguments.get("after_context"))
-            if ctx_c:
-                mode_flags += f" -C {ctx_c}"
-            else:
-                if ctx_b:
-                    mode_flags += f" -B {ctx_b}"
-                if ctx_a:
-                    mode_flags += f" -A {ctx_a}"
-
-        # Branch on file vs directory so single-file and symlinked targets work
-        # reliably across GNU and BSD/macOS grep. Directories (incl. symlinks to
-        # dirs) use `-R` with a trailing slash — BSD grep won't descend into a
-        # symlink-to-dir given directly, but the trailing slash forces it. Single
-        # files use plain `grep -nH` (no recursion; `-r <file>` is unreliable on
-        # BSD). `-H` keeps the path:line:content shape even for one file.
-        command = (
-            f"p={q_path}; "
-            f'if [ -d "$p" ]; then '
-            f'grep -R {line_flags} -E{mode_flags}{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
-            f"else "
-            f'grep {line_flags} -E{mode_flags} -e {q_pattern} -- "$p"; '
-            f"fi"
+        command = _build_search_command(
+            pattern, path, glob, output_mode, context, before, after, no_ignore
         )
-
         result = await env.execute(command)
         if result.exit_code == 1 and not result.stdout.strip():
             return ToolResult(

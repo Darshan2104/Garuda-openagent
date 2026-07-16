@@ -18,6 +18,7 @@ class ToolContext:
     subagent_runner: "SubagentRunner | None" = None
     buffer: "ToolOutputBuffer | None" = None
     post_edit_diagnostics: bool = True
+    post_edit_lint: bool = True
     persistent_shell: bool = False
 
 

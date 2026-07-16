@@ -109,10 +109,7 @@ class WriteFileTool:
         size = len(content.encode("utf-8"))
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         message = f"Wrote {path} ({size} bytes, {line_count} lines)"
-        if getattr(ctx, "post_edit_diagnostics", True):
-            from garuda.tools.diagnostics import check_syntax
+        from garuda.tools.diagnostics import post_edit_report
 
-            problem = await check_syntax(env, path)
-            if problem:
-                message += f"\n\n⚠ Syntax check failed after write:\n{problem}"
+        message += await post_edit_report(env, path, ctx)
         return ToolResult(tool_call_id="", content=message)

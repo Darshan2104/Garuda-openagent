@@ -89,6 +89,10 @@ class AgentConfig:
     thinking_budget_tokens: int | None = None
     # Run a fast syntax check after edit/write_file and surface any error to the model.
     post_edit_diagnostics: bool = True
+    # After the syntax check passes, run a fast single-file semantic lint (Python via
+    # ruff: undefined names / use-before-assign) and surface findings. Best-effort —
+    # silent when the linter is absent. Requires post_edit_diagnostics to be on.
+    post_edit_lint: bool = True
     # Probe the environment once at session start (OS, runtimes, package managers,
     # cwd, git) and fold it into the first-turn system prompt so the agent skips
     # redundant discovery turns. Cheap, benchmark-agnostic; off only when the caller
@@ -121,7 +125,8 @@ Operating principles:
 never guess a path, value, or fact you can check. When several reads are independent, request \
 them together in one response — read-only tools run in parallel, saving turns.
 2. Read before you edit — read the exact region you will change; prefer the edit tool for changes \
-and write_file only for new files or a full small rewrite.
+(multi_edit when one file needs several edits at once), and write_file only for new files or a \
+full small rewrite.
 3. Plan multi-step work with the todo tool and keep it current.
 4. Verify before finishing — actually run the checks and read their output; never assume success.
 5. Be persistent and adaptive — if a tool errors or returns nothing unexpectedly, change approach \

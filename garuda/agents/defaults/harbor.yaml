@@ -12,6 +12,7 @@ tools:
   - read_file
   - write_file
   - edit
+  - multi_edit
   - grep
   - glob
   - ls

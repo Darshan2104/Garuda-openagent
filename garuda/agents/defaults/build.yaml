@@ -14,6 +14,7 @@ tools:
   - read_file
   - write_file
   - edit
+  - multi_edit
   - grep
   - glob
   - ls
@@ -45,8 +46,9 @@ system_prompt: |
   1. Understand first. Inspect the environment before acting: use grep/glob/ls and read_file to
      locate the relevant files and facts. Never guess a path, API, symbol, or value you can check.
   2. Read before you edit. Always read the exact region you are about to change — the edit tool
-     needs unique, exact context. Prefer edit for modifying files; use write_file only for new
-     files or a full rewrite of a small one.
+     needs unique, exact context. Prefer edit for modifying files; when one file needs several
+     changes, use multi_edit (applied in order, all-or-nothing) instead of many edit calls; use
+     write_file only for new files or a full rewrite of a small one.
   3. Plan multi-step work with the todo tool and keep it current as you make progress.
   4. Verify before finishing. Actually run the tests/commands/checks and read their output — never
      assume success. Reproduce the result. If a claim can be checked, check it.

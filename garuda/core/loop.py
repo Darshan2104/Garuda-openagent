@@ -252,6 +252,7 @@ class DefaultAgent:
             subagent_runner=subagent_runner,
             buffer=buffer,
             post_edit_diagnostics=config.post_edit_diagnostics,
+            post_edit_lint=config.post_edit_lint,
             persistent_shell=config.persistent_shell,
         )
         final_message = ""

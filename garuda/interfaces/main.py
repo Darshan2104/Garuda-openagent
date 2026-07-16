@@ -92,6 +92,11 @@ def build_parser():
         help="Disable the syntax check run after edit/write_file",
     )
     run_parser.add_argument(
+        "--no-post-edit-lint",
+        action="store_true",
+        help="Disable the fast semantic lint (Python/ruff) run after edit/write_file",
+    )
+    run_parser.add_argument(
         "--no-bootstrap",
         action="store_true",
         help="Skip the session-start environment probe (cold start; the agent "
@@ -310,6 +315,8 @@ async def run_task(args) -> int:
         config.persistent_shell = True
     if getattr(args, "no_post_edit_diagnostics", False):
         config.post_edit_diagnostics = False
+    if getattr(args, "no_post_edit_lint", False):
+        config.post_edit_lint = False
     if getattr(args, "no_bootstrap", False):
         config.bootstrap_environment = False
     config.workspace_kind = args.workspace_kind

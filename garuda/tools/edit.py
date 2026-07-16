@@ -1,8 +1,16 @@
+import re
+from dataclasses import dataclass
+
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 _SNIPPET_CONTEXT_LINES = 2
+
+# A read_file line-number prefix: leading spaces, digits, then a TAB — matches
+# ReadFileTool's `f"{i:>{width}}\t{line}"` rendering. Models sometimes paste these
+# into old_string verbatim; stripping them recovers the real text.
+_LINE_NO_PREFIX_RE = re.compile(r"^[ \t]*\d+\t")
 
 
 def _normalize_ws(text: str) -> str:
@@ -12,6 +20,22 @@ def _normalize_ws(text: str) -> str:
 
 def _normalize_eol(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _leading_ws(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _dominant_eol(text: str) -> str:
+    if "\r\n" in text:
+        return "\r\n"
+    if "\r" in text:
+        return "\r"
+    return "\n"
+
+
+def _strip_line_number_prefixes(text: str) -> str:
+    return "\n".join(_LINE_NO_PREFIX_RE.sub("", ln) for ln in text.split("\n"))
 
 
 def _no_match_hint(content: str, old_string: str) -> str:
@@ -51,6 +75,210 @@ def _snippet_around(content: str, position: int) -> str:
     start = max(0, line_index - _SNIPPET_CONTEXT_LINES)
     stop = min(len(lines), line_index + _SNIPPET_CONTEXT_LINES + 1)
     return "\n".join(lines[start:stop])
+
+
+def _first_diff(before: str, after: str) -> int:
+    """Character offset where two strings first differ (len of the shorter if one
+    is a prefix of the other). Locates the edit site even when the replacement was
+    transformed (re-indented / prefix-stripped) and so isn't found verbatim."""
+    limit = min(len(before), len(after))
+    for i in range(limit):
+        if before[i] != after[i]:
+            return i
+    return limit
+
+
+def _ambiguous_error(count: int, path: str) -> str:
+    return (
+        f"old_string occurs {count} times in {path}. "
+        "Add more surrounding context to make it unique, "
+        "or set replace_all to true to replace every occurrence."
+    )
+
+
+@dataclass
+class EditOutcome:
+    """Result of resolving an edit against a file's contents.
+
+    ``updated`` is the new full-file content on success (``None`` on failure);
+    ``note`` is non-empty only when a recovery layer (not an exact match) matched,
+    so the caller can flag it for the model to verify.
+    """
+
+    updated: str | None
+    replacements: int
+    note: str
+    error: str | None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.updated is not None
+
+
+def _apply_literal(
+    content: str, needle: str, new_string: str, path: str, replace_all: bool, note: str
+) -> EditOutcome | None:
+    """Literal substring replacement. Returns an EditOutcome (success, or an
+    ambiguous-match error) when ``needle`` is present, else ``None`` so the caller
+    falls through to the next recovery layer."""
+    count = content.count(needle)
+    if count == 0:
+        return None
+    if count > 1 and not replace_all:
+        return EditOutcome(None, 0, "", _ambiguous_error(count, path))
+    if replace_all:
+        return EditOutcome(content.replace(needle, new_string), count, note, None)
+    return EditOutcome(content.replace(needle, new_string, 1), 1, note, None)
+
+
+def _apply_eol_normalized(
+    content: str, old_string: str, new_string: str, path: str, replace_all: bool
+) -> EditOutcome | None:
+    """Recover when old_string matches only after line-ending normalization (the
+    file uses CRLF/CR but the model typed LF, or vice versa)."""
+    norm_content = _normalize_eol(content)
+    norm_old = _normalize_eol(old_string)
+    # Nothing to gain if neither side carried a CR — Layer 1 already covered it.
+    if norm_content == content and norm_old == old_string:
+        return None
+    count = norm_content.count(norm_old)
+    if count == 0:
+        return None
+    if count > 1 and not replace_all:
+        return EditOutcome(None, 0, "", _ambiguous_error(count, path))
+    eol = _dominant_eol(content)
+    old_native = norm_old.replace("\n", eol)
+    new_native = _normalize_eol(new_string).replace("\n", eol)
+    if replace_all:
+        reps = content.count(old_native)
+        updated = content.replace(old_native, new_native)
+    else:
+        reps = 1
+        updated = content.replace(old_native, new_native, 1)
+    # Mixed line endings: the native needle may not appear in the raw bytes. Bail
+    # rather than silently write nothing / the wrong thing.
+    if reps == 0 or updated == content:
+        return None
+    return EditOutcome(updated, reps, "matched after normalizing line endings", None)
+
+
+def _reindent(new_lines: list[str], model_indent: str, file_indent: str) -> list[str] | None:
+    """Shift ``new_lines`` from the model's indentation to the file's actual one.
+
+    Returns ``None`` when the shift can't be done safely (a tab/space mismatch),
+    so the caller falls back to a clear error instead of writing inconsistent
+    indentation.
+    """
+    if model_indent == file_indent:
+        return list(new_lines)
+    # Only shift when both indents are spaces-only; mixing tabs makes a column
+    # delta meaningless (and a tab-vs-space file should be copied exactly).
+    if "\t" in model_indent or "\t" in file_indent:
+        return None
+    delta = len(file_indent) - len(model_indent)
+    shifted: list[str] = []
+    for line in new_lines:
+        if not line.strip():
+            shifted.append(line)  # leave blank lines alone
+        elif delta >= 0:
+            shifted.append(" " * delta + line)
+        else:
+            removable = len(line) - len(line.lstrip(" "))
+            shifted.append(line[min(removable, -delta):])
+    return shifted
+
+
+def _apply_whitespace_flexible(
+    content: str, old_string: str, new_string: str, path: str, replace_all: bool
+) -> EditOutcome | None:
+    """Recover when old_string matches ignoring per-line indentation/whitespace,
+    re-anchoring the replacement to the file's real indentation. Unique-match only
+    (never guesses); bails on tab/space mismatches it can't safely re-indent."""
+    eol = _dominant_eol(content)
+    content_lines = _normalize_eol(content).split("\n")
+    old_lines = _normalize_eol(old_string).split("\n")
+    new_lines = _normalize_eol(new_string).split("\n")
+    stripped_old = [ln.strip() for ln in old_lines]
+    if not any(stripped_old):  # an all-blank old_string can't be anchored
+        return None
+    window = len(old_lines)
+    starts = [
+        i
+        for i in range(0, len(content_lines) - window + 1)
+        if [content_lines[j].strip() for j in range(i, i + window)] == stripped_old
+    ]
+    if not starts:
+        return None
+    if len(starts) > 1 and not replace_all:
+        return EditOutcome(
+            None,
+            0,
+            "",
+            f"a whitespace-insensitive match for old_string occurs {len(starts)} times in "
+            f"{path}; add more surrounding context, or set replace_all to true.",
+        )
+    targets = starts if replace_all else starts[:1]
+    result_lines = list(content_lines)
+    model_indent = _leading_ws(old_lines[0])
+    for start in sorted(targets, reverse=True):
+        file_indent = _leading_ws(content_lines[start])
+        reindented = _reindent(new_lines, model_indent, file_indent)
+        if reindented is None:
+            return None  # unsafe to re-anchor; fall through to a clear error
+        result_lines[start : start + window] = reindented
+    return EditOutcome(
+        eol.join(result_lines),
+        len(targets),
+        "matched ignoring indentation; new text re-indented to the file",
+        None,
+    )
+
+
+def resolve_edit(
+    content: str, old_string: str, new_string: str, path: str, replace_all: bool
+) -> EditOutcome:
+    """Resolve an edit through layered matching, most-exact first.
+
+    Each layer only accepts a **unique** match (or all matches under replace_all)
+    and never guesses on ambiguity — so a recovery can save a wasted retry, but can
+    never silently apply the wrong edit. Layers:
+
+    1. exact literal (unchanged fast path)
+    2. strip pasted read_file line-number prefixes from old/new
+    3. line-ending (CRLF/LF) normalization
+    4. per-line whitespace/indentation flexibility, re-indented to the file
+    """
+    outcome = _apply_literal(content, old_string, new_string, path, replace_all, note="")
+    if outcome is not None:
+        return outcome
+
+    stripped_old = _strip_line_number_prefixes(old_string)
+    if stripped_old != old_string and stripped_old.strip():
+        # If the model pasted line numbers into old_string it almost certainly did
+        # so in new_string too; strip both so we never write a "NNN<tab>" prefix.
+        stripped_new = _strip_line_number_prefixes(new_string)
+        outcome = _apply_literal(
+            content,
+            stripped_old,
+            stripped_new,
+            path,
+            replace_all,
+            note="matched after stripping read_file line-number prefixes from old_string",
+        )
+        if outcome is not None:
+            return outcome
+
+    outcome = _apply_eol_normalized(content, old_string, new_string, path, replace_all)
+    if outcome is not None:
+        return outcome
+
+    outcome = _apply_whitespace_flexible(content, old_string, new_string, path, replace_all)
+    if outcome is not None:
+        return outcome
+
+    return EditOutcome(
+        None, 0, "", f"old_string not found in {path}.{_no_match_hint(content, old_string)}"
+    )
 
 
 class EditTool:
@@ -125,43 +353,20 @@ class EditTool:
                 is_error=True,
             )
 
-        count = content.count(old_string)
-        if count == 0:
-            return ToolResult(
-                tool_call_id="",
-                content=f"old_string not found in {path}.{_no_match_hint(content, old_string)}",
-                is_error=True,
-            )
-        if count > 1 and not replace_all:
-            return ToolResult(
-                tool_call_id="",
-                content=(
-                    f"old_string occurs {count} times in {path}. "
-                    "Add more surrounding context to make it unique, "
-                    "or set replace_all to true to replace every occurrence."
-                ),
-                is_error=True,
-            )
+        outcome = resolve_edit(content, old_string, new_string, path, replace_all)
+        if not outcome.ok:
+            return ToolResult(tool_call_id="", content=outcome.error, is_error=True)
 
-        if replace_all:
-            updated = content.replace(old_string, new_string)
-            replacements = count
-        else:
-            updated = content.replace(old_string, new_string, 1)
-            replacements = 1
+        await env.write_file(path, outcome.updated)
 
-        await env.write_file(path, updated)
-
-        first_site = updated.find(new_string) if new_string else content.find(old_string)
-        snippet = _snippet_around(updated, max(first_site, 0))
-        plural = "s" if replacements != 1 else ""
-        message = f"Edited {path} ({replacements} replacement{plural})"
+        snippet = _snippet_around(outcome.updated, _first_diff(content, outcome.updated))
+        plural = "s" if outcome.replacements != 1 else ""
+        message = f"Edited {path} ({outcome.replacements} replacement{plural})"
+        if outcome.note:
+            message += f"\n({outcome.note} — verify the snippet below)"
         if snippet:
             message += f"\n\nSnippet of new content:\n{snippet}"
-        if getattr(ctx, "post_edit_diagnostics", True):
-            from garuda.tools.diagnostics import check_syntax
+        from garuda.tools.diagnostics import post_edit_report
 
-            problem = await check_syntax(env, path)
-            if problem:
-                message += f"\n\n⚠ Syntax check failed after edit:\n{problem}"
+        message += await post_edit_report(env, path, ctx)
         return ToolResult(tool_call_id="", content=message)

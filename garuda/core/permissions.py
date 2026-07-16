@@ -52,12 +52,12 @@ COMMAND_TOOLS = {
 }
 
 # File-operation tools that modify the filesystem.
-WRITE_TOOLS = {"write_file", "edit"}
+WRITE_TOOLS = {"write_file", "edit", "multi_edit"}
 
 # File-operation tools that only read.
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet"}
 
-READONLY_DENIED_TOOLS = {"write_file", "edit", "tmux_exec", "bash_background", "kill_task"}
+READONLY_DENIED_TOOLS = {"write_file", "edit", "multi_edit", "tmux_exec", "bash_background", "kill_task"}
 
 
 class PermissionEngine:
