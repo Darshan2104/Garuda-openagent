@@ -10,6 +10,15 @@ _STATUS_MARKS = {
 }
 
 
+def render_todos(todos: list[dict]) -> str:
+    """Render a todo list into the compact marker form (shared by the tool result
+    and the loop's post-compaction re-pinning)."""
+    return "\n".join(
+        f"{_STATUS_MARKS.get(item.get('status', 'pending'), '☐')} {item.get('content', '')}"
+        for item in todos
+    )
+
+
 class TodoTool:
     name = "todo"
     description = (
@@ -87,7 +96,4 @@ class TodoTool:
 
         if not cleaned:
             return ToolResult(tool_call_id="", content="Todo list cleared.")
-        rendered = "\n".join(
-            f"{_STATUS_MARKS[item['status']]} {item['content']}" for item in cleaned
-        )
-        return ToolResult(tool_call_id="", content=rendered)
+        return ToolResult(tool_call_id="", content=render_todos(cleaned))

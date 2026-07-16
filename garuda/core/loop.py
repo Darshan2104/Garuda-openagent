@@ -83,6 +83,7 @@ PARALLEL_SAFE_TOOLS = frozenset(
         "buffer_slice",
         "buffer_list",
         "buffer_query",
+        "search_tool",
     }
 )
 
@@ -175,8 +176,11 @@ class DefaultAgent:
         if config.allowed_tools:
             allowed = set(config.allowed_tools)
             # Always keep task_complete (a verifier-gated run can never finish without
-            # it) and MCP tools (their names aren't in the static profile list).
+            # it), the lazy-discovery meta-tools (they replace the MCP tool list), and
+            # MCP tools (their names aren't in the static profile list).
             allowed.add("task_complete")
+            allowed.add("search_tool")
+            allowed.add("use_tool")
             for tool in tools:
                 if tool.name.startswith("mcp__"):
                     allowed.add(tool.name)
@@ -271,6 +275,10 @@ class DefaultAgent:
         for turn in range(1, config.max_turns + 1):
             if await context.maybe_summarize():
                 events.append(EventType.SUMMARIZATION, {"turn": turn})
+                # Compaction can summarize away the goal and todo list; re-pin them
+                # so long tasks keep their north star and don't re-derive their plan
+                # (which would waste turns and tokens).
+                self._reinject_pinned_state(context, tool_map, events.session_id)
 
             # Flush notes queued on the previous turn, now that its tool-result block
             # is complete and contiguous with its assistant message.
@@ -520,6 +528,33 @@ class DefaultAgent:
         return self._result(
             False, final_message or "Max turns exceeded", context, config.max_turns, events, usage_totals
         )
+
+    def _reinject_pinned_state(self, context, tool_map, session_id: str) -> None:
+        """Re-surface the current goal and todo list as compact messages after a
+        compaction, so they survive summarization. Safe at the top of a turn (the
+        prior turn's tool-result block is already complete). No-op when unset."""
+        goal_tool = tool_map.get("update_goal")
+        if goal_tool is not None:
+            goal = goal_tool.get_goal(session_id)
+            if goal:
+                context.append(
+                    Message(
+                        role=Role.USER,
+                        content=f"[current goal — retained across compaction]\n{goal}",
+                    )
+                )
+        todo_tool = tool_map.get("todo")
+        if todo_tool is not None:
+            todos = todo_tool.get_todos(session_id)
+            if todos:
+                from garuda.tools.todo import render_todos
+
+                context.append(
+                    Message(
+                        role=Role.USER,
+                        content=f"[todo list — retained across compaction]\n{render_todos(todos)}",
+                    )
+                )
 
     def _record_failure_streak(
         self,

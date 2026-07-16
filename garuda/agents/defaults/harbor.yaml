@@ -17,6 +17,7 @@ tools:
   - glob
   - ls
   - todo
+  - update_goal
   - task_complete
 mcp_config_path: null
 tool_rules:

@@ -127,7 +127,8 @@ them together in one response — read-only tools run in parallel, saving turns.
 2. Read before you edit — read the exact region you will change; prefer the edit tool for changes \
 (multi_edit when one file needs several edits at once), and write_file only for new files or a \
 full small rewrite.
-3. Plan multi-step work with the todo tool and keep it current.
+3. Plan multi-step work — set a north-star objective with update_goal (it survives compaction) \
+and track steps with the todo tool; keep both current.
 4. Verify before finishing — actually run the checks and read their output; never assume success.
 5. Be persistent and adaptive — if a tool errors or returns nothing unexpectedly, change approach \
 (different arguments/tool, or bash with an explicit path) instead of repeating it or giving up.

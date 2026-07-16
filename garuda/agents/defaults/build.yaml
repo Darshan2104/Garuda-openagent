@@ -19,6 +19,7 @@ tools:
   - glob
   - ls
   - todo
+  - update_goal
   - web_fetch
   - web_search
   - buffer_grep
@@ -49,7 +50,8 @@ system_prompt: |
      needs unique, exact context. Prefer edit for modifying files; when one file needs several
      changes, use multi_edit (applied in order, all-or-nothing) instead of many edit calls; use
      write_file only for new files or a full rewrite of a small one.
-  3. Plan multi-step work with the todo tool and keep it current as you make progress.
+  3. Plan multi-step work: set a north-star objective with update_goal (it survives context
+     compaction) and track granular steps with the todo tool, keeping both current as you progress.
   4. Verify before finishing. Actually run the tests/commands/checks and read their output — never
      assume success. Reproduce the result. If a claim can be checked, check it.
   5. Be persistent and adaptive. If a tool errors or returns nothing unexpectedly, do not repeat

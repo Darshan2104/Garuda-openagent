@@ -4,6 +4,7 @@ from __future__ import annotations
 # Importing it here would create a cycle: mcp.client -> tools.protocol -> tools
 # (package __init__) -> mcp.client (partially initialized).
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from garuda.tools.background import BashBackgroundTool, KillTaskTool, TaskOutputTool
@@ -17,6 +18,7 @@ from garuda.tools.buffer_tools import (
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
+from garuda.tools.goal import UpdateGoalTool
 from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.protocol import Tool
@@ -38,6 +40,18 @@ if TYPE_CHECKING:
     from garuda.mcp.client import McpClientManager
 
 logger = logging.getLogger(__name__)
+
+# Above this many MCP tools, expose them lazily via search_tool/use_tool instead of
+# injecting every schema into the prompt (keeps requests token-lean). Overridable
+# per-call or via the env var; a very high value effectively disables lazy mode.
+DEFAULT_MCP_MAX_DIRECT_TOOLS = 10
+
+
+def _default_lazy_threshold() -> int:
+    try:
+        return int(os.environ.get("GARUDA_MCP_MAX_DIRECT_TOOLS", DEFAULT_MCP_MAX_DIRECT_TOOLS))
+    except (TypeError, ValueError):
+        return DEFAULT_MCP_MAX_DIRECT_TOOLS
 
 __all__ = [
     "BashBackgroundTool",
@@ -64,6 +78,7 @@ __all__ = [
     "TmuxExecTool",
     "TodoTool",
     "ToolRegistry",
+    "UpdateGoalTool",
     "WebFetchTool",
     "WebSearchTool",
     "WriteFileTool",
@@ -90,6 +105,7 @@ def _bootstrap_registry() -> None:
         GlobTool(),
         LsTool(),
         TodoTool(),
+        UpdateGoalTool(),
         WebFetchTool(),
         WebSearchTool(),
         TaskCompleteTool(),
@@ -125,6 +141,7 @@ def default_tools() -> list[Tool]:
             "glob",
             "ls",
             "todo",
+            "update_goal",
             "web_fetch",
             "web_search",
             "buffer_grep",
@@ -176,6 +193,7 @@ async def build_toolkit(
     workspace: str | None = None,
     load_project_tools: bool | None = None,
     mcp_servers: list[str] | None = None,
+    lazy_mcp_threshold: int | None = None,
 ) -> tuple[list[Tool], "McpClientManager | None"]:
     """Resolve a run's tool list from names, custom tools, and MCP servers.
 
@@ -206,7 +224,22 @@ async def build_toolkit(
         paths = [p for p in (mcp_config_path or []) if p]
     if paths:
         manager = await McpClientManager.from_paths(paths, allowed_servers=mcp_servers)
-        tools = tools + manager.get_tools()
+        mcp_tools = manager.get_tools()
+        threshold = lazy_mcp_threshold if lazy_mcp_threshold is not None else _default_lazy_threshold()
+        if len(mcp_tools) > threshold:
+            # Too many to list up front: expose them lazily so the prompt stays lean.
+            from garuda.tools.discovery import SearchToolTool, UseToolTool
+
+            shared = {t.name: t for t in mcp_tools}
+            tools = tools + [SearchToolTool(shared), UseToolTool(shared)]
+            logger.info(
+                "MCP: %d tools exceed the direct-exposure threshold (%d); exposing via "
+                "search_tool/use_tool to keep the prompt lean.",
+                len(mcp_tools),
+                threshold,
+            )
+        else:
+            tools = tools + mcp_tools
     return tools, manager
 
 
