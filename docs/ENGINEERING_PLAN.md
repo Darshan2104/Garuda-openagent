@@ -606,6 +606,36 @@ riskiest).
 Suite: **524 passing** (7 skipped, 0 failed), +20 tests (`test_tool_discovery.py`, `test_goal.py`).
 `ruff check` clean on all changed files.
 
+## Status update 24 (2026-07-17) — correctness fixes from a full-codebase validation pass (v1.1.1)
+
+A re-review of the whole harness (deterministic checks + fan-out review) surfaced two real defects,
+both now fixed with regression coverage. Neither is a style nit; the first made two built-in agents
+unusable standalone.
+
+- **`plan`/`explore` could never complete standalone** (`agents/defaults/{plan,explore}.yaml`) —
+  `enable_verifier` defaults on, and the loop accepts completion only via a `task_complete` *call*.
+  Both profiles told the model to "finish with task_complete" and set `task_complete: allow`, but
+  omitted it from `tools:`, so `build_toolkit` never placed it in the model's schema. The final
+  answer was rejected turn after turn until `max_turns` (100/50), returning `success=False` and
+  burning the whole turn budget — the opposite of the token goal. Both profiles now grant
+  `task_complete` (matching `build`/`reviewer`); rigorous-mode's plan phase was unaffected (it sets
+  `enable_verifier=False` explicitly). Pre-existing since the profiles were introduced.
+- **`use_tool` bypassed per-tool MCP permissions** (`tools/discovery.py`, `tools/protocol.py`,
+  `core/loop.py`) — in lazy-discovery mode the model reaches MCP tools through `use_tool`, but the
+  loop only screened the outer `"use_tool"` name (always allowed) and `UseToolTool` invoked the
+  target with no re-check, so a per-tool `deny`/`ask` rule was silently ignored. The
+  `PermissionEngine` is now threaded through `ToolContext.permissions` and `use_tool` re-screens the
+  *target* tool before dispatch, matching the loop's direct-call screen. `permissions=None` preserves
+  prior behavior for callers that don't wire it. Introduced with lazy discovery (update 23).
+
+Also corrected stale docs: MODULES M11 referenced a `patch.py` that never shipped (superseded by
+`edit`/`multi_edit`); the README profile table dropped the nonexistent "patch" tool and fixed the
+`plan`/`explore`/`harbor` tool lists and test counts.
+
+Suite: **529 passing** (7 skipped, 0 failed), +5 tests (completing-profile `task_complete` invariant
++ plan/explore toolkit check; `use_tool` deny/allow/no-permissions cases). `ruff check` clean on
+`garuda/` and changed tests. Version bumped to **1.1.1**.
+
 ---
 
 ## 0. Verdict

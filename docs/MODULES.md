@@ -158,7 +158,7 @@ Suite after fixes: 529 passed, 7 skipped, ruff-clean.
 
 **Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33), Phase 7 (M34–M37), Phase 8 (M38–M39)
 
-**Status:** All 39 modules complete — Garuda v1.1.0
+**Status:** All 39 modules complete — Garuda v1.1.1
 
 ---
 

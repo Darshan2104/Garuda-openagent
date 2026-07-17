@@ -6,7 +6,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 
 > **Core thesis:** The harness is the product, not the model.
 
-**Version:** 1.1.0 · **Python:** 3.12+ · **License:** MIT
+**Version:** 1.1.1 · **Python:** 3.12+ · **License:** MIT
 
 ---
 
