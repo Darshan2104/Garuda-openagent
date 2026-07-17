@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from garuda.core.permissions import PermissionEngine
 from garuda.tools import build_toolkit
 from garuda.tools.discovery import SearchToolTool, UseToolTool
 from garuda.tools.protocol import ToolContext
@@ -94,6 +95,55 @@ async def test_use_tool_bad_arguments_type_errors(tmp_path: Path):
     )
     assert result.is_error
     assert "must be an object" in result.content
+
+
+# --- use_tool re-screens the target tool through the permission engine --------
+
+
+class RecordingTool(FakeTool):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ran = False
+
+    async def execute(self, arguments, env, ctx):
+        self.ran = True
+        return await super().execute(arguments, env, ctx)
+
+
+async def test_use_tool_denies_when_inner_tool_denied(tmp_path: Path):
+    # A per-tool deny rule on the underlying tool must be honored even when it is
+    # reached via use_tool (lazy-discovery mode), not silently bypassed.
+    env = LocalEnvironment(workspace_root=tmp_path)
+    tool = RecordingTool("mcp__srv__danger", "does something dangerous")
+    perms = PermissionEngine(mode="smart", tool_rules={"mcp__srv__danger": "deny"})
+    ctx = ToolContext(session_id="t", permissions=perms)
+    result = await UseToolTool(_map(tool)).execute(
+        {"name": "mcp__srv__danger", "arguments": {}}, env, ctx
+    )
+    assert result.is_error
+    assert not tool.ran  # the underlying tool never executed
+    assert "denied" in result.content.lower()
+
+
+async def test_use_tool_allows_when_inner_tool_permitted(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    perms = PermissionEngine(mode="smart")  # no rule -> allow
+    ctx = ToolContext(session_id="t", permissions=perms)
+    tool = RecordingTool("mcp__srv__ok", "harmless")
+    result = await UseToolTool(_map(tool)).execute(
+        {"name": "mcp__srv__ok", "arguments": {}}, env, ctx
+    )
+    assert not result.is_error
+    assert tool.ran
+
+
+async def test_use_tool_without_permissions_still_runs(tmp_path: Path):
+    # Back-compat: a ctx with no permission engine keeps the prior behavior.
+    env = LocalEnvironment(workspace_root=tmp_path)
+    result = await UseToolTool(_map(FakeTool("mcp__srv__ok", "fine"))).execute(
+        {"name": "mcp__srv__ok", "arguments": {}}, env, ToolContext(session_id="t")
+    )
+    assert not result.is_error
 
 
 async def test_search_and_use_share_the_same_map(tmp_path: Path):

@@ -7,7 +7,7 @@ from garuda.core.permissions import PermissionDecision, PermissionEngine
 from garuda.core.verifier import CompletionVerifier
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
-from garuda.tools import default_tools, tools_for_names
+from garuda.tools import build_toolkit, tools_for_names
 from garuda.tools.edit import EditTool
 from garuda.tools.protocol import ToolContext
 from garuda.types import AgentConfig, ToolCall
@@ -55,6 +55,28 @@ def test_agent_profiles_load():
     profile = load_profile("plan")
     assert profile.permission_mode == "readonly"
     assert "write_file" not in (profile.tools or [])
+
+
+def test_completing_profiles_grant_task_complete():
+    # enable_verifier defaults on, and the loop only accepts completion via a
+    # task_complete CALL — which the model can make only if the tool is in its
+    # granted set (and thus its schema). A standard-mode profile that references
+    # task_complete but omits it from tools can never complete: it loops to
+    # max_turns. Lock the invariant for every built-in completing profile.
+    for name in ("build", "plan", "explore", "reviewer"):
+        profile = load_profile(name)
+        assert "task_complete" in (profile.tools or []), (
+            f"{name} must grant task_complete or it can never finish"
+        )
+
+
+@pytest.mark.asyncio
+async def test_readonly_profile_toolkit_exposes_task_complete():
+    # The real production path: build the toolkit from the profile's tool NAMES.
+    for name in ("plan", "explore"):
+        profile = load_profile(name)
+        tools, _ = await build_toolkit(profile.tools, None)
+        assert any(t.name == "task_complete" for t in tools), name
 
 
 @pytest.mark.asyncio

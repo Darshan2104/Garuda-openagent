@@ -9,6 +9,7 @@ tools:
   - grep
   - glob
   - ls
+  - task_complete
 tool_rules:
   write_file: deny
   edit: deny

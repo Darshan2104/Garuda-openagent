@@ -2,7 +2,7 @@
 
 **Universal, provider-agnostic agent harness** for terminal and software engineering tasks.
 
-Garuda is a runtime that runs any LLM against real environments using tools (bash, files, patches, tmux, MCP). It combines ideas from OpenCode, Goose, Terminus-2/KIRA, mini-SWE-agent, and Harbor into one configurable, auditable system.
+Garuda is a runtime that runs any LLM against real environments using tools (bash, files, edits, tmux, MCP). It combines ideas from OpenCode, Goose, Terminus-2/KIRA, mini-SWE-agent, and Harbor into one configurable, auditable system.
 
 > **Core thesis:** The harness is the product, not the model.
 
@@ -337,10 +337,10 @@ Profiles live in `garuda/agents/defaults/`, your project's `.agent/agents/` (or 
 | Profile | Access | Tools | Use case |
 |---------|--------|-------|----------|
 | **build** | Read/write/exec | All core + MCP | Implementation, fixes |
-| **plan** | Read-only | `bash`, `read_file` | Analysis and planning |
-| **explore** | Read-only | `bash`, `read_file` | Fast codebase search (subagent) |
-| **reviewer** | Read-only | `bash`, `read_file` | Code review (subagent, agent.md) |
-| **harbor** | YOLO eval | bash, files, patch, `task_complete` | Harbor benchmarks |
+| **plan** | Read-only | `bash`, `read_file`, `grep`, `glob`, `ls`, `task_complete` | Analysis and planning |
+| **explore** | Read-only | `bash`, `read_file`, `grep`, `glob`, `ls`, `task_complete` | Fast codebase search (subagent) |
+| **reviewer** | Read-only | `bash`, `read_file`, `task_complete` | Code review (subagent, agent.md) |
+| **harbor** | YOLO eval | bash, files, `edit`, `task_complete` | Harbor benchmarks |
 
 ### agent.md (OpenCode-compatible)
 
@@ -687,7 +687,7 @@ docs/
 ├── ENGINEERING_PLAN.md         # Running engineering log / status updates
 └── CONFIG_SCALABILITY_PLAN.md  # .agent/ home + scalability design
 
-tests/                          # ~460 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # ~530 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 
@@ -706,7 +706,7 @@ pytest tests/ -v
 GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 ```
 
-**Current test status:** 524 passed, 7 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 529 passed, 7 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 

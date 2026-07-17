@@ -56,7 +56,7 @@ workspace ──┬── tools ──┘
 | M8 | **Context manager** | `garuda/context/` | ✅ | M2, M6 | Output caps, head/tail shaping |
 | M9 | **Permissions** | `garuda/core/permissions.py` | ✅ | M4 | allow/deny/ask per tool/command |
 | M10 | **Completion verifier** | `garuda/core/verifier.py` | ✅ | M2, M6 | Checklist gate on `task_complete` |
-| M11 | **Patch tool** | `garuda/tools/patch.py` | ✅ | M3 | Unified diff apply |
+| M11 | **Edit tool** (replaced planned patch tool) | `garuda/tools/edit.py` | ✅ | M3 | String-anchored `edit`; supersedes the originally-planned unified-diff patch tool (see M34/M35) |
 | M12 | **Agent profiles** | `garuda/agents/` | ✅ | M6, M9 | Load `build`/`plan`/`explore` from YAML |
 | M13 | **Interactive CLI** | `garuda/interfaces/cli.py` | ✅ | M6, M9 | TUI with permission prompts |
 
@@ -144,6 +144,13 @@ Reduce token usage and keep long tasks on-track. See ENGINEERING_PLAN.md status 
 | M39 | **Goal orchestration + state re-pinning** | `garuda/tools/goal.py` | ✅ | M8 | `update_goal` tool; loop re-pins goal + todos after compaction so they survive summarization |
 
 **Phase 8 exit:** leaner prompts with many MCP tools; goal/todos persist across compaction; 524 tests passing, ruff-clean.
+
+### Post-Phase-8 correctness fixes
+
+- **Standalone `plan`/`explore` completion** — both profiles now grant `task_complete`. With `enable_verifier` defaulting on, the loop accepts completion only via a `task_complete` call, so a standard-mode profile that omitted the tool looped to max_turns instead of finishing.
+- **`use_tool` permission parity** — `use_tool` (lazy MCP discovery) now re-screens the *target* tool through the permission engine (threaded via `ToolContext.permissions`), so a per-tool deny/ask rule is enforced whether the tool is exposed directly or reached via `use_tool`.
+
+Suite after fixes: 529 passed, 7 skipped, ruff-clean.
 
 ---
 

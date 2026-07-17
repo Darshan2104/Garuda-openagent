@@ -7,6 +7,7 @@ from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
     from garuda.core.buffer import ToolOutputBuffer
+    from garuda.core.permissions import PermissionEngine
     from garuda.core.subagent import SubagentRunner
 
 
@@ -20,6 +21,10 @@ class ToolContext:
     post_edit_diagnostics: bool = True
     post_edit_lint: bool = True
     persistent_shell: bool = False
+    # Present so meta-tools that dispatch to other tools (e.g. use_tool) can re-run
+    # the same permission screen the loop applies to a direct call. None disables the
+    # check (callers that don't wire permissions get the pre-existing behavior).
+    permissions: "PermissionEngine | None" = None
 
 
 @runtime_checkable

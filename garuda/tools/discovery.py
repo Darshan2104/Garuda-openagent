@@ -152,4 +152,16 @@ class UseToolTool:
                 content="'arguments' must be an object (a JSON dict of the tool's parameters).",
                 is_error=True,
             )
+        # Re-screen the *target* tool through the permission engine. The agent loop
+        # only evaluated "use_tool" (always allowed); without this, a per-tool deny/ask
+        # rule on the underlying tool would be silently bypassed whenever it is reached
+        # via use_tool (i.e. in lazy-discovery mode). Mirrors the loop's own screen.
+        if ctx.permissions is not None:
+            allowed, reason = await ctx.permissions.evaluate_tool_call(name, tool_args)
+            if not allowed:
+                return ToolResult(
+                    tool_call_id="",
+                    content=reason or f"Permission denied for tool: {name}",
+                    is_error=True,
+                )
         return await tool.execute(tool_args, env, ctx)

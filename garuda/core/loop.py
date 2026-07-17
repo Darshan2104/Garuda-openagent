@@ -258,6 +258,7 @@ class DefaultAgent:
             post_edit_diagnostics=config.post_edit_diagnostics,
             post_edit_lint=config.post_edit_lint,
             persistent_shell=config.persistent_shell,
+            permissions=permissions,
         )
         final_message = ""
         usage_totals: dict[str, int] = {}
