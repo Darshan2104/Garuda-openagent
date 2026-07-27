@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from garuda.core.events import EventStore
+from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.model.litellm_model import LitellmModel
@@ -59,10 +60,17 @@ DEFAULT_VARIANTS: dict[str, dict] = {
     "no_verifier": {"enable_verifier": False},
     "recent_window": {"condenser": "recent_window"},
     "rigorous": {"mode": "rigorous"},
+    # The posture difference is itself worth measuring: this is what a plain
+    # `garuda run` now costs versus the graded configuration.
+    "eval_gates": {"mode": "eval"},
 }
 
 
 def _base_config(**overrides) -> AgentConfig:
+    # Ablation deliberately does NOT go through apply_mode_preset: the point is to
+    # toggle one field at a time, so a preset overwriting siblings would confound
+    # every variant. Gate fields are therefore spelled out here, and a variant that
+    # names a `mode` gets its preset applied afterwards (see run_variant).
     cfg = AgentConfig(
         max_turns=overrides.pop("max_turns", 20),
         permission_mode="yolo",
@@ -71,6 +79,13 @@ def _base_config(**overrides) -> AgentConfig:
         enable_three_step_summary=False,
         sandbox_require=False,
     )
+    # A variant naming a `mode` gets its preset first, so its own explicit fields
+    # still win. Reversing these would let the preset clobber the one knob the
+    # variant exists to set — e.g. `{"mode": "eval", "enable_llm_verifier": False}`
+    # would silently turn the model call back on.
+    if "mode" in overrides:
+        cfg.mode = overrides["mode"]
+        apply_mode_preset(cfg)
     for key, value in overrides.items():
         setattr(cfg, key, value)
     return cfg

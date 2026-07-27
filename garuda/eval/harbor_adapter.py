@@ -1,5 +1,6 @@
 """Harbor ``BaseAgent`` implementation that runs Garuda's DefaultAgent."""
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any, override
@@ -30,6 +31,12 @@ except ImportError:  # pragma: no cover - exercised when eval extra not installe
     AgentContext = object  # type: ignore[misc, assignment]
     HARBOR_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
+# Fraction of the harness timeout held back so the agent's own wind-down (final
+# verification, writing the answer) happens before the external kill, not after.
+DEFAULT_DEADLINE_MARGIN = 0.1
+
 
 class _UsageTrackingModel:
     """Accumulate LiteLLM usage across a Harbor trial run."""
@@ -38,6 +45,11 @@ class _UsageTrackingModel:
         self._inner = inner
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
+        # Only meaningful when the provider reports per-call cost; stays None
+        # otherwise so the trajectory falls back to an estimate rather than
+        # publishing a partial sum as if it were the bill.
+        self.provider_cost_usd: float | None = None
 
     @property
     def model_name(self) -> str:
@@ -62,6 +74,10 @@ class _UsageTrackingModel:
         )
         self.prompt_tokens += response.usage.get("prompt_tokens", 0)
         self.completion_tokens += response.usage.get("completion_tokens", 0)
+        self.cached_tokens += response.usage.get("cache_read_tokens", 0)
+        call_cost = response.usage.get("cost_usd")
+        if isinstance(call_cost, (int, float)):
+            self.provider_cost_usd = (self.provider_cost_usd or 0.0) + float(call_cost)
         return response
 
     def count_tokens(self, messages: list[Message]) -> int:
@@ -81,16 +97,96 @@ class GarudaHarborAgent(BaseAgent):
         agent_profile: str = "harbor",
         max_turns: int | None = None,
         permission_mode: str | None = None,
+        agent_timeout_sec: float | None = None,
+        deadline_margin: float = DEFAULT_DEADLINE_MARGIN,
+        system_prompt: str | None = None,
+        system_prompt_path: str | None = None,
+        append_system_prompt: str | None = None,
+        agents_dir: str | list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         if not HARBOR_AVAILABLE:
             raise ImportError(
                 "Harbor is required for GarudaHarborAgent. Install with: pip install 'garuda-openagent[eval]'"
             )
+        if system_prompt is not None and system_prompt_path is not None:
+            raise ValueError(
+                "Pass system_prompt or system_prompt_path, not both — one would silently "
+                "shadow the other."
+            )
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
         self._agent_profile = agent_profile
         self._max_turns = max_turns
         self._permission_mode = permission_mode
+        self._agent_timeout_sec = agent_timeout_sec
+        self._deadline_margin = deadline_margin
+        self._system_prompt = system_prompt
+        self._system_prompt_path = system_prompt_path
+        self._append_system_prompt = append_system_prompt
+        self._agents_dir = agents_dir
+
+    def _resolved_agents_dirs(self) -> list[Path] | None:
+        """Extra profile directories, so `agent_profile` can name a custom YAML."""
+        if not self._agents_dir:
+            return None
+        raw = [self._agents_dir] if isinstance(self._agents_dir, str) else list(self._agents_dir)
+        return [Path(d) for d in raw]
+
+    def _base_system_prompt(self, profile: Any) -> str | None:
+        """The profile's base prompt with this run's overrides applied, or None.
+
+        Returns None when nothing was configured, so the caller leaves the prompt
+        `prepare_agent_run` already resolved untouched.
+
+        Overrides replace the *base* prompt rather than the resolved one:
+        `resolve_system_prompt` appends the discovered-skills block and the project
+        memory block, and overwriting `config.system_prompt` afterwards would throw
+        both away without saying so.
+        """
+        base: str | None = None
+        if self._system_prompt is not None:
+            base = self._system_prompt
+        elif self._system_prompt_path is not None:
+            path = Path(self._system_prompt_path).expanduser()
+            try:
+                base = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                # Silently falling back to the profile's prompt would mean scoring a
+                # run that did not use the prompt under test.
+                raise ValueError(f"Cannot read system_prompt_path {path}: {exc}") from exc
+
+        if self._append_system_prompt:
+            from garuda.types import DEFAULT_SYSTEM_PROMPT
+
+            current = base if base is not None else (profile.system_prompt or DEFAULT_SYSTEM_PROMPT)
+            base = f"{current.rstrip()}\n\n{self._append_system_prompt.strip()}"
+
+        return base
+
+    def _resolved_deadline_sec(self) -> float | None:
+        """The agent's own wall-clock budget, or None to stay turn-bounded.
+
+        Harbor's ``override_timeout_sec`` lives in the job config and never
+        reaches the agent, so the value is supplied through the agent's own
+        ``kwargs`` (``agent_timeout_sec``). Set it to the same number as
+        ``override_timeout_sec``; a margin is subtracted here.
+        """
+        timeout = self._agent_timeout_sec
+        if timeout is None:
+            return None
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring non-numeric agent_timeout_sec=%r", self._agent_timeout_sec)
+            return None
+        if timeout <= 0:
+            logger.warning("Ignoring non-positive agent_timeout_sec=%r", timeout)
+            return None
+        margin = self._deadline_margin
+        if not isinstance(margin, (int, float)) or not 0 <= margin < 1:
+            logger.warning("Ignoring out-of-range deadline_margin=%r", margin)
+            margin = DEFAULT_DEADLINE_MARGIN
+        return timeout * (1.0 - margin)
 
     @staticmethod
     @override
@@ -118,21 +214,49 @@ class GarudaHarborAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        # Checked before any resource is acquired, so a misconfigured run can't
+        # leak the MCP manager prepare_agent_run would have started.
+        if not self.model_name:
+            raise ValueError("GarudaHarborAgent requires --model (provider/model_name)")
+
         adapter = HarborEnvironmentAdapter(environment)
         workspace_root = await adapter.resolve_workspace_root()
 
-        # Benchmarks always run the standard loop: the plan→execute→critic
-        # (rigorous) mode multiplies turns/cost and isn't what we're scoring, so
-        # a `mode: rigorous` line in the profile is intentionally overridden here.
+        # `eval` mode: the full completion-gate stack (LLM judge, acceptance
+        # contract, discriminating + stable evidence, side-effect sweep) on the
+        # single-agent loop. Pinned explicitly rather than inherited, because the
+        # default posture is `interactive` — a benchmark that silently ran without
+        # its gates would report numbers no one could reproduce. The plan→execute→
+        # critic (`rigorous`) mode is still deliberately *not* used: it multiplies
+        # turns and cost and isn't what we're scoring, so a `mode: rigorous` line
+        # in the profile is overridden here.
         profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
             self._agent_profile,
             workspace=workspace_root,
-            mode="standard",
+            agents_dir=self._resolved_agents_dirs(),
+            mode="eval",
         )
+        # Prompt is a benchmark variable, not an agent property: measuring how much
+        # of a score is scaffold vs instruction needs the prompt swappable per job,
+        # without editing a profile the rest of the system shares.
+        base_prompt = self._base_system_prompt(profile)
+        if base_prompt is not None:
+            from garuda.agents.loader import resolve_system_prompt
+
+            profile.system_prompt = base_prompt
+            config.system_prompt = resolve_system_prompt(profile, workspace_root)
         config.enable_verifier = True
         config.workspace_kind = "local"
         if self._max_turns is not None:
             config.max_turns = self._max_turns
+        # Harbor enforces `override_timeout_sec` by killing the agent from the
+        # outside and tells it nothing (AgentContext is output-only), so without
+        # this the agent has no wall-clock awareness: it cannot pace itself, wind
+        # down, or write a partial answer before the kill lands. The margin leaves
+        # room for its own wind-down to run first.
+        deadline = self._resolved_deadline_sec()
+        if deadline is not None:
+            config.deadline_sec = deadline
         if self._permission_mode:
             config.permission_mode = self._permission_mode
             permissions = PermissionEngine(
@@ -142,29 +266,65 @@ class GarudaHarborAgent(BaseAgent):
                 bash_rules=profile.bash_rules,
             )
 
-        if not self.model_name:
-            raise ValueError("GarudaHarborAgent requires --model (provider/model_name)")
-
         model = _UsageTrackingModel(LitellmModel(model_name=self.model_name))
         events = EventStore()
 
-        mcp_path = await self._write_mcp_config()
-        if mcp_path:
-            tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
+        result = None
+        mcp_path: str | None = None
+        try:
+            mcp_path = await self._write_mcp_config()
+            if mcp_path:
+                # build_toolkit spawns its own manager; close the one
+                # prepare_agent_run already started or its stdio subprocesses leak
+                # for the rest of the eval run.
+                if mcp_manager is not None:
+                    await mcp_manager.close()
+                    mcp_manager = None
+                tools, mcp_manager = await build_toolkit(profile.tools, mcp_path)
 
-        result = await agent.run(
-            task=instruction,
-            model=model,
-            env=adapter,
-            tools=tools,
-            config=config,
-            events=events,
-            permissions=permissions,
-        )
+            result = await agent.run(
+                task=instruction,
+                model=model,
+                env=adapter,
+                tools=tools,
+                config=config,
+                events=events,
+                permissions=permissions,
+            )
+        finally:
+            # Teardown and trajectory persistence must survive a failed run: a
+            # crashed task is exactly when the transcript is most valuable, and
+            # previously any exception here left no trajectory.json at all.
+            if mcp_manager is not None:
+                try:
+                    await mcp_manager.close()
+                except Exception:
+                    logger.warning("MCP manager close failed", exc_info=True)
+            if mcp_path:
+                Path(mcp_path).unlink(missing_ok=True)
+            try:
+                self._persist_trajectory(events, model, instruction)
+            except Exception:
+                logger.warning("Trajectory persistence failed", exc_info=True)
 
-        if mcp_manager is not None:
-            await mcp_manager.close()
+            context.n_input_tokens = model.prompt_tokens
+            context.n_output_tokens = model.completion_tokens
+            context.n_cache_tokens = model.cached_tokens or None
+            if model.provider_cost_usd is not None:
+                context.cost_usd = round(model.provider_cost_usd, 8)
+            context.metadata = {
+                "success": result.success if result is not None else False,
+                "turns": result.turns if result is not None else 0,
+                "session_id": events.session_id,
+            }
 
+    def _persist_trajectory(
+        self,
+        events: EventStore,
+        model: "_UsageTrackingModel",
+        instruction: str,
+    ) -> None:
+        """Write trajectory.json + events.jsonl for this trial."""
         trajectory_dict = events_to_atif(
             events.get_all(),
             session_id=events.session_id,
@@ -174,23 +334,14 @@ class GarudaHarborAgent(BaseAgent):
             instruction=instruction,
             prompt_tokens=model.prompt_tokens or None,
             completion_tokens=model.completion_tokens or None,
+            cost_usd=model.provider_cost_usd,
         )
-
-        trajectory_path = self.logs_dir / "trajectory.json"
         trajectory = Trajectory.model_validate(trajectory_dict)
-        trajectory_path.write_text(
+        (self.logs_dir / "trajectory.json").write_text(
             format_trajectory_json(trajectory.to_json_dict()),
             encoding="utf-8",
         )
         events.save(self.logs_dir / "events.jsonl")
-
-        context.n_input_tokens = model.prompt_tokens
-        context.n_output_tokens = model.completion_tokens
-        context.metadata = {
-            "success": result.success,
-            "turns": result.turns,
-            "session_id": events.session_id,
-        }
 
     async def _write_mcp_config(self) -> str | None:
         if not self.mcp_servers:

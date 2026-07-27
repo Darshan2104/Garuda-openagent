@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import math
 import shlex
 import tempfile
 import time
@@ -98,7 +100,10 @@ class DockerEnvironment:
         # client-side wait_for is a slightly-longer backstop.
         inner = f"cd {shlex.quote(workdir)} && {command}"
         if timeout is not None:
-            shell = f"timeout --kill-after=5s {int(timeout)}s bash -lc {shlex.quote(inner)}"
+            # Ceil, and never 0: `int(0.5)` is 0 and coreutils reads `timeout 0s` as
+            # *no limit*, so a sub-second budget silently became unbounded.
+            budget = max(1, math.ceil(timeout))
+            shell = f"timeout --kill-after=5s {budget}s bash -lc {shlex.quote(inner)}"
             client_timeout: float | None = timeout + 15
         else:
             shell = inner
@@ -140,9 +145,50 @@ class DockerEnvironment:
             duration_ms=duration_ms,
         )
 
+    async def _exec_argv(self, argv: list[str], timeout: float = 60.0) -> ExecResult:
+        """Run argv in the container with no shell at all.
+
+        For content-bearing commands: no `bash -lc`, so no profile banners and no
+        quoting round-trip.
+        """
+        start = time.monotonic()
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            self._container_name,
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                await process.wait()
+            return ExecResult(
+                stdout="",
+                stderr=f"Command timed out after {timeout}s and was killed.",
+                exit_code=124,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                truncated=True,
+            )
+        return ExecResult(
+            stdout=stdout_bytes.decode(errors="replace"),
+            stderr=stderr_bytes.decode(errors="replace"),
+            exit_code=process.returncode or 0,
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+
     async def read_file(self, path: str) -> str:
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
-        result = await self.execute(f"cat {shlex.quote(target)}")
+        # Deliberately not via execute(): that runs `bash -lc`, and a login shell
+        # sources profile files, whose banners ("Welcome to…", nvm/pyenv chatter) are
+        # prepended to stdout and silently corrupt the file contents. Exec `cat`
+        # directly so the bytes returned are the file's.
+        result = await self._exec_argv(["cat", target])
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
         return result.stdout

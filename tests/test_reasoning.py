@@ -13,7 +13,6 @@ from garuda.tools import default_tools
 from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
-
 # --- thinking-block normalization -------------------------------------------
 
 class _FakeBlock:

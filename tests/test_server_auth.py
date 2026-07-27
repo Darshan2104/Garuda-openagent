@@ -1,6 +1,5 @@
 """Tests for JSON-RPC server bearer-token auth and the sessions method."""
 
-import json
 
 import pytest
 

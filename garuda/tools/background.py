@@ -5,6 +5,11 @@ so the same mechanism works in local, docker, and remote environments. Logs live
 in /tmp — NOT the workspace — so they never pollute a ``git diff`` / glob of the
 project. State is keyed by (session_id, task_id) because registry tool instances
 are shared across sessions.
+
+**Not supported under bubblewrap.** bwrap gives each exec its own PID namespace
+and ``--die-with-parent``, so a backgrounded process cannot outlive the launcher
+that started it. Rather than hand back a pid that names nothing, the tool refuses
+on that backend — see :data:`BWRAP_UNSUPPORTED`.
 """
 
 import logging
@@ -21,6 +26,31 @@ logger = logging.getLogger(__name__)
 # Kept out of the workspace so background logs don't show up as untracked files.
 TASKS_DIR = "/tmp/garuda-tasks"
 MAX_OUTPUT_BYTES = 20_000
+
+BWRAP_UNSUPPORTED = (
+    "bash_background is not supported under the bubblewrap sandbox. Each command "
+    "runs in its own PID namespace (--unshare-pid --die-with-parent), so a "
+    "backgrounded process is PID 1 of a namespace that is torn down as soon as the "
+    "launcher returns: the task would die immediately and the returned pid would be "
+    "meaningless to task_output/kill_task.\n"
+    "Instead: run the command in the foreground with an explicit `timeout`, or use "
+    "--workspace-kind docker where background processes persist for the container's "
+    "lifetime."
+)
+
+
+def _unsupported_backend(env: Environment) -> str | None:
+    """Reason this environment cannot host a background task, or None.
+
+    Refusing up front beats the alternative: bwrap would accept the launch,
+    return a namespace-local pid, and reap the process — leaving the agent to
+    poll a task that never existed. A clear refusal is recoverable; a phantom
+    task id is not.
+    """
+    backend = getattr(env, "backend", None)
+    if backend == "bwrap":
+        return BWRAP_UNSUPPORTED
+    return None
 
 
 async def reap_session(session_id: str, env: Environment) -> int:
@@ -76,6 +106,9 @@ class BashBackgroundTool:
     }
 
     async def execute(self, arguments: dict, env: Environment, ctx: ToolContext) -> ToolResult:
+        unsupported = _unsupported_backend(env)
+        if unsupported:
+            return ToolResult(tool_call_id="", content=unsupported, is_error=True)
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
@@ -136,7 +169,13 @@ class TaskOutputTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        tail_bytes = int(arguments.get("tail_bytes", MAX_OUTPUT_BYTES))
+        # Clamp: a model-supplied tail_bytes of 1e9 would pull the whole log into
+        # context, and a negative value makes `tail -c` fail outright.
+        try:
+            tail_bytes = int(arguments.get("tail_bytes", MAX_OUTPUT_BYTES))
+        except (TypeError, ValueError):
+            tail_bytes = MAX_OUTPUT_BYTES
+        tail_bytes = max(1, min(tail_bytes, MAX_OUTPUT_BYTES))
         probe = await env.execute(
             f"kill -0 {task.pid} 2>/dev/null && echo RUNNING || echo EXITED; "
             f"tail -c {tail_bytes} {shlex.quote(task.log_path)} 2>/dev/null",
@@ -146,6 +185,12 @@ class TaskOutputTool:
         status = lines[0].strip() if lines else "UNKNOWN"
         output = "\n".join(lines[1:])
         state = "still running" if status == "RUNNING" else "exited"
+        if status == "EXITED":
+            # Drop the registry entry once the process is gone. `reap_session` clears
+            # a session's tasks at run end, but a long-lived `serve` process that
+            # never reaches that path would otherwise accumulate dead entries for
+            # its lifetime. The log file is left on disk for a later read.
+            _TASKS.pop(_task_key(ctx, arguments["task_id"]), None)
         return ToolResult(
             tool_call_id="",
             content=f"Task {task.task_id} ({task.command}) is {state}.\n--- output tail ---\n{output}",

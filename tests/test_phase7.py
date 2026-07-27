@@ -1,16 +1,13 @@
 """Tests for agent capabilities: agent.md, skills, SDK, documents, permissions."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from garuda.agents.frontmatter import parse_frontmatter
 from garuda.agents.loader import list_profiles, load_profile, resolve_system_prompt
-from garuda.agents.md_loader import load_agent_md
 from garuda.core.permissions import PermissionEngine
 from garuda.mcp.config import load_mcp_config
-from garuda.skills.loader import discover_skills, format_skills_prompt, load_skill
+from garuda.skills.loader import discover_skills, format_skills_prompt
 from garuda.tools.registry import list_tool_names, register_tool
 
 
@@ -111,7 +108,6 @@ def test_document_tools_registered():
 
 @pytest.mark.asyncio
 async def test_software_agent_sdk(tmp_path):
-    from garuda.core.loop import DefaultAgent
     from garuda.model.protocol import ModelResponse
     from garuda.model.script_model import ScriptModel
     from garuda.sdk import SoftwareAgent
@@ -139,9 +135,18 @@ async def test_software_agent_sdk(tmp_path):
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="1", name="task_complete", arguments={"summary": "SDK smoke test completed fine."})
+                    ToolCall(
+                        id="1",
+                        name="task_complete",
+                        arguments={
+                            "summary": "SDK smoke test completed fine.",
+                            "verification_commands": ["test -d ."],
+                        },
+                    )
                 ],
-            )
+            ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
+            ModelResponse(content="APPROVED: smoke test complete.", tool_calls=[]),
         ]
     )
     try:

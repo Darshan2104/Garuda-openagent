@@ -51,21 +51,58 @@ class ExecResult:
 
 @dataclass
 class AgentConfig:
+    """Per-run configuration.
+
+    The gate fields below are individually switchable for ablation, but you
+    normally should not set them one at a time: ``mode`` implies a coherent set
+    (see ``garuda.core.modes``). The defaults here are the ``interactive``
+    posture — cheapest thing that still verifies — so a bare ``AgentConfig()``
+    costs no extra model calls. Pass ``mode="eval"`` for the full gate stack the
+    benchmark numbers were produced under.
+    """
+
     max_turns: int = 200
-    mode: str = "standard"
+    mode: str = "interactive"
     permission_mode: str = "smart"
     max_output_bytes: int = 30_720
     proactive_summarize_threshold: int = 8000
+    # The structural completion gate: task_complete must carry evidence. Cheap —
+    # no model call — so it is on in every posture, and off only as an ablation.
     enable_verifier: bool = True
-    # LLM-judge verification is opt-in: it costs a model call per completion and,
-    # by design, fails CLOSED (rejects on error/unclear verdict), so enabling it
-    # is a deliberate choice. Deterministic checks (summary, permission-screened
-    # verification commands, answer_check) always run when enable_verifier is on.
+    # LLM-judge verification. An agent that picks its own success criteria grades
+    # itself generously, and the judge is the only step that reads the task
+    # statement back against observed output. Costs one model call per completion
+    # attempt and fails CLOSED (rejects on error/unclear verdict). Off by default
+    # because that cost belongs to a graded run, not to every interactive one;
+    # `mode="eval"` turns it on.
     enable_llm_verifier: bool = False
+    # Refuse completions whose verification commands cannot fail. `cat out.txt`,
+    # `ls`, `echo` and `py_compile` exit 0 whether or not the task was solved, so
+    # accepting them as proof makes the gate ceremonial.
+    require_discriminating_evidence: bool = False
+    # Re-run the discriminating checks once and require the same exit codes. Work
+    # that verifies on the first run and not the second depends on state that run
+    # consumed or created, which a grader starting fresh will not have. Doubles
+    # the cost of every verification command.
+    require_stable_verification: bool = False
     # Optional domain grader called before the LLM verdict: answer_check(env) ->
     # VerificationResult | None (None = no opinion). Set programmatically by
     # profiles/eval runners; not loadable from YAML.
     answer_check: Any = None
+    # Derive checkable acceptance criteria from the task statement at run start,
+    # pin them across compaction, and require each to be resolved before a
+    # completion is accepted. One extra model call per run.
+    enable_acceptance_contract: bool = False
+    # Sweep agent-started background processes before verification, so the gate
+    # observes the workspace an outside observer would see.
+    enable_side_effect_sweep: bool = False
+    # Wall-clock budget for the whole run. Turn count alone cannot express "most
+    # of my time is gone", which is what matters when one command can block for
+    # minutes. None leaves the run bounded only by max_turns.
+    deadline_sec: float | None = None
+    # Largest share of the *remaining* wall-clock budget any single command may
+    # consume. Stops one hung command from spending the rest of the run.
+    max_command_budget_fraction: float = 0.5
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True

@@ -1,7 +1,6 @@
 """Tests for entry-point parity, MCP lifecycle, and multi-turn context."""
 
 import logging
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -96,17 +95,33 @@ async def test_conversation_carries_llm_context(tmp_path):
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="1", name="task_complete", arguments={"summary": "turn one done"})
+                    ToolCall(
+                    id="1",
+                    name="task_complete",
+                    arguments={
+                        "summary": "turn one done",
+                        "verification_commands": ["test -d ."],
+                    },
+                )
                 ],
             ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
             # LLM verifier verdict for turn one.
             ModelResponse(content="APPROVED: turn one complete.", tool_calls=[]),
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="2", name="task_complete", arguments={"summary": "turn two done"})
+                    ToolCall(
+                    id="2",
+                    name="task_complete",
+                    arguments={
+                        "summary": "turn two done",
+                        "verification_commands": ["test -d ."],
+                    },
+                )
                 ],
             ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
             # LLM verifier verdict for turn two.
             ModelResponse(content="APPROVED: turn two complete.", tool_calls=[]),
         ]

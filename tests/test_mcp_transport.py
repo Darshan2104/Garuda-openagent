@@ -10,7 +10,6 @@ import garuda.mcp.client as client_mod
 from garuda.mcp.client import McpClientManager
 from garuda.mcp.config import load_mcp_config, normalize_transport
 
-
 # --- transport normalization ------------------------------------------------
 
 def test_normalize_transport_aliases():

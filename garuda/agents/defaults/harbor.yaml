@@ -18,6 +18,11 @@ tools:
   - ls
   - todo
   - update_goal
+  # Required: this profile runs under `eval` mode, so enable_acceptance_contract
+  # is on — the gate refuses a completion while criteria are outstanding, and
+  # this tool is the only way to resolve one. Omitting it makes every
+  # task_complete unsatisfiable.
+  - contract
   - task_complete
 mcp_config_path: null
 tool_rules:

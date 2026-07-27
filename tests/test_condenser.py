@@ -10,7 +10,6 @@ from garuda.context.condenser import (
 )
 from garuda.context.manager import ContextManager
 from garuda.model.script_model import ScriptModel
-from garuda.model.protocol import ModelResponse
 from garuda.types import Message, Role, ToolCall
 
 

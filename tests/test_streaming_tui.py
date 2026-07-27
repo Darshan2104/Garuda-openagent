@@ -11,7 +11,6 @@ from garuda.model.protocol import ModelResponse, StreamDelta, supports_streaming
 from garuda.model.script_model import ScriptModel
 from garuda.types import Message, Role, ToolCall
 
-
 # --------------------------------------------------------------------------
 # Task 1 — streaming model API
 # --------------------------------------------------------------------------

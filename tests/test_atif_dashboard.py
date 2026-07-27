@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 import garuda.eval.costs as costs
+from garuda.core.sessions import SessionStore
 from garuda.eval.atif_export import events_to_atif
 from garuda.eval.dashboard import collect_rows, render_dashboard, row_from_atif
-from garuda.core.sessions import SessionStore
 
 
 def _events_with_usage() -> list[dict]:

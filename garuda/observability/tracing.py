@@ -12,10 +12,13 @@ ATIF exporter) to wrap operations; it is a no-op when tracing is disabled.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # OpenInference semantic-convention attribute keys. We set these strings
@@ -138,6 +141,16 @@ def configure_tracing(
 
     provider.add_span_processor(processor_cls(exporter))
 
+    # Reconfiguring used to abandon the previous provider, leaving its
+    # BatchSpanProcessor's export thread alive with buffered spans it would never
+    # flush — and `_PROVIDER` then disagreed with the global provider. Shut the old
+    # one down first so a second call replaces rather than accumulates.
+    if _PROVIDER is not None and _PROVIDER is not provider:
+        try:
+            _PROVIDER.shutdown()
+        except Exception:
+            logger.debug("Previous tracer provider shutdown failed", exc_info=True)
+
     _PROVIDER = provider
     _CONFIGURED = True
     _SERVICE_NAME = service_name
@@ -164,7 +177,7 @@ def _make_otlp_exporter(endpoint: str | None) -> Any:
     for module_name in candidates:
         try:
             module = importlib.import_module(module_name)
-            exporter_cls = getattr(module, "OTLPSpanExporter")
+            exporter_cls = module.OTLPSpanExporter
             return exporter_cls(endpoint=endpoint) if endpoint else exporter_cls()
         except Exception:
             continue
@@ -210,6 +223,19 @@ def span(name: str, kind: str = KIND_CHAIN, **attrs: Any) -> Iterator[Any]:
 
 
 def emit_spans_from_events(events: list[dict], service_name: str = "garuda") -> int:
+    """Emit spans for a finished session, never raising into the caller.
+
+    Telemetry is an observer: a malformed or unexpected event shape must not fail
+    the run that produced it. The real work is in :func:`_emit_spans_from_events`.
+    """
+    try:
+        return _emit_spans_from_events(events, service_name)
+    except Exception:
+        logger.warning("Span emission failed; continuing without traces", exc_info=True)
+        return 0
+
+
+def _emit_spans_from_events(events: list[dict], service_name: str = "garuda") -> int:
     """Walk a finished session's events and emit an OpenInference span tree.
 
     Builds one root AGENT span for the session, child LLM spans per

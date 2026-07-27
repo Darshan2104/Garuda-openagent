@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from garuda.agents.frontmatter import parse_frontmatter
-from garuda.agents.loader import AgentProfile
+from garuda.agents.loader import _PROFILE_FIELD_NAMES, AgentProfile
 
 
 def load_agent_md(path: str | Path) -> AgentProfile:
@@ -20,6 +20,7 @@ def load_agent_md(path: str | Path) -> AgentProfile:
     if isinstance(mcp_servers, str):
         mcp_servers = [mcp_servers]
     return AgentProfile(
+        declared_fields={key for key in meta if key in _PROFILE_FIELD_NAMES},
         name=meta.get("name", target.stem),
         description=meta.get("description", ""),
         permission_mode=meta.get("permission_mode", "smart"),

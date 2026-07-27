@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from garuda.context.manager import ContextManager
-from garuda.core.loop import DefaultAgent
+from garuda.core.run_state import reinject_pinned_state
 from garuda.tools.goal import UpdateGoalTool, render_goal
 from garuda.tools.protocol import ToolContext
 from garuda.tools.todo import TodoTool
@@ -86,7 +86,7 @@ async def test_reinject_pins_goal_and_todos(tmp_path: Path):
         {"todos": [{"content": "do thing", "status": "in_progress"}]}, env, ToolContext(session_id=sid)
     )
     cm = _ctx_manager()
-    DefaultAgent()._reinject_pinned_state(cm, {"update_goal": goal_tool, "todo": todo_tool}, sid)
+    reinject_pinned_state(cm, {"update_goal": goal_tool, "todo": todo_tool}, sid)
 
     contents = [m.content for m in cm.get_messages()]
     assert any("current goal" in c and "Build X" in c for c in contents)
@@ -96,14 +96,12 @@ async def test_reinject_pins_goal_and_todos(tmp_path: Path):
 async def test_reinject_noop_when_unset(tmp_path: Path):
     cm = _ctx_manager()
     before = len(cm.get_messages())
-    DefaultAgent()._reinject_pinned_state(
-        cm, {"update_goal": UpdateGoalTool(), "todo": TodoTool()}, "empty-session"
-    )
+    reinject_pinned_state(cm, {"update_goal": UpdateGoalTool(), "todo": TodoTool()}, "empty-session")
     assert len(cm.get_messages()) == before  # nothing pinned when there's nothing to pin
 
 
 async def test_reinject_tolerates_missing_tools(tmp_path: Path):
     cm = _ctx_manager()
     before = len(cm.get_messages())
-    DefaultAgent()._reinject_pinned_state(cm, {}, "sid")  # no goal/todo tools in map
+    reinject_pinned_state(cm, {}, "sid")  # no goal/todo tools in map
     assert len(cm.get_messages()) == before

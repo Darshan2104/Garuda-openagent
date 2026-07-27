@@ -122,6 +122,40 @@ def _parse_mcp_servers(data: Any) -> list[dict]:
     return entries
 
 
+def _string_list(entry: dict, key: str, name: str) -> list[str]:
+    """Interpolated list value, rejecting a bare string.
+
+    ``args: hello`` is the tempting typo for ``args: [hello]``, and iterating a
+    string yields ``['h','e','l','l','o']`` — the server then launches with
+    per-character arguments and fails somewhere far from the cause. A scalar is
+    almost certainly meant as a one-element list, so treat it as one and say so.
+    """
+    value = entry.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        logger.warning(
+            "MCP server %r: %s should be a list; treating %r as a single element",
+            name,
+            key,
+            value,
+        )
+        return [_interpolate(value)]
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{key} must be a list, got {type(value).__name__}")
+    return [_interpolate(str(item)) for item in value]
+
+
+def _string_map(entry: dict, key: str, name: str) -> dict[str, str]:
+    """Interpolated mapping value, with a named error for the wrong shape."""
+    value = entry.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"{key} must be a mapping, got {type(value).__name__}")
+    return {str(k): _interpolate(str(v)) for k, v in value.items()}
+
+
 def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
     """Normalize raw server dicts into :class:`McpServerConfig` objects.
 
@@ -137,13 +171,11 @@ def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
                 logger.warning("Skipping MCP server entry with no name: %r", entry)
                 continue
             command = _interpolate(str(entry.get("command", "") or ""))
-            args = [_interpolate(str(a)) for a in (entry.get("args") or [])]
-            env = {k: _interpolate(str(v)) for k, v in (entry.get("env") or {}).items()}
+            args = _string_list(entry, "args", name)
+            env = _string_map(entry, "env", name)
             raw_url = entry.get("url")
             url = _interpolate(str(raw_url)) if raw_url else None
-            headers = {
-                k: _interpolate(str(v)) for k, v in (entry.get("headers") or {}).items()
-            }
+            headers = _string_map(entry, "headers", name)
             # A bearer token can be given as `auth`/`token`/`bearer` shorthand
             # instead of a full Authorization header.
             token = entry.get("auth") or entry.get("token") or entry.get("bearer")

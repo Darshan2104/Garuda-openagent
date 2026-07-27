@@ -4,12 +4,12 @@ import asyncio
 from pathlib import Path
 
 from garuda.core.loop import DefaultAgent
+from garuda.model.litellm_model import _message_to_litellm
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
-from garuda.types import AgentConfig, Message, Role, ToolCall
+from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
-from garuda.model.litellm_model import _message_to_litellm
 from tests.test_conformance import assert_openai_valid_sequence
 
 
@@ -37,7 +37,7 @@ async def test_parallel_reads_preserve_order_and_pairing(tmp_path: Path):
         model=ScriptModel(responses=responses),
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=5),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
     )
     assert result.success
 
@@ -89,7 +89,7 @@ async def test_parallel_reads_actually_concurrent(tmp_path: Path, monkeypatch):
     ]
     result = await DefaultAgent().run(
         task="t", model=ScriptModel(responses=responses), env=env, tools=tools,
-        config=AgentConfig(max_turns=5),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
     )
     assert result.success
     # All three ran at the same time.
@@ -115,7 +115,7 @@ async def test_mixed_calls_fall_back_to_sequential(tmp_path: Path):
     ]
     result = await DefaultAgent().run(
         task="t", model=ScriptModel(responses=responses), env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=5),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
     )
     assert result.success
     assert (tmp_path / "b.txt").read_text() == "x"
@@ -142,7 +142,7 @@ async def test_parallel_batch_permission_denial_still_pairs(tmp_path: Path):
     ]
     result = await DefaultAgent().run(
         task="t", model=ScriptModel(responses=responses), env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=5),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
     )
     assert result.success
     payload = [_message_to_litellm(m) for m in result.messages]

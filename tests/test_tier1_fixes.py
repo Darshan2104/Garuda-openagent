@@ -3,9 +3,7 @@ event serialization, and crash-resumable sessions."""
 
 from pathlib import Path
 
-import pytest
-
-from garuda.core.events import EventStore
+from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionDecision, PermissionEngine
 from garuda.core.sessions import SessionStore
@@ -13,7 +11,6 @@ from garuda.model.protocol import ModelResponse
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
-
 
 # --- T1a: no user message ever splits an assistant tool_calls / tool-result pair ---
 
@@ -143,8 +140,10 @@ def test_event_save_handles_nonserializable(tmp_path: Path):
     from datetime import datetime, timezone
 
     store = EventStore()
-    store.append(store_type := __import__("garuda.core.events", fromlist=["EventType"]).EventType.TOOL_RESULT,
-                 {"when": datetime.now(timezone.utc), "path": Path("/x")})
+    store.append(
+        EventType.TOOL_RESULT,
+        {"when": datetime.now(timezone.utc), "path": Path("/x")},
+    )
     out = tmp_path / "ev.jsonl"
     store.save(out)  # must not raise
     assert out.exists()

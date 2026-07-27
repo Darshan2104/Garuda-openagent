@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from typing import Any
 
 _TODO_MARKS = {"pending": "☐", "in_progress": "▶", "completed": "☑"}
@@ -73,18 +74,26 @@ class ChatRenderer:
     ``on_todo``, ``on_done`` and the ``thinking`` context manager.
     """
 
-    def __init__(self, use_rich: bool | None = None):
+    def __init__(self, use_rich: bool | None = None, stream=None):
         if use_rich is None:
             use_rich = rich_available()
         self._rich = bool(use_rich)
+        # Where the plain backend writes. Defaults to stdout; the JSONL chat mode
+        # passes stderr so stdout stays a pure event stream. Resolved lazily on
+        # each write so tests that swap sys.stdout still capture output.
+        self._stream = stream
         self._console = None
         if self._rich:
             try:
                 from rich.console import Console
 
-                self._console = Console()
+                self._console = Console(file=stream) if stream is not None else Console()
             except Exception:
                 self._rich = False
+
+    def _out(self, text: str, end: str = "\n") -> None:
+        """Write human-facing text to the renderer's stream."""
+        print(text, end=end, flush=True, file=self._stream or sys.stdout)
 
     # -- header ------------------------------------------------------------
     def header(self, model: str, agent: str, workspace: str, session_id: str) -> None:
@@ -104,9 +113,9 @@ class ChatRenderer:
             )
             self._console.print("[dim]Enter a task (empty line to quit).[/dim]\n")
             return
-        print(f"Garuda chat — agent={agent} model={model} workspace={workspace}")
-        print(f"session={session_id}")
-        print("Enter a task (empty line to quit).\n")
+        self._out(f"Garuda chat — agent={agent} model={model} workspace={workspace}")
+        self._out(f"session={session_id}")
+        self._out("Enter a task (empty line to quit).\n")
 
     # -- thinking spinner --------------------------------------------------
     def thinking(self, label: str = "Thinking…"):
@@ -114,10 +123,9 @@ class ChatRenderer:
             return self._console.status(f"[bold cyan]{label}", spinner="dots")
         return self._plain_status(label)
 
-    @staticmethod
     @contextlib.contextmanager
-    def _plain_status(label: str):
-        print(f"[garuda] {label}", flush=True)
+    def _plain_status(self, label: str):
+        self._out(f"[garuda] {label}")
         yield
 
     # -- assistant text ----------------------------------------------------
@@ -132,7 +140,7 @@ class ChatRenderer:
                 Panel(Markdown(text), border_style="green", title="[green]assistant", expand=True)
             )
             return
-        print(text, end="", flush=True)
+        self._out(text, end="")
 
     # -- tool calls / results ---------------------------------------------
     def on_tool_call(self, name: str, args: dict[str, Any] | None) -> None:
@@ -142,7 +150,7 @@ class ChatRenderer:
             self._console.print(f"[bold yellow]⚙ {name}[/bold yellow]{suffix}")
             return
         suffix = f" {rendered_args}" if rendered_args else ""
-        print(f"\n[tool] {name}{suffix}", flush=True)
+        self._out(f"\n[tool] {name}{suffix}")
 
     def on_tool_result(self, name: str, content: str, is_error: bool = False) -> None:
         body = _truncate(content or "", 500)
@@ -152,7 +160,7 @@ class ChatRenderer:
             self._console.print(f"  [{colour}]↳ {name} {label}:[/{colour}] {body}")
             return
         tag = "tool-error" if is_error else "tool-result"
-        print(f"[{tag}] {name}: {body}", flush=True)
+        self._out(f"[{tag}] {name}: {body}")
 
     # -- todo list ---------------------------------------------------------
     def on_todo(self, todos: list[dict[str, Any]]) -> None:
@@ -169,10 +177,22 @@ class ChatRenderer:
                 Panel("\n".join(lines), title="[magenta]todo", border_style="magenta", expand=False)
             )
             return
-        print("[todo]", flush=True)
+        self._out("[todo]")
         for item in todos:
             mark = _TODO_MARKS.get(item.get("status", "pending"), "☐")
-            print(f"  {mark} {item.get('content', '')}", flush=True)
+            self._out(f"  {mark} {item.get('content', '')}")
+
+    # -- turn error --------------------------------------------------------
+    def on_error(self, message: str) -> None:
+        """Report a failed turn without ending the session."""
+        if self._rich and self._console is not None:
+            from rich.panel import Panel
+
+            self._console.print(
+                Panel(message, border_style="red", title="[bold red]turn failed", expand=False)
+            )
+            return
+        self._out(f"\n[error] {message}\n")
 
     # -- final message -----------------------------------------------------
     def on_done(self, final: str) -> None:
@@ -186,4 +206,4 @@ class ChatRenderer:
                       border_style="green", title="[bold green]done", expand=True)
             )
             return
-        print(f"\n{final}\n", flush=True)
+        self._out(f"\n{final}\n")

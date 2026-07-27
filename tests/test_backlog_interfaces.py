@@ -3,10 +3,7 @@ via env (B), condenser re-summarize guard (#13), buffer path collision (#15)."""
 
 from pathlib import Path
 
-import pytest
-
 from garuda.agents.setup import prepare_agent_run
-
 
 # --- C3: profile mode is honored unless explicitly overridden ---------------
 
@@ -30,9 +27,27 @@ async def test_profile_mode_honored_when_no_override(tmp_path: Path):
 async def test_explicit_mode_overrides_profile(tmp_path: Path):
     _write_profile(tmp_path, "myrig", "rigorous")
     _, config, _, _, _, mgr = await prepare_agent_run(
+        "myrig", workspace=str(tmp_path), agents_dir=tmp_path, mode="interactive"
+    )
+    assert config.mode == "interactive"
+    if mgr:
+        await mgr.close()
+
+
+async def test_standard_mode_resolves_to_interactive(tmp_path: Path):
+    """`standard` is a back-compat alias, and it is canonicalized on the config.
+
+    Every shipped profile declares `mode: standard`, so this alias has to keep
+    resolving — but it resolves to the *cheap* posture now, which is the flip that
+    made a bare run stop paying for gates it did not ask for.
+    """
+    _write_profile(tmp_path, "myrig", "rigorous")
+    _, config, _, _, _, mgr = await prepare_agent_run(
         "myrig", workspace=str(tmp_path), agents_dir=tmp_path, mode="standard"
     )
-    assert config.mode == "standard"
+    assert config.mode == "interactive"
+    assert not config.enable_llm_verifier
+    assert not config.enable_acceptance_contract
     if mgr:
         await mgr.close()
 

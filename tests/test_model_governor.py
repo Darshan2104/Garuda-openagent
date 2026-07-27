@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 from garuda.model.governor import ModelGovernor, provider_of
 
 

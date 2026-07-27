@@ -220,7 +220,6 @@ async def test_from_config_json_starts_echo():
     # pre-existing import cycle that only bites when the client is imported first
     # (e.g. running this module in isolation).
     import garuda.tools  # noqa: F401
-
     from garuda.mcp.client import McpClientManager
 
     manager = await McpClientManager.from_config("tests/fixtures/mcp_echo.json")

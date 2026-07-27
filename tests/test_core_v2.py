@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 
 from garuda.context.manager import ContextManager
-from garuda.core.loop import REPEAT_NUDGE, DefaultAgent
+from garuda.core.loop import DefaultAgent
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
@@ -112,7 +112,7 @@ async def test_repeated_identical_calls_get_nudged(tmp_path: Path):
         model=ScriptModel(responses=responses),
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=10),
+        config=AgentConfig(max_turns=10, enable_verifier=False),
     )
     assert result.success
     nudges = [m for m in result.messages if m.role == Role.USER and "same tool call" in m.content]
@@ -136,7 +136,7 @@ async def test_turn_budget_reminder_injected(tmp_path: Path):
         model=ScriptModel(responses=responses),
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=8),
+        config=AgentConfig(max_turns=8, enable_verifier=False),
     )
     notices = [m for m in result.messages if m.role == Role.USER and m.content.startswith("[budget]")]
     assert notices, "a turn-budget notice should be injected near the end of the budget"

@@ -100,7 +100,9 @@ def test_docker_limits_default_args():
     assert "--cpus" in args and "2" in args
     assert "--pids-limit" in args
     assert "--network" in args and "bridge" in args
-    assert "--security-opt" in args and "no-new-privileges" in args
+    # The explicit `:true` form: some daemons silently ignore the bare flag, which
+    # would leave setuid escalation available while the config claims otherwise.
+    assert "--security-opt" in args and "no-new-privileges:true" in args
 
 
 def test_docker_limits_no_network():

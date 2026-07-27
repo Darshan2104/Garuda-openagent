@@ -1,7 +1,9 @@
 """Bridge Harbor task environments to Garuda's Environment protocol."""
 
+import math
 import shlex
 import tempfile
+import time
 from pathlib import Path
 
 from garuda.types import ExecResult
@@ -34,7 +36,11 @@ class HarborEnvironmentAdapter:
         cwd: str | None = None,
     ) -> ExecResult:
         workdir = cwd or self.workspace_root
-        timeout_sec = int(timeout) if timeout is not None else None
+        # Ceil, and never 0: `int(0.5)` is 0, and a 0-second budget is read as
+        # "no limit" — so a sub-second timeout silently became unbounded. Same
+        # defect as docker.py/remote.py carried.
+        timeout_sec = max(1, math.ceil(timeout)) if timeout is not None else None
+        start = time.monotonic()
         result = await self._env.exec(
             command=command,
             cwd=workdir,
@@ -44,7 +50,9 @@ class HarborEnvironmentAdapter:
             stdout=result.stdout or "",
             stderr=result.stderr or "",
             exit_code=result.return_code,
-            duration_ms=0,
+            # Was hardcoded 0, which made every ATIF/trajectory duration for an
+            # eval run read as instantaneous.
+            duration_ms=int((time.monotonic() - start) * 1000),
         )
 
     async def read_file(self, path: str) -> str:
@@ -58,11 +66,17 @@ class HarborEnvironmentAdapter:
         resolved = self._resolve_path(path)
         parent = str(Path(resolved).parent)
         await self.execute(f"mkdir -p {shlex.quote(parent)}")
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tmp", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", delete=False, suffix=".tmp", encoding="utf-8"
+        ) as handle:
             handle.write(content)
             local_path = handle.name
-        await self._env.upload_file(local_path, resolved)
-        Path(local_path).unlink(missing_ok=True)
+        # try/finally: an upload that raises used to leave the temp file behind, so a
+        # long eval run slowly filled the host's temp dir with dead payloads.
+        try:
+            await self._env.upload_file(local_path, resolved)
+        finally:
+            Path(local_path).unlink(missing_ok=True)
 
     async def resolve_workspace_root(self) -> str:
         """Detect the container working directory when not configured."""

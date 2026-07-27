@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.core.events import EventStore
+from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
@@ -78,6 +79,7 @@ class SoftwareAgent:
         config = profile.to_agent_config()
         if self.mode:  # else honor the profile's own mode
             config.mode = self.mode
+        apply_mode_preset(config, declared_fields=profile.declared_fields)
         config.workspace_kind = self.workspace_kind
         config.docker_image = self.docker_image
         config.docker_host = self.docker_host

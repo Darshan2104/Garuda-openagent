@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import litellm
-import pytest
 
 from garuda.context.manager import ContextManager
 from garuda.core.loop import CONTINUE_NUDGE, DefaultAgent
@@ -80,11 +79,20 @@ async def test_multi_turn_tool_use_serializes_to_valid_payload(tmp_path: Path):
         ModelResponse(
             content=None,
             tool_calls=[
-                ToolCall(id="call_4", name="task_complete", arguments={"summary": "Wrote and verified a.txt."}),
+                ToolCall(
+                    id="call_4",
+                    name="task_complete",
+                    arguments={
+                        "summary": "Wrote and verified a.txt.",
+                        "verification_commands": ["test -f a.txt"],
+                    },
+                ),
             ],
         ),
     ]
-    result = await _run_scripted(responses, tmp_path, enable_verifier=True)
+    result = await _run_scripted(
+        responses, tmp_path, enable_verifier=True, enable_llm_verifier=False
+    )
     assert result.success
 
     payload = [_message_to_litellm(m) for m in result.messages]
@@ -129,10 +137,17 @@ async def test_malformed_tool_arguments_become_error_result(tmp_path: Path):
         ModelResponse(content=None, tool_calls=parsed),
         ModelResponse(
             content=None,
-            tool_calls=[ToolCall(id="call_done", name="task_complete", arguments={"summary": "Recovered from bad args."})],
+            tool_calls=[ToolCall(
+                    id="call_done",
+                    name="task_complete",
+                    arguments={
+                        "summary": "Recovered from bad args.",
+                        "verification_commands": ["test -d ."],
+                    },
+                )],
         ),
     ]
-    result = await _run_scripted(responses, tmp_path)
+    result = await _run_scripted(responses, tmp_path, enable_llm_verifier=False)
     assert result.success
     payload = [_message_to_litellm(m) for m in result.messages]
     assert_openai_valid_sequence(payload)
@@ -146,10 +161,19 @@ async def test_text_only_response_gets_nudge_when_verifier_enabled(tmp_path: Pat
         ModelResponse(content="I think I am done.", tool_calls=[]),
         ModelResponse(
             content=None,
-            tool_calls=[ToolCall(id="c", name="task_complete", arguments={"summary": "Completed the task now."})],
+            tool_calls=[ToolCall(
+                    id="c",
+                    name="task_complete",
+                    arguments={
+                        "summary": "Completed the task now.",
+                        "verification_commands": ["test -d ."],
+                    },
+                )],
         ),
     ]
-    result = await _run_scripted(responses, tmp_path, enable_verifier=True)
+    result = await _run_scripted(
+        responses, tmp_path, enable_verifier=True, enable_llm_verifier=False
+    )
     assert result.success
     nudges = [m for m in result.messages if m.role == Role.USER and m.content == CONTINUE_NUDGE]
     assert len(nudges) == 1

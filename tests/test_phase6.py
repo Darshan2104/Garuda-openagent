@@ -1,4 +1,3 @@
-import json
 import os
 import platform
 import shutil
@@ -7,16 +6,12 @@ from pathlib import Path
 
 import pytest
 
-# Live Seatbelt execution (macOS `sandbox-exec`) varies by OS version, so skip the
-# live-execution path unless opted in — matching tests/test_sandbox_v2.py. On Linux
-# (bwrap or unconfined) the test still runs.
-_LIVE_SEATBELT_ONLY = (
-    platform.system() == "Darwin"
-    and shutil.which("sandbox-exec") is not None
-    and os.environ.get("GARUDA_LIVE_SANDBOX") != "1"
+from garuda.config.recipes import (
+    load_recipe,
+    render_template,
+    resolve_recipe_params,
+    run_recipe,
 )
-
-from garuda.config.recipes import load_recipe, render_template, resolve_recipe_params, run_recipe
 from garuda.core.events import EventStore
 from garuda.core.rigorous import RigorousAgent, create_agent
 from garuda.interfaces.server import JsonRpcServer, ServerConfig
@@ -27,6 +22,15 @@ from garuda.types import AgentConfig, ToolCall
 from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.remote import RemoteWorkspace
 from garuda.workspace.sandbox import SandboxEnvironment
+
+# Live Seatbelt execution (macOS `sandbox-exec`) varies by OS version, so skip the
+# live-execution path unless opted in — matching tests/test_sandbox_v2.py. On Linux
+# (bwrap or unconfined) the test still runs.
+_LIVE_SEATBELT_ONLY = (
+    platform.system() == "Darwin"
+    and shutil.which("sandbox-exec") is not None
+    and os.environ.get("GARUDA_LIVE_SANDBOX") != "1"
+)
 
 
 def test_render_template():
@@ -61,17 +65,33 @@ async def test_run_recipe_steps(tmp_path):
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="2", name="task_complete", arguments={"summary": "Applied auth patch and verified tests."}),
+                    ToolCall(
+                        id="2",
+                        name="task_complete",
+                        arguments={
+                            "summary": "Applied auth patch and verified tests.",
+                            "verification_commands": ["test -f fix.txt"],
+                        },
+                    ),
                 ],
             ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
             # LLM verifier verdict for the step-2 completion.
             ModelResponse(content="APPROVED: patch applied and verified.", tool_calls=[]),
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="3", name="task_complete", arguments={"summary": "Ran pytest successfully after auth fix."}),
+                    ToolCall(
+                        id="3",
+                        name="task_complete",
+                        arguments={
+                            "summary": "Ran pytest successfully after auth fix.",
+                            "verification_commands": ["test -f fix.txt"],
+                        },
+                    ),
                 ],
             ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
             # LLM verifier verdict for the step-3 completion.
             ModelResponse(content="APPROVED: tests ran successfully.", tool_calls=[]),
         ]
@@ -106,7 +126,10 @@ async def test_rigorous_agent_plan_execute_critic(tmp_path):
                     ToolCall(
                         id="2",
                         name="task_complete",
-                        arguments={"summary": "Implemented fix and validated behavior."},
+                        arguments={
+                            "summary": "Implemented fix and validated behavior.",
+                            "verification_commands": ["test -f done.txt"],
+                        },
                     )
                 ],
             ),
@@ -120,7 +143,8 @@ async def test_rigorous_agent_plan_execute_critic(tmp_path):
         env=env,
         tools=tools_for_names(["write_file", "task_complete"]),
         config=AgentConfig(
-            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo"
+            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo",
+            enable_acceptance_contract=False
         ),
         events=EventStore(),
     )
@@ -171,9 +195,18 @@ async def test_jsonrpc_run(tmp_path):
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="1", name="task_complete", arguments={"summary": "Completed RPC smoke test run."})
+                    ToolCall(
+                    id="1",
+                    name="task_complete",
+                    arguments={
+                        "summary": "Completed RPC smoke test run.",
+                        "verification_commands": ["test -d ."],
+                    },
+                )
                 ],
-            )
+            ),
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),  # criteria extraction
+            ModelResponse(content="APPROVED: smoke run completed.", tool_calls=[]),
         ]
     )
 

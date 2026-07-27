@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda.core.events import EventStore, EventType
+from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.eval.atif_export import events_to_atif, save_atif_trajectory
 from garuda.eval.harbor_environment import HarborEnvironmentAdapter
@@ -138,9 +138,23 @@ async def test_default_agent_exports_atif_compatible_events(tmp_path):
             ModelResponse(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="2", name="task_complete", arguments={"summary": "Wrote out.txt"})
+                    ToolCall(
+                        id="2",
+                        name="task_complete",
+                        arguments={
+                            "summary": "Wrote out.txt",
+                            # The gate requires at least one command whose exit code
+                            # would change if the work were wrong, so a bare summary
+                            # is no longer a completion.
+                            "verification_commands": [f"grep -q done {tmp_path}/out.txt"],
+                        },
+                    )
                 ],
             ),
+            # Acceptance-criteria extraction, then the LLM verdict: both are real
+            # model calls the completion path makes, so the script must supply them.
+            ModelResponse(content='{"criteria": []}', tool_calls=[]),
+            ModelResponse(content='{"verdict": "APPROVED", "reason": "file written"}', tool_calls=[]),
         ]
     )
     agent = DefaultAgent(profile_name="harbor")
@@ -200,9 +214,22 @@ async def test_garuda_harbor_agent_run(tmp_path):
                             ToolCall(
                                 id="2",
                                 name="task_complete",
-                                arguments={"summary": "Created harbor.txt"},
+                                arguments={
+                                    "summary": "Created harbor.txt",
+                                    # A summary alone no longer completes a run: the
+                                    # gate insists on a check that could have failed.
+                                    "verification_commands": [
+                                        f"grep -q garuda {tmp_path}/harbor.txt"
+                                    ],
+                                },
                             )
                         ],
+                    ),
+                    # Criteria extraction, then the LLM verdict.
+                    ModelResponse(content='{"criteria": []}', tool_calls=[]),
+                    ModelResponse(
+                        content='{"verdict": "APPROVED", "reason": "file created"}',
+                        tool_calls=[],
                     ),
                 ]
             )
@@ -241,3 +268,81 @@ async def test_garuda_harbor_agent_run(tmp_path):
     assert trajectory.agent.name == "garuda"
     assert harbor_env._files[f"{tmp_path}/harbor.txt"] == "from garuda"
     assert context.metadata and context.metadata.get("success") is True
+
+
+@pytest.mark.asyncio
+async def test_harbor_agent_persists_trajectory_when_run_fails(tmp_path):
+    """A crashed trial must still leave trajectory.json + events.jsonl behind — that
+    transcript is exactly what you need to diagnose the crash. The exception still
+    propagates so Harbor scores the trial as failed."""
+    from garuda.eval.harbor_adapter import GarudaHarborAgent
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    agent = GarudaHarborAgent(
+        logs_dir=logs_dir,
+        model_name="script/test",
+        agent_profile="harbor",
+        permission_mode="yolo",
+        max_turns=5,
+    )
+
+    harbor_env = MockHarborEnvironment(workdir=str(tmp_path))
+    context = harbor.models.agent.context.AgentContext()
+
+    import garuda.eval.harbor_adapter as adapter_module
+
+    class ExplodingAgent:
+        """Stands in for a loop failure that escapes run() — e.g. a model error
+        during compaction, or cancellation on an eval timeout. Ordinary per-turn
+        model errors are caught inside the loop and don't exercise this path."""
+
+        profile_name = "harbor"
+
+        async def run(self, **kwargs):
+            raise RuntimeError("loop exploded")
+
+    original = adapter_module.prepare_agent_run
+
+    async def exploding_prepare(*args, **kwargs):
+        profile, config, permissions, tools, _agent, mcp_manager = await original(*args, **kwargs)
+        return profile, config, permissions, tools, ExplodingAgent(), mcp_manager
+
+    adapter_module.prepare_agent_run = exploding_prepare
+    try:
+        with pytest.raises(RuntimeError, match="loop exploded"):
+            await agent.run("write harbor.txt", harbor_env, context)
+    finally:
+        adapter_module.prepare_agent_run = original
+
+    assert (logs_dir / "trajectory.json").exists(), "trajectory lost on failure"
+    assert (logs_dir / "events.jsonl").exists(), "event log lost on failure"
+    assert context.metadata and context.metadata.get("success") is False
+
+
+@pytest.mark.asyncio
+async def test_harbor_agent_requires_model_before_acquiring_resources():
+    """The model-name guard must fire before prepare_agent_run starts an MCP
+    manager, or a misconfigured run leaks stdio subprocesses."""
+    from garuda.eval.harbor_adapter import GarudaHarborAgent
+
+    agent = GarudaHarborAgent(logs_dir=None, model_name=None, agent_profile="harbor")
+    called = False
+
+    import garuda.eval.harbor_adapter as adapter_module
+
+    original = adapter_module.prepare_agent_run
+
+    async def tracking_prepare(*args, **kwargs):
+        nonlocal called
+        called = True
+        return await original(*args, **kwargs)
+
+    adapter_module.prepare_agent_run = tracking_prepare
+    try:
+        with pytest.raises(ValueError, match="requires --model"):
+            await agent.run("task", MockHarborEnvironment(workdir="/tmp"), None)
+    finally:
+        adapter_module.prepare_agent_run = original
+
+    assert not called, "prepare_agent_run ran before the model-name guard"

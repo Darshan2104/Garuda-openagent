@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -45,7 +44,10 @@ async def test_default_agent_with_script_model(tmp_path: Path):
                     ToolCall(
                         id="2",
                         name="task_complete",
-                        arguments={"summary": "Wrote out.txt with content ok."},
+                        arguments={
+                            "summary": "Wrote out.txt with content ok.",
+                            "verification_commands": ["grep -q ok out.txt"],
+                        },
                     ),
                 ],
             ),
@@ -57,7 +59,7 @@ async def test_default_agent_with_script_model(tmp_path: Path):
         model=model,
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=5, enable_verifier=True),
+        config=AgentConfig(max_turns=5, enable_verifier=True, enable_llm_verifier=False),
     )
     assert result.success
     assert (tmp_path / "out.txt").read_text() == "ok"

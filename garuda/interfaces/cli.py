@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
+import functools
 import json
+import sys
 
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment
@@ -10,8 +12,15 @@ from garuda.plugins.hooks import build_hook_registry
 from garuda.types import AgentResult
 
 
-async def stdin_approval(action: str) -> bool:
-    print(f"\n[garuda] Approve {action}? [y/N]: ", end="", flush=True)
+async def stdin_approval(action: str, stream=None) -> bool:
+    # The prompt is human-facing, never data: in JSONL mode the caller passes
+    # stderr so stdout stays parseable.
+    print(
+        f"\n[garuda] Approve {action}? [y/N]: ",
+        end="",
+        flush=True,
+        file=stream or sys.stdout,
+    )
     answer = await asyncio.to_thread(input)
     return answer.strip().lower() in ("y", "yes")
 
@@ -68,7 +77,16 @@ async def chat_loop(args) -> int:
     from garuda.agents.loader import load_profile
 
     profile = load_profile(args.agent, extra_dir=agents_dir)
-    approval = stdin_approval if profile.permission_mode == "smart" else None
+    # In JSONL mode stdout carries one JSON event per line and nothing else, so
+    # every human-facing write — prompts, header, status, final message, "Bye." —
+    # goes to stderr instead. A consumer piping stdout to a parser must never see
+    # decoration.
+    human = sys.stderr if args.json else sys.stdout
+    approval = (
+        functools.partial(stdin_approval, stream=human)
+        if profile.permission_mode == "smart"
+        else None
+    )
 
     session = await AgentSession.create(
         agent_name=args.agent,
@@ -76,7 +94,9 @@ async def chat_loop(args) -> int:
         workspace=args.workspace,
         agents_dir=agents_dir,
         mcp_config_path=getattr(args, "mcp_config", None),
-        mode=getattr(args, "mode", "standard"),
+        # None, not a literal mode: a fallback value here would override the
+        # profile's own `mode` for any caller whose args lack the attribute.
+        mode=getattr(args, "mode", None),
         approval_handler=approval,
         workspace_kind=getattr(args, "workspace_kind", "local"),
         docker_image=getattr(args, "docker_image", "ubuntu:22.04"),
@@ -104,7 +124,7 @@ async def chat_loop(args) -> int:
 
     # JSONL mode must keep stdout machine-readable, so rich rendering is off there.
     render = not args.json
-    renderer = ChatRenderer(use_rich=render)
+    renderer = ChatRenderer(use_rich=render, stream=human)
     renderer.header(
         model=args.model,
         agent=session.profile.name,
@@ -117,11 +137,11 @@ async def chat_loop(args) -> int:
     offset = len(session.events.get_all())
     try:
         while True:
-            print("task> ", end="", flush=True)
+            print("task> ", end="", flush=True, file=human)
             try:
                 task = await asyncio.to_thread(input)
             except EOFError:
-                print()
+                print(file=human)
                 break
             if not task.strip():
                 break
@@ -152,10 +172,21 @@ async def chat_loop(args) -> int:
                         )
                         await asyncio.sleep(0.05)
                 result = await run_task
-            except BaseException:
+            except BaseException as exc:
                 run_task.cancel()
                 with contextlib.suppress(BaseException):
                     await run_task
+                # A failed turn is not a failed session. Ctrl-C and cancellation
+                # still propagate (the user meant those); an ordinary error — a
+                # provider 500, a bad tool argument — is reported and the prompt
+                # comes back, because losing the whole conversation to one bad turn
+                # is a worse outcome than the error itself.
+                if isinstance(exc, Exception):
+                    offset = _drain_events(
+                        renderer, session.events, offset, render=render, emit_json=args.json
+                    )
+                    renderer.on_error(f"{type(exc).__name__}: {exc}")
+                    continue
                 raise
             offset = _drain_events(
                 renderer, session.events, offset, render=render, emit_json=args.json
@@ -163,7 +194,7 @@ async def chat_loop(args) -> int:
             last_result = result
             renderer.on_done(result.final_message)
     except KeyboardInterrupt:
-        print()
+        print(file=human)
     finally:
         await cleanup_workspace(env_handle)
         await session.close()
@@ -175,7 +206,7 @@ async def chat_loop(args) -> int:
                 "turns": last_result.turns if last_result else 0,
             }
         )
-    print("Bye.")
+    print("Bye.", file=human)
     return 0
 
 

@@ -9,7 +9,6 @@ from garuda.tools.registry import (
     ToolRegistry,
     get_tool,
     list_tool_names,
-    register_tool,
 )
 
 

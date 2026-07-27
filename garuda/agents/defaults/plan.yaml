@@ -3,6 +3,9 @@ description: Read-only analysis and planning
 permission_mode: readonly
 mode: standard
 max_turns: 100
+# Output is a plan, not a change: there is nothing in the workspace for
+# acceptance criteria to be checked against.
+enable_acceptance_contract: false
 tools:
   - bash
   - read_file

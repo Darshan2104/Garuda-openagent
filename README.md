@@ -28,7 +28,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
 | **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
-| **Modes** | `standard` (fast), `rigorous` (plan → execute → critic), `readonly` |
+| **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
 | **Evaluation** | Harbor adapter + ATIF-v1.7 trajectory export |
 
@@ -179,6 +179,38 @@ garuda recipe run flow.yaml -p key=value   # run a multi-step YAML workflow
 
 ---
 
+## Run modes
+
+`--mode` picks a **run posture**: one flag that implies a coherent set of completion
+gates, so you don't configure five booleans to say "cheap" or "strict".
+
+| Mode | Completion gates | Extra model calls | Use it for |
+|---|---|---|---|
+| `interactive` *(default)* | structural gate only — `task_complete` must carry evidence | none | day-to-day runs |
+| `eval` | LLM judge, acceptance contract, discriminating evidence, stable re-verification, side-effect sweep | ~2 per completion attempt, plus a re-run of each verification command | graded / benchmark runs |
+| `rigorous` | `eval` gates plus a plan → execute → critic agent | `eval` cost × repair rounds | maximum scrutiny |
+| `readonly` | `interactive` gates, permissions forced read-only | none | inspection without writes |
+
+`standard` is a back-compat alias for `interactive`.
+
+**The default is deliberately cheap.** A bare `garuda run` pays for the task plus
+local checks (post-edit syntax and lint, the one-shot environment probe) and
+nothing else. The strict stack is real work — an LLM judge reading the task
+statement back against observed output, acceptance criteria pinned across
+compaction, every verification command re-run to prove it isn't order-dependent —
+and it belongs to a run whose product is a graded pass. Ask for it with
+`--mode eval`.
+
+If you are reproducing benchmark numbers, use `--mode eval`. Harbor runs pin it
+automatically.
+
+Precedence, widest to narrowest: built-in defaults → the mode preset → fields your
+profile YAML declares explicitly → explicit CLI flags. So a profile that sets
+`enable_acceptance_contract: true` keeps it under `--mode interactive`, and an
+explicit `--permission-mode yolo` overrides `--mode readonly`.
+
+---
+
 ## CLI reference
 
 ### `garuda run` — headless task execution
@@ -203,7 +235,7 @@ garuda run -f task.md [options]
 | `--no-network` | Disable network for docker/remote containers (default: bridged) |
 | `--allow-network` | Allow network egress inside the OS sandbox (denied by default) |
 | `--allow-unsandboxed` | Let `--workspace-kind sandbox` run unconfined if no backend exists (default: fail loudly) |
-| `--mode` | `standard` · `rigorous` · `readonly` (default: the profile's own) |
+| `--mode` | Run posture: `interactive` (default) · `eval` · `rigorous` · `readonly`. See [Run modes](#run-modes). |
 | `--permission-mode` | `auto` · `smart` · `readonly` · `yolo` |
 | `--mcp-config` | Path to MCP servers config (YAML or JSON); auto-discovered when omitted |
 | `--load-project-tools` | Import custom tools from `.agent/tools/*.py` (runs repo code; overrides the global setting) |
@@ -222,7 +254,10 @@ garuda run -f task.md [options]
 **Examples:**
 
 ```bash
-# Rigorous mode (plan → execute → critic)
+# Full completion-gate stack (the benchmark configuration)
+garuda run -t "Fix the failing test in tests/" --mode eval
+
+# Rigorous mode (eval gates plus plan → execute → critic)
 garuda run -t "Fix the failing test in tests/" --mode rigorous
 
 # Docker-isolated run with no network
@@ -590,8 +625,14 @@ the environment and network egress is denied by default; writes are confined to 
 workspace. On Linux (bubblewrap) reads are also confined via an explicit allowlist.
 On macOS, Seatbelt cannot practically confine `file-read*` without breaking basic
 process execution, so file *reads* are not confined there — use `docker` when that
-matters. The agent-facing file tools additionally resolve symlinks and refuse paths
-escaping the workspace on every platform.
+matters. Selecting the Seatbelt backend logs this caveat once at startup, so it is
+visible at runtime and not only here: treat macOS Seatbelt as a blast-radius reducer
+rather than a confinement boundary. The agent-facing file tools additionally resolve
+symlinks and refuse paths escaping the workspace on every platform.
+
+Signals are scoped rather than blanket-allowed: a sandboxed command may signal
+itself and its own process group — so `kill`, `timeout`, `make -j` and test runners
+work — but not any other process, so it cannot signal the agent or the host.
 
 ---
 
@@ -654,6 +695,47 @@ harbor run -d terminal-bench@2.0 \
   --model openai/gpt-4o-mini
 ```
 
+### Adapter options
+
+Set these under the agent's `kwargs` in a Harbor job config. They are
+benchmark-scoped — none of them change how `garuda run` behaves.
+
+| kwarg | Purpose |
+|---|---|
+| `agent_profile` | Profile to run (default `harbor`) |
+| `max_turns` | Turn cap for the run |
+| `permission_mode` | Usually `yolo` inside a disposable container |
+| `agent_timeout_sec` | Set to the same value as `override_timeout_sec`. Harbor enforces its timeout by killing the agent and tells it nothing, so this is what gives the agent a wall-clock budget to pace against |
+| `deadline_margin` | Fraction of that budget held back for wind-down (default `0.1`) |
+| `system_prompt` | Replace the profile's base prompt inline |
+| `system_prompt_path` | Replace it from a file — easier to diff and version than a YAML block |
+| `append_system_prompt` | Keep the profile's prompt and add to it |
+| `agents_dir` | Extra profile directory, so `agent_profile` can name a fully custom YAML |
+
+**Why the prompt is a job-level knob.** A harness score mixes scaffold quality with
+instruction quality, and the two are only separable if the prompt can be swapped
+per job without editing a profile the rest of the system shares. The `harbor`
+profile ships a deliberately minimal prompt so the baseline measures the scaffold;
+supply your own here to measure the difference.
+
+Overrides replace the profile's *base* prompt, so the discovered-skills block and
+`AGENTS.md` project memory are still appended as usual. A `system_prompt_path` that
+cannot be read is an error, not a fallback — silently reverting to the profile
+prompt would score a run that never used the prompt under test.
+
+```yaml
+agents:
+- import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
+  model_name: openrouter/minimax/minimax-m2.5
+  override_timeout_sec: 900
+  kwargs:
+    agent_profile: harbor
+    max_turns: 120
+    permission_mode: yolo
+    agent_timeout_sec: 900        # mirrors override_timeout_sec
+    system_prompt_path: prompts/experiment-a.md
+```
+
 See also:
 
 - `garuda/eval/benchmarks/terminal_bench/` — Terminal-Bench 2.0
@@ -668,7 +750,8 @@ See also:
 garuda/
 ├── agents/          # profile loader (YAML + agent.md) + default profiles
 ├── config/          # .agent/ home resolver, recipes, defaults
-├── core/            # agent loop, events, permissions, verifier, sessions, rigorous mode
+├── core/            # turn loop + run state, steering, tool runner, completion gate,
+│                   # run modes, events, permissions, verifier, sessions, rigorous mode
 ├── context/         # context manager, summarizer, condenser, output shaping
 ├── model/           # LiteLLM adapter, concurrency governor, ScriptModel
 ├── skills/          # SKILL.md discovery + progressive disclosure
@@ -682,12 +765,12 @@ garuda/
 └── interfaces/      # CLI, JSON-RPC server, job queue, runner
 
 docs/
-├── GARUDA_OPEN_AGENT_RFC.md    # Architecture RFC
-├── MODULES.md                  # Module work breakdown
-├── ENGINEERING_PLAN.md         # Running engineering log / status updates
-└── CONFIG_SCALABILITY_PLAN.md  # .agent/ home + scalability design
+├── ARCHITECTURE.md             # Orientation: postures, boundaries, run path
+├── MODULES.md                  # Module map
+├── BACKLOG.md                  # Living residuals
+└── archive/                    # Dated: original RFC, engineering log, closed ledgers
 
-tests/                          # ~530 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # ~820 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 
@@ -706,7 +789,7 @@ pytest tests/ -v
 GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 ```
 
-**Current test status:** 529 passed, 7 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 810 passed, 8 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 
@@ -729,10 +812,15 @@ GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 
 ## Documentation
 
-- [Architecture RFC](docs/GARUDA_OPEN_AGENT_RFC.md) — design goals, interfaces, roadmap
-- [Module breakdown](docs/MODULES.md) — module-by-module status
-- [Engineering plan](docs/ENGINEERING_PLAN.md) — running log of shipped work
-- [Config & scalability plan](docs/CONFIG_SCALABILITY_PLAN.md) — the `.agent/` home + job-queue design
+Start here, in order:
+
+- [Architecture](docs/ARCHITECTURE.md) — run postures, trust boundaries, the run path, where to change what
+- [Module map](docs/MODULES.md) — what each package owns and the file to open first
+- [Open backlog](docs/BACKLOG.md) — residuals only; nothing in it is marked done
+
+[docs/archive/](docs/archive/) holds the original RFC, the engineering log, and the
+closed review ledgers, dated. Kept for provenance and **not** maintained — don't
+read them as current behavior.
 
 ---
 

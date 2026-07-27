@@ -3,10 +3,10 @@ background reaping."""
 
 from pathlib import Path
 
+from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.subagent import _drop_incomplete_tail
-from garuda.context.manager import ContextManager
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
@@ -35,7 +35,7 @@ async def test_task_complete_preserved_when_not_in_allowed_tools(tmp_path: Path)
     model = ScriptModel(responses=[_tc()])
     result = await DefaultAgent().run(
         task="t", model=model, env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=4, allowed_tools=["read_file"]),  # no task_complete!
+        config=AgentConfig(max_turns=4, allowed_tools=["read_file"], enable_verifier=False),  # no task_complete!
     )
     assert result.success  # completion still possible
 
@@ -63,7 +63,7 @@ async def test_repeated_task_complete_rejection_steers(tmp_path: Path):
     model = ScriptModel(responses=[_tc("x"), _tc("x"), _tc("x"), _tc("x"), _tc("x")])
     result = await DefaultAgent().run(
         task="t", model=model, env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=6, enable_verifier=True),
+        config=AgentConfig(max_turns=6, enable_verifier=True, enable_llm_verifier=False),
     )
     steers = [m for m in result.messages if m.role == Role.USER and "rejected" in (m.content or "") and "in a row" in (m.content or "")]
     assert steers
@@ -194,7 +194,7 @@ async def test_forked_subagent_e2e_no_dangling_tool_call(tmp_path: Path):
     ])
     result = await DefaultAgent().run(
         task="delegate then finish", model=model, env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=6),
+        config=AgentConfig(max_turns=6, enable_verifier=False),
     )
     assert result.success
     # The parent's own transcript is a valid sequence (invoke_subagent answered).

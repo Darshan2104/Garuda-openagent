@@ -121,3 +121,44 @@ async def test_resume_unknown_session_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(tmp_path / "sessions"))
     with pytest.raises(FileNotFoundError):
         await _run("task", "Never runs.", tmp_path, EventStore(), resume="deadbeef")
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["../secret", "../../etc/passwd", "a/b", "/abs/path", "..", ".", "", "sess;rm"],
+)
+def test_resolve_rejects_non_bare_session_refs(tmp_path, ref):
+    """A traversal ref must not resolve — the server's `resume` param is
+    client-controlled, so `../x` would otherwise read arbitrary messages.json
+    files into the model context."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    (outside / "messages.json").write_text('[{"role": "user", "content": "pwned"}]')
+
+    store = SessionStore(root)
+    with pytest.raises(ValueError):
+        store.resolve(ref)
+
+
+def test_load_messages_rejects_traversal_ref(tmp_path):
+    """Validation sits on session_dir, so every on-disk read is covered even if a
+    caller skips resolve()."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    (outside / "messages.json").write_text('[{"role": "user", "content": "pwned"}]')
+
+    store = SessionStore(root)
+    with pytest.raises(ValueError):
+        store.load_messages("../secret")
+
+
+def test_resolve_still_accepts_bare_ids_and_prefixes(tmp_path):
+    root = tmp_path / "sessions"
+    (root / "abc12345-0000").mkdir(parents=True)
+    store = SessionStore(root)
+    assert store.resolve("abc12345-0000") == "abc12345-0000"
+    assert store.resolve("abc123") == "abc12345-0000"

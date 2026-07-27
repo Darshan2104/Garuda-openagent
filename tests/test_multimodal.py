@@ -6,7 +6,6 @@ from garuda.core.loop import DefaultAgent
 from garuda.model.litellm_model import LitellmModel, _message_to_litellm
 from garuda.model.protocol import ModelResponse
 from garuda.tools import default_tools
-from garuda.tools.protocol import ToolContext
 from garuda.types import AgentConfig, Message, Role, ToolCall, ToolResult
 from garuda.workspace.local import LocalEnvironment
 

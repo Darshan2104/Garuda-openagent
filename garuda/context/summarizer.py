@@ -3,6 +3,11 @@ from garuda.types import Message, Role
 
 MAX_HISTORY_MESSAGES = 200
 MAX_MESSAGE_CHARS = 2000
+# Ceiling on the whole rendered transcript. The per-message caps alone allow
+# 200 x 2000 = 400 KB (~100k tokens), which can exceed the context window at the
+# exact moment summarization is needed to get back under it — the request meant to
+# recover from overflow would itself overflow. Newest messages are kept.
+MAX_TRANSCRIPT_CHARS = 60_000
 
 _STATE_SYSTEM = (
     "You maintain a compact STRUCTURED STATE of an agent's progress that survives context "
@@ -53,7 +58,27 @@ def _render_history(messages: list[Message]) -> str:
             )
             line = f"{line}\n  -> called: {calls}"
         lines.append(line)
-    return "\n".join(lines)
+    return _tail_within_budget(lines, MAX_TRANSCRIPT_CHARS)
+
+
+def _tail_within_budget(lines: list[str], budget: int) -> str:
+    """Join the newest lines that fit in `budget` characters.
+
+    Trimming from the oldest end keeps the part of the transcript the summary most
+    needs — recent work — and notes the drop so the model does not read the result
+    as a complete history.
+    """
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        cost = len(line) + 1
+        if used + cost > budget and kept:
+            dropped = len(lines) - len(kept)
+            kept.insert(0, f"[{dropped} earlier message(s) omitted to fit the summary budget]")
+            break
+        kept.insert(0, line)
+        used += cost
+    return "\n".join(kept)
 
 
 async def summarize_three_step(model: Model, messages: list[Message], task: str) -> str:

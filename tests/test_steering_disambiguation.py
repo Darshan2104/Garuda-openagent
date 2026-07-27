@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from garuda.core.loop import FAILURE_STEER_NUDGE, DefaultAgent
+from garuda.core.loop import DefaultAgent
 from garuda.core.verifier import CompletionVerifier
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
@@ -85,7 +85,7 @@ async def test_rationale_reaches_verifier_prompt(tmp_path: Path):
     await CompletionVerifier().verify_with_commands(
         task="compute the value",
         summary="A sufficiently detailed completion summary of the work.",
-        verification_commands=[], env=env, config=AgentConfig(), model=model,
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=model,
         answer_rationale="Chose 42 over 4200 because the units were per-item, not per-batch.",
     )
     assert "Chose 42 over 4200" in model.last_prompt
@@ -97,7 +97,7 @@ async def test_contradiction_without_rationale_prompts_disambiguation(tmp_path: 
     await CompletionVerifier().verify_with_commands(
         task="compute the value",
         summary="The result is either 5 or 5000 depending on interpretation.",
-        verification_commands=[], env=env, config=AgentConfig(), model=model,
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=model,
     )
     assert "no answer_rationale" in model.last_prompt
     assert "disambiguate" in model.last_prompt
@@ -109,7 +109,7 @@ async def test_contradiction_with_rationale_softens_note(tmp_path: Path):
     await CompletionVerifier().verify_with_commands(
         task="compute the value",
         summary="The result is either 5 or 5000 depending on interpretation.",
-        verification_commands=[], env=env, config=AgentConfig(), model=model,
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=model,
         answer_rationale="It is 5000; the 5 was an intermediate per-unit figure.",
     )
     assert "accept only if the rationale" in model.last_prompt

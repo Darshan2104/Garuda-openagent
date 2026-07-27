@@ -19,7 +19,6 @@ from garuda.tools.diagnostics import check_syntax
 from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
-
 # --- environment bootstrap snapshot -----------------------------------------
 
 
@@ -139,7 +138,7 @@ async def test_batch_of_readonly_buffer_and_read_runs_and_pairs(tmp_path: Path):
         model=ScriptModel(responses=responses),
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=5, bootstrap_environment=False),
+        config=AgentConfig(max_turns=5, bootstrap_environment=False, enable_verifier=False),
     )
     assert result.success
     tool_msgs = [m for m in result.messages if m.role == Role.TOOL]

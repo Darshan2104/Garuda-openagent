@@ -1,7 +1,6 @@
 """Model-layer resilience: retry classification, Retry-After, max_retries=0,
 non-retryable fast-fail, and mid-stream fallback."""
 
-import asyncio
 
 import litellm
 import pytest

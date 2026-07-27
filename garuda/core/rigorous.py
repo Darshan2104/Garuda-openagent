@@ -7,6 +7,7 @@ import logging
 from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
+from garuda.core.modes import apply_mode_preset, is_rigorous
 from garuda.core.permissions import PermissionEngine
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model.protocol import Model
@@ -22,9 +23,9 @@ logger = logging.getLogger(__name__)
 MAX_REPAIR_ROUNDS = 2
 
 
-def create_agent(profile_name: str, mode: str = "standard") -> DefaultAgent | RigorousAgent:
-    """Return the agent implementation for a profile mode."""
-    if mode == "rigorous":
+def create_agent(profile_name: str, mode: str | None = None) -> DefaultAgent | RigorousAgent:
+    """Return the agent implementation for a run mode."""
+    if is_rigorous(mode):
         return RigorousAgent(profile_name=profile_name)
     return DefaultAgent(profile_name=profile_name)
 
@@ -78,7 +79,7 @@ class RigorousAgent:
         context=None,
         checkpoint=None,
     ) -> AgentResult:
-        config = config or AgentConfig(mode="rigorous")
+        config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
         events.append(EventType.SESSION_START, {"task": task, "mode": "rigorous", "model": model.model_name})
@@ -116,10 +117,12 @@ class RigorousAgent:
 
         for attempt in range(MAX_REPAIR_ROUNDS + 1):
             build_agent = DefaultAgent(profile_name=self._profile_name)
-            # When a context is reused across repair rounds, run() won't re-seed the
-            # task, so the critic feedback (folded into current_task) must be appended
-            # explicitly or the retry re-sees only the history it already "finished".
-            if context is not None and attempt > 0:
+            # run() only seeds the task when it creates the context itself, so with a
+            # threaded-in context (resume / multi-turn chat / SDK) every round must
+            # append its effective task explicitly. Round 0 carries the approved plan
+            # and later rounds carry the critic feedback — skipping either leaves the
+            # executor working from history alone, blind to the plan it just paid for.
+            if context is not None:
                 context.append(Message(role=Role.USER, content=current_task))
             exec_result = await build_agent.run(
                 task=current_task,

@@ -106,7 +106,12 @@ async def test_task_complete_verification(tmp_path):
         model=model,
         env=env,
         tools=tools_for_names(["task_complete", "bash"]),
-        config=AgentConfig(max_turns=3, enable_verifier=True),
+        config=AgentConfig(
+            max_turns=3,
+            enable_verifier=True,
+            enable_llm_verifier=False,
+            enable_acceptance_contract=False,
+        ),
     )
     assert result.success
 

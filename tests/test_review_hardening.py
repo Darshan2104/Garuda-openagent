@@ -3,12 +3,14 @@ subagent permission/hook threading, streaming usage, truncation surfacing."""
 
 from pathlib import Path
 
-import pytest
-
 import garuda.mcp.client as mcp_client
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
-from garuda.core.verifier import CompletionVerifier, VerificationResult, has_numeric_contradiction
+from garuda.core.verifier import (
+    CompletionVerifier,
+    VerificationResult,
+    has_numeric_contradiction,
+)
 from garuda.mcp.client import McpRemoteTool
 from garuda.model.protocol import ModelResponse, StreamDelta
 from garuda.model.script_model import ScriptModel
@@ -93,7 +95,7 @@ async def test_verifier_rejects_when_model_unreachable(tmp_path: Path):
     env = LocalEnvironment(workspace_root=tmp_path)
     result = await CompletionVerifier().verify_with_commands(
         task="t", summary="A sufficiently detailed completion summary of the work.",
-        verification_commands=[], env=env, config=AgentConfig(), model=_RaisingModel(),
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=_RaisingModel(),
     )
     assert not result.approved
     assert "could not be reached" in (result.feedback or "")
@@ -104,7 +106,7 @@ async def test_verifier_rejects_unparseable_verdict(tmp_path: Path):
     model = ScriptModel(responses=[ModelResponse(content="Hmm, seems fine to me?", tool_calls=[])])
     result = await CompletionVerifier().verify_with_commands(
         task="t", summary="A sufficiently detailed completion summary of the work.",
-        verification_commands=[], env=env, config=AgentConfig(), model=model,
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=model,
     )
     assert not result.approved
     assert "unclear" in (result.feedback or "")
@@ -115,7 +117,7 @@ async def test_verifier_parses_bolded_rejection(tmp_path: Path):
     model = ScriptModel(responses=[ModelResponse(content="**REJECTED**: tests still fail", tool_calls=[])])
     result = await CompletionVerifier().verify_with_commands(
         task="t", summary="A sufficiently detailed completion summary of the work.",
-        verification_commands=[], env=env, config=AgentConfig(), model=model,
+        verification_commands=["test -d ."], env=env, config=AgentConfig(), model=model,
     )
     assert not result.approved
 

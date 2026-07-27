@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same ref makes the in-flight run redundant.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        # bubblewrap = the Linux sandbox backend; tmux backs the tmux_exec /
+        # tmux_capture tools (those tests skip when it is absent). ripgrep ships on
+        # GitHub runners, so grep's rg path is covered, not only its grep -E fallback.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap tmux
+          else
+            brew install tmux
+          fi
+
+      - name: Install package and extras
+        run: pip install -e ".[dev,eval,docs,tui,observability]"
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  live-sandbox:
+    # Deliberately NOT a required gate. Live Seatbelt/bwrap confinement behaves
+    # differently across OS image versions, which is why these tests are opt-in
+    # (see commit 029fa77). Running them here keeps the coverage visible without
+    # letting an image upgrade break every PR.
+    name: live sandbox (${{ matrix.os }}, non-blocking)
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap tmux
+          else
+            brew install tmux
+          fi
+
+      - name: Install package and extras
+        run: pip install -e ".[dev,eval,docs,tui,observability]"
+
+      - name: Test with real OS sandbox confinement
+        env:
+          GARUDA_LIVE_SANDBOX: "1"
+        run: pytest -q

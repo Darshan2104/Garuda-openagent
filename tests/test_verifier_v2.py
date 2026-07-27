@@ -55,7 +55,7 @@ async def test_llm_verdict_approves(tmp_path):
     result = await verifier.verify_with_commands(
         task="do the thing",
         summary=GOOD_SUMMARY,
-        verification_commands=[],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(enable_verifier=True),
         model=model,
@@ -63,12 +63,15 @@ async def test_llm_verdict_approves(tmp_path):
     )
     assert result.approved
     assert result.checklist.get("llm_verdict") is True
-    # The verdict prompt should include the task, summary, checklist, and tool call names.
+    # The verdict prompt should include the task, summary, checklist, tool call
+    # names, and the observed output of the commands that were actually run.
     prompt = model.calls[0][-1].content
     assert "do the thing" in prompt
     assert GOOD_SUMMARY in prompt
-    assert "requirements met" in prompt
+    assert "## Checklist" in prompt
     assert "tool calls: bash" in prompt
+    assert "Verification commands actually executed" in prompt
+    assert "test -d ." in prompt
 
 
 async def test_llm_verdict_rejects_with_feedback(tmp_path):
@@ -78,7 +81,7 @@ async def test_llm_verdict_rejects_with_feedback(tmp_path):
     result = await verifier.verify_with_commands(
         task="do the thing",
         summary=GOOD_SUMMARY,
-        verification_commands=[],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(enable_verifier=True),
         model=model,
@@ -98,7 +101,7 @@ async def test_llm_verdict_parse_noise_rejects_fail_closed(tmp_path, caplog):
         result = await verifier.verify_with_commands(
             task="do the thing",
             summary=GOOD_SUMMARY,
-            verification_commands=[],
+            verification_commands=["test -d ."],
             env=env,
             config=AgentConfig(enable_verifier=True),
             model=model,
@@ -115,7 +118,7 @@ async def test_llm_verdict_model_error_rejects_fail_closed(tmp_path):
     result = await verifier.verify_with_commands(
         task="do the thing",
         summary=GOOD_SUMMARY,
-        verification_commands=[],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(enable_verifier=True),
         model=ExplodingModel(),
@@ -134,7 +137,7 @@ async def test_non_llm_checks_still_run_before_llm(tmp_path):
     result = await verifier.verify_with_commands(
         task="do the thing",
         summary="done",
-        verification_commands=[],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(enable_verifier=True),
         model=model,
@@ -149,7 +152,7 @@ async def test_backward_compatible_without_model(tmp_path):
     result = await verifier.verify_with_commands(
         task="t",
         summary=GOOD_SUMMARY,
-        verification_commands=["true"],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(enable_verifier=True),
     )

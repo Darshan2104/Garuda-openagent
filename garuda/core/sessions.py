@@ -10,12 +10,46 @@ override with ``GARUDA_SESSIONS_DIR``):
 """
 
 import json
+import logging
 import os
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from garuda.types import AgentResult, Message, Role, ToolCall
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl
+    fcntl = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+# A session ref must be a single path component: no separators, no traversal, no
+# absolute paths. Refs reach this module from untrusted callers (the `resume`
+# JSON-RPC param is client-controlled), and every on-disk path is derived by
+# joining the ref onto the store root — so an unvalidated `../../x` would read
+# arbitrary `messages.json` files straight into the model context.
+_SESSION_REF_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def validate_session_ref(session_ref: str) -> str:
+    """Return ``session_ref`` if it is a safe single path component, else raise.
+
+    Rejects separators, ``..``/``.``, null bytes, and anything outside
+    ``[A-Za-z0-9._-]`` so a ref can never escape the sessions root.
+    """
+    if not isinstance(session_ref, str) or not session_ref:
+        raise ValueError("Session id must be a non-empty string.")
+    if session_ref in (".", "..") or not _SESSION_REF_RE.match(session_ref):
+        raise ValueError(
+            f"Invalid session id {session_ref!r}: expected a bare id "
+            "(letters, digits, '.', '-', '_' only — no path separators)."
+        )
+    return session_ref
 
 
 def default_sessions_root() -> Path:
@@ -28,10 +62,75 @@ def default_sessions_root() -> Path:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Write via a temp file + os.replace so a crash mid-write can't corrupt the target."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    """Write via a temp file + os.replace so a crash mid-write can't corrupt the target.
+
+    The temp name carries the pid: a shared ``.tmp`` name means two concurrent
+    writers scribble over each other's staging file and one publishes the other's
+    half-written bytes, which is exactly the corruption os.replace is here to
+    prevent.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+@contextmanager
+def _meta_lock(meta_path: Path) -> Iterator[None]:
+    """Serialize read-modify-write cycles on ``meta_path`` across processes.
+
+    The lock lives on a sidecar ``meta.json.lock`` rather than on meta.json
+    itself, because publishing goes through ``os.replace`` — locking the target
+    would leave each writer holding a lock on an inode the next replace detaches,
+    which serializes nothing.
+
+    Best-effort by design: on a platform without ``fcntl``, or a filesystem where
+    locking fails, the cycle proceeds unlocked. A lost meta update degrades the
+    session index; refusing to record the run at all would be worse.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = meta_path.with_name(meta_path.name + ".lock")
+    handle = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if handle is not None:
+            handle.close()
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+def merge_meta(meta_path: Path, updates: dict) -> None:
+    """Merge ``updates`` into the meta document under an exclusive lock.
+
+    The single chokepoint for every meta read-modify-write. Two writers used to
+    read, mutate and publish independently, so whichever replaced last silently
+    dropped the other's fields — a finished run could lose its usage totals to a
+    concurrent provenance patch.
+    """
+    with _meta_lock(meta_path):
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                # An already-corrupt meta.json shouldn't take the run down with
+                # it; rebuild from the updates rather than propagating.
+                logger.warning("Overwriting unparseable meta at %s", meta_path)
+                meta = {}
+        meta.update(updates)
+        meta.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+        _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
 
 
 def message_to_dict(message: Message) -> dict:
@@ -97,7 +196,9 @@ class SessionStore:
         self.root = Path(root) if root else default_sessions_root()
 
     def session_dir(self, session_id: str) -> Path:
-        return self.root / session_id
+        # Validated here because this is the single chokepoint every on-disk path
+        # (meta, messages, events) is derived from.
+        return self.root / validate_session_ref(session_id)
 
     def events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
@@ -125,9 +226,9 @@ class SessionStore:
             created_at=now,
             updated_at=now,
         )
-        (directory / "meta.json").write_text(
-            json.dumps(meta.to_dict(), indent=2), encoding="utf-8"
-        )
+        # Locked + atomic like every other meta write: a plain write_text here let a
+        # concurrent list_sessions read a half-created document.
+        merge_meta(directory / "meta.json", meta.to_dict())
         return self.events_path(session_id)
 
     def checkpoint_messages(self, session_id: str, messages: list[Message]) -> None:
@@ -152,9 +253,8 @@ class SessionStore:
             directory / "messages.json",
             json.dumps([message_to_dict(m) for m in result.messages], indent=2, default=str),
         )
-        meta_path = directory / "meta.json"
-        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-        meta.update(
+        self.update_meta(
+            session_id,
             {
                 "session_id": session_id,
                 "status": "success" if result.success else "failed",
@@ -162,9 +262,12 @@ class SessionStore:
                 "turns": result.turns,
                 "final_message": result.final_message[:2000],
                 "usage": result.metadata.get("usage", {}),
-            }
+            },
         )
-        _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
+
+    def update_meta(self, session_id: str, updates: dict) -> None:
+        """Merge fields into this session's meta under an exclusive lock."""
+        merge_meta(self.session_dir(session_id) / "meta.json", updates)
 
     def load_messages(self, session_id: str) -> list[Message]:
         path = self.session_dir(session_id) / "messages.json"
@@ -193,12 +296,17 @@ class SessionStore:
         return metas[:limit]
 
     def resolve(self, session_ref: str) -> str:
-        """Resolve 'latest' or a unique session-id prefix to a full session id."""
+        """Resolve 'latest' or a unique session-id prefix to a full session id.
+
+        Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
+        from remote clients via the server's ``resume`` param.
+        """
         if session_ref == "latest":
             sessions = self.list_sessions(limit=1)
             if not sessions:
                 raise FileNotFoundError("No saved sessions to resume.")
             return sessions[0]["session_id"]
+        validate_session_ref(session_ref)
         if self.session_dir(session_ref).is_dir():
             return session_ref
         if self.root.exists():

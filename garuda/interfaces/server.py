@@ -23,9 +23,26 @@ UNAUTHORIZED_CODE = -32001
 PARSE_ERROR_CODE = -32700
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
+
+def _write_simple(writer: "asyncio.StreamWriter", status: bytes, message: str) -> None:
+    """Write a minimal JSON error response for requests rejected before dispatch."""
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": None, "error": {"code": PARSE_ERROR_CODE, "message": message}}
+    ).encode("utf-8")
+    writer.write(
+        status
+        + b"\r\nContent-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+        + body
+    )
+
 # Drop a client that hasn't sent a complete request within this many seconds
 # (slow-loris protection).
 REQUEST_READ_TIMEOUT = 30.0
+# Ceiling on a request body. Generous for JSON-RPC (the largest realistic payload is
+# a file write), and small enough that a declared Content-Length cannot be used to
+# exhaust memory before the request is even authenticated.
+MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 
 
 @dataclass
@@ -357,7 +374,32 @@ class JsonRpcServer:
                     headers[key.decode("utf-8", "replace").strip().lower()] = value.decode(
                         "utf-8", "replace"
                     ).strip()
-            length = int(headers.get("content-length", 0) or 0)
+            # A client-declared Content-Length is untrusted input. Without a ceiling,
+            # `Content-Length: 5000000000` has the server allocating toward 5 GB
+            # before any auth check runs; a non-numeric value used to raise straight
+            # out of the handler.
+            try:
+                length = int(headers.get("content-length", 0) or 0)
+            except ValueError:
+                _write_simple(writer, b"HTTP/1.1 400 Bad Request", "Invalid Content-Length")
+                await writer.drain()
+                return
+            if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+                _write_simple(
+                    writer,
+                    b"HTTP/1.1 413 Payload Too Large",
+                    f"Request body exceeds {MAX_REQUEST_BODY_BYTES} bytes",
+                )
+                await writer.drain()
+                return
+            if len(body_bytes) > MAX_REQUEST_BODY_BYTES:
+                _write_simple(
+                    writer,
+                    b"HTTP/1.1 413 Payload Too Large",
+                    f"Request body exceeds {MAX_REQUEST_BODY_BYTES} bytes",
+                )
+                await writer.drain()
+                return
             if length and len(body_bytes) < length:
                 try:
                     body_bytes += await asyncio.wait_for(

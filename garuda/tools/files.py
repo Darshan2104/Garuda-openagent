@@ -87,7 +87,13 @@ class ReadFileTool:
 
 class WriteFileTool:
     name = "write_file"
-    description = "Write content to a file in the workspace."
+    description = (
+        "Write content to a file in the workspace, replacing it entirely. "
+        "Use this for new files, or when replacing a whole small file. "
+        "To change part of an existing file use edit (or multi_edit for several "
+        "changes at once): a full rewrite costs tokens in proportion to the file's "
+        "size and silently drops anything you omit."
+    )
     parameters = {
         "type": "object",
         "properties": {

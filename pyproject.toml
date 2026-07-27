@@ -53,3 +53,16 @@ garuda = ["agents/defaults/*.yaml", "agents/defaults/*.md", "config/defaults/*.y
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+# Matches the code as written; E501 is deliberately NOT enabled (reflowing ~770
+# existing lines would bury real findings in whitespace churn).
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# ruff's default set (E4/E7/E9 + F) plus:
+#   I — import sorting, so import order stops drifting per-commit
+#   B — flake8-bugbear, which catches real defects (e.g. an unstrict zip() that
+#       would silently misalign parallel tool results with their tool_call_ids)
+select = ["E4", "E7", "E9", "F", "I", "B"]

@@ -45,7 +45,7 @@ async def test_hook_blocks_tool(tmp_path):
         model=model,
         env=env,
         tools=tools_for_names(["bash", "task_complete"]),
-        config=AgentConfig(max_turns=5, enable_verifier=True),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
         hooks=hooks,
     )
     assert result.success
@@ -86,7 +86,7 @@ async def test_hook_modifies_result(tmp_path):
         model=model,
         env=env,
         tools=tools_for_names(["write_file", "task_complete"]),
-        config=AgentConfig(max_turns=5, enable_verifier=True),
+        config=AgentConfig(max_turns=5, enable_verifier=False),
         hooks=hooks,
     )
     assert result.success
@@ -145,7 +145,6 @@ async def test_invoke_subagent_tool(tmp_path):
     )
 
     from garuda.core.events import EventStore
-    from garuda.core.permissions import PermissionEngine
 
     events = EventStore()
     runner = SubagentRunner(
@@ -159,7 +158,7 @@ async def test_invoke_subagent_tool(tmp_path):
         model=parent_model,
         env=env,
         tools=tools_for_names(["invoke_subagent", "task_complete"]),
-        config=AgentConfig(max_turns=8, enable_verifier=True),
+        config=AgentConfig(max_turns=8, enable_verifier=False),
         events=events,
         subagent_runner=runner,
     )

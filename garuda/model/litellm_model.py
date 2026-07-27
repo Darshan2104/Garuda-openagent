@@ -182,7 +182,9 @@ def _stream_deltas_from_chunk(chunk) -> list[StreamDelta]:
         deltas.append(
             StreamDelta(
                 tool_call_delta={
-                    "index": getattr(tc, "index", 0) or 0,
+                    # Preserve a missing index as None rather than coercing to 0 —
+                    # coercion is what merged every index-less call into one slot.
+                    "index": getattr(tc, "index", None),
                     "id": getattr(tc, "id", None),
                     "name": getattr(fn, "name", None) if fn is not None else None,
                     "arguments": getattr(fn, "arguments", None) if fn is not None else None,
@@ -192,10 +194,42 @@ def _stream_deltas_from_chunk(chunk) -> list[StreamDelta]:
     return deltas
 
 
-def _merge_tool_fragment(tool_frags: dict[int, dict], frag: dict) -> None:
-    """Fold a streamed tool-call fragment into per-index accumulators."""
-    index = frag.get("index", 0) or 0
-    slot = tool_frags.setdefault(index, {"id": None, "name": None, "arguments": ""})
+def _merge_tool_fragment(tool_frags: dict, frag: dict) -> None:
+    """Fold a streamed tool-call fragment into per-call accumulators.
+
+    ``index`` is the natural key, but not every provider sends one. Coercing a
+    missing index to 0 (as this did) merged *every* parallel tool call of the turn
+    into a single slot, so the model's second and third calls silently vanished
+    and their arguments were concatenated onto the first.
+    """
+    index = frag.get("index")
+    if index is not None:
+        key: object = index
+    elif frag.get("id"):
+        # No index: the id identifies the call.
+        key = f"id:{frag['id']}"
+    elif tool_frags:
+        # Neither index nor id: a bare argument fragment continuing the open call.
+        key = next(reversed(tool_frags))
+    else:
+        key = 0
+    slot = tool_frags.setdefault(key, {"id": None, "name": None, "arguments": ""})
+    _merge_slot(slot, frag)
+
+
+def _ordered_slots(tool_frags: dict) -> list[dict]:
+    """Accumulated calls in provider order.
+
+    Sorting is only meaningful when every key is an index; a mixed int/str key set
+    (some providers send an index, some only an id) would raise on comparison, so
+    fall back to insertion order — which is the arrival order anyway.
+    """
+    if tool_frags and all(isinstance(key, int) for key in tool_frags):
+        return [slot for _, slot in sorted(tool_frags.items())]
+    return list(tool_frags.values())
+
+
+def _merge_slot(slot: dict, frag: dict) -> None:
     if frag.get("id"):
         slot["id"] = frag["id"]
     if frag.get("name"):
@@ -204,8 +238,24 @@ def _merge_tool_fragment(tool_frags: dict[int, dict], frag: dict) -> None:
         slot["arguments"] += frag["arguments"]
 
 
-def _extract_usage(response) -> dict[str, int]:
-    usage: dict[str, int] = {}
+def _provider_cost(response, raw_usage) -> float | None:
+    """The cost the provider billed for this call, when it says so.
+
+    Worth reaching for: a public pricing table can be stale or simply wrong for
+    a given model, and a confidently wrong cost is worse than none. OpenRouter
+    reports `usage.cost`; others expose it through litellm's hidden params.
+    """
+    for candidate in (
+        getattr(raw_usage, "cost", None),
+        (getattr(response, "_hidden_params", None) or {}).get("response_cost"),
+    ):
+        if isinstance(candidate, (int, float)) and candidate >= 0:
+            return float(candidate)
+    return None
+
+
+def _extract_usage(response) -> dict[str, float]:
+    usage: dict[str, float] = {}
     if not getattr(response, "usage", None):
         return usage
     raw = response.usage
@@ -221,6 +271,9 @@ def _extract_usage(response) -> dict[str, int]:
     cache_creation = getattr(raw, "cache_creation_input_tokens", None)
     if cache_creation:
         usage["cache_creation_tokens"] = cache_creation
+    cost = _provider_cost(response, raw)
+    if cost is not None:
+        usage["cost_usd"] = cost
     return usage
 
 
@@ -345,8 +398,23 @@ class LitellmModel:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        self._apply_usage_accounting(kwargs)
         self._apply_reasoning(kwargs)
         return kwargs
+
+    def _apply_usage_accounting(self, kwargs: dict) -> None:
+        """Ask OpenRouter to return what the call actually cost.
+
+        Opt-in per request, and free: it adds a `cost` field to the usage block.
+        Having the real figure removes any dependence on a public pricing table
+        being right about this model — including the cache-read rate, which is
+        where estimates go furthest wrong on a cache-heavy agentic run.
+        """
+        if not self._model_name.startswith("openrouter/"):
+            return
+        extra_body = kwargs.setdefault("extra_body", {})
+        if isinstance(extra_body, dict):
+            extra_body.setdefault("usage", {"include": True})
 
     def _apply_reasoning(self, kwargs: dict) -> None:
         """Attach extended-thinking params. ``drop_params`` lets litellm silently
@@ -477,7 +545,7 @@ class LitellmModel:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         thinking_blocks: list[dict] | None = None
-        tool_frags: dict[int, dict] = {}
+        tool_frags: dict = {}
         usage: dict[str, int] = {}
         try:
             async for delta in self.stream(messages, tools, temperature, max_tokens):
@@ -509,7 +577,7 @@ class LitellmModel:
                 "id": slot["id"] or str(uuid.uuid4()),
                 "function": {"name": slot["name"] or "", "arguments": slot["arguments"] or "{}"},
             }
-            for _, slot in sorted(tool_frags.items())
+            for slot in _ordered_slots(tool_frags)
         ]
         return ModelResponse(
             content=content,
@@ -527,5 +595,21 @@ class LitellmModel:
                 messages=[_message_to_litellm(m) for m in messages],
             )
         except Exception:
-            text = "\n".join(m.content or "" for m in messages)
-            return len(text) // 4
+            # Content alone undercounts badly: tool-call arguments are often the
+            # largest part of a turn (a full-file write_file, a long bash command),
+            # and this estimate gates compaction. Undercounting here means the
+            # window overflows instead of compacting.
+            parts: list[str] = []
+            for message in messages:
+                if message.content:
+                    parts.append(message.content)
+                for call in getattr(message, "tool_calls", None) or []:
+                    parts.append(getattr(call, "name", "") or "")
+                    arguments = getattr(call, "arguments", None)
+                    if arguments is not None:
+                        parts.append(
+                            arguments if isinstance(arguments, str) else json.dumps(
+                                arguments, default=str
+                            )
+                        )
+            return sum(len(p) for p in parts) // 4

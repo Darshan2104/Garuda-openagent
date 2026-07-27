@@ -15,12 +15,13 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.contract import ContractTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
 from garuda.tools.goal import UpdateGoalTool
-from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.image_read import ImageReadTool
+from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.protocol import Tool
 from garuda.tools.registry import (
     ToolRegistry,
@@ -73,6 +74,7 @@ __all__ = [
     "ReadFileTool",
     "ReadPdfTool",
     "ReadSpreadsheetTool",
+    "ContractTool",
     "TaskCompleteTool",
     "TmuxCaptureTool",
     "TmuxExecTool",
@@ -106,6 +108,7 @@ def _bootstrap_registry() -> None:
         LsTool(),
         TodoTool(),
         UpdateGoalTool(),
+        ContractTool(),
         WebFetchTool(),
         WebSearchTool(),
         TaskCompleteTool(),
@@ -142,6 +145,7 @@ def default_tools() -> list[Tool]:
             "ls",
             "todo",
             "update_goal",
+            "contract",
             "web_fetch",
             "web_search",
             "buffer_grep",

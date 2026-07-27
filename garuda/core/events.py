@@ -22,6 +22,10 @@ class EventType(str, Enum):
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     ENVIRONMENT_SNAPSHOT = "environment_snapshot"
+    ENVIRONMENT_UNAVAILABLE = "environment_unavailable"
+    BUDGET = "budget"
+    SIDE_EFFECTS = "side_effects"
+    CONTRACT = "contract"
 
 
 class EventStore:

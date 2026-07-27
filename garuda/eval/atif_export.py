@@ -59,6 +59,10 @@ def events_to_atif(
 
     # Accumulate per-step token usage into a lossless total.
     usage_totals: dict[str, int] = {}
+    # Per-step costs, summed rather than re-derived from the totals: a step may
+    # carry the provider's own figure, which no re-derivation can improve on.
+    step_cost_total = 0.0
+    priced_steps = 0
 
     steps: list[dict[str, Any]] = []
     step_id = 1
@@ -107,6 +111,8 @@ def events_to_atif(
                 step_cost = estimate_cost(model_name, usage)
                 if step_cost is not None:
                     step_metrics["cost_usd"] = step_cost
+                    step_cost_total += step_cost
+                    priced_steps += 1
                 if step_metrics:
                     current_agent_step["metrics"] = step_metrics
             steps.append(current_agent_step)
@@ -169,12 +175,19 @@ def events_to_atif(
     if usage_totals.get("cache_read_tokens"):
         final_metrics["total_cached_tokens"] = usage_totals["cache_read_tokens"]
 
+    if cost_usd is None and priced_steps:
+        cost_usd = round(step_cost_total, 8)
     if cost_usd is None:
+        # No per-step usage to sum (e.g. a streamed run that only reported
+        # aggregates). Price the totals — cache-aware, so the discounted reads
+        # are not charged at the fresh-input rate.
         cost_usd = estimate_cost(
             model_name,
             {
                 "prompt_tokens": total_prompt or 0,
                 "completion_tokens": total_completion or 0,
+                "cache_read_tokens": usage_totals.get("cache_read_tokens", 0),
+                "cache_creation_tokens": usage_totals.get("cache_creation_tokens", 0),
             },
         )
     if cost_usd is not None:

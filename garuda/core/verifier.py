@@ -5,7 +5,9 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from garuda.core import evidence
 from garuda.types import AgentConfig, Message, Role
+from garuda.workspace.health import EnvironmentUnavailableError
 from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
@@ -173,6 +175,86 @@ class VerificationResult:
     approved: bool
     checklist: dict[str, bool] = field(default_factory=dict)
     feedback: str | None = None
+    # Observed output of each verification command, so the judge reasons about
+    # what the workspace actually printed rather than the agent's account of it.
+    evidence: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class CompletionGateState:
+    """Verdict history for one run, so a rejection constrains the next attempt.
+
+    Without this each ``task_complete`` is judged in isolation, and the cheapest
+    way past a rejection is to resubmit with the failing check removed.
+    """
+
+    rejections: int = 0
+    approvals: int = 0
+    rejected_command_sets: list[frozenset[str]] = field(default_factory=list)
+    last_feedback: str | None = None
+    # Consecutive contract rejections naming the exact same outstanding criteria.
+    # A gate that keeps returning an identical demand the agent cannot satisfy is
+    # not steering it, and the run has no way out but the turn cap.
+    contract_reject_streak: int = 0
+    last_outstanding: frozenset[str] | None = None
+    # Set once the gate has given up on the contract. Latched, so the run reports
+    # the stall a single time instead of on every later attempt.
+    contract_yielded: bool = False
+
+    def record_rejection(self, commands: list[str], feedback: str | None) -> None:
+        self.rejections += 1
+        self.rejected_command_sets.append(frozenset(commands))
+        self.last_feedback = feedback
+
+    def note_contract_rejection(self, criterion_ids: list[str]) -> int:
+        """Count consecutive rejections demanding the identical criteria.
+
+        Returns the streak length. Any change in the outstanding set means the
+        agent is making progress, so the count restarts.
+        """
+        current = frozenset(criterion_ids)
+        if self.last_outstanding is not None and current == self.last_outstanding:
+            self.contract_reject_streak += 1
+        else:
+            self.contract_reject_streak = 1
+            self.last_outstanding = current
+        return self.contract_reject_streak
+
+    def weaker_than_rejected(self, commands: list[str]) -> bool:
+        """True if this attempt offers nothing the rejected attempts did not.
+
+        Equal or narrower evidence after a rejection means the agent resubmitted
+        instead of responding to the feedback.
+        """
+        if not self.rejections:
+            return False
+        candidate = frozenset(commands)
+        return any(candidate <= previous for previous in self.rejected_command_sets)
+
+
+RESUBMIT_FEEDBACK = (
+    "Completion rejected: this is attempt {attempt} and it presents no new evidence.\n"
+    "The previous attempt was rejected for this reason:\n{prior}\n\n"
+    "Resubmitting the same (or fewer) verification commands cannot change the outcome. "
+    "Before calling task_complete again, actually fix the gap and supply at least one "
+    "verification command that was not in the rejected attempt."
+)
+
+WEAK_EVIDENCE_FEEDBACK = (
+    "Completion rejected: none of your verification commands can fail if the work is wrong.\n"
+    "{breakdown}\n"
+    "A command counts as evidence only when a wrong result would make it exit non-zero. "
+    "Run the deliverable and assert on what it produces — for example execute the program "
+    "and check its output (`... | grep -q EXPECTED`), diff against expected content "
+    "(`diff -u expected.txt actual.txt`), or run the project's own test command. "
+    "Then call task_complete again with that command included."
+)
+
+NO_EVIDENCE_FEEDBACK = (
+    "Completion rejected: task_complete was called with no verification_commands.\n"
+    "State how the result was checked by supplying at least one command that executes the "
+    "deliverable and exits non-zero if the result is wrong."
+)
 
 
 class CompletionVerifier:
@@ -187,6 +269,7 @@ class CompletionVerifier:
         model: "Model | None" = None,
         messages: list[Message] | None = None,
         answer_rationale: str | None = None,
+        gate: CompletionGateState | None = None,
     ) -> VerificationResult:
         if not config.enable_verifier:
             return VerificationResult(approved=True, checklist={"disabled": True})
@@ -209,6 +292,45 @@ class CompletionVerifier:
                 feedback="Completion rejected: summary is too short. Explain what was done and how it was verified.",
             )
 
+        # A resubmission that drops the check it just failed is the cheapest way
+        # past the gate, so it is refused before anything is executed.
+        if gate is not None and gate.weaker_than_rejected(verification_commands):
+            checklist["new_evidence"] = False
+            return VerificationResult(
+                approved=False,
+                checklist=checklist,
+                feedback=RESUBMIT_FEEDBACK.format(
+                    attempt=gate.rejections + 1,
+                    prior=(gate.last_feedback or "(no feedback recorded)")[:800],
+                ),
+            )
+
+        # Evidence screen. Commands that cannot fail are not evidence, so a
+        # completion resting entirely on them is rejected before it is trusted.
+        # Skipped when an authoritative domain grader is configured: that grader
+        # *is* the oracle, and demanding the agent supply its own on top would
+        # reject work an external check has already judged.
+        has_external_grader = callable(getattr(config, "answer_check", None))
+        if config.require_discriminating_evidence and not has_external_grader:
+            if not verification_commands:
+                checklist["evidence_present"] = False
+                return VerificationResult(
+                    approved=False, checklist=checklist, feedback=NO_EVIDENCE_FEEDBACK
+                )
+            screen = evidence.summarize(verification_commands)
+            checklist["evidence_discriminating"] = bool(screen["n_discriminating"])
+            if not screen["n_discriminating"]:
+                breakdown = "\n".join(
+                    f"  - `{command}` — {evidence.weakness_reason(command)}"
+                    for command in verification_commands
+                )
+                return VerificationResult(
+                    approved=False,
+                    checklist=checklist,
+                    feedback=WEAK_EVIDENCE_FEEDBACK.format(breakdown=breakdown),
+                )
+
+        observed: list[dict] = []
         for index, command in enumerate(verification_commands):
             if permissions is not None:
                 allowed, denial_reason = await permissions.evaluate_tool_call(
@@ -219,6 +341,7 @@ class CompletionVerifier:
                     return VerificationResult(
                         approved=False,
                         checklist=checklist,
+                        evidence=observed,
                         feedback=(
                             f"Verification command denied by permission policy: {command}"
                             + (f" ({denial_reason})" if denial_reason else "")
@@ -226,11 +349,16 @@ class CompletionVerifier:
                     )
             try:
                 result = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
+            except EnvironmentUnavailableError:
+                # The workspace is gone; the loop aborts the run. Never convert
+                # this into a completion verdict of any kind.
+                raise
             except Exception as exc:
                 checklist[f"verify_cmd_{index}"] = False
                 return VerificationResult(
                     approved=False,
                     checklist=checklist,
+                    evidence=observed,
                     feedback=(
                         f"Verification command could not be run ({type(exc).__name__}: {exc}): "
                         f"{command}. Provide a command that completes within "
@@ -239,13 +367,44 @@ class CompletionVerifier:
                 )
             key = f"verify_cmd_{index}"
             checklist[key] = result.exit_code == 0
+            observed.append(
+                {
+                    "command": command,
+                    "class": evidence.classify_command(command),
+                    "exit_code": result.exit_code,
+                    "stdout": (result.stdout or "")[:EVIDENCE_CONTENT_CHARS],
+                    "stderr": (result.stderr or "")[:EVIDENCE_CONTENT_CHARS],
+                }
+            )
             if result.exit_code != 0:
                 return VerificationResult(
                     approved=False,
                     checklist=checklist,
+                    evidence=observed,
                     feedback=(
                         f"Verification command failed (exit {result.exit_code}): {command}\n"
                         f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                    ),
+                )
+
+        # Stability: the same checks run twice in a row must agree. A result
+        # that holds once and not twice is not a result — it depends on state
+        # the first run consumed or created.
+        if config.require_stable_verification:
+            unstable = await self._recheck_stability(observed, env)
+            checklist["verification_stable"] = unstable is None
+            if unstable is not None:
+                command, first, second = unstable
+                return VerificationResult(
+                    approved=False,
+                    checklist=checklist,
+                    evidence=observed,
+                    feedback=(
+                        f"Completion rejected: verification is not repeatable. `{command}` exited "
+                        f"{first} on the first run and {second} when run again immediately after, "
+                        "so the result depends on state that one run consumes or creates. Make the "
+                        "work idempotent — running it twice from the same starting point must give "
+                        "the same outcome — then verify again."
                     ),
                 )
 
@@ -270,7 +429,7 @@ class CompletionVerifier:
                 return verdict
 
         if model is not None:
-            return await self._llm_verdict(
+            verdict = await self._llm_verdict(
                 task=task,
                 summary=summary,
                 env=env,
@@ -278,9 +437,39 @@ class CompletionVerifier:
                 messages=messages,
                 checklist=checklist,
                 answer_rationale=answer_rationale,
+                observed=observed,
             )
+            verdict.evidence = observed
+            return verdict
 
-        return VerificationResult(approved=True, checklist=checklist)
+        # No judge model wired. The deterministic gate above has already required
+        # discriminating evidence and seen it pass, so approving here rests on
+        # observed exit codes rather than on the agent's own account.
+        return VerificationResult(approved=True, checklist=checklist, evidence=observed)
+
+    async def _recheck_stability(
+        self, observed: list[dict], env: Environment
+    ) -> tuple[str, int, int] | None:
+        """Re-run the discriminating checks once; report the first that disagrees.
+
+        Only discriminating commands are repeated — re-running `cat` proves
+        nothing and costs time — and only their exit codes are compared, since
+        stdout legitimately varies (timings, ordering, temp paths).
+        """
+        for entry in observed:
+            if entry.get("class") not in (evidence.EXECUTION, evidence.ASSERTION):
+                continue
+            command = entry["command"]
+            try:
+                repeat = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
+            except EnvironmentUnavailableError:
+                raise
+            except Exception:
+                logger.warning("Stability re-check could not run: %s", command, exc_info=True)
+                continue
+            if repeat.exit_code != entry["exit_code"]:
+                return command, int(entry["exit_code"]), int(repeat.exit_code)
+        return None
 
     async def _llm_verdict(
         self,
@@ -291,6 +480,7 @@ class CompletionVerifier:
         messages: list[Message] | None,
         checklist: dict[str, bool],
         answer_rationale: str | None = None,
+        observed: list[dict] | None = None,
     ) -> VerificationResult:
         """One LLM call producing a structured APPROVED/REJECTED verdict.
 
@@ -307,6 +497,22 @@ class CompletionVerifier:
         ]
         if answer_rationale:
             prompt_parts.append(f"## Agent's rationale for the chosen answer\n{answer_rationale}")
+        if observed:
+            # The strongest evidence available: what the workspace printed when
+            # the agent's own checks were executed. Judged ahead of the summary,
+            # which is the agent's account of the same events.
+            rendered = []
+            for entry in observed:
+                rendered.append(
+                    f"$ {entry['command']}\n"
+                    f"[class: {entry['class']}, exit: {entry['exit_code']}]\n"
+                    f"stdout: {(entry['stdout'] or '(empty)').strip()}\n"
+                    f"stderr: {(entry['stderr'] or '(empty)').strip()}"
+                )
+            prompt_parts.append(
+                "## Verification commands actually executed (observed output)\n"
+                + "\n\n".join(rendered)
+            )
         if git_evidence:
             prompt_parts.append(f"## Git evidence from the workspace\n{git_evidence}")
         if conversation:
@@ -327,11 +533,16 @@ class CompletionVerifier:
         prompt_parts.append(
             "## Checklist\n"
             "Evaluate the completion against this checklist:\n"
-            "1. Are the task requirements met (correct answer / artifact present)?\n"
-            "2. Was the work actually verified (tests or commands run, results observed) — "
-            "not just asserted?\n"
+            "1. Does the observed command output actually demonstrate the task requirements "
+            "are met — every requested file, name, format and value from the task statement?\n"
+            "2. Was the work verified by evidence that could have failed, rather than by "
+            "commands that exit 0 regardless (listing a file, printing content, compiling)?\n"
             "3. Are units, scale, and magnitude plausible and internally consistent?\n"
-            "4. Any signs of premature completion (unfinished steps, unverified claims)?\n\n"
+            "4. Any signs of premature completion (unfinished steps, unverified claims, "
+            "requirements in the task that no command checked)?\n\n"
+            "Weigh the observed output above the agent's summary: the summary is a claim, "
+            "the output is what happened. If a requirement stated in the task has no "
+            "corresponding evidence, REJECT and name the requirement.\n\n"
             'Reply with a single JSON object and nothing else:\n'
             '{"verdict": "APPROVED" or "REJECTED", "reason": "<one concise sentence>"}'
         )

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from garuda.tools.protocol import ToolContext
-from garuda.tools.search import GrepTool, GlobTool
+from garuda.tools.search import GlobTool, GrepTool
 from garuda.workspace.local import LocalEnvironment
 
 

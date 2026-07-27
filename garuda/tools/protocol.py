@@ -25,6 +25,16 @@ class ToolContext:
     # the same permission screen the loop applies to a direct call. None disables the
     # check (callers that don't wire permissions get the pre-existing behavior).
     permissions: "PermissionEngine | None" = None
+    # time.monotonic() at which the run's wall-clock budget expires, so tools that
+    # block (bash) can bound themselves by what is actually left rather than by a
+    # fixed per-call default. None means no wall-clock budget.
+    deadline_monotonic: float | None = None
+    # Largest share of the remaining budget one command may take.
+    command_budget_fraction: float = 0.5
+    # Run-scoped record of workspace mutations, for pre-completion cleanup.
+    side_effects: Any = None
+    # Acceptance criteria derived from the task statement.
+    contract: Any = None
 
 
 @runtime_checkable

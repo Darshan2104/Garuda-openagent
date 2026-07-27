@@ -3,6 +3,10 @@ description: Fast read-only codebase exploration
 permission_mode: readonly
 mode: standard
 max_turns: 50
+# This agent reports findings; it does not change the workspace. Acceptance
+# criteria would cost a model call to derive and then gate the completion on
+# workspace evidence it is forbidden to produce.
+enable_acceptance_contract: false
 tools:
   - bash
   - read_file

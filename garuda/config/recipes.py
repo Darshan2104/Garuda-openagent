@@ -115,7 +115,7 @@ async def run_recipe(
     results: list[AgentResult] = []
     prior_context = ""
 
-    for index, step in enumerate(recipe.steps, start=1):
+    for step in recipe.steps:
         prompt = render_template(step.prompt, resolved)
         if prior_context:
             prompt = f"{prompt}\n\n## Prior step output\n{prior_context}"

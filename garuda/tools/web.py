@@ -4,6 +4,7 @@ Not registered in garuda.tools.__init__ yet; registration is wired separately.
 """
 
 import asyncio
+import http.client
 import ipaddress
 import json
 import logging
@@ -29,34 +30,192 @@ TOTAL_FETCH_DEADLINE = 45.0
 DEFAULT_MAX_BYTES = 100_000
 # Absolute cap so a huge max_bytes can't trigger a multi-hundred-MB read.
 MAX_FETCH_BYTES_CAP = 5_000_000
+# Redirect hops allowed before the fetch is abandoned. Each hop is re-vetted by
+# the SSRF guard; the cap stops a redirect loop from spinning the turn away.
+MAX_REDIRECTS = 5
 DEFAULT_MAX_RESULTS = 5
 MAX_SNIPPET_CHARS = 300
 
 
-def _ssrf_error(url: str) -> str | None:
-    """Block fetches that resolve to non-public addresses (cloud metadata,
-    localhost services, internal networks). Best-effort SSRF guard."""
-    host = urllib.parse.urlparse(url).hostname
-    if not host:
-        return "Invalid URL (missing host)."
+def _address_error(raw: str) -> str | None:
+    """Vet one resolved address. Returns a reason string if it must not be reached."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return None  # let the fetch surface a normal DNS error
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        # An address family we cannot parse is an address we cannot vet.
+        return "resolved to an unparseable address"
+    # IPv4 tunnelled through IPv6 (::ffff:169.254.169.254, 64:ff9b::/96) is
+    # public-looking as an IPv6 address but private once unwrapped.
+    candidates = [ip]
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        candidates.append(mapped)
+    sixtofour = getattr(ip, "sixtofour", None)
+    if sixtofour is not None:
+        candidates.append(sixtofour)
+    teredo = getattr(ip, "teredo", None)
+    if teredo:
+        candidates.extend(teredo)
+    for candidate in candidates:
         if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+            candidate.is_private or candidate.is_loopback or candidate.is_link_local
+            or candidate.is_reserved or candidate.is_multicast or candidate.is_unspecified
         ):
             return (
-                f"Refusing to fetch {url}: host resolves to a non-public address ({ip}). "
-                "web_fetch is restricted to public internet endpoints."
+                f"resolves to a non-public address ({candidate}); "
+                "web_fetch is restricted to public internet endpoints"
             )
     return None
+
+
+def _resolve_and_vet(host: str, port: int | None = None) -> tuple[str | None, str | None]:
+    """Resolve ``host`` once and vet **every** address it answers with.
+
+    Returns ``(error, pinned_ip)``. On success ``pinned_ip`` is the literal
+    address the caller must connect to — resolving again would reopen the
+    rebinding window this function exists to close.
+
+    Fails **closed**: a host that cannot be resolved is refused rather than
+    handed to ``urlopen``, because "could not resolve" and "resolved to
+    something we would have rejected" are not distinguishable after the fact.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port)
+    except socket.gaierror as exc:
+        return (f"host {host} could not be resolved ({exc})", None)
+    if not infos:
+        return (f"host {host} resolved to no addresses", None)
+    pinned: str | None = None
+    for info in infos:
+        raw = info[4][0]
+        error = _address_error(raw)
+        if error is not None:
+            return (f"host {host} {error}", None)
+        if pinned is None:
+            pinned = raw
+    return (None, pinned)
+
+
+def _ssrf_error(url: str) -> str | None:
+    """Pre-flight SSRF check: scheme plus a resolve-and-vet of the host.
+
+    This is the *early rejection* path — it produces a clear refusal before any
+    connection is attempted. It is not the authoritative check, because the
+    address it vetted is not the address a later ``urlopen`` would connect to.
+    Enforcement lives in :class:`_PinnedHTTPSConnection` / :class:`_PinnedHTTPConnection`,
+    which vet and connect against a single resolution.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"Refusing to fetch {url}: only http and https are allowed."
+    host = parsed.hostname
+    if not host:
+        return "Invalid URL (missing host)."
+    error, _ = _resolve_and_vet(host)
+    if error is not None:
+        return f"Refusing to fetch {url}: {error}."
+    return None
+
+
+class BlockedAddressError(OSError):
+    """Raised at connect time when a host resolves somewhere we refuse to reach.
+
+    Subclasses ``OSError`` so urllib wraps it in ``URLError`` and the reason
+    text reaches the model instead of a bare traceback.
+    """
+
+
+def _pinning_create_connection(address, *args, **kwargs):
+    """``socket.create_connection`` that vets the host and connects to that exact IP.
+
+    This is where the DNS-rebinding window closes. The guard used to resolve the
+    host and then hand the *hostname* to ``urlopen``, which resolved it a second
+    time — a short-TTL record could answer publicly for the check and
+    ``169.254.169.254`` for the connect. Here one resolution is both vetted and
+    dialled, so there is no second answer to substitute.
+    """
+    host, port = address[0], address[1]
+    error, pinned = _resolve_and_vet(host, port)
+    if error is not None or pinned is None:
+        raise BlockedAddressError(f"blocked connection: {error or 'host could not be vetted'}")
+    return socket.create_connection((pinned, port, *address[2:]), *args, **kwargs)
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection that dials a vetted, pinned IP.
+
+    ``self.host`` is deliberately left as the hostname: it supplies the ``Host``
+    header, so virtual hosting and the redirect chain keep working. Only the
+    socket target is substituted.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _pinning_create_connection
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS variant. ``self.host`` also drives SNI and certificate validation,
+    so pinning the socket target does not weaken TLS — the certificate is still
+    checked against the hostname the caller asked for."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _pinning_create_connection
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: D102
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):  # noqa: D102
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF guard on every redirect hop.
+
+    Validating only the URL the caller passed is no guard at all: an
+    attacker-controlled page need only answer ``302 Location:
+    http://169.254.169.254/…`` to have the *host-side* tool read cloud metadata
+    and return it into the model's context. urllib follows redirects by default,
+    so the check has to live here.
+
+    The pinned connection classes below would refuse the hop anyway; this runs
+    first so the refusal names the redirect rather than surfacing as a connect
+    error several frames deeper.
+    """
+
+    max_repeats = MAX_REDIRECTS
+    max_redirections = MAX_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        error = _ssrf_error(newurl)
+        if error is not None:
+            raise urllib.error.HTTPError(newurl, code, f"blocked redirect: {error}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    """An opener that re-vets every redirect target and pins every connect.
+
+    The pinned handlers are installed ahead of urllib's defaults so no request
+    can reach an unvetted socket.
+
+    Proxy handling is left at urllib's default. A proxy is operator
+    configuration, not something the model can choose, so it is not an SSRF
+    vector — and disabling it would break every deployment that requires one.
+    Note that when a proxy *is* configured urllib connects to the proxy rather
+    than the target host, so pinning applies to the proxy hostname; the proxy
+    itself becomes the trust boundary for the target.
+    """
+    return urllib.request.build_opener(
+        _PinnedHTTPHandler(),
+        _PinnedHTTPSHandler(),
+        _ValidatingRedirectHandler(),
+    )
 
 # Content types (besides text/*) we are willing to return as text.
 _TEXTUAL_TYPES = {
@@ -159,7 +318,7 @@ def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
         return (ssrf, "")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        with _build_opener().open(request, timeout=REQUEST_TIMEOUT) as response:
             content_type = response.headers.get_content_type()
             if not (content_type.startswith("text/") or content_type in _TEXTUAL_TYPES):
                 return (f"Unsupported content type '{content_type}' at {url} (not text).", "")
@@ -368,10 +527,15 @@ def _blocking_search(query: str, max_results: int) -> tuple[str | None, str]:
 
 
 def _fetch_raw(url: str) -> tuple[str | None, str]:
-    """Fetch a URL body as text without HTML extraction. Returns (error, body)."""
+    """Fetch a URL body as text without HTML extraction. Returns (error, body).
+
+    Search endpoints are ours, not the model's, but they still go through the
+    validating opener: a redirect from a search host to an internal address would
+    otherwise be followed unchecked.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        with _build_opener().open(request, timeout=REQUEST_TIMEOUT) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             raw = response.read(2_000_000)
     except urllib.error.HTTPError as exc:

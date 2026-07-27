@@ -1,0 +1,35 @@
+---
+description: GitHub identity for this repo — always use Darshan2104, not darshan-sentient
+alwaysApply: true
+---
+
+# Git identity (Garuda-openagent only)
+
+This repository belongs to **Darshan2104**. All git operations against GitHub must use that account.
+
+## SSH
+
+- **This repo**: remote `origin` uses `git@github-darshan2104:Darshan2104/Garuda-openagent.git` (key `~/.ssh/id_darshan2104`).
+- **All other repos**: use default `git@github.com` (key `~/.ssh/id_ed25519`, account `darshan-sentient`).
+
+## Commit author (repo-local only)
+
+- **name**: `Darshan Tank`
+- **email**: `61326242+Darshan2104@users.noreply.github.com`
+
+Never commit from this repo with `darshan@sentient.xyz` — that attributes work to the wrong GitHub account.
+
+## Do not
+
+- Change `origin` to `git@github.com:Darshan2104/...` — that authenticates as `darshan-sentient` and will be denied.
+- Run `git push` / `git fetch` for this repo without the `github-darshan2104` host alias.
+
+## Verify before push
+
+```bash
+git remote -v
+# origin  git@github-darshan2104:Darshan2104/Garuda-openagent.git
+
+ssh -T git@github-darshan2104
+# Hi Darshan2104!
+```

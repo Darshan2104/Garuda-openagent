@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
+from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
@@ -31,9 +32,13 @@ async def prepare_agent_run(
     profile = load_profile(agent_name, extra_dir=agents_dirs)
     config = profile.to_agent_config()
     # Only override the profile's own mode when a caller explicitly asked for one,
-    # so a `mode: rigorous` profile isn't silently downgraded to standard.
+    # so a `mode: rigorous` profile isn't silently downgraded.
     if mode:
         config.mode = mode
+    # The mode decides the gate posture; fields the profile declared explicitly are
+    # left alone. Every entry point funnels through here, so this is the one place
+    # a preset needs applying.
+    apply_mode_preset(config, declared_fields=profile.declared_fields)
     config.system_prompt = resolve_system_prompt(profile, workspace)
     mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
     permissions = PermissionEngine(

@@ -1,8 +1,57 @@
+import re
 import shlex
 
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
+
+
+def _glob_regex(pattern: str) -> "re.Pattern[str]":
+    """Compile a glob into a regex with `*` confined to one path segment.
+
+    `*` -> `[^/]*`, `?` -> `[^/]`, `**/` -> any number of segments, `**` -> anything,
+    `[abc]`/`[!abc]` -> a character class. This is the shell's meaning of the
+    pattern; `find -path` treats every `*` as crossing `/`, which is why `src/*.ts`
+    used to return `src/nested/b.ts`.
+
+    Character classes are passed through rather than escaped: this filter refines
+    what `find` returned, so escaping `[` would make it *stricter* than the
+    prefilter and `src/[ab].ts` would silently match nothing.
+    """
+    pat = pattern.removeprefix("./")
+    parts = ["(?:\\./)?"]
+    index = 0
+    while index < len(pat):
+        if pat.startswith("**/", index):
+            parts.append("(?:[^/]+/)*")
+            index += 3
+        elif pat.startswith("**", index):
+            parts.append(".*")
+            index += 2
+        elif pat[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        elif pat[index] == "?":
+            parts.append("[^/]")
+            index += 1
+        elif pat[index] == "[":
+            close = pat.find("]", index + 1)
+            if close == -1:
+                # Unterminated: a literal bracket, as the shell treats it.
+                parts.append(re.escape("["))
+                index += 1
+                continue
+            body = pat[index + 1 : close]
+            # glob negates with `!`, regex with `^`.
+            if body.startswith("!"):
+                body = "^" + body[1:]
+            parts.append(f"[{body}]")
+            index = close + 1
+        else:
+            parts.append(re.escape(pat[index]))
+            index += 1
+    return re.compile("^" + "".join(parts) + "$")
+
 
 DEFAULT_GREP_MAX_RESULTS = 100
 GLOB_MAX_RESULTS = 200
@@ -231,17 +280,20 @@ class GlobTool:
         pattern = arguments["pattern"]
         base = arguments.get("path") or "."
 
+        segment_filter: "re.Pattern[str] | None" = None
         if "/" not in pattern:
             # Bare filename glob: match anywhere under the base path.
             matcher = f"-name {shlex.quote(pattern)}"
         else:
-            # Path glob. In `find -path`, `*` matches `/` too, so `**` collapses
-            # naturally: `src/**/*.py` -> `./src/**.py` matches any depth,
-            # including direct children.
+            # Path glob. `find -path` lets `*` match `/` as well, so `src/*.ts`
+            # also returned `src/nested/b.ts` — a single `*` is meant to stay within
+            # one path segment. `find` cannot express that, so it stays the broad
+            # prefilter and the exact semantics are applied here.
             converted = pattern.replace("**/", "*")
             if not converted.startswith(("./", "/", "*")):
                 converted = "./" + converted
             matcher = f"-path {shlex.quote(converted)}"
+            segment_filter = _glob_regex(pattern)
 
         # `-L` follows symlinks so a symlinked directory under the base is
         # traversed (matches shell globbing / bash reach).
@@ -258,6 +310,8 @@ class GlobTool:
             )
 
         lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if segment_filter is not None:
+            lines = [line for line in lines if segment_filter.match(line.strip())]
         if not lines:
             return ToolResult(tool_call_id="", content=f"No files matched pattern {pattern}")
         capped = len(lines) > GLOB_MAX_RESULTS

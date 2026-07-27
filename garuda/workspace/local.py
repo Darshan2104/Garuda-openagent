@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import signal
 import time
@@ -22,6 +23,23 @@ def _kill_process_tree(process: "asyncio.subprocess.Process") -> None:
             process.kill()
         except ProcessLookupError:
             pass
+
+
+# Seconds allowed to finish reading a pipe. After a kill both pipes are at EOF so
+# this returns at once; the bound only stops a grandchild that inherited the pipe
+# and is still holding it open from re-hanging the turn.
+_PIPE_DRAIN_TIMEOUT = 5.0
+
+
+async def _collect(task: "asyncio.Task[bytes]") -> bytes:
+    """Await a pipe-reader task, yielding b"" rather than raising."""
+    try:
+        return await asyncio.wait_for(task, timeout=_PIPE_DRAIN_TIMEOUT)
+    except (TimeoutError, asyncio.TimeoutError):
+        task.cancel()
+        return b""
+    except Exception:
+        return b""
 
 
 class LocalEnvironment:
@@ -66,25 +84,37 @@ class LocalEnvironment:
             env=env,
             start_new_session=True,  # own process group, so timeout can kill children
         )
+        # Read the pipes in their own tasks rather than via communicate(). A
+        # wait_for around communicate() *cancels* it on timeout, which abandons the
+        # readers and loses everything the command had already written — and a build
+        # or test run that burned its whole budget and then died is exactly when its
+        # output matters most. Draining separately keeps the partial output.
+        stdout_task = asyncio.create_task(process.stdout.read())
+        stderr_task = asyncio.create_task(process.stderr.read())
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout,
-            )
+            await asyncio.wait_for(process.wait(), timeout=timeout)
         except (TimeoutError, asyncio.TimeoutError):
             _kill_process_tree(process)
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 await process.wait()
-            except ProcessLookupError:
-                pass
+            # The process is dead, so both pipes are at EOF and these return at once.
+            partial_out = await _collect(stdout_task)
+            partial_err = await _collect(stderr_task)
             duration_ms = int((time.monotonic() - start) * 1000)
+            notice = f"Command timed out after {timeout}s and was killed."
             return ExecResult(
-                stdout="",
-                stderr=f"Command timed out after {timeout}s and was killed.",
+                stdout=partial_out.decode(errors="replace"),
+                stderr=(
+                    f"{partial_err.decode(errors='replace')}\n{notice}"
+                    if partial_err
+                    else notice
+                ),
                 exit_code=124,
                 duration_ms=duration_ms,
                 truncated=True,
             )
+        stdout_bytes = await _collect(stdout_task)
+        stderr_bytes = await _collect(stderr_task)
         duration_ms = int((time.monotonic() - start) * 1000)
         return ExecResult(
             stdout=stdout_bytes.decode(errors="replace"),

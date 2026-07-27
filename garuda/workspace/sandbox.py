@@ -39,6 +39,27 @@ from garuda.workspace.sandbox_policy import (
 
 logger = logging.getLogger(__name__)
 
+# Emit the macOS read-confinement caveat once per process. It is a property of the
+# backend, not of a particular command, so repeating it per exec would train the
+# operator to ignore it.
+_READ_GAP_WARNED = False
+
+READ_GAP_WARNING = (
+    "Seatbelt sandbox active: writes and network egress are confined, but file "
+    "*reads* are not — a sandboxed command can read host files outside the "
+    "workspace (e.g. ~/.ssh, ~/.aws, .env). Treat this backend as a blast-radius "
+    "reducer, not a confinement boundary; use readonly permission mode or a "
+    "container for untrusted work. (Linux/bwrap confines reads properly.)"
+)
+
+
+def _warn_read_gap_once(backend: str | None) -> None:
+    global _READ_GAP_WARNED
+    if backend != "seatbelt" or _READ_GAP_WARNED:
+        return
+    _READ_GAP_WARNED = True
+    logger.warning(READ_GAP_WARNING)
+
 
 class SandboxEnvironment:
     """Restrict command execution with an OS sandbox backend."""
@@ -54,6 +75,7 @@ class SandboxEnvironment:
         self._backend = detect_sandbox_backend()
         if self._backend is None and self._policy.require_sandbox:
             raise SandboxUnavailableError(describe_unavailable())
+        _warn_read_gap_once(self._backend)
 
     @property
     def workspace_root(self) -> str:

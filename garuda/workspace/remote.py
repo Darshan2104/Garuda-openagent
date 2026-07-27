@@ -1,6 +1,8 @@
 """Remote Docker workspace using a configurable Docker daemon host."""
 
 import asyncio
+import contextlib
+import math
 import os
 import shlex
 import tempfile
@@ -118,7 +120,10 @@ class RemoteEnvironment:
         # leave the remote command running.
         inner = f"cd {shlex.quote(workdir)} && {command}"
         if timeout is not None:
-            shell = f"timeout --kill-after=5s {int(timeout)}s bash -lc {shlex.quote(inner)}"
+            # Ceil, never 0: coreutils reads `timeout 0s` as *no limit*, so
+            # `int(0.5)` silently made a sub-second budget unbounded.
+            budget = max(1, math.ceil(timeout))
+            shell = f"timeout --kill-after=5s {budget}s bash -lc {shlex.quote(inner)}"
             client_timeout: float | None = timeout + 15
         else:
             shell = inner
@@ -160,9 +165,44 @@ class RemoteEnvironment:
             duration_ms=duration_ms,
         )
 
+    async def _exec_argv(self, argv: list[str], timeout: float = 60.0) -> ExecResult:
+        """Run argv in the container with no shell — see docker.py._exec_argv."""
+        start = time.monotonic()
+        process = await asyncio.create_subprocess_exec(
+            *self._docker_base,
+            "exec",
+            self._container_name,
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                await process.wait()
+            return ExecResult(
+                stdout="",
+                stderr=f"Command timed out after {timeout}s and was killed.",
+                exit_code=124,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                truncated=True,
+            )
+        return ExecResult(
+            stdout=stdout_bytes.decode(errors="replace"),
+            stderr=stderr_bytes.decode(errors="replace"),
+            exit_code=process.returncode or 0,
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+
     async def read_file(self, path: str) -> str:
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
-        result = await self.execute(f"cat {shlex.quote(target)}")
+        # No `bash -lc`: a login shell's profile banners would be prepended to the
+        # file's contents. See docker.py.
+        result = await self._exec_argv(["cat", target])
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
         return result.stdout

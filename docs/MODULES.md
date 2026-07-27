@@ -1,184 +1,123 @@
-# Garuda — Module Work Breakdown
+# Garuda — Module Map
 
-Build order: **bottom-up**. Each module has a status, dependencies, and exit criteria.
+What each package owns and the file to open first. Read
+[ARCHITECTURE.md](ARCHITECTURE.md) for how these fit together at run time.
 
-| Status | Meaning |
-|--------|---------|
-| ✅ | Done |
-| 🚧 | In progress |
-| ⬜ | Not started |
+The historical build-order plan (39 modules across 8 phases, all complete) is in
+[archive/2026-07-17-MODULES-build-phases.md](archive/2026-07-17-MODULES-build-phases.md).
+It is provenance, not a map.
 
----
+## `garuda/types.py`
 
-## Dependency Graph
+The shared vocabulary: `Message`, `ToolCall`, `ToolResult`, `ExecResult`,
+`AgentConfig`, `AgentResult`, and the default system prompt. Everything imports
+from here; it imports from nothing in the package. Keep it dependency-free — a
+module-level import in `types.py` becomes a cycle everywhere.
 
-```
-types ──┬── model ──┬── core/loop ─── interfaces/cli
-        │           │
-workspace ──┬── tools ──┘
-            │
-        core/events
-            │
-        context (Phase 2)
-        permissions (Phase 2)
-        verifier (Phase 2)
-            │
-        agents/loader (Phase 2)
-            │
-        workspace/docker, tmux (Phase 3)
-        tools/mcp (Phase 4)
-            │
-        eval/harbor (Phase 5)
-```
+## `core/` — the loop and its gates
 
----
+`DefaultAgent` used to be one ~500-line `run()` doing setup, turns, and completion.
+It is now four collaborators; read `loop.py` for control flow, the others to change
+a behaviour.
 
-## Phase 1 — Foundation (MVP)
+| File | Owns |
+|---|---|
+| `loop.py` | `DefaultAgent`: the turn loop, and nothing else. Model call → tool step → repeat. Re-exports the constants callers import from here. |
+| `run_state.py` | `prepare_run` (assembly: tool filtering, buffer, context bootstrap, subagent wiring, deadline) and `RunState` (what the loop reads and writes, plus result building). |
+| `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
+| `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. |
+| `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
+| `modes.py` | Run postures. The presets that map one `mode` onto a coherent gate set. |
+| `rigorous.py` | `RigorousAgent`: plan → execute → critic, with repair rounds. `create_agent()` picks between this and `DefaultAgent`. |
+| `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
+| `evidence.py` | Whether verification commands can actually fail — a check that cannot fail is not proof. |
+| `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
+| `side_effects.py` | Sweeps agent-started background processes before verification. |
+| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Guardrails, not confinement. |
+| `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
+| `events.py` | Append-only JSONL event log, crash-safe. |
+| `buffer.py` | Session buffers holding large tool output and compacted history. |
+| `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
+| `subagent.py` | Forked child runs. |
+| `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. |
 
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M1 | **Types** | `garuda/types.py` | ✅ | — | Message, ToolCall, AgentConfig dataclasses |
-| M2 | **Model protocol** | `garuda/model/` | ✅ | M1 | `Model` protocol + `LitellmModel` + `ScriptModel` (tests) |
-| M3 | **Environment** | `garuda/workspace/local.py` | ✅ | M1 | bash exec, read/write files in workspace |
-| M4 | **Tools** | `garuda/tools/` | ✅ | M1, M3 | `bash`, `read_file`, `write_file` |
-| M5 | **Event store** | `garuda/core/events.py` | ✅ | M1 | Append-only JSONL log |
-| M6 | **Agent loop** | `garuda/core/loop.py` | ✅ | M2–M5 | `DefaultAgent` runs multi-turn with tools |
-| M7 | **Headless CLI** | `garuda/interfaces/headless.py` | ✅ | M6 | `garuda run -t "task"` works |
+## `tools/` — what the agent can do
 
-**Phase 1 exit:** Run a local task end-to-end with any LiteLLM model (or `ScriptModel` in tests).
+`protocol.py` defines the contract (`ToolContext` in, `ToolResult` out);
+`registry.py` + `__init__.py::build_toolkit` assemble the set a profile asks for.
 
----
+Execution: `bash.py`, `background.py`, `tmux.py`.
+Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
+`diagnostics.py` (post-edit syntax + lint).
+Reading: `documents.py`, `image_read.py`.
+Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
+Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.
+Large output: `buffer_tools.py`. Discovery: `discovery.py` (token-lean MCP),
+`project_loader.py` (opt-in `.agent/tools/*.py`). Delegation: `subagent.py`.
 
-## Phase 2 — Reliability
+## `workspace/` — where commands run
 
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M8 | **Context manager** | `garuda/context/` | ✅ | M2, M6 | Output caps, head/tail shaping |
-| M9 | **Permissions** | `garuda/core/permissions.py` | ✅ | M4 | allow/deny/ask per tool/command |
-| M10 | **Completion verifier** | `garuda/core/verifier.py` | ✅ | M2, M6 | Checklist gate on `task_complete` |
-| M11 | **Edit tool** (replaced planned patch tool) | `garuda/tools/edit.py` | ✅ | M3 | String-anchored `edit`; supersedes the originally-planned unified-diff patch tool (see M34/M35) |
-| M12 | **Agent profiles** | `garuda/agents/` | ✅ | M6, M9 | Load `build`/`plan`/`explore` from YAML |
-| M13 | **Interactive CLI** | `garuda/interfaces/cli.py` | ✅ | M6, M9 | TUI with permission prompts |
+`protocol.py` is the `Environment` interface every tool talks to. Implementations:
+`local.py`, `docker.py`, `remote.py`, `tmux.py` (persistent panes with marker
+polling), selected by `factory.py`.
 
-**Phase 2 exit:** Multi-turn task with permissions and completion verification.
+`sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
+Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it
+records which confinement actually holds. `shell.py` is the opt-in persistent
+shell; `paths.py` and `health.py` are path safety and liveness.
 
----
+## `context/` — fitting the conversation in the window
 
-## Phase 3 — Terminal Realism
+`manager.py` holds history and decides when to act. `shaper.py` caps and shapes
+tool output, `condenser.py` compacts (`microcompact` by default) and demotes
+pruned history into buffers, `summarizer.py` produces the summaries.
 
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M14 | **Tmux environment** | `garuda/workspace/tmux.py` | ✅ | M3 | Persistent tmux session |
-| M15 | **Tmux tools** | `garuda/tools/tmux.py` | ✅ | M14 | `tmux_exec`, `tmux_capture` |
-| M16 | **Marker polling** | `garuda/workspace/tmux.py` | ✅ | M14 | `__CMDEND__` early completion |
-| M17 | **Summarizer** | `garuda/context/summarizer.py` | ✅ | M8 | 3-step proactive summarization |
-| M18 | **Image read** | `garuda/tools/image_read.py` | ✅ | M2 | Multimodal file analysis |
-| M19 | **Docker workspace** | `garuda/workspace/docker.py` | ✅ | M3 | Container-isolated execution |
+## `agents/` — profiles
 
-**Phase 3 exit:** Interactive terminal task (pager, server, menu) via tmux.
+`setup.py::prepare_agent_run` is the shared chokepoint for every entry point.
+`loader.py` reads YAML profiles (and records which fields were declared, so mode
+presets don't override authored intent); `md_loader.py` + `frontmatter.py` read
+OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,
+`harbor`, `reviewer`.
 
----
+## `model/` — provider access
 
-## Phase 4 — Extensibility
+`protocol.py` is the `Model` interface. `litellm_model.py` is the real
+implementation (streaming, tool calls, reasoning effort, prompt caching, retries);
+`governor.py` caps per-provider concurrency; `script_model.py` is the deterministic
+test double — prefer it over mocks.
 
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M20 | **MCP client** | `garuda/mcp/` | ✅ | M4 | Connect stdio MCP servers |
-| M21 | **Plugin hooks** | `garuda/plugins/hooks.py` | ✅ | M6 | before/after tool lifecycle |
-| M22 | **Subagent handoff** | `garuda/core/subagent.py` | ✅ | M8, M12 | Fork context, return summary |
-| M23 | **Task complete tool** | `garuda/tools/task_complete.py` | ✅ | M10 | Triggers verifier |
+## `interfaces/` — entry points
 
-**Phase 4 exit:** Custom YAML agent profile + MCP tool in Docker.
+`main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
+(interactive chat), `server.py` + `jobs.py` (job-queue server: submit/status/
+events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
+`runner.py` (assembles a run and owns workspace teardown).
 
----
+## `eval/` — measurement, outside the agent
 
-## Phase 5 — Evaluation
+`harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),
+`harbor_environment.py`, `ablation.py` (per-variant config matrix),
+`atif_export.py`, `dashboard.py`, `costs.py`.
 
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M24 | **ATIF export** | `garuda/eval/atif_export.py` | ✅ | M5 | EventStore → ATIF JSON |
-| M25 | **Harbor adapter** | `garuda/eval/harbor_adapter.py` | ✅ | M6, M19 | `BaseAgent` implementation |
-| M26 | **TB benchmarks** | `garuda/eval/benchmarks/` | ✅ | M25 | Harbor run configs |
-| M27 | **Spreadsheet eval** | `garuda/eval/benchmarks/spreadsheet/` | ✅ | M25 | SpreadsheetBench adapter (eval only) |
-| M28 | **PDF eval** | `garuda/eval/benchmarks/pdf/` | ✅ | M25 | OfficeQA adapter (eval only) |
+## Everything else
 
-**Phase 5 exit:** Score on Terminal-Bench 2.0 via Harbor with ATIF logs.
+| Package | Owns |
+|---|---|
+| `config/` | `agent_home.py` — all `.agent/` discovery. `recipes.py` — YAML multi-step workflows. |
+| `mcp/` | `config.py` (merge + allowlist), `client.py` (per-run server manager). |
+| `skills/` | `loader.py` — progressive disclosure, `allowed-tools` validation. |
+| `sdk/` | `software_agent.py`, `conversation.py` — the library surface. |
+| `observability/` | `tracing.py` — spans. |
+| `plugins/` | `hooks.py` — lifecycle hooks. |
 
----
-
-## Phase 6 — Production (v1.5+)
-
-| # | Module | Path | Status | Depends On |
-|---|--------|------|--------|------------|
-| M29 | Recipes | `garuda/config/recipes.py` | ✅ | M12 |
-| M30 | RigorousAgent | `garuda/core/rigorous.py` | ✅ | M10, M17 |
-| M31 | IDE server | `garuda/interfaces/server.py` | ✅ | M6 |
-| M32 | OS sandbox | `garuda/workspace/sandbox.py` | ✅ | M3 |
-| M33 | Remote workspace | `garuda/workspace/remote.py` | ✅ | M19 |
-
----
-
-## Phase 7 — Edit/Search Reliability (grok-build-informed)
-
-Capability upgrades from a review of xAI's `grok-build` harness, targeting wasted turns on
-mechanical edit/search friction. See ENGINEERING_PLAN.md status update 22.
-
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M34 | **Anchored edits** | `garuda/tools/edit.py` | ✅ | M11 | `resolve_edit` layered matcher: line-number-prefix / CRLF / indentation recovery, unique-match-only |
-| M35 | **Multi-edit tool** | `garuda/tools/multi_edit.py` | ✅ | M34 | `multi_edit` applies N atomic, sequential edits to one file |
-| M36 | **Ripgrep-backed grep** | `garuda/tools/search.py` | ✅ | M4 | prefer `rg` (gitignore-aware) with `grep -E` fallback; `no_ignore` escape hatch |
-| M37 | **Semantic post-edit lint** | `garuda/tools/diagnostics.py` | ✅ | M11 | `check_lint` (ruff, undefined-name class) + unified `post_edit_report` |
-
-**Phase 7 exit:** edit/search friction reduced; 504 tests passing, ruff-clean.
-
----
-
-## Phase 8 — Token Efficiency & Context Management (grok-build-informed)
-
-Reduce token usage and keep long tasks on-track. See ENGINEERING_PLAN.md status update 23.
-
-| # | Module | Path | Status | Depends On | Exit Criteria |
-|---|--------|------|--------|------------|---------------|
-| M38 | **Lazy tool discovery** | `garuda/tools/discovery.py` | ✅ | M20 | `search_tool`/`use_tool` replace raw MCP schemas above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) |
-| M39 | **Goal orchestration + state re-pinning** | `garuda/tools/goal.py` | ✅ | M8 | `update_goal` tool; loop re-pins goal + todos after compaction so they survive summarization |
-
-**Phase 8 exit:** leaner prompts with many MCP tools; goal/todos persist across compaction; 524 tests passing, ruff-clean.
-
-### Post-Phase-8 correctness fixes
-
-- **Standalone `plan`/`explore` completion** — both profiles now grant `task_complete`. With `enable_verifier` defaulting on, the loop accepts completion only via a `task_complete` call, so a standard-mode profile that omitted the tool looped to max_turns instead of finishing.
-- **`use_tool` permission parity** — `use_tool` (lazy MCP discovery) now re-screens the *target* tool through the permission engine (threaded via `ToolContext.permissions`), so a per-tool deny/ask rule is enforced whether the tool is exposed directly or reached via `use_tool`.
-
-Suite after fixes: 529 passed, 7 skipped, ruff-clean.
-
----
-
-## Current Sprint
-
-**Completed:** Phase 1 (M1–M7), Phase 2 (M8–M13), Phase 3 (M14–M19), Phase 4 (M20–M23), Phase 5 (M24–M28), Phase 6 (M29–M33), Phase 7 (M34–M37), Phase 8 (M38–M39)
-
-**Status:** All 39 modules complete — Garuda v1.1.1
-
----
-
-## How to Work Module-by-Module
-
-1. Pick the next ⬜ module whose dependencies are ✅
-2. Implement module + unit tests in `tests/`
-3. Update status in this file
-4. PR per phase (or per module for large phases)
+## Working on it
 
 ```bash
-# Install
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v
+ruff check garuda/
 
-# Run agent (needs API key)
-garuda run -t "List files in the current directory"
-
-# Run with explicit model
-garuda run -t "..." --model openai/gpt-4o-mini
+garuda run -t "List files in the current directory"          # interactive posture
+garuda run -t "..." --mode eval --model openai/gpt-4o-mini   # full gate stack
 ```

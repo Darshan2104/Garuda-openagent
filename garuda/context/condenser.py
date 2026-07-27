@@ -87,6 +87,33 @@ def _window_boundary(messages: list[Message], keep_recent_turns: int) -> int:
     return 0
 
 
+def _prune_tool_call_arguments(message: Message, prune_min_chars: int) -> bool:
+    """Stub oversized string values inside an old assistant turn's tool arguments.
+
+    Only the *values* are replaced, never the argument keys or the call's id/name:
+    the shape stays a valid arguments object, so providers that validate it against
+    the tool schema still accept the replayed history, and the model can still see
+    *which* call it made and with which parameters.
+    """
+    if message.metadata.get("args_pruned"):
+        return False
+    changed = False
+    for call in message.tool_calls or []:
+        arguments = getattr(call, "arguments", None)
+        if not isinstance(arguments, dict):
+            continue
+        for key, value in list(arguments.items()):
+            if isinstance(value, str) and len(value) > prune_min_chars:
+                arguments[key] = (
+                    f"[pruned to save context: {len(value)} chars of "
+                    f"{key!r} passed to {call.name}]"
+                )
+                changed = True
+    if changed:
+        message.metadata["args_pruned"] = True
+    return changed
+
+
 def microcompact_messages(
     messages: list[Message],
     keep_recent_turns: int,
@@ -101,6 +128,12 @@ def microcompact_messages(
     boundary = _window_boundary(messages, keep_recent_turns)
     pruned = 0
     for message in messages[:boundary]:
+        # An assistant turn's own tool *arguments* can dwarf the result it produced —
+        # a whole-file write_file carries the entire file. Pruning only tool results
+        # left that text in the window for the rest of the run.
+        if message.role == Role.ASSISTANT and message.tool_calls:
+            if _prune_tool_call_arguments(message, prune_min_chars):
+                pruned += 1
         if (
             message.role == Role.TOOL
             and len(message.content or "") > prune_min_chars

@@ -2,10 +2,15 @@ from pathlib import Path
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.core.events import EventStore
+from garuda.core.modes import MODE_CHOICES, apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.cli import chat_loop
-from garuda.interfaces.runner import cleanup_workspace, resolve_environment, run_agent_task
+from garuda.interfaces.runner import (
+    cleanup_workspace,
+    resolve_environment,
+    run_agent_task,
+)
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
@@ -66,11 +71,30 @@ def build_parser():
     run_parser.add_argument("--permission-mode", choices=["auto", "smart", "readonly", "yolo"])
     run_parser.add_argument(
         "--mode",
-        choices=["standard", "rigorous", "readonly"],
+        choices=list(MODE_CHOICES),
         default=None,
-        help="Override the agent profile's mode (defaults to the profile's own)",
+        help=(
+            "Run posture, which picks a coherent set of completion gates. "
+            "interactive (default): no gates that cost a model call. "
+            "eval: full gate stack — LLM judge, acceptance contract, "
+            "discriminating + stable evidence (~2 extra model calls per completion "
+            "attempt); this is the benchmark configuration. "
+            "rigorous: eval gates plus a plan/execute/critic agent. "
+            "readonly: interactive gates with permissions forced read-only. "
+            "standard is an alias for interactive. Omit to honor the profile's own."
+        ),
     )
     run_parser.add_argument("--max-turns", type=int)
+    run_parser.add_argument(
+        "--deadline-sec",
+        type=float,
+        default=None,
+        help=(
+            "Wall-clock budget for the run. The agent paces itself against it and "
+            "reserves turns to finish, which a turn count cannot express when one "
+            "command may block for minutes."
+        ),
+    )
     run_parser.add_argument(
         "--reasoning-effort",
         choices=["minimal", "low", "medium", "high"],
@@ -125,7 +149,12 @@ def build_parser():
     chat_parser.add_argument("--agent", default="build")
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
-    chat_parser.add_argument("--mode", choices=["standard", "rigorous", "readonly"], default=None)
+    chat_parser.add_argument(
+        "--mode",
+        choices=list(MODE_CHOICES),
+        default=None,
+        help="Run posture (see `garuda run --help`); defaults to interactive.",
+    )
     chat_parser.add_argument("--json", action="store_true")
 
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
@@ -299,8 +328,13 @@ async def run_task(args) -> int:
     config = profile.to_agent_config()
     if args.mode:  # else keep the profile's own mode
         config.mode = args.mode
+    # Preset first, explicit flags after: every `if args.x` below is a narrower
+    # statement of intent than the posture and must win over it.
+    apply_mode_preset(config, declared_fields=profile.declared_fields)
     if args.max_turns is not None:
         config.max_turns = args.max_turns
+    if getattr(args, "deadline_sec", None) is not None:
+        config.deadline_sec = args.deadline_sec
     if args.permission_mode:
         config.permission_mode = args.permission_mode
     if args.no_verifier:

@@ -6,7 +6,6 @@ from garuda.core.subagent import format_subagent_summary
 from garuda.model.protocol import ModelResponse
 from garuda.types import AgentResult, Message, Role, ToolCall
 
-
 # --- #3: structured subagent summary ----------------------------------------
 
 def test_subagent_summary_lists_files_and_buffers():

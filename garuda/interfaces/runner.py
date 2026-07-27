@@ -70,15 +70,33 @@ async def cleanup_workspace(handle: object | None) -> None:
 
 def update_session_meta(store: SessionStore, session_id: str, updates: dict) -> None:
     """Merge extra fields into a session's meta.json (SessionStore.begin has a
-    fixed schema, so resume provenance and failure states are patched in here)."""
-    meta_path = store.session_dir(session_id) / "meta.json"
+    fixed schema, so resume provenance and failure states are patched in here).
+
+    Delegates to the store so this writer and ``finish()`` contend on the same
+    lock; two independent read-modify-write cycles used to drop each other's
+    fields. Still never raises — losing provenance must not fail a completed run.
+    """
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-        meta.update(updates)
-        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
-        meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        store.update_meta(
+            session_id, {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}
+        )
     except OSError:
         pass
+
+
+def _with_current_system_prompt(messages: list[Message], system_prompt: str) -> list[Message]:
+    """Replace the replayed history's leading system message with the current one.
+
+    Only the first system message is touched; everything else — including the
+    conversation's own structure and tool_call pairing — is preserved. When the
+    history has no system message, one is prepended.
+    """
+    updated = list(messages)
+    for index, message in enumerate(updated):
+        if message.role == Role.SYSTEM:
+            updated[index] = Message(role=Role.SYSTEM, content=system_prompt)
+            return updated
+    return [Message(role=Role.SYSTEM, content=system_prompt), *updated]
 
 
 def build_resumed_context(
@@ -90,6 +108,12 @@ def build_resumed_context(
 ) -> ContextManager:
     """Seed a ContextManager with a prior session's messages plus the new task."""
     messages = store.load_messages(resumed_session_id)
+    # Replay the conversation but not its stale system prompt. The saved messages
+    # carry the prompt from the original run, so skills added since, an edited
+    # AGENTS.md, or a changed profile were all silently ignored on resume — the
+    # session kept obeying instructions the workspace no longer has.
+    if config.system_prompt:
+        messages = _with_current_system_prompt(messages, config.system_prompt)
     context = ContextManager(
         model=model,
         max_output_bytes=config.max_output_bytes,
@@ -191,9 +215,19 @@ async def run_agent_task(
                 await env.aclose()
             except Exception:
                 logger.warning("Failed to close persistent shell", exc_info=True)
-        await cleanup_workspace(handle)
+        # Each teardown step is guarded individually: a failure to stop a container
+        # or close an MCP server must not skip the two things that follow, or the
+        # session stays marked "running" in the index forever and no session-end
+        # hook ever fires — the state you most need after a crash.
+        try:
+            await cleanup_workspace(handle)
+        except Exception:
+            logger.warning("Workspace cleanup failed", exc_info=True)
         if close_mcp and mcp_manager is not None:
-            await mcp_manager.close()
+            try:
+                await mcp_manager.close()
+            except Exception:
+                logger.warning("MCP manager close failed", exc_info=True)
         if result is not None:
             store.finish(events.session_id, result)
             summary = {

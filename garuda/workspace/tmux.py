@@ -16,13 +16,38 @@ MARKER_PREFIX = "__CMDEND__"
 TYPED_MARKER_FRAGMENT = "'__CMD''END__"
 
 
+def unbalanced_quotes(command: str) -> bool:
+    """True if the command has an unterminated quote.
+
+    Such a command leaves the shell on a continuation prompt, so the marker printf
+    is swallowed into the open string and never runs — the poller then waits out
+    its whole timeout for output that cannot arrive. Better to reject it up front.
+    """
+    try:
+        shlex.split(command)
+    except ValueError:
+        return True
+    return False
+
+
 def build_marker_payload(command: str, seq: int) -> str:
     """Wrap a command so its completion emits an assembled marker with exit code.
 
     The typed line shows ``printf '__CMD''END__%s__%s__\\n' <seq> $?`` which never
     contains the literal ``__CMDEND__`` marker; only the printf output does.
     """
-    return f"{command}; printf '__CMD''END__%s__%s__\\n' {seq} $?"
+    stripped = command.rstrip()
+    # `cmd &` backgrounds the job and is already a complete statement: appending
+    # `; printf` produces `cmd &; printf`, which is a bash syntax error, so the
+    # marker never printed and the poll hung until timeout. `&` also separates
+    # commands, so no `;` is needed after it. A trailing `;` is likewise redundant.
+    if stripped.endswith("&") and not stripped.endswith("&&"):
+        separator = " "
+    elif stripped.endswith(";"):
+        separator = " "
+    else:
+        separator = "; "
+    return f"{stripped}{separator}printf '__CMD''END__%s__%s__\\n' {seq} $?"
 
 
 def marker_regex(seq: int) -> re.Pattern[str]:

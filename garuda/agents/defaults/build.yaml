@@ -20,6 +20,10 @@ tools:
   - ls
   - todo
   - update_goal
+  # Kept for `--mode eval`, where enable_acceptance_contract is on: it is the
+  # only way to resolve a criterion, and the gate blocks on outstanding ones.
+  # Harmless in the default interactive posture, where the gate is off.
+  - contract
   - web_fetch
   - web_search
   - buffer_grep

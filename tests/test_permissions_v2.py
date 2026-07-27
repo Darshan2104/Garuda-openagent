@@ -104,7 +104,7 @@ async def test_verifier_runs_allowed_commands(tmp_path: Path):
     result = await verifier.verify_with_commands(
         task="t",
         summary="A sufficiently long summary of the completed work.",
-        verification_commands=["true"],
+        verification_commands=["test -d ."],
         env=env,
         config=AgentConfig(),
         permissions=engine,
@@ -159,3 +159,67 @@ async def test_bash_rules_backward_compatible_without_allow_prefixes():
     assert not allowed
     allowed, _ = await engine.evaluate_tool_call("bash", {"command": "echo fine"})
     assert allowed
+
+
+async def test_path_deny_rule_covers_bash_operands():
+    """`cat .env` must be denied by the same rule that blocks read_file(".env") —
+    bash reaches the filesystem through env.execute, bypassing the file tools."""
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/*.env"]})
+    allowed, _ = await engine.evaluate_tool_call("read_file", {"path": ".env"})
+    assert not allowed
+    for command in ("cat .env", "cat /srv/app/.env", "head -n 5 .env"):
+        allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
+        assert not allowed, f"{command!r} should be denied by the path rule"
+
+
+async def test_path_deny_rule_covers_search_tools():
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/secrets"]})
+    for tool, args in (
+        ("ls", {"path": "secrets"}),
+        ("grep", {"pattern": "token", "path": "secrets"}),
+        ("glob", {"pattern": "*", "path": "secrets"}),
+    ):
+        allowed, _ = await engine.evaluate_tool_call(tool, args)
+        assert not allowed, f"{tool} must honor the path deny rule"
+
+
+async def test_path_deny_rule_covers_glob_pattern_argument():
+    """The denied path can arrive as a *pattern* rather than a base dir."""
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/*.env"]})
+    allowed, _ = await engine.evaluate_tool_call("glob", {"pattern": "**/*.env"})
+    assert not allowed
+    allowed, _ = await engine.evaluate_tool_call(
+        "grep", {"pattern": "KEY", "path": ".", "glob": "*.env"}
+    )
+    assert not allowed
+
+
+async def test_path_screening_does_not_break_ordinary_commands():
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/*.env"]})
+    for command in ("pytest -q", "git status", "cat src/main.py", "ls -la"):
+        allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
+        assert allowed, f"{command!r} should be allowed"
+    allowed, _ = await engine.evaluate_tool_call("ls", {"path": "src"})
+    assert allowed
+
+
+async def test_path_screening_survives_unbalanced_quotes():
+    """A command shlex can't parse must not fail open."""
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/*.env"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": 'cat .env "'})
+    assert not allowed
+
+
+async def test_path_ask_rule_on_bash_requires_approval():
+    asked = []
+
+    async def handler(action: str) -> bool:
+        asked.append(action)
+        return False
+
+    engine = PermissionEngine(
+        mode="smart", path_rules={"ask": ["**/*.pem"]}, approval_handler=handler
+    )
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "cat server.pem"})
+    assert not allowed
+    assert asked

@@ -1,7 +1,8 @@
 """G1: RLM-style tool-output buffer — store full output, stub in context, retrieve."""
 
-import os
 from pathlib import Path
+
+import pytest
 
 from garuda.core.buffer import ToolOutputBuffer, format_buffer_stub
 from garuda.core.loop import DefaultAgent
@@ -43,11 +44,8 @@ def test_buffer_stub_format(tmp_path: Path):
 
 def test_buffer_grep_unknown_id_errors(tmp_path: Path):
     buf = _buffer(tmp_path)
-    try:
+    with pytest.raises(KeyError):
         buf.grep("nope", "x")
-        assert False, "should raise"
-    except KeyError:
-        pass
 
 
 def test_buffer_list_includes_disk_on_resume(tmp_path: Path):
@@ -76,7 +74,7 @@ async def test_large_tool_output_is_buffered_not_truncated(tmp_path: Path):
         model=ScriptModel(responses=responses),
         env=env,
         tools=default_tools(),
-        config=AgentConfig(max_turns=5, buffer_threshold_bytes=500),
+        config=AgentConfig(max_turns=5, buffer_threshold_bytes=500, enable_verifier=False),
     )
     assert result.success
     tool_msgs = [m for m in result.messages if m.role == Role.TOOL and m.name == "bash"]
@@ -103,7 +101,7 @@ async def test_small_output_stays_inline(tmp_path: Path):
     env = LocalEnvironment(workspace_root=tmp_path)
     result = await DefaultAgent().run(
         task="small", model=ScriptModel(responses=responses), env=env, tools=default_tools(),
-        config=AgentConfig(max_turns=5, buffer_threshold_bytes=30_720),
+        config=AgentConfig(max_turns=5, buffer_threshold_bytes=30_720, enable_verifier=False),
     )
     tool_msgs = [m for m in result.messages if m.role == Role.TOOL and m.name == "bash"]
     assert "hi" in tool_msgs[0].content

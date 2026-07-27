@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
+from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
@@ -54,6 +55,7 @@ class AgentSession:
         config = profile.to_agent_config()
         if mode:  # else honor the profile's own mode
             config.mode = mode
+        apply_mode_preset(config, declared_fields=profile.declared_fields)
         config.workspace_kind = workspace_kind
         config.docker_image = docker_image
         config.docker_host = docker_host

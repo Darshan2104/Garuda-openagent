@@ -1,11 +1,11 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from importlib import resources
 from pathlib import Path
 
 import yaml
 
-from garuda.types import AgentConfig, DEFAULT_SYSTEM_PROMPT
+from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,10 @@ class AgentProfile:
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True
+    # Read-only/advisory profiles turn this off: deriving acceptance criteria
+    # costs a model call, and a gate demanding workspace evidence is meaningless
+    # for an agent whose output is a report rather than a change.
+    enable_acceptance_contract: bool = True
     max_context_tokens: int = 128_000
     proactive_summarize_threshold: int = 8000
     max_output_bytes: int = 30_720
@@ -38,6 +42,10 @@ class AgentProfile:
     reasoning_effort: str | None = None
     thinking_budget_tokens: int | None = None
     source_path: Path | None = None
+    # Field names this profile set explicitly, so a mode preset can leave authored
+    # intent alone. Diffing against dataclass defaults would not do: a profile
+    # declaring a value that happens to equal the default still chose it.
+    declared_fields: set[str] = field(default_factory=set)
 
     def to_agent_config(self) -> AgentConfig:
         return AgentConfig(
@@ -50,6 +58,7 @@ class AgentProfile:
             enable_tmux=self.enable_tmux,
             marker_polling=self.marker_polling,
             enable_three_step_summary=self.enable_three_step_summary,
+            enable_acceptance_contract=self.enable_acceptance_contract,
             max_context_tokens=self.max_context_tokens,
             proactive_summarize_threshold=self.proactive_summarize_threshold,
             max_output_bytes=self.max_output_bytes,
@@ -75,7 +84,7 @@ def _profile_names_in_dir(directory: Path) -> set[str]:
         names.add(path.stem)
     for path in directory.glob("*.md"):
         names.add(path.stem)
-    for path in directory.glob("agent.md"):
+    if (directory / "agent.md").is_file():
         names.add(directory.name)
     for path in directory.glob("**/agent.md"):
         names.add(path.parent.name)
@@ -98,8 +107,12 @@ def list_profiles(extra_dir: Path | list[Path] | None = None) -> list[str]:
     return sorted(names)
 
 
+_PROFILE_FIELD_NAMES = {f.name for f in fields(AgentProfile)}
+
+
 def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> AgentProfile:
     return AgentProfile(
+        declared_fields={key for key in data if key in _PROFILE_FIELD_NAMES},
         name=data.get("name", name),
         description=data.get("description", ""),
         permission_mode=data.get("permission_mode", "smart"),
@@ -113,6 +126,7 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         enable_tmux=data.get("enable_tmux", True),
         marker_polling=data.get("marker_polling", True),
         enable_three_step_summary=data.get("enable_three_step_summary", True),
+        enable_acceptance_contract=data.get("enable_acceptance_contract", True),
         max_context_tokens=data.get("max_context_tokens", 128_000),
         proactive_summarize_threshold=data.get("proactive_summarize_threshold", 8000),
         max_output_bytes=data.get("max_output_bytes", 30_720),
@@ -221,7 +235,16 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
 
         skill_dirs.extend(resolve_agent_home(workspace_root).skills_dirs)
     if profile.skills_dirs:
-        skill_dirs.extend(Path(d) for d in profile.skills_dirs)
+        # A relative skills dir means "relative to the workspace", not to whatever
+        # cwd the process happens to have. Under `serve` or the SDK those differ, so
+        # the configured skills were looked for in the wrong place and silently not
+        # found. Falls back to the plain path when no workspace is known.
+        base = Path(workspace_root) if workspace_root else None
+        for raw in profile.skills_dirs:
+            candidate = Path(raw)
+            if not candidate.is_absolute() and base is not None:
+                candidate = base / candidate
+            skill_dirs.append(candidate)
 
     discovered = discover_skills(*skill_dirs)
     if profile.skills:

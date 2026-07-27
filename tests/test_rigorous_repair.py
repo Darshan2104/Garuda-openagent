@@ -23,7 +23,10 @@ def _write_then_complete(marker: str, call_prefix: str) -> list[ModelResponse]:
                 ToolCall(
                     id=f"{call_prefix}-c",
                     name="task_complete",
-                    arguments={"summary": "Implemented the change and verified the result."},
+                    arguments={
+                        "summary": "Implemented the change and verified the result.",
+                        "verification_commands": ["test -d ."],
+                    },
                 )
             ],
         ),
@@ -53,7 +56,8 @@ async def test_critic_rejection_triggers_repair_then_approves(tmp_path):
         env=env,
         tools=tools_for_names(["write_file", "task_complete"]),
         config=AgentConfig(
-            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo"
+            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo",
+            enable_acceptance_contract=False
         ),
         events=EventStore(),
     )
@@ -81,7 +85,8 @@ async def test_persistent_rejection_fails_after_max_rounds(tmp_path):
         env=env,
         tools=tools_for_names(["write_file", "task_complete"]),
         config=AgentConfig(
-            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo"
+            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo",
+            enable_acceptance_contract=False
         ),
         events=EventStore(),
     )
@@ -101,3 +106,50 @@ def test_parse_critic_verdict_robust():
     assert approved is False and "rejected" in feedback
     assert _parse_critic_verdict("")[0] is False
     assert _parse_critic_verdict("I think it is fine")[0] is False
+
+
+async def test_threaded_context_receives_approved_plan_on_first_attempt(tmp_path):
+    """With a caller-supplied context, run() does not seed the task itself, so the
+    executor's first attempt must still be told the task and the approved plan —
+    otherwise the plan phase is paid for and thrown away."""
+    from garuda.context.manager import ContextManager
+    from garuda.types import Message
+
+    env = LocalEnvironment(workspace_root=tmp_path)
+    model = ScriptModel(
+        responses=[
+            ModelResponse(content="1. Write marker.txt\n2. Verify it exists", tool_calls=[]),
+            *_write_then_complete("marker.txt", "a1"),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]
+    )
+    context = ContextManager(model=model, task="fix the bug")
+    context.seed(
+        [
+            Message(role=Role.SYSTEM, content="system"),
+            Message(role=Role.USER, content="fix the bug"),
+        ]
+    )
+
+    agent = RigorousAgent(profile_name="build")
+    result = await agent.run(
+        task="fix the bug",
+        model=model,
+        env=env,
+        tools=tools_for_names(["write_file", "task_complete"]),
+        config=AgentConfig(
+            max_turns=10, enable_verifier=True, enable_llm_verifier=False, permission_mode="yolo",
+            enable_acceptance_contract=False
+        ),
+        events=EventStore(),
+        context=context,
+    )
+    assert result.success
+
+    plan_carrying = [
+        m.content
+        for m in context.get_messages()
+        if m.role == Role.USER and "## Approved plan" in (m.content or "")
+    ]
+    assert plan_carrying, "the approved plan never reached the executor's context"
+    assert "Write marker.txt" in plan_carrying[0]

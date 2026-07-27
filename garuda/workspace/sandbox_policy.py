@@ -84,7 +84,12 @@ class DockerLimits:
         if self.network:
             args += ["--network", self.network]
         if self.no_new_privileges:
-            args += ["--security-opt", "no-new-privileges"]
+            # The explicit `:true` form is what the Docker API documents. Some
+            # daemons accept the bare flag and others silently ignore it, which
+            # would leave setuid escalation available while the config claims
+            # otherwise — a security control that fails quietly is worse than one
+            # that is absent.
+            args += ["--security-opt", "no-new-privileges:true"]
         return args
 
 
@@ -175,9 +180,9 @@ def _sbpl_quote(path: str) -> str:
 def build_seatbelt_profile(workdir: str, policy: SandboxPolicy) -> str:
     """Build a macOS Seatbelt (SBPL) profile string.
 
-    Denies everything by default, allows process exec and full read, confines
-    writes to the workspace plus a small set of runtime paths, and denies
-    network egress unless ``allow_network`` is set.
+    Denies everything by default, allows process exec, self-signalling and full
+    read, confines writes to the workspace plus a small set of runtime paths, and
+    denies network egress unless ``allow_network`` is set.
 
     File reads are intentionally NOT scoped down: Seatbelt has no working
     allow-then-deny-subpath override for ``file-read*`` (an unfiltered
@@ -195,6 +200,20 @@ def build_seatbelt_profile(workdir: str, policy: SandboxPolicy) -> str:
         "(version 1)\n"
         "(deny default)\n"
         "(allow process*)\n"
+        # `(allow process*)` does not cover `signal`, so without this a sandboxed
+        # process cannot kill its own children: `kill`, `timeout`, `make -j` and
+        # most test runners fail with "Operation not permitted".
+        #
+        # `(target pgrp)` is the operative clause and `(target self)` alone is a
+        # no-op here — verified empirically on macOS 25.5: with only `self`,
+        # `sleep 30 & kill $!` still returns "Operation not permitted"; adding
+        # `pgrp` makes it succeed. `(target others)` is deliberately withheld, so a
+        # sandboxed command can signal its own process group but never the agent
+        # or anything else on the host.
+        "(allow signal (target self) (target pgrp))\n"
+        # Interactive tools (pty-driven REPLs, progress bars) issue terminal
+        # ioctls; denying them turns a working command into an obscure failure.
+        "(allow file-ioctl)\n"
         "(allow sysctl-read)\n"
         "(allow mach-lookup)\n"
         "(allow file-read*)\n"
