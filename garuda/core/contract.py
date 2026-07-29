@@ -130,6 +130,37 @@ class AcceptanceContract:
         criterion.note = note.strip()[:400]
         return True, f"{criterion_id} → {status}"
 
+    def mark_many(self, marks: list[dict]) -> tuple[int, list[str]]:
+        """Resolve several criteria in one go. Returns ``(n_applied, messages)``.
+
+        Exists because marking one criterion per tool call cost one model
+        round-trip each, and a run derives ~15 criteria — measured at 229 calls
+        across 17 benchmark tasks, every one carrying a single mark, which was
+        roughly two thirds of this harness's excess model calls against a
+        comparable one. Same evidence discipline per criterion, a fraction of the
+        turns.
+
+        Partial application is deliberate: a malformed entry reports its own error
+        and the valid ones still land, so one bad note does not force the agent to
+        resend the whole batch.
+        """
+        applied = 0
+        messages: list[str] = []
+        for entry in marks:
+            if not isinstance(entry, dict):
+                messages.append(f"Skipped a mark that is not an object: {entry!r}")
+                continue
+            criterion_id = str(entry.get("id") or "").strip()
+            status = str(entry.get("status") or "").strip().lower()
+            note = str(entry.get("note") or "")
+            if not criterion_id:
+                messages.append("Skipped a mark with no 'id'.")
+                continue
+            ok, message = self.mark(criterion_id, status or UNVERIFIED, note)
+            messages.append(message)
+            applied += int(ok)
+        return applied, messages
+
     def add(self, text: str, kind: str = "behaviour", check: str = "") -> Criterion:
         criterion = Criterion(
             id=f"c{len(self.criteria) + 1}", text=text.strip(), kind=kind, check=check

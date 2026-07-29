@@ -204,6 +204,74 @@ def test_unknown_criterion_is_reported_with_valid_ids():
     assert ok is False and "c1" in message
 
 
+def test_criteria_can_be_resolved_in_one_batch():
+    """Cost fix from the 2026-07-28 benchmark run: 229 contract calls across 17
+    tasks, every one carrying a single mark, at one model round-trip each — about
+    two thirds of this harness's excess model calls versus a comparable one. A
+    task derives ~15 criteria, so batching is the difference between ~15 turns of
+    bookkeeping and one."""
+    contract = _contract()
+    applied, messages = contract.mark_many(
+        [
+            {"id": "c1", "status": VERIFIED, "note": "ran compress.py, diffed 20 filenames"},
+            {"id": "c2", "status": ASSUMED, "note": "task gave no count; chose 10000"},
+        ]
+    )
+    assert applied == 2, messages
+    assert contract.outstanding == []
+
+
+def test_a_bad_entry_does_not_discard_the_good_ones():
+    """Partial application on purpose: forcing a full resend after one malformed
+    note would hand back the turns batching just saved."""
+    contract = _contract()
+    applied, messages = contract.mark_many(
+        [
+            {"id": "c1", "status": VERIFIED, "note": "ran compress.py"},
+            {"id": "c9", "status": VERIFIED, "note": "no such criterion"},
+            {"id": "c2", "status": VERIFIED},  # verified with no note
+        ]
+    )
+    assert applied == 1
+    assert contract.get("c1").status == VERIFIED
+    assert contract.get("c2").status not in (VERIFIED,), "note-less verify must not land"
+    assert any("c9" in m for m in messages)
+
+
+async def test_contract_tool_accepts_a_batch_and_still_accepts_one():
+    """The tool surface, not just the model: both shapes must work, and the batch
+    path must render the contract once rather than once per criterion."""
+    from garuda.tools.contract import ContractTool
+    from garuda.tools.protocol import ToolContext
+
+    contract = _contract()
+    tool = ContractTool()
+    tool.bind("s1", contract)
+    ctx = ToolContext(session_id="s1")
+
+    batch = await tool.execute(
+        {
+            "action": "mark",
+            "marks": [{"id": "c1", "status": VERIFIED, "note": "ran compress.py"}],
+        },
+        None,
+        ctx,
+    )
+    assert batch.is_error is False
+    assert contract.get("c1").status == VERIFIED
+
+    single = await tool.execute(
+        {"action": "mark", "id": "c2", "status": ASSUMED, "note": "chose 10000"},
+        None,
+        ctx,
+    )
+    assert single.is_error is False, "the single-mark form must keep working"
+    assert contract.outstanding == []
+
+    nothing = await tool.execute({"action": "mark"}, None, ctx)
+    assert nothing.is_error is True and "marks" in nothing.content
+
+
 def test_unverifiable_is_an_explicit_escape_not_a_silent_one():
     contract = _contract()
     contract.mark("c1", UNVERIFIABLE, "no network in this sandbox to fetch the reference file")

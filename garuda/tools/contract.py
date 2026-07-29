@@ -27,7 +27,10 @@ class ContractTool:
         "if it were wrong (say what you ran in the note), 'assumed' when the task left a "
         "value open and you chose one (state the value and why it is reasonable), or "
         "'unverifiable' when nothing in this environment could check it (say why). "
-        "Every criterion must be resolved before task_complete will be accepted."
+        "Every criterion must be resolved before task_complete will be accepted.\n"
+        "RESOLVE THEM IN BATCHES: pass `marks` with every criterion you can settle from "
+        "the evidence you already have — one call can resolve all of them. Marking them "
+        "one per call wastes a whole turn each, and a task typically has 10-20."
     )
     parameters = {
         "type": "object",
@@ -37,9 +40,32 @@ class ContractTool:
                 "enum": ["view", "mark", "add"],
                 "description": "'view' lists criteria, 'mark' sets a status, 'add' records a requirement the extraction missed",
             },
+            "marks": {
+                "type": "array",
+                "description": (
+                    "PREFERRED for action='mark': resolve several criteria in one call. "
+                    "Each entry is {id, status, note}. Use this instead of one call per "
+                    "criterion."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Criterion id, e.g. 'c3'"},
+                        "status": {
+                            "type": "string",
+                            "enum": [VERIFIED, ASSUMED, UNVERIFIABLE, UNVERIFIED],
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "How you established it: what you ran and what it showed.",
+                        },
+                    },
+                    "required": ["id", "status"],
+                },
+            },
             "id": {
                 "type": "string",
-                "description": "Criterion id to mark, e.g. 'c3' (required for action='mark')",
+                "description": "Single criterion id to mark, e.g. 'c3'. Prefer `marks` for more than one.",
             },
             "status": {
                 "type": "string",
@@ -102,19 +128,38 @@ class ContractTool:
             )
 
         if action == "mark":
-            criterion_id = (arguments.get("id") or "").strip()
-            status = (arguments.get("status") or "").strip().lower()
-            note = arguments.get("note") or ""
-            if not criterion_id:
-                return ToolResult(
-                    tool_call_id="",
-                    content="action='mark' needs the criterion 'id' (e.g. 'c2').",
-                    is_error=True,
-                )
-            ok, message = contract.mark(criterion_id, status or UNVERIFIED, note)
-            if not ok:
-                return ToolResult(tool_call_id="", content=message, is_error=True)
-            return ToolResult(tool_call_id="", content=f"{message}\n\n{contract.render()}")
+            marks = arguments.get("marks")
+            # A single {id,status,note} is folded into the batch path so there is one
+            # code path to reason about, and so the contract is rendered once per call
+            # rather than once per criterion.
+            if not isinstance(marks, list) or not marks:
+                criterion_id = (arguments.get("id") or "").strip()
+                if not criterion_id:
+                    return ToolResult(
+                        tool_call_id="",
+                        content=(
+                            "action='mark' needs either 'marks' (preferred: a list of "
+                            "{id, status, note} resolving several criteria at once) or a "
+                            "single 'id' (e.g. 'c2')."
+                        ),
+                        is_error=True,
+                    )
+                marks = [
+                    {
+                        "id": criterion_id,
+                        "status": (arguments.get("status") or "").strip().lower(),
+                        "note": arguments.get("note") or "",
+                    }
+                ]
+            applied, messages = contract.mark_many(marks)
+            body = "\n".join(messages)
+            # Errors only fail the call when nothing landed; a partially applied batch
+            # is progress, and flagging it as an error would invite a full resend.
+            return ToolResult(
+                tool_call_id="",
+                content=f"{body}\n\n{contract.render()}",
+                is_error=applied == 0,
+            )
 
         return ToolResult(
             tool_call_id="",
