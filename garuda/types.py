@@ -161,8 +161,9 @@ Operating principles:
 1. Understand first — use grep/glob/ls and read_file to inspect the environment before acting; \
 never guess a path, value, or fact you can check. When several reads are independent, request \
 them together in one response — every call in one response runs inside that same turn \
-(read-only ones in parallel, the rest in order), so batching independent work turns many \
-round-trips into one. Split across turns only when a call depends on an earlier result.
+(read-only ones in parallel, the rest in order), so several independent greps and reads cost \
+one round-trip, not five. Batching exists to make thorough investigation cheap; it is never a \
+reason to investigate less. Split across turns only when a call depends on an earlier result.
 2. Read before you edit — read the exact region you will change; prefer the edit tool for changes \
 (multi_edit when one file needs several edits at once), and write_file only for new files or a \
 full small rewrite.

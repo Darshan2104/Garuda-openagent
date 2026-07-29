@@ -63,6 +63,28 @@ measured — only that it costs less. Worth an ablation run (`eval_gates` varian
 exists for exactly this comparison) before anyone concludes the cheap default is
 free.
 
+**Investigation depth is prompt-governed, and the prompt is load-bearing.**
+Measured 2026-07-30 on 4 tasks, three prompt revisions of the same code:
+adding batching guidance cut cost 67% *and* cut investigation 32% (grep went to
+zero on all four tasks) — the agent read batching as permission to check less.
+Rebalancing to lead with grounding recovered investigation (25 → 35 calls, grep
+0 → 3) while keeping the batching win (contract calls 79 → 6; cost still 58%
+below the un-batched baseline). Two things remain unresolved:
+- **Reward did not follow.** `bash-ddos-traffic-analyzer` scored 1.0 un-batched,
+  0.0 under both later prompts, and grounding did not bring it back. One trial
+  each, in a suite that has flipped `build-coq` 1.0 → 0.0 on identical code, so
+  this is not evidence either way — it is an unexplained regression that a
+  repeated-trial run should either reproduce or dismiss.
+- **Grounding costs wall-clock.** Output tokens rose ~44% on the two tasks that
+  were already investigating enough (8.7k → 12.5k, 11.6k → 16.8k), taking total
+  time on the 4 tasks to 1073s against 945s un-batched — i.e. the batching speed
+  win is gone even though the cost win holds. Fine for a graded run, worth
+  knowing before tuning this prompt for latency.
+Anyone editing these prompts (`types.py:DEFAULT_SYSTEM_PROMPT`,
+`agents/defaults/harbor.yaml`, `agents/defaults/build.yaml`) should assume a
+cost-framed sentence will be read as a licence to skip work, and measure
+investigation counts — not just cost — before and after.
+
 ## Before the next benchmark run
 
 - Set `agent_timeout_sec` in the job kwargs to match `override_timeout_sec`.
