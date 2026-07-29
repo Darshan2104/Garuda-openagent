@@ -192,6 +192,66 @@ async def test_contract_gate_always_has_a_rejection_counter(tmp_path: Path):
     assert len(yields) == 1
 
 
+async def test_contract_rejection_does_not_lock_out_the_resubmission_it_asks_for(
+    tmp_path: Path,
+):
+    """Found in the 2026-07-28 core-16 run: 4 of 16 tasks burned all 60 turns
+    reporting failure while ground truth scored their work 1.0.
+
+    The contract gate refuses *before* any evidence is run, so it has formed no
+    opinion about the attempt's verification commands. Filing them as rejected
+    evidence meant the agent was told "resolve your criteria", did exactly that,
+    resubmitted the same perfectly good commands, and was then told "attempt 2
+    presents no new evidence" — escapable only by inventing a verification
+    command it never needed.
+    """
+    from garuda.core.completion import CompletionGate
+    from garuda.core.contract import AcceptanceContract, Criterion
+    from garuda.core.events import EventStore
+
+    contract = AcceptanceContract(criteria=[Criterion(id="c1", text="must hold")])
+    gate = CompletionGate(
+        task="t",
+        config=_config(enable_verifier=False),
+        context=_NullContext(),
+        env=LocalEnvironment(workspace_root=tmp_path),
+        events=EventStore(),
+        tool_map={},
+    )
+    gate.contract = contract
+    gate.contract_attempted = True
+
+    commands = ["python3 check.py"]
+    call = ToolCall(id="tc", name="task_complete", arguments={"summary": "done"})
+    assert await gate._check_contract(call, commands) is True, "fixture must reject once"
+
+    # The refusal was about criteria, so the commands must not be filed as
+    # rejected evidence — that is the whole bug.
+    assert gate.gate.rejected_command_sets == [], (
+        "contract rejection recorded the attempt's commands as failed evidence"
+    )
+    assert not gate.gate.weaker_than_rejected(commands), (
+        "resubmitting the same commands after resolving criteria must not read as "
+        "'no new evidence' — this is what burned 60 turns on 4 tasks"
+    )
+    assert gate.gate.rejections == 1, "the attempt still counts as a rejection"
+    assert gate.gate.last_feedback, "the agent still needs to see why it was refused"
+
+
+def test_evidence_rejection_still_constrains_the_next_attempt(tmp_path: Path):
+    """The other half: a verdict that *did* judge the commands must still block a
+    bare resubmission. Fixing the contract path must not disarm this."""
+    from garuda.core.verifier import CompletionGateState
+
+    gate = CompletionGateState()
+    gate.record_rejection(["cat out.txt"], "evidence cannot fail")
+    assert gate.weaker_than_rejected(["cat out.txt"]), "identical evidence must be refused"
+    assert gate.weaker_than_rejected([]), "dropping the failed check must be refused"
+    assert not gate.weaker_than_rejected(["cat out.txt", "python3 check.py"]), (
+        "genuinely new evidence must be allowed through"
+    )
+
+
 class _NullContext:
     """Minimal ContextManager stand-in: the gate path only appends and reads."""
 

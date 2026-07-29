@@ -210,7 +210,10 @@ class CompletionGate:
             "were wrong."
         )
         self.events.append(EventType.CONTRACT, {"action": "gate_reject", "outstanding": ids})
-        self.gate.record_rejection(verification_commands, feedback)
+        # Not record_rejection: this refusal never looked at the commands, so
+        # filing them as rejected evidence would lock out the very resubmission
+        # the feedback asks for. See CompletionGateState.record_contract_rejection.
+        self.gate.record_contract_rejection(feedback)
         self._reject(call, feedback)
         return True
 

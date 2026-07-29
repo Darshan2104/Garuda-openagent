@@ -202,8 +202,29 @@ class CompletionGateState:
     contract_yielded: bool = False
 
     def record_rejection(self, commands: list[str], feedback: str | None) -> None:
+        """Record a rejection that actually judged the evidence.
+
+        Only for verdicts that examined ``commands`` and found them wanting —
+        those are the ones a resubmission must improve on. A rejection made on
+        other grounds must use :meth:`record_contract_rejection`.
+        """
         self.rejections += 1
         self.rejected_command_sets.append(frozenset(commands))
+        self.last_feedback = feedback
+
+    def record_contract_rejection(self, feedback: str | None) -> None:
+        """Record a rejection made on acceptance-criteria grounds only.
+
+        Deliberately does **not** add the attempt's commands to
+        ``rejected_command_sets``: the contract gate refuses before any evidence
+        is run, so it has formed no opinion about those commands. Filing them as
+        rejected evidence caused a lockout — the agent was told to resolve its
+        criteria, did so, resubmitted the same (perfectly good) commands, and
+        ``weaker_than_rejected`` then called that a resubmission. The only escape
+        was to invent a verification command it never needed, so runs burned to
+        the turn cap with the work already correct on disk.
+        """
+        self.rejections += 1
         self.last_feedback = feedback
 
     def note_contract_rejection(self, criterion_ids: list[str]) -> int:
