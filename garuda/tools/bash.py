@@ -119,9 +119,15 @@ class BashTool:
             output += BUDGET_CAPPED_NOTE.format(
                 capped=effective, asked=asked, remaining=remaining or 0.0
             )
+        # exit_code is on the metadata, not only in the rendered text: the working
+        # state records which verification commands passed, and re-parsing it out of
+        # the content would mean regexing a header the model can also produce.
+        metadata: dict = {"exit_code": result.exit_code}
+        if launch:
+            metadata["launch"] = launch
         return ToolResult(
             tool_call_id="",
             content=output,
             is_error=failed,
-            metadata={"launch": launch} if launch else {},
+            metadata=metadata,
         )

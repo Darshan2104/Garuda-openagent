@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 import logging
@@ -138,15 +139,21 @@ async def gather_git_evidence(env: Environment) -> str:
     if probe.exit_code != 0:
         return ""
 
+    # Both are read-only git queries with no dependence on each other, so they run
+    # concurrently. The probe stays ahead of them because it decides whether they
+    # are worth running at all. Output order is fixed by the command tuple, not by
+    # which finished first.
+    commands = ("git status --short", "git diff HEAD --stat")
+    outcomes = await asyncio.gather(
+        *(env.execute(command, timeout=EVIDENCE_COMMAND_TIMEOUT) for command in commands),
+        return_exceptions=True,
+    )
     sections: list[str] = []
-    for command in ("git status --short", "git diff HEAD --stat"):
-        try:
-            result = await env.execute(command, timeout=EVIDENCE_COMMAND_TIMEOUT)
-        except Exception:
+    for command, result in zip(commands, outcomes, strict=True):
+        if isinstance(result, BaseException) or result.exit_code != 0:
             continue
-        if result.exit_code == 0:
-            output = result.stdout.strip() or "(no output)"
-            sections.append(f"$ {command}\n{output}")
+        output = result.stdout.strip() or "(no output)"
+        sections.append(f"$ {command}\n{output}")
     return "\n\n".join(sections)
 
 
@@ -278,6 +285,35 @@ NO_EVIDENCE_FEEDBACK = (
 )
 
 
+def _verification_segments(
+    commands: list[str], enabled: bool
+) -> list[tuple[bool, list[tuple[int, str]]]]:
+    """Split verification commands into contiguous ``(is_parallel, [(i, cmd)])`` segments.
+
+    Indices are carried through because ``checklist`` keys are ``verify_cmd_<i>`` in the
+    agent's original numbering, and a segment walk must not renumber them.
+
+    A lone side-effect-free command is emitted as a serial segment: there is nothing to
+    overlap it with, and the serial path is the one whose screening cannot raise a
+    prompt that would not otherwise have happened.
+    """
+    if not enabled:
+        return [(False, [(index, command)]) for index, command in enumerate(commands)]
+    segments: list[tuple[bool, list[tuple[int, str]]]] = []
+    for index, command in enumerate(commands):
+        free = evidence.is_side_effect_free(command)
+        if segments and segments[-1][0] == free:
+            segments[-1][1].append((index, command))
+            continue
+        segments.append((free, [(index, command)]))
+    return [(free and len(group) > 1, group) for free, group in segments]
+
+
+def group_command(group: list[tuple[int, str]], index: int) -> str:
+    """The command at ``index`` within a segment."""
+    return next(command for i, command in group if i == index)
+
+
 class CompletionVerifier:
     async def verify_with_commands(
         self,
@@ -352,61 +388,11 @@ class CompletionVerifier:
                 )
 
         observed: list[dict] = []
-        for index, command in enumerate(verification_commands):
-            if permissions is not None:
-                allowed, denial_reason = await permissions.evaluate_tool_call(
-                    "bash", {"command": command}
-                )
-                if not allowed:
-                    checklist[f"verify_cmd_{index}"] = False
-                    return VerificationResult(
-                        approved=False,
-                        checklist=checklist,
-                        evidence=observed,
-                        feedback=(
-                            f"Verification command denied by permission policy: {command}"
-                            + (f" ({denial_reason})" if denial_reason else "")
-                        ),
-                    )
-            try:
-                result = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
-            except EnvironmentUnavailableError:
-                # The workspace is gone; the loop aborts the run. Never convert
-                # this into a completion verdict of any kind.
-                raise
-            except Exception as exc:
-                checklist[f"verify_cmd_{index}"] = False
-                return VerificationResult(
-                    approved=False,
-                    checklist=checklist,
-                    evidence=observed,
-                    feedback=(
-                        f"Verification command could not be run ({type(exc).__name__}: {exc}): "
-                        f"{command}. Provide a command that completes within "
-                        f"{int(VERIFICATION_COMMAND_TIMEOUT)}s."
-                    ),
-                )
-            key = f"verify_cmd_{index}"
-            checklist[key] = result.exit_code == 0
-            observed.append(
-                {
-                    "command": command,
-                    "class": evidence.classify_command(command),
-                    "exit_code": result.exit_code,
-                    "stdout": (result.stdout or "")[:EVIDENCE_CONTENT_CHARS],
-                    "stderr": (result.stderr or "")[:EVIDENCE_CONTENT_CHARS],
-                }
-            )
-            if result.exit_code != 0:
-                return VerificationResult(
-                    approved=False,
-                    checklist=checklist,
-                    evidence=observed,
-                    feedback=(
-                        f"Verification command failed (exit {result.exit_code}): {command}\n"
-                        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-                    ),
-                )
+        early = await self._run_commands(
+            verification_commands, env, config, permissions, checklist, observed
+        )
+        if early is not None:
+            return early
 
         # Stability: the same checks run twice in a row must agree. A result
         # that holds once and not twice is not a result — it depends on state
@@ -467,6 +453,234 @@ class CompletionVerifier:
         # discriminating evidence and seen it pass, so approving here rests on
         # observed exit codes rather than on the agent's own account.
         return VerificationResult(approved=True, checklist=checklist, evidence=observed)
+
+    # -- running the agent's verification commands -----------------------------
+
+    async def _run_commands(
+        self,
+        commands: list[str],
+        env: Environment,
+        config: AgentConfig,
+        permissions: "PermissionEngine | None",
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        """Run the agent's verification commands, appending to ``observed`` in order.
+
+        Returns a rejection result if one should end verification here, else None.
+
+        Commands run one at a time except where a contiguous run of them is
+        *side-effect free* (``evidence.is_side_effect_free``), in which case that run
+        is gathered. Contiguity matters for the same reason it does in the agent loop:
+        `make build` followed by `./run` are not independent, and only adjacent
+        non-mutating readers can be reordered relative to each other at all.
+        """
+        for parallel, group in _verification_segments(
+            commands, enabled=bool(getattr(config, "parallel_verification", True))
+        ):
+            if parallel:
+                early = await self._run_group_concurrently(
+                    group, env, permissions, checklist, observed
+                )
+            else:
+                early = await self._run_group_serially(
+                    group, env, permissions, checklist, observed
+                )
+            if early is not None:
+                return early
+        return None
+
+    async def _run_group_serially(
+        self,
+        group: list[tuple[int, str]],
+        env: Environment,
+        permissions: "PermissionEngine | None",
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        """Screen-then-execute, one command at a time.
+
+        Byte-for-byte the pre-existing behaviour, and the path every command that
+        might write still takes. Screening stays interleaved with execution here on
+        purpose: a permission decision can prompt the user, so screening a command
+        that a preceding failure means we will never run would raise a prompt that
+        never used to appear.
+        """
+        for index, command in group:
+            denied = await self._screen(command, index, permissions, checklist, observed)
+            if denied is not None:
+                return denied
+            failed = await self._execute_one(command, index, env, checklist, observed)
+            if failed is not None:
+                return failed
+        return None
+
+    async def _run_group_concurrently(
+        self,
+        group: list[tuple[int, str]],
+        env: Environment,
+        permissions: "PermissionEngine | None",
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        """Gather a run of side-effect-free commands, reporting outcomes in order.
+
+        Two behaviour deltas against the serial path, both inherent to running things
+        at once rather than in sequence, and both bounded by the fact that every
+        command here is a non-mutating reader:
+
+        - every command in the group is screened and executed even if an earlier one
+          fails, where the serial path would have stopped;
+        - a failing group therefore reports evidence for commands the serial path
+          would not have run.
+
+        Neither can change the verdict: the rejection reported is still the
+        first-in-order failure, with the same feedback text.
+        """
+        # Screen in order, stopping at the first denial so nothing past it is
+        # screened — matching the serial path's prompt behaviour on a denial.
+        runnable: list[tuple[int, str]] = []
+        denial: tuple[int, str] | None = None
+        for index, command in group:
+            allowed, reason = await self._permit(command, permissions)
+            if not allowed:
+                denial = (index, reason or "")
+                break
+            runnable.append((index, command))
+
+        if runnable:
+            outcomes = await asyncio.gather(
+                *(
+                    env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
+                    for _, command in runnable
+                ),
+                return_exceptions=True,
+            )
+            # A dead workspace aborts the run; it must never be folded into a
+            # completion verdict, so it is surfaced before any result is recorded.
+            for outcome in outcomes:
+                if isinstance(outcome, EnvironmentUnavailableError):
+                    raise outcome
+            first_failure: "VerificationResult | None" = None
+            for (index, command), outcome in zip(runnable, outcomes, strict=True):
+                failed = self._record_outcome(command, index, outcome, checklist, observed)
+                # Keep walking so `observed` holds the whole group, but report the
+                # first failure in the agent's own command order.
+                if failed is not None and first_failure is None:
+                    first_failure = failed
+            if first_failure is not None:
+                return first_failure
+
+        if denial is not None:
+            index, reason = denial
+            return self._denied(group_command(group, index), index, reason, checklist, observed)
+        return None
+
+    async def _permit(
+        self, command: str, permissions: "PermissionEngine | None"
+    ) -> tuple[bool, str | None]:
+        if permissions is None:
+            return True, None
+        return await permissions.evaluate_tool_call("bash", {"command": command})
+
+    async def _screen(
+        self,
+        command: str,
+        index: int,
+        permissions: "PermissionEngine | None",
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        allowed, reason = await self._permit(command, permissions)
+        if allowed:
+            return None
+        return self._denied(command, index, reason, checklist, observed)
+
+    def _denied(
+        self,
+        command: str,
+        index: int,
+        reason: str | None,
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult":
+        checklist[f"verify_cmd_{index}"] = False
+        return VerificationResult(
+            approved=False,
+            checklist=checklist,
+            evidence=observed,
+            feedback=(
+                f"Verification command denied by permission policy: {command}"
+                + (f" ({reason})" if reason else "")
+            ),
+        )
+
+    async def _execute_one(
+        self,
+        command: str,
+        index: int,
+        env: Environment,
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        try:
+            result = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
+        except EnvironmentUnavailableError:
+            # The workspace is gone; the loop aborts the run. Never convert
+            # this into a completion verdict of any kind.
+            raise
+        except Exception as exc:
+            result = exc
+        return self._record_outcome(command, index, result, checklist, observed)
+
+    def _record_outcome(
+        self,
+        command: str,
+        index: int,
+        result,
+        checklist: dict,
+        observed: list[dict],
+    ) -> "VerificationResult | None":
+        """Fold one command's outcome into the checklist and evidence.
+
+        Returns a rejection result if this command is grounds for one. Shared by both
+        paths so a gathered command produces the same checklist key, the same evidence
+        shape and the same feedback text as a serial one.
+        """
+        if isinstance(result, BaseException):
+            checklist[f"verify_cmd_{index}"] = False
+            return VerificationResult(
+                approved=False,
+                checklist=checklist,
+                evidence=observed,
+                feedback=(
+                    f"Verification command could not be run "
+                    f"({type(result).__name__}: {result}): "
+                    f"{command}. Provide a command that completes within "
+                    f"{int(VERIFICATION_COMMAND_TIMEOUT)}s."
+                ),
+            )
+        checklist[f"verify_cmd_{index}"] = result.exit_code == 0
+        observed.append(
+            {
+                "command": command,
+                "class": evidence.classify_command(command),
+                "exit_code": result.exit_code,
+                "stdout": (result.stdout or "")[:EVIDENCE_CONTENT_CHARS],
+                "stderr": (result.stderr or "")[:EVIDENCE_CONTENT_CHARS],
+            }
+        )
+        if result.exit_code != 0:
+            return VerificationResult(
+                approved=False,
+                checklist=checklist,
+                evidence=observed,
+                feedback=(
+                    f"Verification command failed (exit {result.exit_code}): {command}\n"
+                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                ),
+            )
+        return None
 
     async def _recheck_stability(
         self, observed: list[dict], env: Environment

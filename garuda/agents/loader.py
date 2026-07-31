@@ -32,6 +32,15 @@ class AgentProfile:
     max_context_tokens: int = 128_000
     proactive_summarize_threshold: int = 8000
     max_output_bytes: int = 30_720
+    # Context-budget knobs. Authorable per profile for the same reason
+    # max_output_bytes is: a read-only explore agent and a long build agent want
+    # very different amounts of the window held back and spent per observation.
+    reserved_output_tokens: int = 16_000
+    context_safety_margin_tokens: int = 2_000
+    enable_request_preflight: bool = True
+    enable_adaptive_output: bool = True
+    min_output_bytes: int = 2_048
+    enable_working_state_card: bool = True
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -62,6 +71,12 @@ class AgentProfile:
             max_context_tokens=self.max_context_tokens,
             proactive_summarize_threshold=self.proactive_summarize_threshold,
             max_output_bytes=self.max_output_bytes,
+            reserved_output_tokens=self.reserved_output_tokens,
+            context_safety_margin_tokens=self.context_safety_margin_tokens,
+            enable_request_preflight=self.enable_request_preflight,
+            enable_adaptive_output=self.enable_adaptive_output,
+            min_output_bytes=self.min_output_bytes,
+            enable_working_state_card=self.enable_working_state_card,
             workspace_kind=self.workspace_kind,
             docker_image=self.docker_image,
             mcp_config_path=self.mcp_config_path,
@@ -130,6 +145,12 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         max_context_tokens=data.get("max_context_tokens", 128_000),
         proactive_summarize_threshold=data.get("proactive_summarize_threshold", 8000),
         max_output_bytes=data.get("max_output_bytes", 30_720),
+        reserved_output_tokens=data.get("reserved_output_tokens", 16_000),
+        context_safety_margin_tokens=data.get("context_safety_margin_tokens", 2_000),
+        enable_request_preflight=data.get("enable_request_preflight", True),
+        enable_adaptive_output=data.get("enable_adaptive_output", True),
+        min_output_bytes=data.get("min_output_bytes", 2_048),
+        enable_working_state_card=data.get("enable_working_state_card", True),
         workspace_kind=data.get("workspace_kind", "local"),
         docker_image=data.get("docker_image", "ubuntu:22.04"),
         mcp_config_path=data.get("mcp_config_path"),

@@ -237,6 +237,88 @@ def is_discriminating(command: str) -> bool:
     return _STRENGTH[classify_command(command)] >= DISCRIMINATING_THRESHOLD
 
 
+# Programs that only read. Note this is a *different axis* from the classification
+# above: that one ranks how much a command's exit code proves, this one asks whether
+# running it changes anything. They are close to opposites in practice — the commands
+# that prove the most (`pytest`, `make`, the deliverable itself) are exactly the ones
+# that write — which is why concurrency here is a narrow win and not a broad one.
+SIDE_EFFECT_FREE_COMMANDS = INSPECTION_COMMANDS | frozenset(
+    {"diff", "cmp", "test", "[", "[[", "grep", "rg", "egrep", "fgrep", "jq", "sort", "uniq", "cut"}
+)
+
+# Shell constructs that write, or hand off to something that might, regardless of
+# which program is being run. Checked against the raw command because they are
+# syntax, not argv[0].
+_MUTATING_SHELL = re.compile(r">|\btee\b|\bsudo\b|\bxargs\b|`|\$\(")
+
+# A trailing `&` backgrounds the segment so it outlives the check; `&&` does not.
+_TRAILING_BACKGROUND = re.compile(r".*(?<!&)&\s*$", re.DOTALL)
+
+
+def is_side_effect_free(command: str) -> bool:
+    """True only when running this command cannot change anything observable.
+
+    Used to decide which verification commands may run concurrently. An allowlist
+    that fails closed: anything unrecognised — every interpreter, every build tool,
+    every script in the workspace — is assumed to write, because the cost of being
+    wrong is a race between two commands at the completion gate, and the cost of
+    being conservative is only that they run one after another as before.
+
+    Reuses ``split_segments`` so quoting is handled the same way the discriminating
+    classifier handles it: ``echo "cat a > b"`` prints a string and writes nothing,
+    while ``cat a > b`` writes, and a quote-blind check cannot tell them apart.
+    """
+    text = command or ""
+    if not text.strip():
+        return False
+    segments = split_segments(text)
+    if not segments:
+        return False
+    for segment in segments:
+        # `&` backgrounds the segment, so it outlives the check and can do anything
+        # afterwards. `>` and friends are looked for per segment for the same reason
+        # split_segments exists: the operators only mean redirection outside quotes.
+        if _MUTATING_SHELL.search(segment) or _TRAILING_BACKGROUND.match(segment):
+            return False
+        head = _command_head(segment)
+        # A segment that is only `cd x` or env assignments resolves to no program.
+        # `cd` cannot be treated as harmless here: it moves the working directory for
+        # everything after it in the same command, so its effect is exactly the kind
+        # of ordering dependence that makes concurrency unsafe.
+        if head is None or head not in SIDE_EFFECT_FREE_COMMANDS:
+            return False
+    return True
+
+
+def _command_head(segment: str) -> str | None:
+    """Resolved program name for one segment, or None if it runs no program.
+
+    Skips leading env assignments and wrapper prefixes, so ``FOO=1 timeout 5 cat x``
+    is judged on ``cat``. Unlike ``classify_segment`` it does **not** skip ``sudo``
+    (caught as mutating by the caller) or ``cd`` (which resolves to ``cd``, is absent
+    from the allowlist, and therefore makes the whole command ineligible).
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if "=" in token and not token.startswith("-") and re.match(r"^\w+=", token):
+            index += 1
+            continue
+        if token in ("env", "nohup", "time", "timeout", "stdbuf", "nice"):
+            index += 1
+            while index < len(tokens) and re.match(r"^-|^\d+[smhd]?$", tokens[index]):
+                index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return None
+    return tokens[index].rsplit("/", 1)[-1]
+
+
 def weakness_reason(command: str) -> str:
     """Explain, for the model, why a command does not count as evidence."""
     label = classify_command(command)

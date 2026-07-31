@@ -13,7 +13,7 @@ from garuda.core.permissions import PermissionEngine
 from garuda.eval.atif_export import events_to_atif, save_atif_trajectory
 from garuda.eval.harbor_environment import HarborEnvironmentAdapter
 from garuda.model.litellm_model import LitellmModel
-from garuda.model.protocol import ModelResponse
+from garuda.model.protocol import ModelResponse, count_request_tokens
 from garuda.tools import build_toolkit
 from garuda.types import Message
 
@@ -82,6 +82,11 @@ class _UsageTrackingModel:
 
     def count_tokens(self, messages: list[Message]) -> int:
         return self._inner.count_tokens(messages)
+
+    def count_request_tokens(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> int:
+        return count_request_tokens(self._inner, messages, tools)
 
 
 class GarudaHarborAgent(BaseAgent):

@@ -103,12 +103,51 @@ class AgentConfig:
     # Largest share of the *remaining* wall-clock budget any single command may
     # consume. Stops one hung command from spending the rest of the run.
     max_command_budget_fraction: float = 0.5
+    # Ceiling on how many read-only tool calls execute concurrently within one
+    # model response. Unbounded fan-out is not free: each read can be a
+    # `docker exec`, so a response with twenty of them would open twenty
+    # containers' worth of work at once and contend with itself.
+    max_parallel_reads: int = 8
+    # Run contiguous runs of side-effect-free verification commands concurrently
+    # at the completion gate. Cannot change a verdict — the allowlist in
+    # core/evidence.py admits only non-mutating readers, and evidence stays in the
+    # command order the agent supplied — so this is a plain latency field rather
+    # than one of the mode gates in core/modes.py.
+    parallel_verification: bool = True
     enable_tmux: bool = True
     marker_polling: bool = True
     enable_three_step_summary: bool = True
     condenser: str = "microcompact"
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
+    # Context window held back for the model's own response. The window is shared
+    # between prompt and completion, so budgeting the prompt against the whole of it
+    # declares "10% free" at the exact moment a long answer will not fit. Raised
+    # automatically for a reasoning run (see run_state.reserved_output_tokens). Set
+    # to 0 to restore the pre-existing behaviour of budgeting against the raw window.
+    reserved_output_tokens: int = 16_000
+    # Slack on top of the reserve, absorbing what no local count can see: provider
+    # framing, a tokenizer that disagrees with ours, an image larger than estimated.
+    context_safety_margin_tokens: int = 2_000
+    # Re-check the budget immediately before the model call, not only at the top of
+    # the turn. Between the two, steering nudges and re-pinned state are appended —
+    # so without this the measured prompt is never the prompt that gets sent.
+    enable_request_preflight: bool = True
+    # Scale the per-tool-result byte budget to how much window is left, instead of
+    # spending a flat 30 KiB whether the run is 10% or 95% full. Under pressure this
+    # mostly moves output into the buffer (lossless, still greppable) rather than
+    # truncating it. False restores the flat max_output_bytes.
+    enable_adaptive_output: bool = True
+    # Floor for the adaptive budget. Below this a result stops being useful at all,
+    # and re-running the tool costs more than the bytes saved.
+    min_output_bytes: int = 2_048
+    # Maintain the run's goal, todos, modified files, verification results and
+    # acceptance criteria as structured state the harness owns, rather than facts
+    # the model re-derives into prose on every compaction. Re-pinned as one message
+    # instead of three, and handed to the summarizer as givens so the model's own
+    # summary covers only findings and dead ends. False restores the prose-only
+    # behaviour and the three separate pinned messages.
+    enable_working_state_card: bool = True
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     docker_host: str | None = None

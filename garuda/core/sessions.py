@@ -245,6 +245,31 @@ class SessionStore:
             json.dumps([message_to_dict(m) for m in messages], indent=2, default=str),
         )
 
+    def checkpoint_state(self, session_id: str, state: dict) -> None:
+        """Atomically persist the run's working state alongside its messages.
+
+        The transcript alone does not carry it: after a compaction the card *is* the
+        record of which files were touched and which checks passed, so a resume that
+        restored only messages would come back having forgotten its own work.
+        """
+        directory = self.session_dir(session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(
+            directory / "state.json", json.dumps(state, indent=2, default=str)
+        )
+
+    def load_state(self, session_id: str) -> dict:
+        """The persisted working state, or {} when a session has none."""
+        path = self.session_dir(session_id) / "state.json"
+        if not path.exists():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("Unreadable working state for session %s", session_id)
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
     def finish(self, session_id: str, result: AgentResult) -> None:
         """Persist the final message state and update meta."""
         directory = self.session_dir(session_id)

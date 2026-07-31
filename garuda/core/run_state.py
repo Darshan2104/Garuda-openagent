@@ -15,9 +15,11 @@ import time
 from dataclasses import dataclass, field
 
 from garuda.context.manager import ContextManager
+from garuda.context.state_card import WorkingState
 from garuda.core.action_memo import ActionMemo
 from garuda.core.completion import CompletionGate
 from garuda.core.events import EventStore, EventType
+from garuda.core.metrics import RunMetrics, stopwatch
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.core.steering import Steering
@@ -54,6 +56,19 @@ class RunState:
     ledger: SideEffectLedger
     emit_session_events: bool
     checkpoint: object | None = None
+    # Persists the working state next to the messages. Separate from ``checkpoint``
+    # because the transcript is not a superset of it: after a compaction the card is
+    # the only remaining record of which files were touched and which checks passed.
+    state_checkpoint: object | None = None
+    metrics: RunMetrics = field(default_factory=RunMetrics)
+    # The tool schemas sent with every model call, built once (see
+    # ``build_tools_schema``). Held here so the loop sends the same object each
+    # turn and the context budget can cache its cost against it.
+    tools_schema: list[dict] = field(default_factory=list)
+    # The run's deterministic self-knowledge: goal, todos, files touched, checks
+    # run, criteria. Re-pinned after compaction and fed to the summarizer as given
+    # facts, so the model is not asked to remember what the harness already knows.
+    state: WorkingState = field(default_factory=WorkingState)
 
     usage_totals: dict[str, int] = field(default_factory=dict)
     final_message: str = ""
@@ -63,6 +78,7 @@ class RunState:
     last_assistant_text: str = ""
 
     def accumulate_usage(self, usage: dict[str, int]) -> None:
+        self.metrics.note_usage(usage)
         for key, value in (usage or {}).items():
             if key == "cost_usd":
                 # Provider-reported spend: a float, and summed as one. Coercing it to
@@ -71,6 +87,20 @@ class RunState:
                 continue
             self.usage_totals[key] = self.usage_totals.get(key, 0) + int(value)
 
+    def flush_turn_metrics(self) -> None:
+        """Append the open turn's metrics event, once.
+
+        Called both from the loop after each turn and from the result builders below,
+        because a turn that ends the run builds its result from inside the tool walk
+        and that result snapshots the event list. Emitting only from the loop left the
+        final turn's metrics out of every consumer reading ``metadata["events"]``.
+        """
+        record = self.metrics.current
+        if record is None or record.emitted:
+            return
+        record.emitted = True
+        self.events.append(EventType.TURN_METRICS, record.to_dict())
+
     def result(self, success: bool, final_message: str, turns: int) -> AgentResult:
         """Build the AgentResult, surfacing how the run behaved in metadata.
 
@@ -78,10 +108,12 @@ class RunState:
         established are on the result so a caller can see them without replaying
         the event log.
         """
+        self.flush_turn_metrics()
         metadata: dict = {
             "session_id": self.events.session_id,
             "events": self.events.get_all(),
             "usage": dict(self.usage_totals),
+            "metrics": self.metrics.summary(),
             "action_memo": self.memo.stats(),
             "side_effects": self.ledger.summary(),
         }
@@ -102,6 +134,7 @@ class RunState:
     def bare_result(self, success: bool, final_message: str, turns: int) -> AgentResult:
         """Result without run-behaviour metadata, for failures that happened before
         the run produced any: a model error or a dead workspace."""
+        self.flush_turn_metrics()
         return AgentResult(
             success=success,
             final_message=final_message,
@@ -111,6 +144,9 @@ class RunState:
                 "session_id": self.events.session_id,
                 "events": self.events.get_all(),
                 "usage": dict(self.usage_totals),
+                # Included even here: how long a run spent before dying on a model
+                # error or a dead workspace is exactly what you want to see.
+                "metrics": self.metrics.summary(),
             },
         )
 
@@ -145,12 +181,92 @@ class RunState:
     def save_checkpoint(self) -> None:
         """Persist the conversation so a crash/kill mid-run is still resumable from
         the last completed turn. Best-effort; never breaks the run."""
-        if self.checkpoint is None:
+        if self.checkpoint is None and self.state_checkpoint is None:
             return
         try:
-            self.checkpoint(self.context.get_messages())
+            with stopwatch() as elapsed:
+                if self.checkpoint is not None:
+                    self.checkpoint(self.context.get_messages())
+                if self.state_checkpoint is not None:
+                    self.state_checkpoint(self.refresh_state().to_dict())
         except Exception:
             logger.warning("Session checkpoint failed", exc_info=True)
+        # Recorded because this write is O(transcript) every turn, so it grows with
+        # the run. If it ever shows up against model and tool time, that is the
+        # number that justifies replacing it with an append-only delta log.
+        record = self.metrics.current
+        if record is not None:
+            record.checkpoint_ms = round(record.checkpoint_ms + elapsed[0], 3)
+
+    async def compact_if_needed(self, turn: int) -> bool:
+        """Compact if the next request would not fit, and re-pin what compaction drops.
+
+        Called twice per turn: once at the top of the loop, and once immediately
+        before the model call. The second check is what makes the budget honest —
+        steering nudges, re-pinned state and the previous turn's tool results all
+        land between the two, so the first check measures a prompt that is never
+        the one sent. Cheap when there is nothing to do: the condenser's first gate
+        is a compare against an already-anchored gauge.
+        """
+        with stopwatch() as elapsed:
+            summarized = await self.context.maybe_summarize()
+        if not summarized:
+            return False
+        record = self.metrics.current
+        if record is not None:
+            record.compaction_ms = round(record.compaction_ms + elapsed[0], 3)
+        self.events.append(
+            EventType.SUMMARIZATION, {"turn": turn, "duration_ms": elapsed[0]}
+        )
+        # Compaction can summarize away the goal and todo list; re-pin them so long
+        # tasks keep their north star and don't re-derive their plan (which would
+        # waste turns and tokens).
+        self.reinject_pinned_state()
+        return True
+
+    def note_context_budget(self, turn: int) -> None:
+        """Record what the request about to be sent will cost.
+
+        Every compaction decision is made on the harness's own view of the budget,
+        and until now that view appeared nowhere in a trajectory — only the
+        provider's after-the-fact count did. Best-effort: a gauge must never be
+        able to end a run.
+        """
+        try:
+            payload = self.context.budget_snapshot()
+        except Exception:
+            logger.debug("Context budget snapshot failed", exc_info=True)
+            return
+        self.events.append(
+            EventType.BUDGET, {"stage": "context", "turn": turn, **payload}
+        )
+
+    def refresh_state(self) -> WorkingState:
+        """Pull the run's live facts into the working state and return it.
+
+        Reads the sources rather than mirroring them: the goal tool, the todo tool,
+        the side-effect ledger and the contract are each already the authority on
+        their own field, and a second copy kept in sync by hand is a second copy
+        that can be wrong.
+        """
+        state = self.state
+        state.task = self.task
+        state.acceptance = ""
+        contract = self.completion.contract
+        if contract is not None and contract.criteria:
+            state.acceptance = contract.render()
+        goal_tool = self.tool_map.get("update_goal")
+        if goal_tool is not None:
+            state.goal = goal_tool.get_goal(self.events.session_id) or ""
+        todo_tool = self.tool_map.get("todo")
+        if todo_tool is not None:
+            state.todos = todo_tool.get_todos(self.events.session_id)
+        state.files_modified = sorted(self.ledger.files_written)
+        return state
+
+    def render_state_card(self) -> str:
+        """The current working state as it would appear in context."""
+        return self.refresh_state().render()
 
     def reinject_pinned_state(self) -> None:
         """Re-pin this run's goal, todos and acceptance criteria after a compaction."""
@@ -159,6 +275,7 @@ class RunState:
             self.tool_map,
             self.events.session_id,
             contract=self.completion.contract,
+            state=self.refresh_state() if self.config.enable_working_state_card else None,
         )
 
 
@@ -167,16 +284,26 @@ def reinject_pinned_state(
     tool_map: dict[str, Tool],
     session_id: str,
     contract=None,
+    state: WorkingState | None = None,
 ) -> None:
-    """Re-surface the current goal, todo list and acceptance criteria as compact
-    messages after a compaction, so they survive summarization. Safe at the top
-    of a turn (the prior turn's tool-result block is already complete). No-op
-    when unset.
+    """Re-surface what compaction is allowed to drop, as compact messages. Safe at
+    the top of a turn (the prior turn's tool-result block is already complete).
+    No-op when there is nothing pinned.
+
+    Given a ``WorkingState``, this is one message: the card already carries goal,
+    todos and criteria alongside the files and checks the run has to its name, and
+    three separate messages saying pieces of the same thing cost more and read as
+    three unrelated interruptions. Without one, it falls back to the original
+    per-source messages so a caller that never built a card still gets its state back.
 
     A free function, not just a ``RunState`` method: it depends on nothing but its
     arguments, and keeping it callable without a whole run assembled is what makes
     it directly testable.
     """
+    if state is not None:
+        if not state.is_empty():
+            context.append(Message(role=Role.USER, content=state.render()))
+        return
     if contract is not None and contract.criteria:
         # The criteria are what the completion gate checks; losing them to
         # compaction is how a long run forgets what it was asked for.
@@ -212,6 +339,41 @@ def reinject_pinned_state(
             )
 
 
+def reserved_output_tokens(config: AgentConfig) -> int:
+    """Window to hold back for the model's own response.
+
+    A reasoning run needs more than a normal one, and the amount is already known:
+    ``LitellmModel._apply_reasoning`` forces ``max_tokens`` to at least the thinking
+    budget plus 4096, so reserving less than that guarantees the prompt budget is
+    wrong on exactly the runs with the least room to spare.
+    """
+    budget = getattr(config, "thinking_budget_tokens", None)
+    if budget:
+        return max(config.reserved_output_tokens, int(budget) + 4096)
+    return config.reserved_output_tokens
+
+
+def build_tools_schema(tools: list[Tool]) -> list[dict]:
+    """The tool schemas sent with every model call.
+
+    Built once per run rather than per turn. Two reasons beyond the obvious: the
+    context budget needs a stable object to cache its token cost against, and an
+    identical list object turn after turn keeps the request's cached prefix
+    byte-identical, which is the same reason ``_filter_tools`` preserves order.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            },
+        }
+        for tool in tools
+    ]
+
+
 def _filter_tools(tools: list[Tool], allowed_names: list[str]) -> list[Tool]:
     """Restrict the toolset to the profile's list, keeping what a run cannot work without."""
     allowed = set(allowed_names)
@@ -245,6 +407,7 @@ async def prepare_run(
     context: ContextManager | None,
     checkpoint,
     buffer,
+    state_checkpoint=None,
     emit_session_events: bool,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
@@ -265,6 +428,7 @@ async def prepare_run(
     if config.allowed_tools:
         tools = _filter_tools(tools, config.allowed_tools)
     tool_map = {tool.name: tool for tool in tools}
+    tools_schema = build_tools_schema(tools)
 
     # A caller (e.g. a forked subagent) may pass its parent's buffer so inherited
     # [buffer:...] stubs resolve; otherwise create one for this session. Created
@@ -299,6 +463,10 @@ async def prepare_run(
             task=task,
             condenser=config.condenser,
             buffer=buffer,
+            reserved_output_tokens=reserved_output_tokens(config),
+            safety_margin_tokens=config.context_safety_margin_tokens,
+            adaptive_output=config.enable_adaptive_output,
+            min_output_bytes=config.min_output_bytes,
         )
         context.seed(
             [
@@ -308,6 +476,10 @@ async def prepare_run(
         )
     else:
         context.attach_buffer(buffer)
+    # Told to the context in both branches: a reused context (resume, subagent) has
+    # the caller's toolkit, not the one it was built with, and a budget that counts
+    # the wrong schemas is worse than one that counts none.
+    context.set_tools(tools_schema)
     events.append(EventType.USER_MESSAGE, {"content": task})
 
     if subagent_runner is None and "invoke_subagent" in tool_map:
@@ -349,8 +521,17 @@ async def prepare_run(
     # Session-wide record of what has already been asked, so a read repeated
     # 30 turns later is answered from memory rather than re-executed.
     memo = ActionMemo()
+    # Shared by the loop (turn boundaries, model and compaction time) and the tool
+    # runner (per-call and per-segment time), so neither has to thread numbers back
+    # through return values to reach the other.
+    metrics = RunMetrics()
+    # Assembled here rather than inside RunState so the tool runner can be handed
+    # the same object: the runner is what sees every command and every error, and
+    # threading those back out through return values would put a state argument on
+    # four signatures to save one attribute.
+    state = WorkingState(task=task)
 
-    return RunState(
+    run_state = RunState(
         task=task,
         config=config,
         events=events,
@@ -367,6 +548,9 @@ async def prepare_run(
             events=events,
             memo=memo,
             ledger=ledger,
+            metrics=metrics,
+            max_parallel_reads=config.max_parallel_reads,
+            state=state if config.enable_working_state_card else None,
         ),
         completion=CompletionGate(
             task=task,
@@ -388,4 +572,14 @@ async def prepare_run(
         ledger=ledger,
         emit_session_events=emit_session_events,
         checkpoint=checkpoint,
+        state_checkpoint=state_checkpoint if config.enable_working_state_card else None,
+        metrics=metrics,
+        tools_schema=tools_schema,
+        state=state,
     )
+    if config.enable_working_state_card:
+        # A callable, not the object: the card needs the contract and the tool map,
+        # which only exist once the run is assembled — and passing a callable keeps
+        # garuda/context from having to import garuda/core to read them.
+        context.set_state_provider(run_state.render_state_card)
+    return run_state

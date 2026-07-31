@@ -95,8 +95,16 @@ class ToolOutputBuffer:
             _prune_old_buffer_dirs(sessions_root)  # bound cross-session disk growth
         self._refs: dict[str, BufferRef] = {}
 
-    def exceeds(self, content: str) -> bool:
-        return len(content.encode("utf-8", errors="ignore")) > self.threshold_bytes
+    def exceeds(self, content: str, threshold: int | None = None) -> bool:
+        """Whether ``content`` is large enough to belong on disk rather than in context.
+
+        ``threshold`` overrides the session default so a caller that knows how full
+        the window is can demote earlier: buffering is lossless (the body stays
+        retrievable) where truncation is not, so under pressure it is strictly the
+        better place for the boundary to move.
+        """
+        limit = self.threshold_bytes if threshold is None else threshold
+        return len(content.encode("utf-8", errors="ignore")) > limit
 
     def _path(self, buffer_id: str) -> Path:
         # Keep the stem filesystem-safe and bounded — some providers (Gemini)

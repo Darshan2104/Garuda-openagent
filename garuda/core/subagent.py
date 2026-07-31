@@ -5,9 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
-from garuda.context.manager import ContextManager
+from garuda.context.manager import (
+    FORK_BRIEF,
+    FORK_NONE,
+    ContextManager,
+    normalize_handoff,
+)
 from garuda.core.events import EventStore, EventType
 from garuda.core.permissions import PermissionEngine
+from garuda.core.run_state import reserved_output_tokens
 from garuda.model.protocol import Model
 from garuda.tools import build_toolkit
 from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentResult, Message, Role
@@ -42,7 +48,9 @@ class SubagentRunner:
     skills_dirs: list[str] | None = None
     workspace_root: str | None = None
     max_turns: int = 50
-    fork_parent_context: bool = False
+    # Default handoff when the caller doesn't name one. Accepts a bool for
+    # back-compat: True is "full" (the whole transcript), False is "none".
+    fork_parent_context: bool | str = FORK_NONE
     parent_messages: list[Message] | None = None
     parent_context: ContextManager | None = None
     # Inherited from the parent so ASK decisions and lifecycle hooks behave the
@@ -59,12 +67,53 @@ class SubagentRunner:
             return self.parent_context.get_messages()
         return self.parent_messages
 
+    def _handoff_context(
+        self, mode: str, profile_name: str, task: str, config
+    ) -> ContextManager | None:
+        """Build the subagent's starting context for a ``brief`` or ``full`` handoff.
+
+        Returns None when there is nothing to hand over, so the caller falls back to
+        a cold start rather than seeding an empty conversation.
+
+        A ``brief`` handoff goes through the parent's ``ContextManager`` because only
+        it can render the working-state card; without a live parent context (a caller
+        that passed raw ``parent_messages``) there is no card to render, so brief
+        degrades to full rather than silently handing over nothing.
+        """
+        if mode == FORK_BRIEF and self.parent_context is not None:
+            context = self.parent_context.fork(mode=FORK_BRIEF)
+            context.set_task(task)
+        else:
+            snapshot = self._parent_snapshot()
+            if not snapshot:
+                return None
+            context = ContextManager(
+                model=self.model,
+                max_output_bytes=config.max_output_bytes,
+                proactive_threshold=config.proactive_summarize_threshold,
+                max_context_tokens=config.max_context_tokens,
+                enable_three_step_summary=False,
+                task=task,
+                reserved_output_tokens=reserved_output_tokens(config),
+                safety_margin_tokens=config.context_safety_margin_tokens,
+                adaptive_output=config.enable_adaptive_output,
+                min_output_bytes=config.min_output_bytes,
+            )
+            context.seed(_drop_incomplete_tail(deepcopy(snapshot)))
+
+        # Run under the subagent's OWN persona, not the parent's leading system msg.
+        context.replace_system_message(config.system_prompt or DEFAULT_SYSTEM_PROMPT)
+        context.append(
+            Message(role=Role.USER, content=f"[subagent:{profile_name}] {task}")
+        )
+        return context
+
     async def run(
         self,
         profile_name: str,
         task: str,
         *,
-        fork_parent_context: bool | None = None,
+        fork_parent_context: bool | str | None = None,
     ) -> AgentResult:
         from garuda.core.loop import DefaultAgent
 
@@ -88,37 +137,16 @@ class SubagentRunner:
         sub_events = EventStore()
         agent = DefaultAgent(profile_name=profile.name)
 
-        use_fork = self.fork_parent_context if fork_parent_context is None else fork_parent_context
-        parent_snapshot = self._parent_snapshot()
+        mode = normalize_handoff(
+            self.fork_parent_context if fork_parent_context is None else fork_parent_context
+        )
         context: ContextManager | None = None
         shared_buffer = None
-        if use_fork and parent_snapshot:
-            context = ContextManager(
-                model=self.model,
-                max_output_bytes=config.max_output_bytes,
-                proactive_threshold=config.proactive_summarize_threshold,
-                max_context_tokens=config.max_context_tokens,
-                enable_three_step_summary=False,
-                task=task,
-            )
-            snapshot = _drop_incomplete_tail(deepcopy(parent_snapshot))
-            # Run under the subagent's OWN persona, not the parent's leading system msg.
-            sub_system = Message(
-                role=Role.SYSTEM, content=config.system_prompt or DEFAULT_SYSTEM_PROMPT
-            )
-            if snapshot and snapshot[0].role == Role.SYSTEM:
-                snapshot[0] = sub_system
-            else:
-                snapshot.insert(0, sub_system)
-            context.seed(snapshot)
-            context.append(
-                Message(
-                    role=Role.USER,
-                    content=f"[subagent:{profile_name}] {task}",
-                )
-            )
-            # Share the parent buffer so inherited stubs are retrievable.
-            shared_buffer = self.parent_buffer
+        if mode != FORK_NONE:
+            context = self._handoff_context(mode, profile_name, task, config)
+            if context is not None:
+                # Share the parent buffer so inherited stubs are retrievable.
+                shared_buffer = self.parent_buffer
 
         try:
             result = await agent.run(

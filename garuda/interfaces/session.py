@@ -10,6 +10,7 @@ from garuda.core.events import EventStore
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
+from garuda.core.run_state import reserved_output_tokens
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.tools import build_toolkit
@@ -96,6 +97,10 @@ class AgentSession:
                 max_context_tokens=self.config.max_context_tokens,
                 enable_three_step_summary=self.config.enable_three_step_summary,
                 task=task,
+                reserved_output_tokens=reserved_output_tokens(self.config),
+                safety_margin_tokens=self.config.context_safety_margin_tokens,
+                adaptive_output=self.config.enable_adaptive_output,
+                min_output_bytes=self.config.min_output_bytes,
             )
             self.context.seed(
                 [

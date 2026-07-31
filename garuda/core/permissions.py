@@ -88,13 +88,24 @@ SEARCH_TOOLS = {
     "ls": ("path",),
 }
 
-# File-operation tools that modify the filesystem.
-WRITE_TOOLS = {"write_file", "edit", "multi_edit"}
+# File-operation tools that modify the filesystem. `notebook_edit` is listed for
+# consistency with `side_effects._WRITE_TOOLS`, which already treats it as mutating;
+# no such tool ships today, so this is here so that the sets agree in advance rather
+# than to close a live hole.
+WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
 
 # File-operation tools that only read.
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet"}
 
-READONLY_DENIED_TOOLS = {"write_file", "edit", "multi_edit", "tmux_exec", "bash_background", "kill_task"}
+READONLY_DENIED_TOOLS = {
+    "write_file",
+    "edit",
+    "multi_edit",
+    "notebook_edit",
+    "tmux_exec",
+    "bash_background",
+    "kill_task",
+}
 
 
 def command_path_tokens(command: str) -> list[str]:

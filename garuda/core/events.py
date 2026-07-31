@@ -26,6 +26,7 @@ class EventType(str, Enum):
     BUDGET = "budget"
     SIDE_EFFECTS = "side_effects"
     CONTRACT = "contract"
+    TURN_METRICS = "turn_metrics"
 
 
 class EventStore:

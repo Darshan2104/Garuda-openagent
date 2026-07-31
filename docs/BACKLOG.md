@@ -52,6 +52,52 @@ Judged and set aside, not overlooked. Each needs something we don't have yet.
 
 ## Open work
 
+**Loop latency is now instrumented; nothing has been measured with it yet.**
+`core/metrics.py` records per-turn model latency, tool latency, tool wall-clock,
+compaction and checkpoint time, and cache-hit rate. The rollup is on
+`AgentResult.metadata["metrics"]` and a `turn_metrics` event lands per turn, so the
+wall-clock figures elsewhere in this file (945s → 1073s above, −16% below) no longer
+have to be assembled by hand. Nothing in this file has been re-measured with it. Two
+things to know before quoting a number from it:
+- `model_ms` includes retry/backoff inside the client, on purpose — that is
+  wall-clock the run spent — so a rate-limited run will show model time that is not
+  model *compute* time.
+- `parallel_saved_ms` is summed per-call durations minus segment wall-clock. It
+  measures overlap, not end-to-end improvement; a run whose turn count moved has not
+  been made faster just because this number is positive. The same trap as the
+  `preserve_reasoning` cost prediction below.
+
+**Two concurrency behaviour deltas, both deliberate, neither verdict-affecting.**
+- *Agent loop.* A response's calls are now split into contiguous read-only /
+  not-read-only segments (`loop.py::_segment_calls`), so one write no longer forces
+  the whole response sequential. Contiguity is what makes it safe — a read before a
+  write still runs before it. Fan-out is bounded by
+  `AgentConfig.max_parallel_reads` (8); it was previously unbounded, so a response
+  with twenty reads opened twenty at once.
+- *Completion gate.* Contiguous runs of side-effect-free verification commands are
+  gathered (`evidence.is_side_effect_free`, a fail-closed allowlist). Within such a
+  group every command is screened and executed even if an earlier one fails, where
+  the serial path stopped — so a *failing* group reports evidence for commands that
+  previously would not have run. The rejection is still the first-in-order failure
+  with the same feedback text, and every command in a group is a non-mutating
+  reader, so no verdict can move. Commands that might write still run one at a time,
+  and `_recheck_stability` is deliberately still serial: it re-runs exactly the
+  discriminating commands (`pytest`, `make`, the deliverable), which are precisely
+  the ones that are not side-effect free.
+
+The honest size of the gate win: the allowlist excludes every assertion runner, which
+is exactly what `require_discriminating_evidence` pushes the agent toward. On a
+well-formed submission most commands still run serially. The unconditional win is the
+two independent git reads in `gather_git_evidence`.
+
+**Per-turn checkpoints are still O(n²) and still unmeasured.**
+`sessions.py::checkpoint_messages` re-serialises and rewrites the whole transcript
+every turn. Left alone deliberately: `eval/harbor_adapter.py` never passes
+`checkpoint`, so benchmark runs pay none of it — this is an interactive/long-session
+cost only. `checkpoint_ms` is now recorded, so the decision to replace it with an
+append-only delta log plus periodic snapshot can be made on a number rather than on
+the complexity argument.
+
 **Docs onboarding path is new and unproven.** ARCHITECTURE → MODULES → this file
 replaced a long status diary. If a contributor still can't get oriented from those
 three, the gap is a bug in them.

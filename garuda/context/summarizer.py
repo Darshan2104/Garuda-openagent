@@ -18,27 +18,58 @@ _STATE_SYSTEM = (
     "Be concise and factual. Output ONLY the updated state, nothing else."
 )
 
+# Used instead of the above when the harness supplies a working-state card. The
+# objective, the file list, the todos and the verification results are then known
+# exactly, and asking a model to restate them is both a waste of the call and a
+# chance for it to get one wrong. What no ledger can produce is judgement: what was
+# learned, what was tried and abandoned, and why the current approach is the one.
+_NOTES_SYSTEM = (
+    "You maintain the ANALYTICAL NOTES of an agent's run — the part of its memory that "
+    "cannot be read off a ledger. A separate working-state card, supplied below, already "
+    "records the objective, the files changed, the todo list, the commands run with their "
+    "exit codes, and the acceptance criteria. Do NOT restate any of that.\n"
+    "Update the existing notes with what the new transcript reveals, PRESERVING still-relevant "
+    "prior notes (do not drop them). Keep exactly these sections:\n"
+    "## Key findings\n## Failed approaches\n## Rationale\n"
+    "Key findings: facts established about the codebase, data, or environment, with how they "
+    "were established. Failed approaches: what was tried, why it did not work, and what that "
+    "rules out. Rationale: why the current approach was chosen over the alternatives.\n"
+    "Be concise and factual. Never invent a result. Output ONLY the updated notes, nothing else."
+)
+
 
 async def summarize_incremental(
-    model: Model, prior_state: str, messages: list[Message], task: str
+    model: Model, prior_state: str, messages: list[Message], task: str, working_state: str = ""
 ) -> str:
     """Fold new transcript into a running structured state (one model call).
 
     Unlike a full re-summarize, this preserves prior structured facts and merges,
     so quality doesn't drift over many compactions and the input stays bounded
-    (after the first rebuild, only a small window is fed back in)."""
+    (after the first rebuild, only a small window is fed back in).
+
+    With a ``working_state`` card the job narrows to analytical notes — the card
+    carries the mechanical facts verbatim, which is both cheaper and more reliable
+    than a paraphrase of them.
+    """
     transcript = _render_history(messages)
-    prior = prior_state.strip() or "(no state yet — create it)"
+    prior = prior_state.strip() or "(no notes yet — create them)"
+    if working_state.strip():
+        system = _NOTES_SYSTEM
+        preamble = (
+            f"Task:\n{task}\n\nWorking state (already recorded — do not restate):\n"
+            f"{working_state.strip()}\n\nCurrent notes:\n{prior}\n\n"
+        )
+        closing = "Return the full updated notes."
+    else:
+        system = _STATE_SYSTEM
+        preamble = f"Task:\n{task}\n\nCurrent state:\n{prior}\n\n"
+        closing = "Return the full updated structured state."
     response = await model.complete(
         [
-            Message(role=Role.SYSTEM, content=_STATE_SYSTEM),
+            Message(role=Role.SYSTEM, content=system),
             Message(
                 role=Role.USER,
-                content=(
-                    f"Task:\n{task}\n\nCurrent state:\n{prior}\n\n"
-                    f"New transcript to fold in:\n{transcript}\n\n"
-                    "Return the full updated structured state."
-                ),
+                content=f"{preamble}New transcript to fold in:\n{transcript}\n\n{closing}",
             ),
         ]
     )

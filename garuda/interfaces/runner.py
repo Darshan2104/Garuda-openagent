@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
+from garuda.core.run_state import reserved_output_tokens
 from garuda.core.sessions import SessionStore
 from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.types import AgentConfig, AgentResult, Message, Role
@@ -121,6 +122,10 @@ def build_resumed_context(
         max_context_tokens=config.max_context_tokens,
         enable_three_step_summary=config.enable_three_step_summary,
         task=task,
+        reserved_output_tokens=reserved_output_tokens(config),
+        safety_margin_tokens=config.context_safety_margin_tokens,
+        adaptive_output=config.enable_adaptive_output,
+        min_output_bytes=config.min_output_bytes,
     )
     context.seed(messages)
     context.append(Message(role=Role.USER, content=task))
@@ -199,6 +204,7 @@ async def run_agent_task(
             agents_dir=agents_dir,
             context=context,
             checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
+            state_checkpoint=lambda state: store.checkpoint_state(events.session_id, state),
         )
     finally:
         # Kill any background tasks this session left running before tearing down

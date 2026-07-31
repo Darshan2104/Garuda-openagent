@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 import litellm
 
 from garuda.model.governor import get_governor, provider_of
-from garuda.model.protocol import ModelResponse, StreamDelta
+from garuda.model.protocol import ModelResponse, StreamDelta, estimate_tools_tokens
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -623,16 +623,24 @@ class LitellmModel:
         )
 
     def count_tokens(self, messages: list[Message]) -> int:
+        return self.count_request_tokens(messages, None)
+
+    def count_request_tokens(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> int:
         # Serialize exactly as the request path does. Counting a different shape
         # than we send is the undercount the fallback below warns about: once
         # reasoning is echoed back it is part of the prompt, and a counter blind
-        # to it lets the window overflow instead of compacting.
+        # to it lets the window overflow instead of compacting. The same argument
+        # applies to `tools`: the schemas ride on every call, so a counter that
+        # ignores them is short by a fixed several thousand tokens every turn.
         try:
             return litellm.token_counter(
                 model=self._model_name,
                 messages=[
                     _message_to_litellm(m, **self._serialization_flags()) for m in messages
                 ],
+                tools=tools or None,
             )
         except Exception:
             # Content alone undercounts badly: tool-call arguments are often the
@@ -652,4 +660,4 @@ class LitellmModel:
                                 arguments, default=str
                             )
                         )
-            return sum(len(p) for p in parts) // 4
+            return sum(len(p) for p in parts) // 4 + estimate_tools_tokens(tools)

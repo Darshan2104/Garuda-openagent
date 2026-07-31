@@ -53,6 +53,11 @@ class CondenserContext:
     # Session tool-output buffer, when available. Condensers use it to demote
     # content to disk instead of destroying it (retrievable via buffer_grep/slice).
     buffer: "ToolOutputBuffer | None" = None
+    # The harness's own structured record of the run (see context/state_card.py),
+    # already rendered. Passed to the summarizer as established fact so the model
+    # is asked for judgement rather than recall, and carried into the rebuilt
+    # history so those facts survive verbatim rather than through a paraphrase.
+    working_state: str = ""
 
     @property
     def free_tokens(self) -> int:
@@ -213,7 +218,12 @@ def compact_summary(messages: list[Message]) -> str:
     return "\n".join(lines)
 
 
-def _rebuild_with_summary(messages: list[Message], summary: str, keep_recent_turns: int) -> list[Message]:
+def _rebuild_with_summary(
+    messages: list[Message],
+    summary: str,
+    keep_recent_turns: int,
+    working_state: str = "",
+) -> list[Message]:
     system = messages[0] if messages and messages[0].role == Role.SYSTEM else None
     task = next((m for m in messages if m.role == Role.USER), None)
     recent = recent_messages(messages, keep_recent_turns, exclude={id(system), id(task)})
@@ -222,8 +232,15 @@ def _rebuild_with_summary(messages: list[Message], summary: str, keep_recent_tur
         rebuilt.append(system)
     if task:
         rebuilt.append(task)
+    # Card first, then the model's notes. The card is verbatim fact and the notes
+    # are interpretation, and putting them in one message keeps them from drifting
+    # apart as later compactions rewrite only the second half.
+    body = f"{working_state}\n\n" if working_state.strip() else ""
     rebuilt.append(
-        Message(role=Role.USER, content=f"Conversation summary (context compacted):\n{summary}")
+        Message(
+            role=Role.USER,
+            content=f"{body}Conversation summary (context compacted):\n{summary}",
+        )
     )
     rebuilt.extend(recent)
     return rebuilt
@@ -277,7 +294,9 @@ class MicrocompactCondenser:
         ):
             return None
         summary = await self._summarize(cx)
-        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        rebuilt = _rebuild_with_summary(
+            cx.messages, summary, cx.keep_recent_turns, cx.working_state
+        )
         self._last_summary_len = len(rebuilt)
         return rebuilt
 
@@ -287,7 +306,9 @@ class MicrocompactCondenser:
         if not cx.enable_three_step_summary:
             return compact_summary(cx.messages)
         try:
-            self._state = await summarize_incremental(cx.model, self._state, cx.messages, cx.task)
+            self._state = await summarize_incremental(
+                cx.model, self._state, cx.messages, cx.task, cx.working_state
+            )
             return self._state
         except Exception as exc:
             logger.warning(
@@ -327,7 +348,9 @@ class SummarizingCondenser:
         if cx.free_tokens >= cx.proactive_threshold:
             return None
         summary = await build_summary(cx)
-        return _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        return _rebuild_with_summary(
+            cx.messages, summary, cx.keep_recent_turns, cx.working_state
+        )
 
 
 _STRATEGIES = {
