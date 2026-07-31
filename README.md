@@ -14,8 +14,8 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 
 | Area | Capabilities |
 |------|--------------|
-| **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, `fireworks_ai/…`, etc.) — retries/backoff, request timeouts, Anthropic prompt caching, extended thinking (`--reasoning-effort` cross-provider, `--thinking-budget` for Anthropic), per-provider concurrency governor |
-| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace with shift recovery — auto-recovers from pasted line-number prefixes, CRLF/LF, and indentation drift), `multi_edit` (several atomic edits to one file in one call), `read_file` (line-numbered, offset/limit), `write_file`, `grep` (ripgrep when available — gitignore-aware — else `grep -E`), `glob`, `ls`, `todo`, `update_goal` (north-star objective, re-pinned across compaction), `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `task_complete` + MCP (`search_tool`/`use_tool` lazy discovery when many are present) |
+| **Models** | Any provider via [LiteLLM](https://github.com/BerriAI/litellm) (`openai/…`, `anthropic/…`, `fireworks_ai/…`, etc.) — retries/backoff, request timeouts, Anthropic prompt caching, extended thinking (`--reasoning-effort` cross-provider, `--thinking-budget` for Anthropic), reasoning preserved across tool-call turns — `thinking_blocks` on Anthropic always, flat `reasoning_content` elsewhere behind opt-in `preserve_reasoning` (measured neutral on minimax-m2.5; see [backlog](docs/BACKLOG.md)), per-provider concurrency governor |
+| **Tools** | `bash`, `bash_background`/`task_output`/`kill_task`, `edit` (string replace with shift recovery — auto-recovers from pasted line-number prefixes, CRLF/LF, and indentation drift), `multi_edit` (several atomic edits to one file in one call), `read_file` (line-numbered, offset/limit), `write_file`, `grep` (ripgrep when available — gitignore-aware — else `grep -E`), `glob`, `ls`, `todo`, `update_goal` (north-star objective, re-pinned across compaction), `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `tmux_exec`, `tmux_capture`, `image_read`, `invoke_subagent`, `buffer_grep`/`buffer_slice`/`buffer_list`/`buffer_query` (archived-context retrieval), `contract` (resolve acceptance criteria — several per call via `marks`), `task_complete` + MCP (`search_tool`/`use_tool` lazy discovery when many are present) |
 | **Sessions** | Every run persists to `~/.agent/sessions/` (`~/.garuda` back-compat, `GARUDA_SESSIONS_DIR` override); `garuda sessions` lists, `garuda run --resume <id\|latest>` continues with full context |
 | **Hooks** | Lifecycle + tool shell-command hooks from the **global** `~/.agent/settings.yaml` (exit 2 blocks the tool call); hooks in a project's own `settings.yaml` run only if you set `trust_project_hooks: true` globally — a cloned repo can't self-authorize running its commands |
 | **Project memory** | `AGENTS.md` / `GARUDA.md` in the workspace root is injected as project instructions |
@@ -26,7 +26,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
-| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, repetition detection |
+| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it) and repetition detection |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
 | **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
@@ -204,6 +204,16 @@ and it belongs to a run whose product is a graded pass. Ask for it with
 If you are reproducing benchmark numbers, use `--mode eval`. Harbor runs pin it
 automatically.
 
+**The acceptance contract under `eval`.** Criteria are derived from the task
+statement once at run start and pinned across compaction; the `contract` tool is
+how the agent resolves them, and the completion gate refuses while any are
+outstanding. Marking one `verified` requires a note saying what was run and what
+it showed. Resolve them in batches — one call carries a `marks` list of
+`{id, status, note}` and can settle every criterion at once; a partly malformed
+batch still applies its valid entries. The `build` and `harbor` profiles both
+grant `contract` for this reason (a profile that omits it under `eval` makes every
+`task_complete` unsatisfiable).
+
 Precedence, widest to narrowest: built-in defaults → the mode preset → fields your
 profile YAML declares explicitly → explicit CLI flags. So a profile that sets
 `enable_acceptance_contract: true` keeps it under `--mode interactive`, and an
@@ -240,11 +250,13 @@ garuda run -f task.md [options]
 | `--mcp-config` | Path to MCP servers config (YAML or JSON); auto-discovered when omitted |
 | `--load-project-tools` | Import custom tools from `.agent/tools/*.py` (runs repo code; overrides the global setting) |
 | `--max-turns` | Max agent turns |
+| `--deadline-sec` | Wall-clock budget for the run. The agent paces against it and reserves turns to finish — a turn count can't express "most of my time is gone" when one command may block for minutes |
 | `--reasoning-effort` | `minimal` · `low` · `medium` · `high` — extended thinking, cross-provider |
 | `--thinking-budget` | Anthropic extended-thinking budget in tokens |
 | `--persistent-shell` | Keep one shell alive across bash calls (cwd/env/venv persist; local env) |
 | `--no-post-edit-diagnostics` | Disable the syntax check run after `edit`/`write_file` |
 | `--no-post-edit-lint` | Disable the fast semantic lint (Python/ruff) run after `edit`/`write_file` |
+| `--no-bootstrap` | Skip the session-start environment probe (cold start — the agent discovers the environment itself) |
 | `--no-verifier` | Disable completion verification gate |
 | `--no-three-step-summary` | Disable 3-step context summarization |
 | `--json` | Print JSONL events to stdout |
@@ -375,7 +387,7 @@ Profiles live in `garuda/agents/defaults/`, your project's `.agent/agents/` (or 
 | **plan** | Read-only | `bash`, `read_file`, `grep`, `glob`, `ls`, `task_complete` | Analysis and planning |
 | **explore** | Read-only | `bash`, `read_file`, `grep`, `glob`, `ls`, `task_complete` | Fast codebase search (subagent) |
 | **reviewer** | Read-only | `bash`, `read_file`, `task_complete` | Code review (subagent, agent.md) |
-| **harbor** | YOLO eval | bash, files, `edit`, `task_complete` | Harbor benchmarks |
+| **harbor** | YOLO eval | `bash`, `read_file`, `write_file`, `edit`, `multi_edit`, `grep`, `glob`, `ls`, `todo`, `update_goal`, `contract`, `task_complete` | Harbor benchmarks (runs under `eval` mode) |
 
 ### agent.md (OpenCode-compatible)
 
@@ -770,7 +782,7 @@ docs/
 ├── BACKLOG.md                  # Living residuals
 └── archive/                    # Dated: original RFC, engineering log, closed ledgers
 
-tests/                          # ~820 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # 839 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 
@@ -789,7 +801,7 @@ pytest tests/ -v
 GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 ```
 
-**Current test status:** 810 passed, 8 skipped (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 831 passed, 8 skipped of 839 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 
@@ -804,6 +816,7 @@ GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 | `GARUDA_MCP_MERGE` | `0` to disable project+global MCP config merging |
 | `GARUDA_MCP_MAX_DIRECT_TOOLS` | Above this many MCP tools, expose them via `search_tool`/`use_tool` instead of listing all schemas (default 10) |
 | `GARUDA_MODEL_MAX_CONCURRENCY` | Cap concurrent model calls per provider (governor) |
+| `GARUDA_TOKEN_PRICES` | Per-model rate overrides in USD per million tokens, e.g. `'{"minimax-m2.5": {"input": 0.302, "cache_read": 0.033, "output": 1.33}}'`. Used only when the provider doesn't report a per-call cost; keys match as substrings of the model name |
 | `GARUDA_SERVE_TOKEN` | Bearer token for `garuda serve` |
 | `GARUDA_TRACING` | Enable OTLP tracing |
 | `DOCKER_HOST` | Remote Docker daemon for `--workspace-kind remote` |

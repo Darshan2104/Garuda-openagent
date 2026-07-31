@@ -3,6 +3,13 @@ description: Harbor benchmark profile with unrestricted tool access
 permission_mode: yolo
 mode: standard
 max_turns: 200
+# reasoning_effort is deliberately NOT set here. Measured 2026-07-31 on
+# bash-ddos-traffic-analyzer, minimax-m2.5: asking for `medium` *lowered*
+# thinking rather than raising it — per-turn reasoning mean 265 -> 200 chars and
+# the peak on any single turn 1,644 -> 719 — because the effort levels impose a
+# budget below what this model spends unprompted. The run then took 60 turns
+# against 33 and hit the cap. Leave it unset unless a measurement on the target
+# model shows a level that beats its default; do not assume high > default.
 enable_tmux: false
 marker_polling: false
 enable_three_step_summary: true

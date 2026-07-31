@@ -73,29 +73,96 @@ _STRENGTH = {NOOP: 0, INSPECTION: 1, SYNTAX: 2, EXECUTION: 3, ASSERTION: 4}
 # Below this, a command cannot distinguish a correct result from a wrong one.
 DISCRIMINATING_THRESHOLD = _STRENGTH[EXECUTION]
 
-_SEGMENT_SPLIT = re.compile(r"\|\||&&|\||;|\n")
-
-_BARE_IMPORT = re.compile(
-    r"""^python3?\s+-c\s+["'](?P<body>.*)["']$""", re.DOTALL
-)
+_SEGMENT_OPERATORS = ("&&", "||", "|", ";", "\n")
 
 
-def _is_bare_import(segment: str) -> bool:
-    """True for `python -c "import x"` — proves importability, not behaviour."""
-    match = _BARE_IMPORT.match(segment.strip())
+def split_segments(command: str) -> list[str]:
+    """Split on shell control operators, ignoring any that appear inside quotes.
+
+    A quote-blind split is not merely imprecise, it is exploitable in the
+    direction that matters: `echo "run x && grep -q y"` splits into a fragment
+    containing `grep -q y`, which grades as an assertion, so a command that only
+    prints a string passes the gate. It also silently disabled the `python -c`
+    guard below, because the `;` separating statements inside the quoted body
+    tore the one-liner into fragments that no longer looked like `python -c`.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    text = command or ""
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            current.append(char)
+            # Only double quotes honour backslash escapes in the shell.
+            if char == "\\" and quote == '"' and index + 1 < len(text):
+                current.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(text):
+            current.append(char)
+            current.append(text[index + 1])
+            index += 2
+            continue
+        operator = next((op for op in _SEGMENT_OPERATORS if text.startswith(op, index)), None)
+        if operator is not None:
+            segments.append("".join(current))
+            current = []
+            index += len(operator)
+            continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    return [segment for segment in segments if segment.strip()]
+
+
+_PYTHON_ONELINER = re.compile(r"""^python3?\s+-c\s+["'](?P<body>.*)["']$""", re.DOTALL)
+_PY_IMPORT = re.compile(r"^(import|from)\s+\w")
+_PY_PRINT = re.compile(r"^print\s*\(")
+_PY_ASSERTION = re.compile(r"^(assert|raise)\b")
+_PY_EXIT = re.compile(r"\b(?:sys\s*\.\s*exit|os\s*\.\s*_exit)\s*\(")
+# A name (possibly attributed, subscripted, or a tuple target) followed by a
+# single `=`. `==` is a comparison, so the lookahead matters. `(` is excluded
+# deliberately: an assignment target never contains one, so `solve.run(strict=1)`
+# stays a call that runs the deliverable rather than being read as an assignment.
+_PY_ASSIGN = re.compile(r"^[A-Za-z_][\w\.\[\]'\"\s,]*=(?!=)")
+
+
+def classify_python_oneliner(segment: str) -> str | None:
+    """Class of a `python -c "..."` one-liner, or None if the segment isn't one.
+
+    An exit code only carries information about correctness when something in
+    the body can raise *because a value is wrong*. Imports, assignments and
+    prints cannot: `m=pickle.load(open(p)); print(m.shape)` exits 0 for a model
+    that deserialized fine and was trained wrong — exactly the claim `cat`
+    makes, dressed as computation. A bare call such as `solve.main()` does run
+    the deliverable, so it keeps the weaker-but-real EXECUTION class.
+    """
+    match = _PYTHON_ONELINER.match(segment.strip())
     if not match:
-        return False
-    body = match.group("body")
-    statements = [s.strip() for s in re.split(r"[;\n]", body) if s.strip()]
+        return None
+    statements = [s.strip() for s in re.split(r"[;\n]", match.group("body")) if s.strip()]
     if not statements:
-        return True
+        return SYNTAX
+    if any(_PY_ASSERTION.match(s) or _PY_EXIT.search(s) for s in statements):
+        return ASSERTION
     for statement in statements:
-        if re.match(r"^(import|from)\s+\w", statement):
+        if _PY_IMPORT.match(statement) or _PY_PRINT.match(statement):
             continue
-        if re.match(r"^print\s*\(", statement):
+        if _PY_ASSIGN.match(statement):
             continue
-        return False
-    return True
+        return EXECUTION
+    return SYNTAX
 
 
 def classify_segment(segment: str) -> str:
@@ -106,8 +173,9 @@ def classify_segment(segment: str) -> str:
     for pattern in SYNTAX_ONLY_PATTERNS:
         if pattern.search(segment):
             return SYNTAX
-    if _is_bare_import(segment):
-        return SYNTAX
+    oneliner = classify_python_oneliner(segment)
+    if oneliner is not None:
+        return oneliner
     try:
         tokens = shlex.split(segment)
     except ValueError:
@@ -157,7 +225,7 @@ def classify_command(command: str) -> str:
     even though `cat` alone never would.
     """
     best = NOOP
-    for segment in _SEGMENT_SPLIT.split(command or ""):
+    for segment in split_segments(command):
         label = classify_segment(segment)
         if _STRENGTH[label] > _STRENGTH[best]:
             best = label
@@ -172,6 +240,15 @@ def is_discriminating(command: str) -> bool:
 def weakness_reason(command: str) -> str:
     """Explain, for the model, why a command does not count as evidence."""
     label = classify_command(command)
+    if label == SYNTAX and any(
+        classify_python_oneliner(segment) == SYNTAX for segment in split_segments(command)
+    ):
+        return (
+            "loads the artifact and prints what it found — nothing in it raises when a "
+            "value is wrong, so it exits 0 for output that deserializes perfectly and is "
+            "incorrect. Add an assert comparing what you got against what the task "
+            "requires, so a wrong value makes it exit non-zero"
+        )
     if label == SYNTAX:
         return (
             "only checks that the file parses or imports — it exits 0 for code that "

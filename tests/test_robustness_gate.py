@@ -84,6 +84,81 @@ def test_prefixes_do_not_hide_the_real_command():
     assert not evidence.is_discriminating("cd /app && cat solution.txt")
 
 
+# --- the quote-blind splitter (2026-07-31 trace analysis) -------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # An operator inside a string literal is not an operator. Splitting on it
+        # handed the gate a fragment that graded as an assertion, so a command
+        # that only prints a string passed: `echo` is this module's own headline
+        # example of an oracle that proves nothing.
+        'echo "run x && grep -q y"',
+        "echo 'cat f | grep -q OK'",
+        'echo "tests passed; pytest exited 0"',
+    ],
+)
+def test_an_assertion_inside_a_string_literal_is_not_an_assertion(command):
+    assert not evidence.is_discriminating(command), command
+
+
+def test_operators_outside_quotes_still_split():
+    assert evidence.split_segments("a && b | c ; d") == ["a ", " b ", " c ", " d"]
+    # The `;` here separates Python statements, not shell commands.
+    assert evidence.split_segments('python3 -c "import csv; print(1)"') == [
+        'python3 -c "import csv; print(1)"'
+    ]
+
+
+# --- load-and-print oracles (2026-07-31 trace analysis) --------------------
+#
+# Both false-positives in the 4-task groundcheck run were this shape: the gate
+# approved, the LLM judge agreed, the grader scored 0.0. A semicolon in the body
+# used to tear the one-liner into fragments before the guard could see it, so
+# `python3` fell through to EXECUTION and counted as evidence.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # advanced-json-to-rfc4180-csv-converter, scored 0.0
+        "python3 -c \"import csv; r=list(csv.reader(open('/app/sales.csv'))); print(r[0])\"",
+        # train-fasttext-style-subword-embeddings, scored 0.0
+        "python3 -c \"import pickle; m=pickle.load(open('/app/m.pkl','rb')); print(m['w'].shape)\"",
+        'python3 -c "import json; d=json.load(open(\'/app/out.json\')); print(len(d))"',
+    ],
+)
+def test_loading_an_artifact_and_printing_it_is_not_evidence(command):
+    assert not evidence.is_discriminating(command), command
+    assert evidence.classify_command(command) == evidence.SYNTAX
+
+
+def test_the_rejection_says_what_to_do_instead():
+    """The bash-ddos task recovered only because the feedback was specific: it
+    was rejected twice for weak evidence and came back with a real assertion."""
+    reason = evidence.weakness_reason(
+        "python3 -c \"import pickle; m=pickle.load(open('/app/m.pkl','rb')); print(m['w'].shape)\""
+    )
+    assert "assert" in reason and "exit non-zero" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A bare call runs the deliverable — weaker than an assertion, still real.
+        'python3 -c "import solve; solve.main()"',
+        # A keyword argument is not an assignment: this still runs the deliverable.
+        'python3 -c "import solve; solve.run(strict=True)"',
+        # An assert fails when a value is wrong, which is the whole point.
+        "python3 -c \"import csv; r=list(csv.reader(open('/app/x.csv'))); assert len(r[0])==15\"",
+        "python3 -c \"import json; d=json.load(open('/app/x')); sys.exit(0 if d['ok'] else 1)\"",
+    ],
+)
+def test_a_python_oneliner_that_can_fail_still_counts(command):
+    assert evidence.is_discriminating(command), command
+
+
 # --- the gate --------------------------------------------------------------
 
 

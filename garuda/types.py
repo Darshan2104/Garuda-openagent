@@ -124,6 +124,16 @@ class AgentConfig:
     # thinking budget. Either enables reasoning; None keeps it off.
     reasoning_effort: str | None = None
     thinking_budget_tokens: int | None = None
+    # Echo the model's own prior reasoning back to it on later turns
+    # (thinking_blocks on Anthropic, reasoning_content elsewhere), so a reasoning
+    # model does not re-derive its chain of thought from nothing each turn.
+    # OFF by default on measurement, not on principle: over 4 terminal-bench-pro
+    # tasks on minimax-m2.5 it left total reasoning flat (-1%), spread the same
+    # thinking over 29% more turns, and cost 59% more. The mechanism is correct
+    # and cheap to carry (the text rides in the cached prefix); what it did not do
+    # is buy anything measurable. Turn it on to re-test, ideally with repeated
+    # trials — the one reward gain sat on a task known to flip on identical code.
+    preserve_reasoning: bool = False
     # Run a fast syntax check after edit/write_file and surface any error to the model.
     post_edit_diagnostics: bool = True
     # After the syntax check passes, run a fast single-file semantic lint (Python via

@@ -111,7 +111,10 @@ def _with_images(content: str, images: list[str]) -> list[dict]:
 
 
 def _message_to_litellm(
-    message: Message, include_thinking: bool = False, include_images: bool = False
+    message: Message,
+    include_thinking: bool = False,
+    include_images: bool = False,
+    include_reasoning: bool = False,
 ) -> dict:
     # A message carrying images renders as a multimodal content-block list (user
     # role only — portable across OpenAI/Anthropic; tool-role images aren't).
@@ -129,6 +132,19 @@ def _message_to_litellm(
             blocks = message.metadata.get("thinking_blocks")
             if blocks:
                 payload["thinking_blocks"] = blocks
+        # Providers outside the Anthropic thinking-block shape return their chain
+        # of thought as flat `reasoning_content`. Without echoing it, a reasoning
+        # model re-derives its thinking from nothing every turn: measured on the
+        # 2026-07-30 4-task set, 10,770 reasoning tokens were generated, logged
+        # and discarded, and two tasks rewrote the same file three times over.
+        # It rides in the cached prefix, so carrying it costs ~11% of the fresh
+        # input rate. `reasoning_content` is a declared field on litellm's
+        # request-side assistant message, so it survives the OpenAI-compatible
+        # transform rather than being dropped as an unknown key.
+        elif include_reasoning:
+            reasoning = message.metadata.get("reasoning_content")
+            if reasoning:
+                payload["reasoning_content"] = reasoning
         return payload
     if message.role == Role.TOOL:
         return {
@@ -288,6 +304,7 @@ class LitellmModel:
         enable_prompt_caching: bool = True,
         reasoning_effort: str | None = None,
         thinking_budget_tokens: int | None = None,
+        preserve_reasoning: bool = False,
     ):
         self._model_name = model_name
         self._api_key = api_key
@@ -300,6 +317,11 @@ class LitellmModel:
         # explicit Anthropic thinking budget. Either enables reasoning.
         self._reasoning_effort = reasoning_effort
         self._thinking_budget_tokens = thinking_budget_tokens
+        # Echo the model's own prior reasoning back across tool-call turns.
+        # Independent of whether *we* asked for reasoning: a model that thinks by
+        # default (minimax-m2.5 does) produces it either way. Opt-in — see
+        # AgentConfig.preserve_reasoning for the measurement behind the default.
+        self._preserve_reasoning = preserve_reasoning
         self._vision_support: bool | None = None
 
     @classmethod
@@ -308,6 +330,7 @@ class LitellmModel:
         params = {
             "reasoning_effort": getattr(config, "reasoning_effort", None),
             "thinking_budget_tokens": getattr(config, "thinking_budget_tokens", None),
+            "preserve_reasoning": getattr(config, "preserve_reasoning", True),
         }
         params.update(overrides)
         return cls(model_name=model_name, **params)
@@ -374,11 +397,8 @@ class LitellmModel:
         cache-control breakpoints, auth, tool wiring, and sampling params so the
         blocking and streaming paths never drift apart.
         """
-        include_thinking = self._is_anthropic() and self._reasoning_enabled()
-        include_images = self._supports_vision()
         litellm_messages = [
-            _message_to_litellm(m, include_thinking=include_thinking, include_images=include_images)
-            for m in messages
+            _message_to_litellm(m, **self._serialization_flags()) for m in messages
         ]
         if self._supports_cache_control():
             litellm_messages = self._apply_cache_control(litellm_messages)
@@ -415,6 +435,20 @@ class LitellmModel:
         extra_body = kwargs.setdefault("extra_body", {})
         if isinstance(extra_body, dict):
             extra_body.setdefault("usage", {"include": True})
+
+    def _serialization_flags(self) -> dict[str, bool]:
+        """How this provider wants messages rendered.
+
+        One source of truth so the request path and the token counter cannot
+        disagree about what is in the prompt. Anthropic carries reasoning as
+        thinking_blocks; everyone else as flat reasoning_content — exactly one of
+        the two applies to a given provider.
+        """
+        return {
+            "include_thinking": self._is_anthropic() and self._reasoning_enabled(),
+            "include_reasoning": self._preserve_reasoning and not self._is_anthropic(),
+            "include_images": self._supports_vision(),
+        }
 
     def _apply_reasoning(self, kwargs: dict) -> None:
         """Attach extended-thinking params. ``drop_params`` lets litellm silently
@@ -589,10 +623,16 @@ class LitellmModel:
         )
 
     def count_tokens(self, messages: list[Message]) -> int:
+        # Serialize exactly as the request path does. Counting a different shape
+        # than we send is the undercount the fallback below warns about: once
+        # reasoning is echoed back it is part of the prompt, and a counter blind
+        # to it lets the window overflow instead of compacting.
         try:
             return litellm.token_counter(
                 model=self._model_name,
-                messages=[_message_to_litellm(m) for m in messages],
+                messages=[
+                    _message_to_litellm(m, **self._serialization_flags()) for m in messages
+                ],
             )
         except Exception:
             # Content alone undercounts badly: tool-call arguments are often the

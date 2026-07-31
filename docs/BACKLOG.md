@@ -8,7 +8,7 @@ The rule that makes this useful: nothing here is marked done. If you fix it,
 delete it. A ledger that mixes open and closed items cannot tell you what is left
 without re-auditing the code, which is what the archived ledgers turned into.
 
-Last verified against code: 2026-07-28.
+Last verified against code: 2026-07-30.
 
 ---
 
@@ -85,6 +85,65 @@ Anyone editing these prompts (`types.py:DEFAULT_SYSTEM_PROMPT`,
 cost-framed sentence will be read as a licence to skip work, and measure
 investigation counts — not just cost — before and after.
 
+**The final turn cannot force a commit.** Surfaced by the 2026-07-28 core-16 run:
+`bash-tree-diff-sync` spent all 60 turns, never called `task_complete`, and the
+run reported failure with correct work on disk. `steering.py` sets
+`final_turn_forced` at the turn cap and delivers `FINAL_TURN_NUDGE`, but a nudge
+is a message — nothing converts "budget exhausted, work done" into a completion
+attempt, and the harness cannot submit on the model's behalf. Open rather than
+obvious because a harness-issued completion has to decide what evidence it
+carries; a gate that accepts an empty one is worse than the missing commit.
+
+**The LLM verdict approves incorrect work.** Four false positives across the 16
+tasks of that same run. One of them, `debug-bst-segfault-with-gdb`, is instructive:
+after the contract-lockout fix the agent committed work the grader rejected and
+the verdict passed it — the previous 1.0 there was a lucky workspace state under
+a run that reported failure. The judge is the only gate that reads the task
+statement back against observed output, so nothing downstream catches a false
+positive; it is the run's answer. This is the gate `--mode eval` numbers rest on.
+
+**`reasoning_effort` is a budget, not a floor — do not set it blind.** Measured
+2026-07-31 on `bash-ddos-traffic-analyzer` with minimax-m2.5: asking for
+`medium` *lowered* thinking against leaving it unset — per-turn reasoning mean
+265 → 200 chars, peak on a single turn 1,644 → 719 — and the run went from 33
+turns to the 60-turn cap at +160% cost. The effort levels impose a ceiling below
+what this model spends unprompted. `harbor.yaml` therefore leaves it unset. Do
+not assume `high` beats the default either; measure peak per-turn reasoning on
+the target model before setting it at all.
+
+**The reasoning echo is built, correct, and does not pay — `preserve_reasoning`
+is off by default.** Non-Anthropic providers return a flat `reasoning_content`
+that was captured, logged and dropped, so a reasoning model re-derived its
+thinking every turn. It is now echoed back when the flag is on, confirmed
+reaching the wire by prompt-growth arithmetic rather than by assumption, with the
+cache holding (94.8% → 95.5%). Measured over 4 terminal-bench-pro tasks on
+minimax-m2.5 against the same code with the flag off:
+
+| | off | on |
+|---|---|---|
+| total reasoning chars | 43,082 | 42,628 (−1%) |
+| reasoning per turn | 399 | 307 (−23%) |
+| turns | 108 | 139 (+29%) |
+| cost | $0.145 | $0.230 (+59%) |
+| write_file | 8 | 15 |
+| reward | 1/4 | 2/4 |
+
+It did not make the model reason more — it spread the same reasoning over 29%
+more turns. The 2/4 is one task (`bash-ddos-traffic-analyzer`) that this file
+already records as flipping on identical code, so it is not evidence. Keep the
+flag; do not turn it on without repeated trials. Three traps this cost us:
+- **A one-task probe lied in both directions.** On `bash-ddos` alone the echo
+  showed reasoning/turn +25% and the full-file rewrite loop converting into
+  edits. Neither replicated: across 4 tasks reasoning/turn fell 23% and
+  `write_file` nearly doubled (`sanitize-jinja2` went 1 → 10 rewrites). The same
+  config also gave 49 and then 37 turns on the same task. Single-task deltas on
+  this suite are noise; do not tune on them.
+- **"It rides in the cached prefix so it is nearly free" was wrong by 20×.** The
+  carry cost predicted +4.7%. Realized was +59%, because the prediction held the
+  trajectory constant and the trajectory is exactly what changed. A cost argument
+  about prompt *content* is only valid alongside a claim about turn count.
+- **`reasoning_effort` is a ceiling, not a floor** — see the entry above.
+
 ## Before the next benchmark run
 
 - Set `agent_timeout_sec` in the job kwargs to match `override_timeout_sec`.
@@ -94,5 +153,11 @@ investigation counts — not just cost — before and after.
 - Confirm the run is on `--mode eval`. The default posture is now `interactive`,
   which has no model-call gates. `eval/harbor_adapter.py` pins this itself, but
   any hand-rolled runner must ask for it explicitly.
-- **No score in this repo is validated against a real graded run.** A passing test
-  suite plus per-mechanism verification is not a benchmark result.
+- **Every score here is single-trial.** Graded runs now exist — core-16 and
+  core-17, both 2026-07-28, plus the 4-task prompt comparisons of 2026-07-29/30 —
+  so the earlier "nothing is validated against a real graded run" no longer holds.
+  Nothing has been run twice, though, and the suite is demonstrably noisy:
+  `build-coq-from-source` has flipped 1.0 → 0.0 on identical code, and
+  `bash-ddos-traffic-analyzer` flipped across a prompt change with no mechanism
+  that explains it. Treat any single-run delta, in either direction, as unmeasured
+  until a repeated-trial run separates signal from noise.
