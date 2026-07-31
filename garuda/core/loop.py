@@ -24,7 +24,7 @@ from garuda.core.completion import CONTRACT_REJECT_LIMIT
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
 from garuda.core.permissions import PermissionEngine
-from garuda.core.run_state import RunState, build_tools_schema, prepare_run
+from garuda.core.run_state import RunState, prepare_run
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
     CONTEXT_WARNING_NUDGE,
@@ -42,7 +42,7 @@ from garuda.core.steering import (
 )
 from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
-from garuda.model.protocol import Model
+from garuda.model.protocol import ContextOverflowError, Model
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig, AgentResult, Message, Role
@@ -71,11 +71,6 @@ __all__ = [
     "TASK_COMPLETE_STUCK_NUDGE",
     "DefaultAgent",
 ]
-
-
-# Built once per run in prepare_run now; re-exported here because tests and callers
-# import it from this module.
-_tools_schema = build_tools_schema
 
 
 class DefaultAgent:
@@ -151,6 +146,87 @@ class DefaultAgent:
 
         return self._exhausted(state, turn)
 
+    async def _timed_complete(self, state: RunState, model: Model, model_ms: list[float]):
+        """One model call, adding only its own duration to ``model_ms``.
+
+        Accumulated rather than assigned because an overflow turn makes two calls,
+        and timed per call rather than around the whole turn so that a compaction
+        happening between them is not booked as model latency.
+        """
+        elapsed = [0.0]
+        try:
+            with stopwatch() as holder:
+                elapsed = holder
+                return await model.complete(
+                    state.context.get_messages(),
+                    tools=state.tools_schema,
+                    # Sent, not merely reserved against. run_state.reserved_output_tokens
+                    # takes this as the ceiling on the response and shrinks the prompt
+                    # budget to match; if the provider were never told, a smaller
+                    # max_tokens would shrink the reserve while leaving the response
+                    # free to exceed it — making the budget less safe on exactly the
+                    # config that reads as tightening it.
+                    max_tokens=state.config.max_tokens,
+                )
+        finally:
+            # Runs after the stopwatch's own exit has filled the holder, so this is
+            # correct on the raising path too — which is the one that matters here.
+            model_ms[0] = round(model_ms[0] + elapsed[0], 3)
+
+    async def _complete_or_shrink(
+        self, state: RunState, model: Model, turn: int, model_ms: list[float]
+    ):
+        """The turn's model call, retried once against a forcibly shrunk history.
+
+        The budget is an estimate, and an estimate can be wrong: a tokenizer that
+        is not the provider's, an image costed by a flat guess, a resumed session
+        whose first prompt was never measured against a provider count. When it is
+        wrong in the low direction the provider rejects the request outright.
+
+        Before this, that ended the run — the client correctly does not retry an
+        oversized prompt, and the loop had no handler, so a recoverable condition
+        was reported as a dead model. Compacting first makes the retry meaningful:
+        it is a different, smaller request, not the same one sent twice.
+        """
+        try:
+            return await self._timed_complete(state, model, model_ms)
+        except ContextOverflowError:
+            before = state.context.budget_snapshot()
+            # Timed and booked as compaction, not as model latency. force_compact can
+            # make a summarizer call of its own, and an overflow turn is precisely the
+            # turn someone later investigates for being slow — charging its compaction
+            # to model_ms would send them to the provider for an answer that is here.
+            with stopwatch() as compaction_ms:
+                shrunk = await state.context.force_compact()
+            record = state.metrics.current
+            if record is not None:
+                record.compaction_ms = round(record.compaction_ms + compaction_ms[0], 3)
+            state.events.append(
+                EventType.SUMMARIZATION,
+                {
+                    "turn": turn,
+                    "reason": "context_overflow",
+                    "recovered": shrunk,
+                    "duration_ms": compaction_ms[0],
+                    "gauge_said": before["used_tokens"],
+                    "capacity": before["capacity_tokens"],
+                },
+            )
+            if not shrunk:
+                # Nothing left to drop — an overflow dominated by the system prompt
+                # or the tool schemas reaches here. Surfacing the original error is
+                # honest: there is no smaller request to make. The attempt is not
+                # free, which is why its cost is recorded above rather than hidden.
+                raise
+            logger.warning(
+                "Prompt exceeded the context window (gauge read %s of %s); "
+                "force-compacted and retrying once",
+                before["used_tokens"],
+                before["capacity_tokens"],
+            )
+            state.reinject_pinned_state()
+            return await self._timed_complete(state, model, model_ms)
+
     async def _run_turn(
         self, state: RunState, model: Model, turn: int
     ) -> AgentResult | None:
@@ -165,16 +241,15 @@ class DefaultAgent:
         state.note_context_budget(turn)
 
         record = state.metrics.current
-        # Timed here rather than inside LitellmModel: one call site, and it measures
-        # every Model implementation the same way (litellm, ScriptModel, the eval
-        # usage-tracking wrapper). Retry/backoff inside the client is included on
-        # purpose — that is wall-clock the run actually spent.
+        # Timed around each model call rather than inside LitellmModel: one place,
+        # and it measures every Model implementation the same way (litellm,
+        # ScriptModel, the eval usage-tracking wrapper). Retry/backoff inside the
+        # client is included on purpose — that is wall-clock the run actually spent.
+        # An overflow turn makes two calls and compacts between them; only the calls
+        # land here, so `model_ms` never absorbs compaction time.
+        model_ms = [0.0]
         try:
-            with stopwatch() as model_ms:
-                response = await model.complete(
-                    state.context.get_messages(),
-                    tools=state.tools_schema,
-                )
+            response = await self._complete_or_shrink(state, model, turn, model_ms)
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
@@ -312,17 +387,17 @@ class DefaultAgent:
     async def _run_parallel_batch(self, state: RunState, calls, turn: int) -> None:
         """Run a whole-response read batch concurrently and update stuck detection."""
         executed = await state.runner.run_parallel_reads(calls, turn)
-        n_results = len(executed)
-        n_errors = sum(1 for _, result in executed if result.is_error)
-        state.steering.record_failure_streak(
-            had_error=n_errors > 0,
-            had_success=(n_results - n_errors) > 0,
-            events=state.events,
-            turn=turn,
-        )
-        state.steering.note_progress()
-        # Detect an identical parallel batch repeated turn after turn (a common
-        # stuck pattern) the same way single-call repetition is caught.
+        # Per-call bookkeeping, exactly as a mixed response gets. Reads used to be
+        # graded differently here purely because no write shared the response: one
+        # aggregate streak update, and no session-wide memo steer at all — so an
+        # agent re-reading the same three files every turn was never told, as long
+        # as it read them together.
+        for call, tool_result in executed:
+            self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
+        # Repetition is the one signal that stays response-level here. Consecutive
+        # per-call signatures cannot express "this same batch again": A,B,C,A,B,C
+        # never repeats consecutively, so the counter resets every call and the
+        # commonest stuck pattern in a read-heavy run goes unnoticed.
         state.steering.note_repetition(batch_signature(calls))
         # image_read is parallel-safe, so a batch can carry images. They used to be
         # dropped here: this path only saw result counts, never the results.
@@ -357,25 +432,35 @@ class DefaultAgent:
             if parallel:
                 for call, tool_result in await state.runner.run_parallel_reads(group, turn):
                     turn_images.extend(tool_result.images)
-                    self._note_call_outcome(state, call, tool_result, turn)
+                    self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
                 continue
             outcome = await self._run_group_sequentially(state, group, turn, turn_images)
             if outcome is not None:
                 return outcome
 
+        # Repetition is reported once for the whole response, whatever shape it had.
+        # Per-call signatures cannot express "this same response again": a repeated
+        # [read_a, read_b, write] yields a, b, w, a, b, w and never repeats
+        # consecutively, so the commonest mixed stuck pattern went unseen. For a
+        # single-call response batch_signature is exactly call_signature, so nothing
+        # changes there.
+        state.steering.note_repetition(batch_signature(calls))
         self._surface_images(state, turn_images)
         return None
 
-    # Pre-segmentation name for what is now _run_calls. Kept because callers and
-    # tests reach for it by name, the same reason the module-level aliases above exist.
-    _run_sequential_calls = _run_calls
-
-    def _note_call_outcome(self, state: RunState, call, tool_result, turn: int) -> None:
-        """Per-call bookkeeping, shared by the sequential and concurrent paths.
+    def _note_call_outcome(
+        self, state: RunState, call, tool_result, turn: int, note_repetition: bool = True
+    ) -> None:
+        """Per-call bookkeeping, shared by every path a tool result can arrive on.
 
         Shared deliberately: the concurrent path used to skip all of this, so a
         gathered read never contributed to the failure streak and never triggered the
         session-wide repetition steer.
+
+        Repetition is the one signal not reported here in practice: both callers pass
+        ``note_repetition=False`` and report once per *response* instead, because a
+        repeated multi-call response never repeats consecutively call-by-call. The
+        parameter stays for a caller with a single call and no response context.
         """
         state.steering.record_failure_streak(
             had_error=tool_result.is_error,
@@ -386,7 +471,8 @@ class DefaultAgent:
         state.steering.note_progress()  # progress made; reset completion-retry counter
 
         signature = call_signature(call)
-        state.steering.note_repetition(signature)
+        if note_repetition:
+            state.steering.note_repetition(signature)
         # Session-wide (not just consecutive) repetition: the same call
         # coming back many turns later is the more common waste pattern.
         steer = state.memo.steer_note(call, signature, state.memo.count_for(signature))
@@ -428,7 +514,7 @@ class DefaultAgent:
 
             tool_result = await state.runner.run_one(call, turn)
             turn_images.extend(tool_result.images)
-            self._note_call_outcome(state, call, tool_result, turn)
+            self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
         return None
 
     def _exhausted(self, state: RunState, turn: int) -> AgentResult:

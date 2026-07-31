@@ -279,6 +279,24 @@ class RunState:
         )
 
 
+def _already_pinned(context: ContextManager, rendered: str) -> bool:
+    """True when this exact card text is already somewhere in the live context.
+
+    Deliberately the whole history, not a tail window. The summary rebuild embeds
+    the card near the front of the rebuilt list, and the re-pin that follows would
+    append the same text again — a tail-only check cannot see the copy it is about
+    to duplicate. Position does not matter for the decision anyway: if the text is
+    byte-identical then no observed fact has changed since it was written, and
+    there is nothing for a second copy to tell the model. The moment anything does
+    change, ``render()`` differs and the card is pinned again.
+    """
+    try:
+        messages = context.get_messages()
+    except Exception:
+        return False
+    return any(rendered in (message.content or "") for message in messages)
+
+
 def reinject_pinned_state(
     context: ContextManager,
     tool_map: dict[str, Tool],
@@ -301,8 +319,18 @@ def reinject_pinned_state(
     it directly testable.
     """
     if state is not None:
-        if not state.is_empty():
-            context.append(Message(role=Role.USER, content=state.render()))
+        if state.is_empty():
+            return
+        rendered = state.render()
+        # Idempotent: the budget is now checked twice a turn, and a condenser that
+        # still has prunable content reports "changed" both times, so this can be
+        # reached twice with nothing having happened in between. It is also reached
+        # right after a summary rebuild, which already embeds the card. Re-pinning
+        # text that is verbatim present is pure cost — and two identical cards back
+        # to back read as two separate updates that happen to agree.
+        if _already_pinned(context, rendered):
+            return
+        context.append(Message(role=Role.USER, content=rendered))
         return
     if contract is not None and contract.criteria:
         # The criteria are what the completion gate checks; losing them to
@@ -342,14 +370,24 @@ def reinject_pinned_state(
 def reserved_output_tokens(config: AgentConfig) -> int:
     """Window to hold back for the model's own response.
 
-    A reasoning run needs more than a normal one, and the amount is already known:
-    ``LitellmModel._apply_reasoning`` forces ``max_tokens`` to at least the thinking
-    budget plus 4096, so reserving less than that guarantees the prompt budget is
-    wrong on exactly the runs with the least room to spare.
+    Prefers a figure the run actually commits to over the configured guess:
+
+    * a thinking budget implies at least ``budget + 4096``, because
+      ``LitellmModel._apply_reasoning`` forces ``max_tokens`` there — reserving less
+      would leave the budget wrong on exactly the runs with least room to spare;
+    * an explicit ``max_tokens`` is the real ceiling on the response, so reserve
+      exactly that rather than a default that is probably too large;
+    * otherwise fall back to the configured reserve.
+
+    A reserve that is too big is not free: it moves every compaction trigger
+    earlier, and compactions cost summary calls and latency.
     """
     budget = getattr(config, "thinking_budget_tokens", None)
     if budget:
         return max(config.reserved_output_tokens, int(budget) + 4096)
+    max_tokens = getattr(config, "max_tokens", None)
+    if max_tokens:
+        return int(max_tokens)
     return config.reserved_output_tokens
 
 

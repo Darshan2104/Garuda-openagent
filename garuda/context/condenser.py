@@ -74,6 +74,19 @@ class CondenserContext:
 class Condenser(Protocol):
     async def condense(self, cx: CondenserContext) -> list[Message] | None: ...
 
+    # Optional. Drop any running state accumulated about a *particular*
+    # conversation, keeping tuning. Called on a copy handed to a context that does
+    # not share the history that state describes. Strategies holding no such state
+    # need not implement it; callers must go through ``reset_condenser`` below.
+    def reset(self) -> None: ...
+
+
+def reset_condenser(condenser: object) -> None:
+    """Clear a condenser's conversation-specific state, if it has any."""
+    reset = getattr(condenser, "reset", None)
+    if callable(reset):
+        reset()
+
 
 # --- shared helpers ----------------------------------------------------------
 
@@ -222,7 +235,6 @@ def _rebuild_with_summary(
     messages: list[Message],
     summary: str,
     keep_recent_turns: int,
-    working_state: str = "",
 ) -> list[Message]:
     system = messages[0] if messages and messages[0].role == Role.SYSTEM else None
     task = next((m for m in messages if m.role == Role.USER), None)
@@ -232,15 +244,13 @@ def _rebuild_with_summary(
         rebuilt.append(system)
     if task:
         rebuilt.append(task)
-    # Card first, then the model's notes. The card is verbatim fact and the notes
-    # are interpretation, and putting them in one message keeps them from drifting
-    # apart as later compactions rewrite only the second half.
-    body = f"{working_state}\n\n" if working_state.strip() else ""
+    # The summary only. The working-state card is not embedded here even though the
+    # summarizer was given it: whoever owns the card re-pins it after every
+    # compaction (see run_state.reinject_pinned_state), at the end of the history
+    # where it is most visible. Writing it here too produced two copies whenever a
+    # prune-then-summarize sequence left the earlier pin inside the recent window.
     rebuilt.append(
-        Message(
-            role=Role.USER,
-            content=f"{body}Conversation summary (context compacted):\n{summary}",
-        )
+        Message(role=Role.USER, content=f"Conversation summary (context compacted):\n{summary}")
     )
     rebuilt.extend(recent)
     return rebuilt
@@ -279,6 +289,19 @@ class MicrocompactCondenser:
         # summary quality doesn't drift over long horizons (vs re-deriving prose).
         self._state = ""
 
+    def reset(self) -> None:
+        """Forget this conversation, keep the tuning.
+
+        Both fields below describe one specific history. Carried into a context
+        that does not have that history — a subagent handed a state card rather
+        than a transcript — ``_state`` becomes notes about work the child never
+        did, which its own summarize would then fold its transcript into; and a
+        high ``_last_summary_len`` suppresses the child's first summarize until its
+        message count passes a number it had no part in reaching.
+        """
+        self._state = ""
+        self._last_summary_len = 0
+
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
         if cx.usage_fraction < self.microcompact_fraction:
             return None
@@ -294,9 +317,7 @@ class MicrocompactCondenser:
         ):
             return None
         summary = await self._summarize(cx)
-        rebuilt = _rebuild_with_summary(
-            cx.messages, summary, cx.keep_recent_turns, cx.working_state
-        )
+        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
         self._last_summary_len = len(rebuilt)
         return rebuilt
 
@@ -348,9 +369,7 @@ class SummarizingCondenser:
         if cx.free_tokens >= cx.proactive_threshold:
             return None
         summary = await build_summary(cx)
-        return _rebuild_with_summary(
-            cx.messages, summary, cx.keep_recent_turns, cx.working_state
-        )
+        return _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
 
 
 _STRATEGIES = {

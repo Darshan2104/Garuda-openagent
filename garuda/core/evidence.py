@@ -243,16 +243,26 @@ def is_discriminating(command: str) -> bool:
 # that prove the most (`pytest`, `make`, the deliverable itself) are exactly the ones
 # that write — which is why concurrency here is a narrow win and not a broad one.
 SIDE_EFFECT_FREE_COMMANDS = INSPECTION_COMMANDS | frozenset(
-    {"diff", "cmp", "test", "[", "[[", "grep", "rg", "egrep", "fgrep", "jq", "sort", "uniq", "cut"}
+    # `sort`, `uniq` and `cut` are deliberately absent despite reading by default:
+    # `sort -o out.txt in.txt` and `uniq in.txt out.txt` name an output file as an
+    # argument, with no redirect for _MUTATING_SHELL to catch. Admitting them let
+    # `sort -o merged.txt …` race a concurrent `cat merged.txt` in the same gather,
+    # which is exactly the verdict-moving case this allowlist exists to prevent.
+    # They cost little: in `sort f | uniq -c` the pipeline head is `sort`, and
+    # neither is usually the whole verification command.
+    {"diff", "cmp", "test", "[", "[[", "grep", "rg", "egrep", "fgrep", "jq"}
 )
 
 # Shell constructs that write, or hand off to something that might, regardless of
-# which program is being run. Checked against the raw command because they are
-# syntax, not argv[0].
-_MUTATING_SHELL = re.compile(r">|\btee\b|\bsudo\b|\bxargs\b|`|\$\(")
-
-# A trailing `&` backgrounds the segment so it outlives the check; `&&` does not.
-_TRAILING_BACKGROUND = re.compile(r".*(?<!&)&\s*$", re.DOTALL)
+# which program is being run. Checked per segment because they are syntax, not
+# argv[0].
+#
+# The trailing alternative is a bare `&` (not `&&`) anywhere in the segment, which
+# backgrounds a job so it outlives this check and keeps running during the gather.
+# Matched wherever it appears, not only at the end: `cat a & rm -rf build` is one
+# segment, so an end-anchored test saw only `cat` and called the whole thing safe.
+# What is backgrounded does not matter — that it escapes the check does.
+_MUTATING_SHELL = re.compile(r">|\btee\b|\bsudo\b|\bxargs\b|`|\$\(|(?<!&)&(?!&)")
 
 
 def is_side_effect_free(command: str) -> bool:
@@ -275,10 +285,10 @@ def is_side_effect_free(command: str) -> bool:
     if not segments:
         return False
     for segment in segments:
-        # `&` backgrounds the segment, so it outlives the check and can do anything
-        # afterwards. `>` and friends are looked for per segment for the same reason
-        # split_segments exists: the operators only mean redirection outside quotes.
-        if _MUTATING_SHELL.search(segment) or _TRAILING_BACKGROUND.match(segment):
+        # Redirection and backgrounding are looked for per segment for the same
+        # reason split_segments exists: the operators only mean what they mean
+        # outside quotes.
+        if _MUTATING_SHELL.search(segment):
             return False
         head = _command_head(segment)
         # A segment that is only `cd x` or env assignments resolves to no program.

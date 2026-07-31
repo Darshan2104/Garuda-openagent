@@ -11,7 +11,12 @@ from collections.abc import AsyncIterator
 import litellm
 
 from garuda.model.governor import get_governor, provider_of
-from garuda.model.protocol import ModelResponse, StreamDelta, estimate_tools_tokens
+from garuda.model.protocol import (
+    ContextOverflowError,
+    ModelResponse,
+    StreamDelta,
+    estimate_tools_tokens,
+)
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -499,6 +504,16 @@ class LitellmModel:
         )
 
     async def _complete_with_retries(self, kwargs: dict):
+        try:
+            return await self._attempt_with_retries(kwargs)
+        except litellm.ContextWindowExceededError as exc:
+            # Re-raised as a provider-agnostic type so the loop can recognise the
+            # one model failure it can act on — shrink the prompt and try again —
+            # without importing litellm. Translated here rather than in `complete`
+            # so the streaming path gets it too.
+            raise ContextOverflowError(str(exc)) from exc
+
+    async def _attempt_with_retries(self, kwargs: dict):
         # At least one attempt even if max_retries is 0 (otherwise the loop body
         # never runs and we would `raise None`).
         attempts = max(1, self._max_retries)

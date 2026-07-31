@@ -17,6 +17,7 @@ from garuda.context.manager import (
     FORK_FULL,
     FORK_NONE,
     ContextManager,
+    local_request_estimate,
     normalize_handoff,
 )
 from garuda.context.shaper import shape_observation
@@ -191,6 +192,117 @@ async def test_compaction_reanchors_exactly_once():
     for _ in range(5):
         cm.usage_fraction()
     assert model.count_calls == 2
+
+
+# --- 2b. the local count calibrates itself against the provider ---------------
+
+
+class Undercounter(ScriptModel):
+    """A tokenizer that reads low, like litellm's does for a non-OpenAI model.
+
+    Measured on a real run: turn 1 counted 2,730 against a reported 3,575.
+    """
+
+    def __init__(self, factor: float = 0.76):
+        super().__init__(responses=[])
+        self._factor = factor
+
+    def count_tokens(self, messages):
+        return int(sum(len(m.content or "") for m in messages) / 4 * self._factor)
+
+
+def _calibrating_cm(factor: float = 0.76) -> ContextManager:
+    cm = ContextManager(model=Undercounter(factor), max_context_tokens=100_000)
+    cm.seed(
+        [
+            Message(role=Role.SYSTEM, content="s" * 4000),
+            Message(role=Role.USER, content="u" * 4000),
+        ]
+    )
+    return cm
+
+
+def test_a_bad_model_tokenizer_cannot_drag_the_gauge_down():
+    """litellm has no real tokenizer for many models. On minimax-m2.5 it read a
+    3,623-token prompt as 2,530 — 30% low, mostly in the tool schemas — and low is
+    the direction that overflows. The gauge takes the higher of the two reads."""
+    cm = _calibrating_cm()  # model counts ~24% low
+    independent = local_request_estimate(cm.get_messages(), None)
+    assert cm._model.count_tokens(cm.get_messages()) < independent
+    assert cm._used_tokens() == independent
+
+
+def test_local_recount_is_corrected_by_the_provider():
+    """The re-count after a compaction is where an undercount overflows: the window
+    is tightest exactly then. Learned only when *both* local reads came up short."""
+    cm = _calibrating_cm()
+    estimate = cm._used_tokens()
+    cm.note_usage({"prompt_tokens": estimate + 600})
+    assert cm._count_overhead == 600
+    cm._anchor_tokens = None  # what a compaction does
+    assert cm._used_tokens() == estimate + 600
+
+
+def test_correction_does_not_touch_incremental_estimates():
+    """The regression this replaced: a 1.31x factor fitted to the anchor was applied
+    to per-message deltas that were already accurate to ~0.5%, and pushed a real
+    run's median error from 0.5% to 4.4% with every turn now reading high."""
+    cm = _calibrating_cm()
+    cm.note_usage({"prompt_tokens": cm._used_tokens() + 600})
+    assert cm._count_overhead > 0
+    before = cm._used_tokens()
+    cm.append(Message(role=Role.USER, content="x" * 4000))
+    # ~1000 tokens plus a little framing — not scaled, and not carrying the
+    # per-request overhead a second time.
+    assert cm._used_tokens() - before == pytest.approx(1000, abs=60)
+
+
+def test_correction_never_adjusts_a_provider_anchor():
+    cm = _calibrating_cm()
+    cm._used_tokens()
+    cm.note_usage({"prompt_tokens": 2000})
+    cm.note_usage({"prompt_tokens": 5000})
+    assert cm._used_tokens() == 5000
+
+
+def test_correction_is_floored_at_zero():
+    """Overcounting compacts early; undercounting overflows. Not symmetric."""
+    cm = _calibrating_cm(factor=4.0)  # tokenizer reads high
+    cm._used_tokens()
+    cm.note_usage({"prompt_tokens": 10})
+    assert cm._count_overhead == 0
+
+
+def test_correction_keeps_the_worst_shortfall_seen():
+    """Samples are rare — one per compaction — so there is no averaging to be had,
+    and the same asymmetry that floors this at 0 argues for the worst case."""
+    cm = _calibrating_cm()
+    cm.note_usage({"prompt_tokens": cm._used_tokens() + 900})
+    assert cm._count_overhead == 900
+    cm._anchor_tokens = None
+    raw = cm._used_tokens() - cm._count_overhead
+    cm._pending_tokens = 0
+    cm._anchor_from_provider = False
+    cm._last_raw_anchor = raw
+    cm.note_usage({"prompt_tokens": raw + 100})  # a smaller shortfall
+    assert cm._count_overhead == 900
+
+
+def test_correction_is_capped():
+    cm = _calibrating_cm(factor=0.01)
+    cm._used_tokens()
+    cm.note_usage({"prompt_tokens": 10_000_000})
+    assert cm._count_overhead <= 20_000
+
+
+def test_correction_only_learns_from_an_untouched_local_anchor():
+    """Once messages have been appended, the provider figure and the raw local count
+    describe different prompts, and the difference is no longer the overhead."""
+    cm = _calibrating_cm()
+    cm._used_tokens()
+    cm.append(Message(role=Role.USER, content="z" * 40_000))
+    cm.note_usage({"prompt_tokens": 2000})
+    assert cm._count_overhead == 0
 
 
 # --- 3. capacity nets out reserved output ------------------------------------
@@ -464,6 +576,68 @@ def test_fork_does_not_share_the_condensers_running_state():
     assert type(forked._condenser) is type(parent._condenser)
     forked._condenser._state = "the fork's notes"
     assert parent._condenser._state == ""
+
+
+def test_fork_preserves_condenser_tuning():
+    """Copied, not reconstructed — `type(c)()` would silently reset these."""
+    cm = ContextManager(
+        model=ScriptModel(responses=[]),
+        condenser=MicrocompactCondenser(microcompact_fraction=0.55, prune_min_chars=99),
+    )
+    forked = cm.fork(mode=FORK_NONE)._condenser
+    assert forked.microcompact_fraction == 0.55
+    assert forked.prune_min_chars == 99
+
+
+def test_a_brief_fork_does_not_inherit_notes_about_history_it_lacks():
+    """The other half of deep-copying: tuning should survive, the parent's running
+    notes should not. A subagent handed a 2 KB card would otherwise start with
+    notes on a transcript it never saw, and fold its own work into them — and a
+    high _last_summary_len would suppress its first summarize until its message
+    count passed a number it had no part in reaching."""
+    parent = _parent()
+    parent._condenser._state = "## Key findings\nthe parent's notes"
+    parent._condenser._last_summary_len = 240
+
+    brief = parent.fork(mode=FORK_BRIEF)._condenser
+    assert brief._state == ""
+    assert brief._last_summary_len == 0
+    assert brief.microcompact_fraction == parent._condenser.microcompact_fraction
+
+    # A full fork *does* have that history, so the notes still describe it.
+    full = parent.fork(mode=FORK_FULL)._condenser
+    assert full._state == "## Key findings\nthe parent's notes"
+    assert full._last_summary_len == 240
+    # And it is still a copy — writing to it must not reach the parent.
+    full._state = "changed"
+    assert parent._condenser._state == "## Key findings\nthe parent's notes"
+
+
+def test_fork_handles_a_condenser_with_no_reset():
+    """reset() is optional on the protocol; a strategy holding no per-conversation
+    state need not implement it."""
+
+    class Stateless:
+        async def condense(self, cx):
+            return None
+
+    cm = ContextManager(model=ScriptModel(responses=[]), condenser=Stateless())
+    assert cm.fork(mode=FORK_BRIEF)._condenser is not cm._condenser
+
+
+def test_fork_survives_a_condenser_with_a_required_argument():
+    """The Condenser Protocol promises no no-arg constructor. Reconstructing one
+    raised TypeError here, which took every subagent invocation with it."""
+
+    class Tuned:
+        def __init__(self, threshold):  # no default, on purpose
+            self.threshold = threshold
+
+        async def condense(self, cx):
+            return None
+
+    cm = ContextManager(model=ScriptModel(responses=[]), condenser=Tuned(0.9))
+    assert cm.fork(mode=FORK_NONE)._condenser.threshold == 0.9
 
 
 def test_fork_keeps_the_boolean_interface_working():

@@ -35,12 +35,19 @@ class AgentProfile:
     # Context-budget knobs. Authorable per profile for the same reason
     # max_output_bytes is: a read-only explore agent and a long build agent want
     # very different amounts of the window held back and spent per observation.
-    reserved_output_tokens: int = 16_000
-    context_safety_margin_tokens: int = 2_000
-    enable_request_preflight: bool = True
-    enable_adaptive_output: bool = True
-    min_output_bytes: int = 2_048
-    enable_working_state_card: bool = True
+    #
+    # Defaults are read off AgentConfig rather than repeated. Repeating them meant
+    # retuning the reserve in types.py changed nothing that ran: every profile
+    # passes its own value through to_agent_config(), so the copy here silently won.
+    reserved_output_tokens: int = AgentConfig.reserved_output_tokens
+    context_safety_margin_tokens: int = AgentConfig.context_safety_margin_tokens
+    enable_request_preflight: bool = AgentConfig.enable_request_preflight
+    enable_adaptive_output: bool = AgentConfig.enable_adaptive_output
+    min_output_bytes: int = AgentConfig.min_output_bytes
+    # Cap on the model's own response. Sent to the provider, and the figure the
+    # context reserve is derived from — the two must not drift apart.
+    max_tokens: int | None = AgentConfig.max_tokens
+    enable_working_state_card: bool = AgentConfig.enable_working_state_card
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -76,6 +83,7 @@ class AgentProfile:
             enable_request_preflight=self.enable_request_preflight,
             enable_adaptive_output=self.enable_adaptive_output,
             min_output_bytes=self.min_output_bytes,
+            max_tokens=self.max_tokens,
             enable_working_state_card=self.enable_working_state_card,
             workspace_kind=self.workspace_kind,
             docker_image=self.docker_image,
@@ -145,12 +153,13 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         max_context_tokens=data.get("max_context_tokens", 128_000),
         proactive_summarize_threshold=data.get("proactive_summarize_threshold", 8000),
         max_output_bytes=data.get("max_output_bytes", 30_720),
-        reserved_output_tokens=data.get("reserved_output_tokens", 16_000),
-        context_safety_margin_tokens=data.get("context_safety_margin_tokens", 2_000),
-        enable_request_preflight=data.get("enable_request_preflight", True),
-        enable_adaptive_output=data.get("enable_adaptive_output", True),
-        min_output_bytes=data.get("min_output_bytes", 2_048),
-        enable_working_state_card=data.get("enable_working_state_card", True),
+        reserved_output_tokens=data.get("reserved_output_tokens", AgentConfig.reserved_output_tokens),
+        context_safety_margin_tokens=data.get("context_safety_margin_tokens", AgentConfig.context_safety_margin_tokens),
+        enable_request_preflight=data.get("enable_request_preflight", AgentConfig.enable_request_preflight),
+        enable_adaptive_output=data.get("enable_adaptive_output", AgentConfig.enable_adaptive_output),
+        min_output_bytes=data.get("min_output_bytes", AgentConfig.min_output_bytes),
+        max_tokens=data.get("max_tokens", AgentConfig.max_tokens),
+        enable_working_state_card=data.get("enable_working_state_card", AgentConfig.enable_working_state_card),
         workspace_kind=data.get("workspace_kind", "local"),
         docker_image=data.get("docker_image", "ubuntu:22.04"),
         mcp_config_path=data.get("mcp_config_path"),

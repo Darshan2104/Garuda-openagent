@@ -21,7 +21,6 @@ READ_ONLY = [
     "cat out.txt | grep -q EXPECTED",
     "sha256sum artifact.tar",
     "jq -e '.ok' report.json",
-    "sort f.txt | uniq -c",
     "test -f build/app",
     "FOO=1 timeout 5 cat x",
     "/usr/bin/cat x",
@@ -43,8 +42,20 @@ MUTATES_OR_UNKNOWN = [
     "ls | xargs rm",
     "sudo cat /etc/shadow",
     "rm -rf /tmp/x",
-    # Backgrounded: outlives the check, so it can do anything afterwards.
+    # Backgrounded: outlives the check, so it can do anything afterwards. The
+    # mid-command form matters as much as the trailing one — `&` does not split a
+    # segment, so an end-anchored test saw only `cat` here and passed the whole
+    # thing. What is backgrounded is beside the point; escaping the check is not.
     "sleep 1 &",
+    "cat a & rm -rf build",
+    "cat a.txt & cat b.txt",
+    # Name an output file as an *argument*, with no redirect to notice. This is why
+    # sort/uniq/cut are not on the allowlist: admitting them let `sort -o merged.txt`
+    # share a gather with a `cat merged.txt` reading the file it was still writing.
+    "sort -o merged.txt a.txt b.txt",
+    "uniq in.txt out.txt",
+    "cut -f1 a.txt",
+    "sort f.txt | uniq -c",
     # Command substitution runs an arbitrary inner command.
     "cat $(mkdir evil)",
     "cat `id`",

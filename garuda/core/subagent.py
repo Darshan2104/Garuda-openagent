@@ -76,11 +76,15 @@ class SubagentRunner:
         a cold start rather than seeding an empty conversation.
 
         A ``brief`` handoff goes through the parent's ``ContextManager`` because only
-        it can render the working-state card; without a live parent context (a caller
-        that passed raw ``parent_messages``) there is no card to render, so brief
-        degrades to full rather than silently handing over nothing.
+        it can render the working-state card. Without a live parent context (a caller
+        holding raw ``parent_messages``) there is no card to render, and brief then
+        degrades to ``none`` — never to ``full``. Falling back to full would hand the
+        entire transcript to a caller who explicitly asked for the cheap handoff,
+        turning the default into the most expensive option available.
         """
-        if mode == FORK_BRIEF and self.parent_context is not None:
+        if mode == FORK_BRIEF:
+            if self.parent_context is None:
+                return None
             context = self.parent_context.fork(mode=FORK_BRIEF)
             context.set_task(task)
         else:

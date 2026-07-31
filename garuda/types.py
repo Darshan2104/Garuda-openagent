@@ -122,10 +122,23 @@ class AgentConfig:
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared
     # between prompt and completion, so budgeting the prompt against the whole of it
-    # declares "10% free" at the exact moment a long answer will not fit. Raised
-    # automatically for a reasoning run (see run_state.reserved_output_tokens). Set
-    # to 0 to restore the pre-existing behaviour of budgeting against the raw window.
+    # declares "10% free" at the exact moment a long answer will not fit.
+    #
+    # 16k, from measurement rather than reasoning. Over 4,315 real model responses
+    # on terminal-bench-pro (minimax-m2.5 via OpenRouter): p50 199 output tokens,
+    # p99 2,906 — but the maximum was 8,391, and three responses cleared 8,000.
+    # Nothing came within half of 16,000. A reserve is an upper bound, so the tail
+    # is what sets it: 8k looked generous against the p99 and was still breached.
+    #
+    # The cost of the larger reserve is real but bounded — it moves the compaction
+    # trigger earlier — and no observed run came close to needing it: the largest
+    # prompt across those runs was 83k of a 128k window. When max_tokens or a
+    # thinking budget is set, run_state.reserved_output_tokens() derives the reserve
+    # from that instead, which is exact. 0 budgets against the raw window.
     reserved_output_tokens: int = 16_000
+    # Cap on the model's own response, when set. None leaves it to the provider.
+    # Also the authoritative input to the reserve above.
+    max_tokens: int | None = None
     # Slack on top of the reserve, absorbing what no local count can see: provider
     # framing, a tokenizer that disagrees with ours, an image larger than estimated.
     context_safety_margin_tokens: int = 2_000

@@ -9,7 +9,9 @@ from garuda.context.condenser import (
     Condenser,
     CondenserContext,
     MicrocompactCondenser,
+    RecentWindowCondenser,
     make_condenser,
+    reset_condenser,
 )
 from garuda.context.shaper import DEFAULT_MAX_OUTPUT_BYTES, shape_observation
 from garuda.model.protocol import Model, count_request_tokens, estimate_tools_tokens
@@ -39,6 +41,11 @@ BYTES_PER_TOKEN = 4
 # costs a turn to re-fetch — which is more expensive than the bytes it saved.
 DEFAULT_MIN_OUTPUT_BYTES = 2_048
 ERROR_OUTPUT_FLOOR_BYTES = 6_144
+
+# Ceiling on the learned local-count shortfall. A gap beyond this is not request
+# scaffolding, it is a bug or a provider counting something we have no model of,
+# and carrying it into the budget would compact continuously.
+MAX_COUNT_OVERHEAD = 20_000
 
 # Subagent handoff modes. See ContextManager.fork.
 FORK_NONE = "none"
@@ -103,6 +110,33 @@ def _estimate_tokens(message: Message) -> int:
     if message.images:
         n += IMAGE_TOKEN_ESTIMATE * len(message.images)
     return n
+
+
+def _history_size(messages: list[Message]) -> int:
+    """Total characters a history occupies, contents and tool arguments alike.
+
+    The change detector for compaction. Message count will not do: a prune rewrites
+    contents in place and hands back the same list, so counting messages reports
+    "nothing happened" after a pass that removed most of the bytes.
+    """
+    total = 0
+    for message in messages:
+        total += len(message.content or "")
+        for call in message.tool_calls or []:
+            total += _json_chars(call.arguments)
+    return total
+
+
+def local_request_estimate(messages: list[Message], tools: list[dict] | None) -> int:
+    """Our own estimate of a whole request, independent of the model's tokenizer.
+
+    Exists to be a second opinion. ``litellm.token_counter`` has no tokenizer for
+    many models and falls back to one that can be badly wrong: on
+    minimax-m2.5 it read a real 3,623-token prompt as 2,530, a 30% undercount,
+    most of it in the tool schemas. Being wrong low is the direction that overflows
+    the window, so the gauge takes whichever of the two reads higher.
+    """
+    return sum(_estimate_tokens(m) for m in messages) + estimate_tools_tokens(tools)
 
 
 def render_archive_transcript(messages: list[Message]) -> str:
@@ -186,6 +220,23 @@ class ContextManager:
         self._anchor_tokens: int | None = None
         self._anchor_from_provider = False
         self._pending_tokens = 0
+        # Fixed overhead a local count misses, learned from the provider. litellm's
+        # tokenizer is not the provider's and neither sees the per-request scaffolding
+        # the provider bills for. Measured on a real run: a full local count of 2,730
+        # against a reported 3,575.
+        #
+        # Additive, not a ratio, because the gap is overhead and not a scaling error.
+        # A 1.31x factor fitted to that same turn was tried and made things worse:
+        # applied to the *incremental* per-message estimates — which were already
+        # accurate to ~0.5% — it pushed every later turn to +1..16% instead. So this
+        # is applied only when the whole history is re-counted, never to a delta.
+        #
+        # It cannot fix the very first turn of a run: there is no provider figure to
+        # learn from yet. What it fixes is the re-count after each compaction, which
+        # is where the risk actually is — the window is tightest exactly then, and an
+        # undercount overflows instead of compacting.
+        self._count_overhead = 0
+        self._last_raw_anchor = 0
         if isinstance(condenser, str):
             condenser = make_condenser(condenser)
         self._condenser: Condenser = condenser or MicrocompactCondenser()
@@ -327,9 +378,33 @@ class ContextManager:
         estimates miss, so they take priority for the condensation trigger.
         """
         if usage and usage.get("prompt_tokens"):
+            self._learn_overhead(usage["prompt_tokens"])
             self._anchor_tokens = usage["prompt_tokens"]
             self._anchor_from_provider = True
             self._pending_tokens = 0
+
+    def _learn_overhead(self, actual: int) -> None:
+        """Update the fixed local-count shortfall from a provider figure.
+
+        Learns only from a turn that was still on its local anchor with nothing
+        appended since — that is the only moment the provider's number and the raw
+        local count describe the same prompt. Once messages have been appended, the
+        difference mixes in per-message estimate error and teaches the wrong thing.
+
+        Floored at 0 deliberately, even though the tokenizer sometimes reads high.
+        The two errors are not symmetric: overcounting compacts a little early,
+        undercounting overflows the window and costs the turn.
+        """
+        if self._anchor_from_provider or self._pending_tokens or self._last_raw_anchor <= 0:
+            return
+        shortfall = actual - self._last_raw_anchor
+        # The largest shortfall seen, not the latest. Samples are rare — one per
+        # compaction — so there is no averaging to be had, and the same asymmetry
+        # that floors this at 0 argues for keeping the worst case: overcounting
+        # compacts a little early, undercounting overflows.
+        self._count_overhead = max(
+            self._count_overhead, min(shortfall, MAX_COUNT_OVERHEAD)
+        )
 
     def fork(
         self, *, include_history: bool = True, mode: str | None = None
@@ -355,6 +430,11 @@ class ContextManager:
             raise ValueError(
                 f"Unknown fork mode {mode!r}. Options: {FORK_NONE}, {FORK_BRIEF}, {FORK_FULL}"
             )
+        forked_condenser = deepcopy(self._condenser)
+        if mode != FORK_FULL:
+            # Tuning survives the copy; notes about the parent's conversation do not.
+            # Only a full fork actually has the history those notes describe.
+            reset_condenser(forked_condenser)
         forked = ContextManager(
             model=self._model,
             max_output_bytes=self._max_output_bytes,
@@ -363,10 +443,15 @@ class ContextManager:
             enable_three_step_summary=self._enable_three_step_summary,
             task=self._task,
             keep_recent_turns=self._keep_recent_turns,
-            # A fresh condenser of the same strategy, never the same instance: a
-            # condenser carries running summary state, and sharing it lets a fork's
-            # compaction overwrite the state its parent will summarize from next.
-            condenser=type(self._condenser)(),
+            # A copy, never the same instance: a condenser carries running summary
+            # state, and sharing it lets a fork's compaction overwrite the state its
+            # parent will summarize from next. Deep-copied rather than reconstructed
+            # — `type(c)()` would silently reset tuning (microcompact_fraction,
+            # prune_min_chars, trigger_fraction) to defaults, and the Condenser
+            # Protocol promises no no-arg constructor, so any strategy with a
+            # required argument would raise here and take every subagent with it.
+            # The conversation-specific half of that copy is dropped below.
+            condenser=forked_condenser,
             buffer=self._buffer,
             reserved_output_tokens=self._reserved_output_tokens,
             safety_margin_tokens=self._safety_margin_tokens,
@@ -430,11 +515,22 @@ class ContextManager:
         taken at most once per compaction; every call after that is O(1).
         """
         if self._anchor_tokens is None:
-            self._anchor_tokens = count_request_tokens(
-                self._model, self._messages, self._tools_schema
+            # Whichever reads higher. The model's own counter is usually better, but
+            # when it has no real tokenizer for the model it can be 30% low, and a
+            # low read is the one that overflows rather than compacts.
+            raw = max(
+                count_request_tokens(self._model, self._messages, self._tools_schema),
+                local_request_estimate(self._messages, self._tools_schema),
             )
+            # Kept separately from the corrected anchor: the next provider figure is
+            # compared against the raw count to learn the overhead, and comparing
+            # against an already-corrected number would feed it back into itself.
+            self._last_raw_anchor = raw
+            self._anchor_tokens = raw + self._count_overhead
             self._anchor_from_provider = False
             self._pending_tokens = 0
+        # Deltas are deliberately uncorrected. The overhead is per-request, paid once
+        # by the prompt as a whole, and adding it again per message would compound.
         return self._anchor_tokens + self._pending_tokens
 
     def has_token_anchor(self) -> bool:
@@ -473,6 +569,7 @@ class ContextManager:
             "capacity_tokens": capacity,
             "fraction": round(used / capacity, 4),
             "provider_anchored": self._anchor_from_provider,
+            "count_overhead": self._count_overhead,
         }
 
     async def maybe_summarize(self) -> bool:
@@ -498,6 +595,58 @@ class ContextManager:
         self._messages = new_messages
         # The anchor described the pre-condensation prompt; invalidate it so the
         # next read re-counts once against the history that actually remains.
+        self._anchor_tokens = None
+        self._anchor_from_provider = False
+        self._pending_tokens = 0
+        return True
+
+    async def force_compact(self) -> bool:
+        """Shrink history as hard as this context can, ignoring the gauge.
+
+        For the case the gauge got wrong: the provider rejected the prompt as too
+        long, so whatever ``usage_fraction`` believed, the real answer is "over".
+        Runs the configured condenser against a deliberately impossible budget so
+        every threshold in it trips, and if that still yields nothing — the usual
+        reason being that there is no bulky tool output left to prune — falls back
+        to dropping the middle of the conversation outright.
+
+        Lossy by design, and only reached when the alternative is losing the run.
+        Returns whether anything actually changed.
+        """
+        cx = CondenserContext(
+            messages=self._messages,
+            model=self._model,
+            task=self._task,
+            # Beyond every trigger fraction and below every free-token threshold.
+            used_tokens=self.capacity() * 2,
+            max_context_tokens=self.capacity(),
+            proactive_threshold=self._proactive_threshold,
+            keep_recent_turns=self._keep_recent_turns,
+            enable_three_step_summary=self._enable_three_step_summary,
+            buffer=self._buffer,
+            working_state=self.working_state(),
+        )
+        before = _history_size(self._messages)
+        new_messages = await self._condenser.condense(cx)
+        if new_messages is not None:
+            cx.messages = new_messages
+        # Then drop the middle regardless. The configured condenser may only have
+        # pruned, which shrinks content but can leave the prompt still too long, and
+        # there is exactly one retry to get under the limit. Dropped messages are
+        # archived to the buffer by _archive_dropped, so they stay retrievable.
+        cx.keep_recent_turns = max(1, self._keep_recent_turns // 2)
+        dropped = await RecentWindowCondenser(trigger_fraction=0.0).condense(cx)
+        if dropped is not None:
+            new_messages = dropped
+        if new_messages is None:
+            return False
+        # Size, not message count: a prune rewrites contents in place and returns
+        # the same list, so counting messages reports "nothing happened" after a
+        # compaction that removed most of the bytes.
+        if _history_size(new_messages) >= before and len(new_messages) >= len(self._messages):
+            return False
+        self._archive_dropped(new_messages)
+        self._messages = new_messages
         self._anchor_tokens = None
         self._anchor_from_provider = False
         self._pending_tokens = 0

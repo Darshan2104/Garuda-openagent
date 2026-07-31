@@ -22,11 +22,11 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **Agents** | YAML or **agent.md** profiles: `build`, `plan`, `explore`, `reviewer`, `harbor` — plus your own in `.agent/agents/` |
 | **Skills** | Universal `SKILL.md` format — auto-discovered from `.agent/skills/`, injected into the system prompt; `allowed-tools` frontmatter validated against the profile's tool grants |
 | **Custom tools** | Drop `*.py` modules in `.agent/tools/` (opt-in — global setting or `--load-project-tools`) or register per-instance via the SDK |
-| **Subagents** | Main agent spins up isolated subagents via `invoke_subagent` |
+| **Subagents** | Main agent spins up isolated subagents via `invoke_subagent`, choosing how much context to hand over: `none` (cold start), `brief` (default — the working-state card plus retrievable buffer ids, a couple of KB), or `full` (the whole transcript, for a subagent that must reason about how the conversation got here) |
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier (evidence must be able to fail — quote-aware structural classification, so a print-only or load-only check is not accepted as proof), post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
-| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it, and filesystem reads stop being memoized entirely while a background task is running — it writes between calls, and no call marks that) and repetition detection |
+| **Context** | Budget measured against the **whole request** — messages, tool schemas, images and echoed reasoning — not just the message list, and against capacity that reserves room for the response (a window is shared between prompt and completion). Re-checked immediately before the model call, after steering and re-pinned state have landed, so the measured prompt is the one actually sent. Per-result output budget scales with remaining window, preferring lossless demotion to disk over truncation. Cache-friendly microcompaction (in-place tool-output pruning) then 1-call incremental summarization; archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed). A deterministic **working-state card** — goal, todos, files modified, verification results, acceptance criteria — is maintained by the harness from sources that already know them, re-pinned as one message after compaction and checkpointed to `state.json`; the model's summary is narrowed to findings/dead-ends/rationale. If the provider still rejects a prompt as too long, the run force-compacts and retries once instead of dying. Durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it, and filesystem reads stop being memoized entirely while a background task is running — it writes between calls, and no call marks that) and repetition detection reported per response |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
 | **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
@@ -794,8 +794,10 @@ garuda/
 ├── agents/          # profile loader (YAML + agent.md) + default profiles
 ├── config/          # .agent/ home resolver, recipes, defaults
 ├── core/            # turn loop + run state, steering, tool runner, completion gate,
-│                   # run modes, events, permissions, verifier, sessions, rigorous mode
-├── context/         # context manager, summarizer, condenser, output shaping
+│                   # run modes, events, permissions, verifier, sessions, rigorous mode,
+│                   # per-turn latency/token metrics
+├── context/         # context budget + manager, summarizer, condenser, output shaping,
+│                   # working-state card
 ├── model/           # LiteLLM adapter, concurrency governor, ScriptModel
 ├── skills/          # SKILL.md discovery + progressive disclosure
 ├── tools/           # bash, files, search, tmux, web, buffers, subagent, registry
@@ -813,7 +815,7 @@ docs/
 ├── BACKLOG.md                  # Living residuals
 └── archive/                    # Dated: original RFC, engineering log, closed ledgers
 
-tests/                          # 839 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # 1049 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 

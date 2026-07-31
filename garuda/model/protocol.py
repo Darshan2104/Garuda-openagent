@@ -10,6 +10,16 @@ from garuda.types import Message
 TOOL_FRAMING_TOKENS = 8
 
 
+class ContextOverflowError(Exception):
+    """The prompt did not fit the model's context window.
+
+    Provider-agnostic on purpose, so the loop can recognise the one model failure
+    it can actually do something about without importing a provider's exception
+    hierarchy. Retrying the same request is futile — the fix is to make the prompt
+    smaller first, which is the caller's job, not the client's.
+    """
+
+
 @dataclass
 class ModelResponse:
     content: str | None
