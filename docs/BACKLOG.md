@@ -144,6 +144,37 @@ flag; do not turn it on without repeated trials. Three traps this cost us:
   about prompt *content* is only valid alongside a claim about turn count.
 - **`reasoning_effort` is a ceiling, not a floor** — see the entry above.
 
+**Prompt additions suppress investigation — this repo has now hit it twice.**
+2026-07-30: cost-framed batching guidance cut investigation 32%, grep to zero.
+2026-07-31: falsification guidance, carrying no cost framing at all, cut
+investigation 31% and grep to zero on all four tasks. The common factor is not
+the framing, it is that the prompt grew and the grounding paragraph was diluted.
+Treat prompt length as a budget: adding a paragraph costs attention somewhere
+else, and the cost lands on investigation. Anyone editing these must measure
+investigation and grep counts before and after, and should prefer the shared
+`task_complete` contract over a profile prompt when the guidance is about
+finishing rather than about exploring. `tests/test_prompt_discipline.py` enforces
+the placement rule and bans validation-task vocabulary from every prompt.
+
+**Falsification framing works at the decision point, unevenly, and reward does
+not follow.** The `task_complete` contract now asks for commands whose exit status
+would change if the work were wrong. Measured over 4 tasks: deliberation appeared
+at the completion step on 3 of 4 tasks (from 1 of 4) and grew 52%; the assertion
+share of accepted evidence went 17% → 27%; `train-fasttext` replaced its
+load-and-print oracle with three real asserts. Cost +17%, wall-clock **−16%**.
+But it was not uniform — `advanced-json` produced *weaker* evidence (two
+`execution` became one `execution` plus two `syntax`, one of them
+`print(all(...))`, which is the print-instead-of-assert pattern with a computed
+boolean) — and `bash-ddos` hit the turn cap. Reward stayed 1/4. Open questions:
+- **Better evidence has not converted to reward anywhere.** `train-fasttext` now
+  asserts its shapes, finiteness and n-gram sizes and still scores 0.0. The gate
+  can force a check that *can* fail; it cannot make the agent check the thing the
+  grader checks. That gap — self-chosen acceptance criteria versus actual ones —
+  is where the remaining zeros live, and it is not an evidence-strength problem.
+- **`print(all(...))` is a hole worth closing.** It computes the right predicate
+  and then throws the answer away by printing it. The classifier correctly grades
+  it `syntax`, so the gate discounts it, but the model reached for it anyway.
+
 ## Before the next benchmark run
 
 - Set `agent_timeout_sec` in the job kwargs to match `override_timeout_sec`.
