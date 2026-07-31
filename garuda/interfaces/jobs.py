@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -40,6 +41,9 @@ class Job:
     state: JobState = JobState.QUEUED
     result: AgentResult | None = None
     error: str | None = None
+    # Monotonic time the job reached a terminal state; None while it can still
+    # run. Drives TTL eviction — a job's *age* is only meaningful once finished.
+    finished_at: float | None = None
     _task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
@@ -56,13 +60,24 @@ JobRunner = Callable[[Job], Awaitable[AgentResult]]
 
 
 class JobManager:
-    """Owns submitted jobs and caps how many run concurrently."""
+    """Owns submitted jobs and caps how many run concurrently.
 
-    def __init__(self, max_jobs: int = 4, max_retained: int = 200):
+    Retention is bounded on two axes because either alone leaks. A count cap
+    applied only at submit time is unbounded in wall-clock: a server that takes
+    ten jobs and then goes quiet holds ten full event histories forever, and on a
+    long-lived server "then goes quiet" is the normal case, not the edge one. So
+    the cap is also enforced when a job finishes, and terminal jobs additionally
+    expire — a result nobody has collected in an hour is not being collected.
+    """
+
+    def __init__(
+        self, max_jobs: int = 4, max_retained: int = 200, retain_seconds: float = 3600.0
+    ):
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         self._sem = asyncio.Semaphore(max(1, max_jobs))
         self._max_retained = max_retained
+        self._retain_seconds = retain_seconds
 
     def submit(self, runner: JobRunner, *, task: str, events: EventStore) -> Job:
         job = Job(id=uuid.uuid4().hex, task=task, events=events)
@@ -88,11 +103,17 @@ class JobManager:
             job.state = JobState.FAILED
             job.error = f"{type(exc).__name__}: {exc}"
             logger.warning("Job %s failed", job.id, exc_info=True)
+        finally:
+            # Reached on the cancel path too, before CancelledError propagates.
+            job.finished_at = time.monotonic()
+            self._prune()
 
     def get(self, job_id: str) -> Job | None:
+        self._prune()
         return self._jobs.get(job_id)
 
     def list(self) -> list[Job]:
+        self._prune()
         return [self._jobs[j] for j in self._order if j in self._jobs]
 
     def cancel(self, job_id: str) -> bool:
@@ -104,19 +125,35 @@ class JobManager:
         return True
 
     def _prune(self) -> None:
-        """Evict oldest terminal jobs beyond the retention cap (running ones stay)."""
-        if len(self._order) <= self._max_retained:
+        """Evict expired and surplus terminal jobs. Running jobs are never evicted."""
+        to_remove = self._expired()
+        surplus = len(self._order) - len(to_remove) - self._max_retained
+        if surplus > 0:
+            removable = [
+                jid
+                for jid in self._order
+                if jid not in to_remove and jid in self._jobs and self._jobs[jid].done
+            ]
+            to_remove.update(removable[:surplus])
+        if not to_remove:
             return
         keep: list[str] = []
-        removable = [
-            jid
-            for jid in self._order
-            if jid in self._jobs and self._jobs[jid].done
-        ]
-        to_remove = set(removable[: max(0, len(self._order) - self._max_retained)])
         for jid in self._order:
             if jid in to_remove:
                 self._jobs.pop(jid, None)
             else:
                 keep.append(jid)
         self._order = keep
+
+    def _expired(self) -> set[str]:
+        """Terminal jobs whose results have gone uncollected past the TTL."""
+        if not self._retain_seconds:
+            return set()
+        cutoff = time.monotonic() - self._retain_seconds
+        return {
+            jid
+            for jid in self._order
+            if (job := self._jobs.get(jid)) is not None
+            and job.finished_at is not None
+            and job.finished_at < cutoff
+        }

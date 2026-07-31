@@ -10,6 +10,7 @@ before the completion gate runs — so verification observes the same workspace 
 outside observer would, rather than one propped up by processes about to vanish.
 """
 
+import asyncio
 import logging
 import re
 import shlex
@@ -44,6 +45,101 @@ _LISTENER_PROBES = (
 
 MAX_SWEEP_TARGETS = 24
 
+# Where a backgrounding command records the process group it leaves behind.
+# Everything it started is in that group, which makes it a precise handle rather
+# than a guess reconstructed from the command text.
+#
+# A file, not stdout, for two reasons. A launch that does *not* redirect its
+# output holds the shell's pipe open, so the tool's captured stdout is lost to
+# the drain timeout — and that is exactly the launch that most needs sweeping.
+# And keeping the marker off stdout means the model's view of the command output
+# is byte-for-byte what the command produced. Under /tmp, like background task
+# logs, so it never shows up in a `git diff` of the workspace.
+LAUNCH_DIR = "/tmp/garuda-launch"
+
+
+def wrap_launch(command: str, path: str) -> str:
+    """``command`` plus a probe recording the launching shell's pid and group.
+
+    Appended on its own line so the command itself is untouched — it still sets
+    the exit status, which is restored after the probe runs. `ps` is asked for
+    the group rather than it being assumed from ``$$``: whether the shell *leads*
+    its group depends on the backend, and sweeping a group we do not lead would
+    reach processes that are not ours.
+    """
+    return (
+        f"{command}\n"
+        f"__garuda_rc=$?\n"
+        f"mkdir -p {shlex.quote(LAUNCH_DIR)} 2>/dev/null\n"
+        f"printf '%s %s\\n' \"$$\" \"$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\" "
+        f"> {shlex.quote(path)} 2>/dev/null\n"
+        f"exit $__garuda_rc"
+    )
+
+
+def parse_launch(text: str) -> dict[str, str] | None:
+    """``{"pid", "pgid"}`` from a probe's output, or None if it did not run."""
+    parts = (text or "").split()
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return {"pid": parts[0], "pgid": parts[1]}
+
+
+async def read_launch(env: Any, path: str) -> dict[str, str] | None:
+    """Collect and remove one launch record. Never raises."""
+    try:
+        result = await env.execute(
+            f"cat {shlex.quote(path)} 2>/dev/null; rm -f {shlex.quote(path)} 2>/dev/null",
+            timeout=15.0,
+        )
+    except Exception:
+        logger.debug("Could not read launch record %s", path, exc_info=True)
+        return None
+    return parse_launch(result.stdout or "")
+
+# A shell that has already returned may have forked a child that has not reached
+# exec() yet, so the very first probe can legitimately see nothing. Wait this long
+# and look again before concluding a launch left nothing behind.
+SWEEP_SETTLE_SEC = 0.5
+
+# Grace between a signal and the probe that checks whether it worked.
+SWEEP_TERM_GRACE_SEC = 0.6
+SWEEP_KILL_GRACE_SEC = 0.4
+
+# One probe of the process table for `pattern`, printing only plausible targets.
+#
+# Two exclusions matter and neither is optional:
+#   * `$$`/`$PPID` — this very shell was invoked with `pattern` inside its own
+#     argv, so `pgrep -f` matches it. Without this the sweep "finds" itself,
+#     reports a kill, and declares a workspace clean that still has a server on it.
+#   * pid 1 — never signal the container's init.
+# The `pgrep` case-match drops the transient forks of this pipeline for the same
+# reason; an agent-started process whose command line contains "pgrep" is not a
+# case worth keeping the false positives for.
+_PROBE_SCRIPT = """\
+for p in $(pgrep -f {pattern} 2>/dev/null | head -40); do
+  [ "$p" = "$$" ] && continue
+  [ "$p" = "$PPID" ] && continue
+  [ "$p" = "1" ] && continue
+  c=$(ps -o command= -p "$p" 2>/dev/null)
+  case "$c" in *pgrep*) continue;; esac
+  echo "$p"
+done"""
+
+# Everything still in the launch's process group. `ps -Ao pid=,pgid=` is in POSIX
+# and reads the kernel's own record of group membership, so nothing here depends
+# on what a process called itself. The probing shell is excluded as before: it
+# is in its own group, but a backend that does not give it one would otherwise
+# make the sweep a candidate for its own kill list.
+_GROUP_PROBE_SCRIPT = """\
+ps -Ao pid=,pgid= 2>/dev/null | while read -r p g; do
+  [ "$g" = {pgid} ] || continue
+  [ "$p" = "$$" ] && continue
+  [ "$p" = "$PPID" ] && continue
+  [ "$p" = "1" ] && continue
+  echo "$p"
+done"""
+
 
 def _strip_background_markers(command: str) -> str:
     """The command text without the shell syntax that detaches it."""
@@ -70,6 +166,14 @@ def is_backgrounding(command: str) -> bool:
 
 def process_pattern(command: str) -> str | None:
     """A ``pgrep -f`` pattern matching just this launch, or None if too vague.
+
+    A fallback, not the primary handle. Reconstructing a pattern from the command
+    text assumes the process's argv still resembles what was typed, and it often
+    does not: on macOS ``/usr/bin/python3 server.py`` re-execs as
+    ``.../Python.app/Contents/MacOS/Python server.py``, which the pattern
+    ``python3 server.py`` cannot match — the process is left running and the
+    sweep reports a clean workspace. Process groups are exact; this is for
+    launches that leave the group (``nohup``, ``setsid``, daemonisers).
 
     Deliberately conservative. The pattern must name a concrete program *and* at
     least one argument, because sweeping on a bare interpreter name would kill
@@ -104,7 +208,7 @@ class SideEffectLedger:
     swept: list[dict[str, Any]] = field(default_factory=list)
     listeners_before: str = ""
     listeners_after: str = ""
-    _seen_patterns: set[str] = field(default_factory=set)
+    _seen_patterns: set[tuple[str | None, str | None]] = field(default_factory=set)
 
     # -- recording ---------------------------------------------------------
 
@@ -133,10 +237,36 @@ class SideEffectLedger:
         # the tool reports failure while the process is very much alive — the
         # exact case that most needs sweeping.
         pattern = process_pattern(command)
-        if pattern is None or pattern in self._seen_patterns:
+        # The group is the real handle; the pattern is a fallback for launches
+        # that leave it. Either alone is a reason to record, so a command too
+        # vague to pattern-match is still swept by group.
+        pgid = self._launch_pgid(result)
+        if pgid is None and pattern is None:
             return
-        self._seen_patterns.add(pattern)
-        self.processes.append({"command": command.strip()[:300], "pattern": pattern})
+        key = (pgid, pattern)
+        if key in self._seen_patterns:
+            return
+        self._seen_patterns.add(key)
+        self.processes.append(
+            {"command": command.strip()[:300], "pattern": pattern, "pgid": pgid}
+        )
+
+    @staticmethod
+    def _launch_pgid(result: ToolResult) -> str | None:
+        """The process group of the shell that ran the command, when it led one.
+
+        Declined when the shell is not its own group leader: the group then
+        belongs to something else — a persistent shell serving every command of
+        the run, or the harness itself — and sweeping it would kill far more than
+        this launch. Falling back to the pattern is the lesser failure.
+        """
+        launch = (result.metadata or {}).get("launch")
+        if not isinstance(launch, dict):
+            return None
+        pid, pgid = launch.get("pid"), launch.get("pgid")
+        if not (isinstance(pgid, str) and pgid.isdigit() and pgid not in ("0", "1")):
+            return None
+        return pgid if pgid == pid else None
 
     # -- reporting ---------------------------------------------------------
 
@@ -149,6 +279,9 @@ class SideEffectLedger:
             "files_written": sorted(self.files_written),
             "processes_started": [p["command"] for p in self.processes],
             "processes_killed": [s["pattern"] for s in self.swept if s.get("killed")],
+            # Signalled and still alive at the last probe. Kept separate from
+            # `processes_killed` so "we tried" is never read as "it is gone".
+            "processes_surviving": [s["pattern"] for s in self.swept if s.get("survivors")],
             "listeners_after": self.listeners_after,
         }
 
@@ -158,7 +291,12 @@ class SideEffectLedger:
         if not self.processes:
             lines.append("  - no background processes were started by you")
         for entry in self.swept:
-            state = "terminated" if entry.get("killed") else "already stopped"
+            if entry.get("survivors"):
+                state = "STILL RUNNING after TERM and KILL"
+            elif entry.get("killed"):
+                state = "terminated"
+            else:
+                state = "already stopped"
             lines.append(f"  - {state}: {entry['pattern']}  (from `{entry['command']}`)")
         lines.append(
             "  Verification below runs against the workspace in this state — the state "
@@ -172,39 +310,101 @@ class SideEffectLedger:
     async def sweep(self, env: Any) -> None:
         """Terminate agent-started background processes; record what happened.
 
+        Probe, signal, and then *probe again*: a single pre-kill `pgrep` answers
+        the wrong question. It cannot see a child that has not reached exec() yet
+        (the launching shell returns first), and finding a pid is not evidence
+        the signal landed — a process that ignores TERM, or a group whose leader
+        dies while a child keeps the port, both read as "killed" to a one-shot
+        sweep. Absence is only ever established by looking after the fact.
+
         Best-effort by construction: a workspace where cleanup fails is still
         worth verifying, and an exception here must not become a task failure.
         """
         for entry in self.processes[:MAX_SWEEP_TARGETS]:
-            pattern = entry["pattern"]
-            killed = False
-            try:
-                probe = await env.execute(
-                    f"pgrep -f {shlex.quote(pattern)} 2>/dev/null | head -20", timeout=15.0
-                )
-                pids = [p for p in (probe.stdout or "").split() if p.isdigit()]
-                if pids:
-                    # Exclude our own shell and pid 1 so the sweep cannot take
-                    # down the container it is running in.
-                    joined = " ".join(pids)
-                    await env.execute(
-                        f"for p in {joined}; do "
-                        f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
-                        f"kill -TERM $p 2>/dev/null || true; fi; done; "
-                        f"sleep 1; "
-                        f"for p in {joined}; do "
-                        f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
-                        f"kill -KILL $p 2>/dev/null || true; fi; done",
-                        timeout=30.0,
-                    )
-                    killed = True
-            except Exception:
-                logger.debug("Sweep failed for pattern %s", pattern, exc_info=True)
-            self.swept.append({**entry, "killed": killed})
+            self.swept.append({**entry, **await self._sweep_one(env, entry)})
         # Only worth a round trip when something was actually running; on most
         # runs there is nothing to sweep and nothing to report.
-        if any(entry.get("killed") for entry in self.swept):
+        if any(e.get("killed") or e.get("survivors") for e in self.swept):
             self.listeners_after = await self._listeners(env)
+
+    async def _sweep_one(self, env: Any, entry: dict[str, Any]) -> dict[str, Any]:
+        """Drive one launch to confirmed absence, or report what survived."""
+        pgid, pattern = entry.get("pgid"), entry.get("pattern")
+        try:
+            pids = await self._probe(env, pgid, pattern)
+            if not pids:
+                # Nothing yet — but "yet" is the operative word for a launch that
+                # has only just been forked. Look once more before believing it.
+                await asyncio.sleep(SWEEP_SETTLE_SEC)
+                pids = await self._probe(env, pgid, pattern)
+            if not pids:
+                return {"killed": False, "survivors": []}
+            for signal_name, grace in (
+                ("TERM", SWEEP_TERM_GRACE_SEC),
+                ("KILL", SWEEP_KILL_GRACE_SEC),
+                ("KILL", SWEEP_KILL_GRACE_SEC),
+            ):
+                await self._signal(env, pids, signal_name)
+                await asyncio.sleep(grace)
+                pids = await self._probe(env, pgid, pattern)
+                if not pids:
+                    return {"killed": True, "survivors": []}
+            # Signalled and still there: say so rather than claiming a clean box.
+            return {"killed": True, "survivors": pids}
+        except Exception:
+            logger.debug("Sweep failed for %s / %s", pgid, pattern, exc_info=True)
+            return {"killed": False, "survivors": [], "error": True}
+
+    async def _probe(
+        self, env: Any, pgid: str | None, pattern: str | None
+    ) -> list[str]:
+        """PIDs still alive from this launch, by group and then by pattern.
+
+        Both sources are consulted because they fail in opposite directions. The
+        group is exact but empty for a launch that left it (``setsid``, ``nohup``,
+        a self-daemonising server); the pattern survives that but only matches
+        when the process's argv still resembles the command that was typed.
+        """
+        found: list[str] = []
+        if pgid:
+            found.extend(await self._probe_group(env, pgid))
+        if pattern:
+            found.extend(await self._probe_pattern(env, pattern))
+        # Order-preserving dedupe: the same pid can answer to both probes.
+        return list(dict.fromkeys(found))
+
+    async def _probe_group(self, env: Any, pgid: str) -> list[str]:
+        """PIDs still in the launching shell's process group.
+
+        No argv matching: membership of that group *is* the evidence that this
+        run started the process, so an interpreter that rewrote its own command
+        line is caught exactly like one that did not.
+        """
+        result = await env.execute(_GROUP_PROBE_SCRIPT.format(pgid=shlex.quote(pgid)), timeout=15.0)
+        return [p for p in (result.stdout or "").split() if p.isdigit() and p != "1"]
+
+    async def _probe_pattern(self, env: Any, pattern: str) -> list[str]:
+        """PIDs currently matching ``pattern``, excluding the probe's own shell."""
+        result = await env.execute(
+            _PROBE_SCRIPT.format(pattern=shlex.quote(pattern)), timeout=15.0
+        )
+        return [p for p in (result.stdout or "").split() if p.isdigit() and p != "1"]
+
+    async def _signal(self, env: Any, pids: list[str], signal_name: str) -> None:
+        """Signal each pid and its process group, ignoring the ones already gone."""
+        joined = " ".join(p for p in pids if p.isdigit())
+        if not joined:
+            return
+        # The negative form targets the whole group, which is what catches a
+        # launcher's children; the plain form covers a process that never became
+        # a group leader. Either may fail harmlessly, so neither gates the other.
+        await env.execute(
+            f"for p in {joined}; do "
+            f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
+            f"kill -{signal_name} -$p 2>/dev/null || true; "
+            f"kill -{signal_name} $p 2>/dev/null || true; fi; done",
+            timeout=30.0,
+        )
 
     async def _listeners(self, env: Any) -> str:
         for probe in _LISTENER_PROBES:

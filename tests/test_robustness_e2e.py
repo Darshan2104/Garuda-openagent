@@ -4,6 +4,7 @@ Each test reproduces a failure mode observed on terminal-bench-pro and asserts
 the agent can no longer finish that way.
 """
 
+import os
 from pathlib import Path
 
 from garuda.core.events import EventType
@@ -123,7 +124,16 @@ async def test_dropping_the_failing_check_does_not_get_past_the_gate(tmp_path: P
 
 async def test_background_process_is_swept_before_verification(tmp_path: Path):
     script = tmp_path / "server.py"
-    script.write_text("import time\ntime.sleep(120)\n")
+    # Writes its own pid, so the assertion below can be about the process itself
+    # rather than about what the cleanup metadata claims. A sweep that reports a
+    # kill it did not perform is the failure mode this test exists to catch, and
+    # `processes_killed` alone cannot tell the two apart.
+    pidfile = tmp_path / "server.pid"
+    script.write_text(
+        f"import os, time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"time.sleep(120)\n"
+    )
     marker = tmp_path / "answer.txt"
     marker.write_text("ANSWER")
     # Redirecting output is what a well-behaved launch looks like; the tool
@@ -146,8 +156,75 @@ async def test_background_process_is_swept_before_verification(tmp_path: Path):
     effects = result.metadata["side_effects"]
     assert any("server.py" in p for p in effects["processes_started"])
     assert effects["processes_killed"], "the process the agent started must not outlive the run"
+    assert not effects["processes_surviving"]
     swept = [e for e in result.metadata["events"] if e["type"] == EventType.SIDE_EFFECTS.value]
     assert swept
+
+    # The claim, checked against the kernel rather than against the report.
+    assert pidfile.exists(), "the launch never ran, so the sweep proved nothing"
+    pid = int(pidfile.read_text().strip())
+    assert not _alive(pid), f"pid {pid} outlived the run despite a reported sweep"
+
+
+def _alive(pid: int) -> bool:
+    """Whether ``pid`` still exists. Signal 0 checks without delivering anything."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # exists, owned by someone else
+        return True
+    return True
+
+
+async def test_a_launch_whose_argv_does_not_match_the_command_is_still_swept(tmp_path: Path):
+    """The sweep cannot rely on the process looking like the command that made it.
+
+    macOS `/usr/bin/python3` re-execs as `.../Python.app/Contents/MacOS/Python`,
+    so a `pgrep -f "python3 server.py"` pattern derived from the command text
+    matches nothing and the server is left holding its port while the run reports
+    a clean workspace. Here the process renames itself outright, which is the
+    same failure with the platform dependency removed.
+    """
+    script = tmp_path / "server.py"
+    pidfile = tmp_path / "server.pid"
+    # setproctitle isn't a dependency, so rewrite argv the portable way: re-exec
+    # the interpreter under a name that shares nothing with the command. The
+    # guard is an env var, not argv[0] — Python rewrites sys.argv[0] to the
+    # script path, so re-reading it would loop forever.
+    disguise = tmp_path / "totally-unrelated-daemon"
+    # The pid is written before the re-exec and survives it unchanged, so the
+    # guard below cannot be satisfied by the sweep killing the process during the
+    # brief window in which it still looks like the command that launched it.
+    script.write_text(
+        "import os, sys, time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        "if not os.environ.get('GARUDA_TEST_DISGUISED'):\n"
+        "    os.environ['GARUDA_TEST_DISGUISED'] = '1'\n"
+        f"    os.execve(sys.executable, [{str(disguise)!r}, __file__], os.environ)\n"
+        "time.sleep(120)\n"
+    )
+    marker = tmp_path / "answer.txt"
+    marker.write_text("ANSWER")
+    result = await DefaultAgent().run(
+        task="Solve the puzzle and write answer.txt",
+        model=ScriptModel(
+            responses=[
+                _bash(f"python3 {script} > /dev/null 2>&1 &"),
+                _complete([f"grep -q ANSWER {marker}"]),
+            ]
+        ),
+        env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(),
+        config=_config(),
+    )
+    assert result.success is True
+    assert pidfile.exists(), "the disguised launch never ran, so the sweep proved nothing"
+    pid = int(pidfile.read_text().strip())
+    assert not _alive(pid), (
+        f"pid {pid} renamed itself and outlived the sweep — the process group, "
+        "not the command text, has to be the handle"
+    )
 
 
 # --- acceptance criteria ---------------------------------------------------

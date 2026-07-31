@@ -1,0 +1,39 @@
+# Versions this tree's results were produced and its suite verified under.
+#
+# pyproject deliberately lower-bounds its dependencies: as a library, garuda
+# should install alongside whatever a host application already has. That is the
+# right contract for a dependency and the wrong one for a benchmark run, where an
+# upstream release can move a number nobody changed. litellm is the pointed
+# example — its pricing table used to decide reported cost, and it ships a new
+# one most weeks.
+#
+# So: install unconstrained when embedding, constrained when measuring.
+#
+#   pip install -e '.[dev,eval]' -c constraints.txt
+#
+# CI runs both (.github/workflows/ci.yml): the `test` job is pinned with this
+# file and gates merges, so a red build is this repo's fault. `latest-deps`
+# installs unconstrained and is non-blocking — it is the early warning that an
+# upstream release has broken something, and is expected to be the noisier of
+# the two. Both print `pip freeze`; the diff against this file is the finding.
+#
+# Regenerate with: pip freeze | grep -iE '^(litellm|pyyaml|mcp|pytest|pytest-asyncio|harbor|pypdf|openpyxl|rich)=='
+# Last verified: 2026-07-31, Python 3.12.
+
+litellm==1.87.0
+PyYAML==6.0.2
+mcp==1.19.0
+
+# dev
+pytest==8.4.2
+pytest-asyncio==1.2.0
+
+# eval
+harbor==0.17.0
+
+# docs
+pypdf==6.12.2
+openpyxl==3.1.5
+
+# tui
+rich==14.2.0

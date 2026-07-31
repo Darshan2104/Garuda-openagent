@@ -157,7 +157,9 @@ class ToolRunner:
             content = result.content if isinstance(result.content, str) else str(result.content)
             result.content = self._shape_or_buffer(content, call, result.is_error)
             if self.memo is not None and signature is not None:
-                self.memo.record(call, signature, result.content, result.is_error)
+                self.memo.record(
+                    call, signature, result.content, result.is_error, result.metadata
+                )
         except EnvironmentUnavailableError:
             # Not a tool failure the model can route around — the workspace is
             # gone. Propagate so the run aborts instead of continuing blind.

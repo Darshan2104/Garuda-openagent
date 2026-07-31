@@ -209,3 +209,142 @@ def test_memo_stats_report_repeats():
     assert stats["total_calls"] == 3
     assert stats["distinct_calls"] == 1
     assert stats["repeat_calls"] == 2
+
+
+# --- W6 regression: a background task writes between tool calls -------------
+
+
+def _run(memo, call, content="", metadata=None):
+    """Put one call through the memo, returning what it served (None = executed)."""
+    sig, _ = memo.observe(call)
+    cached = memo.lookup(call, sig)
+    if cached is None:
+        memo.record(call, sig, content, False, metadata)
+    return cached
+
+
+def test_polling_a_background_task_cannot_serve_a_stale_read():
+    """launch -> read -> background writer -> poll -> reread.
+
+    Invalidate-on-mutation assumes the tool stream is the only writer. A build
+    started with bash_background keeps writing between calls, and `task_output`
+    is declared non-mutating, so nothing after the launch marks the file as
+    changed. The read has to be taken *after* the launch for the hole to show:
+    the launch's own invalidation covers everything before it and nothing after.
+    """
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+    _run(memo, read, "old contents")
+    # ... the build writes /app/out.txt here, invisibly to the tool stream ...
+    _run(memo, _call("task_output", task_id="a1"), "still running", {"background_tasks": 1})
+
+    assert _run(memo, read, "new contents") is None, "the reread must actually hit disk"
+
+
+def test_reads_stay_uncached_for_as_long_as_a_task_is_live():
+    """Two reads with no call at all between them are just as exposed."""
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+
+    assert _run(memo, read, "first") is None
+    assert _run(memo, read, "second") is None
+
+
+def test_caching_resumes_once_the_last_task_has_exited():
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+    _run(memo, read, "mid-build")
+    # The poll that observes the exit drops the count — and with it anything
+    # cached during the window in which the build was writing.
+    _run(memo, _call("task_output", task_id="a1"), "exited", {"background_tasks": 0})
+
+    assert _run(memo, read, "final") is None  # first post-build read is real
+    cached = _run(memo, read)
+    assert cached is not None and "final" in cached[0]
+
+
+def test_buffer_reads_stay_memoized_while_a_task_runs():
+    """A live task suspends filesystem caching, not all caching.
+
+    The output buffer holds a stored copy of an earlier tool result in this
+    process; a background command has no way to reach it, so re-slicing it is
+    the one repeated read that is still safe to answer from memory.
+    """
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    slice_call = _call("buffer_slice", buffer_id="buf_1", start=0)
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+
+    assert _run(memo, slice_call, "lines 0-40") is None  # first one executes
+    cached = _run(memo, slice_call)
+    assert cached is not None and "lines 0-40" in cached[0]
+
+    # Same sequence against the filesystem never gets a second chance.
+    assert _run(memo, read, "contents") is None
+    assert _run(memo, read, "contents") is None
+
+
+def test_a_raw_backgrounding_bash_command_suspends_filesystem_caching():
+    """`bash("make build &")` is the same hazard with none of the bookkeeping.
+
+    The live-task count only exists for `bash_background`. A shell command that
+    backgrounds its own writer invalidates once, on the way through — and then
+    every later read is cacheable again while the build is still writing.
+    """
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+
+    _run(memo, _call("bash", command="make build > build.log 2>&1 &"), "ok")
+    assert memo.untracked_writer is True
+
+    assert _run(memo, read, "mid-build") is None
+    assert _run(memo, read, "mid-build") is None, "a build is still writing to it"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["python3 server.py &", "nohup ./run.sh &", "setsid ./daemon --port 80", "nginx"],
+)
+def test_every_form_of_backgrounding_counts(command):
+    memo = ActionMemo()
+    _run(memo, _call("bash", command=command), "ok")
+    assert memo.filesystem_is_volatile is True
+
+
+def test_an_ordinary_command_leaves_caching_alone():
+    """The suspension is sticky, so it must not fire on `a && b` or a plain run."""
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    for command in ("make build", "a && b", "grep -r x . | head", "ls -la"):
+        _run(memo, _call("bash", command=command), "ok")
+    assert memo.untracked_writer is False
+
+    assert _run(memo, read, "contents") is None
+    cached = _run(memo, read)
+    assert cached is not None and "contents" in cached[0]
+
+
+def test_bash_background_does_not_trip_the_sticky_flag():
+    """It reports its own exits, so caching may resume when the task ends."""
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+    assert memo.untracked_writer is False
+
+    _run(memo, _call("task_output", task_id="a1"), "exited", {"background_tasks": 0})
+    assert _run(memo, read, "final") is None
+    assert _run(memo, read) is not None  # caching resumed
+
+
+def test_killing_a_task_invalidates_what_it_may_have_written():
+    memo = ActionMemo()
+    read = _call("read_file", path="/app/out.txt")
+    _run(memo, read, "before")
+    _run(memo, _call("bash_background", command="make build"), "started", {"background_tasks": 1})
+    _run(memo, _call("kill_task", task_id="a1"), "killed", {"background_tasks": 0})
+
+    assert _run(memo, read, "after") is None

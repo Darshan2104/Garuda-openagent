@@ -135,3 +135,95 @@ async def test_prune_evicts_old_terminal_jobs():
     extra = mgr.submit(runner, task="x", events=EventStore())
     await extra._task
     assert len(mgr.list()) <= 3
+
+
+# --- retention: a quiet server must not hold every event history it ever saw --
+
+
+async def test_the_cap_applies_when_jobs_finish_not_only_when_they_are_submitted():
+    """The leak: pruning only at submit time is unbounded in wall-clock.
+
+    A server that takes a burst of jobs and then goes quiet — the normal state of
+    a long-lived server, not an edge case — retains every completed job's full
+    in-memory event history until something else is submitted, which may be never.
+    """
+    mgr = JobManager(max_jobs=8, max_retained=2)
+
+    async def runner(job):
+        return _result()
+
+    jobs = [mgr.submit(runner, task=str(i), events=EventStore()) for i in range(6)]
+    await asyncio.gather(*[j._task for j in jobs])
+    # No further submission: retention has to hold on its own.
+    assert len(mgr.list()) <= 2
+
+
+async def test_terminal_jobs_expire_after_their_ttl():
+    mgr = JobManager(retain_seconds=60.0)
+
+    async def runner(job):
+        return _result()
+
+    job = mgr.submit(runner, task="t", events=EventStore())
+    await job._task
+    assert mgr.get(job.id) is not None
+
+    job.finished_at -= 61.0  # as if the result went uncollected for an hour
+    assert mgr.get(job.id) is None
+    assert mgr.list() == []
+
+
+async def test_a_running_job_is_never_evicted():
+    """Eviction is for results nobody collected, never for work in flight."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(job):
+        started.set()
+        await release.wait()
+        return _result()
+
+    async def fast(job):
+        return _result()
+
+    mgr = JobManager(max_jobs=8, max_retained=1, retain_seconds=0.0)
+    long_job = mgr.submit(slow, task="slow", events=EventStore())
+    await started.wait()
+
+    others = [mgr.submit(fast, task=str(i), events=EventStore()) for i in range(5)]
+    await asyncio.gather(*[j._task for j in others])
+
+    assert mgr.get(long_job.id) is not None
+    release.set()
+    await long_job._task
+
+
+async def test_ttl_of_zero_keeps_the_count_cap_only():
+    mgr = JobManager(max_retained=5, retain_seconds=0.0)
+
+    async def runner(job):
+        return _result()
+
+    job = mgr.submit(runner, task="t", events=EventStore())
+    await job._task
+    job.finished_at -= 10_000.0
+    assert mgr.get(job.id) is not None
+
+
+async def test_a_cancelled_job_is_stamped_and_becomes_evictable():
+    release = asyncio.Event()
+
+    async def slow(job):
+        await release.wait()
+        return _result()
+
+    mgr = JobManager(retain_seconds=60.0)
+    job = mgr.submit(slow, task="t", events=EventStore())
+    await asyncio.sleep(0)
+    assert mgr.cancel(job.id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await job._task
+
+    assert job.finished_at is not None
+    job.finished_at -= 61.0
+    assert mgr.get(job.id) is None

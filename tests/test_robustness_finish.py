@@ -16,7 +16,9 @@ from garuda.core.loop import _budget_fraction
 from garuda.core.side_effects import (
     SideEffectLedger,
     is_backgrounding,
+    parse_launch,
     process_pattern,
+    wrap_launch,
 )
 from garuda.tools.bash import (
     MIN_COMMAND_TIMEOUT_SEC,
@@ -67,16 +69,38 @@ def test_pattern_refuses_to_be_vague():
 
 
 class _SweepEnv:
+    """A process table the sweep can actually change.
+
+    Returning a fixed pid list to every probe would let a sweep that never kills
+    anything pass, which is the bug this fake exists to catch. Here a probe
+    reports what is alive *now*: ``visible_after`` models a launch that has not
+    reached exec() yet, and ``survives`` a process that outlives its signals.
+    """
+
     workspace_root = "/app"
 
-    def __init__(self, pids="4242"):
+    def __init__(self, pids="4242", visible_after: int = 0, survives: bool = False):
         self.pids = pids
         self.ran: list[str] = []
+        self._probes = 0
+        self._visible_after = visible_after
+        self._survives = survives
+        self._alive = True
+
+    @property
+    def probes(self) -> int:
+        return self._probes
 
     async def execute(self, command, timeout=None, cwd=None):
         self.ran.append(command)
-        if command.startswith("pgrep"):
-            return _exec(stdout=self.pids)
+        if "pgrep" in command:
+            self._probes += 1
+            visible = self._alive and self._probes > self._visible_after
+            return _exec(stdout=self.pids if visible else "")
+        if "kill -" in command:
+            if not self._survives:
+                self._alive = False
+            return _exec()
         if command.startswith("ss "):
             return _exec(stdout="LISTEN 0 128 0.0.0.0:9999")
         return _exec()
@@ -88,16 +112,22 @@ class _SweepEnv:
         return None
 
 
-async def test_sweep_kills_agent_started_process():
+def _server_ledger(command="python3 /app/puzzle_server.py &"):
     ledger = SideEffectLedger()
     ledger.observe(
-        ToolCall(id="1", name="bash", arguments={"command": "python3 /app/puzzle_server.py &"}),
+        ToolCall(id="1", name="bash", arguments={"command": command}),
         ToolResult(tool_call_id="1", content="ok"),
     )
+    return ledger
+
+
+async def test_sweep_kills_agent_started_process():
+    ledger = _server_ledger()
     assert ledger.has_pending
     env = _SweepEnv()
     await ledger.sweep(env)
     assert ledger.swept and ledger.swept[0]["killed"] is True
+    assert ledger.summary()["processes_surviving"] == []
     assert any("kill -TERM" in c for c in env.ran)
     # The sweep must never be able to take down the container it runs in.
     kill_cmd = next(c for c in env.ran if "kill -TERM" in c)
@@ -114,6 +144,163 @@ async def test_sweep_is_a_noop_without_background_processes():
     await ledger.sweep(env)
     assert ledger.swept == []
     assert not any("kill" in c for c in env.ran)
+
+
+# --- W3 regression: the sweep has to look twice ----------------------------
+
+
+async def test_sweep_catches_a_process_that_starts_after_the_first_probe():
+    """The launching shell returns before its child reaches exec().
+
+    A single probe sees nothing, concludes the box is clean, and the process
+    outlives the run — the exact leak this sweep exists to prevent.
+    """
+    ledger = _server_ledger()
+    env = _SweepEnv(visible_after=1)
+    await ledger.sweep(env)
+    assert env.probes >= 2, "one probe cannot distinguish 'gone' from 'not started yet'"
+    assert ledger.swept[0]["killed"] is True
+    assert ledger.swept[0]["survivors"] == []
+
+
+async def test_sweep_confirms_absence_rather_than_assuming_it():
+    """Finding a pid is not evidence the signal landed."""
+    ledger = _server_ledger()
+    env = _SweepEnv(survives=True)
+    await ledger.sweep(env)
+    entry = ledger.swept[0]
+    assert entry["survivors"] == ["4242"]
+    assert ledger.summary()["processes_surviving"] == ["python3 /app/puzzle_server.py"]
+    assert "STILL RUNNING" in ledger.render()
+    # It escalated instead of giving up after one TERM.
+    assert sum(1 for c in env.ran if "kill -KILL" in c) >= 1
+
+
+async def test_sweep_reports_a_process_that_was_already_gone():
+    ledger = _server_ledger()
+    env = _SweepEnv(pids="")
+    await ledger.sweep(env)
+    assert ledger.swept[0] == {**ledger.processes[0], "killed": False, "survivors": []}
+    assert not any("kill -" in c for c in env.ran)
+
+
+async def test_probe_excludes_the_shell_that_carries_the_pattern_in_its_argv():
+    """`pgrep -f` matches the probe's own command line.
+
+    Without the exclusion the sweep finds itself, reports a kill, and calls a
+    workspace clean that still has a server on it.
+    """
+    ledger = _server_ledger()
+    env = _SweepEnv()
+    await ledger.sweep(env)
+    probe = next(c for c in env.ran if "pgrep" in c)
+    assert '"$p" = "$$"' in probe
+    assert '"$p" = "$PPID"' in probe
+    assert '"$p" = "1"' in probe
+
+
+# --- W3 regression: the process group, not the command text ----------------
+
+
+def test_the_launch_wrapper_leaves_the_command_and_its_exit_status_alone():
+    wrapped = wrap_launch("python3 server.py &", "/tmp/garuda-launch/abc")
+    assert wrapped.startswith("python3 server.py &\n")
+    assert "__garuda_rc=$?" in wrapped  # captured before the probe can clobber it
+    assert wrapped.endswith("exit $__garuda_rc")
+    assert "/tmp/garuda-launch/abc" in wrapped
+
+
+def test_launch_records_are_parsed_or_declined():
+    assert parse_launch("4242 4242\n") == {"pid": "4242", "pgid": "4242"}
+    for junk in ("", "\n", "not a pid", "4242", "sh: ps: not found"):
+        assert parse_launch(junk) is None
+
+
+def _launched(pid="4242", pgid="4242", command="python3 /app/puzzle_server.py &"):
+    """A ledger holding one bash launch that reported the given pid/pgid."""
+    ledger = SideEffectLedger()
+    ledger.observe(
+        ToolCall(id="1", name="bash", arguments={"command": command}),
+        ToolResult(
+            tool_call_id="1",
+            content="ok",
+            metadata={"launch": {"pid": pid, "pgid": pgid}},
+        ),
+    )
+    return ledger
+
+
+def test_a_launch_that_led_its_group_is_recorded_by_group():
+    assert _launched().processes[0]["pgid"] == "4242"
+
+
+def test_a_launch_that_did_not_lead_its_group_declines_it():
+    """A persistent shell serves every command in the run; its group is not ours."""
+    ledger = _launched(pid="4242", pgid="900")
+    assert ledger.processes[0]["pgid"] is None
+
+
+@pytest.mark.parametrize("pgid", ["1", "0", "", "nonsense", None])
+def test_unusable_group_ids_are_declined(pgid):
+    ledger = _launched(pid=pgid, pgid=pgid)
+    assert ledger.processes[0]["pgid"] is None
+
+
+def test_a_group_is_swept_even_when_the_command_is_too_vague_to_pattern_match():
+    """`process_pattern` gives up on a bare interpreter; the group still holds."""
+    ledger = _launched(command="python3 &")
+    entry = ledger.processes[0]
+    assert entry["pattern"] is None and entry["pgid"] == "4242"
+
+
+async def test_the_sweep_finds_a_process_whose_argv_no_longer_matches():
+    """The macOS case: `python3 x.py` re-execs as `.../MacOS/Python x.py`.
+
+    The pattern derived from the command text matches nothing at all, so a sweep
+    with only that source reports a clean workspace over a live server.
+    """
+
+    class _RenamedEnv(_SweepEnv):
+        async def execute(self, command, timeout=None, cwd=None):
+            self.ran.append(command)
+            if "pgrep" in command:
+                return _exec(stdout="")  # the argv no longer resembles the command
+            if "ps -Ao" in command:
+                self._probes += 1
+                return _exec(stdout=self.pids if self._alive else "")
+            if "kill -" in command:
+                self._alive = False
+                return _exec()
+            return _exec()
+
+    ledger = _launched()
+    env = _RenamedEnv()
+    await ledger.sweep(env)
+    assert ledger.swept[0]["killed"] is True
+    assert ledger.swept[0]["survivors"] == []
+    assert any("ps -Ao pid=,pgid=" in c for c in env.ran)
+
+
+async def test_the_group_probe_never_targets_init_or_the_probing_shell():
+    ledger = _launched()
+    env = _SweepEnv(pids="")
+    await ledger.sweep(env)
+    probe = next(c for c in env.ran if "ps -Ao" in c)
+    assert '"$p" = "$$"' in probe
+    assert '"$p" = "$PPID"' in probe
+    assert '"$p" = "1"' in probe
+    assert '[ "$g" = 4242 ]' in probe
+
+
+async def test_sweep_survives_an_environment_that_raises():
+    class _Broken(_SweepEnv):
+        async def execute(self, command, timeout=None, cwd=None):
+            raise RuntimeError("workspace gone")
+
+    ledger = _server_ledger()
+    await ledger.sweep(_Broken())
+    assert ledger.swept[0]["killed"] is False
+    assert ledger.swept[0]["error"] is True
 
 
 def test_failed_calls_are_not_recorded():

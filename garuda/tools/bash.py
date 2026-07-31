@@ -1,5 +1,7 @@
 import time
+import uuid
 
+from garuda.core.side_effects import LAUNCH_DIR, is_backgrounding, read_launch, wrap_launch
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
@@ -85,8 +87,20 @@ class BashTool:
             kwargs["cwd"] = cwd
         # Persistent mode (opt-in, local env): reuse a long-lived shell so cwd/env
         # persist across calls. Falls back to per-call execution otherwise.
-        if getattr(ctx, "persistent_shell", False) and hasattr(env, "persistent_execute"):
+        persistent = getattr(ctx, "persistent_shell", False) and hasattr(env, "persistent_execute")
+        # A command that backgrounds something is asked to name the process group
+        # it leaves behind, so the pre-completion sweep has an exact handle on it
+        # instead of a pattern guessed from the command text. Not in persistent
+        # mode: there the group belongs to the long-lived shell that serves every
+        # command in the run, and sweeping it would kill the session itself.
+        instrument = not persistent and is_backgrounding(command)
+        launch = None
+        if persistent:
             result = await env.persistent_execute(command, **kwargs)
+        elif instrument:
+            record = f"{LAUNCH_DIR}/{uuid.uuid4().hex[:12]}"
+            result = await env.execute(wrap_launch(command, record), **kwargs)
+            launch = await read_launch(env, record)
         else:
             result = await env.execute(command, **kwargs)
 
@@ -109,4 +123,5 @@ class BashTool:
             tool_call_id="",
             content=output,
             is_error=failed,
+            metadata={"launch": launch} if launch else {},
         )

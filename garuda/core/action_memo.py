@@ -14,19 +14,36 @@ Two mechanisms, deliberately separated by safety:
   signature has been issued across the session and steer the model once a call
   keeps coming back. Mutating calls are never served from cache; re-running them
   may be legitimate, so the intervention is advice, not substitution.
+
+Invalidate-on-mutation rests on an assumption that a background task breaks: that
+the tool stream is the only writer. A build or server started with
+``bash_background`` keeps writing between calls, so *no* call has to intervene for
+a cached read to go stale — polling it with ``task_output`` is enough, and so is
+doing nothing at all. While any background task is live, filesystem reads are
+therefore executed rather than remembered. The buffer reads keep their cache;
+they answer from in-process state that a background process cannot reach.
+
+A raw ``bash("make build &")`` is the same hazard with none of the bookkeeping.
+Nothing reports when it finishes, so there is no count to decrement and no moment
+at which caching is known to be safe again. Detected launches therefore suspend
+filesystem memoization for the rest of the session. That is deliberately
+pessimistic: the alternative is serving a read that a process nobody is tracking
+has already invalidated, and the cost of being wrong is not symmetric.
 """
 
 import json
 import logging
 from dataclasses import dataclass, field
 
+from garuda.core.side_effects import is_backgrounding
 from garuda.types import ToolCall
 
 logger = logging.getLogger(__name__)
 
-# Tools with no workspace side effects, safe to serve from cache. A superset of
-# the loop's PARALLEL_SAFE_TOOLS minus anything whose value is time-dependent.
-CACHEABLE_TOOLS = frozenset(
+# Read-only tools whose answer comes from the filesystem. Cacheable, but only
+# while the tool stream is the *only* thing writing to it — see
+# ``background_tasks`` below.
+WORKSPACE_READ_TOOLS = frozenset(
     {
         "read_file",
         "grep",
@@ -35,12 +52,23 @@ CACHEABLE_TOOLS = frozenset(
         "read_pdf",
         "read_spreadsheet",
         "image_read",
+    }
+)
+
+# Read-only tools that answer from in-process state (the output buffer), which
+# nothing outside the tool stream can touch. Always safe to serve from cache.
+BUFFER_READ_TOOLS = frozenset(
+    {
         "buffer_grep",
         "buffer_slice",
         "buffer_list",
         "buffer_query",
     }
 )
+
+# Tools with no workspace side effects, safe to serve from cache. A superset of
+# the loop's PARALLEL_SAFE_TOOLS minus anything whose value is time-dependent.
+CACHEABLE_TOOLS = WORKSPACE_READ_TOOLS | BUFFER_READ_TOOLS
 
 # Tools that never touch the workspace and therefore must not invalidate the
 # memo when they run (bookkeeping, planning, completion signalling).
@@ -57,6 +85,12 @@ NON_MUTATING_TOOLS = CACHEABLE_TOOLS | frozenset(
         "task_output",
     }
 )
+
+# Tools that launch background work *and* report when it ends. Their commands are
+# excluded from the sticky untracked-writer detection: they have a live count, so
+# treating them as permanently volatile would give up caching for the whole
+# session over work that finished two turns ago.
+_MANAGED_BACKGROUND_TOOLS = frozenset({"bash_background"})
 
 # How many times an identical signature may appear before the model is steered.
 REPEAT_STEER_THRESHOLD = 3
@@ -115,6 +149,18 @@ class ActionMemo:
     step: int = 0
     hits: int = 0
     invalidations: int = 0
+    # Background tasks currently running for this session, as reported by the
+    # background tools. Non-zero means something outside the tool stream may be
+    # writing to the workspace at any moment.
+    background_tasks: int = 0
+    # A raw `cmd &` was seen. Sticky: nothing reports its exit, so there is no
+    # later call that could clear it honestly.
+    untracked_writer: bool = False
+
+    @property
+    def filesystem_is_volatile(self) -> bool:
+        """Something outside the tool stream may be writing to the workspace."""
+        return bool(self.background_tasks or self.untracked_writer)
 
     def observe(self, call: ToolCall) -> tuple[str, int]:
         """Record that ``call`` is about to run. Returns (signature, occurrence)."""
@@ -129,21 +175,70 @@ class ActionMemo:
         """Cached (content, is_error) for a repeated read-only call, else None."""
         if call.name not in CACHEABLE_TOOLS:
             return None
+        if self.filesystem_is_volatile and call.name in WORKSPACE_READ_TOOLS:
+            return None
         entry = self._entries.get(signature)
         if entry is None:
             return None
         self.hits += 1
         return entry.content + CACHE_HIT_SUFFIX.format(first=entry.first_step), entry.is_error
 
-    def record(self, call: ToolCall, signature: str, content: str, is_error: bool) -> None:
+    def record(
+        self,
+        call: ToolCall,
+        signature: str,
+        content: str,
+        is_error: bool,
+        metadata: dict | None = None,
+    ) -> None:
         """Store a result and, if the call mutated anything, drop cached reads."""
-        if call.name in CACHEABLE_TOOLS:
+        self._note_background(call, metadata)
+        if call.name in WORKSPACE_READ_TOOLS:
+            # Not stored at all while a background task runs: storing it now and
+            # declining to serve it is the same thing until the task ends, at
+            # which point the stale entry would become servable again.
+            if not self.filesystem_is_volatile:
+                self._entries.setdefault(
+                    signature, _Entry(content=content, is_error=is_error, first_step=self.step)
+                )
+            return
+        if call.name in BUFFER_READ_TOOLS:
             self._entries.setdefault(
                 signature, _Entry(content=content, is_error=is_error, first_step=self.step)
             )
             return
         if call.name not in NON_MUTATING_TOOLS:
             self.invalidate()
+
+    def _note_background(self, call: ToolCall, metadata: dict | None) -> None:
+        """Note anything that leaves a writer running behind this call.
+
+        Two sources, because there are two ways to get one. The background tools
+        report a live count, and any change to it is a workspace-visible event: a
+        launch means writes may start, an exit means whatever it wrote is now
+        final and previously cached reads describe a workspace that no longer
+        exists. A shell command that backgrounds its own work reports nothing at
+        all, so it is detected from the command text — the same detection the
+        side-effect ledger uses to decide what to sweep.
+        """
+        command = (call.arguments or {}).get("command")
+        if (
+            not self.untracked_writer
+            and call.name not in _MANAGED_BACKGROUND_TOOLS
+            and isinstance(command, str)
+            and is_backgrounding(command)
+        ):
+            self.untracked_writer = True
+            self.invalidate()
+
+        count = (metadata or {}).get("background_tasks")
+        if not isinstance(count, int) or isinstance(count, bool):
+            return
+        count = max(count, 0)
+        if count == self.background_tasks:
+            return
+        self.background_tasks = count
+        self.invalidate()
 
     def count_for(self, signature: str) -> int:
         """How many times this exact signature has been issued this session."""

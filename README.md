@@ -26,7 +26,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier (evidence must be able to fail — quote-aware structural classification, so a print-only or load-only check is not accepted as proof), post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
-| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it) and repetition detection |
+| **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it, and filesystem reads stop being memoized entirely while a background task is running — it writes between calls, and no call marks that) and repetition detection |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
 | **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
@@ -717,6 +717,27 @@ harbor run -d terminal-bench@2.0 \
   --model openai/gpt-4o-mini
 ```
 
+### Cost accounting
+
+Reported cost resolves in four tiers, strongest first:
+
+1. **What the provider charged** — `cost_usd` on the call's usage, when the
+   provider returns one. The invoice beats any model of the invoice.
+2. **`GARUDA_TOKEN_PRICES`** — rates you have measured for your own account.
+3. **The in-repo snapshot** — [`garuda/eval/pricing.py`](garuda/eval/pricing.py),
+   versioned and offline, changed only by a reviewed diff.
+4. **LiteLLM's table**, for models the snapshot does not name.
+
+Tier 3 exists because tier 4 is not reproducible: LiteLLM fetches its cost map
+from GitHub at import time and revises it continuously upstream, so the same
+trajectory can price differently on two machines on the same day. Garuda sets
+`LITELLM_LOCAL_MODEL_COST_MAP=True` before importing LiteLLM (unless you have set
+it yourself) so even the fallback depends only on the installed version.
+
+Pricing is cache-aware at every tier. An agentic run is mostly cache reads — 97%
+of prompt tokens on a recent 50-task benchmark — billed at a fraction of the
+fresh-input rate. To add a model, edit the snapshot and bump `SNAPSHOT_VERSION`.
+
 ### Adapter options
 
 Set these under the agent's `kwargs` in a Harbor job config. They are
@@ -811,7 +832,21 @@ pytest tests/ -v
 GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 ```
 
-**Current test status:** 831 passed, 8 skipped of 839 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Reproducible installs.** `pyproject.toml` lower-bounds its dependencies on
+purpose: as a library, Garuda should install alongside whatever a host
+application already has. That is the wrong contract for a measured run, where an
+upstream release can move a number nobody changed. Pin with the constraints file
+when the results have to be comparable:
+
+```bash
+pip install -e ".[dev,eval]" -c constraints.txt
+```
+
+CI runs both: `test` is pinned and gating, `latest-deps` installs unconstrained
+and is non-blocking — it exists to tell you an upstream release has broken
+something, not to block an unrelated PR.
+
+**Current test status:** 902 passed, 8 skipped of 910 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 
@@ -826,7 +861,7 @@ GARUDA_LIVE_SANDBOX=1 pytest tests/ -v
 | `GARUDA_MCP_MERGE` | `0` to disable project+global MCP config merging |
 | `GARUDA_MCP_MAX_DIRECT_TOOLS` | Above this many MCP tools, expose them via `search_tool`/`use_tool` instead of listing all schemas (default 10) |
 | `GARUDA_MODEL_MAX_CONCURRENCY` | Cap concurrent model calls per provider (governor) |
-| `GARUDA_TOKEN_PRICES` | Per-model rate overrides in USD per million tokens, e.g. `'{"minimax-m2.5": {"input": 0.302, "cache_read": 0.033, "output": 1.33}}'`. Used only when the provider doesn't report a per-call cost; keys match as substrings of the model name |
+| `GARUDA_TOKEN_PRICES` | Per-model rate overrides in USD per million tokens, e.g. `'{"minimax-m2.5": {"input": 0.302, "cache_read": 0.033, "output": 1.33}}'`. Used only when the provider doesn't report a per-call cost; keys match as substrings of the model name. Beats the built-in snapshot (see [Cost accounting](#cost-accounting)) |
 | `GARUDA_SERVE_TOKEN` | Bearer token for `garuda serve` |
 | `GARUDA_TRACING` | Enable OTLP tracing |
 | `DOCKER_HOST` | Remote Docker daemon for `--workspace-kind remote` |

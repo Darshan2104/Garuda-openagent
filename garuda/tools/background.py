@@ -90,6 +90,21 @@ def _task_key(ctx: ToolContext, task_id: str) -> tuple[str, str]:
     return (ctx.session_id, task_id)
 
 
+def active_task_count(session_id: str) -> int:
+    """How many background tasks this session still has running."""
+    return sum(1 for key in _TASKS if key[0] == session_id)
+
+
+def _task_state(ctx: ToolContext) -> dict:
+    """Result metadata announcing how many writers are loose in the workspace.
+
+    Every one of these tools returns it, including the polls, because the action
+    memo keys its filesystem cache off it: a background build writes between tool
+    calls, so a read cached before the launch must not be served after it.
+    """
+    return {"background_tasks": active_task_count(ctx.session_id)}
+
+
 class BashBackgroundTool:
     name = "bash_background"
     description = (
@@ -112,14 +127,18 @@ class BashBackgroundTool:
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
-        # Use setsid where available (Linux, containers) so the command is its own
-        # session/process-group leader and kill_task can reap the whole tree via
-        # `kill -- -$pid`. macOS ships no setsid, so fall back to a plain background
-        # launch there. ';' not '&&' so the whole chain isn't backgrounded (which
+        # The task must be its own process-group leader, or `kill -- -$pid` in
+        # kill_task/reap_session names some *other* group — the launcher's — and
+        # the kill lands on the shell while its children go on running. setsid
+        # does this where it exists (Linux, containers); macOS ships none, and
+        # there `set -m` gets the same result, because a shell in monitor mode
+        # puts each background job in a group of its own. Verified on darwin: an
+        # unlaunched-by-either `sleep` outlives the group kill; under `set -m` it
+        # does not. ';' not '&&' so the whole chain isn't backgrounded (which
         # would hold the launcher's stdout pipe open until it exits).
         launcher = (
             f"mkdir -p {shlex.quote(TASKS_DIR)}; "
-            f"if command -v setsid >/dev/null 2>&1; then _s=setsid; else _s=; fi; "
+            f"if command -v setsid >/dev/null 2>&1; then _s=setsid; else _s=; set -m; fi; "
             f"$_s sh -c {shlex.quote(command)} > {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
         )
         result = await env.execute(launcher, timeout=15.0)
@@ -139,6 +158,7 @@ class BashBackgroundTool:
                 f"Started background task {task_id} (pid {pid}): {command}\n"
                 f"Poll with task_output(task_id=\"{task_id}\")."
             ),
+            metadata=_task_state(ctx),
         )
 
 
@@ -194,6 +214,7 @@ class TaskOutputTool:
         return ToolResult(
             tool_call_id="",
             content=f"Task {task.task_id} ({task.command}) is {state}.\n--- output tail ---\n{output}",
+            metadata=_task_state(ctx),
         )
 
 
@@ -228,4 +249,5 @@ class KillTaskTool:
         return ToolResult(
             tool_call_id="",
             content=f"Killed background task {task.task_id} (pid {task.pid}).",
+            metadata=_task_state(ctx),
         )

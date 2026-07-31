@@ -60,6 +60,11 @@ class ServerConfig:
     token: str | None = None
     max_jobs: int = 4
     model_max_concurrency: int = 0
+    # Retention for finished jobs. A completed job keeps its whole event history
+    # in memory, so on a long-lived server these bound the process, not just the
+    # response of `jobs.list`. 0 seconds disables the TTL (the count cap remains).
+    max_retained_jobs: int = 200
+    job_retain_seconds: float = 3600.0
 
 
 def ensure_secure_config(config: ServerConfig) -> None:
@@ -258,7 +263,11 @@ class JsonRpcServer:
 
     def _jobs(self) -> "JobManager":
         if self._job_manager is None:
-            self._job_manager = JobManager(max_jobs=self._config.max_jobs)
+            self._job_manager = JobManager(
+                max_jobs=self._config.max_jobs,
+                max_retained=self._config.max_retained_jobs,
+                retain_seconds=self._config.job_retain_seconds,
+            )
         return self._job_manager
 
     def _require_job(self, params: dict[str, Any]) -> "Job":

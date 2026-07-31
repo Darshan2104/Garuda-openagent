@@ -102,6 +102,16 @@ a run that reported failure. The judge is the only gate that reads the task
 statement back against observed output, so nothing downstream catches a false
 positive; it is the run's answer. This is the gate `--mode eval` numbers rest on.
 
+The next move on this is probably not more prompt text. A judge reads the task
+statement back against observed output; what it cannot do is check the thing the
+*grader* checks, which is where the falsification entry below lands too. The seam
+already exists — `AgentConfig.answer_check(env) -> VerificationResult | None`,
+consulted before the LLM verdict and returning None for "no opinion" — and it is
+unused. A per-benchmark checker wired in there (output file present and parseable,
+answer in the requested form, the domain invariant the task names) turns a judge
+call into a decidable one for the tasks it covers, and costs nothing on the rest.
+Raised independently in external review, 2026-07-31.
+
 **`reasoning_effort` is a budget, not a floor — do not set it blind.** Measured
 2026-07-31 on `bash-ddos-traffic-analyzer` with minimax-m2.5: asking for
 `medium` *lowered* thinking against leaving it unset — per-turn reasoning mean

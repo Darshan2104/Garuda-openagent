@@ -1,14 +1,23 @@
 """Token-cost accounting and timestamp helpers shared by ATIF export and the dashboard.
 
-Cost is resolved in three tiers, strongest first:
+Cost is resolved in four tiers, strongest first:
 
 1. **What the provider charged.** Some providers return the actual cost of a call
    alongside its token counts. That is the invoice, not a model of it, so it wins
    outright.
-2. **A local price override.** Public pricing tables drift, and a wrong table is
-   worse than no number because it looks authoritative. ``GARUDA_TOKEN_PRICES``
-   lets a caller pin rates it has measured.
-3. **litellm's pricing table**, priced cache-aware.
+2. **A local price override.** ``GARUDA_TOKEN_PRICES`` lets a caller pin rates it
+   has measured for its own account.
+3. **The in-repo pricing snapshot** (:mod:`garuda.eval.pricing`) — versioned,
+   offline, and changed only by a reviewed diff.
+4. **litellm's pricing table**, for models the snapshot does not name.
+
+Tier 3 exists because tier 4 is not reproducible. litellm fetches its cost map
+over the network at import time and it is edited continuously upstream, so the
+same trajectory could price differently on two machines on the same day. That is
+fine for a rough estimate and disqualifying for a benchmark number, so the
+snapshot answers first and litellm only fills the gaps — with its network fetch
+disabled (see :data:`_LITELLM_LOCAL_MAP_ENV`) so even the fallback depends on
+nothing but the installed version.
 
 The cache-aware part matters more than it sounds. An agentic run is mostly cache
 reads — 97% of prompt tokens on a recent 50-task benchmark — and those are billed
@@ -22,6 +31,8 @@ import os
 from datetime import datetime
 from typing import Any
 
+from garuda.eval.pricing import snapshot_rates
+
 logger = logging.getLogger(__name__)
 
 # Per-model rate overrides, in USD per million tokens:
@@ -32,6 +43,19 @@ logger = logging.getLogger(__name__)
 _PRICE_ENV_VAR = "GARUDA_TOKEN_PRICES"
 
 _PRICE_FIELDS = ("input", "cache_read", "cache_write", "output")
+
+# Set before litellm is first imported so it loads the table bundled with the
+# installed wheel instead of fetching one from GitHub. `setdefault`: a host that
+# has deliberately chosen the network map keeps it, and if litellm is already
+# imported this is a harmless no-op (the map is read at import time).
+_LITELLM_LOCAL_MAP_ENV = "LITELLM_LOCAL_MODEL_COST_MAP"
+
+
+def _import_litellm():
+    os.environ.setdefault(_LITELLM_LOCAL_MAP_ENV, "True")
+    import litellm
+
+    return litellm
 
 
 def _load_overrides() -> dict[str, dict[str, float]]:
@@ -68,6 +92,24 @@ def _override_for(model_name: str) -> dict[str, float] | None:
     if not matches:
         return None
     return overrides[max(matches, key=len)]
+
+
+def _apply_rates(
+    rates: dict[str, float], fresh: int, cache_read: int, cache_write: int, completion: int
+) -> float:
+    """Price a token split against one rate table.
+
+    A rate table need not be complete: a provider that does not bill cache reads
+    separately simply has none, and those tokens are charged at the input rate
+    rather than silently priced at zero.
+    """
+    input_rate = rates.get("input", 0.0)
+    return (
+        fresh * input_rate
+        + cache_read * rates.get("cache_read", input_rate)
+        + cache_write * rates.get("cache_write", input_rate)
+        + completion * rates.get("output", 0.0)
+    )
 
 
 def provider_cost(usage: dict[str, Any] | None) -> float | None:
@@ -115,19 +157,12 @@ def estimate_cost(model_name: str | None, usage: dict[str, Any] | None) -> float
     if not any((fresh, cache_read, cache_write, completion)):
         return None
 
-    override = _override_for(model_name)
-    if override is not None:
-        input_rate = override.get("input", 0.0)
-        total = (
-            fresh * input_rate
-            + cache_read * override.get("cache_read", input_rate)
-            + cache_write * override.get("cache_write", input_rate)
-            + completion * override.get("output", 0.0)
-        )
-        return round(total, 8)
+    rates = _override_for(model_name) or snapshot_rates(model_name)
+    if rates is not None:
+        return round(_apply_rates(rates, fresh, cache_read, cache_write, completion), 8)
 
     try:
-        import litellm
+        litellm = _import_litellm()
 
         # litellm treats prompt_tokens as inclusive and discounts the cached
         # portion internally, so it is given the original prompt count.
@@ -144,7 +179,7 @@ def estimate_cost(model_name: str | None, usage: dict[str, Any] | None) -> float
         # only. Undercounting the discounted portion beats charging it at the
         # full input rate, which is the error this module used to make.
         try:
-            import litellm
+            litellm = _import_litellm()
 
             prompt_cost, completion_cost = litellm.cost_per_token(
                 model=model_name, prompt_tokens=fresh, completion_tokens=completion

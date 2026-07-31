@@ -13,7 +13,9 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    # The gate. Pinned via constraints.txt, so a failure here is this repo's
+    # fault and nobody has to ask which upstream release moved underneath it.
+    name: test (${{ matrix.os }}, pinned)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,13 +41,58 @@ jobs:
             brew install tmux
           fi
 
-      - name: Install package and extras
-        run: pip install -e ".[dev,eval,docs,tui,observability]"
+      - name: Install package and extras (pinned)
+        run: pip install -e ".[dev,eval,docs,tui,observability]" -c constraints.txt
+
+      - name: Record resolved versions
+        # So a failure can be read against what was actually installed.
+        run: pip freeze
 
       - name: Lint
         run: |
           pip install ruff
           ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  latest-deps:
+    # Early warning, not a gate. pyproject lower-bounds its dependencies so the
+    # package installs alongside whatever a host app already has; this job is
+    # what tells us when "whatever" has stopped working. It is allowed to fail:
+    # an upstream release should not block an unrelated PR, it should open an
+    # issue. Cost of getting this backwards is on record — a live pricing table
+    # broke the suite and the failure looked like ours.
+    name: latest dependencies (${{ matrix.os }}, non-blocking)
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap tmux
+          else
+            brew install tmux
+          fi
+
+      - name: Install package and extras (unconstrained, newest resolvable)
+        run: pip install -e ".[dev,eval,docs,tui,observability]" --upgrade
+
+      - name: Record resolved versions
+        # The diff against constraints.txt is the finding when this job goes red.
+        run: pip freeze
 
       - name: Test
         run: pytest -q
@@ -80,7 +127,7 @@ jobs:
           fi
 
       - name: Install package and extras
-        run: pip install -e ".[dev,eval,docs,tui,observability]"
+        run: pip install -e ".[dev,eval,docs,tui,observability]" -c constraints.txt
 
       - name: Test with real OS sandbox confinement
         env:

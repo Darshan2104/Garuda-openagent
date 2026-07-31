@@ -32,21 +32,23 @@ a behaviour.
 | `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
 | `evidence.py` | Whether verification commands can actually fail — a check that cannot fail is not proof. |
 | `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
-| `side_effects.py` | Sweeps agent-started background processes before verification. |
+| `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
 | `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `buffer.py` | Session buffers holding large tool output and compacted history. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | Forked child runs. |
-| `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. |
+| `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports its own exits so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |
 
 ## `tools/` — what the agent can do
 
 `protocol.py` defines the contract (`ToolContext` in, `ToolResult` out);
 `registry.py` + `__init__.py::build_toolkit` assemble the set a profile asks for.
 
-Execution: `bash.py`, `background.py`, `tmux.py`.
+Execution: `bash.py` (a command that backgrounds something also records the
+process group it leaves behind, so the pre-completion sweep has an exact handle
+on it), `background.py`, `tmux.py`.
 Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
 `diagnostics.py` (post-edit syntax + lint).
 Reading: `documents.py`, `image_read.py`.
@@ -98,7 +100,9 @@ events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
 
 `harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),
 `harbor_environment.py`, `ablation.py` (per-variant config matrix),
-`atif_export.py`, `dashboard.py`, `costs.py`.
+`atif_export.py`, `dashboard.py`, `costs.py` (four-tier cost resolution),
+`pricing.py` (the versioned price snapshot `costs.py` resolves against, so a
+reported cost does not move when an upstream table does).
 
 ## Everything else
 
