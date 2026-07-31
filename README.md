@@ -25,7 +25,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **Subagents** | Main agent spins up isolated subagents via `invoke_subagent` |
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
-| **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier, post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
+| **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier (evidence must be able to fail — quote-aware structural classification, so a print-only or load-only check is not accepted as proof), post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
 | **Context** | Output shaping, cache-friendly microcompaction (in-place tool-output pruning), usage-driven proactive + 3-step summarization, archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed), goal + todo list re-pinned after compaction (survive summarization), durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it) and repetition detection |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
 | **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
@@ -672,7 +672,17 @@ bash_rules:
   ask: ["sudo .*"]
 ```
 
-The `task_complete` tool triggers a **completion verifier** that checks summary quality and optional verification commands before accepting task completion.
+The `task_complete` tool triggers a **completion verifier** that checks summary
+quality and the verification commands before accepting completion. Under
+`--mode eval` those commands must be *discriminating* — a wrong result has to be
+able to make one exit non-zero. Commands that only show an artifact exists,
+parses, imports, or prints are rejected with an explanation of what to run
+instead, because they exit 0 whether the work is right or wrong. Classification
+is structural (see `garuda/core/evidence.py`) and knows nothing about any
+particular task: it is quote-aware, so a shell operator inside a string literal
+is text rather than an operator, and a `python -c` one-liner counts only when
+something in its body can raise *because a value is wrong* — an `assert`,
+`raise`, or `sys.exit` — not merely because a file failed to load.
 
 ### Hooks
 
