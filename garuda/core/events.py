@@ -6,8 +6,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from garuda.types import Message
-
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +113,3 @@ class EventStore:
         if store._events:
             store.session_id = store._events[0].get("session_id", store.session_id)
         return store
-
-    def messages_snapshot(self, messages: list[Message]) -> list[dict[str, str]]:
-        return [{"role": m.role.value, "content": m.content} for m in messages]

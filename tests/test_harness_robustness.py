@@ -126,6 +126,66 @@ class TestMissingRequiredArguments:
         assert "missing required argument(s)" in result.content
 
 
+class TestBinaryReadIsPortable:
+    """`read_pdf` / `read_spreadsheet` were dead on every macOS host.
+
+    They ran `base64 -w0 FILE` with a bare `base64 FILE` fallback. BSD/macOS
+    `base64` accepts no positional input file at all — both forms fail with
+    `base64: invalid argument <path>` — so the fallback was as wrong as the primary
+    and the tools reported a present file as missing. Reads from stdin now, the one
+    form GNU and BSD agree on.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bytes_round_trip_through_the_environment(self, tmp_path):
+        from garuda.tools.documents import _read_file_bytes
+        from garuda.workspace.local import LocalEnvironment
+
+        payload = bytes(range(256)) * 8  # non-UTF8, spans every byte value
+        (tmp_path / "blob.bin").write_bytes(payload)
+        env = LocalEnvironment(workspace_root=str(tmp_path))
+        assert await _read_file_bytes(env, "blob.bin") == payload
+
+    @pytest.mark.asyncio
+    async def test_line_wrapping_does_not_corrupt_the_decode(self, tmp_path):
+        """No `-w0` is passed, so output arrives wrapped; b64decode must tolerate it.
+        Large enough to force several wraps at BSD's 76-column default."""
+        from garuda.tools.documents import _read_file_bytes
+        from garuda.workspace.local import LocalEnvironment
+
+        payload = b"".join(bytes([i % 256]) for i in range(5000))
+        (tmp_path / "big.bin").write_bytes(payload)
+        env = LocalEnvironment(workspace_root=str(tmp_path))
+        assert await _read_file_bytes(env, "big.bin") == payload
+
+    @pytest.mark.asyncio
+    async def test_a_missing_file_still_raises_filenotfound(self, tmp_path):
+        from garuda.tools.documents import _read_file_bytes
+        from garuda.workspace.local import LocalEnvironment
+
+        env = LocalEnvironment(workspace_root=str(tmp_path))
+        with pytest.raises(FileNotFoundError):
+            await _read_file_bytes(env, "absent.bin")
+
+    @pytest.mark.asyncio
+    async def test_read_spreadsheet_reads_a_real_workbook(self, tmp_path):
+        openpyxl = pytest.importorskip("openpyxl")
+        from garuda.tools.documents import ReadSpreadsheetTool
+        from garuda.workspace.local import LocalEnvironment
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(["product", "units"])
+        sheet.append(["gizmo", 11])
+        workbook.save(tmp_path / "r.xlsx")
+
+        result = await ReadSpreadsheetTool().execute(
+            {"path": "r.xlsx"}, LocalEnvironment(workspace_root=str(tmp_path)), None
+        )
+        assert result.is_error is False
+        assert "gizmo" in result.content and "11" in result.content
+
+
 class TestReadonlyPermitsReads:
     """`readonly` denied *every* command, which made it unusable rather than safe.
 
@@ -299,3 +359,34 @@ class TestChatHonoursPermissionPosture:
 
         args = build_parser().parse_args(["chat", "--permission-mode", "readonly"])
         assert args.permission_mode == "readonly"
+
+
+class TestExportedVersionsTrackThePackage:
+    """Two version fields were literals that stopped matching the code.
+
+    `serve`'s health read install-time metadata (1.1.0 while running 1.1.1) and the
+    ATIF exporter had `agent_version="0.5.0"` hardcoded, stamping that into every
+    graded trajectory — the field whose only job is saying which harness produced a
+    number. Neither was compared to anything, so neither could be noticed.
+    """
+
+    def test_atif_agent_version_is_the_running_version(self):
+        import garuda
+        from garuda.eval.atif_export import events_to_atif
+
+        trajectory = events_to_atif([], session_id="s1")
+        assert trajectory["agent"]["version"] == garuda.__version__
+
+    def test_atif_schema_version_is_pinned(self):
+        """The format the exporter claims to emit; consumers key off it."""
+        from garuda.eval.atif_export import events_to_atif
+
+        assert events_to_atif([], session_id="s1")["schema_version"] == "ATIF-v1.7"
+
+    def test_the_harbor_adapter_reports_the_running_version(self):
+        """Harbor stores this against the score, so it is the worst field to let
+        drift: a real trajectory recorded 1.1.0 while the code was 1.1.1."""
+        import garuda
+        from garuda.eval.harbor_adapter import GarudaHarborAgent
+
+        assert GarudaHarborAgent.version(GarudaHarborAgent) == garuda.__version__

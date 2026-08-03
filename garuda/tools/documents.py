@@ -10,8 +10,22 @@ from garuda.workspace.protocol import Environment
 
 
 async def _read_file_bytes(env: Environment, path: str) -> bytes:
+    """Read a binary file out of the environment as bytes.
+
+    Fed on **stdin**, not as an argument. BSD/macOS `base64` accepts no positional
+    input file (it wants `-i` or stdin), so `base64 -w0 FILE` and the bare
+    `base64 FILE` fallback both failed with `invalid argument <path>` — and because
+    the fallback was just as wrong as the primary, `read_pdf` and `read_spreadsheet`
+    were dead on every macOS host, reporting the file as missing when it was there.
+    `base64 < file` is the one form both GNU and BSD accept, and it is what
+    `tools/image_read.py` already used.
+
+    No `-w0`: line wrapping does not matter because `b64decode` (validate=False)
+    discards characters outside the base64 alphabet, newlines included. Dropping the
+    flag is what makes the command portable.
+    """
     resolved = path if path.startswith("/") else f"{env.workspace_root.rstrip('/')}/{path}"
-    result = await env.execute(f"base64 -w0 {shlex.quote(resolved)} 2>/dev/null || base64 {shlex.quote(resolved)}")
+    result = await env.execute(f"base64 < {shlex.quote(resolved)}")
     if result.exit_code != 0:
         raise FileNotFoundError(result.stderr or f"Cannot read binary file: {path}")
     return base64.b64decode(result.stdout.strip())

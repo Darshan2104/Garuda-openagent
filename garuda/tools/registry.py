@@ -111,6 +111,3 @@ def list_tool_names() -> list[str]:
 def tools_for_names(names: list[str] | None) -> list[Tool]:
     return _default.select(names)
 
-
-def clear_registry() -> None:
-    _default.clear()

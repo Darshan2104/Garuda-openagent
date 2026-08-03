@@ -8,7 +8,7 @@ The rule that makes this useful: nothing here is marked done. If you fix it,
 delete it. A ledger that mixes open and closed items cannot tell you what is left
 without re-auditing the code, which is what the archived ledgers turned into.
 
-Last verified against code: 2026-08-03.
+Last verified against code: 2026-08-04.
 
 **The measurement constraint, stated once because it governs the whole file.**
 There is no budget for repeated-trial (multi-seed) benchmark runs. Every score
@@ -118,10 +118,50 @@ open pending a measurement that is not coming:
   requires repeated trials to justify, which is the one thing unavailable, so the
   flag stays off. Keep the code: it is correct, and the finding is the point.
 
+**`readonly` cannot run a read-only `git`.** The mode screens `bash` with
+`evidence.is_side_effect_free`, whose allowlist has no `git` — correctly, because
+`git commit`/`checkout` write and even `git status` refreshes `.git/index`. So a
+`reviewer` run cannot `git diff` or `git log`, which is the natural tool for the job;
+it reads files with `read_file`/`grep` instead. Not fixed by widening that allowlist:
+it is shared with the completion gate's decision about what may run *concurrently*,
+where admitting an index-writing command reintroduces exactly the race it exists to
+prevent. A separate readonly-only allowlist of `git log`/`show`/`diff` would work and
+is deliberately not built yet — one more list to keep correct, for a gap with a
+workaround.
+
+**`is_side_effect_free` reads a quoted `>` as a redirect.** `split_segments` is
+quote-aware, but `_MUTATING_SHELL` is applied to the raw segment, so
+`echo "cat a > b"` is judged unsafe though it writes nothing. Conservative in the
+direction the function must fail, and pinned by test in both directions
+(`tests/test_harness_robustness.py`) so nobody narrows the match to unquoted
+operators and admits a real redirect. The cost is one rephrase by the agent.
+
+**A profile's `tools:` list no longer filters a tool the caller supplied.** Recorded
+because it is a deliberate behaviour change, not an oversight: `register_tool` and
+`.agent/tools` are both explicit acts, and filtering them made both features silent
+no-ops on every shipped profile (`build` names 27 tools, so nothing a user added ever
+matched). Restriction of *discovered* tools is unchanged. If a profile ever needs to
+refuse a caller-supplied tool, that wants a new opt-in field, not the reinstatement of
+this filter.
+
 ## Standing rules that came out of measurement
 
 Not residuals — constraints. Each cost a run to learn, and violating one silently
 undoes work already paid for.
+
+**A green suite says nothing about the wiring. Drive the commands.**
+2026-08-04: eight defects were found by running the documented interfaces end to end
+against a live model, with 1131 tests passing throughout. Six were reachable from a
+single documented command, and three were total: `--mode eval` died with a provider 400
+on its first `task_complete` (a USER-role note between an assistant `tool_calls` block
+and its results), `--mode rigorous` raised `TypeError` before its first turn
+(`RigorousAgent.run` had not tracked a signature change in `DefaultAgent.run`), and
+`read_pdf`/`read_spreadsheet` were dead on every macOS host (`base64` with a positional
+file, which BSD does not accept). The pattern in all three: each unit was tested and
+correct, and nothing tested the seam between them. `--mode readonly` was worse than
+broken — it inverted, leaving `--agent harbor` on `yolo`. Before trusting a posture or
+an extension point, run it once and read the trajectory; a unit test on either side of
+a seam will not tell you the seam is open.
 
 **Prompt additions suppress investigation. This repo has hit it twice.**
 2026-07-30: cost-framed batching guidance cut investigation 32%, grep to zero on

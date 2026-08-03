@@ -214,12 +214,18 @@ class GarudaHarborAgent(BaseAgent):
 
     @override
     def version(self) -> str | None:
-        from importlib.metadata import version
+        """The running version, which is what a graded result has to be attributable to.
 
-        try:
-            return version("garuda-openagent")
-        except Exception:
-            return "0.5.0"
+        Was `importlib.metadata.version("garuda-openagent")`: under `pip install -e .`
+        that is a snapshot from install time, so a real benchmark trajectory recorded
+        1.1.0 while the code under test was 1.1.1. Harbor stores this against the
+        score, which makes it exactly the wrong field to let drift — and the old
+        fallback compounded it by claiming "0.5.0" for any environment where the
+        lookup failed. `garuda.__version__` ships with the code being measured.
+        """
+        from garuda import __version__
+
+        return __version__
 
     @override
     async def setup(self, environment: BaseEnvironment) -> None:

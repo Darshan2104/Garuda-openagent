@@ -6,7 +6,7 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 
 > **Core thesis:** The harness is the product, not the model.
 
-**Version:** 1.1.1 · **Python:** 3.12+ · **License:** MIT
+**Version:** 1.2.0 · **Python:** 3.12+ · **License:** MIT
 
 ---
 
@@ -21,14 +21,14 @@ Garuda is a runtime that runs any LLM against real environments using tools (bas
 | **Project memory** | `AGENTS.md` / `GARUDA.md` in the workspace root is injected as project instructions |
 | **Agents** | YAML or **agent.md** profiles: `build`, `plan`, `explore`, `reviewer`, `harbor` — plus your own in `.agent/agents/` |
 | **Skills** | Universal `SKILL.md` format — auto-discovered from `.agent/skills/`, injected into the system prompt; `allowed-tools` frontmatter validated against the profile's tool grants |
-| **Custom tools** | Drop `*.py` modules in `.agent/tools/` (opt-in — global setting or `--load-project-tools`) or register per-instance via the SDK |
+| **Custom tools** | Drop `*.py` modules in `.agent/tools/` (opt-in — global setting or `--load-project-tools`) or register per-instance via the SDK. A tool you supply is not filtered by a profile's `tools:` allowlist, so adding one needs no profile edit |
 | **Subagents** | Main agent spins up isolated subagents via `invoke_subagent`, choosing how much context to hand over: `none` (cold start), `brief` (default — the working-state card plus retrievable buffer ids, a couple of KB), or `full` (the whole transcript, for a subagent that must reason about how the conversation got here) |
 | **SDK** | `garuda.sdk.SoftwareAgent` — OpenHands-style programmatic API |
 | **Workspaces** | `local`, `sandbox`, `tmux`, `docker`, `remote` |
 | **Safety** | Permission modes (bash **and** tmux commands screened), workspace path confinement (symlink-resolving), permission-screened verification commands, completion verifier (evidence must be able to fail — quote-aware structural classification, so a print-only or load-only check is not accepted as proof), post-edit diagnostics (syntax check + fast semantic lint via ruff, surfaced to the model), OS sandbox (bubblewrap on Linux, Seatbelt on macOS) with env scrubbing + network egress control, docker resource/network limits |
 | **Context** | Budget measured against the **whole request** — messages, tool schemas, images and echoed reasoning — not just the message list, and against capacity that reserves room for the response (a window is shared between prompt and completion). Re-checked immediately before the model call, after steering and re-pinned state have landed, so the measured prompt is the one actually sent. Per-result output budget scales with remaining window, preferring lossless demotion to disk over truncation. Cache-friendly microcompaction (in-place tool-output pruning) then 1-call incremental summarization; archive-on-compaction (pruned/dropped history is demoted to session-disk buffers retrievable via `buffer_grep`/`buffer_slice`, never destroyed). A deterministic **working-state card** — goal, todos, files modified, verification results, acceptance criteria — is maintained by the harness from sources that already know them, re-pinned as one message after compaction and checkpointed to `state.json`; the model's summary is narrowed to findings/dead-ends/rationale. If the provider still rejects a prompt as too long, the run force-compacts and retries once instead of dying. Durable-notes nudge before compaction, turn/context budget reminders, session-wide action memo (a repeated read-only call is answered from the earlier observation instead of re-run; any mutating call invalidates it, and filesystem reads stop being memoized entirely while a background task is running — it writes between calls, and no call marks that) and repetition detection reported per response |
 | **Extensibility** | MCP servers (stdio, HTTP, SSE) with lazy `search_tool`/`use_tool` discovery above `GARUDA_MCP_MAX_DIRECT_TOOLS` (default 10) so many tools don't bloat the prompt, plugin hooks, YAML recipes, subagent handoff |
-| **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only). See [Run modes](#run-modes). |
+| **Run modes** | One flag picks a gate posture: `interactive` (default — no model-call gates), `eval` (full completion-gate stack: LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep), `rigorous` (eval gates + plan → execute → critic), `readonly` (interactive gates, permissions forced read-only even over the profile, `bash` limited to screened reads). See [Run modes](#run-modes). |
 | **Interfaces** | Headless CLI, interactive chat, JSON-RPC server with an async job queue |
 | **Evaluation** | Harbor adapter + ATIF-v1.7 trajectory export |
 
@@ -189,7 +189,7 @@ gates, so you don't configure five booleans to say "cheap" or "strict".
 | `interactive` *(default)* | structural gate only — `task_complete` must carry evidence | none | day-to-day runs |
 | `eval` | LLM judge, acceptance contract, discriminating evidence, stable re-verification, side-effect sweep | ~2 per completion attempt, plus a re-run of each verification command | graded / benchmark runs |
 | `rigorous` | `eval` gates plus a plan → execute → critic agent | `eval` cost × repair rounds | maximum scrutiny |
-| `readonly` | `interactive` gates, permissions forced read-only | none | inspection without writes |
+| `readonly` | `interactive` gates, permissions forced read-only (over the profile — see [precedence](#run-modes)); `bash` limited to screened inspection commands | none | inspection without writes |
 
 `standard` is a back-compat alias for `interactive`.
 
@@ -218,6 +218,14 @@ Precedence, widest to narrowest: built-in defaults → the mode preset → field
 profile YAML declares explicitly → explicit CLI flags. So a profile that sets
 `enable_acceptance_contract: true` keeps it under `--mode interactive`, and an
 explicit `--permission-mode yolo` overrides `--mode readonly`.
+
+**`permission_mode` is the one exception**, and only under `--mode readonly`: the
+posture forces it even over a profile that declares its own. Every shipped profile
+declares one (`build: smart`, `harbor: yolo`), so yielding to them made
+`--mode readonly` a no-op on the default profile and left
+`--mode readonly --agent harbor` running with `yolo` — asked for no writes, got
+allow-everything. A safety posture the target can opt out of is not a posture. An
+explicit `--permission-mode` still wins, since it is narrower and stated later.
 
 ---
 
@@ -288,7 +296,9 @@ garuda run -t "Refactor utils.py" --workspace-kind sandbox
 garuda chat --agent build --model openai/gpt-4o-mini
 ```
 
-Enter tasks at the `task>` prompt. Permission prompts appear in `smart` mode. Supports `--workspace`, `--workspace-kind`, `--agents-dir`, `--mcp-config`, `--mode`, `--json`.
+Enter tasks at the `task>` prompt; an empty line quits. Permission prompts appear in
+`smart` mode. Supports `--workspace`, `--workspace-kind`, `--agents-dir`,
+`--mcp-config`, `--mode`, `--permission-mode`, `--json`.
 
 ### `garuda serve` — JSON-RPC server + job queue
 
@@ -505,7 +515,11 @@ agent = SoftwareAgent(workspace=".", model="openai/gpt-4o-mini")
 agent.register_tool(HelloTool())
 ```
 
-If the profile has a `tools:` allowlist, add the tool's name there (or omit `tools:` to allow all discovered tools).
+A profile's `tools:` allowlist selects among *discovered* tools and does **not** filter
+a tool you supplied yourself — both routes above are already explicit acts, so you do
+not have to re-list all of `build`'s tools in a custom profile just to add one of your
+own. Restriction of built-ins is unaffected: a profile listing only `bash` and
+`read_file` still gets only those two, plus whatever you registered.
 
 ### Document files (PDF, Excel)
 
@@ -654,7 +668,7 @@ work — but not any other process, so it cannot signal the agent or the host.
 |------|----------|
 | `smart` | Allow safe ops; prompt for risky commands (chat mode) |
 | `auto` | Auto-approve most tool calls |
-| `readonly` | Deny writes and patches |
+| `readonly` | Deny writes and patches. `bash` is screened per command: an inspection command with no redirect, backgrounding, substitution or `sudo` runs; everything else — every interpreter, build tool and workspace script — is denied. The allowlist fails closed, so `cat f` runs and `python f.py` does not |
 | `yolo` | Allow everything (eval/sandboxed use only) |
 
 Configure per-agent in YAML/agent.md:
@@ -815,7 +829,7 @@ docs/
 ├── BACKLOG.md                  # Living residuals
 └── archive/                    # Dated: original RFC, engineering log, closed ledgers
 
-tests/                          # 1139 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # 1196 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 
@@ -848,7 +862,32 @@ CI runs both: `test` is pinned and gating, `latest-deps` installs unconstrained
 and is non-blocking — it exists to tell you an upstream release has broken
 something, not to block an unrelated PR.
 
-**Current test status:** 1131 passed, 8 skipped of 1139 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 1188 passed, 8 skipped of 1196 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+
+### What has been exercised against a live model
+
+The suite is unit and integration level. Separately, every surface below was driven
+end to end against `openrouter/openai/gpt-4o-mini` on macOS 15 (Darwin 25.5), because
+the defects worth finding here live in the wiring between components rather than
+inside them — six of the eight bugs fixed in 1.2.0 were reachable from a documented
+command while the suite was fully green.
+
+| Surface | Verified |
+|---|---|
+| `garuda run` | headless run, `--resume latest` (context carried), `--json` events, `--trajectory` |
+| Run modes | `interactive`, `eval` (contract → sweep → 6/6 verifier checks), `rigorous` (plan → execute → critic), `readonly` (write refused) |
+| `garuda chat` | task loop, rich TUI, `--permission-mode`, `--mode` |
+| `garuda serve` | `health`, `submit`/`status`/`result`, cursor `events`, blocking `run`, `jobs`, `sessions`, `list_agents`, 401 on a bad token |
+| `garuda sessions` / `mcp list` / `recipe run` | listing, config resolution + live tool enumeration, multi-step workflow |
+| Workspaces | `local`, `docker` (`--no-network`), `sandbox` (macOS Seatbelt) |
+| Tools | `bash`, `read_file`, `write_file`, `edit`, `multi_edit`, `grep`, `glob`, `ls`, `todo`, `update_goal`, `web_fetch`, `web_search`, `read_pdf`, `read_spreadsheet`, `image_read`, `bash_background`/`task_output`/`kill_task`, `buffer_grep`, `contract`, `task_complete`, `invoke_subagent` |
+| Extensibility | MCP stdio server (tool called, not just listed), `SKILL.md`, `AGENTS.md`, `agent.md` + YAML profiles, `.agent/tools` and `SoftwareAgent.register_tool` |
+| SDK | `SoftwareAgent.run`, `register_tool`, `Conversation` multi-turn |
+| Eval | Harbor adapter on 1 Terminal-Bench 2.0 task (0 exceptions; tokens and `cost_usd` reported back to Harbor), ATIF-v1.7 export |
+
+Not covered: `--workspace-kind tmux` and `remote` (need `tmux` and a remote Docker
+daemon), and Linux `bwrap` confinement. `tmux` logic is unit-tested; those tests skip
+when the binary is absent.
 
 ---
 

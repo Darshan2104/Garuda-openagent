@@ -313,3 +313,29 @@ async def test_model_retries_on_rate_limit(monkeypatch):
     assert response.content == "ok"
     assert calls["n"] == 3
     assert response.usage["prompt_tokens"] == 10
+
+
+def test_every_agent_implementation_accepts_the_same_run_signature():
+    """`interfaces/runner.py` calls `agent.run(...)` with one keyword set for whatever
+    `create_agent` returned, so the implementations must agree on it.
+
+    They drifted: `DefaultAgent.run` gained `buffer`, `emit_session_events` and
+    `state_checkpoint` while `RigorousAgent.run` did not, and `--mode rigorous` became
+    a `TypeError` on the first call — not a degraded mode, a mode that could not start.
+    Nothing caught it because every test drove `DefaultAgent` directly.
+    """
+    import inspect
+
+    from garuda.core.rigorous import RigorousAgent
+
+    default_params = inspect.signature(DefaultAgent.run).parameters
+    rigorous_params = inspect.signature(RigorousAgent.run).parameters
+    missing = set(default_params) - set(rigorous_params)
+    assert not missing, f"RigorousAgent.run cannot accept: {sorted(missing)}"
+    # Defaults must match too: a parameter that is required on one and optional on the
+    # other fails only for the callers that omit it.
+    for name, param in default_params.items():
+        assert rigorous_params[name].default == param.default, (
+            f"{name!r} default differs: DefaultAgent={param.default!r} "
+            f"RigorousAgent={rigorous_params[name].default!r}"
+        )

@@ -135,16 +135,3 @@ def apply_mode_preset(
         if field not in protected:
             setattr(config, field, value)
     return config
-
-
-def describe_mode(mode: str | None) -> str:
-    """One-line summary of what a mode turns on, for `--help` and run banners."""
-    resolved = resolve_mode(mode)
-    gates = MODE_PRESETS.get(resolved, {})
-    on = [f for f in GATE_FIELDS if gates.get(f)]
-    if resolved == "rigorous":
-        return "plan/execute/critic agent, all completion gates on"
-    if not on:
-        note = ", permissions read-only" if resolved == "readonly" else ""
-        return f"no model-call gates (cheapest){note}"
-    return f"all completion gates on ({len(on)} gates, ~2 extra model calls per attempt)"

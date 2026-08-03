@@ -21,7 +21,7 @@ coherent set of them (`garuda/core/modes.py`):
 | `interactive` (default) | none that cost a model call | day-to-day runs |
 | `eval` | LLM judge, acceptance contract, discriminating + stable evidence, side-effect sweep | graded benchmark runs |
 | `rigorous` | `eval` gates plus a plan → execute → critic agent | maximum scrutiny |
-| `readonly` | `interactive` gates, permissions forced read-only | inspection |
+| `readonly` | `interactive` gates, permissions forced read-only — over the profile too, and `bash` limited to screened inspection commands | inspection |
 
 `standard` is a back-compat alias for `interactive`. The default is deliberately
 cheap: a bare `garuda run` pays for the work and the local checks, nothing else.

@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from garuda import __version__ as _GARUDA_VERSION
 from garuda.eval.costs import duration_ms, estimate_cost, merge_usage
 
 
@@ -13,7 +14,12 @@ def events_to_atif(
     session_id: str,
     *,
     agent_name: str = "garuda",
-    agent_version: str = "0.5.0",
+    # The running version, not a literal. This was pinned at "0.5.0" and went on
+    # being exported long past 1.1.1, stamping the wrong version into every graded
+    # trajectory — the field whose whole job is telling you which harness produced
+    # a number. Same drift as `serve`'s health endpoint, and equally invisible
+    # because nothing compares it to anything.
+    agent_version: str = _GARUDA_VERSION,
     model_name: str | None = None,
     instruction: str | None = None,
     prompt_tokens: int | None = None,

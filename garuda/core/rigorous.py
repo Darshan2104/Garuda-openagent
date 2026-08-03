@@ -78,11 +78,23 @@ class RigorousAgent:
         agents_dir=None,
         context=None,
         checkpoint=None,
+        # These three exist on DefaultAgent.run and are passed positionally-by-name by
+        # `interfaces/runner.py`, so omitting them was not a missing feature — it was a
+        # TypeError on every `--mode rigorous` run. The mode could not start at all.
+        # Keep this signature identical to DefaultAgent.run; `tests/test_conformance.py`
+        # now compares them so the next parameter added cannot break only this path.
+        buffer=None,
+        emit_session_events: bool = True,
+        state_checkpoint=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
-        events.append(EventType.SESSION_START, {"task": task, "mode": "rigorous", "model": model.model_name})
+        if emit_session_events:
+            events.append(
+                EventType.SESSION_START,
+                {"task": task, "mode": "rigorous", "model": model.model_name},
+            )
 
         plan_profile = load_profile("plan")
         plan_config = plan_profile.to_agent_config()
@@ -106,7 +118,10 @@ class RigorousAgent:
         events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
 
         if not plan_result.success:
-            events.append(EventType.SESSION_END, {"success": False, "reason": "plan_failed"})
+            if emit_session_events:
+                events.append(
+                    EventType.SESSION_END, {"success": False, "reason": "plan_failed"}
+                )
             return plan_result
 
         exec_task = f"{task}\n\n## Approved plan\n{plan_result.final_message}"
@@ -137,6 +152,11 @@ class RigorousAgent:
                 agents_dir=agents_dir,
                 context=context,
                 checkpoint=checkpoint,
+                # The executor is the phase that does the work, so it is the one that
+                # gets the session buffer (archived tool output stays retrievable
+                # across repair rounds) and the working-state checkpoint.
+                buffer=buffer,
+                state_checkpoint=state_checkpoint,
                 emit_session_events=False,  # rigorous emits its own single session span
             )
 
@@ -152,12 +172,18 @@ class RigorousAgent:
             current_task = f"{exec_task}\n\n## Critic feedback on previous attempt\n{feedback}"
 
         if not approved:
-            events.append(EventType.SESSION_END, {"success": False, "reason": "critic_rejected"})
+            if emit_session_events:
+                events.append(
+                    EventType.SESSION_END, {"success": False, "reason": "critic_rejected"}
+                )
             exec_result.success = False
             exec_result.final_message = f"Critic rejected completion: {feedback}"
             return exec_result
 
-        events.append(EventType.SESSION_END, {"success": exec_result.success, "mode": "rigorous"})
+        if emit_session_events:
+            events.append(
+                EventType.SESSION_END, {"success": exec_result.success, "mode": "rigorous"}
+            )
         return exec_result
 
     async def _critic_review(
