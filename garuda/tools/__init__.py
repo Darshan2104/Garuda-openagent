@@ -22,7 +22,7 @@ from garuda.tools.files import ReadFileTool, WriteFileTool
 from garuda.tools.goal import UpdateGoalTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.multi_edit import MultiEditTool
-from garuda.tools.protocol import Tool
+from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool
 from garuda.tools.registry import (
     ToolRegistry,
     builtin_registry,
@@ -208,17 +208,49 @@ async def build_toolkit(
     """
     from garuda.mcp.client import McpClientManager
 
+    explicit: list[Tool] = []
     if registry is None:
-        combined = list(extra_tools or [])
+        explicit = list(extra_tools or [])
         if workspace is not None:
-            combined += _resolve_project_tools(workspace, load_project_tools)
-        if combined:
+            explicit += _resolve_project_tools(workspace, load_project_tools)
+        if explicit:
             registry = builtin_registry().layer()
-            for tool in combined:
+            for tool in explicit:
+                # Marked so the second allowlist pass in `run_state._filter_tools`
+                # keeps it too. Without the mark the tool survived here and was
+                # dropped there, which is the same silent no-op one layer down.
+                try:
+                    setattr(tool, EXPLICIT_TOOL_ATTR, True)
+                except AttributeError:
+                    # A slotted or frozen tool object; it still works, it just
+                    # cannot carry the mark past a restrictive profile.
+                    logger.debug("Could not mark %s as explicit", tool.name)
                 registry.register(tool, replace=True)
         else:
             registry = builtin_registry()
     tools = registry.select(names)
+    # A profile's `tools:` list selects among *discovered* tools. It must not filter
+    # out one the caller handed in, because both ways of doing that are already an
+    # explicit act: `SoftwareAgent.register_tool(t)` is code the user wrote, and
+    # `.agent/tools` requires the `--load-project-tools` opt-in that crosses a trust
+    # boundary. Filtering them made both documented extension points silent no-ops on
+    # every shipped profile — `build` lists 27 tools, so a registered tool was loaded,
+    # logged as loaded, and then dropped before the model ever saw it. Using either
+    # feature meant also authoring a profile that re-lists all 27 built-ins.
+    #
+    # Only additive: a name the allowlist already selected is left as `select`
+    # returned it (the layer registered it with replace=True, so that entry is
+    # already the caller's override).
+    if explicit and names is not None:
+        selected = {tool.name for tool in tools}
+        added = [tool for tool in explicit if tool.name not in selected]
+        if added:
+            tools = tools + added
+            logger.info(
+                "Custom tool(s) not in the profile's tools list, included because they "
+                "were provided explicitly: %s",
+                ", ".join(tool.name for tool in added),
+            )
     manager: McpClientManager | None = None
     # Accept either a single path (back-compat) or an ordered list of paths to
     # merge (project + global). Empty/None means MCP stays disabled.

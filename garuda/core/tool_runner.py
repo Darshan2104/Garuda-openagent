@@ -57,6 +57,36 @@ PARALLEL_SAFE_TOOLS = frozenset(
 DEFAULT_MAX_PARALLEL_READS = 8
 
 
+def _missing_required_arguments(tool, arguments) -> str | None:
+    """Feedback for a call missing declared required arguments, else None.
+
+    Reads the tool's own JSON Schema, so it stays correct as tools change and adds
+    nothing for a tool that declares no required fields. Returns the message rather
+    than raising: a malformed call is the model's to fix on the next turn, not a
+    run-ending fault.
+    """
+    if not isinstance(arguments, dict):
+        return (
+            f"Tool '{tool.name}' expects a JSON object of arguments, got "
+            f"{type(arguments).__name__}."
+        )
+    schema = getattr(tool, "parameters", None) or {}
+    required = schema.get("required") or []
+    missing = [name for name in required if name not in arguments]
+    if not missing:
+        return None
+    accepted = list((schema.get("properties") or {}).keys())
+    message = (
+        f"Tool '{tool.name}' is missing required argument(s): {', '.join(missing)}. "
+        f"Accepted arguments: {', '.join(accepted) or 'none'}."
+    )
+    # Naming what *was* sent is the whole point when the cause is a mistyped key —
+    # the model is looking for `pattern` in its own call and sees `pattern:` there.
+    if arguments:
+        message += f" Received: {', '.join(sorted(map(str, arguments)))}."
+    return message
+
+
 @dataclass
 class ToolRunner:
     """Executes tool calls against the environment and folds results into the transcript."""
@@ -205,6 +235,16 @@ class ToolRunner:
                 content=f"Unknown tool: {call.name}",
                 is_error=True,
             )
+        invalid = _missing_required_arguments(tool, call.arguments)
+        if invalid is not None:
+            # Checked here rather than left to the tool, because what the tool does
+            # with a missing argument is `KeyError: 'pattern'` — which tells the
+            # model the name of something it thought it had sent and nothing about
+            # what went wrong. Observed live: a model sent `{"pattern:": "*.py"}`,
+            # colon inside the key, and burned a turn on an error that never
+            # mentioned the key it actually used. Listing the accepted names makes
+            # that class of typo self-evident on the first read.
+            return ToolResult(tool_call_id=call.id, content=invalid, is_error=True)
         signature = None
         if self.memo is not None:
             signature, _ = self.memo.observe(call)

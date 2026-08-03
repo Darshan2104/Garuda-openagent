@@ -71,6 +71,34 @@ class CompletionGate:
     # Stops a run that skipped or failed derivation from paying for another
     # derive_contract model call on every subsequent completion attempt.
     contract_attempted: bool = False
+    # USER-role messages this attempt wants to add, held until the tool result for
+    # the `task_complete` call is in the transcript. See `_defer`.
+    _deferred_notes: list[str] = field(default_factory=list)
+
+    def _defer(self, content: str) -> None:
+        """Queue a USER-role message to append *after* the call's tool result.
+
+        Everything in `attempt` runs while the transcript's last message is the
+        assistant response carrying the `task_complete` call, and providers require
+        the tool messages answering a `tool_calls` block to follow it *immediately*.
+        Appending a USER message here put one in between, and OpenAI-family
+        providers reject the whole request for it:
+
+            An assistant message with 'tool_calls' must be followed by tool
+            messages responding to each 'tool_call_id'.
+
+        That killed the run outright on the first `task_complete` of any posture
+        that derives a contract — i.e. every `--mode eval` run, the one whose
+        product is a graded pass. The content is not the problem and is not
+        dropped; only its position was wrong.
+        """
+        self._deferred_notes.append(content)
+
+    def _flush_deferred(self) -> None:
+        """Append the queued notes. Called once the tool result is in place."""
+        for content in self._deferred_notes:
+            self.context.append(Message(role=Role.USER, content=content))
+        self._deferred_notes.clear()
 
     async def attempt(self, call: ToolCall) -> tuple[bool, str]:
         """Evaluate one ``task_complete`` call.
@@ -94,7 +122,7 @@ class CompletionGate:
             await self.ledger.sweep(self.env)
             self.events.append(EventType.SIDE_EFFECTS, self.ledger.summary())
             if self.ledger.swept or self.ledger.listeners_after:
-                self.context.append(Message(role=Role.USER, content=self.ledger.render()))
+                self._defer(self.ledger.render())
 
         result = await self.verifier.verify_with_commands(
             task=self.task,
@@ -154,7 +182,7 @@ class CompletionGate:
                 contract = None
             else:
                 binder(self.events.session_id, contract)
-                self.context.append(Message(role=Role.USER, content=contract.render(header=True)))
+                self._defer(contract.render(header=True))
         self.contract = contract
         self.contract_attempted = True
 
@@ -188,15 +216,10 @@ class CompletionGate:
                 EventType.CONTRACT,
                 {"action": "gate_yield", "outstanding": ids, "attempts": streak - 1},
             )
-            self.context.append(
-                Message(
-                    role=Role.USER,
-                    content=(
-                        f"{len(ids)} acceptance criterion(s) remain unresolved after "
-                        f"{streak - 1} attempts. Proceeding to verification; the summary "
-                        "should state plainly which requirements you could not confirm."
-                    ),
-                )
+            self._defer(
+                f"{len(ids)} acceptance criterion(s) remain unresolved after "
+                f"{streak - 1} attempts. Proceeding to verification; the summary "
+                "should state plainly which requirements you could not confirm."
             )
             return False
 
@@ -226,3 +249,15 @@ class CompletionGate:
                 tool_call_id=call.id,
             )
         )
+        # The call is answered, so the queued notes now have a valid position.
+        self._flush_deferred()
+
+    def flush_notes(self) -> None:
+        """Append any queued notes once the caller has closed the transcript.
+
+        Only the rejection paths answer the call themselves; on an *approved*
+        completion the loop writes the tool result (``RunState.answer_open_calls``)
+        after ``attempt`` has returned, so the loop is the only place that knows
+        when the notes are safe to add. A no-op when nothing is queued.
+        """
+        self._flush_deferred()

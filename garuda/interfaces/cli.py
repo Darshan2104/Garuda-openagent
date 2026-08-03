@@ -97,6 +97,7 @@ async def chat_loop(args) -> int:
         # None, not a literal mode: a fallback value here would override the
         # profile's own `mode` for any caller whose args lack the attribute.
         mode=getattr(args, "mode", None),
+        permission_mode=getattr(args, "permission_mode", None),
         approval_handler=approval,
         workspace_kind=getattr(args, "workspace_kind", "local"),
         docker_image=getattr(args, "docker_image", "ubuntu:22.04"),

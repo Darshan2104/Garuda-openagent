@@ -62,6 +62,21 @@ GATE_FIELDS = (
 _ALL_GATES_OFF = dict.fromkeys(GATE_FIELDS, False)
 _ALL_GATES_ON = dict.fromkeys(GATE_FIELDS, True)
 
+# Fields a preset applies even when the profile declared them. Everything else in
+# a preset yields to an authored profile value (see `apply_mode_preset`), which is
+# right for the gate switches: a profile asking for the acceptance contract means
+# it, and a posture should not silently strip it.
+#
+# `permission_mode` is different in kind. It is not one of the knobs `readonly`
+# adjusts — it is the *entire content* of that posture, and every shipped profile
+# declares one (`build: smart`, `harbor: yolo`). Protecting it made `--mode
+# readonly` a no-op on the default profile and, worse, left `--mode readonly
+# --agent harbor` running with `yolo`: the user asked for "no writes" and got
+# "allow everything". A safety posture the target can opt out of is not a posture.
+# An explicit `--permission-mode` still wins, because the CLI applies flags after
+# the preset — narrower intent, stated later.
+FORCED_FIELDS = frozenset({"permission_mode"})
+
 MODE_PRESETS: dict[str, dict[str, object]] = {
     # enable_verifier stays on even here: it is the structural completion gate
     # (task_complete must carry evidence), not a model call. Turning it off is an
@@ -105,7 +120,8 @@ def apply_mode_preset(
     """Apply a mode's preset to ``config`` in place and return it.
 
     ``declared_fields`` names the fields a profile set explicitly; those are left
-    alone so the preset never overrides authored intent. An unknown mode applies
+    alone so the preset never overrides authored intent — except for
+    ``FORCED_FIELDS``, which a posture owns outright. An unknown mode applies
     no preset — it is passed through so the caller's own validation reports it,
     rather than being silently coerced to a posture the user did not ask for.
     """
@@ -114,7 +130,7 @@ def apply_mode_preset(
     preset = MODE_PRESETS.get(resolved)
     if not preset:
         return config
-    protected = declared_fields or set()
+    protected = (declared_fields or set()) - FORCED_FIELDS
     for field, value in preset.items():
         if field not in protected:
             setattr(config, field, value)

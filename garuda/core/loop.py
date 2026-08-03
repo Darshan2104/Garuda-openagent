@@ -259,6 +259,7 @@ class DefaultAgent:
             return self._exhausted(state, turn)
 
         state.answer_open_calls(response.tool_calls, call)
+        state.completion.flush_notes()
         if state.emit_session_events:
             state.events.append(
                 EventType.SESSION_END,
@@ -639,6 +640,10 @@ class DefaultAgent:
                     # would otherwise sit unanswered in the transcript this result
                     # carries. See RunState.answer_open_calls.
                     state.answer_open_calls(response_calls or calls, call)
+                    # Only now may the gate's own USER-role notes land — before
+                    # this they would sit between the assistant's tool_calls and
+                    # the results answering them. See CompletionGate._defer.
+                    state.completion.flush_notes()
                     if state.emit_session_events:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}

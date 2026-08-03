@@ -219,3 +219,7 @@ __marimo__/
 
 # DeepEval (auto-created if deepeval is imported)
 .deepeval/
+
+# macOS / editor cruft
+.DS_Store
+**/.DS_Store

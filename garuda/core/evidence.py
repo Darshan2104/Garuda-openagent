@@ -311,9 +311,13 @@ def is_side_effect_free(command: str) -> bool:
     wrong is a race between two commands at the completion gate, and the cost of
     being conservative is only that they run one after another as before.
 
-    Reuses ``split_segments`` so quoting is handled the same way the discriminating
-    classifier handles it: ``echo "cat a > b"`` prints a string and writes nothing,
-    while ``cat a > b`` writes, and a quote-blind check cannot tell them apart.
+    Reuses ``split_segments`` so a ``|`` or ``&&`` inside a string literal does not
+    split a segment. Note what that does *not* buy: ``_MUTATING_SHELL`` is applied to
+    the raw segment text, so a ``>`` inside quotes still reads as a redirect and
+    ``echo "cat a > b"`` is judged unsafe though it writes nothing. That is a false
+    negative — conservative, in the direction this function is required to fail — and
+    it is pinned by test rather than fixed, because narrowing the match to unquoted
+    operators is how a real redirect gets admitted.
     """
     text = command or ""
     if not text.strip():

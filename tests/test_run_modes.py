@@ -68,6 +68,34 @@ def test_readonly_mode_actually_forces_readonly_permissions():
     assert not any(_gates(config).values())
 
 
+def test_readonly_beats_a_profile_that_declares_its_own_permission_mode():
+    """The case the assertion above missed by passing no `declared_fields`.
+
+    Every shipped profile declares `permission_mode`, so protecting it made
+    `--mode readonly` a no-op on `build` (smart) and inverted it on `harbor`,
+    where the user asked for no writes and got `yolo`. Verified live: before the
+    fix `--mode readonly` created the file it was told not to be able to create.
+    """
+    for declared in ("smart", "yolo", "auto"):
+        config = apply_mode_preset(
+            AgentConfig(permission_mode=declared),
+            "readonly",
+            declared_fields={"permission_mode", "mode"},
+        )
+        assert config.permission_mode == "readonly", f"profile {declared!r} escaped the posture"
+
+
+def test_a_declared_permission_mode_survives_every_other_posture():
+    """Only `readonly` forces it. `eval` must not quietly re-permission a profile."""
+    for mode in ("interactive", "eval", "rigorous"):
+        config = apply_mode_preset(
+            AgentConfig(permission_mode="yolo"),
+            mode,
+            declared_fields={"permission_mode"},
+        )
+        assert config.permission_mode == "yolo", f"{mode} should not touch permissions"
+
+
 def test_rigorous_keeps_the_full_gate_stack_and_its_own_agent():
     config = apply_mode_preset(AgentConfig(), "rigorous")
     assert all(_gates(config).values())

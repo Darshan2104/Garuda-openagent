@@ -25,7 +25,7 @@ from garuda.core.side_effects import SideEffectLedger
 from garuda.core.steering import Steering
 from garuda.core.tool_runner import ToolRunner
 from garuda.plugins.hooks import HookRegistry
-from garuda.tools.protocol import Tool, ToolContext
+from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolContext
 from garuda.types import (
     DEFAULT_SYSTEM_PROMPT,
     AgentConfig,
@@ -463,6 +463,13 @@ def _filter_tools(tools: list[Tool], allowed_names: list[str]) -> list[Tool]:
     allowed.add("use_tool")
     for tool in tools:
         if tool.name.startswith("mcp__"):
+            allowed.add(tool.name)
+        # And a tool the caller supplied explicitly. This allowlist selects among
+        # discovered tools; a registered one is not a candidate to be selected, it
+        # is a decision already made. Dropping it here is what made
+        # `register_tool` and `--load-project-tools` silent no-ops on `build`,
+        # whose list names 27 tools and so matched nothing the user added.
+        elif getattr(tool, EXPLICIT_TOOL_ATTR, False):
             allowed.add(tool.name)
     # Filter in the original order so the tool-schema sequence is deterministic
     # across runs (a stable prefix keeps prompt caching warm).

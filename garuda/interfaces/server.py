@@ -85,9 +85,16 @@ def ensure_secure_config(config: ServerConfig) -> None:
             "or bind to 127.0.0.1."
         )
     config.token = secrets.token_urlsafe(32)
+    # flush=True is load-bearing, not tidiness. Python block-buffers stdout when it
+    # is not a tty, which is how a server is normally started (`garuda serve > log`,
+    # systemd, docker). The process then blocks in the event loop forever, so the
+    # buffer never fills and never flushes: the only copy of the generated token is
+    # stranded in memory and every request 401s. The server was unusable in exactly
+    # the deployment shape this token exists for.
     print(
         "[garuda serve] No token configured; generated one for this session.\n"
-        f"  Authorization: Bearer {config.token}"
+        f"  Authorization: Bearer {config.token}",
+        flush=True,
     )
 
 
@@ -183,13 +190,15 @@ class JsonRpcServer:
             }
 
     async def _health(self) -> dict[str, Any]:
-        from importlib.metadata import version
+        # `garuda.__version__`, not importlib.metadata: under `pip install -e .` the
+        # distribution metadata is a snapshot from install time, so health reported
+        # 1.1.0 while the running code was 1.1.1. A version that lags whatever you
+        # last installed is worse than no version — it is the field a client uses to
+        # decide whether a fix is deployed. `tests/test_server_auth.py` pins this
+        # against pyproject so the two cannot drift.
+        from garuda import __version__
 
-        try:
-            pkg_version = version("garuda-openagent")
-        except Exception:
-            pkg_version = "unknown"
-        return {"status": "ok", "version": pkg_version}
+        return {"status": "ok", "version": __version__}
 
     async def _execute(self, params: dict[str, Any], events: EventStore):
         """Build run dependencies from params and execute one agent task.
@@ -358,7 +367,9 @@ class JsonRpcServer:
             self._config.port,
         )
         addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
-        print(f"Garuda JSON-RPC server listening on {addrs}")
+        # Same reason as the token banner: this is the last thing printed before the
+        # loop blocks, so unflushed it never reaches a redirected stdout.
+        print(f"Garuda JSON-RPC server listening on {addrs}", flush=True)
         async with server:
             await server.serve_forever()
 

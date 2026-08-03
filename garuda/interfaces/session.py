@@ -44,6 +44,7 @@ class AgentSession:
         agents_dir: Path | list[Path] | None = None,
         mcp_config_path: str | None = None,
         mode: str | None = None,
+        permission_mode: str | None = None,
         approval_handler: ApprovalHandler | None = None,
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
@@ -57,13 +58,21 @@ class AgentSession:
         if mode:  # else honor the profile's own mode
             config.mode = mode
         apply_mode_preset(config, declared_fields=profile.declared_fields)
+        # After the preset, and narrower than it — same precedence `garuda run`
+        # uses, so `--mode readonly` and `--permission-mode` mean the same thing
+        # in both interfaces.
+        if permission_mode:
+            config.permission_mode = permission_mode
         config.workspace_kind = workspace_kind
         config.docker_image = docker_image
         config.docker_host = docker_host
         config.system_prompt = resolve_system_prompt(profile, workspace)
         mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
         permissions = PermissionEngine(
-            mode=profile.permission_mode,
+            # config, not profile: the profile value is only the starting point, and
+            # reading it here meant a chat session ignored both the mode preset and
+            # the flag. `--mode readonly` left the agent writing files.
+            mode=config.permission_mode,
             tool_rules=profile.tool_rules,
             path_rules=profile.path_rules,
             bash_rules=profile.bash_rules,

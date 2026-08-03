@@ -155,6 +155,15 @@ def build_parser():
         default=None,
         help="Run posture (see `garuda run --help`); defaults to interactive.",
     )
+    # No default, so an unset flag stays None and the profile/preset decides. Chat
+    # is the interface built around permission prompts, so not being able to pick
+    # the mode here was the one place the flag was most obviously missing.
+    chat_parser.add_argument(
+        "--permission-mode",
+        choices=["auto", "smart", "readonly", "yolo"],
+        default=None,
+        help="Permission posture; overrides the profile and --mode.",
+    )
     chat_parser.add_argument("--json", action="store_true")
 
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
@@ -448,6 +457,16 @@ async def run_recipe_command(args) -> int:
     for index, result in enumerate(results, start=1):
         print(f"--- Step {index} ({'ok' if result.success else 'failed'}) ---")
         print(result.final_message)
+    # `run_recipe` stops at the first failed step. Say so, and name what did not run:
+    # otherwise the output ends on a failed step and a 3-step recipe that stopped at
+    # step 1 looks identical to a 1-step recipe that failed.
+    skipped = len(recipe.steps) - len(results)
+    if skipped > 0:
+        print(
+            f"--- Recipe stopped at step {len(results)}; {skipped} later step(s) "
+            f"were not run ---",
+            file=sys.stderr,
+        )
     return 0 if results and results[-1].success else 1
 
 

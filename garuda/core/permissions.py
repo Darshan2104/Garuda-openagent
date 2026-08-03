@@ -229,7 +229,27 @@ class PermissionEngine:
         if self._mode in ("auto", "yolo"):
             return PermissionDecision.ALLOW
         if self._mode == "readonly":
-            return PermissionDecision.DENY
+            # Reads are permitted; anything else is denied. Blanket-denying every
+            # command made `readonly` unusable rather than safe: `plan`, `explore`
+            # and `reviewer` all grant `bash`, so the tool they are built around
+            # could never run, and the completion gate re-runs the agent's own
+            # verification commands — which were denied too. The observed result was
+            # an `explore` subagent spending all 50 turns on "permission issues with
+            # verification commands" and failing with the answer already in hand.
+            #
+            # `is_side_effect_free` is the same fail-closed, quote-aware allowlist
+            # the gate uses to decide what may run concurrently: an inspection
+            # command with no redirect, no backgrounding, no substitution and no
+            # sudo. Every interpreter, build tool and workspace script is
+            # unrecognised and therefore denied, so `python x.py` and `echo x > f`
+            # stay refused exactly as before.
+            from garuda.core.evidence import is_side_effect_free
+
+            return (
+                PermissionDecision.ALLOW
+                if is_side_effect_free(command)
+                else PermissionDecision.DENY
+            )
         for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.DENY

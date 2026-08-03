@@ -61,6 +61,81 @@ MAX_HANDOFF_BUFFERS = 12
 _BUFFER_ID_RE = re.compile(r"\[buffer:([^\s|\]]+)")
 
 
+def order_tool_results(messages: list[Message]) -> list[Message]:
+    """Copy ``messages`` with each assistant ``tool_calls`` block kept adjacent to
+    the tool messages answering it.
+
+    Providers require the results for a ``tool_calls`` block to follow the assistant
+    message *immediately*; anything in between is a hard 400 on OpenAI-family
+    providers, which kills the run:
+
+        An assistant message with 'tool_calls' must be followed by tool messages
+        responding to each 'tool_call_id'.
+
+    The gate used to append a USER-role note there and did exactly this on the first
+    ``task_complete`` of every ``--mode eval`` run (fixed at source — see
+    ``CompletionGate._defer``). This is the backstop for that whole class, because
+    the cost of getting it wrong is the entire run rather than a degraded turn, and
+    the code that appends to a transcript is spread across the loop, the gate, the
+    steering queue and the context manager itself.
+
+    Deliberately narrow. A displaced message is *moved to just after* the tool block
+    it interrupted, never dropped or merged, and relative order is preserved within
+    both groups. Only messages between an assistant ``tool_calls`` message and the
+    next assistant/system boundary are considered, and a well-formed transcript —
+    the overwhelmingly common case — returns a plain copy without inspection beyond
+    one linear scan.
+    """
+    if not _has_displaced_tool_result(messages):
+        return list(messages)
+    logger.warning(
+        "Transcript had a message between an assistant tool_calls block and its "
+        "results; reordering so the request stays valid. This is a bug in whatever "
+        "appended it — see ContextManager.order_tool_results."
+    )
+    ordered: list[Message] = []
+    index = 0
+    total = len(messages)
+    while index < total:
+        message = messages[index]
+        ordered.append(message)
+        index += 1
+        if message.role != Role.ASSISTANT or not message.tool_calls:
+            continue
+        expected = {call.id for call in message.tool_calls}
+        results: list[Message] = []
+        displaced: list[Message] = []
+        while index < total and messages[index].role not in (Role.ASSISTANT, Role.SYSTEM):
+            candidate = messages[index]
+            if candidate.role == Role.TOOL and candidate.tool_call_id in expected:
+                results.append(candidate)
+            else:
+                displaced.append(candidate)
+            index += 1
+        ordered.extend(results)
+        ordered.extend(displaced)
+    return ordered
+
+
+def _has_displaced_tool_result(messages: list[Message]) -> bool:
+    """True when some tool result is separated from its call block by another message."""
+    for position, message in enumerate(messages):
+        if message.role != Role.ASSISTANT or not message.tool_calls:
+            continue
+        expected = {call.id for call in message.tool_calls}
+        interrupted = False
+        scan = position + 1
+        while scan < len(messages) and messages[scan].role not in (Role.ASSISTANT, Role.SYSTEM):
+            candidate = messages[scan]
+            if candidate.role == Role.TOOL and candidate.tool_call_id in expected:
+                if interrupted:
+                    return True
+            else:
+                interrupted = True
+            scan += 1
+    return False
+
+
 def normalize_handoff(value: bool | str | None) -> str:
     """Coerce a handoff selector to a mode name.
 
@@ -311,7 +386,7 @@ class ContextManager:
             self._buffer = buffer
 
     def get_messages(self) -> list[Message]:
-        return list(self._messages)
+        return order_tool_results(self._messages)
 
     def output_budget(self, is_error: bool = False) -> int:
         """Bytes one tool result may occupy, given how full the window already is.

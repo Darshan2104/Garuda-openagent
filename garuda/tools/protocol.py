@@ -37,6 +37,19 @@ class ToolContext:
     contract: Any = None
 
 
+# Attribute name marking a tool the caller supplied explicitly — via
+# `SoftwareAgent.register_tool`, `build_toolkit(extra_tools=...)`, or an opt-in
+# `.agent/tools` module — rather than one discovered from the built-in registry.
+#
+# A profile's `tools:` allowlist selects among *discovered* tools; it must not
+# discard one the caller handed in, and it is applied in two independent places
+# (`build_toolkit` and `run_state._filter_tools`). Marking the tool is what lets
+# both honour that without either needing to know how the other was called.
+# Defined here, on the protocol module both sides already import, so neither has
+# to import the other.
+EXPLICIT_TOOL_ATTR = "_garuda_explicit"
+
+
 @runtime_checkable
 class Tool(Protocol):
     name: str
