@@ -815,7 +815,7 @@ docs/
 ├── BACKLOG.md                  # Living residuals
 └── archive/                    # Dated: original RFC, engineering log, closed ledgers
 
-tests/                          # 1049 tests (unit + integration + live-sandbox opt-ins)
+tests/                          # 1139 tests (unit + integration + live-sandbox opt-ins)
 └── fixtures/                   # MCP echo server for tests
 ```
 
@@ -848,7 +848,7 @@ CI runs both: `test` is pinned and gating, `latest-deps` installs unconstrained
 and is non-blocking — it exists to tell you an upstream release has broken
 something, not to block an unrelated PR.
 
-**Current test status:** 902 passed, 8 skipped of 910 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
+**Current test status:** 1131 passed, 8 skipped of 1139 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ---
 

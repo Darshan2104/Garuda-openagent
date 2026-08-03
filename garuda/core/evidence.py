@@ -165,6 +165,43 @@ def classify_python_oneliner(segment: str) -> str | None:
     return SYNTAX
 
 
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+# A predicate that is computed and then printed instead of asserted:
+# `print(all(...))`, `print(got == expected)`, `print(isinstance(x, int))`.
+# Its exit status is 0 for a predicate that came out False, so it proves nothing
+# — but unlike `print(m.shape)` the *right check* is already written, and the fix
+# is one word. Worth naming precisely in the rejection for that reason.
+_PY_PRINTED_PREDICATE = re.compile(
+    r"^print\s*\(\s*(?:"
+    r"(?:all|any|bool|isinstance|issubclass|callable|hasattr)\s*\("
+    r"|.*(?:==|!=|<=|>=|<|>|\bis\b|\bin\b|\bnot\b)"
+    r")"
+)
+
+
+def _blank_quoted(text: str) -> str:
+    """Replace quoted spans with empty quotes, so a string's *contents* can't be
+    mistaken for code — `print("a in b")` prints a sentence, it checks nothing."""
+    return _QUOTED_SPAN.sub("''", text)
+
+
+def prints_a_predicate(command: str) -> bool:
+    """True when a `python -c` one-liner computes a truth value and prints it.
+
+    The print-instead-of-assert pattern. Detected only to sharpen the feedback:
+    the command already grades as ``syntax`` either way, so no verdict moves on it.
+    """
+    for segment in split_segments(command):
+        match = _PYTHON_ONELINER.match(segment.strip())
+        if not match:
+            continue
+        for statement in re.split(r"[;\n]", match.group("body")):
+            if _PY_PRINTED_PREDICATE.match(_blank_quoted(statement.strip())):
+                return True
+    return False
+
+
 def classify_segment(segment: str) -> str:
     """Classify one pipeline segment by the strongest claim its exit code supports."""
     segment = segment.strip()
@@ -332,6 +369,13 @@ def _command_head(segment: str) -> str | None:
 def weakness_reason(command: str) -> str:
     """Explain, for the model, why a command does not count as evidence."""
     label = classify_command(command)
+    if label == SYNTAX and prints_a_predicate(command):
+        return (
+            "computes the right check and then throws the answer away by printing it — "
+            "`print(P)` exits 0 whether P is True or False, so the exit code carries none "
+            "of the result. Replace `print(P)` with `assert P` (keeping the same "
+            "predicate) and the same command becomes evidence"
+        )
     if label == SYNTAX and any(
         classify_python_oneliner(segment) == SYNTAX for segment in split_segments(command)
     ):

@@ -108,6 +108,7 @@ class GarudaHarborAgent(BaseAgent):
         system_prompt_path: str | None = None,
         append_system_prompt: str | None = None,
         agents_dir: str | list[str] | None = None,
+        enable_deliverable_check: bool = True,
         **kwargs: Any,
     ) -> None:
         if not HARBOR_AVAILABLE:
@@ -129,6 +130,7 @@ class GarudaHarborAgent(BaseAgent):
         self._system_prompt_path = system_prompt_path
         self._append_system_prompt = append_system_prompt
         self._agents_dir = agents_dir
+        self._enable_deliverable_check = enable_deliverable_check
 
     def _resolved_agents_dirs(self) -> list[Path] | None:
         """Extra profile directories, so `agent_profile` can name a custom YAML."""
@@ -178,6 +180,18 @@ class GarudaHarborAgent(BaseAgent):
         """
         timeout = self._agent_timeout_sec
         if timeout is None:
+            # Said out loud, because the failure is silent otherwise: the run still
+            # completes, paces itself by turn count alone, and gets killed mid-work
+            # by a deadline it was never told about. That looked like an agent that
+            # ran out of turns, and the checklist item asking anyone to remember
+            # this was the only thing standing between a graded run and a wrong
+            # conclusion.
+            logger.warning(
+                "No agent_timeout_sec passed: the agent has no wall-clock awareness and "
+                "cannot wind down before Harbor's override_timeout_sec kills it. Pass "
+                "agent_timeout_sec in the agent kwargs, set to the same number as "
+                "override_timeout_sec."
+            )
             return None
         try:
             timeout = float(timeout)
@@ -252,6 +266,24 @@ class GarudaHarborAgent(BaseAgent):
             config.system_prompt = resolve_system_prompt(profile, workspace_root)
         config.enable_verifier = True
         config.workspace_kind = "local"
+        # The judge is the only gate that reads the task statement back against
+        # observed output, and it approved incorrect work on tasks where the
+        # deliverable the statement asked for was missing or malformed. Whether a
+        # named output file exists and parses is decidable, so it is decided here
+        # instead of being put to a judge. Advisory: it can only reject, and stays
+        # silent (None) on the tasks whose statement names no output file — which
+        # is why it is safe to wire in unconditionally.
+        if self._enable_deliverable_check:
+            from garuda.eval.answer_checks import deliverable_check
+
+            check = deliverable_check(instruction)
+            if check is not None:
+                config.answer_check = check
+                logger.info(
+                    "Deliverable check active for %d named output(s): %s",
+                    len(check.deliverables),
+                    ", ".join(d.path for d in check.deliverables),
+                )
         if self._max_turns is not None:
             config.max_turns = self._max_turns
         # Harbor enforces `override_timeout_sec` by killing the agent from the

@@ -40,11 +40,27 @@ def _short(value: str, width: int) -> str:
     return value if len(value) <= width else value[: width - 1] + "…"
 
 
+def _as_int(value: Any, fallback: int | None = 0) -> int | None:
+    """Coerce a persisted metric to int, falling back rather than raising.
+
+    These numbers come off disk — a session written by an older build, a
+    hand-edited ``meta.json``, a provider that reported ``"1234"`` as a string, a
+    field that arrived as ``null``. A dashboard is a reporting tool: one malformed
+    field in one old session should cost that cell, not the whole table.
+    """
+    if isinstance(value, bool) or value is None:
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def row_from_session_meta(meta: dict[str, Any]) -> RunRow:
     usage = meta.get("usage") or {}
-    prompt = int(usage.get("prompt_tokens", 0) or 0)
-    completion = int(usage.get("completion_tokens", 0) or 0)
-    total = int(usage.get("total_tokens", 0) or (prompt + completion))
+    prompt = _as_int(usage.get("prompt_tokens"))
+    completion = _as_int(usage.get("completion_tokens"))
+    total = _as_int(usage.get("total_tokens")) or (prompt + completion)
     model = meta.get("model")
     cost = estimate_cost(model, usage)
     return RunRow(
@@ -62,21 +78,26 @@ def row_from_session_meta(meta: dict[str, Any]) -> RunRow:
 
 def row_from_atif(path: Path) -> RunRow:
     data = json.loads(path.read_text(encoding="utf-8"))
-    metrics = data.get("final_metrics", {})
+    metrics = data.get("final_metrics") or {}
     extra = metrics.get("extra") or {}
-    prompt = int(metrics.get("total_prompt_tokens", 0) or 0)
-    completion = int(metrics.get("total_completion_tokens", 0) or 0)
-    total = int(extra.get("total_tokens", 0) or (prompt + completion))
+    prompt = _as_int(metrics.get("total_prompt_tokens"))
+    completion = _as_int(metrics.get("total_completion_tokens"))
+    total = _as_int(extra.get("total_tokens")) or (prompt + completion)
+    cost = metrics.get("total_cost_usd")
     return RunRow(
         source=path.name,
         model=(data.get("agent") or {}).get("model_name"),
         status="success" if extra.get("success") else ("failed" if "success" in extra else "?"),
-        turns=extra.get("turns"),
+        # None keeps the cell as an em dash; a non-numeric value must not reach the
+        # `%d`-style formatting in render_dashboard.
+        turns=_as_int(extra.get("turns"), fallback=None) if "turns" in extra else None,
         prompt_tokens=prompt,
         completion_tokens=completion,
         total_tokens=total,
-        cost_usd=metrics.get("total_cost_usd"),
-        duration_ms=extra.get("duration_ms"),
+        cost_usd=cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+        duration_ms=_as_int(extra.get("duration_ms"), fallback=None)
+        if "duration_ms" in extra
+        else None,
     )
 
 

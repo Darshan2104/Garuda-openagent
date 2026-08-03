@@ -57,24 +57,32 @@ def _no_match_hint(content: str, old_string: str) -> str:
 
 
 def _snippet_around(content: str, position: int) -> str:
-    """Return a few lines of `content` surrounding character offset `position`."""
-    lines = content.splitlines()
-    if not lines:
+    """Return a few lines of `content` surrounding character offset `position`.
+
+    Offsets are walked with the real line terminators (``splitlines(keepends=True)``),
+    not an assumed one-character newline. A CRLF file advances two characters per
+    line, so charging one made the walk fall behind by a character per line and the
+    snippet drifted earlier and earlier — on a 200-line CRLF file it pointed several
+    lines above the edit. The same walk handles a missing trailing newline, where the
+    old arithmetic over-counted the final line by one.
+    """
+    kept = content.splitlines(keepends=True)
+    if not kept:
         return ""
-    # Find the line index containing `position`.
+    # A pure deletion at the end of the file puts the first difference at EOF, which
+    # is one past the last character; clamp so it resolves to the last line instead
+    # of falling through to the loop's default.
+    position = max(0, min(position, len(content) - 1))
     offset = 0
-    line_index = 0
-    for i, line in enumerate(lines):
-        end = offset + len(line) + 1  # account for the newline
-        if position < end:
+    line_index = len(kept) - 1
+    for i, line in enumerate(kept):
+        if position < offset + len(line):
             line_index = i
             break
-        offset = end
-    else:
-        line_index = len(lines) - 1
+        offset += len(line)
     start = max(0, line_index - _SNIPPET_CONTEXT_LINES)
-    stop = min(len(lines), line_index + _SNIPPET_CONTEXT_LINES + 1)
-    return "\n".join(lines[start:stop])
+    stop = min(len(kept), line_index + _SNIPPET_CONTEXT_LINES + 1)
+    return "\n".join(line.rstrip("\r\n") for line in kept[start:stop])
 
 
 def _first_diff(before: str, after: str) -> int:

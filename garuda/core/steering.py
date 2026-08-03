@@ -93,6 +93,16 @@ FINAL_TURN_NUDGE = (
     "and what is a best guess. A committed imperfect answer beats no answer."
 )
 
+FINAL_SUBMISSION_PROMPT = (
+    "[budget] The turn budget is spent. This is not a working turn — `task_complete` is the "
+    "only tool available, and the run ends after this message either way.\n"
+    "Submit what you have: summarize what you actually accomplished, and list the "
+    "verification commands you genuinely ran so they can be re-run now. Name plainly "
+    "anything you could not finish or confirm; an honest partial submission is worth more "
+    "than a claim that does not hold up. Work sitting on disk that was never submitted "
+    "reports nothing."
+)
+
 TRUNCATION_NOTE = (
     "[note] Your previous response was truncated at the output-token limit. "
     "Continue where you left off, or make the remaining work more concise."

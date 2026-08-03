@@ -101,6 +101,46 @@ class RunState:
         record.emitted = True
         self.events.append(EventType.TURN_METRICS, record.to_dict())
 
+    def answer_open_calls(self, calls: list, accepted, reason: str | None = None) -> None:
+        """Close out a response's tool calls when an accepted completion ends the run.
+
+        Providers require every ``tool_calls`` entry to have a matching tool result,
+        and an accepted ``task_complete`` used to return straight out of the tool walk
+        — leaving its own call unanswered along with any sibling calls the model made
+        in the same response, which the run never got to. The transcript that lands in
+        ``AgentResult.messages`` was therefore malformed at exactly the point it is
+        most likely to be reused: resume it, hand it to a judge, or replay it from a
+        checkpoint, and the next provider call is a 400.
+
+        Only fills gaps: calls that already produced a result keep it. ``accepted``
+        may be None on the paths that end the run without an accepted completion
+        (the final submission turn declining to submit, or its submission being
+        rejected), where ``reason`` supplies the text for every open call.
+        """
+        answered = {
+            message.tool_call_id
+            for message in self.context.get_messages()
+            if message.role == Role.TOOL and message.tool_call_id
+        }
+        default_reason = reason or "Not executed: the run ended when task_complete was accepted."
+        for call in calls:
+            if call.id in answered:
+                continue
+            content = (
+                "task_complete accepted — the run ended here."
+                if accepted is not None
+                and (call is accepted or call.id == getattr(accepted, "id", None))
+                else default_reason
+            )
+            self.context.append(
+                Message(
+                    role=Role.TOOL,
+                    content=content,
+                    name=call.name,
+                    tool_call_id=call.id,
+                )
+            )
+
     def result(self, success: bool, final_message: str, turns: int) -> AgentResult:
         """Build the AgentResult, surfacing how the run behaved in metadata.
 

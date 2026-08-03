@@ -31,6 +31,7 @@ from garuda.core.steering import (
     CONTINUE_NUDGE,
     FAILURE_STEER_NUDGE,
     FAILURE_STREAK_THRESHOLD,
+    FINAL_SUBMISSION_PROMPT,
     FINAL_TURN_NUDGE,
     REPEAT_NUDGE,
     REPEAT_THRESHOLD,
@@ -64,6 +65,7 @@ __all__ = [
     "CONTRACT_REJECT_LIMIT",
     "FAILURE_STEER_NUDGE",
     "FAILURE_STREAK_THRESHOLD",
+    "FINAL_SUBMISSION_PROMPT",
     "FINAL_TURN_NUDGE",
     "PARALLEL_SAFE_TOOLS",
     "REPEAT_NUDGE",
@@ -144,14 +146,138 @@ class DefaultAgent:
             if outcome is not None:
                 return outcome
 
-        return self._exhausted(state, turn)
+        return await self._final_submission(state, model, turn)
 
-    async def _timed_complete(self, state: RunState, model: Model, model_ms: list[float]):
+    async def _final_submission(
+        self, state: RunState, model: Model, turn: int
+    ) -> AgentResult:
+        """Spend one exchange whose only available tool is ``task_complete``.
+
+        The budget is gone and nothing has been accepted. ``FINAL_TURN_NUDGE`` has
+        already asked for a commit and been ignored — it is a message, and a message
+        cannot make the model stop investigating. Restricting the toolset can: with
+        nothing else on offer, "submit or say nothing" is the whole action space.
+
+        What it deliberately does not do is submit *for* the model. The evidence is
+        the model's own, run by the ordinary gate against the real workspace, so a
+        fabricated command fails here exactly as it would have failed earlier. A
+        harness-issued completion would have to invent the evidence it carries, and
+        a gate that accepts an empty one is worse than the missing commit.
+
+        Skipped when there is no gate to satisfy (``enable_verifier`` off — those runs
+        end on the first tool-free response anyway) or no ``task_complete`` tool. Run
+        even past the wall-clock deadline: the deadline margin exists for exactly this
+        wind-down, and being inside it is the case this was built for.
+        """
+        if not (
+            state.config.force_final_submission
+            and state.config.enable_verifier
+            and "task_complete" in state.tool_map
+        ):
+            return self._exhausted(state, turn)
+
+        turns = min(turn, state.config.max_turns)
+        schema = [
+            entry
+            for entry in state.tools_schema
+            if (entry.get("function") or {}).get("name") == "task_complete"
+        ]
+        if not schema:
+            return self._exhausted(state, turn)
+
+        state.events.append(
+            EventType.BUDGET,
+            {"stage": "final_submission", "turn": turn, "attempted": True},
+        )
+        # Its own metrics record, labelled. Without one this call's tokens reached
+        # `accumulate_usage` while no `turn_metrics` event described them, so anyone
+        # reconciling the rollup against total usage was short exactly one call — on
+        # precisely the runs that used this mechanism.
+        state.metrics.open_turn(turn, label="final_submission")
+        state.context.append(Message(role=Role.USER, content=FINAL_SUBMISSION_PROMPT))
+
+        # This is the largest context the run will ever assemble: the last turn's
+        # preflight ran before its tool results landed, and the prompt above is
+        # appended on top of them. So it is the call most likely to overflow, and
+        # going through the ordinary path is what makes the mechanism fire on long
+        # runs — which are the runs that exhaust their budget in the first place.
+        # Calling `model.complete` raw meant an overflow became a logged warning and
+        # the mechanism silently did nothing.
+        if state.config.enable_request_preflight:
+            await state.compact_if_needed(turn)
+        model_ms = [0.0]
+        try:
+            response = await self._complete_or_shrink(state, model, turn, model_ms, tools=schema)
+        except Exception as exc:
+            # The run had already failed; a model error here changes nothing about
+            # that, so it is logged and the ordinary exhausted result stands.
+            logger.warning("Final submission call failed: %s: %s", type(exc).__name__, exc)
+            record = state.metrics.current
+            if record is not None:
+                record.model_ms = model_ms[0]
+            state.flush_turn_metrics()
+            return self._exhausted(state, turn)
+
+        record = state.metrics.current
+        if record is not None:
+            record.model_ms = model_ms[0]
+        state.accumulate_usage(response.usage)
+        state.context.note_usage(response.usage)
+        self._record_response(state, response, turn, model_ms[0])
+
+        call = next((c for c in response.tool_calls if c.name == "task_complete"), None)
+        if call is None:
+            # Nothing submitted. Any calls the response did make (a hallucinated
+            # tool name reaches here) are answered first: `_record_response` has
+            # already put an assistant message with `tool_calls` in the transcript,
+            # and leaving those unanswered is the malformed-transcript bug this
+            # change set exists to fix. `_exhausted` then reports the response's
+            # content as the run's best answer.
+            state.answer_open_calls(
+                response.tool_calls, None, reason="Not executed: the run ended here."
+            )
+            state.flush_turn_metrics()
+            return self._exhausted(state, turn)
+
+        try:
+            approved, summary = await state.completion.attempt(call)
+        except EnvironmentUnavailableError as exc:
+            # Nearly moot — the workspace is gone and this transcript will not be
+            # replayed — but this is a change set about not leaving open calls, and
+            # `AgentResult.messages` is handed out on this path like any other.
+            state.answer_open_calls(
+                response.tool_calls, None, reason="Not executed: the workspace became unavailable."
+            )
+            return state.abort_environment_dead(exc, turn)
+        if not approved:
+            # The gate answered `call` with its rejection feedback; a second
+            # task_complete in the same response would still be open.
+            state.answer_open_calls(
+                response.tool_calls, None, reason="Not executed: the run ended here."
+            )
+            state.flush_turn_metrics()
+            return self._exhausted(state, turn)
+
+        state.answer_open_calls(response.tool_calls, call)
+        if state.emit_session_events:
+            state.events.append(
+                EventType.SESSION_END,
+                {"success": True, "turns": turns, "via": "final_submission"},
+            )
+        return state.result(True, summary, turns)
+
+    async def _timed_complete(
+        self, state: RunState, model: Model, model_ms: list[float], tools: list[dict] | None = None
+    ):
         """One model call, adding only its own duration to ``model_ms``.
 
         Accumulated rather than assigned because an overflow turn makes two calls,
         and timed per call rather than around the whole turn so that a compaction
         happening between them is not booked as model latency.
+
+        ``tools`` overrides the run's schema for this call; None means the run's own.
+        Used by the final submission turn, whose restricted single-tool schema is the
+        whole mechanism — so it cannot simply reuse ``state.tools_schema``.
         """
         elapsed = [0.0]
         try:
@@ -159,7 +285,7 @@ class DefaultAgent:
                 elapsed = holder
                 return await model.complete(
                     state.context.get_messages(),
-                    tools=state.tools_schema,
+                    tools=state.tools_schema if tools is None else tools,
                     # Sent, not merely reserved against. run_state.reserved_output_tokens
                     # takes this as the ceiling on the response and shrinks the prompt
                     # budget to match; if the provider were never told, a smaller
@@ -174,7 +300,12 @@ class DefaultAgent:
             model_ms[0] = round(model_ms[0] + elapsed[0], 3)
 
     async def _complete_or_shrink(
-        self, state: RunState, model: Model, turn: int, model_ms: list[float]
+        self,
+        state: RunState,
+        model: Model,
+        turn: int,
+        model_ms: list[float],
+        tools: list[dict] | None = None,
     ):
         """The turn's model call, retried once against a forcibly shrunk history.
 
@@ -189,7 +320,7 @@ class DefaultAgent:
         it is a different, smaller request, not the same one sent twice.
         """
         try:
-            return await self._timed_complete(state, model, model_ms)
+            return await self._timed_complete(state, model, model_ms, tools=tools)
         except ContextOverflowError:
             before = state.context.budget_snapshot()
             # Timed and booked as compaction, not as model latency. force_compact can
@@ -225,7 +356,7 @@ class DefaultAgent:
                 before["capacity_tokens"],
             )
             state.reinject_pinned_state()
-            return await self._timed_complete(state, model, model_ms)
+            return await self._timed_complete(state, model, model_ms, tools=tools)
 
     async def _run_turn(
         self, state: RunState, model: Model, turn: int
@@ -290,6 +421,12 @@ class DefaultAgent:
                 return None
             return await self._run_calls(state, response.tool_calls, turn)
         except EnvironmentUnavailableError as exc:
+            # The more reachable of the two abort paths: any tool in the walk can
+            # raise mid-response, so every call after it in that response is left
+            # unanswered in the transcript `AgentResult.messages` hands out.
+            state.answer_open_calls(
+                response.tool_calls, None, reason="Not executed: the workspace became unavailable."
+            )
             return state.abort_environment_dead(exc, turn)
 
     @staticmethod
@@ -434,7 +571,12 @@ class DefaultAgent:
                     turn_images.extend(tool_result.images)
                     self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
                 continue
-            outcome = await self._run_group_sequentially(state, group, turn, turn_images)
+            # The whole response's calls travel with the segment: an accepted
+            # completion has to answer every call in the assistant message it came
+            # from, including those in segments this run will now never reach.
+            outcome = await self._run_group_sequentially(
+                state, group, turn, turn_images, response_calls=calls
+            )
             if outcome is not None:
                 return outcome
 
@@ -480,13 +622,23 @@ class DefaultAgent:
             state.steering.queue(steer)
 
     async def _run_group_sequentially(
-        self, state: RunState, calls, turn: int, turn_images: list[str]
+        self, state: RunState, calls, turn: int, turn_images: list[str], response_calls=None
     ) -> AgentResult | None:
-        """Run one segment's calls one at a time. Returns a result only if the run ends."""
+        """Run one segment's calls one at a time. Returns a result only if the run ends.
+
+        ``response_calls`` is the full set of calls from the assistant message this
+        segment belongs to, used only to close the transcript when a completion is
+        accepted. Defaults to this segment's calls for callers with no wider context.
+        """
         for call in calls:
             if call.name == "task_complete":
                 approved, summary = await state.completion.attempt(call)
                 if approved:
+                    # Close the response's tool_calls block before returning: the
+                    # accepted call and any siblings this run will now never reach
+                    # would otherwise sit unanswered in the transcript this result
+                    # carries. See RunState.answer_open_calls.
+                    state.answer_open_calls(response_calls or calls, call)
                     if state.emit_session_events:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}

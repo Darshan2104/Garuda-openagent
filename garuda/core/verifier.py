@@ -315,6 +315,19 @@ def group_command(group: list[tuple[int, str]], index: int) -> str:
 
 
 class CompletionVerifier:
+    @staticmethod
+    def _has_authoritative_grader(config: AgentConfig) -> bool:
+        """True when ``config.answer_check`` claims to be the oracle for this task.
+
+        A hook sets ``authoritative = False`` to say it can only ever *reject* —
+        that its silence means "no opinion", not "approved". Only an authoritative
+        grader may stand in for the evidence screen.
+        """
+        hook = getattr(config, "answer_check", None)
+        if not callable(hook):
+            return False
+        return bool(getattr(hook, "authoritative", True))
+
     async def verify_with_commands(
         self,
         task: str,
@@ -364,11 +377,18 @@ class CompletionVerifier:
 
         # Evidence screen. Commands that cannot fail are not evidence, so a
         # completion resting entirely on them is rejected before it is trusted.
-        # Skipped when an authoritative domain grader is configured: that grader
+        # Skipped when an *authoritative* domain grader is configured: that grader
         # *is* the oracle, and demanding the agent supply its own on top would
         # reject work an external check has already judged.
-        has_external_grader = callable(getattr(config, "answer_check", None))
-        if config.require_discriminating_evidence and not has_external_grader:
+        #
+        # Authority is the hook's own claim, not an inference from its presence. An
+        # advisory check — one that can only reject, e.g. eval's DeliverableCheck —
+        # is a necessary condition, never a sufficient one, so treating it as the
+        # oracle would quietly retire the evidence screen in exchange for a check
+        # that a file exists. Absent the attribute the hook is taken as
+        # authoritative, which is the older behaviour and the safe reading of a
+        # grader wired in deliberately.
+        if config.require_discriminating_evidence and not self._has_authoritative_grader(config):
             if not verification_commands:
                 checklist["evidence_present"] = False
                 return VerificationResult(
@@ -433,7 +453,20 @@ class CompletionVerifier:
                     feedback="Completion rejected: answer_check hook failed.",
                 )
             if verdict is not None:
-                return verdict
+                # An advisory hook's approval is not honoured: it declared that it
+                # can only reject, so an `approved=True` from it is a bug in the
+                # hook, and letting it through would skip the judge on the strength
+                # of a check that never claimed to be sufficient. Downgraded to
+                # "no opinion" rather than raising — the run should not die because
+                # a plugged-in checker overstated itself.
+                if verdict.approved and not self._has_authoritative_grader(config):
+                    logger.warning(
+                        "answer_check declared authoritative=False but returned an approval; "
+                        "treating it as no opinion and continuing to the verdict."
+                    )
+                else:
+                    verdict.evidence = verdict.evidence or observed
+                    return verdict
 
         if model is not None:
             verdict = await self._llm_verdict(

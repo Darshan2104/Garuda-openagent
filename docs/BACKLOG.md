@@ -8,7 +8,19 @@ The rule that makes this useful: nothing here is marked done. If you fix it,
 delete it. A ledger that mixes open and closed items cannot tell you what is left
 without re-auditing the code, which is what the archived ledgers turned into.
 
-Last verified against code: 2026-07-30.
+Last verified against code: 2026-08-03.
+
+**The measurement constraint, stated once because it governs the whole file.**
+There is no budget for repeated-trial (multi-seed) benchmark runs. Every score
+this repo has is single-trial, on a suite that has flipped `build-coq-from-source`
+1.0 → 0.0 on identical code and `bash-ddos-traffic-analyzer` across a prompt change
+with no mechanism that explains it. So "run it again and see" is not an available
+next step for anything, and a plan whose only evidence would be a reward delta is
+not a plan. What this leaves is work that is justifiable without a reward
+measurement: a missing gate, an unwired seam, a lost submission, a malformed
+transcript — each provable by unit test. Everything that was open here *pending
+measurement* has therefore been accepted as permanent below rather than left
+looking actionable.
 
 ---
 
@@ -33,218 +45,209 @@ indirection beat any regex. The OS sandbox and `readonly` mode are the boundary.
 **`pane_delta` falls back to full scrollback on a prefix miss.** A fidelity
 trade-off — more output, never less. Not a defect.
 
-## Deferred, examined
+**A file tool cannot see CRLF through a local workspace.**
+`LocalEnvironment.read_file` goes through `Path.read_text`, whose universal-newline
+translation strips `\r` before any tool sees it; CRLF reaches a tool only from an
+Environment that preserves it (a container `cat`). So byte-exactness in the file tools
+is testable at unit level and effectively untestable through a local Environment —
+which is why a snippet-offset drift lived there as long as it did, and it applies to
+any other byte-exactness assumption in `tools/`. Recorded as permanent because the fix
+is a second read path that exists only in order to be tested.
 
-Judged and set aside, not overlooked. Each needs something we don't have yet.
+**The judge cannot check what the grader checks.** The LLM verdict reads the task
+statement back against observed output; it has no access to the benchmark's own
+oracle, so a run can satisfy every self-chosen criterion and still be graded
+wrong. The *decidable* part of this gap is now closed by the deliverable check
+below. What remains — is this number right, is this the algorithm asked for — is
+judgement, and the judge is the run's answer for it. Recorded as permanent because
+the alternative (a per-benchmark oracle mirroring each grader) is the benchmark's
+job, not the agent's.
 
-- **Unreproduced** — MCP client start/close cross-task cancel-scope hazard
-  (anyio); possible consecutive USER messages (budget notice after a tool result);
-  `cache_control` on a trailing tool-role message surviving litellm's Anthropic
-  translation. Each needs a live provider or a race to confirm. Guessing at a fix
-  for an unconfirmed fault is how a previous suggested fix shipped as a no-op.
-- **Eval-only, outside the agent** — ATIF attribution name-matches before index;
-  `dashboard.collect_rows` crashes on a non-numeric metric; `ablation` aborts the
-  whole matrix when one task's setup fails.
-- **Cosmetic** — `edit` snippet offset math on `\r\n` and pure deletions;
-  subagent fork inherits the parent task string for summarization framing;
-  retry-log denominator off by one; `task_complete` alongside sibling calls
-  returns immediately, leaving unanswered `tool_calls` in the transcript.
+**Three unreproduced hazards, each needing a live provider or a race.** MCP client
+start/close cross-task cancel-scope hazard (anyio); possible consecutive USER
+messages (a budget notice landing after a tool result); `cache_control` on a
+trailing tool-role message surviving litellm's Anthropic translation. Guessing at
+a fix for an unconfirmed fault is how a previous suggested fix shipped as a no-op,
+and none of the three has a local reproduction. Left alone deliberately.
+
+**Per-turn checkpoints are O(n²), permanently.** `sessions.py::checkpoint_messages`
+re-serialises and rewrites the whole transcript every turn.
+`eval/harbor_adapter.py` never passes `checkpoint`, so benchmark runs pay none of
+it — this is an interactive/long-session cost only. `checkpoint_ms` is recorded if
+anyone ever wants the number, but replacing it with an append-only delta log plus
+periodic snapshot is not happening on the strength of a complexity argument alone.
+
+**Two deliberate concurrency deltas, neither verdict-affecting.** Recorded so
+neither reads as a bug later. *Agent loop*: a response's calls are split into
+contiguous read-only / not-read-only segments (`loop.py::_segment_calls`), bounded
+by `AgentConfig.max_parallel_reads` (8), so one write no longer forces a whole
+response sequential and twenty reads no longer open twenty at once. *Completion
+gate*: contiguous runs of side-effect-free verification commands are gathered
+(`evidence.is_side_effect_free`, a fail-closed allowlist), so a *failing* group
+reports evidence for commands the serial path would not have reached — the
+rejection is still the first-in-order failure with the same text, and every command
+in such a group is a non-mutating reader. `_recheck_stability` stays serial on
+purpose: it re-runs exactly the discriminating commands (`pytest`, `make`, the
+deliverable), which are precisely the ones that are not side-effect free. The
+honest size of the gate win is small — the allowlist excludes every assertion
+runner, which is what `require_discriminating_evidence` pushes the agent toward.
+
+**Three unmeasured cost/quality trades, accepted as they stand.** Each was left
+open pending a measurement that is not coming:
+
+- *Loop latency.* `core/metrics.py` records per-turn model latency, tool latency,
+  tool wall-clock, compaction, checkpoint time and cache-hit rate; the rollup is on
+  `AgentResult.metadata["metrics"]` with a `turn_metrics` event per turn. Nothing in
+  this file has been re-measured with it, and nothing will be. Two traps if you ever
+  read a number off it: `model_ms` includes retry/backoff inside the client on
+  purpose (it is wall-clock the run spent, not model *compute*), and
+  `parallel_saved_ms` is summed per-call durations minus segment wall-clock — it
+  measures overlap, not end-to-end improvement, so a run whose turn count moved has
+  not been made faster just because that number is positive.
+- *The posture flip.* `interactive` is the default, so a plain run pays for no LLM
+  judge, no acceptance contract, no stable re-verification. It costs less; how much
+  *quality* that costs on a real task set is unknown. The `eval_gates` ablation
+  variant exists for the comparison if a budget ever does.
+- *`preserve_reasoning` stays off.* The echo is built and confirmed reaching the
+  wire (prompt-growth arithmetic, cache holding 94.8% → 95.5%), and over 4
+  terminal-bench-pro tasks on minimax-m2.5 it did not make the model reason more —
+  it spread the same reasoning over 29% more turns: total reasoning chars 43,082 →
+  42,628 (−1%), reasoning per turn 399 → 307 (−23%), turns 108 → 139 (+29%), cost
+  $0.145 → $0.230 (+59%), `write_file` 8 → 15, reward 1/4 → 2/4 (and that 2/4 is
+  `bash-ddos-traffic-analyzer`, which flips on identical code). Turning it on
+  requires repeated trials to justify, which is the one thing unavailable, so the
+  flag stays off. Keep the code: it is correct, and the finding is the point.
+
+## Standing rules that came out of measurement
+
+Not residuals — constraints. Each cost a run to learn, and violating one silently
+undoes work already paid for.
+
+**Prompt additions suppress investigation. This repo has hit it twice.**
+2026-07-30: cost-framed batching guidance cut investigation 32%, grep to zero on
+all four tasks. 2026-07-31: falsification guidance carrying no cost framing at all
+cut investigation 31%, grep to zero on all four tasks. The common factor is not the
+framing — it is that the prompt grew and the grounding paragraph was diluted. Treat
+prompt length as a budget: a new paragraph costs attention somewhere else, and the
+cost lands on investigation. Rebalancing to lead with grounding recovered it
+(25 → 35 calls, grep 0 → 3) while keeping the batching win (contract calls 79 → 6,
+cost still 58% below the un-batched baseline), so the recovery is known to work.
+Anyone editing `types.py:DEFAULT_SYSTEM_PROMPT`, `agents/defaults/harbor.yaml` or
+`agents/defaults/build.yaml` must measure investigation and grep counts before and
+after — not just cost — and should prefer the shared `task_complete` contract over a
+profile prompt when the guidance is about finishing rather than exploring.
+`tests/test_prompt_discipline.py` enforces the placement rule and bans
+validation-task vocabulary from every prompt.
+
+**`reasoning_effort` is a budget, not a floor — do not set it blind.** Measured
+2026-07-31 on `bash-ddos-traffic-analyzer` with minimax-m2.5: asking for `medium`
+*lowered* thinking against leaving it unset — per-turn reasoning mean 265 → 200
+chars, single-turn peak 1,644 → 719 — and the run went from 33 turns to the 60-turn
+cap at +160% cost. The effort levels impose a ceiling below what this model spends
+unprompted, so `harbor.yaml` leaves it unset. Do not assume `high` beats the
+default either; measure peak per-turn reasoning on the target model before setting
+it at all.
+
+**A cost argument about prompt content is only valid alongside a claim about turn
+count.** The `preserve_reasoning` carry cost was predicted at +4.7% and realized at
++59% — wrong by 20× — because the prediction held the trajectory constant and the
+trajectory was exactly what changed. The same trap sits under `parallel_saved_ms`.
+
+**Single-task probes on this suite lie in both directions.** On `bash-ddos` alone
+the reasoning echo showed reasoning/turn +25% and the full-file-rewrite loop turning
+into edits; across 4 tasks reasoning/turn fell 23% and `write_file` nearly doubled.
+The same config gave 49 and then 37 turns on the same task. Do not tune on one task.
 
 ## Open work
 
-**Loop latency is now instrumented; nothing has been measured with it yet.**
-`core/metrics.py` records per-turn model latency, tool latency, tool wall-clock,
-compaction and checkpoint time, and cache-hit rate. The rollup is on
-`AgentResult.metadata["metrics"]` and a `turn_metrics` event lands per turn, so the
-wall-clock figures elsewhere in this file (945s → 1073s above, −16% below) no longer
-have to be assembled by hand. Nothing in this file has been re-measured with it. Two
-things to know before quoting a number from it:
-- `model_ms` includes retry/backoff inside the client, on purpose — that is
-  wall-clock the run spent — so a rate-limited run will show model time that is not
-  model *compute* time.
-- `parallel_saved_ms` is summed per-call durations minus segment wall-clock. It
-  measures overlap, not end-to-end improvement; a run whose turn count moved has not
-  been made faster just because this number is positive. The same trap as the
-  `preserve_reasoning` cost prediction below.
+**The deliverable check is new and its hit rate is unknown.**
+`eval/answer_checks.py` extracts the output files a task statement unconditionally
+asks for and rejects a completion when one is missing, or not the format its name
+claims; the Harbor adapter wires it in per task. It is advisory
+(`authoritative = False`), so it can only reject and never approve — the judge still
+decides everything else. Per the measurement constraint, how often it fires on a real
+task set will stay unknown. The mitigations are that it is switchable
+(`enable_deliverable_check=False` on the Harbor agent) and that every rejection names
+the file and the reason, so a wrong one is obvious in the trajectory rather than
+buried in a verdict.
 
-**Two concurrency behaviour deltas, both deliberate, neither verdict-affecting.**
-- *Agent loop.* A response's calls are now split into contiguous read-only /
-  not-read-only segments (`loop.py::_segment_calls`), so one write no longer forces
-  the whole response sequential. Contiguity is what makes it safe — a read before a
-  write still runs before it. Fan-out is bounded by
-  `AgentConfig.max_parallel_reads` (8); it was previously unbounded, so a response
-  with twenty reads opened twenty at once.
-- *Completion gate.* Contiguous runs of side-effect-free verification commands are
-  gathered (`evidence.is_side_effect_free`, a fail-closed allowlist). Within such a
-  group every command is screened and executed even if an earlier one fails, where
-  the serial path stopped — so a *failing* group reports evidence for commands that
-  previously would not have run. The rejection is still the first-in-order failure
-  with the same feedback text, and every command in a group is a non-mutating
-  reader, so no verdict can move. Commands that might write still run one at a time,
-  and `_recheck_stability` is deliberately still serial: it re-runs exactly the
-  discriminating commands (`pytest`, `make`, the deliverable), which are precisely
-  the ones that are not side-effect free.
+What to know before touching the extraction. **A false rejection fails a run whose
+work was fine** — strictly worse than the false positive the check exists to catch —
+so every rule in it is biased toward silence, and review of the first cut found five
+false-rejection bugs and three silent-suppression bugs in a hundred lines of regex. Both
+classes come from the same place: a marker's *scope*. `if`/`unless` hedge their whole
+sentence; the temporal set (`when`, `whenever`, `once`, `after`, `while`, `for each`)
+and the exemplifying set (`e.g.`, `for example`) hedge only what *follows* them, so
+position decides whether they apply at all; a marker of *either* kind in a fragment
+ending in `:` carries across the list it introduces and resets at a blank line. That
+last clause is the one that keeps getting missed: the defect appeared three times — the
+splitter
+breaking on `:`, then on `e.g.`'s own full stop, then the carry keying on the
+sentence-wide hedges only — each time turning `<condition>:` plus a bulleted list into
+unconditional requirements. `tests/test_backlog_clearing.py` pins 39 phrasings, and
+anything changed here needs a phrasing added to that battery in both directions — a
+statement that must yield the path, and one that must not. A battery with only one
+direction is how the `for example` case passed for the wrong reason for two rounds.
 
-The honest size of the gate win: the allowlist excludes every assertion runner, which
-is exactly what `require_discriminating_evidence` pushes the agent toward. On a
-well-formed submission most commands still run serially. The unconditional win is the
-two independent git reads in `gather_git_evidence`.
+Four known extraction limits, all failing toward silence rather than rejection, all
+judged not worth the false-rejection risk of fixing:
+- **A temporal marker ahead of the verb drops the requirement.** `After you finish,
+  write the version to VERSION.txt` → `[]`, likewise for `when`/`once`/`while`.
+  Ordering-then-requirement is ordinary phrasing, so this is likely the broadest of the
+  four — unmeasured, like the hit rate itself. It is the deliberate price of reading
+  `When a mismatch is found, write it to diff.txt` as conditional, which it is: nothing
+  in the surface form tells the two apart. The `:` form of the same statement is
+  silenced by the carry rule below rather than by position, so the two punctuations
+  agree instead of one of them extracting. Pinned in `test_requirement_phrasings`.
+- **One verb governing two paths yields only the first.** `Write results to
+  /app/out.json and a log to /var/log/run.log` → `['/app/out.json']`; the requirement
+  pattern needs a verb per path and `finditer` is non-overlapping. Scanning on past a
+  match for more paths would just as happily pick up an *input* file.
+- **The `:` carry over-extends without a blank line.** `If errors exist:\n- write them
+  to errors.txt\nWrite the summary to summary.json` → `[]`, and the same for a temporal
+  marker in place of the `if`. Markdown normally wants the blank line, and reading a
+  bullet list as ended by anything less is guesswork. Note what it costs: the
+  suppression is not confined to the list, so a requirement in trailing prose goes with
+  it — the one case where the `:` form silences *more* than the comma form does.
+- **Only `.json` treats an empty file as malformed.** Every other parseable suffix has
+  a legitimate empty reading (zero records, null document, zero rows), and a plain
+  `.txt` is not checked for content at all.
 
-**Per-turn checkpoints are still O(n²) and still unmeasured.**
-`sessions.py::checkpoint_messages` re-serialises and rewrites the whole transcript
-every turn. Left alone deliberately: `eval/harbor_adapter.py` never passes
-`checkpoint`, so benchmark runs pay none of it — this is an interactive/long-session
-cost only. `checkpoint_ms` is now recorded, so the decision to replace it with an
-append-only delta log plus periodic snapshot can be made on a number rather than on
-the complexity argument.
+**The forced final submission is a mechanism, not a measured win.** A run that
+spends its budget without submitting now gets one extra exchange in which
+`task_complete` is the only tool available (`loop.py::_final_submission`,
+`AgentConfig.force_final_submission`). This closes the `bash-tree-diff-sync` shape —
+60 turns spent, correct work on disk, never submitted — and it deliberately does not
+submit *for* the model: the evidence is the model's own, run by the ordinary gate, so
+a fabricated command fails exactly as it would have earlier, and an empty one is
+still refused under `require_discriminating_evidence`. What is unknown is how often
+the model takes the offer and how often that submission is accepted. Costs one model
+call, and only on a run that has already failed.
 
-**Docs onboarding path is new and unproven.** ARCHITECTURE → MODULES → this file
-replaced a long status diary. If a contributor still can't get oriented from those
-three, the gap is a bug in them.
-
-**The posture flip is unmeasured.** `interactive` is now the default, so a plain
-run no longer pays for the LLM judge, the acceptance contract, or stable
-re-verification. How much *quality* that costs on a real task set has not been
-measured — only that it costs less. Worth an ablation run (`eval_gates` variant
-exists for exactly this comparison) before anyone concludes the cheap default is
-free.
-
-**Investigation depth is prompt-governed, and the prompt is load-bearing.**
-Measured 2026-07-30 on 4 tasks, three prompt revisions of the same code:
-adding batching guidance cut cost 67% *and* cut investigation 32% (grep went to
-zero on all four tasks) — the agent read batching as permission to check less.
-Rebalancing to lead with grounding recovered investigation (25 → 35 calls, grep
-0 → 3) while keeping the batching win (contract calls 79 → 6; cost still 58%
-below the un-batched baseline). Two things remain unresolved:
-- **Reward did not follow.** `bash-ddos-traffic-analyzer` scored 1.0 un-batched,
-  0.0 under both later prompts, and grounding did not bring it back. One trial
-  each, in a suite that has flipped `build-coq` 1.0 → 0.0 on identical code, so
-  this is not evidence either way — it is an unexplained regression that a
-  repeated-trial run should either reproduce or dismiss.
-- **Grounding costs wall-clock.** Output tokens rose ~44% on the two tasks that
-  were already investigating enough (8.7k → 12.5k, 11.6k → 16.8k), taking total
-  time on the 4 tasks to 1073s against 945s un-batched — i.e. the batching speed
-  win is gone even though the cost win holds. Fine for a graded run, worth
-  knowing before tuning this prompt for latency.
-Anyone editing these prompts (`types.py:DEFAULT_SYSTEM_PROMPT`,
-`agents/defaults/harbor.yaml`, `agents/defaults/build.yaml`) should assume a
-cost-framed sentence will be read as a licence to skip work, and measure
-investigation counts — not just cost — before and after.
-
-**The final turn cannot force a commit.** Surfaced by the 2026-07-28 core-16 run:
-`bash-tree-diff-sync` spent all 60 turns, never called `task_complete`, and the
-run reported failure with correct work on disk. `steering.py` sets
-`final_turn_forced` at the turn cap and delivers `FINAL_TURN_NUDGE`, but a nudge
-is a message — nothing converts "budget exhausted, work done" into a completion
-attempt, and the harness cannot submit on the model's behalf. Open rather than
-obvious because a harness-issued completion has to decide what evidence it
-carries; a gate that accepts an empty one is worse than the missing commit.
-
-**The LLM verdict approves incorrect work.** Four false positives across the 16
-tasks of that same run. One of them, `debug-bst-segfault-with-gdb`, is instructive:
-after the contract-lockout fix the agent committed work the grader rejected and
-the verdict passed it — the previous 1.0 there was a lucky workspace state under
-a run that reported failure. The judge is the only gate that reads the task
-statement back against observed output, so nothing downstream catches a false
-positive; it is the run's answer. This is the gate `--mode eval` numbers rest on.
-
-The next move on this is probably not more prompt text. A judge reads the task
-statement back against observed output; what it cannot do is check the thing the
-*grader* checks, which is where the falsification entry below lands too. The seam
-already exists — `AgentConfig.answer_check(env) -> VerificationResult | None`,
-consulted before the LLM verdict and returning None for "no opinion" — and it is
-unused. A per-benchmark checker wired in there (output file present and parseable,
-answer in the requested form, the domain invariant the task names) turns a judge
-call into a decidable one for the tasks it covers, and costs nothing on the rest.
-Raised independently in external review, 2026-07-31.
-
-**`reasoning_effort` is a budget, not a floor — do not set it blind.** Measured
-2026-07-31 on `bash-ddos-traffic-analyzer` with minimax-m2.5: asking for
-`medium` *lowered* thinking against leaving it unset — per-turn reasoning mean
-265 → 200 chars, peak on a single turn 1,644 → 719 — and the run went from 33
-turns to the 60-turn cap at +160% cost. The effort levels impose a ceiling below
-what this model spends unprompted. `harbor.yaml` therefore leaves it unset. Do
-not assume `high` beats the default either; measure peak per-turn reasoning on
-the target model before setting it at all.
-
-**The reasoning echo is built, correct, and does not pay — `preserve_reasoning`
-is off by default.** Non-Anthropic providers return a flat `reasoning_content`
-that was captured, logged and dropped, so a reasoning model re-derived its
-thinking every turn. It is now echoed back when the flag is on, confirmed
-reaching the wire by prompt-growth arithmetic rather than by assumption, with the
-cache holding (94.8% → 95.5%). Measured over 4 terminal-bench-pro tasks on
-minimax-m2.5 against the same code with the flag off:
-
-| | off | on |
-|---|---|---|
-| total reasoning chars | 43,082 | 42,628 (−1%) |
-| reasoning per turn | 399 | 307 (−23%) |
-| turns | 108 | 139 (+29%) |
-| cost | $0.145 | $0.230 (+59%) |
-| write_file | 8 | 15 |
-| reward | 1/4 | 2/4 |
-
-It did not make the model reason more — it spread the same reasoning over 29%
-more turns. The 2/4 is one task (`bash-ddos-traffic-analyzer`) that this file
-already records as flipping on identical code, so it is not evidence. Keep the
-flag; do not turn it on without repeated trials. Three traps this cost us:
-- **A one-task probe lied in both directions.** On `bash-ddos` alone the echo
-  showed reasoning/turn +25% and the full-file rewrite loop converting into
-  edits. Neither replicated: across 4 tasks reasoning/turn fell 23% and
-  `write_file` nearly doubled (`sanitize-jinja2` went 1 → 10 rewrites). The same
-  config also gave 49 and then 37 turns on the same task. Single-task deltas on
-  this suite are noise; do not tune on them.
-- **"It rides in the cached prefix so it is nearly free" was wrong by 20×.** The
-  carry cost predicted +4.7%. Realized was +59%, because the prediction held the
-  trajectory constant and the trajectory is exactly what changed. A cost argument
-  about prompt *content* is only valid alongside a claim about turn count.
-- **`reasoning_effort` is a ceiling, not a floor** — see the entry above.
-
-**Prompt additions suppress investigation — this repo has now hit it twice.**
-2026-07-30: cost-framed batching guidance cut investigation 32%, grep to zero.
-2026-07-31: falsification guidance, carrying no cost framing at all, cut
-investigation 31% and grep to zero on all four tasks. The common factor is not
-the framing, it is that the prompt grew and the grounding paragraph was diluted.
-Treat prompt length as a budget: adding a paragraph costs attention somewhere
-else, and the cost lands on investigation. Anyone editing these must measure
-investigation and grep counts before and after, and should prefer the shared
-`task_complete` contract over a profile prompt when the guidance is about
-finishing rather than about exploring. `tests/test_prompt_discipline.py` enforces
-the placement rule and bans validation-task vocabulary from every prompt.
-
-**Falsification framing works at the decision point, unevenly, and reward does
-not follow.** The `task_complete` contract now asks for commands whose exit status
-would change if the work were wrong. Measured over 4 tasks: deliberation appeared
-at the completion step on 3 of 4 tasks (from 1 of 4) and grew 52%; the assertion
-share of accepted evidence went 17% → 27%; `train-fasttext` replaced its
-load-and-print oracle with three real asserts. Cost +17%, wall-clock **−16%**.
-But it was not uniform — `advanced-json` produced *weaker* evidence (two
-`execution` became one `execution` plus two `syntax`, one of them
-`print(all(...))`, which is the print-instead-of-assert pattern with a computed
-boolean) — and `bash-ddos` hit the turn cap. Reward stayed 1/4. Open questions:
-- **Better evidence has not converted to reward anywhere.** `train-fasttext` now
-  asserts its shapes, finiteness and n-gram sizes and still scores 0.0. The gate
-  can force a check that *can* fail; it cannot make the agent check the thing the
-  grader checks. That gap — self-chosen acceptance criteria versus actual ones —
-  is where the remaining zeros live, and it is not an evidence-strength problem.
-- **`print(all(...))` is a hole worth closing.** It computes the right predicate
-  and then throws the answer away by printing it. The classifier correctly grades
-  it `syntax`, so the gate discounts it, but the model reached for it anyway.
+**Better evidence still has not converted to reward.** Falsification framing
+demonstrably improved the *evidence*: deliberation appeared at the completion step
+on 3 of 4 tasks (from 1 of 4) and grew 52%, the assertion share of accepted evidence
+went 17% → 27%, `train-fasttext` replaced its load-and-print oracle with three real
+asserts, cost +17% and wall-clock −16%. Reward stayed 1/4, and `train-fasttext`
+still scores 0.0 while asserting its shapes, finiteness and n-gram sizes. Nor was the
+gain uniform: the same change made `advanced-json` produce *weaker* evidence (two
+`execution` became one `execution` plus two `syntax`), and `bash-ddos` hit the turn
+cap. The gate can force a check that *can* fail; it cannot make the agent check the
+thing the grader checks. With the decidable part of that gap now handled by the
+deliverable check, what is left here is the judgement part — see the accepted
+limitation above — and it is not an evidence-strength problem. Recorded as open only
+because it is the gap that matters most, not because there is a known next move.
 
 ## Before the next benchmark run
 
-- Set `agent_timeout_sec` in the job kwargs to match `override_timeout_sec`.
-  Harbor enforces its timeout by killing the agent and tells it nothing, so
-  without this the agent has no wall-clock awareness and the deadline plumbing
-  buys nothing.
-- Confirm the run is on `--mode eval`. The default posture is now `interactive`,
-  which has no model-call gates. `eval/harbor_adapter.py` pins this itself, but
-  any hand-rolled runner must ask for it explicitly.
-- **Every score here is single-trial.** Graded runs now exist — core-16 and
-  core-17, both 2026-07-28, plus the 4-task prompt comparisons of 2026-07-29/30 —
-  so the earlier "nothing is validated against a real graded run" no longer holds.
-  Nothing has been run twice, though, and the suite is demonstrably noisy:
-  `build-coq-from-source` has flipped 1.0 → 0.0 on identical code, and
-  `bash-ddos-traffic-analyzer` flipped across a prompt change with no mechanism
-  that explains it. Treat any single-run delta, in either direction, as unmeasured
-  until a repeated-trial run separates signal from noise.
+- Confirm the run is on `--mode eval`. The default posture is `interactive`, which
+  has no model-call gates. `eval/harbor_adapter.py` pins this itself, but any
+  hand-rolled runner must ask for it explicitly.
+- Set `agent_timeout_sec` in the job kwargs to match `override_timeout_sec`. Harbor
+  enforces its timeout by killing the agent and tells it nothing, so without this the
+  agent has no wall-clock awareness and the deadline plumbing buys nothing. No longer
+  only a checklist item: the adapter now logs a warning when it is missing, so a run
+  that forgot says so in its own log.
+- **Every score is single-trial and will stay that way.** See the measurement
+  constraint at the top. Treat any single-run delta, in either direction, as
+  unmeasured — including deltas from the changes recorded above.

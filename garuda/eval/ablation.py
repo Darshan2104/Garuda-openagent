@@ -97,7 +97,25 @@ async def run_variant(
     workspace = base_dir / f"{task.id}__{variant}"
     workspace.mkdir(parents=True, exist_ok=True)
     if task.setup:
-        task.setup(workspace)
+        try:
+            task.setup(workspace)
+        except Exception as exc:  # noqa: BLE001 - eval harness records failures
+            # Setup used to run outside any handler, so one task that could not build
+            # its fixture (a full disk, a permission error, a typo in a new task) took
+            # the entire matrix down and discarded every variant already scored. A
+            # failed fixture is one recorded cell, like any other failure here.
+            return VariantResult(
+                variant=variant,
+                task_id=task.id,
+                agent_success=False,
+                graded_pass=None,
+                turns=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                duration_ms=0,
+                error=f"setup failed: {type(exc).__name__}: {exc}",
+            )
 
     config = _base_config(**overrides)
     from garuda.workspace.local import LocalEnvironment
@@ -163,9 +181,29 @@ async def run_ablation(
     try:
         for task in tasks:
             for variant, overrides in variants.items():
-                results.append(
-                    await run_variant(task, variant, overrides, model_name, base_dir)
-                )
+                try:
+                    results.append(
+                        await run_variant(task, variant, overrides, model_name, base_dir)
+                    )
+                except Exception as exc:  # noqa: BLE001 - one cell must not lose the matrix
+                    # run_variant handles the agent's own failures; this catches the
+                    # rest of the cell (workspace creation, model construction, an
+                    # override naming a field AgentConfig does not have). The matrix
+                    # is expensive to produce and every completed cell is real data.
+                    results.append(
+                        VariantResult(
+                            variant=variant,
+                            task_id=task.id,
+                            agent_success=False,
+                            graded_pass=None,
+                            turns=0,
+                            prompt_tokens=0,
+                            completion_tokens=0,
+                            total_tokens=0,
+                            duration_ms=0,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
     finally:
         if cleanup:
             shutil.rmtree(base_dir, ignore_errors=True)

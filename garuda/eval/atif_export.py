@@ -270,20 +270,43 @@ def _append_tool_result(
     observation = agent_step.setdefault("observation", {"results": []})
     results = observation.setdefault("results", [])
     tool_calls = agent_step.get("tool_calls") or []
+    # Ids already claimed by earlier results in this step. Without this, name
+    # matching hands every result of a repeated tool to that tool's *first* call:
+    # a turn with two `read_file` calls attributed both outputs to the first one and
+    # left the second call with no observation at all, which reads in the trajectory
+    # as a call the agent made and never got an answer to.
+    claimed = {
+        result.get("source_call_id") for result in results if result.get("source_call_id")
+    }
+
+    def _unclaimed(candidates: list[dict]) -> str | None:
+        for call in candidates:
+            call_id = call.get("tool_call_id")
+            if call_id and call_id not in claimed:
+                return call_id
+        return None
+
     source_call_id = None
-    # Prefer exact id match (correct even when a tool is called twice in one turn).
+    # Prefer exact id match — authoritative, and the only signal that stays correct
+    # when results arrive out of order.
     if tool_call_id:
-        for call in tool_calls:
-            if call.get("tool_call_id") == tool_call_id:
-                source_call_id = tool_call_id
-                break
+        source_call_id = next(
+            (
+                call.get("tool_call_id")
+                for call in tool_calls
+                if call.get("tool_call_id") == tool_call_id
+            ),
+            None,
+        )
+    # Then the earliest call of this name that nothing has claimed yet, then the
+    # earliest unclaimed call of any name. Both rest on results arriving in call
+    # order, which is what the loop appends.
     if source_call_id is None:
-        for call in tool_calls:
-            if call.get("function_name") == tool_name:
-                source_call_id = call.get("tool_call_id")
-                break
-    if source_call_id is None and tool_calls:
-        source_call_id = tool_calls[min(len(results), len(tool_calls) - 1)].get("tool_call_id")
+        source_call_id = _unclaimed(
+            [call for call in tool_calls if call.get("function_name") == tool_name]
+        )
+    if source_call_id is None:
+        source_call_id = _unclaimed(tool_calls)
 
     result: dict[str, Any] = {"content": content}
     if source_call_id:

@@ -88,6 +88,13 @@ class AgentConfig:
     # Optional domain grader called before the LLM verdict: answer_check(env) ->
     # VerificationResult | None (None = no opinion). Set programmatically by
     # profiles/eval runners; not loadable from YAML.
+    #
+    # Two kinds, distinguished by an `authoritative` attribute on the callable:
+    # an authoritative grader (the default reading) *is* the oracle, so it may
+    # approve and it stands in for the discriminating-evidence screen; one marked
+    # `authoritative = False` may only reject, and its silence means "no opinion"
+    # — see `garuda.eval.answer_checks.DeliverableCheck`, which the Harbor adapter
+    # wires up from the task statement.
     answer_check: Any = None
     # Derive checkable acceptance criteria from the task statement at run start,
     # pin them across compaction, and require each to be resolved before a
@@ -96,6 +103,16 @@ class AgentConfig:
     # Sweep agent-started background processes before verification, so the gate
     # observes the workspace an outside observer would see.
     enable_side_effect_sweep: bool = False
+    # When the budget runs out with no accepted completion, spend one extra
+    # exchange in which `task_complete` is the only tool on offer. A nudge is a
+    # message: a run can read "this is your final turn", keep investigating, and
+    # end with correct work on disk that it never submitted. This is the
+    # mechanism that converts "budget exhausted, work done" into an actual
+    # completion attempt — judged by the ordinary gate, on the agent's own
+    # evidence, because a harness-issued completion carrying no evidence would be
+    # worse than the missing one. Costs one model call, and only on a run that
+    # has already failed.
+    force_final_submission: bool = True
     # Wall-clock budget for the whole run. Turn count alone cannot express "most
     # of my time is gone", which is what matters when one command can block for
     # minutes. None leaves the run bounded only by max_turns.

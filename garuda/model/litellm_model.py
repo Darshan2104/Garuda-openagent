@@ -304,6 +304,9 @@ class LitellmModel:
         model_name: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        # Total attempts, not retries on top of one — 5 means five calls, four of
+        # them retries. Named for the constructor arg every caller already passes;
+        # `_attempt_with_retries` is the one place the distinction matters.
         max_retries: int = 5,
         request_timeout: float = 600.0,
         enable_prompt_caching: bool = True,
@@ -538,11 +541,17 @@ class LitellmModel:
                 base = retry_after if retry_after is not None else min(delay, _MAX_RETRY_SLEEP)
                 # Full-ish jitter so parallel subagents don't retry in lockstep.
                 wait = base + random.uniform(0, min(base, 1.0))
+                # Reported as attempts, not retries. `max_retries` is used as a
+                # total-attempt count (see `attempts` above), so a "retry N/M" line
+                # had to pick a denominator for a quantity the loop does not track:
+                # it printed `attempts - 1`, which disagreed with the configured
+                # number by one and made a log read as though a retry had been
+                # skipped. Counting attempts describes exactly what the loop does.
                 logger.warning(
-                    "Model call failed (%s), retry %d/%d in %.1fs",
+                    "Model call failed (%s) on attempt %d/%d; retrying in %.1fs",
                     type(exc).__name__,
                     attempt,
-                    attempts - 1,
+                    attempts,
                     wait,
                 )
                 await asyncio.sleep(wait)
