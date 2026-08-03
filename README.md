@@ -862,6 +862,20 @@ CI runs both: `test` is pinned and gating, `latest-deps` installs unconstrained
 and is non-blocking — it exists to tell you an upstream release has broken
 something, not to block an unrelated PR.
 
+Because the gate is pinned, it does **not** exercise the version a user actually
+resolves, so the bounds themselves need checking by hand before a release. Do it in a
+throwaway environment, with the command this README gives:
+
+```bash
+python -m venv /tmp/garuda-check && /tmp/garuda-check/bin/pip install -e ".[dev]"
+/tmp/garuda-check/bin/python -m pytest -q
+/tmp/garuda-check/bin/garuda run -t "Create hello.txt" --model <your-model>
+```
+
+This is how the `mcp>=1.9.0` bound was found to be wrong: mcp 2.0 renamed a transport
+symbol, so an unpinned install produced a harness that raised `ImportError` on every
+run. The bound is now `<2` (see [BACKLOG](docs/BACKLOG.md)).
+
 **Current test status:** 1188 passed, 8 skipped of 1196 collected (tmux-dependent tests skip when `tmux` is absent; live Seatbelt tests are opt-in via `GARUDA_LIVE_SANDBOX=1`).
 
 ### What has been exercised against a live model

@@ -14,8 +14,17 @@ dependencies = [
     # round-trip must exist or extended thinking silently no-ops.
     "litellm>=1.63.0",
     "pyyaml>=6.0",
-    # >=1.9: streamablehttp_client / sse_client transports used by mcp/client.py.
-    "mcp>=1.9.0",
+    # >=1.9: the streamable-HTTP / SSE transports used by mcp/client.py exist.
+    # <2: mcp 2.0 renamed `streamablehttp_client` to `streamable_http_client` *and*
+    # changed its signature — `headers` and `timeout` were replaced by a caller-built
+    # `http_client` object. Without this cap a plain `pip install -e .` resolved to
+    # 2.0.0 and the harness could not run a single task: importing garuda.mcp.client
+    # raised ImportError, which is on the path of every run. A rename shim alone would
+    # not fix it, and the 2.0 transport path has no local reproduction to test against
+    # (see docs/BACKLOG.md), so the bound states the range that actually works rather
+    # than shipping a guessed one. Raise it deliberately, with an HTTP MCP server to
+    # verify against.
+    "mcp>=1.9.0,<2",
 ]
 
 [project.optional-dependencies]

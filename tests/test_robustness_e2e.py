@@ -122,6 +122,24 @@ async def test_dropping_the_failing_check_does_not_get_past_the_gate(tmp_path: P
 # --- the escape-room failure: a server left holding a port -----------------
 
 
+def _await_pidfile(pidfile: Path) -> str:
+    """A turn that waits for the launched child to record its pid.
+
+    Kept as its own bash call so the launch command stays exactly
+    `python3 server.py > /dev/null 2>&1 &` — the side-effect ledger identifies a
+    background launch from the command text, so folding the wait into that line
+    stops it being recognised as a launch at all, which is the mechanism under test.
+
+    What this removes is a race in the *assertion*, not in the sweep: `python3`
+    needs ~80ms to reach its first statement, so whether the pidfile existed by the
+    time the sweep ran depended on how much work the harness happened to do in
+    between. Both tests here passed on a warm interpreter and failed 5/5 in a clean
+    venv, where the sweep won. The pidfile is the evidence that the process really
+    started, so it has to be a precondition rather than a gamble.
+    """
+    return f"for _ in $(seq 1 200); do [ -s {pidfile} ] && break; sleep 0.05; done"
+
+
 async def test_background_process_is_swept_before_verification(tmp_path: Path):
     script = tmp_path / "server.py"
     # Writes its own pid, so the assertion below can be about the process itself
@@ -142,6 +160,7 @@ async def test_background_process_is_swept_before_verification(tmp_path: Path):
     model = ScriptModel(
         responses=[
             _bash(f"python3 {script} > /dev/null 2>&1 &"),
+            _bash(_await_pidfile(pidfile)),
             _complete([f"grep -q ANSWER {marker}"]),
         ]
     )
@@ -211,6 +230,7 @@ async def test_a_launch_whose_argv_does_not_match_the_command_is_still_swept(tmp
         model=ScriptModel(
             responses=[
                 _bash(f"python3 {script} > /dev/null 2>&1 &"),
+                _bash(_await_pidfile(pidfile)),
                 _complete([f"grep -q ANSWER {marker}"]),
             ]
         ),

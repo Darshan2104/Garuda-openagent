@@ -144,10 +144,40 @@ matched). Restriction of *discovered* tools is unchanged. If a profile ever need
 refuse a caller-supplied tool, that wants a new opt-in field, not the reinstatement of
 this filter.
 
+**mcp 2.0 is not supported, and the bound says so.** 2.0 renamed
+`streamablehttp_client` to `streamable_http_client` *and* changed its signature:
+`headers` and `timeout` are gone, replaced by a caller-built `http_client`. So a
+rename shim does not do it — the HTTP transport needs a second construction path.
+`pyproject.toml` therefore pins `mcp>=1.9.0,<2`. It is not written because supporting
+2.0 is hard; it is written because there is no local HTTP MCP server to verify a 2.0
+path against, and the fixture is stdio. Raise the bound when there is something to
+test it with, not before.
+
+Worth knowing how this was found, because the gating CI job cannot find it: `test`
+installs with `-c constraints.txt` (mcp pinned at 1.19.0), so the version a *user*
+resolves is never what the gate exercises. A clean clone plus the README's own
+`pip install -e ".[dev]"` pulled mcp 2.0.0, and `import garuda.mcp.client` — on the
+path of every run, MCP configured or not — raised ImportError. The harness could not
+execute one task, and five test modules failed to collect. `latest-deps` exists for
+exactly this and is deliberately non-blocking, so it warns and nothing stops. The
+lesson is in the standing rules below: install the way the README says, in a clean
+environment, before calling a release good.
+
 ## Standing rules that came out of measurement
 
 Not residuals — constraints. Each cost a run to learn, and violating one silently
 undoes work already paid for.
+
+**A pinned suite says nothing about what a user installs.**
+The gate installs with `-c constraints.txt` on purpose — a failure there is this
+repo's fault and not an upstream release's — but the consequence is that the
+dependency *bounds* in `pyproject.toml` go untested, and a bound is a claim about
+what works. It was wrong (`mcp>=1.9.0` admitted a 2.0 that breaks on import), and a
+clean-venv install was the only thing that could say so. Two timing-dependent tests
+in `test_robustness_e2e.py` surfaced the same way: they asserted a launched process
+had written its pidfile before the sweep killed it, which is an ~80ms race the warm
+interpreter happened to win and a cold venv lost 5/5. Run the documented install in a
+throwaway environment as part of finishing, not as a courtesy.
 
 **A green suite says nothing about the wiring. Drive the commands.**
 2026-08-04: eight defects were found by running the documented interfaces end to end
