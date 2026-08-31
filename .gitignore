@@ -206,6 +206,11 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Garuda session-managed context; durable `.context/*.md` files are committed.
+.context/current-task.md
+.context/handoff.md
+.context/sessions/
+
 # PyPI configuration file
 .pypirc
 

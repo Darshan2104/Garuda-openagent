@@ -366,7 +366,8 @@ limitation with a runtime warning, **#10 fixed by refusing** the unsupported bac
 breakage is still unreproduced on Linux — see the entry).
 
 Two defects found during the same re-audit are tracked in
-[SECURITY_CORRECTNESS_TODO.md](SECURITY_CORRECTNESS_TODO.md) as #16–#18, all fixed: the
+[2026-07-28-SECURITY_CORRECTNESS_TODO.md](2026-07-28-SECURITY_CORRECTNESS_TODO.md)
+as #16–#18, all fixed: the
 acceptance-contract livelock, the un-propagated `deadline_sec`, and the whole-file-rewrite bias.
 
 The **P2 backlog below was then worked through** (2026-07-28). Of ~28 items, 10 turned out already

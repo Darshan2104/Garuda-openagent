@@ -1,7 +1,8 @@
 # Security & Correctness Backlog — completion record
 
 **Opened:** 2026-07-27 · **Closed:** 2026-07-27 · **Source:** the 15 numbered findings in
-[REVIEW_FINDINGS.md](REVIEW_FINDINGS.md), re-verified against the working tree, plus three defects
+[2026-07-28-REVIEW_FINDINGS.md](2026-07-28-REVIEW_FINDINGS.md), re-verified
+against the working tree, plus three defects
 found while analysing a 50-task terminal-bench-pro run on the same date.
 
 Every item was re-checked against current code before being classified. That mattered: the ledger

@@ -372,7 +372,8 @@ search→write and write-code→run-via-persistent-shell→write-result both cor
 
 Closed the P1 scalability items from the senior review and made every asset a project can
 supply (tools, MCP servers, skills, profiles) discoverable from one `.agent/` folder. Full
-design + per-item commits in [`CONFIG_SCALABILITY_PLAN.md`](CONFIG_SCALABILITY_PLAN.md).
+design + per-item commits in
+[`2026-07-08-CONFIG_SCALABILITY_PLAN.md`](2026-07-08-CONFIG_SCALABILITY_PLAN.md).
 
 - **`.agent/` project home** — `config/agent_home.py` resolves `agents/`, `skills/`, `tools/`,
   `mcp.*`, `settings.yaml` (with `.garuda/` as a back-compat alias); threaded through CLI
