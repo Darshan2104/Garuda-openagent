@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** approved design, implementation not started
+**Status:** approved and decomposed into GitHub issues; implementation not started
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -106,20 +106,20 @@ ACP negotiation assigns each tool family to exactly one owner. Garuda brokers ap
 
 | Order | Epic | Child work |
 |---|---|---|
-| 0 | Repository standards | Documentation migration; AGENTS/context contract; docs-link CI. |
-| 1 | Runtime foundation | Runtime protocol; registry/config; unified session persistence; native runtime adapter. |
-| 2 | Context and handoffs | Schemas; deterministic compiler; transactional switch; secret/size validation. |
-| 3 | ACP foundation | Python client; capability/authority negotiation; protocol normalizer; fake ACP conformance server. |
-| 4 | Safety and repository state | Workspace lease; permission broker; Git baseline/diff; recovery and cancellation. |
-| 5 | Harness adapters | Claude/Codex; Cursor/OpenCode; Pi/Goose/registry discovery; health/auth UX. |
-| 6 | Product surfaces | CLI; web dashboard; SDK/service; persisted trace reader. |
-| 7 | Quality | Contract suites; opt-in real integrations; eval matrix; performance and observability. |
-| 8 | Expansion | Garuda ACP server; supported direct transports; opt-in policy router. |
+| 0 | [Repository standards (#6)](https://github.com/Darshan2104/Garuda-openagent/issues/6) | [#7](https://github.com/Darshan2104/Garuda-openagent/issues/7) docs migration; [#8](https://github.com/Darshan2104/Garuda-openagent/issues/8) AGENTS/context; [#9](https://github.com/Darshan2104/Garuda-openagent/issues/9) docs CI. |
+| 1 | [Runtime foundation (#10)](https://github.com/Darshan2104/Garuda-openagent/issues/10) | [#11](https://github.com/Darshan2104/Garuda-openagent/issues/11) protocol; [#12](https://github.com/Darshan2104/Garuda-openagent/issues/12) registry; [#13](https://github.com/Darshan2104/Garuda-openagent/issues/13) sessions; [#14](https://github.com/Darshan2104/Garuda-openagent/issues/14) native bridge. |
+| 2 | [Context and handoffs (#15)](https://github.com/Darshan2104/Garuda-openagent/issues/15) | [#16](https://github.com/Darshan2104/Garuda-openagent/issues/16) schemas; [#17](https://github.com/Darshan2104/Garuda-openagent/issues/17) compiler; [#18](https://github.com/Darshan2104/Garuda-openagent/issues/18) switch; [#19](https://github.com/Darshan2104/Garuda-openagent/issues/19) validation. |
+| 3 | [ACP foundation (#20)](https://github.com/Darshan2104/Garuda-openagent/issues/20) | [#21](https://github.com/Darshan2104/Garuda-openagent/issues/21) client; [#22](https://github.com/Darshan2104/Garuda-openagent/issues/22) authority; [#23](https://github.com/Darshan2104/Garuda-openagent/issues/23) normalizer; [#24](https://github.com/Darshan2104/Garuda-openagent/issues/24) fake agent. |
+| 4 | [Safety and repository state (#25)](https://github.com/Darshan2104/Garuda-openagent/issues/25) | [#26](https://github.com/Darshan2104/Garuda-openagent/issues/26) workspace lease; [#27](https://github.com/Darshan2104/Garuda-openagent/issues/27) permissions; [#28](https://github.com/Darshan2104/Garuda-openagent/issues/28) diff; [#29](https://github.com/Darshan2104/Garuda-openagent/issues/29) recovery. |
+| 5 | [Harness adapters (#30)](https://github.com/Darshan2104/Garuda-openagent/issues/30) | [#31](https://github.com/Darshan2104/Garuda-openagent/issues/31) discovery; [#32](https://github.com/Darshan2104/Garuda-openagent/issues/32) Claude/Codex; [#33](https://github.com/Darshan2104/Garuda-openagent/issues/33) Cursor/OpenCode; [#34](https://github.com/Darshan2104/Garuda-openagent/issues/34) Pi/Goose; [#35](https://github.com/Darshan2104/Garuda-openagent/issues/35) auth UX. |
+| 6 | [Product surfaces (#36)](https://github.com/Darshan2104/Garuda-openagent/issues/36) | [#37](https://github.com/Darshan2104/Garuda-openagent/issues/37) CLI; [#38](https://github.com/Darshan2104/Garuda-openagent/issues/38) web; [#39](https://github.com/Darshan2104/Garuda-openagent/issues/39) SDK; [#40](https://github.com/Darshan2104/Garuda-openagent/issues/40) trace reader. |
+| 7 | [Quality (#41)](https://github.com/Darshan2104/Garuda-openagent/issues/41) | [#42](https://github.com/Darshan2104/Garuda-openagent/issues/42) contracts; [#43](https://github.com/Darshan2104/Garuda-openagent/issues/43) real integrations; [#44](https://github.com/Darshan2104/Garuda-openagent/issues/44) evals; [#45](https://github.com/Darshan2104/Garuda-openagent/issues/45) observability. |
+| 8 | [Expansion (#46)](https://github.com/Darshan2104/Garuda-openagent/issues/46) | [#47](https://github.com/Darshan2104/Garuda-openagent/issues/47) Garuda ACP server; [#48](https://github.com/Darshan2104/Garuda-openagent/issues/48) direct transports; [#49](https://github.com/Darshan2104/Garuda-openagent/issues/49) policy router. |
 
 The detailed parent/child payloads are in the [issue catalog](issue-catalog.md).
 Each child issue states scope, non-goals, dependencies, interface changes,
 acceptance criteria, tests, security posture, telemetry, documentation, and
-rollout plan. GitHub issue links are added after issue creation.
+rollout plan. GitHub tracks each listed child as a sub-issue of its linked epic.
 
 ## Definition of done
 
