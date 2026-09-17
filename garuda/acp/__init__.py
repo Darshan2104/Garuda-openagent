@@ -17,6 +17,13 @@ from garuda.acp.authority import (
     ToolFamily,
     negotiate,
 )
+from garuda.acp.broker import (
+    ApprovalBroker,
+    ApprovalOutcome,
+    ApprovalRecord,
+    ApprovalRequest,
+    describe_gaps,
+)
 from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import (
     ACP_VERSION,
@@ -39,6 +46,10 @@ __all__ = [
     "AcpRuntime",
     "AcpTimeoutError",
     "AgentCapabilities",
+    "ApprovalBroker",
+    "ApprovalOutcome",
+    "ApprovalRecord",
+    "ApprovalRequest",
     "AuthorityMap",
     "AuthorityOwner",
     "AuthorityPolicy",
@@ -46,5 +57,6 @@ __all__ = [
     "ToolFamily",
     "decode_frame",
     "encode_frame",
+    "describe_gaps",
     "negotiate",
 ]
