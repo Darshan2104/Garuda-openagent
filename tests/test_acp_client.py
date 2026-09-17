@@ -85,7 +85,12 @@ def test_frame_codec_round_trip_and_rejects():
 
 async def test_handshake_session_prompt_and_notifications():
     process = await _launched(
-        _argv({"initialize": {"protocolVersion": "0.4"}, "session/new": {"sessionId": "s1"}})
+        _argv(
+            {
+                "initialize": {"protocolVersion": "0.4", "ok": True},
+                "session/new": {"sessionId": "s1"},
+            }
+        )
     )
     try:
         result = await process.initialize()
@@ -102,9 +107,11 @@ async def test_handshake_session_prompt_and_notifications():
 
 async def test_stderr_never_corrupts_the_stream():
     script = "import sys; sys.stderr.write('diagnostic line\\n'); sys.stderr.flush()\n" + ECHO_SERVER
-    process = await _launched(_argv({"initialize": {"ok": True}}, extra=script))
+    process = await _launched(
+        _argv({"initialize": {"protocolVersion": "0.4", "ok": True}}, extra=script)
+    )
     try:
-        assert (await process.initialize()) == {"ok": True}
+        assert (await process.initialize())["ok"] is True
         assert "diagnostic line" in process.stderr_tail
     finally:
         await process.close()
