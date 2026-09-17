@@ -90,6 +90,14 @@ implementation (streaming, tool calls, reasoning effort, prompt caching, retries
 `governor.py` caps per-provider concurrency; `script_model.py` is the deterministic
 test double — prefer it over mocks.
 
+## `runtime/` — harness boundary
+
+`protocol.py` is the `AgentRuntime` interface every harness implements (native or
+external — never place a harness behind `Model`). `events.py` is the normalized
+event vocabulary with session/turn correlation. `fake.py` is the deterministic
+test double with scripted scenarios; every adapter must pass the shared suite in
+`tests/test_runtime_conformance.py`.
+
 ## `interfaces/` — entry points
 
 `main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
