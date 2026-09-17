@@ -30,8 +30,19 @@ from garuda.runtime.protocol import (
     RuntimeTransitionError,
     check_transition,
 )
+from garuda.runtime.registry import (
+    BUILTIN_NATIVE_ID,
+    ProjectRuntimeRef,
+    RegistryError,
+    ResolvedRuntime,
+    RuntimeManifest,
+    RuntimeRegistry,
+    parse_global_manifests,
+    parse_project_refs,
+)
 
 __all__ = [
+    "BUILTIN_NATIVE_ID",
     "PROTOCOL_VERSION",
     "TERMINAL_LIFECYCLE_STATES",
     "AgentRuntime",
@@ -39,6 +50,9 @@ __all__ = [
     "AuthStatus",
     "HealthStatus",
     "LifecycleState",
+    "ProjectRuntimeRef",
+    "RegistryError",
+    "ResolvedRuntime",
     "RuntimeCapabilities",
     "RuntimeCancelledError",
     "RuntimeClosedError",
@@ -46,10 +60,14 @@ __all__ = [
     "RuntimeEventKind",
     "RuntimeInfo",
     "RuntimeKind",
+    "RuntimeManifest",
     "RuntimeNotActiveError",
     "RuntimeProtocolError",
+    "RuntimeRegistry",
     "RuntimeStartError",
     "RuntimeTimeoutError",
     "RuntimeTransitionError",
     "check_transition",
+    "parse_global_manifests",
+    "parse_project_refs",
 ]
