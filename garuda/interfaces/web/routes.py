@@ -549,3 +549,90 @@ def _job_expired(job_id: str) -> Response:
         f"/api/runs/<session_id>.",
         status=410,
     )
+
+
+# --- runtimes, handoff, diff, recovery (P1.7) --------------------------------------
+
+
+@route("GET", r"/api/runtimes")
+def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web.runtimes import list_runtimes, manifests_from_extra
+
+    return ok(list_runtimes(manifests_from_extra(ctx.extra)))
+
+
+@route("GET", r"/api/runtimes/(?P<rid>[A-Za-z0-9._-]+)")
+def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web.runtimes import inspect_runtime, manifests_from_extra
+
+    payload = inspect_runtime(manifests_from_extra(ctx.extra), match["rid"])
+    if payload is None:
+        return not_found(f"No runtime {match['rid']!r}.")
+    return ok(payload)
+
+
+@route("GET", r"/api/runs/(?P<sid>[^/]+)/handoff")
+def _handoff_preview(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.sessions import validate_session_ref
+    from garuda.interfaces.web.runtimes import handoff_preview
+
+    session_id = validate_session_ref(match["sid"])
+    target = request.first("to")
+    if not target:
+        return invalid("`to` query parameter is required.")
+    try:
+        return ok(handoff_preview(ctx.store, session_id, target))
+    except (OSError, ValueError) as exc:
+        return not_found(f"No readable session {session_id!r}: {exc}")
+
+
+@route("POST", r"/api/runs/(?P<sid>[^/]+)/handoff")
+def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.sessions import validate_session_ref
+    from garuda.interfaces.web.runtimes import handoff_prepare
+
+    refusal = requires_write(ctx)
+    if refusal is not None:
+        return refusal
+    session_id = validate_session_ref(match["sid"])
+    body = request.json_body()
+    target = body.get("target") if isinstance(body, dict) else None
+    if not target or not isinstance(target, str):
+        return invalid("JSON body `target` is required.")
+    try:
+        return ok(handoff_prepare(ctx.store, session_id, target))
+    except (OSError, ValueError) as exc:
+        return not_found(f"Cannot prepare handoff for {session_id!r}: {exc}")
+
+
+@route("GET", r"/api/runs/(?P<sid>[^/]+)/diff")
+def _run_diff(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.sessions import validate_session_ref
+    from garuda.interfaces.web.runtimes import diff_timeline
+
+    session_id = validate_session_ref(match["sid"])
+    try:
+        return ok(diff_timeline(ctx.store, session_id))
+    except (OSError, ValueError) as exc:
+        return not_found(f"No readable session {session_id!r}: {exc}")
+
+
+@route("GET", r"/api/runs/(?P<sid>[^/]+)/recover")
+def _recover_preview(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.sessions import validate_session_ref
+    from garuda.interfaces.web.runtimes import recover_report
+
+    session_id = validate_session_ref(match["sid"])
+    return ok(recover_report(ctx.store, session_id))
+
+
+@route("POST", r"/api/runs/(?P<sid>[^/]+)/recover")
+def _recover_run(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.sessions import validate_session_ref
+    from garuda.interfaces.web.runtimes import recover_report
+
+    refusal = requires_write(ctx)
+    if refusal is not None:
+        return refusal
+    session_id = validate_session_ref(match["sid"])
+    return ok(recover_report(ctx.store, session_id, run=True))
