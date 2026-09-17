@@ -67,7 +67,10 @@ polling), selected by `factory.py`.
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it
 records which confinement actually holds. `shell.py` is the opt-in persistent
-shell; `paths.py` and `health.py` are path safety and liveness.
+shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
+issues mutating-workspace leases (one live mutating owner, read-only sharing,
+heartbeat TTL with audited stale takeover, corrupt leases fail closed, user
+files never touched) plus worktree isolation keys and creation hooks.
 
 ## `context/` — fitting the conversation in the window
 
