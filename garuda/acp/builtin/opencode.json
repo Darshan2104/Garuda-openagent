@@ -11,5 +11,9 @@
   "version_args": ["opencode", "--version"],
   "version_pattern": "",
   "auth_probe": null,
-  "setup": "1. Install the OpenCode CLI (registry package opencode-ai) and log in. 2. Verify: opencode --version. Garuda never reads your OpenCode auth configuration."
+  "setup": "1. Install the OpenCode CLI (registry package opencode-ai) and log in. 2. Verify: opencode --version. Garuda never reads your OpenCode auth configuration.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Log in to OpenCode, then select this runtime."
+  }
 }

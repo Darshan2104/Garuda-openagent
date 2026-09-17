@@ -68,6 +68,7 @@ class AcpRuntime:
         self._turn = 0
         self._events: list[RuntimeEvent] = []
         self._pending_approvals: set[str] = set()
+        self._quota: dict[str, Any] | None = None
 
     @property
     def runtime_id(self) -> str:
@@ -94,6 +95,12 @@ class AcpRuntime:
     @property
     def authority(self) -> AuthorityMap | None:
         return self._authority
+
+    @property
+    def quota(self) -> dict[str, Any] | None:
+        """Harness-supplied quota, passed through untouched. None means unknown —
+        never estimated, never zero-filled."""
+        return dict(self._quota) if self._quota is not None else None
 
     async def health(self) -> HealthStatus:
         if self._process is None or not self._process.is_running:
@@ -151,6 +158,8 @@ class AcpRuntime:
                 self._policy,
                 AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
             )
+            quota = handshake.get("quota")
+            self._quota = dict(quota) if isinstance(quota, dict) else None
             self._agent_session_id = await process.session_new()
         except AcpProtocolError as exc:
             await process.close()
