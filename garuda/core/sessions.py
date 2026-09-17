@@ -19,6 +19,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from garuda.runtime.session import (
+    HANDOFF_STATES,
+    SESSION_SCHEMA_VERSION,
+    RuntimeSegment,
+    UnifiedSession,
+    migrate_legacy_meta,
+)
+from garuda.runtime.session import (
+    load_unified as _load_unified_session,
+)
 from garuda.types import AgentResult, Message, Role, ToolCall
 
 try:
@@ -301,6 +311,62 @@ class SessionStore:
     def update_meta(self, session_id: str, updates: dict) -> None:
         """Merge fields into this session's meta under an exclusive lock."""
         merge_meta(self.session_dir(session_id) / "meta.json", updates)
+
+    def load_unified(self, session_id: str) -> UnifiedSession:
+        """Validate this session's meta as a unified session (issue #13).
+
+        Legacy sessions migrate in memory; the file is never modified here.
+        """
+        return _load_unified_session(self.load_meta(session_id))
+
+    def ensure_unified(self, session_id: str) -> UnifiedSession:
+        """Publish the unified document for a legacy session, then validate it.
+
+        Already-unified sessions are returned untouched. The migrated document
+        goes through the atomic locked meta path, so a failed write leaves the
+        original file readable.
+        """
+        meta = self.load_meta(session_id)
+        if meta.get("schema_version") == SESSION_SCHEMA_VERSION:
+            return _load_unified_session(meta)
+        self.update_meta(session_id, migrate_legacy_meta(meta))
+        return _load_unified_session(self.load_meta(session_id))
+
+    def attach_runtime_segment(self, session_id: str, segment: RuntimeSegment) -> None:
+        """Append a runtime segment, migrating legacy sessions first."""
+        meta = self.load_meta(session_id)
+        if meta.get("schema_version") is None:
+            meta = migrate_legacy_meta(meta)
+        segments = list(meta.get("runtime_segments", []))
+        segments.append(segment.to_dict())
+        self.update_meta(session_id, {**meta, "runtime_segments": segments})
+
+    def record_handoff(self, session_id: str, *, state: str, attempts: int = 0, **extra) -> None:
+        """Record handoff transaction state. Unknown states fail closed."""
+        if state not in HANDOFF_STATES:
+            raise ValueError(f"Unknown handoff state {state!r}")
+        if not isinstance(attempts, int) or attempts < 0:
+            raise ValueError("Handoff attempts must be >= 0")
+        self.update_meta(session_id, {"handoff": {"state": state, "attempts": attempts, **extra}})
+
+    def record_baseline(self, session_id: str, baseline: dict) -> None:
+        """Record the workspace baseline (commit, dirty fingerprint)."""
+        if not isinstance(baseline, dict):
+            raise ValueError("Workspace baseline must be a mapping")
+        self.update_meta(session_id, {"baseline": dict(baseline)})
+
+    def advance_event_cursor(self, session_id: str, cursor: int) -> None:
+        """Advance the active segment's event cursor. Never regresses."""
+        if not isinstance(cursor, int) or cursor < 0:
+            raise ValueError("Event cursor must be >= 0")
+        unified = self.load_unified(session_id)
+        if cursor < unified.active.event_cursor:
+            raise ValueError(
+                f"Event cursor cannot regress ({unified.active.event_cursor} -> {cursor})"
+            )
+        segments = [s.to_dict() for s in unified.segments]
+        segments[-1]["event_cursor"] = cursor
+        self.update_meta(session_id, {"runtime_segments": segments})
 
     def load_messages(self, session_id: str) -> list[Message]:
         path = self.session_dir(session_id) / "messages.json"

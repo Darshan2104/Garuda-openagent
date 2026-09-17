@@ -40,10 +40,21 @@ from garuda.runtime.registry import (
     parse_global_manifests,
     parse_project_refs,
 )
+from garuda.runtime.session import (
+    HANDOFF_STATES,
+    SESSION_SCHEMA_VERSION,
+    RuntimeSegment,
+    UnifiedSession,
+    UnifiedSessionError,
+    load_unified,
+    migrate_legacy_meta,
+)
 
 __all__ = [
     "BUILTIN_NATIVE_ID",
+    "HANDOFF_STATES",
     "PROTOCOL_VERSION",
+    "SESSION_SCHEMA_VERSION",
     "TERMINAL_LIFECYCLE_STATES",
     "AgentRuntime",
     "AgentRuntimeError",
@@ -64,10 +75,15 @@ __all__ = [
     "RuntimeNotActiveError",
     "RuntimeProtocolError",
     "RuntimeRegistry",
+    "RuntimeSegment",
     "RuntimeStartError",
     "RuntimeTimeoutError",
     "RuntimeTransitionError",
+    "UnifiedSession",
+    "UnifiedSessionError",
     "check_transition",
+    "load_unified",
+    "migrate_legacy_meta",
     "parse_global_manifests",
     "parse_project_refs",
 ]
