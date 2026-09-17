@@ -1,0 +1,15 @@
+{
+  "runtime_id": "goose",
+  "kind": "acp",
+  "command": ["goose", "acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "Goose via its native ACP subcommand. Subscription access stays in your Goose login; Garuda never reads it.",
+  "warnings": [
+    "Vendor capability mediation is negotiated at handshake; strict garuda-only policies may be refused — review before mutating runs."
+  ],
+  "version_args": ["goose", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install the Goose CLI and log in. 2. Verify: goose --version. Garuda never reads your Goose credentials."
+}

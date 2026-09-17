@@ -42,6 +42,19 @@ never sees, reads, or stores subscription credentials.
 - Auth stays in your OpenCode login. Garuda never reads your OpenCode auth
   configuration.
 
+## Pi
+
+- Launch command: `pi-acp` (registry package `pi-acp`).
+- Setup: `npm install -g pi-acp`, authenticate Pi itself, then verify
+  `pi-acp --version`.
+- Auth stays in your Pi login. Garuda never reads your Pi credentials.
+
+## Goose
+
+- Launch command: `goose acp` (native Goose CLI subcommand).
+- Setup: install Goose, log in, then verify `goose --version`.
+- Auth stays in your Goose login. Garuda never reads your Goose credentials.
+
 ## Version and capability limits
 
 - Login state shows `unknown` until a run: Garuda cannot check it without
@@ -58,4 +71,16 @@ never sees, reads, or stores subscription credentials.
 ## Custom ACP servers
 
 Any stdio ACP server works through a global harness manifest with its launch
-command; see the [ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+command — no code changes are needed for a standard capability set. Generic
+adapters have no vendor-specific guarantees: modes, model lists, and extras
+beyond the wire subset are not driven. See the
+[ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+
+## Optional live compatibility checks
+
+Set `GARUDA_LIVE_HARNESS` to one installed harness id to run its handshake-only
+smoke check locally. The corresponding vendor CLI must already be installed and
+logged in with the user's own account; Garuda never accepts or reads a secret
+for this check. Without that opt-in environment variable the check is skipped.
+With it, a missing, unauthenticated, or incompatible CLI fails the check and is
+reported as an environment or compatibility failure—not a green CI result.

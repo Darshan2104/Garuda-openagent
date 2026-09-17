@@ -101,6 +101,7 @@ class ResolvedRuntime:
     command: tuple[str, ...] | None
     capabilities: RuntimeCapabilities
     description: str = ""
+    setup: str = ""
     warnings: tuple[str, ...] = ()
     via_alias: str | None = None
 
@@ -359,6 +360,7 @@ class RuntimeRegistry:
                 command=manifest.command,
                 capabilities=manifest.capabilities,
                 description=manifest.description,
+                setup=manifest.setup,
                 warnings=manifest.warnings,
             )
         project_ref = self._aliases[ref]
@@ -373,6 +375,7 @@ class RuntimeRegistry:
             command=manifest.command,
             capabilities=capabilities,
             description=manifest.description,
+            setup=manifest.setup,
             warnings=manifest.warnings,
             via_alias=project_ref.alias,
         )
@@ -397,6 +400,7 @@ class RuntimeRegistry:
                     command=manifest.command,
                     capabilities=manifest.capabilities,
                     description=manifest.description,
+                    setup=manifest.setup,
                     warnings=warnings,
                 )
             )
@@ -416,6 +420,7 @@ class RuntimeRegistry:
                     command=manifest.command,
                     capabilities=capabilities,
                     description=manifest.description,
+                    setup=manifest.setup,
                     warnings=(*manifest.warnings, "disabled by user configuration"),
                     via_alias=alias,
                 )

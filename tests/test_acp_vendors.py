@@ -14,9 +14,11 @@ import pytest
 from garuda.acp.catalog import (
     AcpUnavailableError,
     adapter_for_manifest,
+    adapter_for_registry,
     builtin_manifest_dicts,
     discover,
     require_acp_argv,
+    shared_registry,
 )
 from garuda.runtime import HandoffTransaction, LifecycleState
 from garuda.runtime.fake import FakeRuntime, FakeScenario
@@ -34,7 +36,14 @@ def _manifests():
 
 def test_builtin_manifests_parse_and_cover_all_vendors():
     manifests = _manifests()
-    assert {m.runtime_id for m in manifests} == {"claude", "codex", "cursor", "opencode"}
+    assert {m.runtime_id for m in manifests} == {
+        "claude",
+        "codex",
+        "cursor",
+        "opencode",
+        "pi",
+        "goose",
+    }
     for manifest in manifests:
         assert manifest.kind.value == "acp"
         assert manifest.command and all(
@@ -51,7 +60,8 @@ def test_no_private_endpoints_or_credential_use():
     for manifest in _manifests():
         blob = " ".join(manifest.command) + manifest.setup + manifest.description
         assert not any(hint in blob for hint in PRIVATE_HINTS)
-        assert "login" in manifest.setup or "log in" in manifest.setup
+        lowered = manifest.setup.lower()
+        assert "login" in lowered or "log in" in lowered
     for path in CREDENTIAL_PATHS:
         assert path not in " ".join(
             " ".join(m.command) for m in _manifests()
@@ -172,3 +182,95 @@ async def test_live_harness_handshake_only():
         assert adapter.authority is not None
     finally:
         await adapter.close()
+
+
+async def test_generic_adapter_needs_only_configuration():
+    """A standard-capability agent onboards by manifest alone: parse, discover,
+    build, and pass the common suite with no new code."""
+    manifests = parse_global_manifests(
+        [
+            {
+                "runtime_id": "my-agent",
+                "kind": "acp",
+                "command": ["my-agent", "--stdio"],
+                "version": "1.0",
+                "capabilities": ["prompt", "cancel"],
+                "setup": "Install my-agent.",
+            }
+        ]
+    )
+    (manifest,) = manifests
+    (found,) = [d for d in discover(manifests) if d.runtime_id == "my-agent"]
+    assert found.available is False
+    assert any("generic adapter" in w for w in found.warnings)
+    adapter = adapter_for_manifest(
+        manifest,
+        argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"],
+    )
+    await run_conformance_suite(lambda adapter=adapter: adapter)
+
+
+async def test_tested_commands_carry_no_generic_warning():
+    found = {d.runtime_id: d for d in discover(_manifests())}
+    for vendor in ("claude", "codex", "cursor", "opencode", "pi", "goose"):
+        assert not any("generic adapter" in w for w in found[vendor].warnings), vendor
+
+
+def _generic_dict(runtime_id="my-agent"):
+    return {
+        "runtime_id": runtime_id,
+        "kind": "acp",
+        "command": ["my-agent", "--stdio"],
+        "version": "1.0",
+        "capabilities": ["prompt", "cancel"],
+        "setup": "Install my-agent.",
+    }
+
+
+async def test_generic_registration_flows_through_the_shared_registry():
+    """Production path: builtins + trusted manifests parse once; duplicates,
+    disabled ids, and untrusted project entries are refused; resolution
+    (the only route to launch) enforces the same boundary."""
+    from garuda.runtime import RegistryError
+
+    registry = shared_registry(
+        extra_manifests=[_generic_dict()], disabled=frozenset()
+    )
+    assert registry.get("my-agent").runtime_id == "my-agent"
+    assert registry.get("claude").runtime_id == "claude"
+    with pytest.raises(RegistryError, match="duplicate"):
+        shared_registry(
+            extra_manifests=[_generic_dict(runtime_id="claude")],
+            disabled=frozenset(),
+        )
+    disabled_registry = shared_registry(
+        extra_manifests=[_generic_dict()], disabled=frozenset({"my-agent"})
+    )
+    with pytest.raises(RegistryError, match="disabled"):
+        disabled_registry.get("my-agent")
+    with pytest.raises(RegistryError, match="disabled"):
+        adapter_for_registry(disabled_registry, "my-agent")
+    with pytest.raises(RegistryError, match="unknown runtime"):
+        shared_registry(
+            extra_manifests=[_generic_dict()],
+            project_refs=[{"alias": "ghost", "runtime_id": "nope"}],
+            disabled=frozenset(),
+        )
+    adapter = adapter_for_registry(
+        registry,
+        "my-agent",
+        argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"],
+    )
+    await run_conformance_suite(lambda adapter=adapter: adapter)
+
+
+def test_registry_adapter_uses_the_discovered_executable(monkeypatch):
+    """The registry route keeps the checked path; it cannot re-resolve PATH."""
+    import garuda.acp.catalog as catalog
+
+    registry = shared_registry(extra_manifests=[_generic_dict()], disabled=frozenset())
+    monkeypatch.setattr(catalog.shutil, "which", lambda _: sys.executable)
+    adapter = adapter_for_registry(registry, "my-agent")
+    assert adapter._argv == [sys.executable, "--stdio"]
+    monkeypatch.setattr(catalog.shutil, "which", lambda _: "/tmp/replaced-agent")
+    assert adapter._argv == [sys.executable, "--stdio"]
