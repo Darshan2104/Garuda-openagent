@@ -76,7 +76,10 @@ tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
 `schemas.py` validates the generated `current-task.md`/`handoff.md` files
 (versioned frontmatter, bounded fields, unknown fields round-trip, unknown
-versions rejected).
+versions rejected). `pack.py` is the single writer: it compiles both files
+deterministically from the state card, session record, and git evidence
+(byte-identical recompilation, budgeted briefs that keep provenance), writes
+atomically, and refuses any other target.
 
 ## `agents/` — profiles
 
