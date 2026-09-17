@@ -27,6 +27,8 @@ from garuda.acp.broker import (
 from garuda.acp.catalog import (
     BUILTIN_STUBS,
     DiscoveredRuntime,
+    adapter_for_manifest,
+    builtin_manifest_dicts,
     discover,
     health_of,
 )
@@ -63,6 +65,8 @@ __all__ = [
     "DiscoveredRuntime",
     "NegotiationError",
     "ToolFamily",
+    "adapter_for_manifest",
+    "builtin_manifest_dicts",
     "decode_frame",
     "describe_gaps",
     "discover",

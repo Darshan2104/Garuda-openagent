@@ -168,7 +168,10 @@ the one approval path: engine ceilings applied to native and ACP requests,
 parked approvals with timeout and disconnect denial, every outcome persisted
 to the session, strict-policy gaps reported before anything runs. `catalog.py` —
 built-in stubs plus discovery (executable, probed version, login state,
-capabilities, setup guidance) that never logs in, installs, or reads tokens. |
+capabilities, setup guidance) that never logs in, installs, or reads tokens.
+`builtin/` ships the tested Claude Code and Codex manifests (bare adapter
+binaries, subscription login delegated, credential paths documented as
+untouchable) with `adapter_for_manifest` and `builtin_manifest_dicts`. |
 
 ## Working on it
 
