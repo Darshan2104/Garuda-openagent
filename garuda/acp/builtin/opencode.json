@@ -1,0 +1,15 @@
+{
+  "runtime_id": "opencode",
+  "kind": "acp",
+  "command": ["opencode", "acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "OpenCode via its native ACP subcommand (registry package opencode-ai). Subscription access stays in your OpenCode login; Garuda never reads it.",
+  "warnings": [
+    "Vendor capability mediation is negotiated at handshake; strict garuda-only policies may be refused — review before mutating runs."
+  ],
+  "version_args": ["opencode", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install the OpenCode CLI (registry package opencode-ai) and log in. 2. Verify: opencode --version. Garuda never reads your OpenCode auth configuration."
+}
