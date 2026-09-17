@@ -8,6 +8,7 @@ Garuda is a universal, provider-agnostic agent harness for terminal and software
 - [Using Garuda](guides/using-garuda.md) — run modes, sessions, workspaces, skills, subagents, and the SDK.
 - [Configuration](guides/configuration.md) — profiles, `.agent/`, MCP, hooks, permissions, and environment variables.
 - [Web dashboard](guides/web-dashboard.md) — local browser interface, grounding, approvals, and trajectory inspection.
+- [External harnesses](guides/external-harnesses.md) — Claude Code and Codex via ACP on your own subscription login.
 - [CLI reference](reference/cli.md) — command map and common flags.
 
 ## Understand and extend Garuda
