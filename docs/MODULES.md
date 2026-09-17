@@ -141,7 +141,11 @@ transfer, with rollback and cancellation returning to one resumable owner and a
 typed event per move. `execute_handoff` runs the full flow against real
 runtimes with the session store recording prepared/acknowledged/failed, so
 success transfers single ownership and target failure keeps the source
-promptable.
+promptable. `recovery.py` classifies restarts from persisted records
+(resumable, rolled-back, ambiguous), reaps orphan agent children with
+verification, records cancellations at turn/switch/process boundaries, and
+never invents success — a bare exit proves nothing; startup/resume classifies
+first and indeterminate liveness refuses without operator action.
 
 ## `interfaces/` — entry points
 
