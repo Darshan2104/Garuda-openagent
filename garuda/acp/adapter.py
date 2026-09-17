@@ -25,7 +25,7 @@ from garuda.acp.authority import (
 )
 from garuda.acp.client import AcpProcess
 from garuda.acp.normalize import AcpNormalizer
-from garuda.acp.protocol import AcpCancelledError, AcpError, AcpTimeoutError
+from garuda.acp.protocol import AcpCancelledError, AcpError, AcpProtocolError, AcpTimeoutError
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 from garuda.runtime.protocol import (
     AuthStatus,
@@ -52,11 +52,13 @@ class AcpRuntime:
         runtime_id: str = "acp",
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
+        setup_hint: str = "",
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
+        self._setup_hint = setup_hint
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -150,6 +152,12 @@ class AcpRuntime:
                 AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
             )
             self._agent_session_id = await process.session_new()
+        except AcpProtocolError as exc:
+            await process.close()
+            self._move(LifecycleState.FAILED)
+            if "speaks ACP" in str(exc) and self._setup_hint:
+                raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
+            raise
         except Exception:
             await process.close()
             self._move(LifecycleState.FAILED)

@@ -25,6 +25,22 @@ never sees, reads, or stores subscription credentials.
   `codex-acp --version`.
 - Auth stays in your Codex login (`~/.codex/auth.json`). Garuda never reads it.
 
+## Cursor Agent
+
+- Launch command: `cursor-agent acp` (native subcommand of the Cursor Agent CLI).
+- Setup: install the Cursor Agent CLI and authenticate with your Cursor
+  account, then verify `cursor-agent --version`.
+- Auth stays in your Cursor login. Garuda never reads your Cursor credentials.
+
+## OpenCode
+
+- Launch command: `opencode acp` (native subcommand; registry package
+  `opencode-ai`).
+- Setup: install the OpenCode CLI and authenticate it, then verify
+  `opencode --version`.
+- Auth stays in your OpenCode login. Garuda never reads your OpenCode auth
+  configuration.
+
 ## Version and capability limits
 
 - Login state shows `unknown` until a run: Garuda cannot check it without

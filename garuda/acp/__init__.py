@@ -26,11 +26,13 @@ from garuda.acp.broker import (
 )
 from garuda.acp.catalog import (
     BUILTIN_STUBS,
+    AcpUnavailableError,
     DiscoveredRuntime,
     adapter_for_manifest,
     builtin_manifest_dicts,
     discover,
     health_of,
+    require_acp_argv,
 )
 from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import (
@@ -53,6 +55,7 @@ __all__ = [
     "AcpProtocolError",
     "AcpRuntime",
     "AcpTimeoutError",
+    "AcpUnavailableError",
     "AgentCapabilities",
     "ApprovalBroker",
     "ApprovalOutcome",
@@ -73,4 +76,5 @@ __all__ = [
     "encode_frame",
     "health_of",
     "negotiate",
+    "require_acp_argv",
 ]

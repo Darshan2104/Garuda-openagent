@@ -24,7 +24,7 @@ from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
 
 BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
-BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json")
+BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json", "cursor.json", "opencode.json")
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -263,4 +263,26 @@ def adapter_for_manifest(
         list(argv_override) if argv_override is not None else list(manifest.command or ()),
         runtime_id=manifest.runtime_id,
         policy=policy,
+        setup_hint=manifest.setup,
     )
+
+
+class AcpUnavailableError(Exception):
+    """The ACP path cannot launch. Carries setup guidance so no fallback is silent."""
+
+    def __init__(self, runtime_id: str, setup: str):
+        super().__init__(
+            f"ACP adapter {runtime_id!r} is unavailable and no non-ACP fallback "
+            f"was requested: {setup}"
+        )
+        self.runtime_id = runtime_id
+        self.setup = setup
+
+
+def require_acp_argv(manifest, *, executable: str | None) -> list[str]:
+    """Resolve a manifest to launch argv, or refuse loudly with setup guidance."""
+    if not manifest.command:
+        raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "no launch command configured")
+    if executable is None:
+        raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "executable not found")
+    return list(manifest.command)
