@@ -87,6 +87,31 @@ jobs:
           pip install pytest
           pytest tests/test_docs_contract.py -q
 
+  contract-matrix:
+    # Issue #42 (P1.10): every adapter runs the common scenarios against fake
+    # harnesses and publishes per-adapter JSON reports. No subscriptions.
+    name: contract matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package and extras (pinned)
+        run: pip install -e ".[dev,eval,docs,tui,observability]" -c constraints.txt
+
+      - name: Run contract matrix
+        run: python -m garuda.eval.contract_matrix --out contract-reports
+
+      - name: Upload contract reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-reports
+          path: contract-reports/
+
   latest-deps:
     # Early warning, not a gate. pyproject lower-bounds its dependencies so the
     # package installs alongside whatever a host app already has; this job is
