@@ -41,6 +41,27 @@ never sees, reads, or stores subscription credentials.
 - Auth stays in your OpenCode login. Garuda never reads your OpenCode auth
   configuration.
 
+## Pi
+
+- Launch command: `pi-acp` (registry package `pi-acp`).
+- Setup: `npm install -g pi-acp`, authenticate Pi itself, verify
+  `pi-acp --version`.
+- Auth stays in your Pi login. Garuda never reads your Pi credentials.
+
+## Goose
+
+- Launch command: `goose acp` (native subcommand of the Goose CLI).
+- Setup: install the Goose CLI, log in, verify `goose --version`.
+- Auth stays in your Goose login. Garuda never reads your Goose credentials.
+
+## Custom (generic) ACP servers
+
+Any stdio ACP server works through a global harness manifest with its launch
+command — no code changes when its capability set is standard. Generic
+adapters carry no vendor-specific guarantees: modes, model lists, and extras
+beyond the wire subset are not driven. See the
+[ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+
 ## Version and capability limits
 
 - Login state shows `unknown` until a run: Garuda cannot check it without
@@ -48,10 +69,5 @@ never sees, reads, or stores subscription credentials.
 - The adapters speak Garuda's owned ACP wire subset: initialize, session/new,
   session/prompt, session/cancel, and approval replies. Vendor extras outside
   that subset (modes, sessions lists, images) are not driven.
-- No private HTTP endpoint is used anywhere: both adapters are stdio
+- No private HTTP endpoint is used anywhere: all adapters are stdio
   subprocesses of commands you authorized in global configuration.
-
-## Custom ACP servers
-
-Any stdio ACP server works through a global harness manifest with its launch
-command; see the [ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).

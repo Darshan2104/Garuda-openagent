@@ -169,11 +169,13 @@ parked approvals with timeout and disconnect denial, every outcome persisted
 to the session, strict-policy gaps reported before anything runs. `catalog.py` —
 built-in stubs plus discovery (executable, probed version, login state,
 capabilities, setup guidance) that never logs in, installs, or reads tokens.
-`builtin/` ships the tested Claude Code and Codex manifests (bare adapter
-binaries, subscription login delegated, credential paths documented as
-untouchable) with `adapter_for_manifest` and `builtin_manifest_dicts`.
-`require_acp_argv` refuses unavailable ACP paths loudly with setup guidance
-(no silent fallback); version mismatches re-raise with upgrade guidance. |
+`builtin/` ships the tested Claude Code, Codex, Cursor, OpenCode, Pi, and Goose
+manifests (bare adapter binaries, subscription login delegated, credential
+paths documented as untouchable) with `adapter_for_manifest` and
+`builtin_manifest_dicts`. `require_acp_argv` refuses unavailable ACP paths
+loudly with setup guidance (no silent fallback); version mismatches re-raise
+with upgrade guidance. Non-builtin commands are discovered as generic
+adapters with standard capabilities only. |
 
 ## Working on it
 
