@@ -96,7 +96,10 @@ test double — prefer it over mocks.
 external — never place a harness behind `Model`). `events.py` is the normalized
 event vocabulary with session/turn correlation. `fake.py` is the deterministic
 test double with scripted scenarios; every adapter must pass the shared suite in
-`tests/test_runtime_conformance.py`.
+`tests/test_runtime_conformance.py`. `registry.py` resolves trusted global
+harness manifests (the only place that authorizes an executable) plus
+project-level aliases that reference and narrow but never self-authorize; one
+instance per job, never process-global.
 
 ## `interfaces/` — entry points
 
