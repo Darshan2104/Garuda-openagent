@@ -21,6 +21,9 @@ from garuda.acp.catalog import (
 )
 from garuda.runtime.recovery import recover, report_to_dict
 
+#: Version of the runtime API surface (SDK + JSON-RPC). Bump on breaking change.
+RUNTIME_API_VERSION = "1"
+
 
 def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[dict]:
     """Builtin manifests plus the trusted global `runtimes:` list.
@@ -98,15 +101,19 @@ async def cmd_handoff_confirm(
     return f"handoff prepared: {session_id} -> {target_id}\n"
 
 
+def recover_dict(store, session_id: str) -> dict[str, Any]:
+    return report_to_dict(recover(store, session_id))
+
+
 def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
-    report = recover(store, session_id)
+    report = recover_dict(store, session_id)
     if as_json:
-        return json.dumps(report_to_dict(report), indent=2)
+        return json.dumps(report, indent=2)
     lines = [
-        f"session {report.session_id}: {report.state.value}",
-        f"  resume: {report.resume_session_id}",
+        f"session {report['session_id']}: {report['state']}",
+        f"  resume: {report['resume_session_id']}",
     ]
-    lines.extend(f"  note: {note}" for note in report.notes)
+    lines.extend(f"  note: {note}" for note in report["notes"])
     return "\n".join(lines) + "\n"
 
 
@@ -124,17 +131,34 @@ async def run_acp_task(manifest, task: str, *, session_id: str | None = None) ->
         events, _ = await runtime.poll_events(0)
         for event in events:
             print(f"[{event.kind.value} t{event.turn}] {event.payload}")
-        return {"session_id": info.native_session_id, "turn": turn, "events": len(events)}
+        chunks = [
+            e.payload.get("chunk", "")
+            for e in events
+            if e.kind.value == "message" and isinstance(e.payload.get("chunk"), str)
+        ]
+        texts = [
+            e.payload.get("text", "")
+            for e in events
+            if e.kind.value == "message" and isinstance(e.payload.get("text"), str)
+        ]
+        return {
+            "session_id": info.native_session_id,
+            "turn": turn,
+            "events": len(events),
+            "final_message": "".join(chunks) or "".join(texts),
+        }
     finally:
         await runtime.close()
 
 
 __all__ = [
+    "RUNTIME_API_VERSION",
     "cmd_handoff_confirm",
     "cmd_handoff_preview",
     "cmd_inspect",
     "cmd_list",
     "cmd_recover",
     "load_configured_manifest_dicts",
+    "recover_dict",
     "run_acp_task",
 ]
