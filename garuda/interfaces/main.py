@@ -134,6 +134,11 @@ def build_parser():
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
     run_parser.add_argument("--trajectory", help="Save event trajectory to JSONL file")
     run_parser.add_argument(
+        "--runtime",
+        default="native",
+        help="Executor runtime id (default: native). Names a configured harness.",
+    )
+    run_parser.add_argument(
         "--resume",
         metavar="ID",
         help="Resume a saved session (full id, unique prefix, or 'latest')",
@@ -301,6 +306,25 @@ def build_parser():
         help="Recipe parameter (repeatable)",
     )
 
+    runtime_parser = subparsers.add_parser("runtime", help="Select and inspect runtimes")
+    runtime_sub = runtime_parser.add_subparsers(dest="runtime_command")
+    runtime_list = runtime_sub.add_parser("list", help="List configured runtimes")
+    runtime_list.add_argument("--json", action="store_true", help="Print JSON health records")
+    runtime_inspect = runtime_sub.add_parser("inspect", help="Inspect one runtime")
+    runtime_inspect.add_argument("runtime_id", help="Runtime id or alias")
+    runtime_inspect.add_argument("--json", action="store_true", help="Print JSON health record")
+    runtime_handoff = runtime_sub.add_parser("handoff", help="Preview or prepare a handoff")
+    runtime_handoff.add_argument("--session", required=True, help="Source session id")
+    runtime_handoff.add_argument("--to", required=True, help="Target runtime id")
+    runtime_handoff.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Prepare the handoff package. Without it, only a preview prints.",
+    )
+    runtime_recover = runtime_sub.add_parser("recover", help="Classify and recover a session")
+    runtime_recover.add_argument("--session", required=True, help="Session id")
+    runtime_recover.add_argument("--json", action="store_true", help="Print JSON report")
+
     return parser
 
 
@@ -381,6 +405,74 @@ async def run_mcp_list(args) -> int:
     return 0
 
 
+def _configured_manifests(workspace: str = "."):
+    """Builtin manifests plus the trusted global `runtimes:` list."""
+    from garuda.config.agent_home import resolve_agent_home
+    from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
+    from garuda.runtime.registry import parse_global_manifests
+
+    home = resolve_agent_home(workspace)
+    return parse_global_manifests(
+        load_configured_manifest_dicts(home.global_settings),
+        source="runtimes (builtin + global settings)",
+    )
+
+
+async def run_runtime_command(args) -> int:
+    """Dispatch `garuda runtime ...`. Preview paths never mutate."""
+    from garuda.context.pack import ContextPackManager
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runtime_cli import (
+        cmd_handoff_confirm,
+        cmd_handoff_preview,
+        cmd_inspect,
+        cmd_list,
+        cmd_recover,
+    )
+
+    command = args.runtime_command
+    if command == "list":
+        print(cmd_list(_configured_manifests(), as_json=args.json), end="")
+        return 0
+    if command == "inspect":
+        try:
+            print(cmd_inspect(_configured_manifests(), args.runtime_id, as_json=args.json), end="")
+        except KeyError as exc:
+            print(f"Error: {exc}")
+            return 2
+        return 0
+    store = SessionStore()
+    if command == "handoff":
+        if not args.confirm:
+            print(cmd_handoff_preview(store, args.session, args.to), end="")
+            return 0
+        manager = ContextPackManager(store.session_dir(args.session))
+        print(await cmd_handoff_confirm(store, args.session, args.to, pack_manager=manager), end="")
+        return 0
+    if command == "recover":
+        print(cmd_recover(store, args.session, as_json=args.json), end="")
+        return 0
+    build_parser().parse_args(["runtime", "--help"])
+    return 1
+
+
+async def run_acp_command(args, task: str) -> int:
+    """Run one task on a named ACP runtime via loud, explicit selection."""
+    from garuda.interfaces.runtime_cli import run_acp_task
+
+    manifests = {m.runtime_id: m for m in _configured_manifests(args.workspace)}
+    if args.runtime not in manifests:
+        print(f"Error: unknown runtime {args.runtime!r}. See `garuda runtime list`.")
+        return 2
+    try:
+        summary = await run_acp_task(manifests[args.runtime], task)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"done: turn {summary['turn']}, {summary['events']} normalized events")
+    return 0
+
+
 async def run_task(args) -> int:
     import sys
 
@@ -390,6 +482,9 @@ async def run_task(args) -> int:
     if not task:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
+
+    if getattr(args, "runtime", "native") != "native":
+        return await run_acp_command(args, task)
 
     from garuda.config.agent_home import resolve_agents_dirs
 
@@ -589,6 +684,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_serve(args)))
     if args.command in ("web", "dashboard"):
         raise SystemExit(asyncio.run(run_web(args)))
+    if args.command == "runtime":
+        raise SystemExit(asyncio.run(run_runtime_command(args)))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
     if args.command == "mcp":
