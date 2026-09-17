@@ -11,6 +11,7 @@ from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
+from garuda.model.protocol import DEFAULT_MODEL
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentResult
@@ -27,7 +28,7 @@ class SoftwareAgent:
     def __init__(
         self,
         workspace: str | Path = ".",
-        model: str = "openai/gpt-4o-mini",
+        model: str = DEFAULT_MODEL,
         agent: str = "build",
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,

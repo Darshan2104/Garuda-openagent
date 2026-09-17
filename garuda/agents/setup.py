@@ -19,11 +19,19 @@ async def prepare_agent_run(
     agents_dir: Path | list[Path] | None = None,
     mcp_config_path: str | None = None,
     mode: str | None = None,
+    permission_mode: str | None = None,
     approval_handler=None,
     extra_tools: list[Tool] | None = None,
     load_project_tools: bool | None = None,
 ) -> tuple[AgentProfile, AgentConfig, PermissionEngine, list, object, object | None]:
-    """Load profile, resolve skills, build toolkit, and return run dependencies."""
+    """Load profile, resolve skills, build toolkit, and return run dependencies.
+
+    ``permission_mode`` overrides both the profile's declaration and the mode preset.
+    It has to be applied here rather than by the caller because ``PermissionEngine`` takes
+    its mode at construction and exposes no setter — a caller that assigned
+    ``config.permission_mode`` afterwards would change the reported posture while the
+    engine kept enforcing the old one, which is the worst of the three outcomes.
+    """
     from garuda.config.agent_home import resolve_agents_dirs
 
     # Default the profiles dirs to the project's `.agent/agents` then `.garuda/agents`
@@ -39,6 +47,10 @@ async def prepare_agent_run(
     # left alone. Every entry point funnels through here, so this is the one place
     # a preset needs applying.
     apply_mode_preset(config, declared_fields=profile.declared_fields)
+    # After the preset, so an explicit request is the narrower statement of intent and
+    # wins — the same ordering the CLI uses for its own flags.
+    if permission_mode:
+        config.permission_mode = permission_mode
     config.system_prompt = resolve_system_prompt(profile, workspace)
     mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
     permissions = PermissionEngine(

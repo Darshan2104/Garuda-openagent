@@ -100,12 +100,16 @@ class CompletionGate:
             self.context.append(Message(role=Role.USER, content=content))
         self._deferred_notes.clear()
 
-    async def attempt(self, call: ToolCall) -> tuple[bool, str]:
+    async def attempt(self, call: ToolCall, *, turn: int | None = None) -> tuple[bool, str]:
         """Evaluate one ``task_complete`` call.
 
         Returns ``(approved, summary_or_feedback)``. On rejection the feedback has
         already been appended to the transcript as the tool result, so the loop only
         has to keep going.
+
+        ``turn`` is recorded on the verdict event so a gate rejection can be placed
+        on the turn that caused it. Keyword-only and optional for the same reason as
+        ``ToolRunner.record``: an out-of-tree caller keeps working, degraded.
         """
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
@@ -144,6 +148,7 @@ class CompletionGate:
                 "feedback": result.feedback,
                 "evidence": result.evidence,
                 "attempt": self.gate.rejections + 1,
+                "turn": turn,
             },
         )
         if result.approved:

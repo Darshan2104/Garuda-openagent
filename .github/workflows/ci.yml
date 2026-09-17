@@ -56,6 +56,26 @@ jobs:
       - name: Test
         run: pytest -q
 
+  docs-contract:
+    # Issue #9 (P0.3): fail on broken local docs links, nested READMEs, and
+    # hand-maintained test counts. Stdlib only and never fetches remote URLs.
+    name: docs contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check docs links, READMEs, and test-count claims
+        run: python scripts/check_docs.py
+
+      - name: Docs contract tests
+        run: |
+          pip install pytest
+          pytest tests/test_docs_contract.py -q
+
   latest-deps:
     # Early warning, not a gate. pyproject lower-bounds its dependencies so the
     # package installs alongside whatever a host app already has; this job is

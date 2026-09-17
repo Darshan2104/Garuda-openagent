@@ -8,6 +8,13 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+#: Where a nested run's event log goes, relative to its parent's log.
+#:
+#: Lives here rather than in ``core/subagent.py`` — its writer — because its reader is the
+#: dashboard, and importing ``subagent`` for one string would drag the whole toolkit
+#: registry into a module that only reads files.
+SUBAGENT_LOG_DIR = "subagents"
+
 
 class EventType(str, Enum):
     USER_MESSAGE = "user_message"
@@ -48,6 +55,17 @@ class EventStore:
         """Append every future event to a JSONL file so crashes keep the trail."""
         self._persist_path = Path(path)
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def persist_path(self) -> Path | None:
+        """Where events are being appended, or ``None`` if nothing is persisting them.
+
+        Read-only and public so a nested run can place its own log *beside* its parent's
+        without being told where that is. ``SubagentRunner`` is the caller: it holds the
+        parent store and needs a sibling path, and deriving one from a re-guessed sessions
+        root would break the rule that ``config/agent_home.py`` decides layout.
+        """
+        return self._persist_path
 
     def append(self, event_type: EventType, payload: dict[str, Any]) -> None:
         event = {

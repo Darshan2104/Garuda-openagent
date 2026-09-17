@@ -95,6 +95,7 @@ ACP negotiation assigns each tool family to exactly one owner. Garuda brokers ap
 6. First-party configuration/discovery for Claude ACP, Codex ACP, Cursor Agent, OpenCode, Pi, and Goose; no automatic installation or secret import.
 7. Unified UI/CLI/SDK runtime selection, health, switch preview, approval cards, normalized trace, and recovery controls.
 8. Reliability, observability, and benchmark/conformance coverage across fake agents and opt-in real harnesses.
+9. P1 routing scope is initial runtime selection (explicit > profile > deterministic rule > optional classifier > default) plus explicit transactional handoff at a safe boundary. Autonomous mid-run policy routing stays in P2 and must not block P1 initial-only routing.
 
 ### P2 — platform expansion
 

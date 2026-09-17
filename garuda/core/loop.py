@@ -240,7 +240,7 @@ class DefaultAgent:
             return self._exhausted(state, turn)
 
         try:
-            approved, summary = await state.completion.attempt(call)
+            approved, summary = await state.completion.attempt(call, turn=turn)
         except EnvironmentUnavailableError as exc:
             # Nearly moot — the workspace is gone and this transcript will not be
             # replayed — but this is a change set about not leaving open calls, and
@@ -342,6 +342,11 @@ class DefaultAgent:
                     "duration_ms": compaction_ms[0],
                     "gauge_said": before["used_tokens"],
                     "capacity": before["capacity_tokens"],
+                    # What force_compact actually did, on the same keys the proactive
+                    # path uses, so one reader handles both. Only populated when it
+                    # changed something — `shrunk` False leaves the last value stale,
+                    # which would misreport this event as a compaction that worked.
+                    **((state.context.last_compaction or {}) if shrunk else {}),
                 },
             )
             if not shrunk:
@@ -481,6 +486,14 @@ class DefaultAgent:
     ) -> None:
         """Log the model response and append it to the transcript."""
         event_payload = {
+            # Turn attribution. Without it every consumer re-derived turn boundaries
+            # positionally (segmenting on the `budget`/`turn_metrics` pair), which is
+            # guesswork on any turn whose best-effort budget snapshot was skipped.
+            # The invariant this establishes: only an event emitted inside the
+            # dynamic extent of `_run_turn`/`_final_submission` carries `turn`, and
+            # its value is that turn's number. The rigorous critic verdict does not,
+            # because it is emitted between turns and a number there would be a lie.
+            "turn": turn,
             "content": response.content,
             "tool_calls": [
                 {"id": call.id, "name": call.name, "arguments": call.arguments}
@@ -633,7 +646,7 @@ class DefaultAgent:
         """
         for call in calls:
             if call.name == "task_complete":
-                approved, summary = await state.completion.attempt(call)
+                approved, summary = await state.completion.attempt(call, turn=turn)
                 if approved:
                     # Close the response's tool_calls block before returning: the
                     # accepted call and any siblings this run will now never reach

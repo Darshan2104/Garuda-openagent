@@ -10,6 +10,7 @@ from garuda.context.condenser import (
     CondenserContext,
     MicrocompactCondenser,
     RecentWindowCondenser,
+    condense_outcome,
     make_condenser,
     reset_condenser,
 )
@@ -312,9 +313,18 @@ class ContextManager:
         # undercount overflows instead of compacting.
         self._count_overhead = 0
         self._last_raw_anchor = 0
+        # The strategy name is kept because `make_condenser` returns an object and the
+        # configured name is otherwise unrecoverable from it. Only used as a fallback
+        # label when a condenser reports no outcome of its own.
         if isinstance(condenser, str):
+            self._condenser_name: str = condenser
             condenser = make_condenser(condenser)
+        else:
+            self._condenser_name = type(condenser).__name__ if condenser else "microcompact"
         self._condenser: Condenser = condenser or MicrocompactCondenser()
+        # What the most recent compaction did. Read by RunState.compact_if_needed to
+        # describe the summarization event; None until one happens.
+        self.last_compaction: dict | None = None
 
     def seed(self, messages: list[Message]) -> None:
         self._messages = list(messages)
@@ -663,6 +673,8 @@ class ContextManager:
             buffer=self._buffer,
             working_state=self.working_state(),
         )
+        tokens_before = cx.used_tokens
+        messages_before = len(self._messages)
         new_messages = await self._condenser.condense(cx)
         if new_messages is None:
             return False
@@ -673,7 +685,35 @@ class ContextManager:
         self._anchor_tokens = None
         self._anchor_from_provider = False
         self._pending_tokens = 0
+        self._record_compaction(tokens_before, messages_before)
         return True
+
+    def _record_compaction(self, tokens_before: int, messages_before: int) -> None:
+        """Describe the compaction that just happened, for the event log.
+
+        Called after the anchor is invalidated, so ``_used_tokens()`` re-counts
+        against the surviving history — the number that makes the before/after pair
+        mean something. Not wasted work: the next preflight needs that same count
+        and now finds it anchored.
+
+        Best-effort for the same reason ``note_context_budget`` is: this exists to
+        explain a run, and a measurement must never be able to end one.
+        """
+        outcome = condense_outcome(self._condenser)
+        record: dict = {
+            "strategy": outcome.strategy if outcome else self._condenser_name,
+            "action": outcome.action if outcome else None,
+            "pruned": outcome.pruned if outcome else 0,
+            "messages_before": messages_before,
+            "messages_after": len(self._messages),
+            "tokens_before": tokens_before,
+        }
+        try:
+            record["tokens_after"] = self._used_tokens()
+        except Exception:
+            logger.debug("Post-compaction token count failed", exc_info=True)
+            record["tokens_after"] = None
+        self.last_compaction = record
 
     async def force_compact(self) -> bool:
         """Shrink history as hard as this context can, ignoring the gauge.
@@ -702,6 +742,8 @@ class ContextManager:
             working_state=self.working_state(),
         )
         before = _history_size(self._messages)
+        tokens_before = self._used_tokens()
+        messages_before = len(self._messages)
         new_messages = await self._condenser.condense(cx)
         if new_messages is not None:
             cx.messages = new_messages
@@ -725,6 +767,11 @@ class ContextManager:
         self._anchor_tokens = None
         self._anchor_from_provider = False
         self._pending_tokens = 0
+        self._record_compaction(tokens_before, messages_before)
+        # The window fallback above may have run after the configured condenser, so
+        # what actually shrank history is not necessarily what the condenser reported.
+        if dropped is not None:
+            self.last_compaction["action"] = "window"
         return True
 
     def _archive_dropped(self, new_messages: list[Message]) -> None:

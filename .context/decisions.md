@@ -11,3 +11,11 @@ The first subscription lane uses user-installed, authenticated official CLIs or 
 ## 2026-08-31 — context uses committed durable files and generated handoffs
 
 Architecture, decisions, discoveries, and conventions are committed. Current task and handoff state are generated per session, gitignored, and retained in the Garuda session store. One mutating session owns one workspace; parallel mutation uses separate worktrees.
+
+## 2026-09-16 — dual-model delegation and routing boundaries
+
+- Reasoning and collection are model roles inside `NativeGarudaRuntime`; external harnesses remain `AgentRuntime` implementations, never `Model` transports.
+- Collection is controller-requested via explicit delegation, not per-turn automatic routing.
+- Initial harness routing may use an optional classifier fallback; mid-run switching is explicit and transactional only.
+- Project configuration cannot authorize providers, endpoints, executables, credential sources, or looser ceilings.
+- Unknown cost is recorded as unknown, never zero; release claims use total-trajectory paired comparisons.

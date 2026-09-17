@@ -181,7 +181,7 @@ throwaway environment as part of finishing, not as a courtesy.
 
 **A green suite says nothing about the wiring. Drive the commands.**
 2026-08-04: eight defects were found by running the documented interfaces end to end
-against a live model, with 1131 tests passing throughout. Six were reachable from a
+against a live model, with the suite passing throughout. Six were reachable from a
 single documented command, and three were total: `--mode eval` died with a provider 400
 on its first `task_complete` (a USER-role note between an assistant `tool_calls` block
 and its results), `--mode rigorous` raised `TypeError` before its first turn
@@ -307,6 +307,29 @@ thing the grader checks. With the decidable part of that gap now handled by the
 deliverable check, what is left here is the judgement part — see the accepted
 limitation above — and it is not an evidence-strength problem. Recorded as open only
 because it is the gap that matters most, not because there is a known next move.
+
+**Two event-log residuals left after the observability pass.** `session_start` now
+carries the resolved gate stack, the four turn-scoped events carry `turn`,
+`permission_ask` names the call it blocked, `summarization` says whether it pruned or
+summarized, and `metrics`/`mode`/`acceptance` reach `meta.json`
+(`tests/test_run_observability.py`). Two things a trajectory still cannot see:
+
+- **`tool_result` is overloaded.** The steering failure-streak marker reuses it with a
+  completely different payload (`{failure_streak, steered, turn}`, no `tool_call_id`),
+  so a consumer filtering `type == "tool_result"` sees a phantom result. Fixing it
+  properly means a new `EventType.STEERING`, which changes the log vocabulary and would
+  strand readers of the ~16 existing harbor job trees; readers must discriminate on the
+  absent `tool_call_id` either way, so the wart is cheaper than the migration. Five more
+  steering note kinds (`CONTINUE_NUDGE`, `REPEAT_NUDGE`, `TASK_COMPLETE_STUCK_NUDGE`,
+  `CONTEXT_WARNING_NUDGE`, `turn_budget_notice`) emit nothing at all, so "the agent was
+  nudged for repetition on turn 14" is not answerable.
+- **Summarizer model calls are invisible in token accounting.** `summarize_incremental`
+  and `summarize_three_step` call `model.complete` directly rather than through the
+  loop's `_timed_complete`, so their prompt/completion tokens never reach
+  `accumulate_usage`, `usage_totals` or `turn_metrics`. A three-step summarize is three
+  uncounted model calls; only its wall-clock shows, as `compaction_ms`. Any cost figure
+  derived from the event log therefore understates a run that compacted — which is the
+  opposite of the direction `eval/costs.py` is careful about elsewhere.
 
 ## Before the next benchmark run
 

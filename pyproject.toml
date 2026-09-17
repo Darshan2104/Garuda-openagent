@@ -57,7 +57,14 @@ where = ["."]
 include = ["garuda*"]
 
 [tool.setuptools.package-data]
-garuda = ["agents/defaults/*.yaml", "agents/defaults/*.md", "config/defaults/*.yaml"]
+garuda = [
+    "agents/defaults/*.yaml",
+    "agents/defaults/*.md",
+    "config/defaults/*.yaml",
+    # The dashboard frontend. Without this the wheel installs a server that
+    # serves a blank page; tests/test_web_static.py guards it.
+    "interfaces/web/static/*",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
