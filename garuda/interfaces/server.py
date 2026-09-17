@@ -180,6 +180,14 @@ class JsonRpcServer:
                         extra_dir=Path(agents_dir) if agents_dir else None
                     )
                 }
+            elif method == "runtime_list":
+                result = await self._runtime_list(params)
+            elif method == "runtime_inspect":
+                result = await self._runtime_inspect(params)
+            elif method == "runtime_handoff":
+                result = await self._runtime_handoff(params)
+            elif method == "runtime_recover":
+                result = await self._runtime_recover(params)
             else:
                 raise ValueError(f"Unknown method: {method}")
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -200,6 +208,91 @@ class JsonRpcServer:
         from garuda import __version__
 
         return {"status": "ok", "version": __version__}
+
+    def _runtime_manifests(self, params: dict[str, Any]) -> list:
+        """Manifests for one request: builtins plus per-request extras.
+
+        Resolved fresh per call, so jobs never share registry state through
+        the process.
+        """
+        from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
+
+        extra = params.get("runtimes", [])
+        if not isinstance(extra, list):
+            raise ValueError("params.runtimes must be a list of manifests")
+        return load_configured_manifest_dicts({"runtimes": extra})
+
+    async def _runtime_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        from garuda.acp.catalog import discover, health_of
+        from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
+        from garuda.runtime.registry import parse_global_manifests
+
+        manifests = parse_global_manifests(
+            self._runtime_manifests(params), source="server runtimes"
+        )
+        return {
+            "api": f"runtime/v{RUNTIME_API_VERSION}",
+            "runtimes": [health_of(entry) for entry in discover(manifests)],
+        }
+
+    async def _runtime_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
+        from garuda.acp.catalog import discover, health_of
+        from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
+        from garuda.runtime.registry import parse_global_manifests
+
+        runtime_id = params.get("runtime")
+        if not runtime_id:
+            raise ValueError("params.runtime is required")
+        manifests = parse_global_manifests(
+            self._runtime_manifests(params), source="server runtimes"
+        )
+        found = {entry.runtime_id: entry for entry in discover(manifests)}
+        if runtime_id not in found:
+            raise ValueError(f"Unknown runtime {runtime_id!r}")
+        entry = found[runtime_id]
+        record = health_of(entry)
+        record["auth_guidance"] = entry.describe_auth()
+        record["api"] = f"runtime/v{RUNTIME_API_VERSION}"
+        return record
+
+    async def _runtime_handoff(self, params: dict[str, Any]) -> dict[str, Any]:
+        from garuda.core.sessions import SessionStore
+        from garuda.interfaces.runtime_cli import (
+            RUNTIME_API_VERSION,
+            cmd_handoff_confirm,
+            cmd_handoff_preview,
+        )
+
+        session_id = params.get("session")
+        target = params.get("target")
+        if not session_id or not target:
+            raise ValueError("params.session and params.target are required")
+        store = SessionStore()
+        if params.get("confirm"):
+            from garuda.context.pack import ContextPackManager
+
+            manager = ContextPackManager(store.session_dir(session_id))
+            text = await cmd_handoff_confirm(store, session_id, target, pack_manager=manager)
+            return {"api": f"runtime/v{RUNTIME_API_VERSION}", "prepared": True, "detail": text}
+        return {
+            "api": f"runtime/v{RUNTIME_API_VERSION}",
+            "prepared": False,
+            "detail": cmd_handoff_preview(store, session_id, target),
+        }
+
+    async def _runtime_recover(self, params: dict[str, Any]) -> dict[str, Any]:
+        from garuda.core.sessions import SessionStore
+        from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
+
+        session_id = params.get("session")
+        if not session_id:
+            raise ValueError("params.session is required")
+        from garuda.interfaces.runtime_cli import recover_dict
+
+        store = SessionStore()
+        payload = recover_dict(store, session_id)
+        payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
+        return payload
 
     async def _execute(self, params: dict[str, Any], events: EventStore):
         """Build run dependencies from params and execute one agent task.
