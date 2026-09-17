@@ -81,7 +81,12 @@ def test_frame_codec_round_trip_and_rejects():
 
 async def test_handshake_session_prompt_and_notifications():
     process = await _launched(
-        _argv({"initialize": {"protocolVersion": 1}, "session/new": {"sessionId": "s1"}})
+        _argv(
+            {
+                "initialize": {"protocolVersion": 1, "ok": True},
+                "session/new": {"sessionId": "s1"},
+            }
+        )
     )
     try:
         result = await process.initialize()
