@@ -36,3 +36,9 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `test_background_process_is_swept_before_verification` were zombies awaiting
   init reaping (SIGKILLed but listed by `pgrep -f` and `os.kill(pid, 0)`),
   not live leaks. Sweep probes and the `_alive` kernel check now exclude STAT Z.
+
+## 2026-09-17 — AgentRuntime protocol v0.1 (P0.4)
+
+- `garuda/runtime/` owns the generic harness contract: `AgentRuntime` Protocol, `RuntimeCapabilities`, `LifecycleState` with explicit allowed transitions, `RuntimeInfo`, typed `AgentRuntimeError` failures, and the normalized `RuntimeEvent` vocabulary (session/turn correlation, `kind` discriminant).
+- The generic contract imports no vendor or ACP types; `RuntimeKind.ACP` is a label. ACP subprocess code belongs behind this boundary, never inside it.
+- `FakeRuntime` is the deterministic test double with scripted scenarios; `run_conformance_suite` in `tests/test_runtime_conformance.py` is the lifecycle suite every future adapter must pass.
