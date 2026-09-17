@@ -24,6 +24,12 @@ from garuda.acp.broker import (
     ApprovalRequest,
     describe_gaps,
 )
+from garuda.acp.catalog import (
+    BUILTIN_STUBS,
+    DiscoveredRuntime,
+    discover,
+    health_of,
+)
 from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import (
     ACP_VERSION,
@@ -53,10 +59,14 @@ __all__ = [
     "AuthorityMap",
     "AuthorityOwner",
     "AuthorityPolicy",
+    "BUILTIN_STUBS",
+    "DiscoveredRuntime",
     "NegotiationError",
     "ToolFamily",
     "decode_frame",
-    "encode_frame",
     "describe_gaps",
+    "discover",
+    "encode_frame",
+    "health_of",
     "negotiate",
 ]
