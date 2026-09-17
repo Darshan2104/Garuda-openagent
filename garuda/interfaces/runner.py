@@ -8,6 +8,7 @@ from garuda.core.permissions import PermissionEngine
 from garuda.core.run_state import reserved_output_tokens
 from garuda.core.sessions import SessionStore
 from garuda.plugins.hooks import HookRegistry, build_hook_registry
+from garuda.runtime.native import NativeGarudaRuntime
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.factory import create_workspace
@@ -159,19 +160,27 @@ async def run_agent_task(
     # launched it — a silent divergence, not an error.
     store = store or SessionStore()
 
+    # Every native run — CLI, SDK, server, web — executes through the
+    # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
+    # record and the normalized event log; execution below is unchanged.
+    runtime = NativeGarudaRuntime(
+        agent=agent,
+        model=model,
+        tools=tools,
+        config=config,
+        permissions=permissions,
+        store=store,
+        events=events,
+    )
+
     resumed_from: str | None = None
     if resume:
         resumed_from = store.resolve(resume)
         if context is None:
             context = build_resumed_context(store, resumed_from, task, model, config)
 
-    events_path = store.begin(
-        session_id=events.session_id,
-        task=task,
-        model=getattr(model, "model_name", str(model)),
-        agent=getattr(agent, "profile_name", "agent"),
-        workspace=str(workspace),
-    )
+    await runtime.start(task=task, session_id=events.session_id)
+    events_path = store.events_path(events.session_id)
     events.attach_persistence(events_path)
     if resumed_from:
         update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
@@ -196,14 +205,15 @@ async def run_agent_task(
     )
     result: AgentResult | None = None
     await hooks.on_session_start(task=task, session_id=events.session_id)
-    try:
-        result = await agent.run(
+
+    async def _driver(*, task: str, turn: int, trail: EventStore):
+        return await agent.run(
             task=task,
             model=model,
             env=env,
             tools=tools,
             config=config,
-            events=events,
+            events=trail,
             permissions=permissions,
             hooks=hooks,
             agents_dir=agents_dir,
@@ -211,6 +221,14 @@ async def run_agent_task(
             checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
             state_checkpoint=lambda state: store.checkpoint_state(events.session_id, state),
         )
+
+    runtime.install_driver(_driver)
+    try:
+        await runtime.prompt(task)
+        result = runtime.last_result
+    except Exception:
+        result = None
+        raise
     finally:
         # Kill any background tasks this session left running before tearing down
         # the workspace (essential for the local env, where nothing else reaps them).
@@ -250,6 +268,10 @@ async def run_agent_task(
         else:
             update_session_meta(store, events.session_id, {"status": "failed"})
             summary = {"session_id": events.session_id, "success": False, "turns": 0}
+        try:
+            await runtime.close()
+        except Exception:
+            logger.warning("Runtime close failed", exc_info=True)
         await hooks.on_session_end(summary)
     if emit_json:
         for event in events.get_all():

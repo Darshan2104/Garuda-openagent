@@ -102,7 +102,10 @@ project-level aliases that reference and narrow but never self-authorize; one
 instance per job, never process-global. `session.py` is the unified session
 schema (runtime segments, baseline, handoff, cursors) plus legacy migration;
 `SessionStore` publishes through the atomic locked meta path, so a failed
-migration or write leaves the original readable.
+migration or write leaves the original readable. `native.py` adapts the native
+loop behind the boundary without changing task semantics — imported directly,
+never re-exported, so the product boundary pulls no `core` imports into
+`garuda.runtime` itself.
 
 ## `interfaces/` — entry points
 
