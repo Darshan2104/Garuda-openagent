@@ -104,6 +104,8 @@ class DiscoveredRuntime:
     health: HealthStatus = HealthStatus.UNAVAILABLE
     capabilities: tuple[str, ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    login_flow: str = "user-cli"
+    login_instructions: str = ""
 
     def describe(self) -> list[str]:
         lines = [
@@ -118,6 +120,21 @@ class DiscoveredRuntime:
             lines.append(f"  capabilities: {', '.join(self.capabilities)}")
         for warning in self.warnings:
             lines.append(f"  warning: {warning}")
+        return lines
+
+    def describe_auth(self) -> list[str]:
+        """Login, availability, and quota UX. Missing credentials produce
+        guidance plus the vendor flow — never a scan, copy, or sign-in."""
+        if self.auth is AuthStatus.AUTHENTICATED:
+            lines = [f"{self.runtime_id}: logged in"]
+        elif self.auth is AuthStatus.UNAUTHENTICATED:
+            lines = [f"{self.runtime_id}: logged out"]
+        else:
+            lines = [f"{self.runtime_id}: login state unknown (checked only at run time)"]
+        if self.auth is not AuthStatus.AUTHENTICATED and self.login_instructions:
+            lines.append(f"  to log in: {self.login_instructions}")
+        lines.append("  quota: shown only when the harness reports it")
+        lines.append("  subscription use is governed by the vendor's policy")
         return lines
 
 
@@ -180,6 +197,8 @@ def discover(
                     available=False,
                     auth=AuthStatus.UNKNOWN,
                     warnings=("disabled by user configuration",),
+                    login_flow=manifest.login.flow,
+                    login_instructions=manifest.login.instructions,
                 )
             )
             continue
@@ -288,6 +307,8 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
             health=HealthStatus.OK,
             capabilities=tuple(sorted(manifest.capabilities.names)),
             warnings=tuple(warnings),
+            login_flow=manifest.login.flow,
+            login_instructions=manifest.login.instructions,
         )
     executable = _resolve_executable(manifest.command)
     if executable is None:
@@ -301,6 +322,8 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
             auth=AuthStatus.UNKNOWN,
             capabilities=tuple(sorted(manifest.capabilities.names)),
             warnings=tuple(warnings),
+            login_flow=manifest.login.flow,
+            login_instructions=manifest.login.instructions,
         )
     version = manifest.version
     if manifest.version_args:
@@ -336,11 +359,17 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
         health=HealthStatus.OK,
         capabilities=tuple(sorted(manifest.capabilities.names)),
         warnings=tuple(warnings),
+        login_flow=manifest.login.flow,
+        login_instructions=manifest.login.instructions,
     )
 
 
-def health_of(discovered: DiscoveredRuntime) -> dict[str, Any]:
-    """JSON-safe health record for CLI/SDK/dashboard consumers."""
+def health_of(discovered: DiscoveredRuntime, quota: dict[str, Any] | None = None) -> dict[str, Any]:
+    """JSON-safe health record for CLI/SDK/dashboard consumers.
+
+    Quota appears only when the harness supplied it (`None` renders unknown,
+    never estimated); login opens only the manifest's user-driven flow.
+    """
     return {
         "runtime_id": discovered.runtime_id,
         "kind": discovered.kind,
@@ -351,6 +380,11 @@ def health_of(discovered: DiscoveredRuntime) -> dict[str, Any]:
         "health": discovered.health.value,
         "capabilities": list(discovered.capabilities),
         "warnings": list(discovered.warnings),
+        "login": {
+            "flow": discovered.login_flow,
+            "instructions": discovered.login_instructions,
+        },
+        "quota": dict(quota) if quota is not None else None,
     }
 
 

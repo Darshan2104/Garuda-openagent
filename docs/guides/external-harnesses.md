@@ -2,7 +2,10 @@
 
 Garuda can supervise subscription-backed coding harnesses through ACP while its
 native runtime stays the default. You authenticate in your own CLI; Garuda
-never sees, reads, or stores subscription credentials.
+never sees, reads, or stores subscription credentials. Subscription use is
+governed by each vendor's policy, not by Garuda: quota appears only when the
+harness itself reports it, and Garuda never estimates, infers, or zero-fills
+usage.
 
 ## Claude Code
 
