@@ -169,6 +169,9 @@ declared capabilities — scenario coverage derives from manifest/runtime
 capabilities plus harness behaviors, vendor rows run stand-ins and are
 labeled simulated, support needs zero failures plus a PASS; per-adapter JSON
 reports; the shared lifecycle itself lives in `garuda/runtime/conformance.py`).
+`live_harness.py` (P1.11: opt-in single-prompt smoke runs against installed
+harnesses with exact reporting, fixture workspaces, fake-agent script path
+so linked checkouts work; CI never sets the gate variable).
 
 ## Everything else
 
