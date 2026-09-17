@@ -75,6 +75,11 @@ files never touched; TTLs validated positive/finite, locking fail-closed when
 creation hooks. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
 last — concurrent runs on one workspace are refused, never interleaved.
+`diff.py` manages the authoritative delta: baseline commit/status/fingerprints
+captured at session start and persisted in the unified session, per-file
+added/modified/deleted/renamed/untracked with preexisting dirt flagged
+separately, bounded diff text recoverable from disk, ACP hints reconciled
+against filesystem truth and never applied.
 
 ## `context/` — fitting the conversation in the window
 
