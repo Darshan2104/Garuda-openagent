@@ -13,3 +13,18 @@ python -m garuda.eval.ablation --model gemini/gemini-2.5-flash
 ```
 
 Cost accounting prefers provider-reported cost, then explicit user overrides, then the versioned in-repository price snapshot, and only then LiteLLM's table.
+
+## Live harness smoke tests
+
+Opt-in only: `GARUDA_LIVE_HARNESS=codex` (or a comma list, or `all`) runs one
+trivial prompt per selected harness in a fixture workspace and reports the
+exact harness, binary, version, auth outcome, and elapsed time:
+
+```bash
+GARUDA_LIVE_HARNESS=codex pytest tests/test_live_harness.py -q
+python -m garuda.eval.live_harness --harness codex --workspace /tmp/smoke-ws
+```
+
+CI never sets the variable, so CI never needs a subscription. Caps are
+strict by construction: fixed trivial prompt text, a bounded deadline, and no
+spend beyond the single roundtrip.

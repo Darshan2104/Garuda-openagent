@@ -51,12 +51,14 @@ class AcpProcess:
         *,
         extra_env: dict[str, str] | None = None,
         call_timeout: float = CALL_TIMEOUT,
+        cwd: str | None = None,
     ):
         if not argv or any(not isinstance(p, str) or not p for p in argv):
             raise AcpProtocolError("argv must be a non-empty list of strings")
         self._argv = list(argv)
         self._extra_env = dict(extra_env or {})
         self._call_timeout = call_timeout
+        self._cwd = cwd
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -94,6 +96,7 @@ class AcpProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._child_env(),
+            cwd=self._cwd,
             start_new_session=True,
         )
         self._reader_task = asyncio.ensure_future(self._read_loop())
