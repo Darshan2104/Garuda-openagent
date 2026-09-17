@@ -113,7 +113,10 @@ schema (runtime segments, baseline, handoff, cursors) plus legacy migration;
 migration or write leaves the original readable. `native.py` adapts the native
 loop behind the boundary without changing task semantics — imported directly,
 never re-exported, so the product boundary pulls no `core` imports into
-`garuda.runtime` itself.
+`garuda.runtime` itself. `handoff.py` is the switch transaction: boundary-only
+pause, checkpoint, capture, generate, target start, acknowledged ownership
+transfer, with rollback and cancellation returning to one resumable owner and a
+typed event per move.
 
 ## `interfaces/` — entry points
 
