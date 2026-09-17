@@ -6,6 +6,15 @@ vendor SDK — the transport owns framing and lifecycle while exposing agent
 notifications and requests for the capability/authority layers above it.
 """
 
+from garuda.acp.authority import (
+    AgentCapabilities,
+    AuthorityMap,
+    AuthorityOwner,
+    AuthorityPolicy,
+    NegotiationError,
+    ToolFamily,
+    negotiate,
+)
 from garuda.acp.protocol import (
     ACP_VERSION,
     AcpCancelledError,
@@ -24,6 +33,13 @@ __all__ = [
     "AcpExitError",
     "AcpProtocolError",
     "AcpTimeoutError",
+    "AgentCapabilities",
+    "AuthorityMap",
+    "AuthorityOwner",
+    "AuthorityPolicy",
+    "NegotiationError",
+    "ToolFamily",
     "decode_frame",
     "encode_frame",
+    "negotiate",
 ]
