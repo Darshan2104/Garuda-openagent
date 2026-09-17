@@ -156,7 +156,10 @@ generic `AcpRuntime` every adapter runs the shared conformance suite through
 (launch, version-checked handshake, negotiation, streaming prompt, approvals,
 cancel, close). `fake_agent.py` — the deterministic `python -m` test server
 with capability/streaming/approval/diff/malformed/slow/exit/resume/mismatch
-profiles; stdio only, isolated from workspaces and credentials. |
+profiles; stdio only, isolated from workspaces and credentials. `broker.py` —
+the one approval path: engine ceilings applied to native and ACP requests,
+parked approvals with timeout and disconnect denial, every outcome persisted
+to the session, strict-policy gaps reported before anything runs. |
 
 ## Working on it
 
