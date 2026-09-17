@@ -98,7 +98,12 @@ async def test_handshake_session_prompt_and_notifications():
         session_id = await process.session_new()
         assert session_id == "s1"
         await process.session_prompt(session_id, "hello")
-        seen = {n["params"]["seen"] for n in process.drain_notifications()}
+        seen: set[str] = set()
+        for _ in range(100):
+            seen |= {n["params"]["seen"] for n in process.drain_notifications()}
+            if {"initialize", "session/new", "session/prompt"} <= seen:
+                break
+            await asyncio.sleep(0.05)
         assert {"initialize", "session/new", "session/prompt"} <= seen
     finally:
         await process.close()

@@ -14,7 +14,9 @@ does not have.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 from garuda.acp.authority import (
@@ -53,12 +55,14 @@ class AcpRuntime:
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
         setup_hint: str = "",
+        persist_dir: str | None = None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._setup_hint = setup_hint
+        self._persist_dir = persist_dir
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -133,15 +137,43 @@ class AcpRuntime:
                 approval_id = event.payload.get("approval_id", "")
                 if approval_id:
                     self._pending_approvals.add(approval_id)
-            self._events.append(
-                RuntimeEvent(
-                    kind=event.kind,
-                    session_id=self._garuda_session_id,
-                    turn=self._turn,
-                    seq=len(self._events),
-                    payload=dict(event.payload),
-                )
+            absorbed = RuntimeEvent(
+                kind=event.kind,
+                session_id=self._garuda_session_id,
+                turn=self._turn,
+                seq=len(self._events),
+                payload=dict(event.payload),
             )
+            self._events.append(absorbed)
+            self._persist(absorbed)
+
+    def _persist(self, event: RuntimeEvent) -> None:
+        """Append one normalized event to the session's external trail.
+
+        Best-effort like all persistence here: a read-only session dir must
+        never fail a running agent. The file is what the trace reader loads.
+        """
+        if self._persist_dir is None:
+            return
+        try:
+            path = Path(self._persist_dir) / "acp-events.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "kind": event.kind.value,
+                            "session_id": event.session_id,
+                            "turn": event.turn,
+                            "seq": event.seq,
+                            "payload": event.payload,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
 
     async def start(self, *, task: str, session_id: str | None = None) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:
