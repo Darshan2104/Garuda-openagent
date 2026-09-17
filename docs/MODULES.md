@@ -152,7 +152,8 @@ mismatch, or invalid ACP authority snapshots refuse startup/resume.
 ## `interfaces/` — entry points
 
 `main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
-(interactive chat), `server.py` + `jobs.py` (job-queue server: submit/status/
+(interactive chat), `runtime_cli.py` (`garuda runtime list|inspect|handoff|recover`
+plus `run --runtime` selection), `server.py` + `jobs.py` (job-queue server: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
 `runner.py` (assembles a run and owns workspace teardown).
 
