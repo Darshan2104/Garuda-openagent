@@ -124,7 +124,10 @@ never re-exported, so the product boundary pulls no `core` imports into
 `garuda.runtime` itself. `handoff.py` is the switch transaction: boundary-only
 pause, checkpoint, capture, generate, target start, acknowledged ownership
 transfer, with rollback and cancellation returning to one resumable owner and a
-typed event per move.
+typed event per move. `recovery.py` classifies restarts from persisted records
+(resumable, rolled-back, ambiguous), reaps orphan agent children with
+verification, records cancellations at turn/switch/process boundaries, and
+never invents success — a bare exit proves nothing.
 
 ## `interfaces/` — entry points
 
