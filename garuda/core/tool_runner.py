@@ -121,8 +121,20 @@ class ToolRunner:
             call.name, call.arguments
         )
         if not allowed:
+            # `name`/`id` make a denial attributable. Without them the payload was
+            # `{approved, reason}` alone, so a blocked call could not be tied to the
+            # call it blocked, and a reader had to collapse four distinct outcomes —
+            # denied, hook-blocked, argument-parse failure, never reached — into one
+            # "this tool call has no result" state that suggests different fixes.
             self.events.append(
-                EventType.PERMISSION_ASK, {"approved": False, "reason": denial_reason}
+                EventType.PERMISSION_ASK,
+                {
+                    "approved": False,
+                    "reason": denial_reason,
+                    "name": call.name,
+                    "id": call.id,
+                    "turn": turn,
+                },
             )
             return None, Message(
                 role=Role.TOOL,
@@ -150,7 +162,7 @@ class ToolRunner:
         """Execute one already-screened call, emitting events and appending the result."""
         self.events.append(
             EventType.TOOL_CALL,
-            {"id": call.id, "name": call.name, "arguments": call.arguments},
+            {"id": call.id, "name": call.name, "arguments": call.arguments, "turn": turn},
         )
         tool_result, duration_ms = await self._execute_timed(call)
         # A sequential call's own duration *is* the wall-clock it consumed.
@@ -159,7 +171,7 @@ class ToolRunner:
         tool_result = await self.hooks.run_after_tool(call, tool_result, self.hook_context(turn))
         if self.ledger is not None:
             self.ledger.observe(call, tool_result)
-        self.record(call, tool_result, duration_ms)
+        self.record(call, tool_result, duration_ms, turn=turn)
         return tool_result
 
     async def _execute_timed(self, call: ToolCall) -> tuple[ToolResult, float]:
@@ -177,13 +189,26 @@ class ToolRunner:
             self.metrics.note_tool(elapsed[0], result.is_error)
         return result, elapsed[0]
 
-    def record(self, call: ToolCall, tool_result: ToolResult, duration_ms: float | None = None) -> None:
-        """Emit the result event and append the tool message to the transcript."""
+    def record(
+        self,
+        call: ToolCall,
+        tool_result: ToolResult,
+        duration_ms: float | None = None,
+        *,
+        turn: int | None = None,
+    ) -> None:
+        """Emit the result event and append the tool message to the transcript.
+
+        ``turn`` is keyword-only and optional so an out-of-tree caller keeps working;
+        both in-tree callers pass it. When it is absent a trajectory reader falls
+        back to positional segmentation, so the event is degraded, never wrong.
+        """
         payload = {
             "tool_call_id": call.id,
             "name": call.name,
             "content": tool_result.content,
             "is_error": tool_result.is_error,
+            "turn": turn,
         }
         # Consumers previously had to difference the tool_call/tool_result event
         # timestamps to get a duration, which is ~ms-resolution and wrong for a
@@ -349,6 +374,7 @@ class ToolRunner:
                     "id": dispatched.id,
                     "name": dispatched.name,
                     "arguments": dispatched.arguments,
+                    "turn": turn,
                 },
             )
         # Bound the fan-out. Each read can be a `docker exec` or a subprocess, so
@@ -410,6 +436,6 @@ class ToolRunner:
             )
             if self.ledger is not None:
                 self.ledger.observe(call, tool_result)
-            self.record(call, tool_result, duration_by_index.get(i))
+            self.record(call, tool_result, duration_by_index.get(i), turn=turn)
             executed.append((call, tool_result))
         return executed

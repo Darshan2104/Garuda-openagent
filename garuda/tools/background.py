@@ -12,11 +12,13 @@ that started it. Rather than hand back a pid that names nothing, the tool refuse
 on that backend — see :data:`BWRAP_UNSUPPORTED`.
 """
 
+import asyncio
 import logging
 import shlex
 import uuid
 from dataclasses import dataclass
 
+from garuda.core.side_effects import apply_kill_tree, kill_tree_command
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
@@ -53,6 +55,18 @@ def _unsupported_backend(env: Environment) -> str | None:
     return None
 
 
+def _kill_process_group(pid: str, signal_name: str) -> str:
+    """Portable shell that signals a pid, its process group, and descendants."""
+    return kill_tree_command(signal_name, pid)
+
+
+async def _deliver_kill(env: Environment, pid: str, signal_name: str, timeout: float = 10.0) -> None:
+    if type(env).__name__ == "LocalEnvironment":
+        apply_kill_tree(signal_name, pid)
+        return
+    await env.execute(_kill_process_group(pid, signal_name), timeout=timeout)
+
+
 async def reap_session(session_id: str, env: Environment) -> int:
     """Kill any still-running background tasks for a session (called at run end).
 
@@ -66,10 +80,7 @@ async def reap_session(session_id: str, env: Environment) -> int:
         if task is None:
             continue
         try:
-            await env.execute(
-                f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
-                timeout=10.0,
-            )
+            await _deliver_kill(env, task.pid, "KILL", timeout=10.0)
         except Exception:
             logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
     return len(keys)
@@ -127,19 +138,20 @@ class BashBackgroundTool:
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
-        # The task must be its own process-group leader, or `kill -- -$pid` in
-        # kill_task/reap_session names some *other* group — the launcher's — and
-        # the kill lands on the shell while its children go on running. setsid
-        # does this where it exists (Linux, containers); macOS ships none, and
-        # there `set -m` gets the same result, because a shell in monitor mode
-        # puts each background job in a group of its own. Verified on darwin: an
-        # unlaunched-by-either `sleep` outlives the group kill; under `set -m` it
-        # does not. ';' not '&&' so the whole chain isn't backgrounded (which
-        # would hold the launcher's stdout pipe open until it exits).
+        # The worker must lead its own session. ``env.execute`` already uses
+        # ``start_new_session``, so util-linux ``setsid`` forks and ``$!`` is the
+        # short-lived parent — Ubuntu CI then kills a dead pid while ``sh script``
+        # keeps running. ``os.setsid()`` in the already-forked child makes ``$!``
+        # the real session leader.
+        starter = (
+            "import os, sys\n"
+            "os.setsid()\n"
+            "os.execvp('sh', ['sh', '-c', sys.argv[1]])\n"
+        )
         launcher = (
             f"mkdir -p {shlex.quote(TASKS_DIR)}; "
-            f"if command -v setsid >/dev/null 2>&1; then _s=setsid; else _s=; set -m; fi; "
-            f"$_s sh -c {shlex.quote(command)} > {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
+            f"python3 -c {shlex.quote(starter)} {shlex.quote(command)} "
+            f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
         )
         result = await env.execute(launcher, timeout=15.0)
         pid = result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else ""
@@ -238,13 +250,12 @@ class KillTaskTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        # Negative pid targets the whole process group (setsid leader + children);
-        # the plain-pid KILL is a fallback for the leader itself.
-        await env.execute(
-            f"kill -TERM -{task.pid} 2>/dev/null; sleep 0.2; "
-            f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
-            timeout=15.0,
-        )
+        # Negative pgid targets the whole process group (setsid leader + children);
+        # plain-pid and ``pgrep -P`` cover leaders that never owned a group.
+        await _deliver_kill(env, task.pid, "TERM", timeout=15.0)
+        if type(env).__name__ == "LocalEnvironment":
+            await asyncio.sleep(0.2)
+        await _deliver_kill(env, task.pid, "KILL", timeout=15.0)
         _TASKS.pop(key, None)
         return ToolResult(
             tool_call_id="",

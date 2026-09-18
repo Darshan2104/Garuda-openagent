@@ -1,3 +1,4 @@
+import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass
@@ -11,13 +12,43 @@ from garuda.context.manager import (
     ContextManager,
     normalize_handoff,
 )
-from garuda.core.events import EventStore, EventType
+from garuda.core.events import SUBAGENT_LOG_DIR, EventStore, EventType
 from garuda.core.permissions import PermissionEngine
 from garuda.core.run_state import reserved_output_tokens
 from garuda.model.protocol import Model
 from garuda.tools import build_toolkit
 from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentResult, Message, Role
 from garuda.workspace.protocol import Environment
+
+logger = logging.getLogger(__name__)
+
+def _persist_beside_parent(parent: EventStore, child: EventStore) -> None:
+    """Give a subagent's event store a log file next to its parent's.
+
+    A subagent runs on its **own** ``EventStore`` on purpose: its turns must not interleave
+    into the parent's log, because the parent's turn segmentation is derived from that log
+    and an inner turn 1 landing between an outer turn's call and result would corrupt it.
+    The consequence, until now, was that the subagent's work was thrown away — the parent
+    kept only the one-line handoff, so "what did the subagent actually do" had no answer
+    anywhere on disk.
+
+    A sibling file resolves both: separate logs keep both segmentations honest, and the
+    parent's handoff event names the child's session id, so the two are joinable. Derived
+    from the parent's own ``persist_path`` rather than a re-guessed sessions root, per
+    ``docs/ARCHITECTURE.md`` — a subagent invoked in a run nobody persisted stays
+    unpersisted, which is the right answer rather than inventing a directory for it.
+    """
+    parent_path = parent.persist_path
+    if parent_path is None:
+        return
+    try:
+        child.attach_persistence(
+            parent_path.parent / SUBAGENT_LOG_DIR / f"{child.session_id}.jsonl"
+        )
+    except OSError:
+        # `attach_persistence` makes the directory, and a read-only or full disk must not
+        # stop the subagent from running. Losing its trace is a strictly smaller failure.
+        logger.warning("Could not persist subagent events beside %s", parent_path, exc_info=True)
 
 
 def _drop_incomplete_tail(messages: list[Message]) -> list[Message]:
@@ -139,6 +170,7 @@ class SubagentRunner:
             profile.mcp_config_path,
         )
         sub_events = EventStore()
+        _persist_beside_parent(self.events, sub_events)
         agent = DefaultAgent(profile_name=profile.name)
 
         mode = normalize_handoff(
@@ -175,6 +207,13 @@ class SubagentRunner:
                 "content": f"[subagent:{profile_name}] {result.final_message}",
                 "subagent": profile_name,
                 "success": result.success,
+                # The parent log records the *handoff*, not the work. These three fields are
+                # what makes the work findable afterwards: the id names the sibling log
+                # `_persist_beside_parent` just wrote, and the counts let a reader say how
+                # much happened inside without opening it.
+                "session_id": sub_events.session_id,
+                "turns": result.turns,
+                "task": task,
             },
         )
         result.metadata["subagent_session_id"] = sub_events.session_id

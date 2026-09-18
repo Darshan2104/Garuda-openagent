@@ -151,8 +151,13 @@ async def run_agent_task(
     context: ContextManager | None = None,
     close_mcp: bool = True,
     resume: str | None = None,
+    store: SessionStore | None = None,
 ) -> AgentResult:
-    store = SessionStore()
+    # Callers that read sessions back from a specific root must be able to write to that
+    # same root. The dashboard's `--sessions-dir` is the case: without this, a run it
+    # launched would persist to the default location and be invisible in the list that
+    # launched it — a silent divergence, not an error.
+    store = store or SessionStore()
 
     resumed_from: str | None = None
     if resume:

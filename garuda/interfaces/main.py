@@ -11,8 +11,11 @@ from garuda.interfaces.runner import (
     resolve_environment,
     run_agent_task,
 )
+from garuda.interfaces.web.live import DEFAULT_MAX_PERMISSION as WEB_DEFAULT_MAX_PERMISSION
+from garuda.interfaces.web.security import DEFAULT_PORT as WEB_DEFAULT_PORT
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
+from garuda.model.protocol import DEFAULT_MODEL, MODEL_ENV_VAR
 from garuda.tools import build_toolkit
 
 
@@ -26,7 +29,7 @@ def build_parser():
     run_parser = subparsers.add_parser("run", help="Run a single agent task (headless)")
     run_parser.add_argument("-t", "--task", help="Task description")
     run_parser.add_argument("-f", "--file", help="Read task from file")
-    run_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    run_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     run_parser.add_argument("--workspace", default=".", help="Workspace root directory")
     run_parser.add_argument(
         "--workspace-kind",
@@ -137,7 +140,7 @@ def build_parser():
     )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
-    chat_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    chat_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     chat_parser.add_argument("--workspace", default=".")
     chat_parser.add_argument(
         "--workspace-kind",
@@ -169,7 +172,7 @@ def build_parser():
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
-    serve_parser.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    serve_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     serve_parser.add_argument("--agent", default="build")
     serve_parser.add_argument("--workspace", default=".")
     serve_parser.add_argument(
@@ -199,6 +202,64 @@ def build_parser():
         help="Cap concurrent model calls per provider across jobs (0 = unlimited)",
     )
 
+    # `web`, aliased `dashboard`: the name people reach for, while the module stays
+    # `interfaces/web` so it does not collide with `garuda.eval.dashboard` (the
+    # markdown cost table). Both spellings must be accepted in the dispatch below.
+    web_parser = subparsers.add_parser(
+        "web",
+        aliases=["dashboard"],
+        help="Serve the local web dashboard: read past runs and talk to an agent",
+    )
+    # No --host: the bind address is 127.0.0.1 and not configurable. See
+    # interfaces/web/http.py::BIND_HOST for why.
+    web_parser.add_argument("--port", type=int, default=WEB_DEFAULT_PORT)
+    web_parser.add_argument(
+        "--sessions-dir", help="Read runs from here instead of the configured sessions root"
+    )
+    web_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
+    web_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Serve the run history only. Without this the dashboard can also talk to an "
+        "agent, which runs tools as you — bounded by --max-permission, which defaults to "
+        "asking before anything destructive.",
+    )
+    # Accepted and ignored: talking to an agent is the default now. Kept so an alias or a
+    # shell history entry carrying it does not fail, rather than out of any real ambiguity.
+    web_parser.add_argument("--allow-run", action="store_true", help=argparse.SUPPRESS)
+    web_parser.add_argument(
+        "--allow-workspace",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="A directory the agent may work in; repeatable. "
+        "Defaults to the current directory. Requests name these by index, never by path.",
+    )
+    web_parser.add_argument(
+        "--max-permission",
+        choices=["readonly", "smart", "auto", "yolo"],
+        default=WEB_DEFAULT_MAX_PERMISSION,
+        help="The loosest permission posture a browser request may ask for "
+        f"(default: {WEB_DEFAULT_MAX_PERMISSION}). A request may ask for this or stricter.",
+    )
+    web_parser.add_argument(
+        "--web-model",
+        default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL),
+        help="Default model for dashboard conversations",
+    )
+    web_parser.add_argument(
+        "--web-agent", default="build", help="Default agent profile for dashboard conversations"
+    )
+    web_parser.add_argument(
+        "--web-workspace-kind",
+        choices=["local", "sandbox", "docker", "tmux", "remote"],
+        default="local",
+        help="Workspace kind for dashboard conversations (default: local)",
+    )
+    web_parser.add_argument(
+        "--no-browser", action="store_true", help="Do not open a browser automatically"
+    )
+
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
 
@@ -221,7 +282,7 @@ def build_parser():
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
     recipe_run = recipe_sub.add_parser("run", help="Execute a recipe file")
     recipe_run.add_argument("recipe", help="Path to recipe YAML")
-    recipe_run.add_argument("--model", default=os.environ.get("GARUDA_MODEL", "openai/gpt-4o-mini"))
+    recipe_run.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     recipe_run.add_argument("--workspace", default=".")
     recipe_run.add_argument(
         "--workspace-kind",
@@ -492,6 +553,29 @@ async def run_serve(args) -> int:
     return 0
 
 
+async def run_web(args) -> int:
+    """Serve the dashboard until interrupted."""
+    from garuda.interfaces.web import DashboardConfig, serve_dashboard
+
+    config = DashboardConfig(
+        port=args.port,
+        sessions_dir=Path(args.sessions_dir) if args.sessions_dir else None,
+        agents_dir=Path(args.agents_dir) if args.agents_dir else None,
+        allow_run=not args.read_only,
+        workspaces=tuple(Path(p) for p in (args.allow_workspace or [])),
+        max_permission=args.max_permission,
+        model=args.web_model,
+        agent=args.web_agent,
+        workspace_kind=args.web_workspace_kind,
+        open_browser=not args.no_browser,
+    )
+    try:
+        await serve_dashboard(config)
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        pass
+    return 0
+
+
 def main() -> None:
     import asyncio
 
@@ -503,6 +587,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(chat_loop(args)))
     if args.command == "serve":
         raise SystemExit(asyncio.run(run_serve(args)))
+    if args.command in ("web", "dashboard"):
+        raise SystemExit(asyncio.run(run_web(args)))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
     if args.command == "mcp":

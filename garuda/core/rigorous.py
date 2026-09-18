@@ -7,7 +7,7 @@ import logging
 from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
-from garuda.core.modes import apply_mode_preset, is_rigorous
+from garuda.core.modes import apply_mode_preset, describe_config, is_rigorous
 from garuda.core.permissions import PermissionEngine
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model.protocol import Model
@@ -91,9 +91,20 @@ class RigorousAgent:
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
         if emit_session_events:
+            # Same shape as the one `run_state.prepare_run` emits, so a trajectory
+            # reader has one session_start contract rather than two. The inner plan
+            # and executor runs pass emit_session_events=False, so this is the only
+            # one a rigorous log carries — it has to describe the whole run.
             events.append(
                 EventType.SESSION_START,
-                {"task": task, "mode": "rigorous", "model": model.model_name},
+                {
+                    "task": task,
+                    "model": model.model_name,
+                    "agent": self._profile_name,
+                    "mode": "rigorous",
+                    "permission_mode": permissions.mode,
+                    "config": describe_config(config),
+                },
             )
 
         plan_profile = load_profile("plan")

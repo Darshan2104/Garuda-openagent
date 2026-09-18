@@ -33,10 +33,21 @@ jobs:
         # bubblewrap = the Linux sandbox backend; tmux backs the tmux_exec /
         # tmux_capture tools (those tests skip when it is absent). ripgrep ships on
         # GitHub runners, so grep's rg path is covered, not only its grep -E fallback.
+        # Ubuntu 24.04+ AppArmor blocks unprivileged user namespaces by default,
+        # which makes bwrap fail with ``loopback: Failed RTM_NEWADDR`` before any
+        # command runs — clear that gate on GitHub-hosted Linux runners.
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi
@@ -55,6 +66,26 @@ jobs:
 
       - name: Test
         run: pytest -q
+
+  docs-contract:
+    # Issue #9 (P0.3): fail on broken local docs links, nested READMEs, and
+    # hand-maintained test counts. Stdlib only and never fetches remote URLs.
+    name: docs contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check docs links, READMEs, and test-count claims
+        run: python scripts/check_docs.py
+
+      - name: Docs contract tests
+        run: |
+          pip install pytest
+          pytest tests/test_docs_contract.py -q
 
   latest-deps:
     # Early warning, not a gate. pyproject lower-bounds its dependencies so the
@@ -83,6 +114,14 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi
@@ -122,6 +161,14 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi

@@ -278,17 +278,25 @@ class SessionStore:
             directory / "messages.json",
             json.dumps([message_to_dict(m) for m in result.messages], indent=2, default=str),
         )
-        self.update_meta(
-            session_id,
-            {
-                "session_id": session_id,
-                "status": "success" if result.success else "failed",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "turns": result.turns,
-                "final_message": result.final_message[:2000],
-                "usage": result.metadata.get("usage", {}),
-            },
-        )
+        updates = {
+            "session_id": session_id,
+            "status": "success" if result.success else "failed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "turns": result.turns,
+            "final_message": result.final_message[:2000],
+            "usage": result.metadata.get("usage", {}),
+        }
+        # `metrics`, `mode` and `acceptance` were computed on every run and then
+        # dropped here, so a finished run read back off disk had no latency figures
+        # and no record of which posture produced it — the event log was the only
+        # copy, and answering "how long did that run take" meant parsing its JSONL.
+        # Copied only when present: `bare_result` carries no acceptance, and a
+        # hand-written or older result may carry none of them. Absent beats null.
+        for key in ("mode", "metrics", "acceptance"):
+            value = result.metadata.get(key)
+            if value is not None:
+                updates[key] = value
+        self.update_meta(session_id, updates)
 
     def update_meta(self, session_id: str, updates: dict) -> None:
         """Merge fields into this session's meta under an exclusive lock."""

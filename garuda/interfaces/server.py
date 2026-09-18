@@ -16,6 +16,7 @@ from garuda.core.sessions import SessionStore
 from garuda.interfaces.jobs import Job, JobManager
 from garuda.interfaces.runner import run_agent_task
 from garuda.model.litellm_model import LitellmModel
+from garuda.model.protocol import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8765
-    model: str = "openai/gpt-4o-mini"
+    model: str = DEFAULT_MODEL
     agent: str = "build"
     workspace: str = "."
     workspace_kind: str = "local"
