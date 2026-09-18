@@ -19,6 +19,15 @@ Garuda discovers project configuration from `.agent/`; `.garuda/` remains a back
 
 Set `GARUDA_MODEL` or pass `--model provider/model`. The provider credential must match the selected model. LiteLLM handles normal inference routing, retries, prompt caching, streaming, and reasoning settings.
 
+## Model transports
+
+Direct transports join `garuda/model/transports.py` only with all six
+admission artifacts: a vendor-support citation (https, public docs), a
+capability declaration, a test double, an opt-in integration test, cost
+semantics with unknown-kept-unknown, and migration notes. Private endpoints,
+reverse-engineered subscription paths, and copied OAuth material are never
+admissible — subscription-backed agents stay behind ACP runtimes instead.
+
 ## MCP
 
 Garuda resolves `.agent/mcp.json`/YAML, `.garuda/` compatibility files, `.cursor/mcp.json`, and global `~/.agent/mcp.json`. Project and global servers merge by default, with project entries winning name collisions. Above the direct tool threshold, Garuda exposes lazy `search_tool` and `use_tool` meta-tools.
