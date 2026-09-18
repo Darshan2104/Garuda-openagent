@@ -53,6 +53,14 @@ from garuda.runtime.registry import (
     parse_global_manifests,
     parse_project_refs,
 )
+from garuda.runtime.router import (
+    RoutingCandidate,
+    RoutingDecision,
+    RoutingError,
+    RoutingRequest,
+    authorize_switch,
+    route,
+)
 from garuda.runtime.session import (
     HANDOFF_STATES,
     SESSION_SCHEMA_VERSION,
@@ -98,6 +106,10 @@ __all__ = [
     "RuntimeStartError",
     "RuntimeTimeoutError",
     "RuntimeTransitionError",
+    "RoutingCandidate",
+    "RoutingDecision",
+    "RoutingError",
+    "RoutingRequest",
     "UnifiedSession",
     "UnifiedSessionError",
     "audit_terminal",
@@ -111,5 +123,7 @@ __all__ = [
     "record_cancel",
     "recover",
     "report_to_dict",
+    "authorize_switch",
+    "route",
     "run_conformance_suite",
 ]
