@@ -12,8 +12,11 @@ outside observer would, rather than one propped up by processes about to vanish.
 
 import asyncio
 import logging
+import os
 import re
 import shlex
+import signal
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,6 +96,38 @@ for raw in sys.argv[2:]:
     except ValueError:
         pass
 """
+
+
+def apply_kill_tree(signal_name: str, *pids: str) -> None:
+    """Signal pids from this process. Used on LocalEnvironment so quoting cannot drop the kill."""
+    sig = getattr(signal, "SIG" + signal_name)
+    seen: set[int] = set()
+
+    def hit(pid: int) -> None:
+        if pid in seen or pid <= 1:
+            return
+        seen.add(pid)
+        for target in (-pid, pid):
+            try:
+                os.kill(target, sig)
+            except OSError:
+                pass
+        for flag in ("-P", "-g"):
+            try:
+                out = subprocess.check_output(
+                    ["pgrep", flag, str(pid)], text=True, stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                out = ""
+            for raw in out.split():
+                try:
+                    hit(int(raw))
+                except ValueError:
+                    pass
+
+    for raw in pids:
+        if isinstance(raw, str) and raw.isdigit():
+            hit(int(raw))
 
 
 def kill_tree_command(signal_name: str, *pids: str) -> str:
@@ -441,6 +476,9 @@ class SideEffectLedger:
 
     async def _signal(self, env: Any, pids: list[str], signal_name: str) -> None:
         """Signal each pid and its process group, ignoring the ones already gone."""
+        if type(env).__name__ == "LocalEnvironment":
+            apply_kill_tree(signal_name, *pids)
+            return
         await env.execute(kill_tree_command(signal_name, *pids), timeout=30.0)
 
     async def _listeners(self, env: Any) -> str:

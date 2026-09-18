@@ -12,12 +12,13 @@ that started it. Rather than hand back a pid that names nothing, the tool refuse
 on that backend — see :data:`BWRAP_UNSUPPORTED`.
 """
 
+import asyncio
 import logging
 import shlex
 import uuid
 from dataclasses import dataclass
 
-from garuda.core.side_effects import kill_tree_command
+from garuda.core.side_effects import apply_kill_tree, kill_tree_command
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
@@ -59,6 +60,13 @@ def _kill_process_group(pid: str, signal_name: str) -> str:
     return kill_tree_command(signal_name, pid)
 
 
+async def _deliver_kill(env: Environment, pid: str, signal_name: str, timeout: float = 10.0) -> None:
+    if type(env).__name__ == "LocalEnvironment":
+        apply_kill_tree(signal_name, pid)
+        return
+    await env.execute(_kill_process_group(pid, signal_name), timeout=timeout)
+
+
 async def reap_session(session_id: str, env: Environment) -> int:
     """Kill any still-running background tasks for a session (called at run end).
 
@@ -72,7 +80,7 @@ async def reap_session(session_id: str, env: Environment) -> int:
         if task is None:
             continue
         try:
-            await env.execute(_kill_process_group(task.pid, "KILL"), timeout=10.0)
+            await _deliver_kill(env, task.pid, "KILL", timeout=10.0)
         except Exception:
             logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
     return len(keys)
@@ -244,11 +252,10 @@ class KillTaskTool:
             )
         # Negative pgid targets the whole process group (setsid leader + children);
         # plain-pid and ``pgrep -P`` cover leaders that never owned a group.
-        await env.execute(
-            f"{_kill_process_group(task.pid, 'TERM')}; sleep 0.2; "
-            f"{_kill_process_group(task.pid, 'KILL')}",
-            timeout=15.0,
-        )
+        await _deliver_kill(env, task.pid, "TERM", timeout=15.0)
+        if type(env).__name__ == "LocalEnvironment":
+            await asyncio.sleep(0.2)
+        await _deliver_kill(env, task.pid, "KILL", timeout=15.0)
         _TASKS.pop(key, None)
         return ToolResult(
             tool_call_id="",
