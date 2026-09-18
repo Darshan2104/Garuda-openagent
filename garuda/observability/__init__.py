@@ -8,6 +8,13 @@ Everything OpenTelemetry-related is a safe no-op unless the SDK is installed *an
 tracing is explicitly enabled (see :func:`configure_tracing`).
 """
 
+from garuda.observability.runtime_metrics import (
+    PHASES,
+    TRIAGE_BUCKETS,
+    RuntimeMetrics,
+    classify_error,
+)
+from garuda.observability.support import build_support_bundle
 from garuda.observability.tracing import (
     configure_tracing,
     emit_spans_from_events,
@@ -28,10 +35,15 @@ from garuda.observability.trajectory import (
 
 __all__ = [
     "EventTail",
+    "PHASES",
     "Run",
+    "RuntimeMetrics",
+    "TRIAGE_BUCKETS",
     "TrajectoryReader",
     "Turn",
     "build_run",
+    "build_support_bundle",
+    "classify_error",
     "configure_tracing",
     "emit_spans_from_events",
     "find_events_file",

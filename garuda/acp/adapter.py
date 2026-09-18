@@ -14,6 +14,7 @@ does not have.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from pathlib import Path
@@ -57,6 +58,7 @@ class AcpRuntime:
         setup_hint: str = "",
         persist_dir: str | None = None,
         cwd: str | None = None,
+        metrics=None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
@@ -65,6 +67,7 @@ class AcpRuntime:
         self._setup_hint = setup_hint
         self._persist_dir = persist_dir
         self._cwd = cwd
+        self._metrics = metrics
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -107,6 +110,20 @@ class AcpRuntime:
         """Harness-supplied quota, passed through untouched. None means unknown —
         never estimated, never zero-filled."""
         return dict(self._quota) if self._quota is not None else None
+
+    @property
+    def metrics(self):
+        """The attached metrics recorder, if any."""
+        return self._metrics
+
+    def _timed(self, phase: str):
+        if self._metrics is None:
+            return contextlib.nullcontext()
+        return self._metrics.timed(phase)
+
+    def _note_error(self, exc: BaseException) -> None:
+        if self._metrics is not None:
+            self._metrics.note_error(exc)
 
     async def health(self) -> HealthStatus:
         if self._process is None or not self._process.is_running:
@@ -186,22 +203,26 @@ class AcpRuntime:
         self._garuda_session_id = session_id or str(uuid.uuid4())
         process = AcpProcess(self._argv, extra_env=self._extra_env, cwd=self._cwd)
         try:
-            await process.launch()
-            handshake = await process.initialize()
-            self._authority = negotiate(
-                self._policy,
-                AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
-            )
+            with self._timed("startup"):
+                await process.launch()
+                handshake = await process.initialize()
+            with self._timed("negotiation"):
+                self._authority = negotiate(
+                    self._policy,
+                    AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
+                )
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
             self._agent_session_id = await process.session_new()
         except AcpProtocolError as exc:
+            self._note_error(exc)
             await process.close()
             self._move(LifecycleState.FAILED)
             if "speaks ACP" in str(exc) and self._setup_hint:
                 raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
             raise
-        except Exception:
+        except Exception as exc:
+            self._note_error(exc)
             await process.close()
             self._move(LifecycleState.FAILED)
             raise
@@ -239,16 +260,19 @@ class AcpRuntime:
             self._process.session_prompt(self._agent_session_id or "", text)
         )
         try:
-            if timeout is not None:
-                result = await asyncio.wait_for(self._drain_until_done(prompt_task), timeout)
-            else:
-                result = await self._drain_until_done(prompt_task)
+            with self._timed("turn"):
+                if timeout is not None:
+                    result = await asyncio.wait_for(self._drain_until_done(prompt_task), timeout)
+                else:
+                    result = await self._drain_until_done(prompt_task)
         except TimeoutError as exc:
             prompt_task.cancel()
             await self._close_process()
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed", "reason": "timeout"})
             self._move(LifecycleState.FAILED)
-            raise AcpTimeoutError("prompt exceeded its deadline") from exc
+            timeout_error = AcpTimeoutError("prompt exceeded its deadline")
+            self._note_error(timeout_error)
+            raise timeout_error from exc
         except AcpCancelledError:
             self._absorb(self._normalizer.finish("cancelled"))
             self._move(LifecycleState.CANCELLING)
@@ -256,6 +280,7 @@ class AcpRuntime:
             self._move(LifecycleState.CLOSED)
             raise
         except AcpError as exc:
+            self._note_error(exc)
             self._absorb(self._normalizer.finish("failed", detail=str(exc)))
             self._move(LifecycleState.FAILED)
             raise
@@ -302,9 +327,10 @@ class AcpRuntime:
         if self._process is None:
             raise RuntimeStartError("runtime is not started")
         self._pending_approvals.discard(approval_id)
-        await self._process.session_approve(
-            self._agent_session_id or "", approval_id, allow
-        )
+        with self._timed("approval"):
+            await self._process.session_approve(
+                self._agent_session_id or "", approval_id, allow
+            )
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -330,7 +356,8 @@ class AcpRuntime:
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "closed"})
         self._move(LifecycleState.CLOSED)
         if self._process is not None:
-            await self._process.close()
+            with self._timed("cleanup"):
+                await self._process.close()
 
     def _info(self) -> RuntimeInfo:
         names: set[str] = set()
