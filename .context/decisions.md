@@ -66,6 +66,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Traces gain lanes, not rewrites: unified segments overlay identity/authority/recovery on the untouched native rebuild, normalized ACP trails persist per session, and exports carry counts only.
 - Runtime metrics record per-adapter phases with triage buckets while native accounting stays pinned; support bundles redact every string and tally kinds instead of copying payloads.
 - Inbound ACP serving reuses the runtime boundary with per-instance sessions: stdio only, version-checked both directions, unknown methods fail closed, and no listener exists to misconfigure.
+- Direct transports need six admission artifacts (https citation, capabilities, double, opt-in test, cost semantics, migration notes); anything private is inadmissible and subscription access stays behind ACP.
 - The contract matrix generates scenarios from declared capabilities with skips named, not hidden; interactive and never-answering profiles prove their lifecycle under driven checks instead of the unattended suite; any failure blocks support.
 - Live harness checks are gated, capped, and reported: env-selected harnesses only, one trivial prompt in a fixture workspace, exact harness/version/auth/elapsed in the report, and CI spends nothing by never opting in.
 - Eval comparisons keep model and harness as separate dimensions with unknown costs never zero-filled, prompts hashed instead of stored, per-cell trial counts, and no vendor claim from thin cells.
