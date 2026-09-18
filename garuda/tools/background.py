@@ -17,6 +17,7 @@ import shlex
 import uuid
 from dataclasses import dataclass
 
+from garuda.core.side_effects import kill_tree_command
 from garuda.tools.protocol import ToolContext
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
@@ -54,21 +55,8 @@ def _unsupported_backend(env: Environment) -> str | None:
 
 
 def _kill_process_group(pid: str, signal_name: str) -> str:
-    """Portable shell that signals a pid, its process group, and direct children.
-
-    Uses ``/bin/kill -s SIGNAL --`` so dash (Ubuntu ``/bin/sh``) and bash agree
-    on negative-pgid syntax. ``pgrep -P`` catches children when the recorded pid
-    was never a group leader — the failure mode that orphans ``sleep`` under a
-    killed launcher shell.
-    """
-    if not pid.isdigit():
-        return "true"
-    return (
-        f"/bin/kill -s {signal_name} -- -{pid} 2>/dev/null || true; "
-        f"/bin/kill -s {signal_name} -- {pid} 2>/dev/null || true; "
-        f'for c in $(pgrep -P {pid} 2>/dev/null); do '
-        f'/bin/kill -s {signal_name} -- "$c" 2>/dev/null || true; done'
-    )
+    """Portable shell that signals a pid, its process group, and descendants."""
+    return kill_tree_command(signal_name, pid)
 
 
 async def reap_session(session_id: str, env: Environment) -> int:
@@ -142,19 +130,20 @@ class BashBackgroundTool:
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
-        # The task must be its own process-group leader, or `kill -- -$pid` in
-        # kill_task/reap_session names some *other* group — the launcher's — and
-        # the kill lands on the shell while its children go on running. setsid
-        # does this where it exists (Linux, containers); macOS ships none, and
-        # there `set -m` gets the same result, because a shell in monitor mode
-        # puts each background job in a group of its own. Verified on darwin: an
-        # unlaunched-by-either `sleep` outlives the group kill; under `set -m` it
-        # does not. ';' not '&&' so the whole chain isn't backgrounded (which
-        # would hold the launcher's stdout pipe open until it exits).
+        # The worker must lead its own session. ``env.execute`` already uses
+        # ``start_new_session``, so util-linux ``setsid`` forks and ``$!`` is the
+        # short-lived parent — Ubuntu CI then kills a dead pid while ``sh script``
+        # keeps running. ``os.setsid()`` in the already-forked child makes ``$!``
+        # the real session leader.
+        starter = (
+            "import os, sys\n"
+            "os.setsid()\n"
+            "os.execvp('sh', ['sh', '-c', sys.argv[1]])\n"
+        )
         launcher = (
             f"mkdir -p {shlex.quote(TASKS_DIR)}; "
-            f"if command -v setsid >/dev/null 2>&1; then _s=setsid; else _s=; set -m; fi; "
-            f"$_s sh -c {shlex.quote(command)} > {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
+            f"python3 -c {shlex.quote(starter)} {shlex.quote(command)} "
+            f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
         )
         result = await env.execute(launcher, timeout=15.0)
         pid = result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else ""
