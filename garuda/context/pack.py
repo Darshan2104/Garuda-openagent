@@ -16,11 +16,17 @@ written pack behind.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
 
 from garuda.context import schemas
+from garuda.context.redact import (
+    assert_safe_for_switch,
+    redact_pack,
+    redact_string_list,
+)
 from garuda.context.schemas import CurrentTask, Handoff
 from garuda.context.state_card import WorkingState
 
@@ -176,7 +182,35 @@ class ContextPackManager:
         return target
 
     def write_current_task(self, doc: CurrentTask, body: str = "") -> Path:
+        """Validate, redact, then publish. Secrets never reach the file; other
+        violations (paths, size, reasoning) block with an actionable error."""
+        doc, body = self._scrub(doc, body)
         return self._publish(CURRENT_TASK_NAME, schemas.render(doc.to_frontmatter(), body))
 
     def write_handoff(self, doc: Handoff, body: str = "") -> Path:
+        doc, body = self._scrub(doc, body, redacted_flag=True)
         return self._publish(HANDOFF_NAME, schemas.render(doc.to_frontmatter(), body))
+
+    @staticmethod
+    def _scrub(doc, body: str, *, redacted_flag: bool = False):
+        """Redact list fields and body, then validate the redacted text."""
+        findings: list = []
+        changes: dict = {}
+        for name in ("acceptance_criteria", "changed_files", "evidence", "blockers"):
+            cleaned, found = redact_string_list(getattr(doc, name))
+            changes[name] = cleaned
+            findings.extend(found)
+        frontmatter = {**doc.to_frontmatter(), **{k: list(v) for k, v in changes.items()}}
+        frontmatter, body, pack_findings = redact_pack(frontmatter, body)
+        findings.extend(pack_findings)
+        # changed_files redaction could theoretically rewrite a path; re-check.
+        assert_safe_for_switch(
+            frontmatter, body, changed_files=tuple(frontmatter.get("changed_files", []))
+        )
+        if findings and redacted_flag:
+            changes["redacted"] = True
+        doc = replace(doc, **changes)
+        if findings:
+            kinds = sorted({f.kind for f in findings})
+            body = body.rstrip() + f"\n\nRedaction: {len(findings)} secret(s) redacted ({', '.join(kinds)}).\n"
+        return doc, body
