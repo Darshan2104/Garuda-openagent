@@ -148,7 +148,12 @@ reported cost does not move when an upstream table does).
 | `acp/` | `protocol.py` — the owned ACP wire subset (JSON-RPC + Content-Length framing, version-pinned, typed transport failures). `client.py` — one managed agent subprocess: minimal child env, process-group launch, stderr diagnostics off the protocol stream, deadlines, cancel, and guaranteed reap. `authority.py` — capability negotiation assigning exactly one owner per tool family (strict policies refused, safe agent-sandbox defaults), with snapshot round-trips into session capability records. `normalize.py` — the
 stateful per-session ACP normalizer: causal ordering (calls before their
 updates), partials preserved exactly once, turn-close vs session-terminal
-rules, raw records as redacted session-local diagnostics. |
+rules, raw records as redacted session-local diagnostics. `adapter.py` — the
+generic `AcpRuntime` every adapter runs the shared conformance suite through
+(launch, version-checked handshake, negotiation, streaming prompt, approvals,
+cancel, close). `fake_agent.py` — the deterministic `python -m` test server
+with capability/streaming/approval/diff/malformed/slow/exit/resume/mismatch
+profiles; stdio only, isolated from workspaces and credentials. |
 
 ## Working on it
 

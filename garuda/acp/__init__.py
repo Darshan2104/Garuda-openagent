@@ -7,6 +7,7 @@ session/cancel, session/update) is small enough to own, and owning it keeps
 every framing, timeout, and cleanup path under test with fake processes.
 """
 
+from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import (
     AgentCapabilities,
     AuthorityMap,
@@ -35,6 +36,7 @@ __all__ = [
     "AcpExitError",
     "AcpNormalizer",
     "AcpProtocolError",
+    "AcpRuntime",
     "AcpTimeoutError",
     "AgentCapabilities",
     "AuthorityMap",
