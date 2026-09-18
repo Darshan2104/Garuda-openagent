@@ -9,6 +9,7 @@ from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
+from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import DEFAULT_MODEL
@@ -38,6 +39,7 @@ class SoftwareAgent:
         mode: str | None = None,
         extra_tools: list[Tool] | None = None,
         load_project_tools: bool | None = None,
+        runtime: str = "native",
     ):
         self.workspace = str(workspace)
         self.model_name = model
@@ -48,6 +50,7 @@ class SoftwareAgent:
         self.docker_image = docker_image
         self.docker_host = docker_host
         self.mode = mode
+        self.runtime_name = runtime
         self._extra_tools: list[Tool] = list(extra_tools or [])
         self._load_project_tools = load_project_tools
 
@@ -71,8 +74,11 @@ class SoftwareAgent:
         """Execute a task and return the agent result.
 
         Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
-        seed the run with a prior session's conversation.
+        seed the run with a prior session's conversation. Non-native runtimes
+        execute one ACP turn per run through the selected harness.
         """
+        if self.runtime_name != "native":
+            return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 
         agents_dir = resolve_agents_dirs(self.workspace, self.agents_dir)
@@ -126,6 +132,34 @@ class SoftwareAgent:
             resume=resume,
         )
 
+    async def _run_acp(self, task: str) -> AgentResult:
+        """One ACP turn through the selected harness, wrapped as an AgentResult."""
+        from garuda.config.agent_home import resolve_agent_home
+        from garuda.interfaces.runtime_cli import load_configured_manifest_dicts, run_acp_task
+        from garuda.runtime.registry import parse_global_manifests
+
+        home = resolve_agent_home(self.workspace)
+        manifests = {
+            m.runtime_id: m
+            for m in parse_global_manifests(
+                load_configured_manifest_dicts(home.global_settings),
+                source="sdk runtimes",
+            )
+        }
+        if self.runtime_name not in manifests:
+            raise ValueError(
+                f"Unknown runtime {self.runtime_name!r}. "
+                "Configure it as a global harness manifest."
+            )
+        summary = await run_acp_task(manifests[self.runtime_name], task)
+        return AgentResult(
+            success=True,
+            final_message=summary.get("final_message", ""),
+            messages=[],
+            turns=summary.get("turn", 1),
+            metadata={"runtime": self.runtime_name, "api": RUNTIME_API_VERSION},
+        )
+
     def conversation(self) -> "Conversation":
         from garuda.sdk.conversation import Conversation
 
@@ -139,4 +173,5 @@ class SoftwareAgent:
             workspace_kind=self.workspace_kind,
             docker_image=self.docker_image,
             docker_host=self.docker_host,
+            runtime=self.runtime_name,
         )
