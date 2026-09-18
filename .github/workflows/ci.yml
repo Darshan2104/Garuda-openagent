@@ -33,10 +33,21 @@ jobs:
         # bubblewrap = the Linux sandbox backend; tmux backs the tmux_exec /
         # tmux_capture tools (those tests skip when it is absent). ripgrep ships on
         # GitHub runners, so grep's rg path is covered, not only its grep -E fallback.
+        # Ubuntu 24.04+ AppArmor blocks unprivileged user namespaces by default,
+        # which makes bwrap fail with ``loopback: Failed RTM_NEWADDR`` before any
+        # command runs — clear that gate on GitHub-hosted Linux runners.
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi
@@ -128,11 +139,17 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi
-
-      - name: Install package and extras (unconstrained, newest resolvable)
         run: pip install -e ".[dev,eval,docs,tui,observability]" --upgrade
 
       - name: Record resolved versions
@@ -167,6 +184,14 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap tmux
+            current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+            if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+              sudo sysctl -w kernel.unprivileged_userns_clone=1
+            fi
+            current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+            if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           else
             brew install tmux
           fi
