@@ -147,6 +147,8 @@ reported cost does not move when an upstream table does).
 `contract_matrix.py` (P1.10: every adapter against the common scenarios from
 declared capabilities, with CI-readable per-adapter JSON reports; the shared
 lifecycle itself lives in `garuda/runtime/conformance.py`).
+`live_harness.py` (P1.11: opt-in single-prompt smoke runs against installed
+harnesses with exact reporting; CI never sets the gate variable).
 
 ## Everything else
 

@@ -56,6 +56,7 @@ class AcpRuntime:
         extra_env: dict[str, str] | None = None,
         setup_hint: str = "",
         persist_dir: str | None = None,
+        cwd: str | None = None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
@@ -63,6 +64,7 @@ class AcpRuntime:
         self._extra_env = dict(extra_env or {})
         self._setup_hint = setup_hint
         self._persist_dir = persist_dir
+        self._cwd = cwd
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -182,7 +184,7 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        process = AcpProcess(self._argv, extra_env=self._extra_env, cwd=self._cwd)
         try:
             await process.launch()
             handshake = await process.initialize()
