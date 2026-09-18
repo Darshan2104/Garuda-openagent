@@ -149,6 +149,8 @@ declared capabilities, with CI-readable per-adapter JSON reports; the shared
 lifecycle itself lives in `garuda/runtime/conformance.py`).
 `live_harness.py` (P1.11: opt-in single-prompt smoke runs against installed
 harnesses with exact reporting; CI never sets the gate variable).
+`harness_matrix.py` (P1.12: model × harness comparison with unknown costs
+kept unknown, hashed prompts, per-cell trial counts, and handoff rates).
 
 ## Everything else
 
