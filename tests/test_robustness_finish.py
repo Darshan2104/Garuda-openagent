@@ -93,14 +93,15 @@ class _SweepEnv:
 
     async def execute(self, command, timeout=None, cwd=None):
         self.ran.append(command)
+        # Kill commands may embed ``pgrep -P`` to reap children; classify kill first.
+        if "/bin/kill" in command or "kill -" in command:
+            if not self._survives:
+                self._alive = False
+            return _exec()
         if "pgrep" in command:
             self._probes += 1
             visible = self._alive and self._probes > self._visible_after
             return _exec(stdout=self.pids if visible else "")
-        if "kill -" in command:
-            if not self._survives:
-                self._alive = False
-            return _exec()
         if command.startswith("ss "):
             return _exec(stdout="LISTEN 0 128 0.0.0.0:9999")
         return _exec()
@@ -128,9 +129,9 @@ async def test_sweep_kills_agent_started_process():
     await ledger.sweep(env)
     assert ledger.swept and ledger.swept[0]["killed"] is True
     assert ledger.summary()["processes_surviving"] == []
-    assert any("kill -TERM" in c for c in env.ran)
+    assert any("kill -s TERM" in c for c in env.ran)
     # The sweep must never be able to take down the container it runs in.
-    kill_cmd = next(c for c in env.ran if "kill -TERM" in c)
+    kill_cmd = next(c for c in env.ran if "kill -s TERM" in c)
     assert '"$p" != "1"' in kill_cmd
 
 
@@ -173,7 +174,7 @@ async def test_sweep_confirms_absence_rather_than_assuming_it():
     assert ledger.summary()["processes_surviving"] == ["python3 /app/puzzle_server.py"]
     assert "STILL RUNNING" in ledger.render()
     # It escalated instead of giving up after one TERM.
-    assert sum(1 for c in env.ran if "kill -KILL" in c) >= 1
+    assert sum(1 for c in env.ran if "kill -s KILL" in c) >= 1
 
 
 async def test_sweep_reports_a_process_that_was_already_gone():
@@ -263,14 +264,15 @@ async def test_the_sweep_finds_a_process_whose_argv_no_longer_matches():
     class _RenamedEnv(_SweepEnv):
         async def execute(self, command, timeout=None, cwd=None):
             self.ran.append(command)
+            # Kill may embed ``pgrep -P``; classify it before pattern probes.
+            if "/bin/kill" in command or "kill -" in command:
+                self._alive = False
+                return _exec()
             if "pgrep" in command:
                 return _exec(stdout="")  # the argv no longer resembles the command
             if "ps -Ao" in command:
                 self._probes += 1
                 return _exec(stdout=self.pids if self._alive else "")
-            if "kill -" in command:
-                self._alive = False
-                return _exec()
             return _exec()
 
     ledger = _launched()
