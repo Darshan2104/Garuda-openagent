@@ -53,6 +53,24 @@ def _unsupported_backend(env: Environment) -> str | None:
     return None
 
 
+def _kill_process_group(pid: str, signal_name: str) -> str:
+    """Portable shell that signals a pid, its process group, and direct children.
+
+    Uses ``/bin/kill -s SIGNAL --`` so dash (Ubuntu ``/bin/sh``) and bash agree
+    on negative-pgid syntax. ``pgrep -P`` catches children when the recorded pid
+    was never a group leader — the failure mode that orphans ``sleep`` under a
+    killed launcher shell.
+    """
+    if not pid.isdigit():
+        return "true"
+    return (
+        f"/bin/kill -s {signal_name} -- -{pid} 2>/dev/null || true; "
+        f"/bin/kill -s {signal_name} -- {pid} 2>/dev/null || true; "
+        f'for c in $(pgrep -P {pid} 2>/dev/null); do '
+        f'/bin/kill -s {signal_name} -- "$c" 2>/dev/null || true; done'
+    )
+
+
 async def reap_session(session_id: str, env: Environment) -> int:
     """Kill any still-running background tasks for a session (called at run end).
 
@@ -66,10 +84,7 @@ async def reap_session(session_id: str, env: Environment) -> int:
         if task is None:
             continue
         try:
-            await env.execute(
-                f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
-                timeout=10.0,
-            )
+            await env.execute(_kill_process_group(task.pid, "KILL"), timeout=10.0)
         except Exception:
             logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
     return len(keys)
@@ -238,11 +253,11 @@ class KillTaskTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        # Negative pid targets the whole process group (setsid leader + children);
-        # the plain-pid KILL is a fallback for the leader itself.
+        # Negative pgid targets the whole process group (setsid leader + children);
+        # plain-pid and ``pgrep -P`` cover leaders that never owned a group.
         await env.execute(
-            f"kill -TERM -{task.pid} 2>/dev/null; sleep 0.2; "
-            f"kill -KILL -{task.pid} 2>/dev/null; kill -KILL {task.pid} 2>/dev/null || true",
+            f"{_kill_process_group(task.pid, 'TERM')}; sleep 0.2; "
+            f"{_kill_process_group(task.pid, 'KILL')}",
             timeout=15.0,
         )
         _TASKS.pop(key, None)
