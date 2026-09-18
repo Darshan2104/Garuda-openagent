@@ -70,7 +70,11 @@ records which confinement actually holds. `shell.py` is the opt-in persistent
 shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 heartbeat TTL with audited stale takeover, corrupt leases fail closed, user
-files never touched) plus worktree isolation keys and creation hooks.
+files never touched) plus worktree isolation keys and creation hooks. `diff.py`
+manages the authoritative delta: baseline commit/status/fingerprints, per-file
+added/modified/deleted/renamed/untracked with preexisting dirt flagged
+separately, bounded diff text recoverable from disk, ACP hints reconciled
+against filesystem truth and never applied.
 
 ## `context/` — fitting the conversation in the window
 
