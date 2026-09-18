@@ -61,6 +61,7 @@ garuda = [
     "agents/defaults/*.yaml",
     "agents/defaults/*.md",
     "config/defaults/*.yaml",
+    "acp/builtin/*.json",
     # The dashboard frontend. Without this the wheel installs a server that
     # serves a blank page; tests/test_web_static.py guards it.
     "interfaces/web/static/*",

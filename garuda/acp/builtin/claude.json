@@ -1,0 +1,13 @@
+{
+  "runtime_id": "claude",
+  "kind": "acp",
+  "command": ["claude-agent-acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "Claude Code via the registry ACP adapter (@agentclientprotocol/claude-agent-acp). Subscription access stays in your Claude Code login; Garuda never reads it.",
+  "warnings": [],
+  "version_args": ["claude-agent-acp", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install Node.js 20+ and Claude Code, then authenticate with your Claude Pro/Max login. 2. Run: npm install -g @agentclientprotocol/claude-agent-acp. 3. Verify: claude-agent-acp --version. Garuda never reads ~/.claude/.credentials.json or the macOS Keychain entry; do not set ANTHROPIC_API_KEY if you want subscription billing."
+}
