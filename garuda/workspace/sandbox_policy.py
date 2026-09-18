@@ -147,9 +147,13 @@ def build_bwrap_command(
     * ``--unshare-net`` unless ``allow_network`` — blocks egress.
     * targeted ``--ro-bind`` of only the paths that exist, not the whole root.
     """
+    # ``--unshare-user`` first: non-setuid bwrap needs a user namespace so the
+    # nested netns can bring up loopback (otherwise Ubuntu 24.04+ / GitHub
+    # runners fail with ``bwrap: loopback: Failed RTM_NEWADDR``).
     argv = [
         bwrap_path,
         "--die-with-parent",
+        "--unshare-user",
         "--unshare-pid",
         "--unshare-uts",
         "--unshare-ipc",
