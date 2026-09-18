@@ -185,7 +185,9 @@ loudly with setup guidance (no silent fallback); version mismatches re-raise
 with upgrade guidance. Non-builtin commands are discovered as generic
 adapters with standard capabilities only. Login state renders from manifests
 (`login` flows are user-driven only) with quota pass-through and never
-estimates; no code under `acp/` may name a credential store. |
+estimates; no code under `acp/` may name a credential store. `server.py` —
+Garuda as a stdio ACP server (P2.1) driving runtimes behind the same boundary,
+per-instance sessions, no sockets. |
 
 ## Working on it
 
