@@ -395,14 +395,18 @@ class SideEffectLedger:
         joined = " ".join(p for p in pids if p.isdigit())
         if not joined:
             return
-        # The negative form targets the whole group, which is what catches a
-        # launcher's children; the plain form covers a process that never became
-        # a group leader. Either may fail harmlessly, so neither gates the other.
+        # ``/bin/kill -s SIGNAL --`` is portable across dash and bash: a bare
+        # ``kill -TERM -$p`` is easy to misparse, and a failed group signal plus a
+        # successful single-pid kill orphans children — the Ubuntu CI failure mode.
+        # ``pgrep -P`` reaps direct children when the pid was never a group leader.
         await env.execute(
             f"for p in {joined}; do "
             f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
-            f"kill -{signal_name} -$p 2>/dev/null || true; "
-            f"kill -{signal_name} $p 2>/dev/null || true; fi; done",
+            f"/bin/kill -s {signal_name} -- -$p 2>/dev/null || true; "
+            f"/bin/kill -s {signal_name} -- $p 2>/dev/null || true; "
+            f'for c in $(pgrep -P "$p" 2>/dev/null); do '
+            f'/bin/kill -s {signal_name} -- "$c" 2>/dev/null || true; done; '
+            f"fi; done",
             timeout=30.0,
         )
 
