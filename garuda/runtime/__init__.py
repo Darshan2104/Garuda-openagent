@@ -6,6 +6,7 @@ loops against each other. Runtimes implement `AgentRuntime`; the orchestrator
 above it sees only `RuntimeInfo` and `RuntimeEvent`.
 """
 
+from garuda.runtime.conformance import run_conformance_suite
 from garuda.runtime.events import (
     TERMINAL_LIFECYCLE_STATES,
     RuntimeEvent,
@@ -110,4 +111,5 @@ __all__ = [
     "record_cancel",
     "recover",
     "report_to_dict",
+    "run_conformance_suite",
 ]
