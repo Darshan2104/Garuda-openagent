@@ -16,6 +16,7 @@ from garuda.acp.authority import (
     ToolFamily,
     negotiate,
 )
+from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import (
     ACP_VERSION,
     AcpCancelledError,
@@ -32,6 +33,7 @@ __all__ = [
     "AcpCancelledError",
     "AcpError",
     "AcpExitError",
+    "AcpNormalizer",
     "AcpProtocolError",
     "AcpTimeoutError",
     "AgentCapabilities",
