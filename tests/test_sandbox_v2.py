@@ -57,6 +57,7 @@ def test_bwrap_command_hardening():
         "echo hi", "/work", "/usr/bin/bwrap", policy, {"PATH": "/usr/bin"}
     )
     assert "--clearenv" in argv
+    assert "--unshare-user" in argv  # needed for loopback in the netns
     assert "--unshare-net" in argv  # network denied
     assert "--ro-bind" not in argv[:2] or True
     # workspace is bind-mounted writable
