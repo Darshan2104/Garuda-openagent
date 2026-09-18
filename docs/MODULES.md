@@ -129,7 +129,10 @@ transfer, with rollback and cancellation returning to one resumable owner and a
 typed event per move. `recovery.py` classifies restarts from persisted records
 (resumable, rolled-back, ambiguous), reaps orphan agent children with
 verification, records cancellations at turn/switch/process boundaries, and
-never invents success — a bare exit proves nothing.
+never invents success — a bare exit proves nothing. `router.py` ranks
+runtimes deterministically from capability, budget, availability, and quality
+history with logged rationale; unknown costs never read free, pins win or
+fail loudly, and switching needs confirmation at a boundary.
 
 ## `interfaces/` — entry points
 
