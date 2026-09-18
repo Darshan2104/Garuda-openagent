@@ -57,6 +57,52 @@ MAX_SWEEP_TARGETS = 24
 # logs, so it never shows up in a `git diff` of the workspace.
 LAUNCH_DIR = "/tmp/garuda-launch"
 
+# Self-contained so it still works inside docker/remote where the Garuda package
+# may not be installed. ``os.kill(-pid, sig)`` is the portable process-group
+# form; dash's builtin ``kill -$pid`` is not.
+_KILL_TREE_PY = """
+import os, signal, subprocess, sys
+sig = getattr(signal, "SIG" + sys.argv[1])
+seen = set()
+
+def hit(pid):
+    if pid in seen or pid <= 1:
+        return
+    seen.add(pid)
+    for target in (-pid, pid):
+        try:
+            os.kill(target, sig)
+        except OSError:
+            pass
+    for flag in ("-P", "-g"):
+        try:
+            out = subprocess.check_output(
+                ["pgrep", flag, str(pid)], text=True, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            out = ""
+        for raw in out.split():
+            try:
+                hit(int(raw))
+            except ValueError:
+                pass
+
+for raw in sys.argv[2:]:
+    try:
+        hit(int(raw))
+    except ValueError:
+        pass
+"""
+
+
+def kill_tree_command(signal_name: str, *pids: str) -> str:
+    """Shell command that signals each pid, its group, children, and group mates."""
+    nums = [p for p in pids if isinstance(p, str) and p.isdigit() and p not in {"0", "1"}]
+    if not nums:
+        return "true"
+    args = " ".join(shlex.quote(part) for part in (signal_name, *nums))
+    return f"python3 -c {shlex.quote(_KILL_TREE_PY)} {args}"
+
 
 def wrap_launch(command: str, path: str) -> str:
     """``command`` plus a probe recording the launching shell's pid and group.
@@ -344,7 +390,10 @@ class SideEffectLedger:
                 ("KILL", SWEEP_KILL_GRACE_SEC),
                 ("KILL", SWEEP_KILL_GRACE_SEC),
             ):
-                await self._signal(env, pids, signal_name)
+                targets = list(pids)
+                if pgid:
+                    targets.append(pgid)
+                await self._signal(env, targets, signal_name)
                 await asyncio.sleep(grace)
                 pids = await self._probe(env, pgid, pattern)
                 if not pids:
@@ -392,23 +441,7 @@ class SideEffectLedger:
 
     async def _signal(self, env: Any, pids: list[str], signal_name: str) -> None:
         """Signal each pid and its process group, ignoring the ones already gone."""
-        joined = " ".join(p for p in pids if p.isdigit())
-        if not joined:
-            return
-        # ``/bin/kill -s SIGNAL --`` is portable across dash and bash: a bare
-        # ``kill -TERM -$p`` is easy to misparse, and a failed group signal plus a
-        # successful single-pid kill orphans children — the Ubuntu CI failure mode.
-        # ``pgrep -P`` reaps direct children when the pid was never a group leader.
-        await env.execute(
-            f"for p in {joined}; do "
-            f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
-            f"/bin/kill -s {signal_name} -- -$p 2>/dev/null || true; "
-            f"/bin/kill -s {signal_name} -- $p 2>/dev/null || true; "
-            f'for c in $(pgrep -P "$p" 2>/dev/null); do '
-            f'/bin/kill -s {signal_name} -- "$c" 2>/dev/null || true; done; '
-            f"fi; done",
-            timeout=30.0,
-        )
+        await env.execute(kill_tree_command(signal_name, *pids), timeout=30.0)
 
     async def _listeners(self, env: Any) -> str:
         for probe in _LISTENER_PROBES:

@@ -93,8 +93,9 @@ class _SweepEnv:
 
     async def execute(self, command, timeout=None, cwd=None):
         self.ran.append(command)
-        # Kill commands may embed ``pgrep -P`` to reap children; classify kill first.
-        if "/bin/kill" in command or "kill -" in command:
+        # Kill commands may embed ``pgrep`` inside a Python tree-walk; classify
+        # signal delivery first so a sweep that actually kills still looks killed.
+        if "os.kill" in command or "/bin/kill" in command or "kill -" in command:
             if not self._survives:
                 self._alive = False
             return _exec()
@@ -129,10 +130,10 @@ async def test_sweep_kills_agent_started_process():
     await ledger.sweep(env)
     assert ledger.swept and ledger.swept[0]["killed"] is True
     assert ledger.summary()["processes_surviving"] == []
-    assert any("kill -s TERM" in c for c in env.ran)
+    assert any("os.kill" in c and "TERM" in c for c in env.ran)
     # The sweep must never be able to take down the container it runs in.
-    kill_cmd = next(c for c in env.ran if "kill -s TERM" in c)
-    assert '"$p" != "1"' in kill_cmd
+    kill_cmd = next(c for c in env.ran if "os.kill" in c and "TERM" in c)
+    assert "pid <= 1" in kill_cmd
 
 
 async def test_sweep_is_a_noop_without_background_processes():
@@ -174,7 +175,7 @@ async def test_sweep_confirms_absence_rather_than_assuming_it():
     assert ledger.summary()["processes_surviving"] == ["python3 /app/puzzle_server.py"]
     assert "STILL RUNNING" in ledger.render()
     # It escalated instead of giving up after one TERM.
-    assert sum(1 for c in env.ran if "kill -s KILL" in c) >= 1
+    assert sum(1 for c in env.ran if "os.kill" in c and "KILL" in c) >= 1
 
 
 async def test_sweep_reports_a_process_that_was_already_gone():
@@ -265,7 +266,7 @@ async def test_the_sweep_finds_a_process_whose_argv_no_longer_matches():
         async def execute(self, command, timeout=None, cwd=None):
             self.ran.append(command)
             # Kill may embed ``pgrep -P``; classify it before pattern probes.
-            if "/bin/kill" in command or "kill -" in command:
+            if "os.kill" in command or "/bin/kill" in command or "kill -" in command:
                 self._alive = False
                 return _exec()
             if "pgrep" in command:
