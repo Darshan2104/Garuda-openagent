@@ -166,7 +166,9 @@ with capability/streaming/approval/diff/malformed/slow/exit/resume/mismatch
 profiles; stdio only, isolated from workspaces and credentials. `broker.py` —
 the one approval path: engine ceilings applied to native and ACP requests,
 parked approvals with timeout and disconnect denial, every outcome persisted
-to the session, strict-policy gaps reported before anything runs. |
+to the session, strict-policy gaps reported before anything runs. `catalog.py` —
+built-in stubs plus discovery (executable, probed version, login state,
+capabilities, setup guidance) that never logs in, installs, or reads tokens. |
 
 ## Working on it
 
