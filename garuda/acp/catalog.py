@@ -24,7 +24,30 @@ from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
 
 BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
-BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json", "cursor.json", "opencode.json")
+BUILTIN_MANIFEST_FILES = (
+    "claude.json",
+    "codex.json",
+    "cursor.json",
+    "opencode.json",
+    "pi.json",
+    "goose.json",
+)
+
+#: Tested (id, command) pairs. Anything else is a generic adapter: same wire
+#: contract, but no vendor-specific guarantees (modes, models, extras).
+BUILTIN_COMMANDS = {
+    "claude": ("claude-agent-acp",),
+    "codex": ("codex-acp",),
+    "cursor": ("cursor-agent", "acp"),
+    "opencode": ("opencode", "acp"),
+    "pi": ("pi-acp",),
+    "goose": ("goose", "acp"),
+}
+
+GENERIC_WARNING = (
+    "generic adapter: standard capability set only; "
+    "vendor-specific behavior is not guaranteed"
+)
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -163,6 +186,10 @@ def discover(
 
 def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> DiscoveredRuntime:
     warnings: list[str] = list(manifest.warnings)
+    if manifest.kind is not RuntimeKind.NATIVE and tuple(manifest.command or ()) != (
+        BUILTIN_COMMANDS.get(manifest.runtime_id, ())
+    ):
+        warnings.append(GENERIC_WARNING)
     if manifest.kind is RuntimeKind.NATIVE:
         return DiscoveredRuntime(
             runtime_id=manifest.runtime_id,
