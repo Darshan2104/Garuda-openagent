@@ -95,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deterministic fake ACP agent.")
     parser.add_argument("--profile", default="success")
     parser.add_argument("--state-file", default=None)
+    parser.add_argument("--quota-json", default=None)
     args = parser.parse_args(argv)
     profile = args.profile
     capabilities = CAPABILITY_PROFILES.get(
@@ -110,14 +111,17 @@ def main(argv: list[str] | None = None) -> int:
             if method == "initialize":
                 if profile == "version-mismatch":
                     _result(call_id, {"protocolVersion": "99.99"})
-                else:
-                    _result(
-                        call_id,
-                        {
-                            "protocolVersion": "0.4",
-                            "agentCapabilities": capabilities,
-                        },
-                    )
+                    continue
+                hello: dict = {
+                    "protocolVersion": "0.4",
+                    "agentCapabilities": capabilities,
+                }
+                if args.quota_json:
+                    try:
+                        hello["quota"] = json.loads(args.quota_json)
+                    except ValueError:
+                        pass
+                _result(call_id, hello)
             elif method == "session/new":
                 sessions += 1
                 state = _load_state(args.state_file)

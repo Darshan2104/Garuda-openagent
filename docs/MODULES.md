@@ -175,7 +175,9 @@ paths documented as untouchable) with `adapter_for_manifest` and
 `builtin_manifest_dicts`. `require_acp_argv` refuses unavailable ACP paths
 loudly with setup guidance (no silent fallback); version mismatches re-raise
 with upgrade guidance. Non-builtin commands are discovered as generic
-adapters with standard capabilities only. |
+adapters with standard capabilities only. Login state renders from manifests
+(`login` flows are user-driven only) with quota pass-through and never
+estimates; no code under `acp/` may name a credential store. |
 
 ## Working on it
 
