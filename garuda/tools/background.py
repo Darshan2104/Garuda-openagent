@@ -13,10 +13,12 @@ on that backend — see :data:`BWRAP_UNSUPPORTED`.
 """
 
 import asyncio
+import contextlib
 import logging
 import shlex
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from garuda.core.side_effects import apply_kill_tree, kill_tree_command
 from garuda.tools.protocol import ToolContext
@@ -81,6 +83,9 @@ async def reap_session(session_id: str, env: Environment) -> int:
             continue
         try:
             await _deliver_kill(env, task.pid, "KILL", timeout=10.0)
+            if task.process is not None:
+                with contextlib.suppress(ProcessLookupError, TimeoutError, asyncio.TimeoutError):
+                    await asyncio.wait_for(task.process.wait(), timeout=2.0)
         except Exception:
             logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
     return len(keys)
@@ -92,9 +97,36 @@ class BackgroundTask:
     pid: str
     command: str
     log_path: str
+    # LocalEnvironment spawns keep the asyncio handle so kill can wait without
+    # leaving a zombie; remote/docker launches only have a pid string.
+    process: asyncio.subprocess.Process | None = None
 
 
 _TASKS: dict[tuple[str, str], BackgroundTask] = {}
+
+
+async def _spawn_local(
+    env: Environment, command: str, log_path: str
+) -> tuple[str, asyncio.subprocess.Process]:
+    """Start ``command`` as its own session leader in this process.
+
+    Avoids the shell ``&`` / ``$!`` path: on Ubuntu that path recorded the wrong
+    pid when nested ``setsid`` forked, and group kills then missed grandchildren.
+    """
+    Path(TASKS_DIR).mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "wb")  # noqa: SIM115 — handed to the child
+    try:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=getattr(env, "workspace_root", None),
+            stdout=log_file,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    finally:
+        log_file.close()
+    return str(process.pid), process
 
 
 def _task_key(ctx: ToolContext, task_id: str) -> tuple[str, str]:
@@ -138,31 +170,51 @@ class BashBackgroundTool:
         command = arguments["command"]
         task_id = uuid.uuid4().hex[:8]
         log_path = f"{TASKS_DIR}/{task_id}.log"
-        # The worker must lead its own session. ``env.execute`` already uses
-        # ``start_new_session``, so util-linux ``setsid`` forks and ``$!`` is the
-        # short-lived parent — Ubuntu CI then kills a dead pid while ``sh script``
-        # keeps running. ``os.setsid()`` in the already-forked child makes ``$!``
-        # the real session leader.
-        starter = (
-            "import os, sys\n"
-            "os.setsid()\n"
-            "os.execvp('sh', ['sh', '-c', sys.argv[1]])\n"
-        )
-        launcher = (
-            f"mkdir -p {shlex.quote(TASKS_DIR)}; "
-            f"python3 -c {shlex.quote(starter)} {shlex.quote(command)} "
-            f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
-        )
-        result = await env.execute(launcher, timeout=15.0)
-        pid = result.stdout.strip().splitlines()[-1].strip() if result.stdout.strip() else ""
-        if result.exit_code != 0 or not pid.isdigit():
-            return ToolResult(
-                tool_call_id="",
-                content=f"Failed to start background task: {result.stderr or result.stdout}",
-                is_error=True,
+        process = None
+        if type(env).__name__ == "LocalEnvironment":
+            try:
+                pid, process = await _spawn_local(env, command, log_path)
+            except OSError as exc:
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"Failed to start background task: {exc}",
+                    is_error=True,
+                )
+        else:
+            # Remote/docker: ``env.execute`` is already a session leader, so
+            # util-linux ``setsid`` would fork and make ``$!`` the dead parent.
+            # ``os.setsid()`` in the already-forked child keeps ``$!`` correct.
+            starter = (
+                "import os, sys\n"
+                "os.setsid()\n"
+                "os.execvp('sh', ['sh', '-c', sys.argv[1]])\n"
             )
+            launcher = (
+                f"mkdir -p {shlex.quote(TASKS_DIR)}; "
+                f"python3 -c {shlex.quote(starter)} {shlex.quote(command)} "
+                f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
+            )
+            result = await env.execute(launcher, timeout=15.0)
+            pid = (
+                result.stdout.strip().splitlines()[-1].strip()
+                if result.stdout.strip()
+                else ""
+            )
+            if result.exit_code != 0 or not pid.isdigit():
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"Failed to start background task: "
+                        f"{result.stderr or result.stdout}"
+                    ),
+                    is_error=True,
+                )
         _TASKS[_task_key(ctx, task_id)] = BackgroundTask(
-            task_id=task_id, pid=pid, command=command, log_path=log_path
+            task_id=task_id,
+            pid=pid,
+            command=command,
+            log_path=log_path,
+            process=process,
         )
         return ToolResult(
             tool_call_id="",
@@ -250,12 +302,14 @@ class KillTaskTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        # Negative pgid targets the whole process group (setsid leader + children);
-        # plain-pid and ``pgrep -P`` cover leaders that never owned a group.
+        # Collect-then-signal in apply_kill_tree; TERM then KILL for stubborn children.
         await _deliver_kill(env, task.pid, "TERM", timeout=15.0)
         if type(env).__name__ == "LocalEnvironment":
             await asyncio.sleep(0.2)
         await _deliver_kill(env, task.pid, "KILL", timeout=15.0)
+        if task.process is not None:
+            with contextlib.suppress(ProcessLookupError):
+                await asyncio.wait_for(task.process.wait(), timeout=2.0)
         _TASKS.pop(key, None)
         return ToolResult(
             tool_call_id="",

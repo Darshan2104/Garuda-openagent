@@ -63,20 +63,18 @@ LAUNCH_DIR = "/tmp/garuda-launch"
 # Self-contained so it still works inside docker/remote where the Garuda package
 # may not be installed. ``os.kill(-pid, sig)`` is the portable process-group
 # form; dash's builtin ``kill -$pid`` is not.
+# Collect descendants *before* signalling. Killing a parent first reparents its
+# children to init and clears ``pgrep -P``, which is exactly how Ubuntu CI left
+# ``sleep`` / ``server.py`` orphans after a "successful" group kill.
 _KILL_TREE_PY = """
 import os, signal, subprocess, sys
 sig = getattr(signal, "SIG" + sys.argv[1])
-seen = set()
+roots, seen, ordered = [], set(), []
 
-def hit(pid):
+def collect(pid):
     if pid in seen or pid <= 1:
         return
     seen.add(pid)
-    for target in (-pid, pid):
-        try:
-            os.kill(target, sig)
-        except OSError:
-            pass
     for flag in ("-P", "-g"):
         try:
             out = subprocess.check_output(
@@ -86,32 +84,42 @@ def hit(pid):
             out = ""
         for raw in out.split():
             try:
-                hit(int(raw))
+                collect(int(raw))
             except ValueError:
                 pass
+    ordered.append(pid)
 
 for raw in sys.argv[2:]:
     try:
-        hit(int(raw))
+        roots.append(int(raw))
     except ValueError:
         pass
+for root in roots:
+    collect(root)
+for pid in ordered:
+    for target in (-pid, pid):
+        try:
+            os.kill(target, sig)
+        except OSError:
+            pass
 """
 
 
 def apply_kill_tree(signal_name: str, *pids: str) -> None:
-    """Signal pids from this process. Used on LocalEnvironment so quoting cannot drop the kill."""
+    """Signal pids from this process. Used on LocalEnvironment so quoting cannot drop the kill.
+
+    Walks children/group mates first, then signals leaves-before-roots. Signalling
+    a parent before collecting orphans the grandchildren under init — the Ubuntu
+    pinned-CI failure mode for background reaping.
+    """
     sig = getattr(signal, "SIG" + signal_name)
     seen: set[int] = set()
+    ordered: list[int] = []
 
-    def hit(pid: int) -> None:
+    def collect(pid: int) -> None:
         if pid in seen or pid <= 1:
             return
         seen.add(pid)
-        for target in (-pid, pid):
-            try:
-                os.kill(target, sig)
-            except OSError:
-                pass
         for flag in ("-P", "-g"):
             try:
                 out = subprocess.check_output(
@@ -121,13 +129,20 @@ def apply_kill_tree(signal_name: str, *pids: str) -> None:
                 out = ""
             for raw in out.split():
                 try:
-                    hit(int(raw))
+                    collect(int(raw))
                 except ValueError:
                     pass
+        ordered.append(pid)
 
     for raw in pids:
         if isinstance(raw, str) and raw.isdigit():
-            hit(int(raw))
+            collect(int(raw))
+    for pid in ordered:
+        for target in (-pid, pid):
+            try:
+                os.kill(target, sig)
+            except OSError:
+                pass
 
 
 def kill_tree_command(signal_name: str, *pids: str) -> str:
