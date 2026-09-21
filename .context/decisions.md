@@ -231,3 +231,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - EOF cleanup cancels pending turns and closes sessions/writers under a bound.
   Native server sessions retain and close the MCP manager returned by setup so
   editor disconnects do not leak subprocess resources.
+## 2026-09-26 — P1 initial runtime selection (issue #77, part of #74)
+
+- Initial selection is its own layer (`garuda/runtime/selection.py`, `Initial*`/`Selection*` names) beside the P2 policy router (`router.py`, `Routing*` names); neither imports the other.
+- Task regexes are global-trust-only; project routes auto-select only when global config sets `trust_project_routes`, otherwise recorded as recommendations.
+- Trait detection is bounded direct-filesystem inspection (no shell, no project import, no symlink following); startup fallback requires an unchanged baseline and fails closed outside a repository.

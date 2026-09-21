@@ -150,6 +150,16 @@ never invents success — a bare exit proves nothing. Only positive, isolated
 process-group leaders recorded against a known runtime/session may be reaped;
 pre- and post-reap indeterminate liveness, missing checkpoints, native identity
 mismatch, or invalid ACP authority snapshots refuse startup/resume.
+`router.py` ranks
+runtimes deterministically from capability, budget, availability, and quality
+history with logged rationale; unknown costs never read free, pins win or
+fail loudly, and switching needs confirmation at a boundary. `selection.py`
+is the P1 initial-only selector (issue #77): explicit → profile pin → first
+trusted deterministic rule → reserved classifier slot (#80) → configured
+default → built-in native, with bounded side-effect-free trait detection,
+trusted-only task regexes, pre-start validation, persisted rationale, and
+startup fallback only on an unchanged baseline. It shares no type names
+with `router.py` (P2 #49) and exposes no handoff API.
 
 ## `interfaces/` — entry points
 
