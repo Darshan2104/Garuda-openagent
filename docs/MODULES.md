@@ -211,6 +211,16 @@ evidence that classification does not consume yet. Only `AcpRuntime(store=…)`
 `HandoffTransaction(store=…)` record children and switch cancels; `garuda run
 --runtime <acp>` and `garuda runtime handoff --confirm` are the production
 callers. Without a store the adapter logs a warning and records nothing.
+ `router.py` ranks runtimes deterministically from capability, budget,
+ availability, and quality history with logged rationale; unknown costs never
+ read free, pins win or fail loudly, and switching needs confirmation at a
+ boundary. `selection.py`
+is the P1 initial-only selector (issue #77): explicit → profile pin → first
+trusted deterministic rule → reserved classifier slot (#80) → configured
+default → built-in native, with bounded side-effect-free trait detection,
+trusted-only task regexes, pre-start validation, persisted rationale, and
+startup fallback only on an unchanged baseline. It shares no type names
+with `router.py` (P2 #49) and exposes no handoff API.
 
 ## `interfaces/` — entry points
 
