@@ -253,14 +253,16 @@ async def test_garuda_harbor_agent_run(tmp_path):
         def count_tokens(self, messages):
             return self._script.count_tokens(messages)
 
-    import garuda.eval.harbor_adapter as adapter_module
+    import garuda.model.factory as factory_module
 
-    original = adapter_module.LitellmModel
-    adapter_module.LitellmModel = lambda model_name, **kwargs: ScriptHarborModel()  # type: ignore[assignment, return-value]
+    # Eval trials resolve through shared setup's ModelFactory, so the scripted
+    # trial hooks the transport registry rather than a per-module constructor.
+    original = factory_module._registry["litellm"]
+    factory_module._registry["litellm"] = lambda spec, **kwargs: ScriptHarborModel()  # type: ignore[assignment, return-value]
     try:
         await agent.run("write harbor.txt", harbor_env, context)
     finally:
-        adapter_module.LitellmModel = original
+        factory_module._registry["litellm"] = original
 
     trajectory_path = logs_dir / "trajectory.json"
     assert trajectory_path.exists()

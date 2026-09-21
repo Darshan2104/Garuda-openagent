@@ -119,6 +119,11 @@ def parse_model_spec(data: object, *, source: str) -> ModelSpec:
     """Parse one model alias body; fail closed with a source-qualified error."""
     if not isinstance(data, dict):
         raise ConfigError(f"{source}: model spec must be a mapping")
+    if "api_key" in data:
+        raise ConfigError(
+            f"{source}: model specs must not store an API key; "
+            "use provider-supported environment variables or explicit caller arguments"
+        )
     transport = data.get("transport", "litellm")
     model = data.get("model", "")
     spec = ModelSpec(
@@ -138,6 +143,93 @@ def parse_model_spec(data: object, *, source: str) -> ModelSpec:
     if unknown:
         raise ConfigError(f"{source}: unknown model fields: {sorted(unknown)}")
     return spec
+
+
+def with_compat_reasoning_settings(
+    spec: ModelSpec,
+    *,
+    reasoning_effort: str | None = None,
+    thinking_budget_tokens: int | None = None,
+) -> ModelSpec:
+    """Translate legacy profile/config reasoning knobs into a reasoning spec.
+
+    Compatibility period: existing `reasoning_effort` / `thinking_budget_tokens`
+    on `AgentProfile` and `AgentConfig` predate role-specific model settings.
+    Explicit spec fields win; legacy knobs only fill gaps they leave unset.
+    Returns a new spec (specs are immutable).
+    """
+    effort = spec.reasoning_effort if spec.reasoning_effort is not None else reasoning_effort
+    budget = (
+        spec.thinking_budget_tokens
+        if spec.thinking_budget_tokens is not None
+        else thinking_budget_tokens
+    )
+    if effort == spec.reasoning_effort and budget == spec.thinking_budget_tokens:
+        return spec
+    return ModelSpec(
+        transport=spec.transport,
+        model=spec.model,
+        api_base=spec.api_base,
+        reasoning_effort=effort,
+        thinking_budget_tokens=budget,
+        max_tokens=spec.max_tokens,
+        timeout_sec=spec.timeout_sec,
+    )
+
+
+def narrow_collection_policy(
+    data: object, *, global_policy: CollectionPolicy, source: str
+) -> CollectionPolicy:
+    """Merge a profile/project collection block over the global policy.
+
+    Toggles (``enabled``, ``profile``, ``handoff``, ``fallback``) may be
+    restated per profile or project; numeric budgets may only narrow the global
+    ceiling — only keys the overlay actually sets are compared, so a partial
+    overlay never trips on defaults it did not ask for. Anything wider, unknown,
+    or malformed fails closed with a source-qualified error.
+    """
+    if not isinstance(data, dict):
+        raise ConfigError(f"{source}: collection must be a mapping")
+    raw_budget = data.get("budget", {}) or {}
+    if not isinstance(raw_budget, dict):
+        raise ConfigError(f"{source}: collection.budget must be a mapping")
+    global_budget = global_policy.budget
+    known_budget_fields = (
+        "max_jobs_per_run",
+        "max_parallel_jobs",
+        "max_turns_per_job",
+        "max_tokens_per_job",
+        "max_total_tokens_per_run",
+        "max_cost_usd_per_run",
+        "deadline_fraction",
+    )
+    for key, value in raw_budget.items():
+        if key not in known_budget_fields:
+            raise ConfigError(f"{source}: collection.budget.{key} is not a known budget field")
+        ceiling = getattr(global_budget, key, None)
+        if value is not None and ceiling is not None and value > ceiling:
+            raise ConfigError(
+                f"{source}: collection.budget.{key}={value} exceeds global ceiling {ceiling}"
+            )
+    merged_budget = {
+        key: raw_budget.get(key, getattr(global_budget, key)) for key in known_budget_fields
+    }
+    merged = {
+        "enabled": data.get("enabled", global_policy.enabled),
+        "profile": data.get("profile", global_policy.profile),
+        "handoff": data.get("handoff", global_policy.handoff),
+        "budget": merged_budget,
+        "fallback": data.get(
+            "fallback",
+            {
+                "interactive": global_policy.fallback.interactive,
+                "readonly": global_policy.fallback.readonly,
+                "eval": global_policy.fallback.eval,
+                "rigorous": global_policy.fallback.rigorous,
+            },
+        ),
+    }
+    return parse_collection_policy(merged, source=source)
 
 
 def _provider_of(model_name: str) -> str:

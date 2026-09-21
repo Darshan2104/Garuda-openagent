@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import garuda.eval.ablation as ablation
 from garuda.eval.ablation import (
     AblationTask,
     VariantResult,
@@ -67,7 +66,7 @@ def test_summarize_and_table():
 
 async def test_run_ablation_with_script_model(tmp_path: Path, monkeypatch):
     # A scripted agent that writes hello.txt then completes.
-    def fresh_model(model_name):
+    def fresh_model(model_name, **kwargs):
         return ScriptModel(
             responses=[
                 ModelResponse(
@@ -83,7 +82,13 @@ async def test_run_ablation_with_script_model(tmp_path: Path, monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(ablation, "LitellmModel", fresh_model)
+    import garuda.model.factory as factory_module
+
+    # Eval builds clients through the shared ModelFactory (fresh per variant),
+    # so the stub hooks the transport registry with a fresh script per build.
+    monkeypatch.setitem(
+        factory_module._registry, "litellm", lambda spec, **kwargs: fresh_model(spec.model)
+    )
 
     task = AblationTask(
         id="create_file",
@@ -112,7 +117,7 @@ async def test_grading_catches_agent_that_lies(tmp_path: Path, monkeypatch):
     (on under `eval`) would refuse it. Both are correct for their posture; grading
     must say False either way, and that is what is pinned here.
     """
-    def fresh_model(model_name):
+    def fresh_model(model_name, **kwargs):
         return ScriptModel(
             responses=[
                 ModelResponse(
@@ -122,7 +127,13 @@ async def test_grading_catches_agent_that_lies(tmp_path: Path, monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(ablation, "LitellmModel", fresh_model)
+    import garuda.model.factory as factory_module
+
+    # Eval builds clients through the shared ModelFactory (fresh per variant),
+    # so the stub hooks the transport registry with a fresh script per build.
+    monkeypatch.setitem(
+        factory_module._registry, "litellm", lambda spec, **kwargs: fresh_model(spec.model)
+    )
     task = AblationTask(
         id="create_file",
         prompt="Create hello.txt containing hi",
@@ -141,7 +152,7 @@ async def test_eval_gates_variant_refuses_the_same_lie(tmp_path: Path, monkeypat
     so the run does not even report success. This is the cost/strictness trade the
     `interactive` default makes explicit.
     """
-    def fresh_model(model_name):
+    def fresh_model(model_name, **kwargs):
         return ScriptModel(
             responses=[
                 ModelResponse(
@@ -158,7 +169,13 @@ async def test_eval_gates_variant_refuses_the_same_lie(tmp_path: Path, monkeypat
             * 4  # rejected attempts are re-tried, so the script must outlast the gate
         )
 
-    monkeypatch.setattr(ablation, "LitellmModel", fresh_model)
+    import garuda.model.factory as factory_module
+
+    # Eval builds clients through the shared ModelFactory (fresh per variant),
+    # so the stub hooks the transport registry with a fresh script per build.
+    monkeypatch.setitem(
+        factory_module._registry, "litellm", lambda spec, **kwargs: fresh_model(spec.model)
+    )
     task = AblationTask(
         id="create_file",
         prompt="Create hello.txt containing hi",

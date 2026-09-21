@@ -1,10 +1,7 @@
 from pathlib import Path
 
-from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.core.events import EventStore
-from garuda.core.modes import MODE_CHOICES, apply_mode_preset
-from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
+from garuda.core.modes import MODE_CHOICES
 from garuda.interfaces.cli import chat_loop
 from garuda.interfaces.runner import (
     cleanup_workspace,
@@ -20,6 +17,36 @@ from garuda.tools import build_toolkit
 from garuda.workspace.factory import WORKSPACE_KINDS
 
 
+def _add_model_flags(parser) -> None:
+    """Role-model flags shared by every task-starting subcommand.
+
+    Defaults are None (never the built-in): an omitted flag must stay
+    distinguishable from an explicit one, or the parser default would mask
+    profile, project, and global bindings below it. `--model` is the legacy
+    explicit reasoning alias; `--reasoning-model` is its new spelling.
+    """
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Reasoning model (alias for --reasoning-model; explicit beats env/bindings)",
+    )
+    parser.add_argument(
+        "--reasoning-model",
+        default=None,
+        help="Reasoning model: owns the controller loop and all mutations",
+    )
+    parser.add_argument(
+        "--collection-model",
+        default=None,
+        help="Optional collection model for bounded read-only investigation jobs",
+    )
+    parser.add_argument(
+        "--no-collection",
+        action="store_true",
+        help="Disable the collection role even when a collection model resolves",
+    )
+
+
 def build_parser():
     import argparse
     import os
@@ -30,7 +57,7 @@ def build_parser():
     run_parser = subparsers.add_parser("run", help="Run a single agent task (headless)")
     run_parser.add_argument("-t", "--task", help="Task description")
     run_parser.add_argument("-f", "--file", help="Read task from file")
-    run_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    _add_model_flags(run_parser)
     run_parser.add_argument("--workspace", default=".", help="Workspace root directory")
     run_parser.add_argument(
         "--workspace-kind",
@@ -144,7 +171,7 @@ def build_parser():
     )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
-    chat_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    _add_model_flags(chat_parser)
     chat_parser.add_argument("--workspace", default=".")
     chat_parser.add_argument(
         "--workspace-kind",
@@ -176,7 +203,7 @@ def build_parser():
     serve_parser = subparsers.add_parser("serve", help="Start JSON-RPC HTTP server for IDE integrations")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
-    serve_parser.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    _add_model_flags(serve_parser)
     serve_parser.add_argument("--agent", default="build")
     serve_parser.add_argument("--workspace", default=".")
     serve_parser.add_argument(
@@ -248,8 +275,8 @@ def build_parser():
     )
     web_parser.add_argument(
         "--web-model",
-        default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL),
-        help="Default model for dashboard conversations",
+        default=None,
+        help="Default model for dashboard conversations (reasoning role; unset honors bindings)",
     )
     web_parser.add_argument(
         "--web-agent", default="build", help="Default agent profile for dashboard conversations"
@@ -286,7 +313,7 @@ def build_parser():
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
     recipe_run = recipe_sub.add_parser("run", help="Execute a recipe file")
     recipe_run.add_argument("recipe", help="Path to recipe YAML")
-    recipe_run.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    _add_model_flags(recipe_run)
     recipe_run.add_argument("--workspace", default=".")
     recipe_run.add_argument(
         "--workspace-kind",
@@ -650,35 +677,45 @@ async def run_task(args) -> int:
     # Native selection still goes through the common trusted boundary before
     # any toolkit or workspace startup. ACP selection is resolved by
     # ``run_acp_command`` through the same trusted registry service.
-    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.agents.setup import prepare_agent_run, prepare_runtime_catalog
 
     runtime_catalog = prepare_runtime_catalog(args.workspace)
     runtime_catalog.select_for_native_facade(args.runtime)
-
     from garuda.config.agent_home import resolve_agents_dirs
+    from garuda.model.config import ConfigError
+    from garuda.model.factory import safe_model_identity
 
     agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
-    profile = load_profile(args.agent, extra_dir=agents_dir)
-    config = profile.to_agent_config()
-    if args.mode:  # else keep the profile's own mode
-        config.mode = args.mode
+    try:
+        prepared = await prepare_agent_run(
+            args.agent,
+            workspace=args.workspace,
+            agents_dir=args.agents_dir,
+            mcp_config_path=args.mcp_config,
+            mode=args.mode,
+            permission_mode=args.permission_mode,
+            model=getattr(args, "model", None),
+            reasoning_model=getattr(args, "reasoning_model", None),
+            collection_model=getattr(args, "collection_model", None),
+            no_collection=getattr(args, "no_collection", False),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
+            thinking_budget_tokens=getattr(args, "thinking_budget", None),
+            load_project_tools=getattr(args, "load_project_tools", None),
+        )
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    config = prepared.config
     # Preset first, explicit flags after: every `if args.x` below is a narrower
     # statement of intent than the posture and must win over it.
-    apply_mode_preset(config, declared_fields=profile.declared_fields)
     if args.max_turns is not None:
         config.max_turns = args.max_turns
     if getattr(args, "deadline_sec", None) is not None:
         config.deadline_sec = args.deadline_sec
-    if args.permission_mode:
-        config.permission_mode = args.permission_mode
     if args.no_verifier:
         config.enable_verifier = False
     if args.no_three_step_summary:
         config.enable_three_step_summary = False
-    if getattr(args, "reasoning_effort", None):
-        config.reasoning_effort = args.reasoning_effort
-    if getattr(args, "thinking_budget", None):
-        config.thinking_budget_tokens = args.thinking_budget
     if getattr(args, "persistent_shell", False):
         config.persistent_shell = True
     if getattr(args, "no_post_edit_diagnostics", False):
@@ -695,29 +732,23 @@ async def run_task(args) -> int:
     config.docker_network = "none" if getattr(args, "no_network", False) else "bridge"
     config.docker_memory = getattr(args, "docker_memory", "2g")
     config.docker_cpus = getattr(args, "docker_cpus", "2")
-    config.system_prompt = resolve_system_prompt(profile, args.workspace)
-    mcp_paths = resolve_mcp_config_paths(args.workspace, args.mcp_config or config.mcp_config_path)
 
-    model = LitellmModel(
-        model_name=args.model,
-        reasoning_effort=config.reasoning_effort,
-        thinking_budget_tokens=config.thinking_budget_tokens,
-    )
-    permissions = PermissionEngine(
-        mode=config.permission_mode,
-        tool_rules=profile.tool_rules,
-        path_rules=profile.path_rules,
-        bash_rules=profile.bash_rules,
-    )
-    agent = create_agent(profile.name, mode=config.mode)
+    model = prepared.reasoning
+    permissions = prepared.permissions
+    agent = prepared.agent
+    tools = prepared.tools
+    mcp_manager = prepared.mcp_manager
+    if not args.json:
+        print(
+            f"[garuda] reasoning={safe_model_identity(model)} "
+            f"({prepared.provenance['reasoning'].provenance.value})",
+        )
+        if prepared.collection is not None:
+            print(
+                f"[garuda] collection={safe_model_identity(prepared.collection)} "
+                f"({prepared.provenance['collection'].provenance.value})",
+            )
     events = EventStore()
-    tools, mcp_manager = await build_toolkit(
-        profile.tools,
-        mcp_paths,
-        workspace=args.workspace,
-        load_project_tools=getattr(args, "load_project_tools", None),
-        mcp_servers=profile.mcp_servers,
-    )
 
     result = await run_agent_task(
         task=task,
@@ -759,7 +790,6 @@ async def run_recipe_command(args) -> int:
         return 1
 
     recipe = load_recipe(args.recipe)
-    model = LitellmModel(model_name=args.model)
     env, handle = await resolve_environment(
         args.workspace_kind,
         args.workspace,
@@ -771,7 +801,10 @@ async def run_recipe_command(args) -> int:
         results = await run_recipe(
             recipe,
             params,
-            model=model,
+            model=getattr(args, "model", None),
+            reasoning_model=getattr(args, "reasoning_model", None),
+            collection_model=getattr(args, "collection_model", None),
+            no_collection=getattr(args, "no_collection", False),
             env=env,
             workspace=args.workspace,
             events=events,
@@ -803,7 +836,10 @@ async def run_serve(args) -> int:
     config = ServerConfig(
         host=args.host,
         port=args.port,
-        model=args.model,
+        model=getattr(args, "model", None),
+        reasoning_model=getattr(args, "reasoning_model", None),
+        collection_model=getattr(args, "collection_model", None),
+        no_collection=getattr(args, "no_collection", False),
         agent=args.agent,
         workspace=args.workspace,
         workspace_kind=args.workspace_kind,
@@ -830,7 +866,7 @@ async def run_web(args) -> int:
         allow_run=not args.read_only,
         workspaces=tuple(Path(p) for p in (args.allow_workspace or [])),
         max_permission=args.max_permission,
-        model=args.web_model,
+        model=args.web_model or "",
         agent=args.web_agent,
         workspace_kind=args.web_workspace_kind,
         open_browser=not args.no_browser,

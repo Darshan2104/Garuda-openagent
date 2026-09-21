@@ -371,19 +371,14 @@ async def make_echo_runtime(session_id: str) -> Any:
 
 async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
     """Production driver: the native loop behind the runtime boundary."""
-    import os
-
     from garuda.agents.setup import prepare_agent_run
     from garuda.core.events import EventStore
     from garuda.interfaces.runner import resolve_environment
-    from garuda.model.litellm_model import LitellmModel
-    from garuda.model.protocol import DEFAULT_MODEL, MODEL_ENV_VAR
     from garuda.runtime.native import NativeGarudaRuntime
 
-    profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
-        "build", workspace=workspace
-    )
-    model = LitellmModel(model_name=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    prepared = await prepare_agent_run("build", workspace=workspace)
+    profile, config, permissions, tools, agent, mcp_manager = prepared
+    model = prepared.reasoning
     runtime = NativeGarudaRuntime(
         agent=agent, model=model, tools=tools, config=config,
         permissions=permissions, resource_manager=mcp_manager,

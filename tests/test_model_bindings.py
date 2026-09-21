@@ -4,13 +4,16 @@ import pytest
 
 from garuda.model.config import (
     CollectionBudget,
+    CollectionPolicy,
     ConfigError,
     ModelBindings,
     ModelSpec,
     check_project_trust,
+    narrow_collection_policy,
     parse_collection_policy,
     parse_model_spec,
     resolve_model_bindings,
+    with_compat_reasoning_settings,
 )
 
 
@@ -101,3 +104,44 @@ def test_unknown_transport_and_bad_limits_fail():
         parse_collection_policy({"fallback": {"interactive": "always"}}, source="t")
     with pytest.raises(ConfigError):
         parse_collection_policy({"handoff": "full"}, source="t")
+
+
+def test_api_key_in_spec_fails_actionably():
+    with pytest.raises(ConfigError, match="must not store an API key"):
+        parse_model_spec({"model": "a/m", "api_key": "sk-secret"}, source="global models.x")
+
+
+def test_compat_reasoning_knobs_fill_only_gaps():
+    spec = with_compat_reasoning_settings(
+        ModelSpec(model="a/m"), reasoning_effort="high", thinking_budget_tokens=5000
+    )
+    assert spec.reasoning_effort == "high"
+    assert spec.thinking_budget_tokens == 5000
+    explicit = with_compat_reasoning_settings(
+        ModelSpec(model="a/m", reasoning_effort="low"),
+        reasoning_effort="high",
+        thinking_budget_tokens=5000,
+    )
+    assert explicit.reasoning_effort == "low"
+    assert explicit.thinking_budget_tokens == 5000
+
+
+def test_narrow_policy_allows_partial_overlay_and_rejects_widening():
+    glob = CollectionPolicy()
+    narrowed = narrow_collection_policy(
+        {"enabled": True, "budget": {"max_jobs_per_run": 2}},
+        global_policy=glob,
+        source="profile build",
+    )
+    assert narrowed.enabled is True
+    assert narrowed.budget.max_jobs_per_run == 2
+    # Untouched budgets inherit the global ceiling instead of tripping on defaults.
+    assert narrowed.budget.max_parallel_jobs == glob.budget.max_parallel_jobs
+    with pytest.raises(ConfigError, match="exceeds global ceiling"):
+        narrow_collection_policy(
+            {"budget": {"max_jobs_per_run": glob.budget.max_jobs_per_run + 1}},
+            global_policy=glob,
+            source="project settings",
+        )
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        narrow_collection_policy("enabled", global_policy=glob, source="t")

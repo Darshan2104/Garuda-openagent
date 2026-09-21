@@ -210,10 +210,10 @@ async def test_jsonrpc_run(tmp_path):
         ]
     )
 
-    import garuda.interfaces.server as server_module
+    import garuda.model.factory as factory_module
 
-    original = server_module.LitellmModel
-    server_module.LitellmModel = lambda model_name, **kwargs: model_patch  # type: ignore[assignment]
+    original = factory_module._registry["litellm"]
+    factory_module._registry["litellm"] = lambda spec, **kwargs: model_patch  # type: ignore[assignment]
     try:
         response = await server.handle(
             {
@@ -224,7 +224,7 @@ async def test_jsonrpc_run(tmp_path):
             }
         )
     finally:
-        server_module.LitellmModel = original
+        factory_module._registry["litellm"] = original
 
     assert "result" in response
     assert response["result"]["success"] is True

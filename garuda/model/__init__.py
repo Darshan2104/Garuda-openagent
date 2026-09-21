@@ -5,7 +5,9 @@ from garuda.model.config import (
     ModelBindings,
     ModelSpec,
     Provenance,
+    narrow_collection_policy,
     resolve_model_bindings,
+    with_compat_reasoning_settings,
 )
 from garuda.model.factory import ModelFactory, ResolvedModels, safe_model_identity
 from garuda.model.litellm_model import LitellmModel
@@ -25,6 +27,8 @@ __all__ = [
     "Provenance",
     "ResolvedModels",
     "ScriptModel",
+    "narrow_collection_policy",
     "resolve_model_bindings",
     "safe_model_identity",
+    "with_compat_reasoning_settings",
 ]

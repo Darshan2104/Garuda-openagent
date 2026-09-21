@@ -15,7 +15,7 @@ from garuda.model.config import (
     ConfigError,
     ModelBindings,
     ModelSpec,
-    check_project_trust,
+    narrow_collection_policy,
     parse_collection_policy,
     parse_model_spec,
 )
@@ -104,11 +104,12 @@ def parse_project_orchestration(    data: object, global_orch: GlobalOrchestrati
         raise ConfigError(f"{source}.model_binding: unknown alias {binding!r}")
     collection = None
     if "collection" in data:
-        collection = parse_collection_policy(data["collection"], source=f"{source}.collection")
-        check_project_trust(
-            project_models={}, global_models=global_orch.models,
-            project_budget=collection.budget, global_budget=global_orch.collection.budget,
-            source=source,
+        # Key-wise narrowing over the global policy: a partial overlay that
+        # sets one budget must not trip on defaults it did not ask for, and a
+        # wider value fails closed here — before any merge could hide which
+        # file authorized it.
+        collection = narrow_collection_policy(
+            data["collection"], global_policy=global_orch.collection, source=f"{source}.collection"
         )
     unknown = set(data) - {"model_binding", "collection"}
     if unknown:

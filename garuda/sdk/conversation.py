@@ -18,7 +18,7 @@ class Conversation:
     def __init__(
         self,
         workspace: str | Path = ".",
-        model: str = DEFAULT_MODEL,
+        model: str | object = DEFAULT_MODEL,
         agent: str = "build",
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,
@@ -29,6 +29,10 @@ class Conversation:
         docker_host: str | None = None,
         store=None,
         approval_handler=None,
+        reasoning_model: str | object | None = None,
+        collection_model: str | object | None = None,
+        no_collection: bool = False,
+        model_binding: str | None = None,
     ):
         self._workspace = str(workspace)
         self._model_name = model
@@ -43,6 +47,10 @@ class Conversation:
         self._runtime_name = runtime
         self._store = store
         self._approval_handler = approval_handler
+        self._reasoning_model = reasoning_model
+        self._collection_model = collection_model
+        self._no_collection = no_collection
+        self._model_binding = model_binding
         self._session: AgentSession | None = None
         self._env: Environment | None = None
         self._env_handle: object | None = None
@@ -63,6 +71,10 @@ class Conversation:
             self._session = await AgentSession.create(
                 agent_name=self._agent_name,
                 model=self._model_name,
+                reasoning_model=self._reasoning_model,
+                collection_model=self._collection_model,
+                no_collection=self._no_collection,
+                model_binding=self._model_binding,
                 workspace=self._workspace,
                 agents_dir=self._agents_dir,
                 mcp_config_path=self._mcp_config,
@@ -70,6 +82,7 @@ class Conversation:
                 workspace_kind=self._workspace_kind,
                 docker_image=self._docker_image,
                 docker_host=self._docker_host,
+                approval_handler=self._approval_handler,
             )
         return self._session
 

@@ -3,17 +3,11 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from garuda.agents.loader import load_profile, resolve_system_prompt
+from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
-from garuda.core.modes import apply_mode_preset
-from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
 from garuda.interfaces.runner import run_agent_task
 from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
-from garuda.mcp.config import resolve_mcp_config_paths
-from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import DEFAULT_MODEL
-from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentResult
 
@@ -29,7 +23,7 @@ class SoftwareAgent:
     def __init__(
         self,
         workspace: str | Path = ".",
-        model: str = DEFAULT_MODEL,
+        model: str | object = DEFAULT_MODEL,
         agent: str = "build",
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,
@@ -41,8 +35,16 @@ class SoftwareAgent:
         load_project_tools: bool | None = None,
         runtime: str = "native",
         store=None,
+        reasoning_model: str | object | None = None,
+        collection_model: str | object | None = None,
+        no_collection: bool = False,
+        model_binding: str | None = None,
     ):
         self.workspace = str(workspace)
+        # `model` stays the legacy reasoning alias. A bare default equal to the
+        # built-in resolves as "unspecified" in shared setup, so environment and
+        # configured bindings are honored; strings name models, live `Model`
+        # objects are kept by identity for this instance's runs.
         self.model_name = model
         self.agent_name = agent
         self.agents_dir = Path(agents_dir) if agents_dir else None
@@ -53,6 +55,10 @@ class SoftwareAgent:
         self.mode = mode
         self.runtime_name = runtime
         self._store = store
+        self.reasoning_model = reasoning_model
+        self.collection_model = collection_model
+        self.no_collection = no_collection
+        self.model_binding = model_binding
         self._extra_tools: list[Tool] = list(extra_tools or [])
         self._load_project_tools = load_project_tools
 
@@ -84,38 +90,26 @@ class SoftwareAgent:
         from garuda.config.agent_home import resolve_agents_dirs
 
         agents_dir = resolve_agents_dirs(self.workspace, self.agents_dir)
-        profile = load_profile(self.agent_name, extra_dir=agents_dir)
-        config = profile.to_agent_config()
-        if self.mode:  # else honor the profile's own mode
-            config.mode = self.mode
-        apply_mode_preset(config, declared_fields=profile.declared_fields)
+        prepared = await prepare_agent_run(
+            self.agent_name,
+            workspace=self.workspace,
+            agents_dir=agents_dir,
+            mcp_config_path=self.mcp_config,
+            mode=self.mode,
+            model=self.model_name,
+            reasoning_model=self.reasoning_model,
+            collection_model=self.collection_model,
+            no_collection=self.no_collection,
+            model_binding=self.model_binding,
+            extra_tools=self._extra_tools,
+            load_project_tools=self._load_project_tools,
+        )
+        profile, config, permissions, tools, agent, mcp_manager = prepared
+        model = prepared.reasoning
+        events = events or EventStore()
         config.workspace_kind = self.workspace_kind
         config.docker_image = self.docker_image
         config.docker_host = self.docker_host
-        config.system_prompt = resolve_system_prompt(profile, self.workspace)
-        mcp_paths = resolve_mcp_config_paths(self.workspace, self.mcp_config or config.mcp_config_path)
-
-        model = LitellmModel(
-            model_name=self.model_name,
-            reasoning_effort=config.reasoning_effort,
-            thinking_budget_tokens=config.thinking_budget_tokens,
-        )
-        permissions = PermissionEngine(
-            mode=config.permission_mode,
-            tool_rules=profile.tool_rules,
-            path_rules=profile.path_rules,
-            bash_rules=profile.bash_rules,
-        )
-        agent = create_agent(profile.name, mode=config.mode)
-        events = events or EventStore()
-        tools, mcp_manager = await build_toolkit(
-            profile.tools,
-            mcp_paths,
-            extra_tools=self._extra_tools,
-            workspace=self.workspace,
-            load_project_tools=self._load_project_tools,
-            mcp_servers=profile.mcp_servers,
-        )
 
         return await run_agent_task(
             task=task,
@@ -209,6 +203,10 @@ class SoftwareAgent:
         return Conversation(
             workspace=self.workspace,
             model=self.model_name,
+            reasoning_model=self.reasoning_model,
+            collection_model=self.collection_model,
+            no_collection=self.no_collection,
+            model_binding=self.model_binding,
             agent=self.agent_name,
             agents_dir=self.agents_dir,
             mcp_config=self.mcp_config,

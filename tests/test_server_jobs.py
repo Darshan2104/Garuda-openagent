@@ -222,9 +222,15 @@ async def test_concurrent_jobs_with_heterogeneous_tools_do_not_leak(tmp_path, mo
             model_name=model_name,
         )
 
-    import garuda.interfaces.server as server_module
+    import garuda.model.factory as factory_module
 
-    monkeypatch.setattr(server_module, "LitellmModel", _model_for)
+    def _model_for_spec(spec, **kwargs):
+        return _model_for(spec.model)
+
+    # The server builds clients through shared setup's ModelFactory (one per
+    # job, never process-global), so the stub hooks the transport registry —
+    # the per-job isolation assertion below is what this test actually proves.
+    monkeypatch.setitem(factory_module._registry, "litellm", _model_for_spec)
 
     server = JsonRpcServer(ServerConfig(token=None, max_jobs=2))
     sub1 = await _call(

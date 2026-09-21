@@ -15,7 +15,6 @@ from garuda.core.events import EventStore
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.jobs import Job, JobManager
 from garuda.interfaces.runner import run_agent_task
-from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,13 @@ MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8765
-    model: str = DEFAULT_MODEL
+    # Default reasoning model name. A value equal to the built-in is treated as
+    # "unspecified" during resolution so env, profile, project, and global
+    # bindings below it are never masked; anything else is an explicit override.
+    model: str | None = DEFAULT_MODEL
+    reasoning_model: str | None = None
+    collection_model: str | None = None
+    no_collection: bool = False
     agent: str = "build"
     workspace: str = "."
     workspace_kind: str = "local"
@@ -341,7 +346,6 @@ class JsonRpcServer:
 
         from garuda.config.agent_home import resolve_agents_dirs
 
-        model_name = params.get("model", self._config.model)
         agent_name = params.get("agent", self._config.agent)
         mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
@@ -353,21 +357,24 @@ class JsonRpcServer:
         # subagents resolve custom profiles the same standard way.
         agents_path = resolve_agents_dirs(workspace, agents_dir)
 
-        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+        # Resolved fresh per request through shared setup: one job's models
+        # never leak into another's, and identical inputs resolve identically
+        # to every other entry point.
+        prepared = await prepare_agent_run(
             agent_name,
             workspace=workspace,
             agents_dir=agents_path,
             mcp_config_path=mcp_config,
             mode=mode,
+            model=params.get("model", self._config.model),
+            reasoning_model=params.get("reasoning_model", self._config.reasoning_model),
+            collection_model=params.get("collection_model", self._config.collection_model),
+            no_collection=params.get("no_collection", self._config.no_collection),
         )
+        profile, config, permissions, tools, agent, mcp_manager = prepared
+        model = prepared.reasoning
         config.workspace_kind = workspace_kind
         config.docker_image = params.get("docker_image", self._config.docker_image)
-
-        model = LitellmModel(
-            model_name=model_name,
-            reasoning_effort=config.reasoning_effort,
-            thinking_budget_tokens=config.thinking_budget_tokens,
-        )
         return await run_agent_task(
             task=task,
             model=model,
