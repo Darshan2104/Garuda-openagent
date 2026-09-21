@@ -11,7 +11,13 @@ refuses incomplete entries so a half-documented transport cannot slip in.
 
 from __future__ import annotations
 
+import pathlib
 from dataclasses import dataclass
+
+#: Structural auth kinds a direct transport may declare. Free-text `auth`
+#: remains as human guidance, but admission gates on this enum — a wording
+#: tweak ("subscription OAuth, never audited") must not satisfy the gate.
+SUPPORTED_AUTH_KINDS = frozenset({"api_key_env"})
 
 
 @dataclass(frozen=True)
@@ -20,10 +26,11 @@ class TransportRecord:
     vendor: str
     support_citation: tuple[str, ...]
     auth: str
-    capabilities: tuple[str, ...]
-    test_double: str
-    integration_test: str
-    cost_semantics: str
+    auth_kind: str = ""
+    capabilities: tuple[str, ...] = ()
+    test_double: str = ""
+    integration_test: str = ""
+    cost_semantics: str = ""
     migration_notes: str = ""
 
     def admission_gaps(self) -> list[str]:
@@ -31,6 +38,10 @@ class TransportRecord:
         gaps = []
         if not self.support_citation:
             gaps.append("vendor-support citation")
+        if not self.auth:
+            gaps.append("auth description")
+        if self.auth_kind not in SUPPORTED_AUTH_KINDS:
+            gaps.append(f"auth kind {sorted(SUPPORTED_AUTH_KINDS)}")
         if not self.capabilities:
             gaps.append("capability declaration")
         if not self.test_double:
@@ -39,6 +50,8 @@ class TransportRecord:
             gaps.append("opt-in integration test")
         if not self.cost_semantics:
             gaps.append("cost semantics")
+        if not self.migration_notes:
+            gaps.append("migration notes")
         return gaps
 
     def to_dict(self) -> dict:
@@ -47,12 +60,50 @@ class TransportRecord:
             "vendor": self.vendor,
             "support_citation": list(self.support_citation),
             "auth": self.auth,
+            "auth_kind": self.auth_kind,
             "capabilities": list(self.capabilities),
             "test_double": self.test_double,
             "integration_test": self.integration_test,
             "cost_semantics": self.cost_semantics,
             "migration_notes": self.migration_notes,
         }
+
+
+def _repo_root() -> pathlib.Path:
+    # garuda/model/transports.py -> repo root (garuda/model -> garuda -> root).
+    return pathlib.Path(__file__).resolve().parents[2]
+
+
+def _assert_integration_test_exists(record: TransportRecord) -> None:
+    """The named integration test must exist, not merely be a non-empty string.
+
+    Accepts ``path/to/test.py::test_name`` (preferred) or a bare path. Fails
+    closed on typos, missing files, and non-collectable nodeids.
+    """
+    nodeid = record.integration_test
+    if "::" in nodeid:
+        path_part, _, test_part = nodeid.partition("::")
+    else:
+        path_part, test_part = nodeid, ""
+    candidate = pathlib.Path(path_part)
+    if not candidate.is_absolute():
+        candidate = _repo_root() / path_part
+    if not candidate.is_file():
+        raise ValueError(
+            f"transport {record.id!r} integration test does not exist: {nodeid!r}"
+        )
+    if test_part:
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(
+                f"transport {record.id!r} cannot read integration test {nodeid!r}: {exc}"
+            ) from exc
+        if f"def {test_part}" not in text:
+            raise ValueError(
+                f"transport {record.id!r} integration test {test_part!r} "
+                f"not found in {path_part!r}"
+            )
 
 
 TRANSPORTS: tuple[TransportRecord, ...] = (
@@ -65,6 +116,7 @@ TRANSPORTS: tuple[TransportRecord, ...] = (
         ),
         auth="Provider API keys via environment (e.g. OPENROUTER_API_KEY); "
         "never subscription OAuth material.",
+        auth_kind="api_key_env",
         capabilities=("streaming", "tool-calling", "reasoning", "prompt-caching", "retries"),
         test_double="garuda.model.script_model.ScriptModel",
         integration_test="tests/test_model_transports.py::test_live_transport_opt_in",
@@ -89,3 +141,14 @@ def assert_admissible(record: TransportRecord) -> None:
     for citation in record.support_citation:
         if not citation.startswith("https://"):
             raise ValueError(f"transport {record.id!r} citation must be https: {citation!r}")
+    if record.auth_kind not in SUPPORTED_AUTH_KINDS:
+        raise ValueError(
+            f"transport {record.id!r} has unsupported auth kind {record.auth_kind!r} "
+            f"(supported: {sorted(SUPPORTED_AUTH_KINDS)})"
+        )
+    lowered = record.auth.lower()
+    if ("subscription" in lowered or "oauth" in lowered) and "never" not in lowered:
+        raise ValueError(
+            f"transport {record.id!r} auth must never claim subscription/OAuth use: {record.auth!r}"
+        )
+    _assert_integration_test_exists(record)

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from garuda.model.config import ConfigError, ModelBindings, ModelSpec, Provenance
+from garuda.model.transports import TransportRecord, assert_admissible, registry as transport_registry
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,30 @@ TransportBuilder = Callable[[ModelSpec], Any]
 _registry: dict[str, TransportBuilder] = {}
 
 
-def register_transport(name: str, builder: TransportBuilder) -> None:
+def register_transport(
+    name: str, builder: TransportBuilder, *, record: TransportRecord | None = None
+) -> None:
+    """Register a transport builder only after admission passes.
+
+    Fail-closed: a new transport cannot be constructed via the factory without
+    touching ``assert_admissible``. Pass the ``TransportRecord`` explicitly, or
+    it is looked up in the canonical ``transports`` registry (which must exist
+    and be admissible). Mismatched ``record.id != name`` is rejected.
+    """
+    candidate = record if record is not None else transport_registry().get(name)
+    if candidate is None:
+        raise ConfigError(
+            f"transport {name!r}: no admission record in garuda/model/transports.py; "
+            "add a fully-admitted TransportRecord first"
+        )
+    if candidate.id != name:
+        raise ConfigError(
+            f"transport {name!r}: admission record id mismatch ({candidate.id!r})"
+        )
+    try:
+        assert_admissible(candidate)
+    except ValueError as exc:
+        raise ConfigError(f"transport {name!r}: not admissible: {exc}") from exc
     _registry[name] = builder
 
 
@@ -46,7 +70,7 @@ def _litellm_builder(spec: ModelSpec) -> Any:
     )
 
 
-register_transport("litellm", _litellm_builder)
+register_transport("litellm", _litellm_builder, record=transport_registry()["litellm"])
 
 
 def _coerce_sdk_model(candidate: Any, *, role: str) -> Any | None:
@@ -72,6 +96,21 @@ class ModelFactory:
                 f"{role}: unsupported transport {spec.transport!r} "
                 f"(known: {sorted(self._transports)})"
             )
+        # Admission runs at build time, not only when the catalog test runs.
+        # A transport smuggled into `_transports` without a registry record, or
+        # with an incomplete record, fails closed here.
+        record = transport_registry().get(spec.transport)
+        if record is None:
+            raise ConfigError(
+                f"{role}: transport {spec.transport!r} has no admission record "
+                "in garuda/model/transports.py"
+            )
+        try:
+            assert_admissible(record)
+        except ValueError as exc:
+            raise ConfigError(
+                f"{role}: transport {spec.transport!r} is not admissible: {exc}"
+            ) from exc
         return builder(spec)
 
     def build(
