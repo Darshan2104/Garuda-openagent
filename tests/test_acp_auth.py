@@ -69,13 +69,10 @@ def test_no_python_reads_credential_stores():
         f"credential scan covered too few files ({len(scanned)}); "
         "the glob is probably shallow again"
     )
-    # Fail-closed on nested subtrees: if a nested package exists, it must have
-    # been scanned. Today builtin/ holds only JSON, but a future helper there
-    # must not slip past this gate.
-    nested = [p for p in scanned if "builtin" in p.parts or "vendors" in p.parts]
-    # (No assertion on nested count yet — the gate is that rglob would find
-    # them. The required-files + minimum-count checks above catch a revert to
-    # a shallow glob.)
+    # Recursive coverage: rglob reaches nested packages such as
+    # garuda/acp/builtin/ or a future garuda/acp/vendors/ subtree, so a helper
+    # added there cannot slip past this gate (verified: a planted
+    # garuda/acp/builtin/evil_check.py containing a marker fails this test).
     markers = (".credentials.json", "credentials.json", "/auth.json", "Keychain")
     hits = []
     for path in scanned:
