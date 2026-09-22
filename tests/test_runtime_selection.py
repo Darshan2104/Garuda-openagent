@@ -451,3 +451,48 @@ def test_selection_layer_owns_no_router_types_and_no_handoff():
         assert "handoff" not in lowered, name
         assert "routing" not in lowered or name.startswith("parse_"), name
     assert "router" not in selection.__doc__.lower() or "distinct from" in selection.__doc__
+
+
+# --- explanation safety -------------------------------------------------------
+
+
+def test_explanations_contain_no_secrets_or_workspace_paths(monkeypatch):
+    decision = select_initial(_request(), _candidates(), rules=[])
+    # Normal routing facts (runtime ids, rule ids, sources, capabilities)
+    # must always pass the safety check.
+    selection.assert_explanation_safe(decision)
+
+    def _bad(**kwargs):
+        base = {
+            "selected": "codex",
+            "source": "rule",
+            "rule_id": "r",
+            "capabilities": ("prompt",),
+            "candidates": ("codex", "native"),
+        }
+        base.update(kwargs)
+        return selection.InitialSelection(**base)
+
+    adversarial = [
+        {"rationale": ("deploy with API_KEY=sk-live-1234",)},
+        {"rationale": ("use token abcdef for auth",)},
+        {"rationale": ("bearer eyJhbGciOiJIUzI1NiJ9",)},
+        {"rationale": ("the password is hunter2",)},
+        {"rationale": ("db credential leaked here",)},
+        {"rationale": ("oauth code=xyz",)},
+        {"rationale": ("read ~/Library/Keychain/login.keychain",)},
+        {"matches": ("r -> codex: yes (secret sauce)",)},
+        {"rationale": ("config at /home/alice/work/garuda",)},
+        {"rationale": ("config at /Users/alice/work/garuda",)},
+        {"rationale": ("config at $HOME/.config/garuda",)},
+        {"rationale": ("config at /tmp/garuda-work/session-1",)},
+    ]
+    for payload in adversarial:
+        with pytest.raises(SelectionError):
+            selection.assert_explanation_safe(_bad(**payload))
+
+    # Secret-named env values must never leak through explanations either.
+    monkeypatch.setenv("GARUDA_TEST_SECRET_TOKEN", "zz-top-999-qwerty-value")
+    leaked = _bad(rationale=("failed with zz-top-999-qwerty-value in output",))
+    with pytest.raises(SelectionError):
+        selection.assert_explanation_safe(leaked)
