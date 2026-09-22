@@ -302,8 +302,13 @@ class KillTaskTool:
                 content=f"Unknown background task: {arguments['task_id']}",
                 is_error=True,
             )
-        # Collect-then-signal in apply_kill_tree; TERM then KILL for stubborn children.
+        # Collect-then-signal in apply_kill_tree; TERM then KILL/KILL to match the
+        # sweep (a second KILL catches children forked between the first two
+        # signals, and zombies are filtered by the probes as already-dead).
         await _deliver_kill(env, task.pid, "TERM", timeout=15.0)
+        if type(env).__name__ == "LocalEnvironment":
+            await asyncio.sleep(0.2)
+        await _deliver_kill(env, task.pid, "KILL", timeout=15.0)
         if type(env).__name__ == "LocalEnvironment":
             await asyncio.sleep(0.2)
         await _deliver_kill(env, task.pid, "KILL", timeout=15.0)

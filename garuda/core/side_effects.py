@@ -204,11 +204,15 @@ SWEEP_KILL_GRACE_SEC = 0.4
 
 # One probe of the process table for `pattern`, printing only plausible targets.
 #
-# Two exclusions matter and neither is optional:
+# Three exclusions matter and none is optional:
 #   * `$$`/`$PPID` — this very shell was invoked with `pattern` inside its own
 #     argv, so `pgrep -f` matches it. Without this the sweep "finds" itself,
 #     reports a kill, and declares a workspace clean that still has a server on it.
 #   * pid 1 — never signal the container's init.
+#   * zombies (STAT Z) — already dead, awaiting init reaping. On Ubuntu CI under
+#     load, a SIGKILLed child reparents to init and lingers as defunct for a
+#     beat; `pgrep -f` still lists it and `os.kill(pid, 0)` still succeeds, so
+#     without this the sweep reports a leak that the kernel has already handled.
 # The `pgrep` case-match drops the transient forks of this pipeline for the same
 # reason; an agent-started process whose command line contains "pgrep" is not a
 # case worth keeping the false positives for.
@@ -219,6 +223,8 @@ for p in $(pgrep -f {pattern} 2>/dev/null | head -40); do
   [ "$p" = "1" ] && continue
   c=$(ps -o command= -p "$p" 2>/dev/null)
   case "$c" in *pgrep*) continue;; esac
+  s=$(ps -o stat= -p "$p" 2>/dev/null)
+  case "$s" in Z*) continue;; esac
   echo "$p"
 done"""
 
@@ -226,13 +232,16 @@ done"""
 # and reads the kernel's own record of group membership, so nothing here depends
 # on what a process called itself. The probing shell is excluded as before: it
 # is in its own group, but a backend that does not give it one would otherwise
-# make the sweep a candidate for its own kill list.
+# make the sweep a candidate for its own kill list. Zombies are excluded: a
+# defunct group member has already been SIGKILLed and awaits init reaping,
+# which on loaded Ubuntu runners lags the final probe and flakes the gate.
 _GROUP_PROBE_SCRIPT = """\
-ps -Ao pid=,pgid= 2>/dev/null | while read -r p g; do
+ps -Ao pid=,pgid=,stat= 2>/dev/null | while read -r p g s; do
   [ "$g" = {pgid} ] || continue
   [ "$p" = "$$" ] && continue
   [ "$p" = "$PPID" ] && continue
   [ "$p" = "1" ] && continue
+  case "$s" in Z*) continue;; esac
   echo "$p"
 done"""
 

@@ -19,3 +19,20 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Initial harness routing may use an optional classifier fallback; mid-run switching is explicit and transactional only.
 - Project configuration cannot authorize providers, endpoints, executables, credential sources, or looser ceilings.
 - Unknown cost is recorded as unknown, never zero; release claims use total-trajectory paired comparisons.
+
+## 2026-09-22 — stack base scope (#83) and Ubuntu reaping
+
+- PR #83 is accepted explicitly as a kitchen-sink stack base, not as a
+  P0.3-only change. Vs `main` it carries ~89 files / ~16k lines (docs-contract
+  plus dual-model routing, web dashboard, trajectory/observability, model
+  bindings, and core churn) because the stack was cut from an unpublished
+  worktree. Reviewers must not sign off on "docs contract" while landing a
+  dashboard; the per-PR gates (#84-#118 incremental diffs) remain the review
+  units, and a future split cherry-picking only `scripts/check_docs.py`,
+  `tests/test_docs_contract.py`, and the docs-contract CI job onto `main`
+  stays open as follow-up.
+- Ubuntu pinned remains the landing gate. Failures in
+  `test_killing_a_task_reaps_its_children_not_just_the_launcher` and
+  `test_background_process_is_swept_before_verification` were zombies awaiting
+  init reaping (SIGKILLed but listed by `pgrep -f` and `os.kill(pid, 0)`),
+  not live leaks. Sweep probes and the `_alive` kernel check now exclude STAT Z.
