@@ -10,7 +10,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from garuda.core.side_effects import SideEffectLedger, apply_kill_tree
+from garuda.core.side_effects import SideEffectLedger
 from garuda.tools.background import BashBackgroundTool, KillTaskTool
 from garuda.tools.protocol import ToolContext
 from garuda.workspace.local import LocalEnvironment
@@ -107,4 +107,4 @@ async def test_ubuntu_reap_debug_dump(tmp_path: Path):
         print(_sh(f"ps -o pid=,ppid=,pgid=,sid=,stat=,args= -p {s} 2>&1"))
         print(_sh(f"cat /proc/{s}/status 2>&1 | head -8"))
     await KillTaskTool().execute({"task_id": task_id}, env, ctx)
-    assert False, f"DEBUG DUMP DONE survivors={survivors}"
+    raise AssertionError(f"DEBUG DUMP DONE survivors={survivors}")
