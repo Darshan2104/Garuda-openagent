@@ -6,6 +6,8 @@ direct loop; the shared conformance suite passes against it; and the
 records unified sessions.
 """
 
+import asyncio
+
 import pytest
 
 from garuda.core.events import EventStore
@@ -180,3 +182,46 @@ async def test_cancel_permission_and_driver_edges(tmp_path):
     bare.install_driver(_noop_driver)
     with pytest.raises(RuntimeStartError, match="already installed"):
         bare.install_driver(_noop_driver)
+
+
+async def test_driver_failure_preserves_the_error_and_records_terminal_event(tmp_path):
+    runtime = _native(tmp_path, "Never completes.")
+
+    async def _broken_driver(**kwargs):
+        raise ValueError("driver exploded")
+
+    runtime._run = _broken_driver
+    await runtime.start(task="failure", session_id="failed-1")
+    with pytest.raises(ValueError, match="driver exploded"):
+        await runtime.prompt("go")
+    assert runtime.state is LifecycleState.FAILED
+    events, _ = await runtime.poll_events(0)
+    assert events[-1].payload["state"] == "failed"
+
+
+async def test_mid_turn_cancel_lands_at_the_next_boundary(tmp_path):
+    runtime = _native(tmp_path, "Cancelled run.")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_driver(**kwargs):
+        entered.set()
+        await release.wait()
+        return object()
+
+    runtime._run = _blocking_driver
+    await runtime.start(task="cancel", session_id="cancel-1")
+    prompting = asyncio.create_task(runtime.prompt("go"))
+    await entered.wait()
+    await runtime.cancel(reason="client cancel")
+    assert runtime.state is LifecycleState.RUNNING
+    release.set()
+    from garuda.runtime import RuntimeCancelledError
+
+    with pytest.raises(RuntimeCancelledError, match="turn boundary"):
+        await prompting
+    assert runtime.state is LifecycleState.CLOSED
+    events, _ = await runtime.poll_events(0)
+    terminal = [event for event in events if event.is_terminal()]
+    assert len(terminal) == 1
+    assert terminal[0].payload == {"state": "cancelled", "reason": "client cancel"}

@@ -81,7 +81,7 @@ class NativeGarudaRuntime:
         self._session_id = ""
         self._turn = 0
         self._events: list[RuntimeEvent] = []
-        self._cancel_requested = False
+        self._cancel_requested: str | None = None
         self._parked_approvals: dict[str, Callable[[bool], None]] = {}
         self._last_result: Any = None
 
@@ -229,10 +229,11 @@ class NativeGarudaRuntime:
             raise RuntimeNotActiveError(f"prompt needs IDLE, state={self._state.value}")
         if not text:
             raise RuntimeNotActiveError("prompt text must not be empty")
-        if self._cancel_requested:
-            self._cancel_requested = False
+        if self._cancel_requested is not None:
+            reason = self._cancel_requested
+            self._cancel_requested = None
             self._move(LifecycleState.CANCELLING)
-            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": "pre-prompt"})
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
             self._move(LifecycleState.CLOSED)
             raise RuntimeCancelledError("cancelled before the turn started")
         if self._run is None:
@@ -244,12 +245,20 @@ class NativeGarudaRuntime:
         try:
             result = await self._run(task=text, turn=self._turn, trail=self._trail)
         except Exception:
-            self._move(LifecycleState.FAILED)
+            # Emit while RUNNING: terminal states reject all later emission.
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed"})
+            self._move(LifecycleState.FAILED)
             raise
         self._last_result = result
         self._normalize_trail(self._trail, skip=seen)
         self._store.advance_event_cursor(self._session_id, len(self._events))
+        if self._cancel_requested is not None:
+            reason = self._cancel_requested
+            self._cancel_requested = None
+            self._move(LifecycleState.CANCELLING)
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
+            self._move(LifecycleState.CLOSED)
+            raise RuntimeCancelledError("cancelled at the turn boundary")
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "completed", "success": bool(result)})
         self._move(LifecycleState.IDLE)
         return self._turn
@@ -280,7 +289,7 @@ class NativeGarudaRuntime:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
         if self._state is LifecycleState.RUNNING:
-            self._cancel_requested = True
+            self._cancel_requested = reason or "cancelled"
             return
         self._move(LifecycleState.CANCELLING)
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
