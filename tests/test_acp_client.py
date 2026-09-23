@@ -69,6 +69,8 @@ async def _launched(argv: list[str], **kwargs) -> AcpProcess:
 
 
 def test_frame_codec_round_trip_and_rejects():
+    from garuda.acp.protocol import MAX_HEADER_BYTES
+
     message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     decoded, rest = decode_frame(encode_frame(message) + b"leftover")
     assert decoded == message
@@ -81,6 +83,15 @@ def test_frame_codec_round_trip_and_rejects():
         decode_frame(encode_frame([1, 2, 3]))
     with pytest.raises(AcpProtocolError):
         decode_frame(b"Content-Length: xyz\r\n\r\n{}")
+    # Fail-closed framing: unbounded header + duplicate lengths.
+    with pytest.raises(AcpProtocolError, match="exceeds bound"):
+        decode_frame(b"X: " + b"a" * (MAX_HEADER_BYTES + 1))
+    body = b"{}"
+    with pytest.raises(AcpProtocolError, match="duplicate Content-Length"):
+        decode_frame(
+            f"Content-Length: {len(body)}\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
 
 
 async def test_handshake_session_prompt_and_notifications():
@@ -196,3 +207,34 @@ async def test_close_reaps_the_group_and_is_idempotent():
     assert not process.is_running
     with pytest.raises(ProcessLookupError):
         os.killpg(pid, 0)
+
+
+async def test_launch_after_close_is_refused():
+    process = await _launched(_argv({"initialize": {"ok": True}}))
+    await process.close()
+    with pytest.raises(AcpProtocolError, match="closed"):
+        await process.launch()
+
+
+async def test_cancel_notification_is_flushed_before_pending_fails():
+    """`session/cancel` must reach the agent: `_notify` drains the transport."""
+    received: list[bytes] = []
+
+    class _DrainAssertingStdin:
+        def __init__(self):
+            self.drained = False
+
+        def write(self, data: bytes):
+            received.append(data)
+
+        async def drain(self):
+            self.drained = True
+
+    process = AcpProcess([sys.executable, "-c", "pass"])
+    fake_stdin = _DrainAssertingStdin()
+    process._process = type(
+        "_P", (), {"stdin": fake_stdin, "returncode": None}
+    )()
+    await process._notify("session/cancel", {"sessionId": "s9"})
+    assert fake_stdin.drained
+    assert received and b"session/cancel" in received[0]
