@@ -59,15 +59,44 @@ async def test_unknown_harness_is_actionable(tmp_path):
 
 
 async def test_smoke_runs_in_fixture_workspace_against_fake(tmp_path):
-    """The gating shape without the spend: fake argv, fixture workspace."""
+    """The gating shape without the spend: fake argv, fixture workspace.
+
+    The fake runs from its resolved script path, not `python -m`: the smoke
+    cwd is an isolated fixture dir, and in a linked checkout without an
+    install that cwd cannot import the `garuda` package. The script itself
+    has no package imports, so a direct path executes anywhere.
+    """
+    import garuda.acp.fake_agent as fake_agent_mod
+
     workspace = tmp_path / "fixture-ws"
     workspace.mkdir()
     report = await run_smoke(
         "claude",
-        argv=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"],
+        argv=[
+            sys.executable, str(fake_agent_mod.__file__),
+            "--profile", "success",
+        ],
         workspace=workspace,
         timeout=30.0,
     )
     assert report.ok is True
     assert report.harness == "claude"
     assert report.turn == 1
+
+
+def test_fake_agent_script_has_no_package_imports():
+    """The fixture-cwd trick depends on this: fake_agent.py must import
+    nothing beyond the standard library, or the resolved-path launch
+    breaks exactly like `python -m` did."""
+    import ast
+
+    import garuda.acp.fake_agent as fake_agent_mod
+
+    tree = ast.parse(open(fake_agent_mod.__file__, encoding="utf-8").read())
+    stdlib = {"__future__", "argparse", "json", "os", "sys", "time"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name.split(".")[0] in stdlib, alias.name
+        elif isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] in stdlib, node.module
