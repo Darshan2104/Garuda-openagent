@@ -13,6 +13,7 @@ fully fault-injectable.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -22,6 +23,8 @@ from garuda.runtime.protocol import (
     AgentRuntimeError,
     LifecycleState,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class HandoffPhase(str, Enum):
@@ -187,3 +190,69 @@ class HandoffTransaction:
             resume = getattr(source, "resume_from_pause", None)
             if resume is not None:
                 await resume()
+
+
+async def execute_handoff(
+    *,
+    session_id: str,
+    source,
+    target_factory: Callable[[], Any],
+    store=None,
+    checkpoint: Callable[[], None] | None = None,
+    capture: Callable[[], dict[str, Any]] | None = None,
+    generate: Callable[[], None] | None = None,
+    emit: Callable[[RuntimeEvent], None] | None = None,
+) -> tuple[HandoffTransaction, Any]:
+    """Run the full pause → checkpoint → capture → start → ack transaction.
+
+    The production entry point `HandoffTransaction` unit tests never reached:
+    every `begin`/`start_target`/`acknowledge` here runs against real
+    `AgentRuntime` instances, with the session store recording the outcome so
+    exactly one authoritative owner survives either branch.
+
+    - Success returns `(tx, target)` with `tx.phase == ACKNOWLEDGED`,
+      `source` CLOSED and `target` active; the store records `acknowledged`.
+    - Target-startup failure rolls back inside `start_target` (source resumed
+      to IDLE and still promptable) and the store records `failed`; the
+      `HandoffError` propagates so callers cannot mistake it for a move.
+    - A `store.record_handoff` failure fails closed: the transaction moves to
+      FAILED rather than transferring ownership without an audit trail.
+    """
+    tx = HandoffTransaction(session_id=session_id, emit=emit)
+    if store is not None:
+        try:
+            store.record_handoff(session_id, state="prepared", attempts=1)
+        except Exception as exc:
+            logger.warning("Handoff prepare audit failed", exc_info=True)
+            raise HandoffError(f"handoff prepare audit failed: {exc}") from exc
+    await tx.begin(
+        source,
+        checkpoint=checkpoint or (lambda: None),
+        capture=capture,
+        generate=generate,
+    )
+    target = target_factory()
+    try:
+        await tx.start_target(source, target)
+    except HandoffError:
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="target_startup"
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+        raise
+    await tx.acknowledge(source, target)
+    if store is not None:
+        try:
+            store.record_handoff(
+                session_id,
+                state="acknowledged",
+                attempts=1,
+                target_runtime=getattr(target, "runtime_id", ""),
+            )
+        except Exception as exc:
+            logger.warning("Handoff acknowledge audit failed", exc_info=True)
+            raise HandoffError(f"handoff acknowledge audit failed: {exc}") from exc
+    return tx, target
