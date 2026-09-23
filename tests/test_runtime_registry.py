@@ -27,6 +27,42 @@ def test_builtin_native_is_always_present():
     assert resolved.command is None
 
 
+def test_trusted_disabled_cannot_be_selected_or_started():
+    """Selection gate: disabled ids (direct or via project alias) refuse,
+    while listing still shows them annotated for UIs."""
+    manifests = _global(
+        {
+            "runtime_id": "codex",
+            "kind": "acp",
+            "command": ["codex", "acp"],
+            "version": "1",
+            "capabilities": ["prompt", "cancel"],
+        }
+    )
+    refs = parse_project_refs([{"alias": "fast", "runtime_id": "codex"}])
+    registry = RuntimeRegistry(manifests, refs, disabled=frozenset({"codex"}))
+    assert registry.disabled_ids == frozenset({"codex"})
+    assert registry.is_disabled("codex") is True
+    assert registry.is_disabled("fast") is True
+    assert registry.is_disabled("native") is False
+    # Cannot be selected — and without a resolution there is nothing to start.
+    with pytest.raises(RegistryError, match="disabled"):
+        registry.get("codex")
+    with pytest.raises(RegistryError, match="disabled"):
+        registry.get("fast")
+    with pytest.raises(RegistryError, match="unknown runtime"):
+        registry.is_disabled("ghost")
+    listed = {r.runtime_id: r for r in registry.list()}
+    assert any("disabled" in w for w in listed["codex"].warnings)
+    # The builtin fallback is not disablable; malformed entries fail closed.
+    with pytest.raises(RegistryError, match="cannot be disabled"):
+        RuntimeRegistry(manifests, disabled=frozenset({"native"}))
+    with pytest.raises(RegistryError, match="non-empty strings"):
+        RuntimeRegistry(manifests, disabled=frozenset({""}))
+    # Enabled runtimes resolve exactly as before.
+    assert RuntimeRegistry(manifests, refs, disabled=frozenset({"other"})).get("fast").runtime_id == "codex"
+
+
 def test_global_manifest_resolves_with_command_and_capabilities():
     manifests = _global(
         {

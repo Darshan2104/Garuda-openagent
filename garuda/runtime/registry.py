@@ -270,9 +270,23 @@ class RuntimeRegistry:
         self,
         manifests: list[RuntimeManifest] | None = None,
         project_refs: list[ProjectRuntimeRef] | None = None,
+        disabled: frozenset[str] | set[str] | None = None,
     ):
+        """`disabled` is the trusted global set (see `catalog.load_trusted_disabled`).
+
+        The builtin native runtime cannot be disabled — it is the fallback every
+        selection path assumes. Unknown ids in the set are inert (a stale entry
+        must not brick the registry); malformed entries fail closed.
+        """
         manifests = list(manifests or [])
         project_refs = list(project_refs or [])
+        disabled_set = frozenset(disabled or ())
+        for entry in disabled_set:
+            if not isinstance(entry, str) or not entry:
+                raise RegistryError(f"disabled runtime ids must be non-empty strings, got {entry!r}")
+        if BUILTIN_NATIVE_ID in disabled_set:
+            raise RegistryError("the builtin native runtime cannot be disabled")
+        self._disabled = disabled_set
         self._manifests: dict[str, RuntimeManifest] = {}
         for manifest in manifests:
             if manifest.runtime_id in self._manifests:
@@ -307,8 +321,35 @@ class RuntimeRegistry:
         """The trusted manifests, builtin native first, for discovery."""
         return [self._manifests[key] for key in sorted(self._manifests)]
 
+    @property
+    def disabled_ids(self) -> frozenset[str]:
+        """Runtime ids disabled by trusted global configuration."""
+        return self._disabled
+
+    def is_disabled(self, ref: str) -> bool:
+        """True when resolving `ref` would hit a disabled runtime. Unknown refs
+        fail closed like `get`."""
+        return self._resolve_id(ref) in self._disabled
+
+    def _resolve_id(self, ref: str) -> str:
+        if ref in self._manifests:
+            return ref
+        project_ref = self._aliases.get(ref)
+        if project_ref is None:
+            raise RegistryError(f"unknown runtime {ref!r}")
+        return project_ref.runtime_id
+
     def get(self, ref: str) -> ResolvedRuntime:
-        """Resolve a runtime id or project alias. Unknown refs fail closed."""
+        """Resolve a runtime id or project alias.
+
+        Unknown refs fail closed; disabled runtimes — directly or via alias —
+        are refused so they cannot be selected or started.
+        """
+        runtime_id = self._resolve_id(ref)
+        if runtime_id in self._disabled:
+            raise RegistryError(
+                f"runtime {runtime_id!r} is disabled by user configuration"
+            )
         if ref in self._manifests:
             manifest = self._manifests[ref]
             return ResolvedRuntime(
@@ -320,9 +361,7 @@ class RuntimeRegistry:
                 description=manifest.description,
                 warnings=manifest.warnings,
             )
-        project_ref = self._aliases.get(ref)
-        if project_ref is None:
-            raise RegistryError(f"unknown runtime {ref!r}")
+        project_ref = self._aliases[ref]
         manifest = self._manifests[project_ref.runtime_id]
         capabilities = manifest.capabilities
         if project_ref.capabilities is not None:
@@ -339,10 +378,49 @@ class RuntimeRegistry:
         )
 
     def list(self) -> list[ResolvedRuntime]:
-        """Every registered runtime, including aliases, in deterministic order."""
-        ids = sorted(self._manifests)
-        aliases = sorted(self._aliases)
-        return [self.get(ref) for ref in ids + aliases]
+        """Every registered runtime, including aliases, in deterministic order.
+
+        Disabled entries are listed — UIs need to show them — annotated with
+        the disablement warning instead of resolving.
+        """
+        resolved: list[ResolvedRuntime] = []
+        for ref in sorted(self._manifests):
+            manifest = self._manifests[ref]
+            warnings = manifest.warnings
+            if ref in self._disabled:
+                warnings = (*warnings, "disabled by user configuration")
+            resolved.append(
+                ResolvedRuntime(
+                    runtime_id=manifest.runtime_id,
+                    kind=manifest.kind,
+                    version=manifest.version,
+                    command=manifest.command,
+                    capabilities=manifest.capabilities,
+                    description=manifest.description,
+                    warnings=warnings,
+                )
+            )
+        for alias in sorted(self._aliases):
+            project_ref = self._aliases[alias]
+            try:
+                entry = self.get(alias)
+            except RegistryError:
+                manifest = self._manifests[project_ref.runtime_id]
+                capabilities = manifest.capabilities
+                if project_ref.capabilities is not None:
+                    capabilities = RuntimeCapabilities(names=project_ref.capabilities)
+                entry = ResolvedRuntime(
+                    runtime_id=manifest.runtime_id,
+                    kind=manifest.kind,
+                    version=manifest.version,
+                    command=manifest.command,
+                    capabilities=capabilities,
+                    description=manifest.description,
+                    warnings=(*manifest.warnings, "disabled by user configuration"),
+                    via_alias=alias,
+                )
+            resolved.append(entry)
+        return resolved
 
     def default(self) -> ResolvedRuntime:
         return self.get(BUILTIN_NATIVE_ID)

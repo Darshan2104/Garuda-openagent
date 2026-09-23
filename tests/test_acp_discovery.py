@@ -10,7 +10,12 @@ import stat
 
 import pytest
 
-from garuda.acp.catalog import BUILTIN_STUBS, discover, health_of
+from garuda.acp.catalog import (
+    BUILTIN_STUBS,
+    discover,
+    health_of,
+    load_trusted_disabled,
+)
 from garuda.runtime.protocol import AuthStatus
 from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
 
@@ -114,6 +119,47 @@ def test_disabled_runtimes_skip_probes_entirely():
     assert entry.available is False
     assert calls == []
     assert any("disabled" in w for w in entry.warnings)
+
+
+def test_trusted_disablement_flows_from_global_settings(tmp_path, monkeypatch):
+    from garuda.runtime.registry import RuntimeRegistry
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("disabled_runtimes:\n  - fake\n", encoding="utf-8")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings_path))
+    assert load_trusted_disabled() == frozenset({"fake"})
+    assert load_trusted_disabled({"disabled_runtimes": ["a", "b"]}) == frozenset({"a", "b"})
+    assert load_trusted_disabled({}) == frozenset()
+    with pytest.raises(ValueError, match="disabled_runtimes"):
+        load_trusted_disabled({"disabled_runtimes": "fake"})
+    with pytest.raises(ValueError, match="disabled_runtimes"):
+        load_trusted_disabled({"disabled_runtimes": ["ok", 7]})
+
+    # The product path: trusted set disables discovery AND selection.
+    manifests = _manifest()
+    (entry,) = [
+        d for d in discover(manifests, disabled=load_trusted_disabled())
+        if d.runtime_id == "fake"
+    ]
+    assert entry.available is False
+    registry = RuntimeRegistry(manifests, disabled=load_trusted_disabled())
+    with pytest.raises(Exception, match="disabled"):
+        registry.get("fake")
+
+
+def test_project_suggestions_are_recommendation_only():
+    manifests = _manifest(command=["definitely-not-installed-xyz"])
+    found = discover(manifests, project_disabled={"fake"})
+    (entry,) = [d for d in found if d.runtime_id == "fake"]
+    # Still discovered normally — the suggestion is a warning, never a block.
+    assert any("ignored" in w and "global settings" in w for w in entry.warnings)
+    from garuda.runtime.registry import RuntimeRegistry
+
+    registry = RuntimeRegistry(manifests)
+    assert registry.get("fake").runtime_id == "fake"
+
+    (stub,) = [d for d in discover([], project_disabled={"claude"}) if d.runtime_id == "claude"]
+    assert any("ignored" in w for w in stub.warnings)
 
 
 def test_stubs_listed_until_configured():

@@ -30,6 +30,7 @@ from garuda.acp.catalog import (
     DiscoveredRuntime,
     discover,
     health_of,
+    load_trusted_disabled,
 )
 from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import (
@@ -70,5 +71,6 @@ __all__ = [
     "discover",
     "encode_frame",
     "health_of",
+    "load_trusted_disabled",
     "negotiate",
 ]

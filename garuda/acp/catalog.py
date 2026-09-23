@@ -6,19 +6,29 @@ warnings. Discovery only ever runs the version/auth probes a trusted global
 manifest declares — it never synthesizes login, install, or token-reading
 commands, and unknown versions or missing tools surface as guidance instead
 of guesses.
+
+Disablement is trusted-global only: `load_trusted_disabled` reads the
+`disabled_runtimes` list from the user-level global settings (the same trust
+anchor as project-code authorization). Project configuration is
+recommendation-only — `project_disabled` entries are reported as warnings on
+the discovered record and never applied.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
+
+logger = logging.getLogger(__name__)
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -121,12 +131,21 @@ def discover(
     manifests,
     *,
     disabled: frozenset[str] | set[str] = frozenset(),
+    project_disabled: frozenset[str] | set[str] = frozenset(),
     probe_timeout: float = PROBE_TIMEOUT,
     run_probe: Callable[..., str | None] | None = None,
 ) -> list[DiscoveredRuntime]:
-    """Inspect configured harnesses without logging in, installing, or reading tokens."""
+    """Inspect configured harnesses without logging in, installing, or reading tokens.
+
+    `disabled` is the trusted global set: those ids resolve to unavailable
+    records and nothing else in the product may select them.
+    `project_disabled` is recommendation-only: matching ids stay fully
+    available and selectable, carrying a warning that the project suggestion
+    was ignored — only global settings disable runtimes.
+    """
     run = run_probe or _run_probe
     by_id = {m.runtime_id: m for m in manifests}
+    project_warned = set(project_disabled) - set(disabled)
     found: list[DiscoveredRuntime] = []
     for manifest in manifests:
         if manifest.runtime_id in disabled:
@@ -140,19 +159,79 @@ def discover(
                 )
             )
             continue
-        found.append(_inspect(manifest, run, probe_timeout))
+        record = _inspect(manifest, run, probe_timeout)
+        if manifest.runtime_id in project_warned:
+            record = DiscoveredRuntime(
+                runtime_id=record.runtime_id,
+                kind=record.kind,
+                available=record.available,
+                executable=record.executable,
+                version=record.version,
+                auth=record.auth,
+                health=record.health,
+                capabilities=record.capabilities,
+                warnings=(
+                    *record.warnings,
+                    "project suggests disabling this runtime — ignored: "
+                    "only global settings disable runtimes",
+                ),
+            )
+        found.append(record)
     for stub in BUILTIN_STUBS:
         if stub["runtime_id"] not in by_id and stub["runtime_id"] not in disabled:
+            warnings = [stub["description"] + " " + stub["setup"]]
+            if stub["runtime_id"] in project_warned:
+                warnings.append(
+                    "project suggests disabling this runtime — ignored: "
+                    "only global settings disable runtimes"
+                )
             found.append(
                 DiscoveredRuntime(
                     runtime_id=stub["runtime_id"],
                     kind=RuntimeKind.ACP.value,
                     available=False,
                     auth=AuthStatus.UNKNOWN,
-                    warnings=(stub["description"] + " " + stub["setup"],),
+                    warnings=tuple(warnings),
                 )
             )
     return sorted(found, key=lambda d: d.runtime_id)
+
+
+def load_trusted_disabled(settings: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """The runtime ids the user disabled in trusted global settings.
+
+    With `settings=None` the global settings file is read (missing or
+    unparsable files mean nothing disabled, mirroring the settings loader).
+    A present-but-malformed `disabled_runtimes` value raises `ValueError`:
+    silently enabling a runtime the user meant to disable is the wrong
+    direction to fail.
+    """
+    if settings is None:
+        settings = _read_global_settings()
+    if not isinstance(settings, Mapping):
+        raise ValueError("global settings must be a mapping")
+    raw = settings.get("disabled_runtimes", [])
+    if raw is None or raw == []:
+        return frozenset()
+    if not isinstance(raw, list) or any(not isinstance(v, str) or not v for v in raw):
+        raise ValueError("disabled_runtimes must be a list of runtime id strings")
+    return frozenset(raw)
+
+
+def _read_global_settings() -> dict[str, Any]:
+    from garuda.config.agent_home import global_settings_path
+
+    path = global_settings_path()
+    if not Path(path).is_file():
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning("Failed to parse global settings %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> DiscoveredRuntime:
