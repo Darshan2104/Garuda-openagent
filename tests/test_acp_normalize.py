@@ -108,7 +108,16 @@ def test_approval_and_unknown_kinds():
 def test_diagnostics_are_redacted_and_scoped():
     normalizer = _normalizer()
     normalizer.feed({"updateType": "agent_message_chunk", "text": "token=supersecret1"})
+    pem = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEpAIBAAKCAQEA7bq3fakekeybody\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    normalizer.feed({"updateType": "agent_message_chunk", "text": pem})
     trail = normalizer.diagnostic_trail()
-    assert len(trail) == 1
+    assert len(trail) == 2
     assert "supersecret1" not in trail[0]["raw"]
     assert "REDACTED" in trail[0]["raw"]
+    # Full PEM blocks (not just headers) are scrubbed from diagnostics.
+    assert "MIIEpAIBAAKCAQEA7bq3fakekeybody" not in trail[1]["raw"]
+    assert "BEGIN RSA PRIVATE KEY" not in trail[1]["raw"]
