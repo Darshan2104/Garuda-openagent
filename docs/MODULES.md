@@ -74,6 +74,9 @@ shell; `paths.py` and `health.py` are path safety and liveness.
 `manager.py` holds history and decides when to act. `shaper.py` caps and shapes
 tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
+`schemas.py` validates the generated `current-task.md`/`handoff.md` files
+(versioned frontmatter, bounded fields, unknown fields round-trip, unknown
+versions rejected).
 
 ## `agents/` — profiles
 
