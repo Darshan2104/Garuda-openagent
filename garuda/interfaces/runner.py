@@ -178,6 +178,11 @@ async def run_agent_task(
     initial_state: dict | None = None
     if resume:
         resumed_from = store.resolve(resume)
+        # Classify the retained session before resuming it: prepared switches
+        # roll back (marked failed), ambiguous trails refuse. Fail-closed.
+        from garuda.runtime.recovery import recover
+
+        recover(store, resumed_from)
         if context is None:
             context = build_resumed_context(store, resumed_from, task, model, config)
         # Restore pack facts after restart: the persisted WorkingState is the

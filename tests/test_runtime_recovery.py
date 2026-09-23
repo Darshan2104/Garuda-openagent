@@ -114,3 +114,138 @@ def test_exit_is_never_success(tmp_path):
     assert report_to_dict(report)["success_claim"] is False
     assert report_to_dict(report)["state"] == "resumable"
     assert store.load_meta("s1")["status"] == "failed"
+
+
+def test_indeterminate_liveness_refuses_without_operator_action(tmp_path, monkeypatch):
+    import os as _os
+
+    import garuda.runtime.recovery as recovery_mod
+
+    store = SessionStore(tmp_path)
+    _begin(store)
+    # PermissionError (another owner's process) is unknown, not dead.
+    monkeypatch.setattr(_os, "kill", lambda pid, sig: (_ for _ in ()).throw(PermissionError()))
+    assert recovery_mod._process_live(1234) is None
+    with pytest.raises(RecoveryError, match="indeterminate liveness"):
+        recover(store, "s1", child_pids=[1234])
+    # ...and an injected unknown verdict refuses the same way.
+    monkeypatch.setattr(_os, "kill", lambda pid, sig: None)
+    assert recovery_mod._process_live(1234) is True
+    with pytest.raises(RecoveryError, match="indeterminate liveness"):
+        recover(store, "s1", child_pids=[1234], is_alive=lambda pid: None)
+
+
+def test_malformed_or_ambiguous_trail_blocks_recovery(tmp_path):
+    from garuda.runtime.recovery import audit_core_trail
+
+    store = SessionStore(tmp_path)
+    _begin(store)
+    events_path = store.events_path("s1")
+    assert audit_core_trail(events_path) is True  # no trail yet
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_text(
+        '{"type": "session_end"}\n{"type": "session_end"}\n', encoding="utf-8"
+    )
+    assert audit_core_trail(events_path) is False
+    with pytest.raises(RecoveryError, match="ambiguous terminal"):
+        recover(store, "s1")
+    events_path.write_text('{"type": "session_end"}\n{broken\n', encoding="utf-8")
+    assert audit_core_trail(events_path) is False
+    with pytest.raises(RecoveryError, match="ambiguous terminal"):
+        recover(store, "s1")
+    # Post-terminal telemetry is bookkeeping, not ambiguity...
+    events_path.write_text(
+        '{"type": "session_end"}\n{"type": "turn_metrics"}\n{"type": "budget"}\n',
+        encoding="utf-8",
+    )
+    assert audit_core_trail(events_path) is True
+    # ...but substantive traffic after the terminal is.
+    events_path.write_text(
+        '{"type": "session_end"}\n{"type": "user_message"}\n', encoding="utf-8"
+    )
+    assert audit_core_trail(events_path) is False
+    with pytest.raises(RecoveryError, match="ambiguous terminal"):
+        recover(store, "s1")
+
+
+async def test_resume_classifies_through_the_production_path(tmp_path, monkeypatch):
+    """`run_agent_task --resume` classifies first: prepared switches roll
+    back and resume; ambiguous trails refuse."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.permissions import PermissionEngine
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import tools_for_names
+    from garuda.types import AgentConfig, ToolCall
+
+    def _script(summary="ok"):
+        return ScriptModel(
+            responses=[
+                ModelResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(id="1", name="task_complete", arguments={"summary": summary})
+                    ],
+                )
+            ]
+        )
+
+    def _run(task, session_id, **kwargs):
+        return run_agent_task(
+            task=task,
+            model=_script(),
+            agent=DefaultAgent(),
+            tools=tools_for_names(["task_complete"]),
+            config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo"),
+            permissions=PermissionEngine(mode="yolo"),
+            workspace=str(tmp_path / "ws"),
+            events=EventStore(session_id=session_id),
+            store=SessionStore(tmp_path / "sessions"),
+            **kwargs,
+        )
+
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    first = await _run("first task", "rec-first")
+    assert first.success
+    store = SessionStore(tmp_path / "sessions")
+    store.record_handoff("rec-first", state="prepared", attempts=1)
+    second = await _run("second task", "rec-second", resume="rec-first")
+    assert second.success
+    assert store.load_unified("rec-first").handoff["state"] == "failed"
+
+    events_path = store.events_path("rec-first")
+    with events_path.open("a", encoding="utf-8") as handle:
+        handle.write('{"type": "session_end"}\n')
+    with pytest.raises(RecoveryError, match="ambiguous terminal"):
+        await _run("third task", "rec-third", resume="rec-first")
+
+
+async def test_native_resume_refuses_ambiguous_trail(tmp_path):
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.permissions import PermissionEngine
+    from garuda.model.script_model import ScriptModel
+    from garuda.runtime.native import NativeGarudaRuntime
+    from garuda.runtime.protocol import RuntimeStartError
+    from garuda.tools import tools_for_names
+    from garuda.types import AgentConfig
+
+    store = SessionStore(tmp_path)
+    store.begin("amb", task="t", model="m", agent="a", workspace="w")
+    events_path = store.events_path("amb")
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_text(
+        '{"type": "session_end"}\n{"type": "session_end"}\n', encoding="utf-8"
+    )
+    runtime = NativeGarudaRuntime(
+        agent=DefaultAgent(),
+        model=ScriptModel(responses=[]),
+        tools=tools_for_names(["task_complete"]),
+        config=AgentConfig(),
+        permissions=PermissionEngine(mode="yolo"),
+        store=store,
+    )
+    with pytest.raises(RuntimeStartError, match="ambiguous terminal"):
+        await runtime.resume(native_session_id="amb")

@@ -17,11 +17,13 @@ verdict marks success, so exit codes alone never flip a session to successful.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 
@@ -58,11 +60,20 @@ def audit_terminal(events: list) -> bool:
     return len(terminal) == 1 and terminal[0] == len(events) - 1
 
 
-def _process_live(pid: int) -> bool:
+def _process_live(pid: int) -> bool | None:
+    """Probe one pid. True = live, False = dead, None = indeterminate.
+
+    `ProcessLookupError` means dead. `PermissionError` (or any other
+    `OSError`) means the process may be alive under another owner — treating
+    that as dead would reap... or rather declare dead something live, so it
+    is indeterminate and the caller must refuse without operator action.
+    """
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError, OSError):
+    except ProcessLookupError:
         return False
+    except (PermissionError, OSError):
+        return None
     return True
 
 
@@ -79,20 +90,62 @@ def _reap_group(pid: int) -> None:
 def reap_orphans(
     pids: list[int],
     *,
-    is_alive: Callable[[int], bool] = _process_live,
+    is_alive: Callable[[int], bool | None] = _process_live,
     reap: Callable[[int], None] = _reap_group,
 ) -> tuple[int, ...]:
     """Kill leftover agent children and verify each one dead. Unverifiable
-    pids fail closed instead of being declared reaped."""
+    pids fail closed instead of being declared reaped; indeterminate liveness
+    refuses recovery until an operator confirms the process is gone."""
     reaped: list[int] = []
     for pid in pids:
-        if not is_alive(pid):
+        alive = is_alive(pid)
+        if alive is None:
+            raise RecoveryError(
+                f"child process {pid} has indeterminate liveness; "
+                "refusing without operator action"
+            )
+        if not alive:
             continue
         reap(pid)
         if is_alive(pid):
             raise RecoveryError(f"child process {pid} survived reaping; refusing")
         reaped.append(pid)
     return tuple(reaped)
+
+
+def audit_core_trail(path: str | Path) -> bool:
+    """True when the persisted core trail is unambiguous: no malformed lines,
+    at most one `session_end`, and nothing substantive after it.
+
+    A missing trail is unambiguous (nothing to contradict). A torn or
+    foreign line is malformed and blocks recovery. Post-terminal telemetry
+    (`turn_metrics`, `budget`) is bookkeeping the loop emits after closing
+    the session — allowed. Anything else after the terminal (a second end,
+    more model/tool traffic, a new start) is ambiguous and refuses.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        raise RecoveryError(f"unreadable event trail at {path}: {exc}") from exc
+    kinds: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            return False
+        kinds.append(event["type"])
+    ends = [i for i, kind in enumerate(kinds) if kind == "session_end"]
+    if not ends:
+        return True
+    if len(ends) > 1:
+        return False
+    return all(kind in ("turn_metrics", "budget") for kind in kinds[ends[0] + 1 :])
 
 
 def record_cancel(store, session_id: str, *, boundary: str, reason: str = "") -> None:
@@ -140,12 +193,32 @@ def recover(
     session_id: str,
     *,
     child_pids: list[int] | None = None,
-    is_alive: Callable[[int], bool] = _process_live,
+    is_alive: Callable[[int], bool | None] = _process_live,
     reap: Callable[[int], None] = _reap_group,
 ) -> RecoveryReport:
-    """Reap orphans, classify, and mark rolled-back switches. Returns the
-    session to resume; never invents success."""
+    """Reap orphans, audit the persisted trail, classify, and mark rolled-back
+    switches. Returns the session to resume; never invents success.
+
+    The persisted event trail is reconstructed and audited before anything is
+    selected: a malformed or ambiguous terminal trail refuses recovery even
+    when the session meta alone looks resumable.
+    """
     reaped = reap_orphans(child_pids or [], is_alive=is_alive, reap=reap)
+    events_path = getattr(store, "events_path", None)
+    if callable(events_path):
+        try:
+            trail_ok = audit_core_trail(events_path(session_id))
+        except RecoveryError:
+            raise
+        except Exception as exc:
+            raise RecoveryError(
+                f"session {session_id} trail audit failed: {exc}"
+            ) from exc
+        if not trail_ok:
+            raise RecoveryError(
+                f"session {session_id} has a malformed or ambiguous terminal "
+                "trail; refusing without operator action"
+            )
     report = classify(store, session_id)
     if report.state is RestartState.ROLLED_BACK:
         store.record_handoff(session_id, state="failed", attempts=1)
