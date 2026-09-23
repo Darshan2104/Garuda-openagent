@@ -173,6 +173,13 @@ h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
 }
 
 .grid { display: grid; gap: 14px; }
+
+/* --- runtimes view: ops cards and selection --- */
+.row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.stack { display: grid; gap: 4px; margin-top: 8px; }
+#rt-table tr.selected td { background: var(--surface-2); }
+.card label { display: grid; gap: 4px; margin-top: 8px; font-size: 13px; }
+.card input { width: 100%; box-sizing: border-box; }
 .grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
 
 /* --- stat tiles --- */

@@ -24,6 +24,13 @@ Uploads and URL sources are saved into the agent workspace under `grounding/`. T
   `GET|POST /api/runs/<id>/recover` classifies or recovers the session.
 - The UI renders exactly these records: unknown versions, logins, and quotas
   display as unknown, never invented.
+- The Runtimes board (`#/runtimes`) is the visible control surface: the
+  harness table with health/auth/version, click-to-inspect detail
+  (capabilities, login guidance, setup), handoff preview plus confirmed
+  prepare with state shown, the diff timeline split into session work vs
+  pre-existing dirt (sessions without a recorded baseline say so instead of
+  inventing one), and recovery classify/run with the report rendered.
+  Prepare and recover disable themselves on read-only dashboards.
 
 ## Safety
 
