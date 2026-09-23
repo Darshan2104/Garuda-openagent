@@ -26,6 +26,8 @@ from typing import Any
 
 from garuda.acp.protocol import (
     ACP_VERSION,
+    MAX_FRAME_BYTES,
+    MAX_HEADER_BYTES,
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
@@ -86,6 +88,8 @@ class AcpProcess:
 
     async def launch(self) -> None:
         """Spawn the process and start the reader + stderr-drain tasks."""
+        if self._closed:
+            raise AcpProtocolError("process is closed; launch after close is refused")
         if self._process is not None:
             raise AcpProtocolError("already launched")
         self._process = await asyncio.create_subprocess_exec(
@@ -115,6 +119,11 @@ class AcpProcess:
                     self._on_eof()
                     return
                 self._buffer += chunk
+                if len(self._buffer) > MAX_FRAME_BYTES + MAX_HEADER_BYTES:
+                    self._on_transport_error(
+                        AcpProtocolError("reader buffer exceeds maximum frame size")
+                    )
+                    return
                 while True:
                     try:
                         message, self._buffer = decode_frame(self._buffer)
@@ -210,13 +219,21 @@ class AcpProcess:
             self._pending.pop(call_id, None)
             raise AcpTimeoutError(f"{method} exceeded its deadline") from exc
 
-    def _notify(self, method: str, params: dict[str, Any]) -> None:
+    async def _notify(self, method: str, params: dict[str, Any]) -> None:
+        """Write one notification and flush it.
+
+        Awaiting the drain matters: `session/cancel` (and later approval
+        answers) must reach the agent before the caller proceeds. A bare
+        `stdin.write` can leave the bytes buffered in the transport while the
+        local pending calls are already failed — a cancel the agent never saw.
+        """
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         try:
             self._process.stdin.write(
                 encode_frame({"jsonrpc": "2.0", "method": method, "params": params})
             )
+            await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
 
@@ -250,7 +267,7 @@ class AcpProcess:
     async def session_cancel(self, session_id: str) -> None:
         """Cancel a prompt: notify the agent and fail local pending calls."""
         try:
-            self._notify("session/cancel", {"sessionId": session_id})
+            await self._notify("session/cancel", {"sessionId": session_id})
         finally:
             self._fail_all_pending(AcpCancelledError("cancelled by caller"))
 

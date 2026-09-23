@@ -18,6 +18,11 @@ ACP_VERSION = "0.4"
 
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
+#: A peer that never sends `\r\n\r\n` must not grow the reader buffer forever.
+#: Headers are a handful of ASCII lines; anything beyond this without a
+#: terminator is a malformed/dead peer, failed closed.
+MAX_HEADER_BYTES = 16 * 1024
+
 
 class AcpError(AgentRuntimeError):
     """Base for every typed ACP transport failure."""
@@ -59,11 +64,19 @@ def decode_frame(buffer: bytes) -> tuple[dict[str, Any], bytes]:
     """
     head, sep, rest = buffer.partition(b"\r\n\r\n")
     if not sep:
+        if len(buffer) > MAX_HEADER_BYTES:
+            raise AcpProtocolError(
+                f"frame header exceeds bound of {MAX_HEADER_BYTES} bytes without terminator"
+            )
         raise ValueError("incomplete frame header")
     length: int | None = None
+    seen_lengths = 0
     for line in head.split(b"\r\n"):
         name, colon, value = line.partition(b":")
         if colon and name.strip().lower() == b"content-length":
+            seen_lengths += 1
+            if seen_lengths > 1:
+                raise AcpProtocolError("duplicate Content-Length header")
             try:
                 length = int(value.strip())
             except ValueError:
