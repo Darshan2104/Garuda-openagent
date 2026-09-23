@@ -110,3 +110,88 @@ def test_nothing_here_cleans_the_tree(repo):
     diff_text(repo)
     assert (repo / "a.txt").read_text() == "precious\n"
     assert _git(repo, "status", "--porcelain=v1").strip().startswith("M")
+
+
+async def test_baseline_captured_at_start_and_delta_separates_dirt(repo, tmp_path, monkeypatch):
+    """End-to-end through `run_agent_task`: the baseline is recorded at
+    session start, and the finish delta keeps pre-existing dirt distinct
+    from agent changes — both read from the recorded baseline."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import tools_for_names
+    from garuda.types import AgentConfig, ToolCall
+
+    (repo / "b.txt").write_text("preexisting dirt\n")
+    store = SessionStore(tmp_path / "sessions")
+    model = ScriptModel(
+        responses=[
+            ModelResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="1", name="bash", arguments={"command": "touch agent-made.txt"})
+                ],
+            ),
+            ModelResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="2", name="task_complete", arguments={"summary": "ok"})
+                ],
+            ),
+        ]
+    )
+    result = await run_agent_task(
+        task="create agent-made.txt",
+        model=model,
+        agent=DefaultAgent(),
+        tools=tools_for_names(["bash", "task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo"),
+        permissions=PermissionEngine(mode="yolo"),
+        workspace=str(repo),
+        events=EventStore(session_id="delta-e2e"),
+        store=store,
+    )
+    assert result.success
+    assert (repo / "agent-made.txt").exists()
+    meta = store.load_meta("delta-e2e")
+    assert meta["baseline"]["commit"] == _git(repo, "rev-parse", "HEAD").strip()
+    assert "agent-made.txt" in meta["delta_changed"]
+    assert "b.txt" not in meta["delta_changed"]
+    assert "b.txt" in meta["delta_preexisting"]
+
+
+async def test_handoff_consumes_the_recorded_baseline(repo, tmp_path, monkeypatch):
+    """`execute_handoff` carries the authoritative delta from the exact
+    start-of-session baseline and persists its commit on acknowledge."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.fake import FakeRuntime, FakeScenario
+    from garuda.runtime.handoff import execute_handoff
+    from garuda.workspace.diff import capture_baseline
+
+    (repo / "b.txt").write_text("preexisting dirt\n")
+    store = SessionStore(tmp_path / "sessions")
+
+    import tests.test_handoff as handoff_tests
+
+    source = await handoff_tests._native_source(tmp_path, store, "handoff-delta-1")
+    store.record_baseline("handoff-delta-1", capture_baseline(repo).to_dict())
+    (repo / "agent-made.txt").write_text("session work\n")
+    tx, _ = await execute_handoff(
+        session_id="handoff-delta-1",
+        source=source,
+        target_factory=lambda: FakeRuntime(FakeScenario.SUCCESS, runtime_id="target-d"),
+        store=store,
+        workspace=repo,
+    )
+    assert "agent-made.txt" in tx.captured["changed"]
+    assert "b.txt" in tx.captured["preexisting"]
+    recorded = store.load_unified("handoff-delta-1").handoff
+    assert recorded["state"] == "acknowledged"
+    assert recorded["baseline_commit"] == tx.captured["baseline_commit"]
+    assert recorded["baseline_commit"]

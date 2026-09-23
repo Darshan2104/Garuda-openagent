@@ -261,6 +261,20 @@ async def run_agent_task(
 
     try:
         await runtime.start(task=task, session_id=events.session_id)
+        # Authoritative baseline (P0.18): captured once the session exists, on
+        # the local working tree only — other workspace kinds do not share the
+        # host filesystem, so a host-side capture would attribute wrongly.
+        # Persisted in the unified session; handoff and verification consume
+        # this recorded baseline, never a fresh capture.
+        if workspace_kind == "local":
+            try:
+                from garuda.workspace.diff import capture_baseline
+
+                store.record_baseline(
+                    events.session_id, capture_baseline(workspace).to_dict()
+                )
+            except Exception:
+                logger.warning("Baseline capture failed", exc_info=True)
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
         if resumed_from:
@@ -366,6 +380,25 @@ async def run_agent_task(
                 logger.warning("MCP manager close failed", exc_info=True)
         if result is not None:
             store.finish(events.session_id, result)
+            # Verifier-facing delta: computed from the exact baseline recorded
+            # at session start, so pre-existing dirt stays distinct from agent
+            # changes for anyone reading the session afterwards. Best-effort.
+            if workspace_kind == "local":
+                try:
+                    from garuda.workspace.diff import load_session_delta
+
+                    delta = load_session_delta(store, events.session_id, workspace)
+                    update_session_meta(
+                        store,
+                        events.session_id,
+                        {
+                            "baseline_commit": delta.baseline_commit,
+                            "delta_changed": list(delta.changed[:200]),
+                            "delta_preexisting": list(delta.preexisting[:200]),
+                        },
+                    )
+                except Exception:
+                    logger.warning("Session delta attach failed", exc_info=True)
             summary = {
                 "session_id": events.session_id,
                 "success": result.success,

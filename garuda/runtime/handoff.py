@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
@@ -202,6 +203,7 @@ async def execute_handoff(
     capture: Callable[[], dict[str, Any]] | None = None,
     generate: Callable[[], None] | None = None,
     emit: Callable[[RuntimeEvent], None] | None = None,
+    workspace: str | Path | None = None,
 ) -> tuple[HandoffTransaction, Any]:
     """Run the full pause → checkpoint → capture → start → ack transaction.
 
@@ -217,6 +219,10 @@ async def execute_handoff(
       `HandoffError` propagates so callers cannot mistake it for a move.
     - A `store.record_handoff` failure fails closed: the transaction moves to
       FAILED rather than transferring ownership without an audit trail.
+    - With `workspace` (and a store holding the session's recorded baseline),
+      the capture carries the authoritative delta — changed vs preexisting
+      files from the exact start-of-session baseline — and the acknowledge
+      record persists the baseline commit for the target session.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit)
     if store is not None:
@@ -225,10 +231,25 @@ async def execute_handoff(
         except Exception as exc:
             logger.warning("Handoff prepare audit failed", exc_info=True)
             raise HandoffError(f"handoff prepare audit failed: {exc}") from exc
+
+    def _capture_with_delta() -> dict[str, Any]:
+        data = dict(capture() if capture else {})
+        if workspace is not None and store is not None:
+            try:
+                from garuda.workspace.diff import load_session_delta
+
+                delta = load_session_delta(store, session_id, workspace)
+                data.setdefault("baseline_commit", delta.baseline_commit)
+                data.setdefault("changed", list(delta.changed))
+                data.setdefault("preexisting", list(delta.preexisting))
+            except Exception:
+                logger.warning("Handoff delta capture failed", exc_info=True)
+        return data
+
     await tx.begin(
         source,
         checkpoint=checkpoint or (lambda: None),
-        capture=capture,
+        capture=_capture_with_delta,
         generate=generate,
     )
     target = target_factory()
@@ -246,11 +267,16 @@ async def execute_handoff(
     await tx.acknowledge(source, target)
     if store is not None:
         try:
+            extra: dict[str, Any] = {
+                "target_runtime": getattr(target, "runtime_id", ""),
+            }
+            if "baseline_commit" in tx.captured:
+                extra["baseline_commit"] = tx.captured["baseline_commit"]
             store.record_handoff(
                 session_id,
                 state="acknowledged",
                 attempts=1,
-                target_runtime=getattr(target, "runtime_id", ""),
+                **extra,
             )
         except Exception as exc:
             logger.warning("Handoff acknowledge audit failed", exc_info=True)
