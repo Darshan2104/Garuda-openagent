@@ -1,10 +1,13 @@
-"""CLI runtime selection and handoff commands (P1.6, issue #37).
+"""CLI runtime selection, handoff, resume, and recovery commands (P1.6, issue #37).
 
 `garuda runtime list|inspect` renders discovery; `garuda run --runtime`
 selects the executor (native default, unchanged); `garuda runtime handoff`
-previews by default and prepares only with `--confirm`; `garuda runtime
-recover` classifies and recovers sessions. Text by default, JSON with
-`--json`, and no switch ever happens without explicit confirmation.
+previews by default and executes the handoff transaction only with
+`--confirm` (pause → checkpoint → capture → start target → acknowledge or
+rollback); `garuda runtime resume` continues a persisted session through the
+real run lifecycle (which classifies first); `garuda runtime recover`
+classifies and recovers sessions. Text by default, JSON with `--json`, and
+no switch ever happens without explicit confirmation.
 """
 
 from __future__ import annotations
@@ -14,12 +17,15 @@ from typing import Any
 
 from garuda.acp.catalog import (
     adapter_for_manifest,
+    adapter_for_registry,
     builtin_manifest_dicts,
     discover,
     health_of,
+    load_trusted_disabled,
     require_acp_argv,
 )
 from garuda.runtime.recovery import recover, report_to_dict
+from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
 
 
 def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[dict]:
@@ -76,26 +82,137 @@ def cmd_handoff_preview(store, session_id: str, target_id: str) -> str:
 
 
 async def cmd_handoff_confirm(
-    store, session_id: str, target_id: str, *, pack_manager=None, state=None
+    store,
+    session_id: str,
+    target_id: str,
+    *,
+    manifests=None,
+    workspace: str | None = None,
+    pack_manager=None,
+    state=None,
+    target_argv_override: list[str] | None = None,
+    disabled=None,
 ) -> str:
-    """Prepare the handoff package and record it. Requires --confirm upstream."""
-    from garuda.context.pack import compile_handoff
+    """Execute the handoff transaction against real runtimes.
 
+    Resolves the target through the shared registry (unknown or disabled
+    targets are refused before anything moves), resumes the source session
+    as a live native runtime, then runs pause → checkpoint → capture →
+    start-target → acknowledge-or-rollback. Success transfers the single
+    mutating ownership; target failure rolls back to the resumable source.
+    A native target is not a switch: resume the session instead.
+    """
+    from garuda.context.pack import compile_handoff
+    from garuda.context.state_card import WorkingState
+    from garuda.runtime.handoff import execute_handoff
+    from garuda.runtime.native import NativeGarudaRuntime
+
+    if target_id == "native":
+        return (
+            "handoff refused: the target is the native runtime itself — "
+            "resume the session instead (`garuda runtime resume`).\n"
+        )
+    parsed = parse_global_manifests(
+        [m for m in (manifests or []) if m.get("runtime_id") != "native"],
+        source="runtime handoff",
+    )
+    if disabled is None:
+        disabled = load_trusted_disabled()
+    registry = RuntimeRegistry(parsed, disabled=disabled)
+    resolved = registry.get(target_id)  # unknown/disabled fail closed here
+    if target_argv_override is None:
+        import shutil
+
+        from garuda.acp.catalog import require_acp_argv
+
+        executable = shutil.which(resolved.command[0]) if resolved.command else None
+        require_acp_argv(resolved, executable=executable)
     unified = store.load_unified(session_id)
     if state is None:
-        from garuda.context.state_card import WorkingState
+        try:
+            state = WorkingState.from_dict(store.load_state(session_id))
+        except Exception:
+            state = WorkingState(task=unified.legacy.get("task", session_id))
+        if not state.task:
+            state.task = unified.legacy.get("task", session_id)
+    if workspace is None:
+        workspace = store.load_meta(session_id).get("workspace", ".")
 
-        state = WorkingState(task=unified.legacy.get("task", session_id))
-    doc, body = compile_handoff(
-        state,
-        source_runtime=unified.active.runtime_id,
-        session_id=session_id,
-        native_session_id=unified.active.native_session_id or "",
+    def _checkpoint() -> None:
+        if pack_manager is not None:
+            doc, body = compile_handoff(
+                state,
+                source_runtime=unified.active.runtime_id,
+                session_id=session_id,
+                native_session_id=unified.active.native_session_id or "",
+            )
+            pack_manager.write_handoff(doc, body)
+
+    source = NativeGarudaRuntime(
+        agent=None, model=None, tools=[], config=None, permissions=None, store=store
     )
-    if pack_manager is not None:
-        pack_manager.write_handoff(doc, body)
-    store.record_handoff(session_id, state="prepared", attempts=1, target_runtime=target_id)
-    return f"handoff prepared: {session_id} -> {target_id}\n"
+    await source.resume(native_session_id=session_id)
+
+    def _target_factory():
+        return adapter_for_registry(
+            registry, target_id, argv_override=target_argv_override
+        )
+
+    tx, _ = await execute_handoff(
+        session_id=session_id,
+        source=source,
+        target_factory=_target_factory,
+        store=store,
+        checkpoint=_checkpoint,
+        workspace=workspace,
+    )
+    return (
+        f"handoff acknowledged: {session_id} -> {target_id} "
+        f"(phase={tx.phase.value})\n"
+    )
+
+
+async def cmd_resume(
+    *,
+    store,
+    session_id: str,
+    task: str,
+    model,
+    agent,
+    tools,
+    config,
+    permissions,
+    workspace: str,
+    **runner_kwargs,
+) -> str:
+    """Resume a persisted session through the real run lifecycle.
+
+    Classification runs first (prepared switches roll back, ambiguous trails
+    refuse); the restored working state and conversation then continue as a
+    new session. Returns a human-readable summary naming both sessions.
+    """
+    from garuda.core.events import EventStore
+    from garuda.interfaces.runner import run_agent_task
+
+    events = EventStore()
+    result = await run_agent_task(
+        task=task,
+        model=model,
+        agent=agent,
+        tools=tools,
+        config=config,
+        permissions=permissions,
+        workspace=workspace,
+        events=events,
+        store=store,
+        resume=session_id,
+        **runner_kwargs,
+    )
+    return (
+        f"resumed {session_id} as {events.session_id}: "
+        f"{'success' if result.success else 'failed'} "
+        f"in {result.turns} turns\n"
+    )
 
 
 def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
@@ -135,6 +252,7 @@ __all__ = [
     "cmd_inspect",
     "cmd_list",
     "cmd_recover",
+    "cmd_resume",
     "load_configured_manifest_dicts",
     "run_acp_task",
 ]

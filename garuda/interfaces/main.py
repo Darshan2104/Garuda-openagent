@@ -316,14 +316,20 @@ def build_parser():
     runtime_inspect = runtime_sub.add_parser("inspect", help="Inspect one runtime")
     runtime_inspect.add_argument("runtime_id", help="Runtime id or alias")
     runtime_inspect.add_argument("--json", action="store_true", help="Print JSON health record")
-    runtime_handoff = runtime_sub.add_parser("handoff", help="Preview or prepare a handoff")
+    runtime_handoff = runtime_sub.add_parser("handoff", help="Preview or execute a handoff")
     runtime_handoff.add_argument("--session", required=True, help="Source session id")
     runtime_handoff.add_argument("--to", required=True, help="Target runtime id")
     runtime_handoff.add_argument(
         "--confirm",
         action="store_true",
-        help="Prepare the handoff package. Without it, only a preview prints.",
+        help="Execute the handoff transaction. Without it, only a preview prints.",
     )
+    runtime_resume = runtime_sub.add_parser("resume", help="Resume a persisted session")
+    runtime_resume.add_argument("--session", required=True, help="Session id to resume")
+    runtime_resume.add_argument("-t", "--task", required=True, help="Continuation task")
+    runtime_resume.add_argument("--workspace", default=".", help="Workspace root")
+    runtime_resume.add_argument("--agent", default="build", help="Agent profile")
+    runtime_resume.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     runtime_recover = runtime_sub.add_parser("recover", help="Classify and recover a session")
     runtime_recover.add_argument("--session", required=True, help="Session id")
     runtime_recover.add_argument("--json", action="store_true", help="Print JSON report")
@@ -449,8 +455,62 @@ async def run_runtime_command(args) -> int:
         if not args.confirm:
             print(cmd_handoff_preview(store, args.session, args.to), end="")
             return 0
+        from garuda.config.agent_home import resolve_agent_home
+        from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
+
+        home = resolve_agent_home(".")
+        dicts = load_configured_manifest_dicts(home.global_settings)
         manager = ContextPackManager(store.session_dir(args.session))
-        print(await cmd_handoff_confirm(store, args.session, args.to, pack_manager=manager), end="")
+        try:
+            print(
+                await cmd_handoff_confirm(
+                    store, args.session, args.to,
+                    manifests=dicts, pack_manager=manager,
+                ),
+                end="",
+            )
+        except Exception as exc:
+            print(f"Error: {exc}")
+            return 1
+        return 0
+    if command == "resume":
+        from garuda.agents.setup import prepare_agent_run
+        from garuda.interfaces.runtime_cli import cmd_resume
+        from garuda.model.litellm_model import LitellmModel
+
+        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+            args.agent, workspace=args.workspace
+        )
+        model = LitellmModel(
+            model_name=args.model,
+            reasoning_effort=config.reasoning_effort,
+            thinking_budget_tokens=config.thinking_budget_tokens,
+        )
+        try:
+            print(
+                await cmd_resume(
+                    store=store,
+                    session_id=args.session,
+                    task=args.task,
+                    model=model,
+                    agent=agent,
+                    tools=tools,
+                    config=config,
+                    permissions=permissions,
+                    workspace=args.workspace,
+                    mcp_manager=mcp_manager,
+                ),
+                end="",
+            )
+        except Exception as exc:
+            print(f"Error: {exc}")
+            return 1
+        finally:
+            if mcp_manager is not None:
+                try:
+                    await mcp_manager.close()
+                except Exception:
+                    pass
         return 0
     if command == "recover":
         print(cmd_recover(store, args.session, as_json=args.json), end="")
