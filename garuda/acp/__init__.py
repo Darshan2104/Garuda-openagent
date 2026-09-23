@@ -18,6 +18,7 @@ from garuda.acp.authority import (
     negotiate,
 )
 from garuda.acp.broker import (
+    ApprovalAuditError,
     ApprovalBroker,
     ApprovalOutcome,
     ApprovalRecord,
@@ -46,6 +47,7 @@ __all__ = [
     "AcpRuntime",
     "AcpTimeoutError",
     "AgentCapabilities",
+    "ApprovalAuditError",
     "ApprovalBroker",
     "ApprovalOutcome",
     "ApprovalRecord",

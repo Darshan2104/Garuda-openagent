@@ -126,3 +126,136 @@ async def test_strict_gaps_reported_not_downgraded():
     assert "garuda_only" in gaps[0]
     assert describe_gaps({"terminal": AuthorityPolicy.AGENT_PREFERRED}, agent) == []
     assert describe_gaps({}, agent) == []
+
+
+class _FailingStore:
+    """A session store whose audit writes always fail."""
+
+    def update_meta(self, session_id, updates):
+        raise OSError("disk is gone")
+
+
+async def test_audit_failure_denies_without_executing():
+    """An allow/deny decision must not execute when its audit is missing."""
+    engine = PermissionEngine(mode="yolo")  # ceiling allows everything
+    broker = ApprovalBroker(engine, store=_FailingStore(), timeout_sec=5.0)
+    allowed, reason = await broker.decide_tool(
+        "read_file", {"path": "a.txt"}, family="edit",
+        runtime_id="native", session_id="s1",
+    )
+    assert allowed is False
+    assert reason is not None and "audit" in reason
+    allowed, reason = await broker.decide_acp(
+        "edit", "a.txt", runtime_id="acp", session_id="s1"
+    )
+    assert allowed is False
+    assert reason is not None and "audit" in reason
+
+
+async def test_answerer_drives_parked_approvals():
+    async def _allow(request):
+        return True
+
+    engine = PermissionEngine(mode="smart", bash_rules={"ask": [".*"]})
+    broker = ApprovalBroker(engine, timeout_sec=5.0)
+    broker.set_answerer(_allow)
+    allowed, _ = await broker.decide_tool(
+        "bash", {"command": "sudo ls"}, family="terminal", runtime_id="native"
+    )
+    assert allowed is True
+
+    async def _boom(request):
+        raise RuntimeError("responder exploded")
+
+    broker.set_answerer(_boom)
+    allowed, reason = await broker.decide_tool(
+        "bash", {"command": "sudo ls"}, family="terminal", runtime_id="native"
+    )
+    assert allowed is False
+    assert reason is not None and "Denied" in reason
+
+
+async def test_facade_runs_share_the_broker_path(tmp_path, monkeypatch):
+    """`run_agent_task` (CLI headless / SDK / server) routes ASK through the
+    session broker: allows execute with an audit trail, denials block the
+    side effect and are audited too."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import tools_for_names
+    from garuda.types import AgentConfig, ToolCall
+
+    async def _answer_allow(action: str) -> bool:
+        return True
+
+    def _script():
+        return ScriptModel(
+            responses=[
+                ModelResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id="1", name="bash",
+                            arguments={"command": "touch broker-proof.txt"},
+                        )
+                    ],
+                ),
+                ModelResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(id="2", name="task_complete", arguments={"summary": "ok"})
+                    ],
+                ),
+            ]
+        )
+
+    def _permissions(handler=None):
+        return PermissionEngine(
+            mode="smart", bash_rules={"ask": ["touch"]}, approval_handler=handler
+        )
+
+    workspace = tmp_path / "ws-allow"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    result = await run_agent_task(
+        task="touch the proof file",
+        model=_script(),
+        agent=DefaultAgent(),
+        tools=tools_for_names(["bash", "task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="smart"),
+        permissions=_permissions(_answer_allow),
+        workspace=str(workspace),
+        events=EventStore(session_id="broker-allow"),
+        store=store,
+    )
+    assert result.success
+    assert (workspace / "broker-proof.txt").exists()
+    meta = store.load_meta("broker-allow")
+    assert any(
+        v.get("outcome") == ApprovalOutcome.ALLOW.value
+        for k, v in meta.items() if k.startswith("approval:")
+    ), "the allow decision must be audited"
+
+    workspace2 = tmp_path / "ws-deny"
+    workspace2.mkdir()
+    result = await run_agent_task(
+        task="touch the proof file",
+        model=_script(),
+        agent=DefaultAgent(),
+        tools=tools_for_names(["bash", "task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="smart"),
+        permissions=_permissions(),  # no handler: deny-all answerer, audited
+        workspace=str(workspace2),
+        events=EventStore(session_id="broker-deny"),
+        store=store,
+    )
+    assert not (workspace2 / "broker-proof.txt").exists()
+    meta = store.load_meta("broker-deny")
+    assert any(
+        v.get("outcome") == ApprovalOutcome.DENY.value
+        for k, v in meta.items() if k.startswith("approval:")
+    ), "the denial must be audited"

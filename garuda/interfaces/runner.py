@@ -215,6 +215,40 @@ async def run_agent_task(
 
     heartbeat_task = asyncio.ensure_future(_lease_heartbeat())
 
+    # One approval path for every run through this facade (P0.17): the engine's
+    # ASK responder becomes the session broker, so native tool approvals and
+    # ACP-side decisions share parking, timeout/disconnect denial, and the
+    # persisted audit — CLI headless, SDK, and server jobs traverse it alike.
+    # A caller-supplied interactive handler is not bypassed; it becomes the
+    # broker's answerer. With no handler, asks deny immediately (audited)
+    # instead of hanging until timeout.
+    from garuda.acp.broker import ApprovalBroker
+
+    approval_broker = ApprovalBroker(engine=permissions, store=store)
+    previous_handler = permissions.approval_handler
+    if previous_handler is not None:
+        def _make_answerer(handler):
+            async def _answer(request) -> bool:
+                try:
+                    return bool(await handler(request.action))
+                except Exception:
+                    logger.warning(
+                        "Approval answerer failed; denying", exc_info=True
+                    )
+                    return False
+
+            return _answer
+
+        approval_broker.set_answerer(_make_answerer(previous_handler))
+    else:
+        async def _deny_all(request) -> bool:
+            return False
+
+        approval_broker.set_answerer(_deny_all)
+    permissions.install_approval_handler(
+        approval_broker.handler(session_id=events.session_id)
+    )
+
     def _abandon_lease() -> None:
         """Cancel the heartbeat and release, for startup paths that never
         reach the main `try/finally` below. Best-effort; never masks the
