@@ -11,6 +11,8 @@ refuses incomplete entries so a half-documented transport cannot slip in.
 
 from __future__ import annotations
 
+import ast
+import importlib
 import pathlib
 from dataclasses import dataclass
 
@@ -99,11 +101,55 @@ def _assert_integration_test_exists(record: TransportRecord) -> None:
             raise ValueError(
                 f"transport {record.id!r} cannot read integration test {nodeid!r}: {exc}"
             ) from exc
-        if f"def {test_part}" not in text:
+        try:
+            tree = ast.parse(text, filename=str(candidate))
+        except SyntaxError as exc:
+            raise ValueError(
+                f"transport {record.id!r} integration test {path_part!r} "
+                f"does not parse: {exc}"
+            ) from exc
+        # A real function node: substring search accepts the name in a comment.
+        defined = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if test_part not in defined:
             raise ValueError(
                 f"transport {record.id!r} integration test {test_part!r} "
-                f"not found in {path_part!r}"
+                f"is not a defined function in {path_part!r}"
             )
+
+
+def _assert_test_double_resolves(record: TransportRecord) -> None:
+    """The configured test double must import and resolve to something
+    buildable — a dotted path pointing at nothing is not a test double."""
+    dotted = record.test_double
+    module_name, _, attr = dotted.rpartition(".")
+    if not module_name or not attr:
+        raise ValueError(
+            f"transport {record.id!r} test double must be a dotted path: {dotted!r}"
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(
+            f"transport {record.id!r} test double module {module_name!r} "
+            f"does not import: {exc}"
+        ) from exc
+    target: object = module
+    for part in dotted[len(module_name) + 1 :].split("."):
+        try:
+            target = getattr(target, part)
+        except AttributeError as exc:
+            raise ValueError(
+                f"transport {record.id!r} test double {dotted!r} "
+                f"does not resolve: {exc}"
+            ) from exc
+    if not callable(target):
+        raise ValueError(
+            f"transport {record.id!r} test double {dotted!r} is not buildable"
+        )
 
 
 TRANSPORTS: tuple[TransportRecord, ...] = (
@@ -152,3 +198,4 @@ def assert_admissible(record: TransportRecord) -> None:
             f"transport {record.id!r} auth must never claim subscription/OAuth use: {record.auth!r}"
         )
     _assert_integration_test_exists(record)
+    _assert_test_double_resolves(record)
