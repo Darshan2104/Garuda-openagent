@@ -204,6 +204,14 @@ class NativeGarudaRuntime:
         if self._state is not LifecycleState.DISCOVERED:
             raise RuntimeStartError(f"cannot resume (state={self._state.value})")
         resolved = self._store.resolve(native_session_id)
+        # Classify first: a prepared-but-unacknowledged switch rolls back, and
+        # a malformed or ambiguous trail refuses the resume outright.
+        try:
+            from garuda.runtime.recovery import RecoveryError, recover
+
+            recover(self._store, resolved)
+        except RecoveryError as exc:
+            raise RuntimeStartError(f"cannot resume session {resolved}: {exc}") from exc
         self._move(LifecycleState.STARTING)
         self._session_id = resolved
         unified = self._store.ensure_unified(resolved)
