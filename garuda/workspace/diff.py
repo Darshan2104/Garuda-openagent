@@ -206,3 +206,19 @@ def reconcile(acp_hints: list[str], delta: SessionDelta) -> Reconciliation:
     confirmed = tuple(h for h in acp_hints if h in on_disk)
     disagreed = tuple(h for h in acp_hints if h not in on_disk)
     return Reconciliation(confirmed=confirmed, disagreed=disagreed)
+
+
+def load_session_delta(store, session_id: str, workspace: str | Path) -> SessionDelta:
+    """Compute the delta from the baseline the session recorded at start.
+
+    Handoff and verification consume the *recorded* baseline — never a fresh
+    capture — so pre-existing dirt and agent work stay attributed exactly as
+    the session saw them. Raises `DiffError` when no baseline was recorded.
+    """
+    try:
+        recorded = store.load_meta(session_id).get("baseline") or {}
+    except Exception as exc:
+        raise DiffError(f"no readable session meta for {session_id}: {exc}") from exc
+    if not recorded:
+        raise DiffError(f"session {session_id} recorded no baseline")
+    return session_delta(Baseline.from_dict(recorded), workspace)
