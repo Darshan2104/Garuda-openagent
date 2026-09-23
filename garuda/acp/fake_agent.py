@@ -35,6 +35,27 @@ CAPABILITY_PROFILES = {
     },
 }
 
+#: Every `--profile` this server accepts. Pinned (and asserted by set
+#: equality in `tests/test_acp_fake_agent.py`) so dropping a scenario from
+#: the fake cannot silently shrink conformance coverage — the contract cases
+#: are enumerated here, not implied by whichever tests happen to name them.
+BASE_PROFILES = frozenset(
+    {
+        "success",
+        "streaming",
+        "approval",
+        "diff",
+        "malformed",
+        "slow",
+        "exit-early",
+        "resume",
+        "version-mismatch",
+    }
+)
+PROFILES = BASE_PROFILES | frozenset(
+    f"capabilities-{name}" for name in CAPABILITY_PROFILES
+)
+
 
 def _read_frame() -> dict:
     header = b""
@@ -97,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", default=None)
     args = parser.parse_args(argv)
     profile = args.profile
+    if profile not in PROFILES:
+        parser.error(f"unknown profile {profile!r}; choices: {sorted(PROFILES)}")
     capabilities = CAPABILITY_PROFILES.get(
         profile[len("capabilities-") :] if profile.startswith("capabilities-") else "full"
     )
