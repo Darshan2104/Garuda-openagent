@@ -6,9 +6,12 @@ identity, native session refs, the authority snapshot, and the event ranges
 belonging to it. Historical logs (no segments at all) read exactly as before
 with zero lanes.
 
-`export_trace` is the sharing format: lane structure, counts, handoff and
-recovery state — never raw transcripts, reasoning, or secrets. Event payloads
-stay out by construction: the exporter only ever reads kinds and counts.
+`export_trace` is the sharing format: a versioned, whitelisted projection —
+lane structure, counts, handoff and recovery state — never raw transcripts,
+reasoning, or secrets. Every exported string passes best-effort secret
+scrubbing, and only known keys are emitted, so adversarial content in
+session ids, handoff fields, or authority entries cannot leak through an
+invented shape.
 """
 
 from __future__ import annotations
@@ -18,7 +21,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from garuda.context.redact import redact_text
+
 ACP_EVENTS_FILE = "acp-events.jsonl"
+
+#: Version of the sharing format. Readers reject newer versions they cannot
+#: interpret instead of guessing at unknown fields.
+TRACE_EXPORT_VERSION = 1
+
+#: Handoff keys allowed into the export. Anything else a future handoff
+#: record carries stays local.
+_HANDOFF_KEYS = frozenset(
+    {"state", "attempts", "target_runtime", "baseline_commit", "reason", "note"}
+)
 
 
 @dataclass
@@ -122,27 +137,64 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
     )
 
 
+def _clean_string(value: object) -> str:
+    """Best-effort secret scrub for one exported string. Non-strings become ""."""
+    if not isinstance(value, str):
+        return ""
+    cleaned, _ = redact_text(value)
+    return cleaned
+
+
+def _clean_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
+    """Whitelisted, scrubbed handoff projection. Unknown keys never export."""
+    if not isinstance(handoff, dict):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in ("state", "target_runtime", "baseline_commit", "reason", "note"):
+        if key in handoff:
+            projected[key] = _clean_string(handoff[key])
+    if "attempts" in handoff and isinstance(handoff["attempts"], int):
+        projected["attempts"] = handoff["attempts"]
+    return projected
+
+
 def export_trace(trace: CrossRuntimeTrace) -> dict[str, Any]:
-    """Sharing-safe export: structure and counts only. No payloads, no transcripts."""
+    """Sharing-safe export: versioned structure and counts only.
+
+    Strict payload-free whitelist: lane identity strings are scrubbed,
+    the handoff projects known keys only, and no payload, transcript, or
+    reasoning text is read at any point.
+    """
     return {
-        "session_id": trace.session_id,
+        "version": TRACE_EXPORT_VERSION,
+        "session_id": _clean_string(trace.session_id),
         "lanes": [
             {
-                "runtime_id": lane.runtime_id,
-                "kind": lane.kind,
-                "native_session_id": lane.native_session_id,
-                "version": lane.version,
-                "authority": list(lane.authority),
+                "runtime_id": _clean_string(lane.runtime_id),
+                "kind": _clean_string(lane.kind),
+                "native_session_id": _clean_string(lane.native_session_id)
+                if lane.native_session_id
+                else None,
+                "version": _clean_string(lane.version),
+                "authority": [
+                    _clean_string(entry) for entry in lane.authority
+                ],
                 "native_events": (
                     None
                     if lane.native_event_start is None
                     else lane.native_event_end - lane.native_event_start
                 ),
-                "external_events": lane.external_events,
+                "external_events": lane.external_events
+                if isinstance(lane.external_events, int)
+                else 0,
             }
             for lane in trace.lanes
         ],
-        "handoff": trace.handoff,
-        "recovery_hint": trace.recovery_hint,
-        "external_kinds": dict(trace.external_kinds),
+        "handoff": _clean_handoff(trace.handoff),
+        "recovery_hint": _clean_string(trace.recovery_hint),
+        "external_kinds": {
+            _clean_string(kind): count
+            for kind, count in trace.external_kinds.items()
+            if isinstance(count, int)
+        },
     }

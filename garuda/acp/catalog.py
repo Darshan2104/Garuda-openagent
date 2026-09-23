@@ -406,6 +406,8 @@ def adapter_for_manifest(
     argv_override: list[str] | None = None,
     executable: str | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    store=None,
+    persist_dir: str | None = None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -423,6 +425,8 @@ def adapter_for_manifest(
         runtime_id=manifest.runtime_id,
         policy=policy,
         setup_hint=manifest.setup,
+        store=store,
+        persist_dir=persist_dir,
     )
 
 
