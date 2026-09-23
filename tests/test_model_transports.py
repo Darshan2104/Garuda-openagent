@@ -107,8 +107,43 @@ def test_incomplete_records_are_refused():
         )
 
 
-def test_factory_refuses_unadmitted_transports():
-    from garuda.model.config import ConfigError, ModelBindings, ModelSpec
+def test_integration_test_must_define_a_real_function(tmp_path):
+    import dataclasses
+
+    (valid,) = [r for r in registry().values() if r.id == "litellm"]
+    planted = tmp_path / "test_planted.py"
+    planted.write_text(
+        "# def test_live_transport_opt_in lives only in this comment\n"
+        "def test_something_else():\n    pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="not a defined function"):
+        assert_admissible(
+            dataclasses.replace(
+                valid, id="planted",
+                integration_test=f"{planted}::test_live_transport_opt_in",
+            )
+        )
+
+
+def test_test_double_must_import_and_resolve():
+    import dataclasses
+
+    (valid,) = [r for r in registry().values() if r.id == "litellm"]
+    for bad_double in (
+        "not-a-dotted-path",
+        "garuda.no_such_module.ScriptModel",
+        "garuda.model.script_model.NoSuchClass",
+    ):
+        with pytest.raises(ValueError, match="test double"):
+            assert_admissible(dataclasses.replace(valid, id="bad", test_double=bad_double))
+    with pytest.raises(ValueError, match="not buildable"):
+        assert_admissible(
+            dataclasses.replace(
+                valid, id="bad", test_double="garuda.model.transports.TRANSPORTS"
+            )
+        )
+    from garuda.model.config import ConfigError, ModelSpec
 
     factory = ModelFactory()
     # Unknown transport: no admission record.
