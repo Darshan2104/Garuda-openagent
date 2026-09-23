@@ -15,7 +15,9 @@ written pack behind.
 
 from __future__ import annotations
 
+import logging
 import os
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -29,6 +31,8 @@ HANDOFF_NAME = "handoff.md"
 _GENERATED = frozenset({CURRENT_TASK_NAME, HANDOFF_NAME})
 
 MAX_GIT_CHARS = 2_000
+
+logger = logging.getLogger(__name__)
 
 
 class PackError(ValueError):
@@ -180,3 +184,84 @@ class ContextPackManager:
 
     def write_handoff(self, doc: Handoff, body: str = "") -> Path:
         return self._publish(HANDOFF_NAME, schemas.render(doc.to_frontmatter(), body))
+
+
+def collect_git_evidence(workspace_root: str | Path | None) -> str:
+    """Best-effort git evidence for the pack's provenance section.
+
+    Runs `git status --short` (plus a one-line HEAD) inside `workspace_root`.
+    Never raises: outside a repo, without git, or on any failure the pack
+    simply cites the state card and session instead. Truncated to
+    `MAX_GIT_CHARS` so an enormous dirty tree cannot bloat the pack.
+    """
+    if not workspace_root:
+        return ""
+    try:
+        root = Path(workspace_root)
+        if not root.is_dir():
+            return ""
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if status.returncode != 0:
+            return ""
+        head = subprocess.run(
+            ["git", "log", "-1", "--oneline"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        parts: list[str] = []
+        if head.returncode == 0 and head.stdout.strip():
+            parts.append(f"HEAD {head.stdout.strip()}")
+        if status.stdout.strip():
+            parts.append(status.stdout.strip())
+        return "\n".join(parts)[:MAX_GIT_CHARS]
+    except Exception:
+        logger.debug("Git evidence collection failed", exc_info=True)
+        return ""
+
+
+def sync_context_pack(
+    manager: ContextPackManager,
+    state: WorkingState,
+    *,
+    source_runtime: str = "native",
+    session_id: str = "",
+    native_session_id: str = "",
+    git_evidence: str = "",
+    redacted: bool = False,
+) -> dict[str, Path]:
+    """Compile `WorkingState` and publish both generated files via `manager`.
+
+    The single-writer rule lives here: every production write goes through
+    `ContextPackManager._publish`, which refuses any target outside the two
+    generated filenames and publishes atomically. Callers invoke this at the
+    documented checkpoint/compaction boundaries; recompilation is deterministic,
+    so re-syncing after compaction or restart reproduces byte-identical files
+    exactly when the underlying facts survived — which is the preservation
+    property the integration tests assert.
+    """
+    current_doc, current_body = compile_current_task(
+        state,
+        source_runtime=source_runtime,
+        session_id=session_id,
+        git_evidence=git_evidence,
+    )
+    handoff_doc, handoff_body = compile_handoff(
+        state,
+        source_runtime=source_runtime,
+        session_id=session_id,
+        native_session_id=native_session_id or session_id,
+        git_evidence=git_evidence,
+        redacted=redacted,
+    )
+    return {
+        "current_task": manager.write_current_task(current_doc, current_body),
+        "handoff": manager.write_handoff(handoff_doc, handoff_body),
+    }

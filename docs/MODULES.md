@@ -79,7 +79,9 @@ pruned history into buffers, `summarizer.py` produces the summaries.
 versions rejected). `pack.py` is the single writer: it compiles both files
 deterministically from the state card, session record, and git evidence
 (byte-identical recompilation, budgeted briefs that keep provenance), writes
-atomically, and refuses any other target.
+atomically, and refuses any other target. `RunState` syncs the pack at the
+checkpoint boundary and re-syncs after every compaction; resume restores the
+persisted working state first, so compaction and restart preserve pack facts.
 
 ## `agents/` — profiles
 

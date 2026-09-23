@@ -174,10 +174,19 @@ async def run_agent_task(
     )
 
     resumed_from: str | None = None
+    initial_state: dict | None = None
     if resume:
         resumed_from = store.resolve(resume)
         if context is None:
             context = build_resumed_context(store, resumed_from, task, model, config)
+        # Restore pack facts after restart: the persisted WorkingState is the
+        # input the pack compiler renders from, so hydrating it here means the
+        # re-synced current-task/handoff carry the pre-restart facts verbatim.
+        try:
+            initial_state = store.load_state(resumed_from) or None
+        except Exception:
+            logger.warning("Failed to load persisted working state", exc_info=True)
+            initial_state = None
 
     await runtime.start(task=task, session_id=events.session_id)
     events_path = store.events_path(events.session_id)
@@ -200,6 +209,25 @@ async def run_agent_task(
     if hooks is None:
         hooks = build_hook_registry(workspace)
 
+    # Single-writer pack publisher for this workspace (P0.9). Best-effort:
+    # when the workspace root is not a writable local dir the manager simply
+    # never syncs, and every sync failure is caught inside RunState.
+    pack_manager = None
+    pack_git_evidence = ""
+    try:
+        from pathlib import Path as _Path
+
+        from garuda.context.pack import ContextPackManager, collect_git_evidence
+
+        pack_root = _Path(workspace) / ".context" if workspace else None
+        if pack_root is not None:
+            pack_manager = ContextPackManager(pack_root)
+            pack_git_evidence = collect_git_evidence(workspace)
+    except Exception:
+        logger.debug("Context pack manager unavailable for workspace", exc_info=True)
+        pack_manager = None
+        pack_git_evidence = ""
+
     env, handle = await resolve_environment(
         workspace_kind, workspace, docker_image, docker_host=docker_host, config=config
     )
@@ -220,6 +248,10 @@ async def run_agent_task(
             context=context,
             checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
             state_checkpoint=lambda state: store.checkpoint_state(events.session_id, state),
+            pack_manager=pack_manager,
+            pack_source_runtime="native",
+            pack_git_evidence=pack_git_evidence,
+            initial_state=initial_state,
         )
 
     runtime.install_driver(_driver)

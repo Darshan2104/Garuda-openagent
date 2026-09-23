@@ -61,6 +61,14 @@ class RunState:
     # because the transcript is not a superset of it: after a compaction the card is
     # the only remaining record of which files were touched and which checks passed.
     state_checkpoint: object | None = None
+    # Single-writer context-pack publisher (P0.9, issue #17). When set, the run
+    # compiles `WorkingState` into `.context/current-task.md` + `handoff.md` at
+    # the checkpoint/compaction boundaries via `ContextPackManager` — the only
+    # production writer of those files. None disables the publish (unit paths
+    # that never configured a workspace), never fails the run.
+    pack_manager: object | None = None
+    pack_source_runtime: str = "native"
+    pack_git_evidence: str = ""
     metrics: RunMetrics = field(default_factory=RunMetrics)
     # The tool schemas sent with every model call, built once (see
     # ``build_tools_schema``). Held here so the loop sends the same object each
@@ -224,7 +232,11 @@ class RunState:
     def save_checkpoint(self) -> None:
         """Persist the conversation so a crash/kill mid-run is still resumable from
         the last completed turn. Best-effort; never breaks the run."""
-        if self.checkpoint is None and self.state_checkpoint is None:
+        if (
+            self.checkpoint is None
+            and self.state_checkpoint is None
+            and self.pack_manager is None
+        ):
             return
         try:
             with stopwatch() as elapsed:
@@ -232,6 +244,7 @@ class RunState:
                     self.checkpoint(self.context.get_messages())
                 if self.state_checkpoint is not None:
                     self.state_checkpoint(self.refresh_state().to_dict())
+                self._sync_pack()
         except Exception:
             logger.warning("Session checkpoint failed", exc_info=True)
         # Recorded because this write is O(transcript) every turn, so it grows with
@@ -274,7 +287,41 @@ class RunState:
         # tasks keep their north star and don't re-derive their plan (which would
         # waste turns and tokens).
         self.reinject_pinned_state()
+        # Re-publish the pack from the preserved WorkingState: recompilation is
+        # deterministic, so identical bytes prove compaction preserved the facts.
+        try:
+            self._sync_pack()
+        except Exception:
+            logger.warning("Context pack re-sync after compaction failed", exc_info=True)
         return True
+
+    def _sync_pack(self) -> None:
+        """Publish current-task/handoff via the single writer. Best-effort.
+
+        Called at the checkpoint boundary (inside `save_checkpoint`'s guard) and
+        after every compaction. Never raises past this point: a pack failure
+        must degrade provenance, not end the run. Raises only when there is no
+        manager configured (the caller already guards) — kept explicit so a
+        direct call without a workspace is a programming error, not silence.
+        """
+        if self.pack_manager is None:
+            return
+        try:
+            from garuda.context.pack import sync_context_pack
+        except ImportError:
+            logger.debug("Context pack module unavailable; skipping sync")
+            return
+        try:
+            sync_context_pack(
+                self.pack_manager,
+                self.refresh_state(),
+                source_runtime=self.pack_source_runtime or "native",
+                session_id=self.events.session_id,
+                native_session_id=self.events.session_id,
+                git_evidence=self.pack_git_evidence or "",
+            )
+        except Exception:
+            logger.warning("Context pack sync failed", exc_info=True)
 
     def note_context_budget(self, turn: int) -> None:
         """Record what the request about to be sent will cost.
@@ -300,20 +347,35 @@ class RunState:
         the side-effect ledger and the contract are each already the authority on
         their own field, and a second copy kept in sync by hand is a second copy
         that can be wrong.
+
+        Restart-preserving: live sources overwrite only when they actually hold
+        something. A fresh restart has an empty ledger and no todos/goals for the
+        new session id yet — overwriting unconditionally would discard the
+        persisted card that `initial_state` just restored (and the pack compiler
+        renders from this card, so the pack would lose its facts on resume).
+        Files accumulate by union so pre-restart edits stay distinct from new ones.
         """
         state = self.state
         state.task = self.task
-        state.acceptance = ""
         contract = self.completion.contract
         if contract is not None and contract.criteria:
             state.acceptance = contract.render()
+        # Else keep the restored acceptance: no contract yet means "no new
+        # information", not "the criteria were deleted".
         goal_tool = self.tool_map.get("update_goal")
         if goal_tool is not None:
-            state.goal = goal_tool.get_goal(self.events.session_id) or ""
+            live_goal = goal_tool.get_goal(self.events.session_id) or ""
+            if live_goal:
+                state.goal = live_goal
         todo_tool = self.tool_map.get("todo")
         if todo_tool is not None:
-            state.todos = todo_tool.get_todos(self.events.session_id)
-        state.files_modified = sorted(self.ledger.files_written)
+            live_todos = todo_tool.get_todos(self.events.session_id)
+            if live_todos:
+                state.todos = live_todos
+        # Union, not overwrite: the ledger only knows this process's writes.
+        merged = set(state.files_modified or [])
+        merged.update(self.ledger.files_written or [])
+        state.files_modified = sorted(merged)
         return state
 
     def render_state_card(self) -> str:
@@ -506,6 +568,10 @@ async def prepare_run(
     buffer,
     state_checkpoint=None,
     emit_session_events: bool,
+    pack_manager=None,
+    pack_source_runtime: str = "native",
+    pack_git_evidence: str = "",
+    initial_state: dict | WorkingState | None = None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -641,7 +707,19 @@ async def prepare_run(
     # the same object: the runner is what sees every command and every error, and
     # threading those back out through return values would put a state argument on
     # four signatures to save one attribute.
-    state = WorkingState(task=task)
+    if isinstance(initial_state, WorkingState):
+        state = initial_state
+        state.task = task or state.task
+    elif isinstance(initial_state, dict) and initial_state:
+        try:
+            state = WorkingState.from_dict(initial_state)
+            if task:
+                state.task = task
+        except Exception:
+            logger.warning("Unusable persisted working state; starting fresh", exc_info=True)
+            state = WorkingState(task=task)
+    else:
+        state = WorkingState(task=task)
 
     run_state = RunState(
         task=task,
@@ -685,6 +763,9 @@ async def prepare_run(
         emit_session_events=emit_session_events,
         checkpoint=checkpoint,
         state_checkpoint=state_checkpoint if config.enable_working_state_card else None,
+        pack_manager=pack_manager,
+        pack_source_runtime=pack_source_runtime or "native",
+        pack_git_evidence=pack_git_evidence or "",
         metrics=metrics,
         tools_schema=tools_schema,
         state=state,
