@@ -186,13 +186,39 @@ async def test_background_process_is_swept_before_verification(tmp_path: Path):
 
 
 def _alive(pid: int) -> bool:
-    """Whether ``pid`` still exists. Signal 0 checks without delivering anything."""
+    """Whether ``pid`` is still running (zombies count as dead).
+
+    Signal 0 succeeds for zombies awaiting init reaping, so without the STAT
+    check a SIGKILLed child that has already exited flakes the gate on loaded
+    Ubuntu runners.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:  # exists, owned by someone else
         return True
+    # Dead but not yet reaped by init: treat as gone, matching the sweep probes.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            parts = fh.read().rsplit(")", 1)
+            if len(parts) == 2 and parts[1].split():
+                return parts[1].split()[0] != "Z"
+    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip().startswith("Z"):
+            return False
+    except Exception:
+        pass
     return True
 
 

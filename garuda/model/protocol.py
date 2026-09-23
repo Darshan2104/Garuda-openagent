@@ -9,6 +9,21 @@ from garuda.types import Message
 # separators). Small, but 25 tools' worth of it is not nothing.
 TOOL_FRAMING_TOKENS = 8
 
+# The model a run uses when nothing names one. Routed through OpenRouter on purpose:
+# `LitellmModel._apply_usage_accounting` asks OpenRouter to return what each call
+# actually cost, so a default run's spend is the provider's own figure rather than a
+# public pricing table's guess about it — and `eval/pricing.py` deliberately has no
+# entry for this model, because an invented rate is worse than none.
+#
+# One constant, not a literal per entry point. This string was copied into seven
+# places (four CLI subcommands, the JSON-RPC server, and both SDK classes), which is
+# the shape of every literal-drift bug this repo has already had to pin with a test
+# — `tests/test_model_defaults.py` now asserts they all agree.
+DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731"
+
+# The env var that overrides it, read at parser-build time by every subcommand.
+MODEL_ENV_VAR = "GARUDA_MODEL"
+
 
 class ContextOverflowError(Exception):
     """The prompt did not fit the model's context window.

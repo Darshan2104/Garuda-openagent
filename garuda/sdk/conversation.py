@@ -5,6 +5,7 @@ from pathlib import Path
 from garuda.core.events import EventStore
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment
 from garuda.interfaces.session import AgentSession
+from garuda.model.protocol import DEFAULT_MODEL
 from garuda.types import AgentResult
 from garuda.workspace.protocol import Environment
 
@@ -15,7 +16,7 @@ class Conversation:
     def __init__(
         self,
         workspace: str | Path = ".",
-        model: str = "openai/gpt-4o-mini",
+        model: str = DEFAULT_MODEL,
         agent: str = "build",
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,

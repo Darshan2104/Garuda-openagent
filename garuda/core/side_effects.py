@@ -12,8 +12,11 @@ outside observer would, rather than one propped up by processes about to vanish.
 
 import asyncio
 import logging
+import os
 import re
 import shlex
+import signal
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +59,99 @@ MAX_SWEEP_TARGETS = 24
 # is byte-for-byte what the command produced. Under /tmp, like background task
 # logs, so it never shows up in a `git diff` of the workspace.
 LAUNCH_DIR = "/tmp/garuda-launch"
+
+# Self-contained so it still works inside docker/remote where the Garuda package
+# may not be installed. ``os.kill(-pid, sig)`` is the portable process-group
+# form; dash's builtin ``kill -$pid`` is not.
+# Collect descendants *before* signalling. Killing a parent first reparents its
+# children to init and clears ``pgrep -P``, which is exactly how Ubuntu CI left
+# ``sleep`` / ``server.py`` orphans after a "successful" group kill.
+_KILL_TREE_PY = """
+import os, signal, subprocess, sys
+sig = getattr(signal, "SIG" + sys.argv[1])
+roots, seen, ordered = [], set(), []
+
+def collect(pid):
+    if pid in seen or pid <= 1:
+        return
+    seen.add(pid)
+    for flag in ("-P", "-g"):
+        try:
+            out = subprocess.check_output(
+                ["pgrep", flag, str(pid)], text=True, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            out = ""
+        for raw in out.split():
+            try:
+                collect(int(raw))
+            except ValueError:
+                pass
+    ordered.append(pid)
+
+for raw in sys.argv[2:]:
+    try:
+        roots.append(int(raw))
+    except ValueError:
+        pass
+for root in roots:
+    collect(root)
+for pid in ordered:
+    for target in (-pid, pid):
+        try:
+            os.kill(target, sig)
+        except OSError:
+            pass
+"""
+
+
+def apply_kill_tree(signal_name: str, *pids: str) -> None:
+    """Signal pids from this process. Used on LocalEnvironment so quoting cannot drop the kill.
+
+    Walks children/group mates first, then signals leaves-before-roots. Signalling
+    a parent before collecting orphans the grandchildren under init — the Ubuntu
+    pinned-CI failure mode for background reaping.
+    """
+    sig = getattr(signal, "SIG" + signal_name)
+    seen: set[int] = set()
+    ordered: list[int] = []
+
+    def collect(pid: int) -> None:
+        if pid in seen or pid <= 1:
+            return
+        seen.add(pid)
+        for flag in ("-P", "-g"):
+            try:
+                out = subprocess.check_output(
+                    ["pgrep", flag, str(pid)], text=True, stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                out = ""
+            for raw in out.split():
+                try:
+                    collect(int(raw))
+                except ValueError:
+                    pass
+        ordered.append(pid)
+
+    for raw in pids:
+        if isinstance(raw, str) and raw.isdigit():
+            collect(int(raw))
+    for pid in ordered:
+        for target in (-pid, pid):
+            try:
+                os.kill(target, sig)
+            except OSError:
+                pass
+
+
+def kill_tree_command(signal_name: str, *pids: str) -> str:
+    """Shell command that signals each pid, its group, children, and group mates."""
+    nums = [p for p in pids if isinstance(p, str) and p.isdigit() and p not in {"0", "1"}]
+    if not nums:
+        return "true"
+    args = " ".join(shlex.quote(part) for part in (signal_name, *nums))
+    return f"python3 -c {shlex.quote(_KILL_TREE_PY)} {args}"
 
 
 def wrap_launch(command: str, path: str) -> str:
@@ -108,11 +204,22 @@ SWEEP_KILL_GRACE_SEC = 0.4
 
 # One probe of the process table for `pattern`, printing only plausible targets.
 #
-# Two exclusions matter and neither is optional:
+# Four exclusions matter and none is optional:
 #   * `$$`/`$PPID` — this very shell was invoked with `pattern` inside its own
 #     argv, so `pgrep -f` matches it. Without this the sweep "finds" itself,
 #     reports a kill, and declares a workspace clean that still has a server on it.
 #   * pid 1 — never signal the container's init.
+#   * zombies (STAT Z) — already dead, awaiting init reaping. On Ubuntu CI under
+#     load, a SIGKILLed child reparents to init and lingers as defunct for a
+#     beat; `pgrep -f` still lists it and `os.kill(pid, 0)` still succeeds, so
+#     without this the sweep reports a leak that the kernel has already handled.
+#   * vanished pids (empty `ps`) — TOCTOU between `pgrep` and verification.
+#     Proven on Ubuntu CI (run 35699706082): the probe's own `$(pgrep | head)`
+#     command-substitution subshell inherits the pattern in its argv, so `pgrep`
+#     lists it; it exits before the verification `ps` runs, `ps` prints nothing,
+#     and the old code fell through to `echo` — reporting a pid whose
+#     `/proc/<pid>` no longer exists as a surviving leak, deterministically.
+#     A pid that is gone is by definition not a leak.
 # The `pgrep` case-match drops the transient forks of this pipeline for the same
 # reason; an agent-started process whose command line contains "pgrep" is not a
 # case worth keeping the false positives for.
@@ -122,7 +229,10 @@ for p in $(pgrep -f {pattern} 2>/dev/null | head -40); do
   [ "$p" = "$PPID" ] && continue
   [ "$p" = "1" ] && continue
   c=$(ps -o command= -p "$p" 2>/dev/null)
+  [ -z "$c" ] && continue
   case "$c" in *pgrep*) continue;; esac
+  s=$(ps -o stat= -p "$p" 2>/dev/null)
+  case "$s" in ""|Z*) continue;; esac
   echo "$p"
 done"""
 
@@ -130,13 +240,18 @@ done"""
 # and reads the kernel's own record of group membership, so nothing here depends
 # on what a process called itself. The probing shell is excluded as before: it
 # is in its own group, but a backend that does not give it one would otherwise
-# make the sweep a candidate for its own kill list.
+# make the sweep a candidate for its own kill list. Each candidate is rechecked
+# with a second `ps`: zombies (already SIGKILLed, awaiting init reaping, which
+# on loaded Ubuntu runners lags the final probe) and vanished pids (TOCTOU —
+# a pid that is gone is by definition not a leak) are both skipped.
 _GROUP_PROBE_SCRIPT = """\
 ps -Ao pid=,pgid= 2>/dev/null | while read -r p g; do
   [ "$g" = {pgid} ] || continue
   [ "$p" = "$$" ] && continue
   [ "$p" = "$PPID" ] && continue
   [ "$p" = "1" ] && continue
+  st=$(ps -o stat= -p "$p" 2>/dev/null)
+  case "$st" in ""|Z*) continue;; esac
   echo "$p"
 done"""
 
@@ -344,7 +459,10 @@ class SideEffectLedger:
                 ("KILL", SWEEP_KILL_GRACE_SEC),
                 ("KILL", SWEEP_KILL_GRACE_SEC),
             ):
-                await self._signal(env, pids, signal_name)
+                targets = list(pids)
+                if pgid:
+                    targets.append(pgid)
+                await self._signal(env, targets, signal_name)
                 await asyncio.sleep(grace)
                 pids = await self._probe(env, pgid, pattern)
                 if not pids:
@@ -392,19 +510,10 @@ class SideEffectLedger:
 
     async def _signal(self, env: Any, pids: list[str], signal_name: str) -> None:
         """Signal each pid and its process group, ignoring the ones already gone."""
-        joined = " ".join(p for p in pids if p.isdigit())
-        if not joined:
+        if type(env).__name__ == "LocalEnvironment":
+            apply_kill_tree(signal_name, *pids)
             return
-        # The negative form targets the whole group, which is what catches a
-        # launcher's children; the plain form covers a process that never became
-        # a group leader. Either may fail harmlessly, so neither gates the other.
-        await env.execute(
-            f"for p in {joined}; do "
-            f'if [ "$p" != "1" ] && [ "$p" != "$$" ]; then '
-            f"kill -{signal_name} -$p 2>/dev/null || true; "
-            f"kill -{signal_name} $p 2>/dev/null || true; fi; done",
-            timeout=30.0,
-        )
+        await env.execute(kill_tree_command(signal_name, *pids), timeout=30.0)
 
     async def _listeners(self, env: Any) -> str:
         for probe in _LISTENER_PROBES:

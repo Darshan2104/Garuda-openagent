@@ -70,6 +70,26 @@ class CondenserContext:
         return self.used_tokens / self.max_context_tokens
 
 
+@dataclass
+class CondenseOutcome:
+    """What a condensation pass actually did.
+
+    ``condense`` returns a message list, which says *that* history changed but not
+    how: a microcompact prune and a full summarize-and-rebuild are indistinguishable
+    from the outside, and the prune count was computed and thrown away. Since both
+    have very different costs and very different effects on what the model can still
+    see, a trajectory that cannot tell them apart cannot explain a run that forgot
+    something. So the strategy reports its own verdict alongside the result.
+    """
+
+    strategy: str
+    # "prune"      — tool outputs stubbed in place; structure and cache prefix kept
+    # "summarize"  — history rebuilt around a generated summary (costs model calls)
+    # "window"     — older messages dropped outright, no model call
+    action: str
+    pruned: int = 0
+
+
 @runtime_checkable
 class Condenser(Protocol):
     async def condense(self, cx: CondenserContext) -> list[Message] | None: ...
@@ -86,6 +106,18 @@ def reset_condenser(condenser: object) -> None:
     reset = getattr(condenser, "reset", None)
     if callable(reset):
         reset()
+
+
+def condense_outcome(condenser: object) -> CondenseOutcome | None:
+    """The verdict from a condenser's most recent pass, if it reports one.
+
+    Read through ``getattr`` for the same reason ``reset_condenser`` is: the
+    protocol member is optional, and a third-party or test condenser that only
+    implements ``condense`` must keep working. A missing verdict degrades the
+    summarization event to what it carried before, never breaks the run.
+    """
+    outcome = getattr(condenser, "last_outcome", None)
+    return outcome if isinstance(outcome, CondenseOutcome) else None
 
 
 # --- shared helpers ----------------------------------------------------------
@@ -288,6 +320,7 @@ class MicrocompactCondenser:
         # Running structured state, maintained incrementally across compactions so
         # summary quality doesn't drift over long horizons (vs re-deriving prose).
         self._state = ""
+        self.last_outcome: CondenseOutcome | None = None
 
     def reset(self) -> None:
         """Forget this conversation, keep the tuning.
@@ -303,9 +336,16 @@ class MicrocompactCondenser:
         self._last_summary_len = 0
 
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
+        self.last_outcome = None
         if cx.usage_fraction < self.microcompact_fraction:
             return None
-        if microcompact_messages(cx.messages, cx.keep_recent_turns, self.prune_min_chars, cx.buffer) > 0:
+        # The count was already computed and discarded by an `> 0` test. It is the
+        # only measure of how much a prune recovered, so it is worth carrying.
+        pruned = microcompact_messages(
+            cx.messages, cx.keep_recent_turns, self.prune_min_chars, cx.buffer
+        )
+        if pruned > 0:
+            self.last_outcome = CondenseOutcome("microcompact", "prune", pruned)
             return list(cx.messages)
         if cx.free_tokens >= cx.proactive_threshold:
             return None
@@ -319,6 +359,7 @@ class MicrocompactCondenser:
         summary = await self._summarize(cx)
         rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
         self._last_summary_len = len(rebuilt)
+        self.last_outcome = CondenseOutcome("microcompact", "summarize")
         return rebuilt
 
     async def _summarize(self, cx: CondenserContext) -> str:
@@ -345,8 +386,10 @@ class RecentWindowCondenser:
 
     def __init__(self, trigger_fraction: float = 0.85):
         self.trigger_fraction = trigger_fraction
+        self.last_outcome: CondenseOutcome | None = None
 
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
+        self.last_outcome = None
         if cx.usage_fraction < self.trigger_fraction:
             return None
         system = cx.messages[0] if cx.messages and cx.messages[0].role == Role.SYSTEM else None
@@ -359,17 +402,28 @@ class RecentWindowCondenser:
             rebuilt.append(task)
         rebuilt.extend(recent)
         # Only report a change if we actually dropped messages.
-        return rebuilt if len(rebuilt) < len(cx.messages) else None
+        if len(rebuilt) >= len(cx.messages):
+            return None
+        # No `pruned`: nothing was stubbed in place. How many messages this dropped
+        # is the manager's messages_before/after delta, which every action reports.
+        self.last_outcome = CondenseOutcome("recent_window", "window")
+        return rebuilt
 
 
 class SummarizingCondenser:
     """Always full summarize-and-rebuild once over the proactive threshold."""
 
+    def __init__(self):
+        self.last_outcome: CondenseOutcome | None = None
+
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
+        self.last_outcome = None
         if cx.free_tokens >= cx.proactive_threshold:
             return None
         summary = await build_summary(cx)
-        return _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        self.last_outcome = CondenseOutcome("summarizing", "summarize")
+        return rebuilt
 
 
 _STRATEGIES = {

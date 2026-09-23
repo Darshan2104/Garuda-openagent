@@ -36,6 +36,13 @@ SNAPSHOT_VERSION = "2026-07-31"
 # one. Where a run has measured its own effective rates, pin them per-run with
 # GARUDA_TOKEN_PRICES rather than editing this table — the snapshot is meant to
 # be the published list price, not one account's negotiated one.
+#
+# Deliberately absent: the default model (`model/protocol.py::DEFAULT_MODEL`). It is
+# an `openrouter/` model, so every call comes back with the provider's own
+# `usage.cost_usd` and `estimate_cost` never reaches this table for it. Adding a
+# guessed rate here would replace an exact figure with a worse one on the very model
+# most runs use — and if the guess were ever consulted, a confidently wrong cost is
+# the outcome this module's four-tier fallback exists to avoid.
 SNAPSHOT: dict[str, dict[str, float]] = {
     "minimax-m2.5": {
         "input": 3e-07,

@@ -99,6 +99,39 @@ MODE_CHOICES = ("interactive", "eval", "rigorous", "readonly", "standard")
 
 DEFAULT_MODE = "interactive"
 
+# What a trajectory needs to know about the posture a run executed under. The gate
+# switches plus the handful of limits that change how a run behaves rather than how
+# it is graded.
+#
+# This exists because the resolved config appeared nowhere in the event log, which
+# made every gate reading ambiguous: no `contract` event could mean the gate was
+# off, or on with derivation failing, or on and never reaching a `task_complete`.
+# A reader cannot tell those apart from absence, and they call for different fixes.
+#
+# Names, not values, because `AgentConfig` is the single source of truth for the
+# defaults and a copied literal here would drift the first time one changed.
+# `tests/test_run_observability.py` asserts every name below is a real field, so a
+# typo fails the suite instead of silently dropping a key from every trajectory.
+RUN_CONFIG_FIELDS = GATE_FIELDS + (
+    "enable_verifier",
+    "permission_mode",
+    "max_turns",
+    "deadline_sec",
+    "condenser",
+    "max_context_tokens",
+)
+
+
+def describe_config(config: AgentConfig) -> dict[str, object]:
+    """The posture ``config`` resolved to, as plain JSON-safe data.
+
+    Read straight off the config *after* the preset and any explicit flags have
+    been applied, so it reports what the run actually did — not what its mode
+    would imply. A profile that declares ``enable_acceptance_contract: true``
+    under ``--mode interactive`` shows the contract on, which is the truth.
+    """
+    return {field: getattr(config, field, None) for field in RUN_CONFIG_FIELDS}
+
 
 def resolve_mode(mode: str | None) -> str:
     """Map a user-supplied mode (or alias) to its canonical name."""

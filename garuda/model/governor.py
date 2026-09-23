@@ -8,8 +8,10 @@ fleet self-throttles.
 
 Default is unlimited (limit ``<= 0``) — single-run behavior is unchanged. Set a
 limit via the ``GARUDA_MODEL_MAX_CONCURRENCY`` env var or :func:`set_max_concurrency`.
-Providers are bucketed by the model-name prefix (``fireworks_ai`` in
-``fireworks_ai/accounts/...``), so distinct providers don't block each other.
+Providers are bucketed by the model-name prefix (``openrouter`` in
+``openrouter/deepseek/...``), so distinct providers don't block each other. Note
+what that means for a gateway: every model reached through OpenRouter shares one
+bucket, because one account's rate limit is what the cap exists to respect.
 """
 
 from __future__ import annotations

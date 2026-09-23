@@ -6,7 +6,9 @@ from garuda.model.governor import ModelGovernor, provider_of
 
 
 def test_provider_of():
-    assert provider_of("fireworks_ai/accounts/x/models/y") == "fireworks_ai"
+    # A multi-segment name still buckets on the first component only: everything
+    # behind one gateway shares a rate limit, so it has to share a bucket.
+    assert provider_of("openrouter/deepseek/deepseek-v4-flash-0731") == "openrouter"
     assert provider_of("openai/gpt-4o-mini") == "openai"
     assert provider_of("bare-model") == "bare-model"
     assert provider_of("") == ""
@@ -87,7 +89,7 @@ async def test_complete_with_retries_respects_governor(monkeypatch):
     monkeypatch.setattr(gov_mod, "_governor", None)
     gov_mod.set_max_concurrency(2)
     try:
-        model = LitellmModel(model_name="fireworks_ai/x", max_retries=1)
+        model = LitellmModel(model_name="openrouter/x/y", max_retries=1)
         results = await asyncio.gather(
             *[model._complete_with_retries({}) for _ in range(6)]
         )

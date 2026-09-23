@@ -2,19 +2,19 @@
 #
 # Usage:
 #   harbor run -c garuda/eval/benchmarks/terminal_bench/job.yaml \
-#     --model openai/gpt-4o-mini
+#     --model openrouter/deepseek/deepseek-v4-flash-0731
 #
 # Or with explicit agent import:
 #   harbor run -d terminal-bench@2.0 \
 #     --agent garuda.eval.harbor_adapter:GarudaHarborAgent \
-#     --model openai/gpt-4o-mini
+#     --model openrouter/deepseek/deepseek-v4-flash-0731
 
 job_name: garuda-terminal-bench-2.0
 n_concurrent_trials: 4
 
 agents:
   - import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
-    model_name: openai/gpt-4o-mini
+    model_name: openrouter/deepseek/deepseek-v4-flash-0731
     kwargs:
       agent_profile: harbor
       permission_mode: yolo

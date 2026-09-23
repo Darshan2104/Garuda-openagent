@@ -20,6 +20,7 @@ from garuda.core.action_memo import ActionMemo
 from garuda.core.completion import CompletionGate
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import RunMetrics, stopwatch
+from garuda.core.modes import describe_config
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.core.steering import Steering
@@ -153,6 +154,7 @@ class RunState:
             "session_id": self.events.session_id,
             "events": self.events.get_all(),
             "usage": dict(self.usage_totals),
+            "mode": self.config.mode,
             "metrics": self.metrics.summary(),
             "action_memo": self.memo.stats(),
             "side_effects": self.ledger.summary(),
@@ -184,6 +186,7 @@ class RunState:
                 "session_id": self.events.session_id,
                 "events": self.events.get_all(),
                 "usage": dict(self.usage_totals),
+                "mode": self.config.mode,
                 # Included even here: how long a run spent before dying on a model
                 # error or a dead workspace is exactly what you want to see.
                 "metrics": self.metrics.summary(),
@@ -255,8 +258,17 @@ class RunState:
         record = self.metrics.current
         if record is not None:
             record.compaction_ms = round(record.compaction_ms + elapsed[0], 3)
+        # Turn and duration alone could not distinguish a cheap in-place prune from a
+        # full summarize-and-rebuild that cost three model calls and dropped half the
+        # history — the two most different things compaction does. The context reports
+        # what it did; `or {}` keeps the event's original shape if it reported nothing.
         self.events.append(
-            EventType.SUMMARIZATION, {"turn": turn, "duration_ms": elapsed[0]}
+            EventType.SUMMARIZATION,
+            {
+                "turn": turn,
+                "duration_ms": elapsed[0],
+                **(self.context.last_compaction or {}),
+            },
         )
         # Compaction can summarize away the goal and todo list; re-pin them so long
         # tasks keep their north star and don't re-derive their plan (which would
@@ -508,7 +520,22 @@ async def prepare_run(
     # event store; suppressing their session_start/end avoids nested/duplicate
     # SESSION_END success events that confuse trajectory consumers.
     if emit_session_events:
-        events.append(EventType.SESSION_START, {"task": task, "model": model.model_name})
+        events.append(
+            EventType.SESSION_START,
+            {
+                "task": task,
+                "model": model.model_name,
+                "agent": profile_name,
+                "mode": config.mode,
+                # The engine's mode, not the config's. They can differ: a caller may
+                # hand in a PermissionEngine built separately (the harbor adapter
+                # rebuilds one from its own kwarg), and what gated the tools is the
+                # engine. The config's copy stays inside `config` below, so a
+                # divergence between the two is visible rather than averaged away.
+                "permission_mode": permissions.mode,
+                "config": describe_config(config),
+            },
+        )
 
     if config.allowed_tools:
         tools = _filter_tools(tools, config.allowed_tools)

@@ -7,7 +7,7 @@ n_concurrent_trials: 2
 
 agents:
   - import_path: garuda.eval.harbor_adapter:GarudaHarborAgent
-    model_name: openai/gpt-4o-mini
+    model_name: openrouter/deepseek/deepseek-v4-flash-0731
     kwargs:
       agent_profile: harbor
       permission_mode: yolo
