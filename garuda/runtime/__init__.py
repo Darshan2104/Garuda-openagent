@@ -54,6 +54,16 @@ from garuda.runtime.registry import (
     parse_global_manifests,
     parse_project_refs,
 )
+from garuda.runtime.router import (
+    RoutingCandidate,
+    RoutingDecision,
+    RoutingError,
+    RoutingRequest,
+    authorize_switch,
+    candidates_from_discovered,
+    record_routing_decision,
+    route,
+)
 from garuda.runtime.session import (
     HANDOFF_STATES,
     SESSION_SCHEMA_VERSION,
@@ -65,6 +75,14 @@ from garuda.runtime.session import (
 )
 
 __all__ = [
+    "RoutingCandidate",
+    "RoutingDecision",
+    "RoutingError",
+    "RoutingRequest",
+    "authorize_switch",
+    "candidates_from_discovered",
+    "record_routing_decision",
+    "route",
     "BUILTIN_NATIVE_ID",
     "HANDOFF_STATES",
     "HandoffError",
