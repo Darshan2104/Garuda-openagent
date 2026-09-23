@@ -4,16 +4,25 @@ ACP-native editors spawn `python -m garuda.acp.server` and speak the owned
 wire subset: initialize, session/new, session/prompt, session/cancel,
 session/approve. Sessions run behind the same `AgentRuntime` boundary every
 other surface uses — the server drives runtimes, never a second agent loop.
+The product driver is the native Garuda runtime (`--driver echo` exists for
+conformance and smoke tests only).
 
 Isolation is structural: each server instance holds its own session table and
 shares nothing with the outbound client (`AcpProcess`) — no globals, no shared
 mutable state. Transport is stdio only: this module opens no socket, and any
 future listener needs explicit secure configuration to exist at all.
+
+Dispatch is concurrent with a bound: prompts run as tasks so a cancel or
+approval arriving mid-turn is processed instead of waiting behind the blocked
+prompt; everything else dispatches inline, and the task set is bounded with
+backpressure. A valid initialize handshake is required before any session
+method; malformed framing ends the process nonzero without leaking internals.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
@@ -27,6 +36,12 @@ from garuda.acp.protocol import (
     decode_frame,
     encode_frame,
 )
+
+logger = logging.getLogger(__name__)
+
+#: Ceiling on concurrent prompt tasks. Past it the reader waits for one to
+#: finish instead of growing the set without bound.
+MAX_INFLIGHT_TASKS = 64
 
 MakeRuntime = Callable[[str], Awaitable[Any]]
 
@@ -42,6 +57,7 @@ class AcpServer:
         self._make_runtime = make_runtime
         self._send = send
         self._sessions: dict[str, Any] = {}
+        self._initialized = False
 
     async def _reply(self, call_id: Any, result: Any) -> None:
         await self._send(encode_frame({"jsonrpc": "2.0", "id": call_id, "result": result}))
@@ -87,9 +103,10 @@ class AcpServer:
         except AcpError as exc:
             if call_id is not None:
                 await self._fail(call_id, str(exc))
-        except Exception as exc:
+        except Exception:
+            logger.warning("ACP server handler failed", exc_info=True)
             if call_id is not None:
-                await self._fail(call_id, f"internal error: {exc}")
+                await self._fail(call_id, "internal error")
 
     async def _on_initialize(self, call_id: Any, params: dict) -> None:
         client_version = (params.get("protocolVersion") or "")
@@ -97,6 +114,7 @@ class AcpServer:
             raise AcpProtocolError(
                 f"client speaks ACP {client_version!r}, server requires {ACP_VERSION!r}"
             )
+        self._initialized = True
         await self._reply(
             call_id,
             {
@@ -110,6 +128,8 @@ class AcpServer:
         )
 
     async def _on_session_new(self, call_id: Any, params: dict) -> None:
+        if not self._initialized:
+            raise AcpProtocolError("initialize first: no handshake completed")
         session_id = f"garuda-{uuid.uuid4().hex[:12]}"
         runtime = await self._make_runtime(session_id)
         await runtime.start(task=params.get("task", "acp session"), session_id=session_id)
@@ -117,6 +137,8 @@ class AcpServer:
         await self._reply(call_id, {"sessionId": session_id})
 
     def _session(self, params: dict) -> Any:
+        if not self._initialized:
+            raise AcpProtocolError("initialize first: no handshake completed")
         session_id = params.get("sessionId", "")
         runtime = self._sessions.get(session_id)
         if runtime is None:
@@ -203,7 +225,14 @@ def _to_update(event: Any) -> dict[str, Any] | None:
 
 
 async def serve_stdio(make_runtime: MakeRuntime) -> int:
-    """Run the framing loop over real stdin/stdout. Returns a process exit code."""
+    """Run the framing loop over real stdin/stdout. Returns a process exit code.
+
+    Prompts dispatch as bounded background tasks so a cancel or approval
+    arriving mid-turn is handled instead of waiting behind the blocked
+    prompt; every other message dispatches inline, preserving arrival order
+    for the fast paths. Malformed framing ends the process nonzero (2)
+    without leaking internals; transport errors end it nonzero (1).
+    """
     loop = asyncio.get_running_loop()
     outbox: asyncio.Queue[bytes] = asyncio.Queue()
 
@@ -216,7 +245,27 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
 
     server = AcpServer(make_runtime, _send)
     writer = asyncio.ensure_future(_writer())
+    pending: set[asyncio.Task[None]] = set()
+
+    def _reap(task: asyncio.Task[None]) -> None:
+        pending.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("ACP server prompt task failed", exc_info=exc)
+
+    async def _dispatch(message: dict[str, Any]) -> None:
+        if message.get("method") == "session/prompt":
+            while len(pending) >= MAX_INFLIGHT_TASKS:
+                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            task = asyncio.ensure_future(server.handle(message))
+            pending.add(task)
+            task.add_done_callback(_reap)
+        else:
+            await server.handle(message)
+
     buffer = b""
+    exit_code = 0
     try:
         while True:
             chunk = await loop.run_in_executor(None, sys.stdin.buffer.read1, 65536)
@@ -228,17 +277,22 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
                     message, buffer = decode_frame(buffer)
                 except ValueError:
                     break
-                await server.handle(message)
-    except (AcpProtocolError, OSError):
-        pass
+                await _dispatch(message)
+    except AcpProtocolError:
+        print("error: malformed input frame", file=sys.stderr)
+        exit_code = 2
+    except OSError:
+        exit_code = 1
     finally:
+        if pending:
+            await asyncio.wait(pending)
         writer.cancel()
         for session in list(server._sessions.values()):
             try:
                 await session.close()
             except Exception:
                 pass
-    return 0
+    return exit_code
 
 
 def _write_stdout(frame: bytes) -> None:
@@ -290,18 +344,33 @@ async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
     return runtime
 
 
-def main(argv: list[str] | None = None) -> int:
+def _cli_parser() -> Any:
     import argparse
 
     parser = argparse.ArgumentParser(description="Garuda as an ACP server (stdio only).")
-    parser.add_argument("--driver", choices=("echo", "native"), default="echo")
+    parser.add_argument(
+        "--driver", choices=("echo", "native"), default="native",
+        help="echo is a test double; native runs the real Garuda loop.",
+    )
     parser.add_argument("--workspace", default=".")
     parser.add_argument(
         "--listen",
         default=None,
         help="Refused: this server is stdio-only. No network listener exists.",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def _select_driver(name: str, workspace: str) -> MakeRuntime:
+    if name == "native":
+        import functools
+
+        return functools.partial(make_native_runtime, workspace=workspace)
+    return make_echo_runtime
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _cli_parser().parse_args(argv)
     if args.listen is not None:
         print(
             "error: network listeners are not supported; "
@@ -309,13 +378,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.driver == "native":
-        import functools
-
-        make_runtime = functools.partial(make_native_runtime, workspace=args.workspace)
-    else:
-        make_runtime = make_echo_runtime
-    return asyncio.run(serve_stdio(make_runtime))
+    return asyncio.run(serve_stdio(_select_driver(args.driver, args.workspace)))
 
 
 if __name__ == "__main__":

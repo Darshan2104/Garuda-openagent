@@ -10,7 +10,14 @@ import sys
 import pytest
 
 from garuda.acp.protocol import ACP_VERSION, decode_frame, encode_frame
-from garuda.acp.server import AcpServer, main, make_echo_runtime
+from garuda.acp.server import (
+    AcpServer,
+    _cli_parser,
+    _select_driver,
+    main,
+    make_echo_runtime,
+    make_native_runtime,
+)
 
 
 class Duplex:
@@ -71,8 +78,23 @@ async def test_initialize_rejects_foreign_versions():
         await duplex.call("initialize", {"protocolVersion": "99.99"})
 
 
+async def test_session_methods_require_the_handshake():
+    _, duplex = _server()
+    with pytest.raises(AssertionError, match="initialize first"):
+        await duplex.call("session/new", {})
+
+
+async def test_native_is_the_product_default():
+    assert _cli_parser().parse_args([]).driver == "native"
+    assert _select_driver("echo", ".") is make_echo_runtime
+    native = _select_driver("native", ".")
+    assert native.func is make_native_runtime
+    assert native.keywords == {"workspace": "."}
+
+
 async def test_sessions_prompts_and_cancellation():
     server, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
     created = await duplex.call("session/new", {})
     session_id = created["sessionId"]
     assert session_id.startswith("garuda-")
@@ -105,6 +127,7 @@ async def test_inbound_outbound_isolation():
     server, duplex = _server()
     assert not hasattr(server, "_process")
     assert outbound.AcpProcess.__module__ == "garuda.acp.client"
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
     first = await duplex.call("session/new", {})
     second = await duplex.call("session/new", {})
     assert first["sessionId"] != second["sessionId"]
@@ -175,6 +198,142 @@ async def test_subprocess_conformance_against_echo_driver():
             await asyncio.wait_for(process.wait(), 10)
         except (TimeoutError, ProcessLookupError):
             pass
+
+
+async def test_cancel_processed_while_prompt_blocked():
+    """A cancel arriving mid-turn interrupts the prompt instead of queueing
+    behind it: the prompt task and the inline cancel overlap in time."""
+    from garuda.acp.protocol import AcpCancelledError
+    from garuda.acp.server import MAX_INFLIGHT_TASKS
+
+    assert MAX_INFLIGHT_TASKS > 0
+
+    class BlockingRuntime:
+        runtime_id = "blocking"
+
+        def __init__(self):
+            self._release = asyncio.Event()
+            self._cancelled = False
+            self.prompt_calls = 0
+
+        async def start(self, *, task, session_id=None):
+            return None
+
+        async def prompt(self, text):
+            self.prompt_calls += 1
+            await self._release.wait()
+            if self._cancelled:
+                raise AcpCancelledError("cancelled by client")
+            return 1
+
+        async def cancel(self, *, reason=""):
+            self._cancelled = True
+            self._release.set()
+
+        async def permission_response(self, *, approval_id, allow):
+            raise AssertionError("no approvals in this test")
+
+        async def poll_events(self, cursor):
+            return [], 0
+
+        async def close(self):
+            self._release.set()
+
+    sent: list[bytes] = []
+
+    async def _send(frame: bytes) -> None:
+        sent.append(frame)
+
+    async def _make(session_id: str):
+        return BlockingRuntime()
+
+    server = AcpServer(_make, _send)
+    await server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    created, _ = decode_frame(sent[-1])
+    session_id = created["result"]["sessionId"]
+
+    prompt_task = asyncio.ensure_future(
+        server.handle(
+            {"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+             "params": {"sessionId": session_id, "prompt": "blocked work"}}
+        )
+    )
+    await asyncio.sleep(0.2)
+    assert not prompt_task.done(), "prompt must still be blocked"
+    await server.handle(
+        {"jsonrpc": "2.0", "id": 4, "method": "session/cancel",
+         "params": {"sessionId": session_id}}
+    )
+    await asyncio.wait_for(prompt_task, 10)
+    replies = {}
+    for frame in sent:
+        message, _ = decode_frame(frame)
+        if "id" in message and message["id"] in (3, 4):
+            replies[message["id"]] = message
+    assert replies[4]["result"] == {"cancelled": True}
+    assert replies[3]["result"] == {"stopReason": "cancelled"}
+
+
+async def test_malformed_framing_exits_nonzero_without_details():
+    argv = [sys.executable, "-m", "garuda.acp.server", "--driver", "echo"]
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert process.stdin is not None
+    try:
+        process.stdin.write(b"not-framed\r\n\r\n{}")
+        await process.stdin.drain()
+        process.stdin.close()
+        code = await asyncio.wait_for(process.wait(), 15)
+        assert code == 2, code
+        _, stderr = await asyncio.gather(
+            process.stdout.read(), process.stderr.read()
+        )
+        assert b"Traceback" not in stderr
+        assert b"malformed input frame" in stderr
+    finally:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+
+
+async def test_internal_errors_do_not_leak():
+    _, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+
+    class ExplodingRuntime:
+        runtime_id = "exploding"
+
+        async def start(self, *, task, session_id=None):
+            raise RuntimeError("secret stack with passwords")
+
+    async def _make(session_id: str):
+        return ExplodingRuntime()
+
+    from garuda.acp.server import AcpServer as Server
+
+    sent: list[bytes] = []
+
+    async def _send(frame: bytes) -> None:
+        sent.append(frame)
+
+    server = Server(_make, _send)
+    await server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    message, _ = decode_frame(sent[-1])
+    assert "error" in message
+    assert "secret stack" not in message["error"]["message"]
+    assert message["error"]["message"] == "internal error"
 
 
 def test_no_listener_without_secure_config(capsys):
