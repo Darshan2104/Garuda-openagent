@@ -5,15 +5,17 @@
  * previous view\'s poller before mounting the next — a leaked poller would keep fetching a
  * run nobody is looking at.
  *
- * Two views, and that is the whole app: the run list (with the stats over it) and one run\'s
- * trace, plus the conversation. Anything that was neither reading a trace nor talking to the
- * agent has been removed rather than kept behind a nav entry. */
+ * Four views: the run list (with the stats over it), one run's trace, the
+ * conversation, and the runtimes board (harness picker, handoff, diff, and
+ * recovery). Anything that was neither reading a trace, talking to the agent,
+ * nor operating a runtime has been removed rather than kept behind a nav entry. */
 
 "use strict";
 
 var ROUTES = [
   [/^#\/runs\/([^/]+)$/, function (m) { return runDetailView(decodeURIComponent(m[1])); }],
   [/^#\/runs$/, function () { return runsView(); }],
+  [/^#\/runtimes$/, function () { return runtimesView(); }],
   [/^#\/chat$/, function () { return chatView(); }]
 ];
 

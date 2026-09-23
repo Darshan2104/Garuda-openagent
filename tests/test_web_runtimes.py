@@ -102,6 +102,15 @@ def test_diff_timeline_and_recover(ctx, ro_ctx, store):
     _seed(store)
     timeline = payload(call(ctx, "/api/runs/s1/diff"))
     assert timeline["session_id"] == "s1"
+    # No recorded baseline: explicit, never invented.
+    assert timeline["baseline_recorded"] is False
+    assert timeline["files"] == []
+
+    from garuda.workspace.diff import capture_baseline
+
+    store.record_baseline("s1", capture_baseline(".").to_dict())
+    timeline = payload(call(ctx, "/api/runs/s1/diff"))
+    assert timeline["baseline_recorded"] is True
     assert isinstance(timeline["files"], list)
 
     classification = payload(call(ro_ctx, "/api/runs/s1/recover"))

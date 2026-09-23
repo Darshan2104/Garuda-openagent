@@ -16,7 +16,7 @@ from garuda.acp.catalog import (
     health_of,
 )
 from garuda.runtime.recovery import recover, report_to_dict
-from garuda.workspace.diff import capture_baseline, session_delta
+from garuda.workspace.diff import session_delta
 
 
 def manifests_from_extra(extra: dict) -> list[dict]:
@@ -93,20 +93,32 @@ def handoff_prepare(store, session_id: str, target_id: str, *, pack_manager=None
 
 
 def diff_timeline(store, session_id: str) -> dict[str, Any]:
-    """Baseline plus authoritative delta for the session workspace."""
+    """Baseline plus authoritative delta for the session workspace.
+
+    Reads the baseline the session recorded at start — never a fresh
+    capture, which could not distinguish pre-existing dirt from agent work.
+    Sessions without a recorded baseline report that explicitly with an
+    empty file list rather than an invented one.
+    """
     meta = store.load_meta(session_id)
     workspace = meta.get("workspace", ".")
     baseline_data = meta.get("baseline") or {}
     from garuda.workspace.diff import Baseline
 
-    if baseline_data:
-        baseline = Baseline.from_dict(baseline_data)
-    else:
-        baseline = capture_baseline(workspace)
+    if not baseline_data:
+        return {
+            "session_id": session_id,
+            "baseline_commit": "",
+            "baseline_recorded": False,
+            "files": [],
+            "note": "no baseline recorded for this session",
+        }
+    baseline = Baseline.from_dict(baseline_data)
     delta = session_delta(baseline, workspace)
     return {
         "session_id": session_id,
         "baseline_commit": delta.baseline_commit,
+        "baseline_recorded": True,
         "files": [
             {"path": f.path, "kind": f.kind, "preexisting": f.preexisting}
             for f in delta.files
