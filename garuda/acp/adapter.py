@@ -84,6 +84,8 @@ class AcpRuntime:
         persist_dir: str | None = None,
         metrics=None,
     ):
+        from garuda.observability.runtime_metrics import RuntimeMetrics
+
         self._argv = list(argv)
         # The agent's session root. `None` keeps the client's historical
         # default (Garuda's own cwd); launch paths pass the workspace.
@@ -98,7 +100,12 @@ class AcpRuntime:
         self._store = store
         self._recorded_child_pid: int | None = None
         self._persist_dir = persist_dir
-        self._metrics = metrics
+        # Always-on: every adapter run records its own timings and triage,
+        # so metrics are observable in real runs without opt-in plumbing.
+        # Callers (mostly tests) may inject their own recorder instead.
+        self._metrics = (
+            metrics if metrics is not None else RuntimeMetrics(adapter_version=self.version)
+        )
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -625,6 +632,7 @@ class AcpRuntime:
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             await self._close_process()
+            self._persist_metrics()
             return
         if self._state is LifecycleState.RUNNING:
             try:
@@ -637,6 +645,26 @@ class AcpRuntime:
         self._move(LifecycleState.CLOSED)
         with self._timed("cleanup"):
             await self._close_process()
+        self._persist_metrics()
+
+    def _persist_metrics(self) -> None:
+        """Write the metrics snapshot beside the session trail, best-effort.
+
+        A read-only session dir must never fail teardown; without a persist
+        dir the snapshot simply lives on `self.metrics` for the caller.
+        """
+        if self._persist_dir is None or self._metrics is None:
+            return
+        try:
+            import json as _json
+
+            path = Path(self._persist_dir) / "metrics.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                _json.dumps(self._metrics.to_dict(), indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     def _info(self) -> RuntimeInfo:
         names: set[str] = set()
