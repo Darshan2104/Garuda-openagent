@@ -11,7 +11,7 @@ from garuda.runtime.events import (
     RuntimeEvent,
     RuntimeEventKind,
 )
-from garuda.runtime.handoff import HandoffError, HandoffPhase, HandoffTransaction
+from garuda.runtime.handoff import HandoffError, HandoffPhase, HandoffTransaction, execute_handoff
 from garuda.runtime.protocol import (
     PROTOCOL_VERSION,
     AgentRuntime,
@@ -57,6 +57,7 @@ __all__ = [
     "HandoffError",
     "HandoffPhase",
     "HandoffTransaction",
+    "execute_handoff",
     "PROTOCOL_VERSION",
     "SESSION_SCHEMA_VERSION",
     "TERMINAL_LIFECYCLE_STATES",
