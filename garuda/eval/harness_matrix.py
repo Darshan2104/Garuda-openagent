@@ -16,6 +16,7 @@ approvals, and handoff success. Three rules are structural, not advisory:
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -66,20 +67,66 @@ class HarnessTrial:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HarnessTrial":
+        """Validated ingestion. Wrong shapes fail closed with a field path —
+        a summed string cost or a counted `"yes"` completion must never reach
+        aggregation silently."""
+        if not isinstance(data, dict):
+            raise ValueError("trial must be a mapping")
+        try:
+            task_id = data["task_id"]
+            harness = data["harness"]
+        except KeyError as exc:
+            raise ValueError(f"trial missing required field {exc}") from exc
+        prompt_hash_value = data.get("prompt_hash", "")
+        if (
+            not isinstance(prompt_hash_value, str)
+            or not prompt_hash_value
+        ):
+            raise ValueError("trial.prompt_hash must be a non-empty string")
+        if not re.fullmatch(r"[0-9a-f]+", prompt_hash_value):
+            raise ValueError("trial.prompt_hash must be hex")
+        model = data.get("model")
+        if model is not None and (not isinstance(model, str) or not model):
+            raise ValueError("trial.model must be a non-empty string or null")
+        completed = data.get("completed")
+        if completed is not None and not isinstance(completed, bool):
+            raise ValueError("trial.completed must be a boolean or null")
+        cost = data.get("cost_usd")
+        if cost is not None and (not isinstance(cost, (int, float)) or isinstance(cost, bool)):
+            raise ValueError("trial.cost_usd must be a number or null")
+        latency = data.get("latency_ms")
+        if latency is not None and (not isinstance(latency, int) or isinstance(latency, bool)):
+            raise ValueError("trial.latency_ms must be an integer or null")
+        if latency is not None and latency < 0:
+            raise ValueError("trial.latency_ms cannot be negative")
+        approvals = data.get("approvals", 0)
+        if not isinstance(approvals, int) or isinstance(approvals, bool) or approvals < 0:
+            raise ValueError("trial.approvals must be a non-negative integer")
+        error = data.get("error", "")
+        if not isinstance(error, str):
+            raise ValueError("trial.error must be a string")
+        capabilities = data.get("capabilities", [])
+        if not isinstance(capabilities, list) or any(
+            not isinstance(c, str) for c in capabilities
+        ):
+            raise ValueError("trial.capabilities must be a list of strings")
+        timestamp = data.get("timestamp", time.time())
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            raise ValueError("trial.timestamp must be a number")
         return cls(
-            task_id=data["task_id"],
-            prompt_hash=data.get("prompt_hash", ""),
-            model=data.get("model"),
-            harness=data["harness"],
+            task_id=task_id,
+            prompt_hash=prompt_hash_value,
+            model=model,
+            harness=harness,
             harness_version=data.get("harness_version", "unknown"),
-            capabilities=tuple(data.get("capabilities", [])),
-            completed=data.get("completed"),
-            cost_usd=data.get("cost_usd"),
-            latency_ms=data.get("latency_ms"),
-            approvals=data.get("approvals", 0),
+            capabilities=tuple(capabilities),
+            completed=completed,
+            cost_usd=cost,
+            latency_ms=latency,
+            approvals=approvals,
             handoff=data.get("handoff", "none"),
-            error=data.get("error", ""),
-            timestamp=data.get("timestamp", time.time()),
+            error=error,
+            timestamp=timestamp,
         )
 
 
@@ -109,6 +156,7 @@ class MatrixCell:
     harness: str
     trials: int = 0
     completed: int = 0
+    unknown_completions: int = 0
     known_cost_usd: float = 0.0
     unknown_costs: int = 0
     latency_ms: list[int] = field(default_factory=list)
@@ -118,13 +166,21 @@ class MatrixCell:
 
     def to_dict(self) -> dict[str, Any]:
         latencies = sorted(self.latency_ms)
-        median = latencies[len(latencies) // 2] if latencies else None
+        median: float | int | None = None
+        if latencies:
+            mid = len(latencies) // 2
+            if len(latencies) % 2:
+                median = latencies[mid]
+            else:
+                median = (latencies[mid - 1] + latencies[mid]) / 2
+        known = self.trials - self.unknown_completions
         return {
             "model": self.model,
             "harness": self.harness,
             "trials": self.trials,
             "completed": self.completed,
-            "completion_rate": (self.completed / self.trials) if self.trials else None,
+            "unknown_completions": self.unknown_completions,
+            "completion_rate": (self.completed / known) if known else None,
             "cost_usd_known_sum": round(self.known_cost_usd, 6),
             "cost_unknown": self.unknown_costs,
             "latency_ms_median": median,
@@ -144,7 +200,9 @@ def summarize(trials: list[HarnessTrial]) -> list[MatrixCell]:
         if cell is None:
             cell = cells[key] = MatrixCell(model=trial.model, harness=trial.harness)
         cell.trials += 1
-        if trial.completed:
+        if trial.completed is None:
+            cell.unknown_completions += 1
+        elif trial.completed:
             cell.completed += 1
         if trial.cost_usd is None:
             cell.unknown_costs += 1
@@ -170,6 +228,8 @@ def render_table(cells: list[MatrixCell]) -> str:
         data = cell.to_dict()
         rate = data["completion_rate"]
         done = f"{data['completed']}/{data['trials']}"
+        if data["unknown_completions"]:
+            done += f" +{data['unknown_completions']} unknown"
         done += f" ({rate*100:.0f}%)" if rate is not None else ""
         cost = f"${data['cost_usd_known_sum']:.4f} + {data['cost_unknown']} unknown"
         latency = (
@@ -181,3 +241,37 @@ def render_table(cells: list[MatrixCell]) -> str:
             f"| {cost} | {latency} | {data['approvals']} | {handoff} |"
         )
     return "\n".join(lines)
+
+
+def trials_from_ablation(
+    tasks, results, *, model: str | None, harness: str = "native"
+) -> list[HarnessTrial]:
+    """Record real eval runs into matrix trials.
+
+    Feeds `run_ablation` output back into the comparison layer: prompt text
+    is hashed (never stored), ungraded runs stay `completed=None` (unknown,
+    never failure), and costs stay unknown unless a pricier pipeline fills
+    them — the product comparison is populated by measured runs, not fixtures.
+    """
+    prompts = {t.id: t.prompt for t in tasks}
+    trials = []
+    for result in results:
+        prompt = prompts.get(result.task_id, result.task_id)
+        if result.graded_pass is not None:
+            completed: bool | None = result.graded_pass
+        elif result.error or not result.agent_success:
+            completed = False
+        else:
+            completed = None
+        trials.append(
+            record_trial(
+                result.task_id,
+                prompt,
+                model=model,
+                harness=harness,
+                completed=completed,
+                latency_ms=result.duration_ms,
+                error=result.error or "",
+            )
+        )
+    return trials
