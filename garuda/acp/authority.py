@@ -82,10 +82,42 @@ def _names(value: object, *, where: str) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class AuthorityMap:
-    """Exactly one owner per family. Consult `owner_of` — never both toolchains."""
+    """Exactly one owner per family. Consult `owner_of` — never both toolchains.
+
+    Validated on every construction path (`__post_init__`): all four families
+    must be present with exactly one valid owner each. Incomplete maps,
+    invalid owners, and dual ownership fail closed with `NegotiationError` —
+    especially at the restore boundary (`from_snapshot`), where inventing
+    owners would silently fork authority.
+    """
 
     owners: dict[str, str] = field(default_factory=dict)
     agent_sandbox: bool = False
+
+    def __post_init__(self) -> None:
+        expected = {f.value for f in _ALL_FAMILIES}
+        actual = set(self.owners)
+        if actual != expected:
+            missing = sorted(expected - actual)
+            unknown = sorted(actual - expected)
+            problems = []
+            if missing:
+                problems.append(f"missing families: {missing}")
+            if unknown:
+                problems.append(f"unknown families: {unknown}")
+            raise NegotiationError(
+                "authority map must hold exactly one owner per family"
+                + (" (" + "; ".join(problems) + ")" if problems else "")
+            )
+        for family, owner in self.owners.items():
+            try:
+                AuthorityOwner(owner)
+            except ValueError:
+                raise NegotiationError(
+                    f"authority map {family!r}: invalid owner {owner!r}"
+                ) from None
+        if not isinstance(self.agent_sandbox, bool):
+            raise NegotiationError("authority map agent_sandbox: must be a boolean")
 
     def owner_of(self, family: str | ToolFamily) -> AuthorityOwner:
         name = family.value if isinstance(family, ToolFamily) else family
@@ -97,15 +129,35 @@ class AuthorityMap:
 
     @classmethod
     def from_snapshot(cls, names: frozenset[str], *, agent_sandbox: bool = False) -> "AuthorityMap":
+        """Restore a map persisted by `to_snapshot`. Fail-closed.
+
+        Malformed entries (no `=`, unknown family, invalid owner), duplicate
+        families (dual ownership), and incomplete maps all raise
+        `NegotiationError` — the restore boundary never invents owners.
+        """
+        if not isinstance(names, (frozenset, set)):
+            raise NegotiationError("authority snapshot: must be a set of names")
         owners: dict[str, str] = {}
+        valid_families = {f.value for f in _ALL_FAMILIES}
         for name in names:
+            if not isinstance(name, str):
+                raise NegotiationError(f"authority snapshot entry {name!r}: must be a string")
             family, sep, owner = name.partition("=")
-            if not sep or family not in {f.value for f in _ALL_FAMILIES}:
-                continue
+            if not sep or family not in valid_families:
+                raise NegotiationError(
+                    f"authority snapshot entry {name!r}: unknown family or malformed"
+                )
             try:
-                owners[family] = AuthorityOwner(owner).value
+                AuthorityOwner(owner)
             except ValueError:
-                continue
+                raise NegotiationError(
+                    f"authority snapshot entry {name!r}: invalid owner"
+                ) from None
+            if family in owners:
+                raise NegotiationError(
+                    f"authority snapshot: dual ownership for {family!r}"
+                )
+            owners[family] = AuthorityOwner(owner).value
         return cls(owners=owners, agent_sandbox=agent_sandbox)
 
 

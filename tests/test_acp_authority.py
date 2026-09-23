@@ -103,3 +103,29 @@ def test_malformed_capabilities_fail_closed():
     with pytest.raises(NegotiationError):
         AgentCapabilities.from_dict({"families": [], "sandbox": "yes"})
     assert AgentCapabilities.from_dict(None) == AgentCapabilities()
+
+
+def test_authority_map_construction_validates_single_ownership():
+    full = {"edit": "garuda", "terminal": "agent", "mcp": "garuda", "approval": "agent"}
+    assert AuthorityMap(owners=dict(full)).owners == full
+    with pytest.raises(NegotiationError, match="missing families"):
+        AuthorityMap(owners={"edit": "garuda"})
+    with pytest.raises(NegotiationError, match="unknown families"):
+        AuthorityMap(owners={**full, "teleport": "garuda"})
+    with pytest.raises(NegotiationError, match="invalid owner"):
+        AuthorityMap(owners={**full, "edit": "both"})
+
+
+def test_snapshot_restore_rejects_malformed_missing_and_dual_owner():
+    good = frozenset({"edit=garuda", "terminal=agent", "mcp=garuda", "approval=agent"})
+    assert AuthorityMap.from_snapshot(good).owners["edit"] == "garuda"
+    with pytest.raises(NegotiationError, match="malformed"):
+        AuthorityMap.from_snapshot(frozenset({"edit-garuda", "terminal=agent"}))
+    with pytest.raises(NegotiationError, match="unknown family"):
+        AuthorityMap.from_snapshot(frozenset({"teleport=garuda"}))
+    with pytest.raises(NegotiationError, match="invalid owner"):
+        AuthorityMap.from_snapshot(frozenset({"edit=both"}))
+    with pytest.raises(NegotiationError, match="missing families"):
+        AuthorityMap.from_snapshot(frozenset({"edit=garuda"}))
+    with pytest.raises(NegotiationError, match="dual ownership"):
+        AuthorityMap.from_snapshot(frozenset({"edit=garuda", "edit=agent"}))
