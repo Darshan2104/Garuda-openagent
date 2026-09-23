@@ -154,3 +154,113 @@ def test_heartbeat_and_release_edges(tmp_path):
     store.release(workspace, "s")
     assert store.holders_of(workspace) == []
     store.release(workspace, "s")
+
+
+def test_ttl_must_be_positive_and_finite(tmp_path):
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    for bad in (0, -5, float("inf"), float("nan")):
+        with pytest.raises(LeaseError, match="positive and finite"):
+            store.acquire(workspace, "s", "mutating", ttl_sec=bad)
+    from garuda.workspace.lease import Lease
+
+    with pytest.raises(LeaseError, match="positive and finite"):
+        Lease.from_dict(
+            {
+                "workspace": "w",
+                "session_id": "s",
+                "mode": "mutating",
+                "ttl_sec": 0,
+            }
+        )
+    assert store.holders_of(workspace) == []
+
+
+def test_lock_failures_fail_closed_not_unlocked(tmp_path, monkeypatch):
+    import garuda.workspace.lease as lease_mod
+
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    # No fcntl (e.g. Windows): acquisition is refused, never unlocked.
+    monkeypatch.setattr(lease_mod, "fcntl", None)
+    with pytest.raises(LeaseError, match="unavailable"):
+        store.acquire(workspace, "s", "mutating")
+    # flock raising (e.g. broken filesystem lock): refused, never unlocked.
+    import fcntl as real_fcntl
+
+    original_flock = real_fcntl.flock
+    monkeypatch.setattr(lease_mod, "fcntl", real_fcntl)
+    monkeypatch.setattr(
+        real_fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError("no locks"))
+    )
+    with pytest.raises(LeaseError, match="cannot lock"):
+        store.acquire(workspace, "s", "mutating")
+    assert store.holders_of(workspace) == []
+    # Sanity: with the real lock back, acquisition works.
+    monkeypatch.setattr(real_fcntl, "flock", original_flock)
+    store.acquire(workspace, "s", "mutating")
+    assert [h.session_id for h in store.holders_of(workspace)] == ["s"]
+
+
+async def test_production_runs_refuse_concurrent_mutation(tmp_path, monkeypatch):
+    """`run_agent_task` holds a mutating lease: a second concurrent run on
+    the same workspace fails instead of interleaving mutations."""
+    import asyncio
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import tools_for_names
+    from garuda.types import AgentConfig, ToolCall
+    from garuda.workspace.lease import LeaseConflictError
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+
+    def _run(model, session_id):
+        return run_agent_task(
+            task="lease contention task",
+            model=model,
+            agent=DefaultAgent(),
+            tools=tools_for_names(["bash", "task_complete"]),
+            config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo"),
+            permissions=PermissionEngine(mode="yolo"),
+            workspace=str(workspace),
+            events=EventStore(session_id=session_id),
+            store=store,
+        )
+
+    def _sleep_then_complete():
+        return ScriptModel(
+            responses=[
+                ModelResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(id="1", name="bash", arguments={"command": "sleep 4"})
+                    ],
+                ),
+                ModelResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(id="2", name="task_complete", arguments={"summary": "ok"})
+                    ],
+                ),
+            ]
+        )
+
+    first = asyncio.ensure_future(_run(_sleep_then_complete(), "lease-first"))
+    await asyncio.sleep(1.0)  # let the first run acquire the lease + start sleeping
+    with pytest.raises(LeaseConflictError, match="mutably held"):
+        await _run(_sleep_then_complete(), "lease-second")
+    result = await first
+    assert result.success
+    # Released afterwards: a later run on the same workspace proceeds.
+    assert (await _run(_sleep_then_complete(), "lease-third")).success

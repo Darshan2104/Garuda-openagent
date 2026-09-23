@@ -70,7 +70,11 @@ records which confinement actually holds. `shell.py` is the opt-in persistent
 shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 heartbeat TTL with audited stale takeover, corrupt leases fail closed, user
-files never touched) plus worktree isolation keys and creation hooks.
+files never touched; TTLs validated positive/finite, locking fail-closed when
+`fcntl` is unavailable or `flock` fails) plus worktree isolation keys and
+creation hooks. `run_agent_task` acquires the mutating lease for the workspace
+before resolving the environment, heartbeats for the whole run, and releases
+last — concurrent runs on one workspace are refused, never interleaved.
 
 ## `context/` — fitting the conversation in the window
 

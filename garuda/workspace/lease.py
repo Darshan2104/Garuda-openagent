@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -29,6 +30,22 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
     fcntl = None  # type: ignore[assignment]
 
 DEFAULT_TTL_SEC = 60.0
+
+
+def _check_ttl(ttl_sec: float, *, where: str) -> float:
+    """Validate a heartbeat TTL. Must be positive and finite.
+
+    A zero/negative TTL is instantly stale (takeover on arrival); an infinite
+    or NaN TTL never expires (a dead holder blocks the workspace forever).
+    Both turn the safety guarantee into its opposite, so both fail closed.
+    """
+    try:
+        ttl = float(ttl_sec)
+    except (TypeError, ValueError) as exc:
+        raise LeaseError(f"{where}: ttl_sec must be a number: {exc}") from exc
+    if not math.isfinite(ttl) or ttl <= 0:
+        raise LeaseError(f"{where}: ttl_sec must be positive and finite, got {ttl_sec!r}")
+    return ttl
 
 
 class LeaseError(Exception):
@@ -76,6 +93,7 @@ class Lease:
                 raise LeaseError(f"lease.{key} must be a non-empty string")
         if data["mode"] not in ("mutating", "read-only"):
             raise LeaseError(f"lease.mode must be mutating|read-only, got {data['mode']!r}")
+        ttl_sec = _check_ttl(data.get("ttl_sec", DEFAULT_TTL_SEC), where="lease")
         try:
             return cls(
                 workspace=data["workspace"],
@@ -83,7 +101,7 @@ class Lease:
                 mode=data["mode"],
                 acquired_at=float(data.get("acquired_at", 0)),
                 heartbeat_at=float(data.get("heartbeat_at", 0)),
-                ttl_sec=float(data.get("ttl_sec", DEFAULT_TTL_SEC)),
+                ttl_sec=ttl_sec,
                 pid=int(data.get("pid", 0)),
                 stolen_from=str(data.get("stolen_from", "")),
             )
@@ -115,30 +133,31 @@ class LeaseStore:
     def _locked(self) -> Iterator[None]:
         """Serialize read-check-publish cycles across processes.
 
-        Best-effort like the session meta lock: without it two racers both
-        read an empty slot and both publish, and the loser never knows.
+        Fail-closed: without the lock two racers both read an empty slot and
+        both publish, and the loser never knows — the mutual-exclusion promise
+        would be fiction. So a platform without `fcntl`, or a filesystem where
+        locking fails, refuses acquisition instead of proceeding unlocked.
         """
         if fcntl is None:
-            yield
-            return
+            raise LeaseError("lease locking unavailable on this platform (no fcntl)")
         lock_path = self.root / ".lock"
-        handle = None
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             handle = open(lock_path, "a+")
+        except OSError as exc:
+            raise LeaseError(f"cannot open lease lock at {lock_path}: {exc}") from exc
+        try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        except OSError:
-            if handle is not None:
-                handle.close()
-                handle = None
+        except OSError as exc:
+            handle.close()
+            raise LeaseError(f"cannot lock {lock_path}: {exc}") from exc
         try:
             yield
         finally:
-            if handle is not None:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                finally:
-                    handle.close()
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
     def _path_for(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode()).hexdigest()[:32]
@@ -182,6 +201,7 @@ class LeaseStore:
             raise LeaseError(f"mode must be mutating|read-only, got {mode!r}")
         if not session_id:
             raise LeaseError("session_id is required")
+        ttl_sec = _check_ttl(ttl_sec, where="acquire")
         key = workspace_key(workspace)
         moment = now if now is not None else time.time()
         path = self._path_for(key)

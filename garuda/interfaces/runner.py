@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -188,73 +189,113 @@ async def run_agent_task(
             logger.warning("Failed to load persisted working state", exc_info=True)
             initial_state = None
 
-    await runtime.start(task=task, session_id=events.session_id)
-    events_path = store.events_path(events.session_id)
-    events.attach_persistence(events_path)
-    if resumed_from:
-        update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
-        # Copy the prior session's tool-output buffers into the new session dir so
-        # inherited [buffer:...] stubs in the resumed conversation still resolve
-        # (buffers are keyed to the session id, which changes on resume).
+    # One mutating session owns a workspace (P0.16). Acquired before any
+    # environment is resolved so a refused run burns nothing, held for the
+    # whole facade call, and released last in `finally`. A live foreign
+    # mutating lease — including a second concurrent `run_agent_task` on this
+    # workspace — fails here instead of interleaving mutations. Fail-closed:
+    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
+    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
+
+    lease_store = LeaseStore()
+    lease_store.acquire(workspace, events.session_id, mode="mutating")
+    lease_ttl = DEFAULT_TTL_SEC
+
+    async def _lease_heartbeat() -> None:
         try:
-            import shutil
+            while True:
+                await asyncio.sleep(lease_ttl / 3)
+                try:
+                    lease_store.heartbeat(workspace, events.session_id)
+                except Exception:
+                    logger.warning("Lease heartbeat failed", exc_info=True)
+                    return
+        except asyncio.CancelledError:
+            raise
 
-            src = store.session_dir(resumed_from) / "buffers"
-            dst = store.session_dir(events.session_id) / "buffers"
-            if src.is_dir() and not dst.exists():
-                shutil.copytree(src, dst)
+    heartbeat_task = asyncio.ensure_future(_lease_heartbeat())
+
+    def _abandon_lease() -> None:
+        """Cancel the heartbeat and release, for startup paths that never
+        reach the main `try/finally` below. Best-effort; never masks the
+        original error."""
+        heartbeat_task.cancel()
+        try:
+            lease_store.release(workspace, events.session_id)
         except Exception:
-            logger.warning("Failed to copy resumed session buffers", exc_info=True)
+            logger.warning("Lease release failed", exc_info=True)
 
-    if hooks is None:
-        hooks = build_hook_registry(workspace)
-
-    # Single-writer pack publisher for this workspace (P0.9). Best-effort:
-    # when the workspace root is not a writable local dir the manager simply
-    # never syncs, and every sync failure is caught inside RunState.
-    pack_manager = None
-    pack_git_evidence = ""
     try:
-        from pathlib import Path as _Path
+        await runtime.start(task=task, session_id=events.session_id)
+        events_path = store.events_path(events.session_id)
+        events.attach_persistence(events_path)
+        if resumed_from:
+            update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
+            # Copy the prior session's tool-output buffers into the new session dir so
+            # inherited [buffer:...] stubs in the resumed conversation still resolve
+            # (buffers are keyed to the session id, which changes on resume).
+            try:
+                import shutil
 
-        from garuda.context.pack import ContextPackManager, collect_git_evidence
+                src = store.session_dir(resumed_from) / "buffers"
+                dst = store.session_dir(events.session_id) / "buffers"
+                if src.is_dir() and not dst.exists():
+                    shutil.copytree(src, dst)
+            except Exception:
+                logger.warning("Failed to copy resumed session buffers", exc_info=True)
 
-        pack_root = _Path(workspace) / ".context" if workspace else None
-        if pack_root is not None:
-            pack_manager = ContextPackManager(pack_root)
-            pack_git_evidence = collect_git_evidence(workspace)
-    except Exception:
-        logger.debug("Context pack manager unavailable for workspace", exc_info=True)
+        if hooks is None:
+            hooks = build_hook_registry(workspace)
+
+        # Single-writer pack publisher for this workspace (P0.9). Best-effort:
+        # when the workspace root is not a writable local dir the manager simply
+        # never syncs, and every sync failure is caught inside RunState.
         pack_manager = None
         pack_git_evidence = ""
+        try:
+            from pathlib import Path as _Path
 
-    env, handle = await resolve_environment(
-        workspace_kind, workspace, docker_image, docker_host=docker_host, config=config
-    )
-    result: AgentResult | None = None
-    await hooks.on_session_start(task=task, session_id=events.session_id)
+            from garuda.context.pack import ContextPackManager, collect_git_evidence
 
-    async def _driver(*, task: str, turn: int, trail: EventStore):
-        return await agent.run(
-            task=task,
-            model=model,
-            env=env,
-            tools=tools,
-            config=config,
-            events=trail,
-            permissions=permissions,
-            hooks=hooks,
-            agents_dir=agents_dir,
-            context=context,
-            checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
-            state_checkpoint=lambda state: store.checkpoint_state(events.session_id, state),
-            pack_manager=pack_manager,
-            pack_source_runtime="native",
-            pack_git_evidence=pack_git_evidence,
-            initial_state=initial_state,
+            pack_root = _Path(workspace) / ".context" if workspace else None
+            if pack_root is not None:
+                pack_manager = ContextPackManager(pack_root)
+                pack_git_evidence = collect_git_evidence(workspace)
+        except Exception:
+            logger.debug("Context pack manager unavailable for workspace", exc_info=True)
+            pack_manager = None
+            pack_git_evidence = ""
+
+        env, handle = await resolve_environment(
+            workspace_kind, workspace, docker_image, docker_host=docker_host, config=config
         )
+        result: AgentResult | None = None
+        await hooks.on_session_start(task=task, session_id=events.session_id)
 
-    runtime.install_driver(_driver)
+        async def _driver(*, task: str, turn: int, trail: EventStore):
+            return await agent.run(
+                task=task,
+                model=model,
+                env=env,
+                tools=tools,
+                config=config,
+                events=trail,
+                permissions=permissions,
+                hooks=hooks,
+                agents_dir=agents_dir,
+                context=context,
+                checkpoint=lambda msgs: store.checkpoint_messages(events.session_id, msgs),
+                state_checkpoint=lambda state: store.checkpoint_state(events.session_id, state),
+                pack_manager=pack_manager,
+                pack_source_runtime="native",
+                pack_git_evidence=pack_git_evidence,
+                initial_state=initial_state,
+            )
+
+        runtime.install_driver(_driver)
+    except Exception:
+        _abandon_lease()
+        raise
     try:
         await runtime.prompt(task)
         result = runtime.last_result
@@ -305,6 +346,18 @@ async def run_agent_task(
         except Exception:
             logger.warning("Runtime close failed", exc_info=True)
         await hooks.on_session_end(summary)
+        # Release the mutating lease last: the whole session lifecycle above
+        # ran under it. Best-effort — a release failure is logged, and the
+        # heartbeat TTL bounds how long a stale holder can block the workspace.
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            lease_store.release(workspace, events.session_id)
+        except Exception:
+            logger.warning("Lease release failed", exc_info=True)
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))
