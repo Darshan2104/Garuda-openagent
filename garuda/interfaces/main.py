@@ -328,6 +328,8 @@ def build_parser():
     runtime_recover = runtime_sub.add_parser("recover", help="Classify and recover a session")
     runtime_recover.add_argument("--session", required=True, help="Session id")
     runtime_recover.add_argument("--json", action="store_true", help="Print JSON report")
+    runtime_support = runtime_sub.add_parser("support", help="Print a redacted support bundle")
+    runtime_support.add_argument("--session", required=True, help="Session id")
 
     return parser
 
@@ -503,6 +505,15 @@ async def run_runtime_command(args) -> int:
         return 0
     if command == "recover":
         print(cmd_recover(store, args.session, as_json=args.json), end="")
+        return 0
+    if command == "support":
+        from garuda.interfaces.runtime_cli import cmd_support_bundle
+
+        try:
+            print(cmd_support_bundle(store, args.session), end="")
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
         return 0
     build_parser().parse_args(["runtime", "--help"])
     return 1

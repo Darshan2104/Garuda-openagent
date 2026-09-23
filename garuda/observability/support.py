@@ -17,14 +17,28 @@ from garuda.context.redact import redact_text
 
 
 def _scrub(value: Any) -> Any:
+    """Recursively secret-scrub every string *and* mapping key.
+
+    Tuples become lists (JSON has no tuples); anything else passes through
+    untouched. Scrubbing keys too, because metric names, session ids, and
+    unknown meta fields are all attacker-influenced strings in adversarial
+    sessions.
+    """
     if isinstance(value, str):
         cleaned, _ = redact_text(value)
         return cleaned
     if isinstance(value, dict):
-        return {key: _scrub(item) for key, item in value.items()}
-    if isinstance(value, list):
+        return {_scrub_key(key): _scrub(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
         return [_scrub(item) for item in value]
     return value
+
+
+def _scrub_key(key: Any) -> Any:
+    if isinstance(key, str):
+        cleaned, _ = redact_text(key)
+        return cleaned
+    return key
 
 
 def _tally(path: Path) -> dict[str, int]:
@@ -70,12 +84,29 @@ def build_support_bundle(
         lanes = exported["lanes"]
     except Exception:
         lanes = []
+    metrics_payload: dict[str, Any] = {}
+    if metrics is not None:
+        if isinstance(metrics, dict):
+            metrics_payload = metrics
+        elif hasattr(metrics, "to_dict"):
+            try:
+                metrics_payload = metrics.to_dict()
+            except Exception:
+                metrics_payload = {}
+    else:
+        metrics_path = root / "metrics.json"
+        if metrics_path.is_file():
+            try:
+                loaded = json.loads(metrics_path.read_text(encoding="utf-8"))
+                metrics_payload = loaded if isinstance(loaded, dict) else {}
+            except (OSError, ValueError):
+                metrics_payload = {}
     return {
-        "session_id": meta.get("session_id", root.name),
+        "session_id": _scrub(meta.get("session_id", root.name)),
         "meta": _scrub({k: v for k, v in meta.items() if k != "session_id"}),
         "lanes": lanes,
         "native_event_kinds": _tally(root / "events.jsonl"),
         "external_event_kinds": _tally(root / "acp-events.jsonl"),
-        "metrics": metrics if metrics is not None else {},
-        "garuda_version": garuda_version,
+        "metrics": _scrub(metrics_payload),
+        "garuda_version": _scrub(garuda_version),
     }

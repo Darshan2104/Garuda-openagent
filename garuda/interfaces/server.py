@@ -188,6 +188,8 @@ class JsonRpcServer:
                 result = await self._runtime_handoff(params)
             elif method == "runtime_recover":
                 result = await self._runtime_recover(params)
+            elif method == "runtime_support":
+                result = await self._runtime_support(params)
             else:
                 raise ValueError(f"Unknown method: {method}")
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -305,6 +307,18 @@ class JsonRpcServer:
 
         store = SessionStore()
         payload = recover_dict(store, session_id)
+        payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
+        return payload
+
+    async def _runtime_support(self, params: dict[str, Any]) -> dict[str, Any]:
+        from garuda.core.sessions import SessionStore
+        from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION, support_bundle_dict
+
+        session_id = params.get("session")
+        if not session_id:
+            raise ValueError("params.session is required")
+        store = SessionStore()
+        payload = support_bundle_dict(store, session_id)
         payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
         return payload
 
