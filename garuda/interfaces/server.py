@@ -272,8 +272,13 @@ class JsonRpcServer:
             from garuda.context.pack import ContextPackManager
 
             manager = ContextPackManager(store.session_dir(session_id))
-            text = await cmd_handoff_confirm(store, session_id, target, pack_manager=manager)
-            return {"api": f"runtime/v{RUNTIME_API_VERSION}", "prepared": True, "detail": text}
+            dicts = self._runtime_manifests(params)
+            text = await cmd_handoff_confirm(
+                store, session_id, target,
+                manifests=dicts,
+                pack_manager=manager,
+            )
+            return {"api": f"runtime/v{RUNTIME_API_VERSION}", "acknowledged": True, "detail": text}
         return {
             "api": f"runtime/v{RUNTIME_API_VERSION}",
             "prepared": False,
