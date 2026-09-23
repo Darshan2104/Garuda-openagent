@@ -1,10 +1,19 @@
 """Runtime and handoff contract matrix (P1.10, issue #42).
 
-Every adapter runs the common scenarios its declared capabilities allow —
-lifecycle, cancellation, permission, diff, resume, handoff, recovery — and
-each run publishes a CI-readable JSON report. An adapter with any failure is
-not supported; skips name the missing capability so coverage gaps stay
-visible instead of silently passing.
+Scenarios run from declared capabilities, not hand tables: each scenario
+names the runtime capabilities it needs (`SCENARIO_CAPS`) and any harness
+behavior it needs (`SCENARIO_BEHAVIORS`, e.g. an approval flow or diff
+events). An adapter runs a scenario only when its real declarations cover
+both; anything else records SKIP naming the gap. Capability sources are
+real: vendor rows use their manifest's declared capabilities, fake rows use
+`FakeRuntime`'s declared `{"prompt", "cancel"}`, ACP profile rows use the
+pinned `fake_agent` profiles, and native uses the loop's `{"prompt",
+"cancel"}`.
+
+Vendor rows run stand-in fakes, so they are labeled `simulated`: they prove
+the harness-agnostic wiring (lifecycle, cancellation, resume, handoff,
+recovery), never vendor support. An adapter is `supported` only with zero
+failures AND at least one PASS — all-SKIP never passes.
 
 Run: `python -m garuda.eval.contract_matrix --out contract-reports`.
 """
@@ -32,6 +41,34 @@ SCENARIOS = (
     "recovery",
 )
 
+#: Runtime capabilities each scenario needs. Wiring scenarios (resume,
+#: handoff, recovery) need none beyond a startable adapter; capability
+#: scenarios derive from the adapter's real declarations.
+SCENARIO_CAPS: dict[str, frozenset[str]] = {
+    "lifecycle": frozenset({"prompt"}),
+    "cancellation": frozenset({"cancel"}),
+    "permission": frozenset({"prompt"}),
+    "diff": frozenset(),
+    "resume": frozenset(),
+    "handoff": frozenset(),
+    "recovery": frozenset(),
+}
+
+#: Harness behaviors each scenario needs. Keys are fake_agent profile
+#: behaviors (pinned in `garuda.acp.fake_agent.PROFILES`); the native loop
+#: provides them structurally.
+SCENARIO_BEHAVIORS: dict[str, frozenset[str]] = {
+    # lifecycle needs an unattended answer: approval blocks for a driver and
+    # slow never answers, so neither runs it.
+    "lifecycle": frozenset({"responds"}),
+    "cancellation": frozenset(),
+    "permission": frozenset({"approval"}),
+    "diff": frozenset({"diff-event"}),
+    "resume": frozenset(),
+    "handoff": frozenset(),
+    "recovery": frozenset(),
+}
+
 PASS, FAIL, SKIP = "pass", "fail", "skip"
 
 
@@ -47,8 +84,19 @@ class AdapterEntry:
     id: str
     kind: str
     capabilities: frozenset[str] = frozenset()
+    behaviors: frozenset[str] = frozenset()
+    simulated: bool = False
     make: Callable[[Path], Any] | None = None
     manifest: Any = None
+
+    def scenarios(self) -> list[str]:
+        """Scenarios this adapter's real declarations cover, in matrix order."""
+        return [
+            scenario
+            for scenario in SCENARIOS
+            if SCENARIO_CAPS[scenario] <= self.capabilities
+            and SCENARIO_BEHAVIORS[scenario] <= self.behaviors
+        ]
 
 
 @dataclass
@@ -58,10 +106,15 @@ class AdapterReport:
     capabilities: tuple[str, ...]
     results: list[CheckResult] = field(default_factory=list)
     generated_at: float = field(default_factory=time.time)
+    simulated: bool = False
 
     @property
     def supported(self) -> bool:
-        return bool(self.results) and all(r.status != FAIL for r in self.results)
+        return (
+            bool(self.results)
+            and all(r.status != FAIL for r in self.results)
+            and any(r.status == PASS for r in self.results)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +123,7 @@ class AdapterReport:
             "capabilities": list(self.capabilities),
             "generated_at": self.generated_at,
             "supported": self.supported,
+            "simulated": self.simulated,
             "results": [
                 {"scenario": r.scenario, "status": r.status, "detail": r.detail}
                 for r in self.results
@@ -77,8 +131,41 @@ class AdapterReport:
         }
 
 
+#: `FakeRuntime`'s declared capabilities — the real source for fake rows.
+FAKE_RUNTIME_CAPS = frozenset({"prompt", "cancel"})
+
+#: Behaviors each fake scenario affords. Keyed by scenario name; the matrix
+#: refuses unknown names so a renamed scenario cannot silently change coverage.
+FAKE_BEHAVIORS: dict[str, frozenset[str]] = {
+    "success": frozenset({"responds"}),
+    "streaming": frozenset({"responds"}),
+    "approval": frozenset({"responds", "approval"}),
+    "cancellation": frozenset({"responds"}),
+}
+
+#: Behaviors each fake_agent profile affords. Subset of the pinned
+#: `garuda.acp.fake_agent.PROFILES`; negative-path fixtures (malformed,
+#: slow, exit-early, resume, version-mismatch, capabilities-*) are
+#: intentionally absent — they prove failure modes elsewhere, not contract
+#: behaviors here.
+PROFILE_BEHAVIORS: dict[str, frozenset[str]] = {
+    "success": frozenset({"responds"}),
+    "streaming": frozenset({"responds"}),
+    "approval": frozenset({"approval"}),
+    "slow": frozenset(),
+    "diff": frozenset({"responds", "diff-event"}),
+}
+
+
 def _fake_entries() -> list[AdapterEntry]:
     from garuda.runtime.fake import FakeRuntime, FakeScenario
+
+    wanted = {
+        FakeScenario.SUCCESS: "success",
+        FakeScenario.STREAMING: "streaming",
+        FakeScenario.APPROVAL: "approval",
+        FakeScenario.CANCELLATION: "cancellation",
+    }
 
     def make(scenario: FakeScenario):
         def _make(scratch: Path, _s=scenario) -> FakeRuntime:
@@ -86,30 +173,25 @@ def _fake_entries() -> list[AdapterEntry]:
 
         return _make
 
-    caps = {
-        FakeScenario.SUCCESS: frozenset({"lifecycle", "cancellation", "handoff", "recovery"}),
-        FakeScenario.STREAMING: frozenset({"lifecycle", "cancellation", "recovery"}),
-        FakeScenario.APPROVAL: frozenset({"lifecycle", "cancellation", "permission", "recovery"}),
-        FakeScenario.CANCELLATION: frozenset({"lifecycle", "cancellation", "recovery"}),
-    }
     return [
-        AdapterEntry(id=f"fake-{s.value}", kind="fake", capabilities=c, make=make(s))
-        for s, c in caps.items()
+        AdapterEntry(
+            id=f"fake-{s.value}",
+            kind="fake",
+            capabilities=FAKE_RUNTIME_CAPS,
+            behaviors=FAKE_BEHAVIORS[name],
+            make=make(s),
+        )
+        for s, name in wanted.items()
     ]
 
 
 def _acp_entries() -> list[AdapterEntry]:
     from garuda.acp.adapter import AcpRuntime
+    from garuda.acp.fake_agent import PROFILES as PINNED_PROFILES
 
-    profiles = {
-        "success": frozenset({"lifecycle", "cancellation", "resume", "handoff", "recovery"}),
-        "streaming": frozenset({"lifecycle", "cancellation", "recovery"}),
-        # approval and slow need a driver (approve) or never answer: their
-        # lifecycle is proven under permission/timeout checks, not unattended.
-        "approval": frozenset({"cancellation", "permission", "recovery"}),
-        "slow": frozenset({"cancellation", "recovery"}),
-        "diff": frozenset({"lifecycle", "cancellation", "diff", "recovery"}),
-    }
+    unknown = set(PROFILE_BEHAVIORS) - {p.split("capabilities-")[-1] if p.startswith("capabilities-") else p for p in PINNED_PROFILES}
+    if unknown:
+        raise ValueError(f"contract profiles not in fake_agent.PROFILES: {sorted(unknown)}")
 
     def make(profile: str):
         def _make(scratch: Path, _p=profile) -> AcpRuntime:
@@ -121,8 +203,14 @@ def _acp_entries() -> list[AdapterEntry]:
         return _make
 
     return [
-        AdapterEntry(id=f"acp-{p}", kind="acp", capabilities=c, make=make(p))
-        for p, c in profiles.items()
+        AdapterEntry(
+            id=f"acp-{profile}",
+            kind="acp",
+            capabilities=FAKE_RUNTIME_CAPS,
+            behaviors=behaviors,
+            make=make(profile),
+        )
+        for profile, behaviors in PROFILE_BEHAVIORS.items()
     ]
 
 
@@ -150,7 +238,11 @@ def _vendor_entries() -> list[AdapterEntry]:
             AdapterEntry(
                 id=runtime_id,
                 kind="vendor",
-                capabilities=frozenset({"lifecycle", "cancellation", "handoff", "recovery"}),
+                # The manifest's own declared capabilities — never a hand table.
+                # The stand-in answers prompts unattended, hence "responds".
+                capabilities=frozenset(manifest.capabilities.names),
+                behaviors=frozenset({"responds"}),
+                simulated=True,
                 make=_make,
                 manifest=manifest,
             )
@@ -207,9 +299,10 @@ def _native_entry() -> AdapterEntry:
     return AdapterEntry(
         id="native",
         kind="native",
-        capabilities=frozenset(
-            {"lifecycle", "cancellation", "permission", "diff", "resume", "handoff", "recovery"}
-        ),
+        # The loop's real capabilities; approval, diff, and unattended
+        # answers hold structurally (parked approvals, git diffs, real model).
+        capabilities=frozenset({"prompt", "cancel"}),
+        behaviors=frozenset({"responds", "approval", "diff-event"}),
         make=_make,
     )
 
@@ -403,12 +496,18 @@ async def _check_recovery(entry: AdapterEntry, scratch: Path) -> None:
     from garuda.runtime.recovery import RestartState, recover
     from garuda.runtime.session import RuntimeSegment
 
+    # The adapter itself starts and stops here: recovery classifies a tenure
+    # that really ran, not a store fixture.
+    runtime = entry.make(scratch)
+    await runtime.start(task="t", session_id=f"rec-{entry.id}")
+    native_id = runtime.native_session_id or "n1"
+    await runtime.close()
     store = SessionStore(scratch / "sessions")
     store.begin("rec-1", task="t", model="m", agent="a", workspace="w")
     store.ensure_unified("rec-1")
     store.attach_runtime_segment(
         "rec-1",
-        RuntimeSegment(runtime_id=entry.id, kind=entry.kind, native_session_id="n1"),
+        RuntimeSegment(runtime_id=entry.id, kind=entry.kind, native_session_id=native_id),
     )
     store.record_handoff("rec-1", state="failed", attempts=1)
     report = recover(store, "rec-1")
@@ -416,15 +515,25 @@ async def _check_recovery(entry: AdapterEntry, scratch: Path) -> None:
     assert report.resume_session_id == "rec-1"
 
 
+def _skip_reason(entry: AdapterEntry, scenario: str) -> str:
+    missing_caps = sorted(SCENARIO_CAPS[scenario] - entry.capabilities)
+    if missing_caps:
+        return f"capability not declared: {', '.join(missing_caps)}"
+    missing = sorted(SCENARIO_BEHAVIORS[scenario] - entry.behaviors)
+    return f"behavior not afforded: {', '.join(missing)}"
+
+
 async def run_entry(entry: AdapterEntry, work_root: Path) -> AdapterReport:
     scratch = work_root / entry.id.replace("/", "_")
     scratch.mkdir(parents=True, exist_ok=True)
     report = AdapterReport(
-        adapter_id=entry.id, kind=entry.kind, capabilities=tuple(sorted(entry.capabilities))
+        adapter_id=entry.id, kind=entry.kind, capabilities=tuple(sorted(entry.capabilities)),
+        simulated=entry.simulated,
     )
+    wanted = set(entry.scenarios())
     for scenario in SCENARIOS:
-        if scenario not in entry.capabilities:
-            report.results.append(CheckResult(scenario, SKIP, "capability not declared"))
+        if scenario not in wanted:
+            report.results.append(CheckResult(scenario, SKIP, _skip_reason(entry, scenario)))
             continue
         report.results.append(await _check(entry, scenario, scratch))
     return report
@@ -453,6 +562,7 @@ async def run_matrix(out_dir: str | Path, *, work_root: str | Path | None = None
             "adapters": len(reports),
             "supported": sorted(r.adapter_id for r in reports if r.supported),
             "unsupported": sorted(r.adapter_id for r in reports if not r.supported),
+            "simulated": sorted(r.adapter_id for r in reports if r.simulated),
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return reports
