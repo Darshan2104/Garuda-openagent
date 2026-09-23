@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from garuda.context import schemas
+from garuda.context.redact import assert_safe_for_switch, redact_pack
 from garuda.context.schemas import CurrentTask, Handoff
 from garuda.context.state_card import WorkingState
 
@@ -180,10 +181,87 @@ class ContextPackManager:
         return target
 
     def write_current_task(self, doc: CurrentTask, body: str = "") -> Path:
+        """Validate, redact, then publish. Secrets never reach the file; other
+        violations (paths, size, reasoning) block with an actionable error."""
+        doc, body = self._scrub(doc, body)
         return self._publish(CURRENT_TASK_NAME, schemas.render(doc.to_frontmatter(), body))
 
     def write_handoff(self, doc: Handoff, body: str = "") -> Path:
+        doc, body = self._scrub(doc, body, redacted_flag=True)
         return self._publish(HANDOFF_NAME, schemas.render(doc.to_frontmatter(), body))
+
+    @staticmethod
+    def _scrub(doc, body: str, *, redacted_flag: bool = False):
+        """Redact *every* persisted string, then rebuild from the scrubbed map.
+
+        Fixed vs the first redaction cut: the old code validated the redacted
+        frontmatter but rebuilt the dataclass from the original scalar/extra
+        fields, so secrets in `task`, session IDs, or nested unknown-frontmatter
+        survived. Here every scalar (`task`, `next_action`, `source_runtime`,
+        session IDs), every list field, every `extra` key/value (recursively),
+        and the body are scrubbed via `redact_pack`; the document is rebuilt
+        from that scrubbed mapping, never from the original object.
+        """
+        # Start from the full frontmatter so `extra` (unknown fields) is included.
+        frontmatter = dict(doc.to_frontmatter())
+        scrubbed_front, scrubbed_body, findings = redact_pack(frontmatter, body)
+        # Re-validate the redacted text; changed_files re-checked post-redaction.
+        assert_safe_for_switch(
+            scrubbed_front,
+            scrubbed_body,
+            changed_files=tuple(scrubbed_front.get("changed_files", [])),
+        )
+        # Rebuild from the scrubbed mapping — the original `doc` is discarded.
+        list_fields: dict[str, tuple[str, ...]] = {}
+        for name in ("acceptance_criteria", "changed_files", "evidence", "blockers"):
+            raw = scrubbed_front.get(name, [])
+            list_fields[name] = tuple(str(v) for v in raw) if isinstance(raw, list) else ()
+        extra = {
+            k: v for k, v in scrubbed_front.items() if k not in {
+                "version", "source_runtime", "task", "acceptance_criteria",
+                "changed_files", "evidence", "blockers", "next_action",
+                "garuda_session_id", "native_session_id", "redacted",
+            }
+        }
+        redacted = bool(scrubbed_front.get("redacted", False))
+        if findings and redacted_flag:
+            redacted = True
+        if isinstance(doc, Handoff):
+            doc = Handoff(
+                task=str(scrubbed_front.get("task", "")),
+                source_runtime=str(scrubbed_front.get("source_runtime", "native")),
+                acceptance_criteria=list_fields["acceptance_criteria"],
+                changed_files=list_fields["changed_files"],
+                evidence=list_fields["evidence"],
+                blockers=list_fields["blockers"],
+                next_action=str(scrubbed_front.get("next_action", "")),
+                garuda_session_id=str(scrubbed_front.get("garuda_session_id", "")),
+                native_session_id=str(scrubbed_front.get("native_session_id", "")),
+                redacted=redacted,
+                extra=extra,
+            )
+        else:
+            doc = CurrentTask(
+                task=str(scrubbed_front.get("task", "")),
+                acceptance_criteria=list_fields["acceptance_criteria"],
+                changed_files=list_fields["changed_files"],
+                evidence=list_fields["evidence"],
+                blockers=list_fields["blockers"],
+                next_action=str(scrubbed_front.get("next_action", "")),
+                source_runtime=str(scrubbed_front.get("source_runtime", "native")),
+                extra=extra,
+            )
+            if findings and redacted_flag:
+                # CurrentTask has no redacted flag; surface via body note below.
+                pass
+        # Keep list-level findings for the body note (kinds only; counts merged).
+        if findings:
+            kinds = sorted({f.kind for f in findings})
+            scrubbed_body = (
+                scrubbed_body.rstrip()
+                + f"\n\nRedaction: {len(findings)} secret(s) redacted ({', '.join(kinds)}).\n"
+            )
+        return doc, scrubbed_body
 
 
 def collect_git_evidence(workspace_root: str | Path | None) -> str:
