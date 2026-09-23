@@ -1,13 +1,24 @@
 """Shared agent and trusted runtime setup for every launch entry point."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
+from garuda.runtime.router import (
+    RoutingCandidate,
+    RoutingDecision,
+    RoutingRequest,
+    candidates_from_discovered,
+    record_routing_decision,
+    route,
+)
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig
@@ -93,6 +104,78 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
             )
         ),
     )
+
+
+def build_routing_candidates(
+    workspace: str,
+    *,
+    costs: Mapping[str, float | None] | None = None,
+    history: Mapping[str, tuple[int, int]] | None = None,
+    mutating_allowed: Mapping[str, bool] | None = None,
+    disabled=None,
+    global_settings: dict | None = None,
+    project_settings: dict | None = None,
+) -> list[RoutingCandidate]:
+    """Build routing candidates from the shared registry and discovery.
+
+    Every product path that needs policy ranking goes through here so
+    disabled ids surface as unavailable and duplicates refuse at registry
+    construction — never a hand-rolled manifest list.
+    """
+    from garuda.acp.catalog import discover
+    from garuda.interfaces.runtime_cli import configured_registry
+
+    registry = configured_registry(
+        workspace,
+        disabled=disabled,
+        global_settings=global_settings,
+        project_settings=project_settings,
+    )
+    discovered = discover(
+        registry.manifests,
+        disabled=registry.disabled_ids,
+    )
+    return candidates_from_discovered(
+        discovered,
+        costs=costs,
+        history=history,
+        mutating_allowed=mutating_allowed,
+    )
+
+
+def route_session(
+    store,
+    session_id: str,
+    *,
+    workspace: str,
+    request: RoutingRequest,
+    costs: Mapping[str, float | None] | None = None,
+    history: Mapping[str, tuple[int, int]] | None = None,
+    mutating_allowed: Mapping[str, bool] | None = None,
+    disabled=None,
+    global_settings: dict | None = None,
+    project_settings: dict | None = None,
+    persist: bool = True,
+) -> RoutingDecision:
+    """Rank configured runtimes and optionally persist the decision.
+
+    Call after ``SessionStore.begin`` and before any runtime ``start`` so a
+    refused pin/budget never launches, and a successful decision is already
+    on the unified session meta when the adapter begins.
+    """
+    candidates = build_routing_candidates(
+        workspace,
+        costs=costs,
+        history=history,
+        mutating_allowed=mutating_allowed,
+        disabled=disabled,
+        global_settings=global_settings,
+        project_settings=project_settings,
+    )
+    decision = route(candidates, request)
+    if persist:
+        record_routing_decision(store, session_id, decision)
+    return decision
 
 
 async def prepare_agent_run(
