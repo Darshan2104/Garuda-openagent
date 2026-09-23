@@ -21,6 +21,33 @@ from tests.test_runtime_conformance import run_conformance_suite
 FAKE = [sys.executable, "-m", "garuda.acp.fake_agent"]
 
 
+def test_public_profile_sets_are_pinned():
+    """Set equality over the fake's contract cases.
+
+    A renamed or silently removed profile must fail here by name — not slip
+    through because no test happened to exercise that scenario.
+    """
+    from garuda.acp.fake_agent import BASE_PROFILES, CAPABILITY_PROFILES, PROFILES
+
+    assert set(CAPABILITY_PROFILES) == {"full", "sandbox-only", "read-only"}
+    assert set(BASE_PROFILES) == {
+        "success",
+        "streaming",
+        "approval",
+        "diff",
+        "malformed",
+        "slow",
+        "exit-early",
+        "resume",
+        "version-mismatch",
+    }
+    assert set(PROFILES) == set(BASE_PROFILES) | {
+        "capabilities-full",
+        "capabilities-sandbox-only",
+        "capabilities-read-only",
+    }
+
+
 def _adapter(profile: str, **kwargs) -> AcpRuntime:
     return AcpRuntime([*FAKE, "--profile", profile], runtime_id=f"fake-{profile}", **kwargs)
 
