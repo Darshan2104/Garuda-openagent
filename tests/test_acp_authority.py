@@ -60,6 +60,13 @@ def test_strict_policies_refused_when_unenforceable():
         negotiate({"terminal": AuthorityPolicy.AGENT_ONLY}, agent)
     with pytest.raises(NegotiationError, match="unknown tool families"):
         negotiate({"teleport": AuthorityPolicy.AGENT_ONLY}, agent)
+    with pytest.raises(NegotiationError, match="unknown authority policy"):
+        negotiate({"edit": "sometimes"}, agent)
+
+
+def test_garuda_only_can_own_a_family_the_agent_does_not_expose():
+    resolved = negotiate({"terminal": "garuda_only"}, _caps([], [], sandbox=False))
+    assert resolved.owner_of("terminal") is AuthorityOwner.GARUDA
 
 
 def test_strict_policies_honored_when_possible():
@@ -81,6 +88,16 @@ def test_safe_defaults_use_the_agent_sandbox():
     unsupported = _caps([], [])
     resolved = negotiate({}, unsupported)
     assert resolved.owner_of("terminal") is AuthorityOwner.GARUDA
+
+    # If the agent can act but offers neither mediation nor a sandbox, a
+    # preferred/default policy has no safe owner and must fail closed.
+    with pytest.raises(NegotiationError, match="neither"):
+        negotiate({}, _caps(["terminal"], [], sandbox=False))
+
+    # A valid string policy from JSON/YAML is normalized, not silently treated
+    # as the default branch.
+    explicit = negotiate({"terminal": "agent_only"}, _caps(["terminal"], [], False))
+    assert explicit.owner_of("terminal") is AuthorityOwner.AGENT
 
 
 def test_snapshot_round_trip_preserves_the_map():
