@@ -94,6 +94,9 @@ def test_safe_defaults_use_the_agent_sandbox():
     with pytest.raises(NegotiationError, match="neither"):
         negotiate({}, _caps(["terminal"], [], sandbox=False))
 
+    approval_only = negotiate({}, _caps(["approval"], [], sandbox=False))
+    assert approval_only.owner_of("approval") is AuthorityOwner.AGENT
+
     # A valid string policy from JSON/YAML is normalized, not silently treated
     # as the default branch.
     explicit = negotiate({"terminal": "agent_only"}, _caps(["terminal"], [], False))

@@ -181,6 +181,9 @@ def negotiate(
             ) from None
         supported = name in agent.families
         mediated = name in agent.mediated
+        # Approval interaction does not execute workspace actions itself; the
+        # sandbox requirement applies to edit/terminal/MCP execution families.
+        sandbox_safe = agent.sandbox or family is ToolFamily.APPROVAL
         if want is AuthorityPolicy.GARUDA_ONLY:
             if supported and not mediated:
                 raise NegotiationError(
@@ -196,7 +199,7 @@ def negotiate(
         elif want is AuthorityPolicy.GARUDA_PREFERRED:
             if mediated or not supported:
                 owners[name] = AuthorityOwner.GARUDA.value
-            elif agent.sandbox:
+            elif sandbox_safe:
                 owners[name] = AuthorityOwner.AGENT.value
             else:
                 raise NegotiationError(
@@ -204,7 +207,7 @@ def negotiate(
                     "mediation nor sandboxed execution"
                 )
         else:
-            if supported and agent.sandbox:
+            if supported and sandbox_safe:
                 owners[name] = AuthorityOwner.AGENT.value
             elif mediated or not supported:
                 owners[name] = AuthorityOwner.GARUDA.value
