@@ -86,6 +86,10 @@ class RigorousAgent:
         buffer=None,
         emit_session_events: bool = True,
         state_checkpoint=None,
+        pack_manager=None,
+        pack_source_runtime: str = "native",
+        pack_git_evidence: str = "",
+        initial_state=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -169,6 +173,10 @@ class RigorousAgent:
                 buffer=buffer,
                 state_checkpoint=state_checkpoint,
                 emit_session_events=False,  # rigorous emits its own single session span
+                pack_manager=pack_manager,
+                pack_source_runtime=pack_source_runtime,
+                pack_git_evidence=pack_git_evidence,
+                initial_state=initial_state,
             )
 
             approved, feedback = await self._critic_review(

@@ -41,4 +41,4 @@ Committed, durable context: `.context/architecture.md`, `.context/decisions.md`,
 
 Session-managed, gitignored context: `.context/current-task.md` and `.context/handoff.md`.
 
-Only Garuda's future `ContextPackManager` writes generated files. Agents may read them and propose changes, but durable context is reviewed repository content and runtime context is not a collaboration scratchpad.
+Only Garuda's `ContextPackManager` writes generated files. Agents may read them and propose changes, but durable context is reviewed repository content and runtime context is not a collaboration scratchpad.
