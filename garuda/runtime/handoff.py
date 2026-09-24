@@ -132,6 +132,12 @@ class HandoffTransaction:
         except HandoffError:
             raise
         except Exception as exc:
+            try:
+                await self._resume_source(source)
+            except Exception as resume_exc:
+                raise self._fail(
+                    f"source side failed: {exc}; source resume failed: {resume_exc}"
+                ) from exc
             raise self._fail(f"source side failed: {exc}") from exc
 
     async def start_target(self, source, target) -> Any:
@@ -142,6 +148,13 @@ class HandoffTransaction:
         try:
             self.target_info = await target.start(task=f"handoff from {self._session_id}")
         except Exception as exc:
+            try:
+                await target.close()
+            except Exception as close_exc:
+                raise self._fail(
+                    "target startup failed and target cleanup could not be confirmed; "
+                    f"source remains paused: {close_exc}"
+                ) from exc
             await self._rollback(source, f"target startup failed: {exc}")
             raise HandoffError(f"target startup failed: {exc}") from exc
         self._move(HandoffPhase.AWAITING_ACK, target=target.runtime_id)
@@ -152,13 +165,33 @@ class HandoffTransaction:
         if self._phase is not HandoffPhase.AWAITING_ACK:
             raise HandoffError(f"cannot acknowledge from {self._phase.value}")
         if source.state is not LifecycleState.PAUSED_AT_BOUNDARY:
+            if target.state not in (LifecycleState.CLOSED, LifecycleState.FAILED):
+                try:
+                    await target.close()
+                except Exception as exc:
+                    raise self._fail(
+                        "source is active and target cleanup could not be confirmed; "
+                        f"manual recovery required: {exc}"
+                    ) from exc
             raise HandoffError(
                 "source is not frozen at the switch boundary; "
                 "two active mutating owners cannot exist"
             )
         if target.state not in (LifecycleState.IDLE, LifecycleState.RUNNING):
             raise HandoffError("target is not active; acknowledgement refused")
-        await source.close()
+        try:
+            await source.close()
+        except Exception as exc:
+            try:
+                await target.close()
+                await self._resume_source(source)
+            except Exception as cleanup_exc:
+                raise self._fail(
+                    "source close failed and rollback could not be confirmed; "
+                    f"manual recovery required: {cleanup_exc}"
+                ) from exc
+            self._move(HandoffPhase.ROLLED_BACK, reason=f"source close failed: {exc}")
+            raise HandoffError(f"source close failed: {exc}") from exc
         self._move(HandoffPhase.ACKNOWLEDGED, target=target.runtime_id)
 
     async def cancel(self, source, target=None, *, reason: str = "") -> None:
@@ -177,7 +210,13 @@ class HandoffTransaction:
             LifecycleState.CLOSED,
             LifecycleState.FAILED,
         ):
-            await target.close()
+            try:
+                await target.close()
+            except Exception as exc:
+                raise self._fail(
+                    "target cleanup could not be confirmed; source remains paused: "
+                    f"{exc}"
+                ) from exc
         await self._resume_source(source)
         self._move(HandoffPhase.CANCELLED, reason=reason)
 
@@ -231,7 +270,18 @@ async def execute_handoff(
         capture=capture,
         generate=generate,
     )
-    target = target_factory()
+    try:
+        target = target_factory()
+    except Exception as exc:
+        await tx.cancel(source, reason="target construction failed")
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="target_factory"
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+        raise HandoffError(f"target construction failed: {exc}") from exc
     try:
         await tx.start_target(source, target)
     except HandoffError:
@@ -243,7 +293,10 @@ async def execute_handoff(
             except Exception:
                 logger.warning("Handoff failure audit failed", exc_info=True)
         raise
-    await tx.acknowledge(source, target)
+    # Persist the ownership decision before closing the source. If this write
+    # fails, the target is closed and the source resumes; ownership never moves
+    # without a durable recovery record. A crash after this write still has one
+    # potential mutator because the source is frozen at its boundary.
     if store is not None:
         try:
             store.record_handoff(
@@ -254,5 +307,17 @@ async def execute_handoff(
             )
         except Exception as exc:
             logger.warning("Handoff acknowledge audit failed", exc_info=True)
+            await tx.cancel(source, target, reason="acknowledgement audit failed")
             raise HandoffError(f"handoff acknowledge audit failed: {exc}") from exc
+    try:
+        await tx.acknowledge(source, target)
+    except HandoffError:
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="acknowledgement"
+                )
+            except Exception:
+                logger.warning("Handoff rollback audit failed", exc_info=True)
+        raise
     return tx, target
