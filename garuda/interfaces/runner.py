@@ -202,24 +202,25 @@ async def run_agent_task(
     lease_ttl = DEFAULT_TTL_SEC
 
     async def _lease_heartbeat() -> None:
-        try:
-            while True:
-                await asyncio.sleep(lease_ttl / 3)
-                try:
-                    lease_store.heartbeat(workspace, events.session_id)
-                except Exception:
-                    logger.warning("Lease heartbeat failed", exc_info=True)
-                    return
-        except asyncio.CancelledError:
-            raise
+        while True:
+            await asyncio.sleep(lease_ttl / 3)
+            # Losing the lease means this run can no longer prove exclusive
+            # mutation authority. Propagate the error to the driver below;
+            # continuing would let a stale takeover and this run mutate at
+            # the same time.
+            lease_store.heartbeat(workspace, events.session_id)
 
     heartbeat_task = asyncio.ensure_future(_lease_heartbeat())
 
-    def _abandon_lease() -> None:
+    async def _abandon_lease() -> None:
         """Cancel the heartbeat and release, for startup paths that never
         reach the main `try/finally` below. Best-effort; never masks the
         original error."""
         heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
         try:
             lease_store.release(workspace, events.session_id)
         except Exception:
@@ -294,70 +295,81 @@ async def run_agent_task(
 
         runtime.install_driver(_driver)
     except Exception:
-        _abandon_lease()
+        await _abandon_lease()
         raise
     try:
-        await runtime.prompt(task)
+        prompt_task = asyncio.ensure_future(runtime.prompt(task))
+        done, _ = await asyncio.wait(
+            {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat_task in done:
+            heartbeat_error = heartbeat_task.exception()
+            if not prompt_task.done():
+                prompt_task.cancel()
+                try:
+                    await prompt_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if heartbeat_error is None:
+                from garuda.workspace.lease import LeaseError
+
+                raise LeaseError("lease heartbeat stopped unexpectedly")
+            raise heartbeat_error
+        await prompt_task
         result = runtime.last_result
     except Exception:
         result = None
         raise
     finally:
-        # Kill any background tasks this session left running before tearing down
-        # the workspace (essential for the local env, where nothing else reaps them).
         try:
-            from garuda.tools.background import reap_session
+            # Kill any background tasks this session left running before tearing down
+            # the workspace (essential for the local env, where nothing else reaps them).
+            try:
+                from garuda.tools.background import reap_session
 
-            await reap_session(events.session_id, env)
-        except Exception:
-            pass
-        # Close a persistent shell if the local env opened one.
-        if hasattr(env, "aclose"):
-            try:
-                await env.aclose()
+                await reap_session(events.session_id, env)
             except Exception:
-                logger.warning("Failed to close persistent shell", exc_info=True)
-        # Each teardown step is guarded individually: a failure to stop a container
-        # or close an MCP server must not skip the two things that follow, or the
-        # session stays marked "running" in the index forever and no session-end
-        # hook ever fires — the state you most need after a crash.
-        try:
-            await cleanup_workspace(handle)
-        except Exception:
-            logger.warning("Workspace cleanup failed", exc_info=True)
-        if close_mcp and mcp_manager is not None:
+                pass
+            # Close a persistent shell if the local env opened one.
+            if hasattr(env, "aclose"):
+                try:
+                    await env.aclose()
+                except Exception:
+                    logger.warning("Failed to close persistent shell", exc_info=True)
+            # Each teardown step is guarded individually: a failure to stop a container
+            # or close an MCP server must not skip the two things that follow, or the
+            # session stays marked "running" in the index forever and no session-end
+            # hook ever fires — the state you most need after a crash.
             try:
-                await mcp_manager.close()
+                await cleanup_workspace(handle)
             except Exception:
-                logger.warning("MCP manager close failed", exc_info=True)
-        if result is not None:
-            store.finish(events.session_id, result)
-            summary = {
-                "session_id": events.session_id,
-                "success": result.success,
-                "turns": result.turns,
-                "final_message": result.final_message[:2000],
-            }
-        else:
-            update_session_meta(store, events.session_id, {"status": "failed"})
-            summary = {"session_id": events.session_id, "success": False, "turns": 0}
-        try:
-            await runtime.close()
-        except Exception:
-            logger.warning("Runtime close failed", exc_info=True)
-        await hooks.on_session_end(summary)
-        # Release the mutating lease last: the whole session lifecycle above
-        # ran under it. Best-effort — a release failure is logged, and the
-        # heartbeat TTL bounds how long a stale holder can block the workspace.
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        try:
-            lease_store.release(workspace, events.session_id)
-        except Exception:
-            logger.warning("Lease release failed", exc_info=True)
+                logger.warning("Workspace cleanup failed", exc_info=True)
+            if close_mcp and mcp_manager is not None:
+                try:
+                    await mcp_manager.close()
+                except Exception:
+                    logger.warning("MCP manager close failed", exc_info=True)
+            if result is not None:
+                store.finish(events.session_id, result)
+                summary = {
+                    "session_id": events.session_id,
+                    "success": result.success,
+                    "turns": result.turns,
+                    "final_message": result.final_message[:2000],
+                }
+            else:
+                update_session_meta(store, events.session_id, {"status": "failed"})
+                summary = {"session_id": events.session_id, "success": False, "turns": 0}
+            try:
+                await runtime.close()
+            except Exception:
+                logger.warning("Runtime close failed", exc_info=True)
+            await hooks.on_session_end(summary)
+        finally:
+            # Release the mutating lease last even if session persistence or a
+            # lifecycle hook fails. Otherwise the heartbeat task can outlive
+            # this call and hold the workspace indefinitely.
+            await _abandon_lease()
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))

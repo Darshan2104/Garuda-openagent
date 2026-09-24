@@ -264,3 +264,85 @@ async def test_production_runs_refuse_concurrent_mutation(tmp_path, monkeypatch)
     assert result.success
     # Released afterwards: a later run on the same workspace proceeds.
     assert (await _run(_sleep_then_complete(), "lease-third")).success
+
+
+async def test_production_run_stops_when_heartbeat_fails(tmp_path, monkeypatch):
+    """A run must stop when it can no longer prove exclusive ownership."""
+    import asyncio
+
+    import garuda.workspace.lease as lease_mod
+    from garuda.core.events import EventStore
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.types import AgentConfig
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    monkeypatch.setattr(lease_mod, "DEFAULT_TTL_SEC", 0.03)
+
+    def fail_heartbeat(self, workspace, session_id):
+        raise LeaseError("heartbeat storage unavailable")
+
+    monkeypatch.setattr(lease_mod.LeaseStore, "heartbeat", fail_heartbeat)
+
+    class BlockingAgent:
+        async def run(self, **kwargs):
+            await asyncio.sleep(10)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with pytest.raises(LeaseError, match="heartbeat storage unavailable"):
+        await asyncio.wait_for(
+            run_agent_task(
+                task="must stop on lease loss",
+                model=object(),
+                agent=BlockingAgent(),
+                tools=[],
+                config=AgentConfig(max_turns=1, enable_verifier=False),
+                permissions=PermissionEngine(mode="yolo"),
+                workspace=str(workspace),
+                events=EventStore(session_id="lease-loss"),
+                store=SessionStore(tmp_path / "sessions"),
+            ),
+            timeout=2,
+        )
+    assert LeaseStore(tmp_path / "leases").holders_of(workspace) == []
+
+
+async def test_production_run_releases_lease_when_end_hook_fails(tmp_path, monkeypatch):
+    """Teardown faults must not leave a live heartbeat holding the workspace."""
+    from garuda.core.events import EventStore
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.types import AgentConfig, AgentResult
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+
+    class CompletingAgent:
+        async def run(self, **kwargs):
+            return AgentResult(success=True, final_message="done", messages=[], turns=1)
+
+    class FailingEndHooks:
+        async def on_session_start(self, **kwargs):
+            return None
+
+        async def on_session_end(self, summary):
+            raise RuntimeError("end hook failed")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with pytest.raises(RuntimeError, match="end hook failed"):
+        await run_agent_task(
+            task="finish then fail teardown",
+            model=object(),
+            agent=CompletingAgent(),
+            tools=[],
+            config=AgentConfig(max_turns=1, enable_verifier=False),
+            permissions=PermissionEngine(mode="yolo"),
+            workspace=str(workspace),
+            events=EventStore(session_id="lease-hook-failure"),
+            hooks=FailingEndHooks(),
+            store=SessionStore(tmp_path / "sessions"),
+        )
+    assert LeaseStore(tmp_path / "leases").holders_of(workspace) == []
