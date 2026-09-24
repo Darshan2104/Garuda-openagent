@@ -82,6 +82,12 @@ deterministically from the state card, session record, and git evidence
 atomically, and refuses any other target. `RunState` syncs the pack at the
 checkpoint boundary and re-syncs after every compaction; resume restores the
 persisted working state first, so compaction and restart preserve pack facts.
+`redact.py` validates packs (size, workspace-relative paths, no-reasoning
+markers) and best-effort redacts secret patterns (full PEM blocks, tokens,
+credential assignments) recursively over every string and key; the writer
+scrubs automatically, rebuilds from the scrubbed map, and blocks unsafe
+handoffs, while durable repository files are unreachable by construction
+(strings in, never paths).
 
 ## `agents/` — profiles
 
