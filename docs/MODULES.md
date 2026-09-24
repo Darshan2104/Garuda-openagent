@@ -154,7 +154,6 @@ reported cost does not move when an upstream table does).
 | `observability/` | `trajectory.py` — rebuilds turn structure from an `events.jsonl` (one reader for local sessions and Harbor trials alike); `tracing.py` — spans. |
 | `plugins/` | `hooks.py` — lifecycle hooks. |
 | `acp/` | `protocol.py` — the owned ACP v1 wire subset (JSON-RPC + newline-delimited framing with bounded partial lines, numeric version pin, typed transport failures). `client.py` — one managed agent subprocess: minimal child env, process-group launch, stderr diagnostics off the protocol stream, deadlines, drained cancel notifications, bidirectional agent requests, launch-after-close refusal, reader buffer cap, and guaranteed reap. `authority.py` — capability negotiation assigning exactly one owner per tool family (strict policies refused, safe agent-sandbox defaults; every construction/restore path validates all families present with exactly one valid owner), with snapshot round-trips into session capability records. `normalize.py` — the stateful per-session ACP normalizer: causal ordering (calls before their updates), partials preserved exactly once, turn-close vs session-terminal rules, raw records as redacted session-local diagnostics. |
-
 ## Working on it
 
 ```bash

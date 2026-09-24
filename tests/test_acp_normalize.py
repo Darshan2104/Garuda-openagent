@@ -79,6 +79,21 @@ def test_out_of_order_update_waits_for_its_call():
     assert events[1].payload["tool_call_id"] == "c9"
 
 
+def test_orphan_updates_and_duplicate_calls_fail_closed():
+    normalizer = _normalizer()
+    normalizer.feed(
+        {"updateType": "tool_call_update", "toolCallId": "missing", "status": "done"}
+    )
+    with pytest.raises(AcpProtocolError, match="unknown tool calls"):
+        normalizer.finish("completed")
+
+    normalizer = _normalizer()
+    call = {"updateType": "tool_call", "toolCallId": "c1", "title": "one"}
+    normalizer.feed(call)
+    with pytest.raises(AcpProtocolError, match="duplicate"):
+        normalizer.feed(call)
+
+
 def test_terminal_error_stream_golden():
     normalizer = _normalizer()
     events = normalizer.feed({"updateType": "error", "message": "agent blew up"})

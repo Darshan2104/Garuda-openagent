@@ -106,6 +106,12 @@ class AcpNormalizer:
         `cancelled`/`failed` end the session — anything after is rejected.
         """
         self._ensure_open()
+        if self._pending_updates:
+            pending = sorted(self._pending_updates)
+            raise AcpProtocolError(
+                "turn ended with updates for unknown tool calls: "
+                f"{pending}"
+            )
         try:
             state = _TERMINAL_REASONS[stop_reason]
         except KeyError:
@@ -134,6 +140,8 @@ class AcpNormalizer:
         call_id = update.get("toolCallId", "")
         if not call_id or not isinstance(call_id, str):
             raise AcpProtocolError("tool_call.toolCallId is required")
+        if call_id in self._seen_calls:
+            raise AcpProtocolError(f"duplicate tool_call id {call_id!r}")
         self._seen_calls.add(call_id)
         events = [
             self._emit(
