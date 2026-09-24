@@ -14,7 +14,7 @@ import pytest
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityOwner
 from garuda.acp.protocol import AcpCancelledError, AcpError, AcpProtocolError, AcpTimeoutError
-from garuda.runtime import LifecycleState, RuntimeClosedError
+from garuda.runtime import HealthStatus, LifecycleState, RuntimeClosedError
 from garuda.runtime.protocol import RuntimeStartError
 from tests.test_runtime_conformance import run_conformance_suite
 
@@ -114,6 +114,7 @@ async def test_malformed_slow_exit_and_version_pinned():
     await malformed.start(task="t", session_id="m1")
     with pytest.raises(AcpProtocolError):
         await malformed.prompt("x")
+    assert await malformed.health() is HealthStatus.UNAVAILABLE
     await malformed.close()
 
     slow = _adapter("slow")
@@ -159,6 +160,7 @@ async def test_approval_flow_and_cancel_paths():
     with pytest.raises(AcpCancelledError):
         await asyncio.wait_for(prompting, 15)
     assert cancelling.state is LifecycleState.CLOSED
+    assert await cancelling.health() is HealthStatus.UNAVAILABLE
     with pytest.raises(RuntimeClosedError):
         await cancelling.prompt("too late")
     with pytest.raises(RuntimeStartError):

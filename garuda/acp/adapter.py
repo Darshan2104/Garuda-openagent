@@ -200,12 +200,14 @@ class AcpRuntime:
             raise AcpTimeoutError("prompt exceeded its deadline") from exc
         except AcpCancelledError:
             self._absorb(self._normalizer.finish("cancelled"))
+            await self._close_process()
             self._move(LifecycleState.CANCELLING)
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled"})
             self._move(LifecycleState.CLOSED)
             raise
         except AcpError as exc:
             self._absorb(self._normalizer.finish("failed", detail=str(exc)))
+            await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
         stop = result.get("stopReason", "end_turn") if isinstance(result, dict) else "end_turn"
@@ -250,10 +252,10 @@ class AcpRuntime:
             raise RuntimeProtocolError(f"no pending approval {approval_id!r}")
         if self._process is None:
             raise RuntimeStartError("runtime is not started")
-        self._pending_approvals.discard(approval_id)
         await self._process.session_approve(
             self._agent_session_id or "", approval_id, allow
         )
+        self._pending_approvals.discard(approval_id)
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -275,6 +277,7 @@ class AcpRuntime:
             return
         if self._state is LifecycleState.RUNNING:
             await self.cancel(reason="close")
+            await self._close_process()
             return
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "closed"})
         self._move(LifecycleState.CLOSED)
