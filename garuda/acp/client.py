@@ -246,6 +246,11 @@ class AcpProcess:
         )
         if not isinstance(result, dict):
             raise AcpProtocolError("initialize result must be an object")
+        version = result.get("protocolVersion")
+        if version != ACP_VERSION:
+            raise AcpProtocolError(
+                f"ACP version mismatch: expected {ACP_VERSION!r}, got {version!r}"
+            )
         return result
 
     async def session_new(self, *, timeout: float = HANDSHAKE_TIMEOUT) -> str:

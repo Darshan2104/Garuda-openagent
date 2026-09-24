@@ -111,11 +111,23 @@ async def test_handshake_session_prompt_and_notifications():
     assert not process.is_running
 
 
+async def test_handshake_rejects_missing_or_mismatched_version():
+    for result in ({}, {"protocolVersion": "99.0"}):
+        process = await _launched(_argv({"initialize": result}))
+        try:
+            with pytest.raises(AcpProtocolError, match="version mismatch"):
+                await process.initialize()
+        finally:
+            await process.close()
+
+
 async def test_stderr_never_corrupts_the_stream():
     script = "import sys; sys.stderr.write('diagnostic line\\n'); sys.stderr.flush()\n" + ECHO_SERVER
-    process = await _launched(_argv({"initialize": {"ok": True}}, extra=script))
+    process = await _launched(
+        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}}, extra=script)
+    )
     try:
-        assert (await process.initialize()) == {"ok": True}
+        assert (await process.initialize()) == {"ok": True, "protocolVersion": "0.4"}
         assert "diagnostic line" in process.stderr_tail
     finally:
         await process.close()
@@ -198,7 +210,7 @@ async def test_cancel_fails_pending_with_cancelled():
 
 async def test_close_reaps_the_group_and_is_idempotent():
     process = await _launched(
-        _argv({"initialize": {"ok": True}}), call_timeout=5
+        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}}), call_timeout=5
     )
     pid = process.pid
     assert pid
@@ -210,7 +222,9 @@ async def test_close_reaps_the_group_and_is_idempotent():
 
 
 async def test_launch_after_close_is_refused():
-    process = await _launched(_argv({"initialize": {"ok": True}}))
+    process = await _launched(
+        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}})
+    )
     await process.close()
     with pytest.raises(AcpProtocolError, match="closed"):
         await process.launch()
