@@ -74,3 +74,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Until the ACP launch facade is wired, selecting a configured ACP runtime
   refuses before any toolkit, workspace, prompt, or process is started; it
   never silently falls back to the native runtime.
+
+## 2026-09-25 — ACP adapters speak the public v1 stdio contract
+
+- ACP subprocesses use bounded NDJSON, numeric `protocolVersion: 1`, absolute
+  `cwd` plus `mcpServers` in `session/new`, and text content blocks in
+  `session/prompt`; Content-Length framing and string prompts are not accepted.
+- ACP is bidirectional JSON-RPC. Agent-originated client requests receive a
+  controller response or an explicit fail-closed JSON-RPC error; they cannot
+  be silently queued as notifications and hang a vendor process.
+- Vendor conformance uses a strict v1 fixture that rejects the previous
+  private transport and request shapes. Installed vendor smoke remains opt-in
+  and creates a session only; it never sends subscription-consuming work.

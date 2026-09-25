@@ -53,11 +53,14 @@ def test_setup_names_untouchable_credential_paths():
     assert "~/.codex/auth.json" in setups
 
 
-async def test_vendor_adapters_pass_the_common_suite_with_fakes():
+async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
+    """This fixture rejects the former private framing/version/session/prompt
+    shapes, so the common suite is protocol-compatibility evidence rather than
+    Garuda talking to its old fake dialect."""
     for manifest in _manifests():
         adapter = adapter_for_manifest(
             manifest,
-            argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"],
+            argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "strict-v1"],
         )
         assert adapter.runtime_id == manifest.runtime_id
         await run_conformance_suite(lambda adapter=adapter: adapter)

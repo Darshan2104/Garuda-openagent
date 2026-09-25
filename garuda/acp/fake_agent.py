@@ -2,7 +2,7 @@
 
 Run as `python -m garuda.acp.fake_agent --profile NAME [--state-file PATH]`.
 Speaks the owned wire subset (initialize, session/new, session/prompt,
-session/cancel, session/approve) with Content-Length framing over stdio.
+session/cancel, session/approve) with ACP v1 NDJSON framing over stdio.
 No network, no subscription, no workspace access — argv and files here are the
 only inputs, so the test server is isolated from credentials by construction.
 
@@ -50,6 +50,7 @@ BASE_PROFILES = frozenset(
         "exit-early",
         "resume",
         "version-mismatch",
+        "strict-v1",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -58,37 +59,25 @@ PROFILES = BASE_PROFILES | frozenset(
 
 
 def _read_frame() -> dict:
-    header = b""
-    while b"\r\n\r\n" not in header:
-        chunk = sys.stdin.buffer.read(1)
-        if not chunk:
-            raise EOFError
-        header += chunk
-    head, _, rest = header.partition(b"\r\n\r\n")
-    length = 0
-    for line in head.split(b"\r\n"):
-        name, colon, value = line.partition(b":")
-        if colon and name.strip().lower() == b"content-length":
-            length = int(value.strip())
-    body = rest
-    while len(body) < length:
-        more = sys.stdin.buffer.read(length - len(body))
-        if not more:
-            raise EOFError
-        body += more
+    body = sys.stdin.buffer.readline()
+    if not body:
+        raise EOFError
     return json.loads(body)
 
 
 def _send(message: dict) -> None:
-    body = json.dumps(message).encode()
-    sys.stdout.buffer.write(
-        b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
-    )
+    sys.stdout.buffer.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
     sys.stdout.buffer.flush()
 
 
-def _update(update: dict) -> None:
-    _send({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
+def _update(update: dict, session_id: str = "") -> None:
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session_id, "update": update},
+        }
+    )
 
 
 def _result(call_id: int, result: dict) -> None:
@@ -131,17 +120,26 @@ def main(argv: list[str] | None = None) -> int:
             call_id = request.get("id")
             params = request.get("params", {})
             if method == "initialize":
-                if profile == "version-mismatch":
-                    _result(call_id, {"protocolVersion": "99.99"})
+                if profile == "version-mismatch" or (
+                    profile == "strict-v1" and params.get("protocolVersion") != 1
+                ):
+                    _result(call_id, {"protocolVersion": 99})
                 else:
                     _result(
                         call_id,
                         {
-                            "protocolVersion": "0.4",
+                            "protocolVersion": 1,
                             "agentCapabilities": capabilities,
                         },
                     )
             elif method == "session/new":
+                if profile == "strict-v1" and (
+                    not isinstance(params.get("cwd"), str)
+                    or not os.path.isabs(params["cwd"])
+                    or not isinstance(params.get("mcpServers"), list)
+                ):
+                    _result(call_id, {})
+                    continue
                 sessions += 1
                 state = _load_state(args.state_file)
                 if profile == "resume":
@@ -152,6 +150,16 @@ def main(argv: list[str] | None = None) -> int:
                     session_id = f"fake-s{sessions}"
                 _result(call_id, {"sessionId": session_id})
             elif method == "session/prompt":
+                if profile == "strict-v1":
+                    prompt = params.get("prompt")
+                    if not (
+                        isinstance(prompt, list)
+                        and prompt
+                        and isinstance(prompt[0], dict)
+                        and prompt[0].get("type") == "text"
+                    ):
+                        _result(call_id, {"stopReason": "error"})
+                        continue
                 _handle_prompt(profile, call_id, params)
             elif method == "session/approve":
                 _update({"updateType": "tool_call_update", "toolCallId": "c-apr",
@@ -164,9 +172,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
-    text = params.get("prompt", "")
+    prompt = params.get("prompt", [])
+    text = prompt[0].get("text", "") if isinstance(prompt, list) and prompt else ""
+    session_id = params.get("sessionId", "")
     if profile == "malformed":
-        sys.stdout.buffer.write(b"Content-Length: nope\r\n\r\n{}")
+        sys.stdout.buffer.write(b"{not-json}\n")
         sys.stdout.buffer.flush()
     elif profile == "slow":
         import time
@@ -178,7 +188,13 @@ def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
         sys.exit(3)
     elif profile == "streaming":
         for chunk in ("hel", "lo, ", "world"):
-            _update({"updateType": "agent_message_chunk", "text": chunk})
+            _update(
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": chunk},
+                },
+                session_id,
+            )
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "approval":
         _update({"updateType": "approval_request", "approvalId": "a1", "action": text})
@@ -193,7 +209,13 @@ def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
         _update({"updateType": "diff", "path": "a.py", "oldText": "", "newText": "x = 1"})
         _result(call_id, {"stopReason": "end_turn"})
     else:
-        _update({"updateType": "agent_message_chunk", "text": f"done: {text}"})
+        _update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": f"done: {text}"},
+            },
+            session_id,
+        )
         _result(call_id, {"stopReason": "end_turn"})
 
 

@@ -42,6 +42,7 @@ def test_public_profile_sets_are_pinned():
         "exit-early",
         "resume",
         "version-mismatch",
+        "strict-v1",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",
@@ -132,7 +133,7 @@ async def test_malformed_slow_exit_and_version_pinned():
     await exiting.close()
 
     mismatch = _adapter("version-mismatch")
-    with pytest.raises(AcpProtocolError, match="99.99"):
+    with pytest.raises(AcpProtocolError, match="99"):
         await mismatch.start(task="t", session_id="v1")
     await mismatch.close()
 

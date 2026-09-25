@@ -23,7 +23,7 @@ from garuda.acp.authority import (
     AuthorityPolicy,
     negotiate,
 )
-from garuda.acp.client import AcpProcess
+from garuda.acp.client import AcpProcess, ClientRequestHandler
 from garuda.acp.normalize import AcpNormalizer
 from garuda.acp.protocol import AcpCancelledError, AcpError, AcpTimeoutError
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
@@ -52,12 +52,14 @@ class AcpRuntime:
         runtime_id: str = "acp",
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
+        client_request_handler: ClientRequestHandler | None = None,
         store=None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
+        self._client_request_handler = client_request_handler
         self._store = store
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
@@ -143,7 +145,11 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        process = AcpProcess(
+            self._argv,
+            extra_env=self._extra_env,
+            client_request_handler=self._client_request_handler,
+        )
         try:
             await process.launch()
             handshake = await process.initialize()

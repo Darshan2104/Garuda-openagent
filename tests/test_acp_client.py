@@ -25,22 +25,13 @@ ECHO_SERVER = r"""
 import json, sys
 
 def read_frame():
-    header = b""
-    while b"\r\n\r\n" not in header:
-        chunk = sys.stdin.buffer.read(1)
-        if not chunk:
-            raise EOFError
-        header += chunk
-    head, _, rest = header.partition(b"\r\n\r\n")
-    length = int(head.split(b":")[1])
-    body = rest
-    while len(body) < length:
-        body += sys.stdin.buffer.read(length - len(body))
+    body = sys.stdin.buffer.readline()
+    if not body:
+        raise EOFError
     return json.loads(body)
 
 def send(message):
-    body = json.dumps(message).encode()
-    sys.stdout.buffer.write(b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    sys.stdout.buffer.write(json.dumps(message).encode() + b"\n")
     sys.stdout.buffer.flush()
 
 RESULTS = json.loads(sys.argv[1])
@@ -69,43 +60,37 @@ async def _launched(argv: list[str], **kwargs) -> AcpProcess:
 
 
 def test_frame_codec_round_trip_and_rejects():
-    from garuda.acp.protocol import MAX_HEADER_BYTES
-
     message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     decoded, rest = decode_frame(encode_frame(message) + b"leftover")
     assert decoded == message
     assert rest == b"leftover"
     with pytest.raises(ValueError):
-        decode_frame(b"Content-Length: 10\r\n\r\nabc")
+        decode_frame(b'{"jsonrpc":"2.0"}')
     with pytest.raises(AcpProtocolError):
-        decode_frame(b"no headers here\r\n\r\n{}")
+        decode_frame(b"not-json\n")
     with pytest.raises(AcpProtocolError):
         decode_frame(encode_frame([1, 2, 3]))
     with pytest.raises(AcpProtocolError):
-        decode_frame(b"Content-Length: xyz\r\n\r\n{}")
-    # Fail-closed framing: unbounded header + duplicate lengths.
+        decode_frame(b"{not-json}\n")
+    # Fail-closed framing: an unbounded NDJSON record is refused.
     with pytest.raises(AcpProtocolError, match="exceeds bound"):
-        decode_frame(b"X: " + b"a" * (MAX_HEADER_BYTES + 1))
-    body = b"{}"
-    with pytest.raises(AcpProtocolError, match="duplicate Content-Length"):
-        decode_frame(
-            f"Content-Length: {len(body)}\r\nContent-Length: {len(body)}\r\n\r\n".encode()
-            + body
-        )
+        decode_frame(b"{" + b"a" * (16 * 1024 * 1024 + 1))
+    with pytest.raises(AcpProtocolError, match="blank"):
+        decode_frame(b"\n")
 
 
 async def test_handshake_session_prompt_and_notifications():
     process = await _launched(
         _argv(
             {
-                "initialize": {"protocolVersion": "0.4", "ok": True},
+                "initialize": {"protocolVersion": 1, "ok": True},
                 "session/new": {"sessionId": "s1"},
             }
         )
     )
     try:
         result = await process.initialize()
-        assert result["protocolVersion"] == "0.4"
+        assert result["protocolVersion"] == 1
         session_id = await process.session_new()
         assert session_id == "s1"
         await process.session_prompt(session_id, "hello")
@@ -119,11 +104,65 @@ async def test_handshake_session_prompt_and_notifications():
 async def test_stderr_never_corrupts_the_stream():
     script = "import sys; sys.stderr.write('diagnostic line\\n'); sys.stderr.flush()\n" + ECHO_SERVER
     process = await _launched(
-        _argv({"initialize": {"protocolVersion": "0.4", "ok": True}}, extra=script)
+        _argv({"initialize": {"protocolVersion": 1, "ok": True}}, extra=script)
     )
     try:
         assert (await process.initialize())["ok"] is True
         assert "diagnostic line" in process.stderr_tail
+    finally:
+        await process.close()
+
+
+async def test_agent_requests_receive_a_response_or_explicit_refusal():
+    """ACP agents can issue client-side JSON-RPC requests while a session is
+    active; they must never be queued as notifications and left hanging."""
+    request_server = r'''
+import json, sys
+def read():
+    value = sys.stdin.buffer.readline()
+    if not value: raise EOFError
+    return json.loads(value)
+def send(value):
+    sys.stdout.buffer.write(json.dumps(value).encode() + b"\n")
+    sys.stdout.buffer.flush()
+try:
+    initial = read()
+    send({"jsonrpc":"2.0","id":initial["id"],"result":{"protocolVersion":1}})
+    send({"jsonrpc":"2.0","id":"agent-1","method":"fs/read_text_file", "params":{"path":"x"}})
+    reply = read()
+    send({"jsonrpc":"2.0","method":"session/update","params":{"reply":reply}})
+    while read(): pass
+except EOFError:
+    pass
+'''
+
+    process = await _launched([sys.executable, "-c", request_server])
+    try:
+        await process.initialize()
+        notification = await process.next_notification(timeout=3)
+        assert notification is not None
+        reply = notification["params"]["reply"]
+        assert reply["id"] == "agent-1"
+        assert reply["error"]["code"] == -32601
+    finally:
+        await process.close()
+
+    seen: list[tuple[str, dict]] = []
+
+    async def handler(method: str, params: dict) -> dict:
+        seen.append((method, params))
+        return {"content": "safe"}
+
+    process = await _launched(
+        [sys.executable, "-c", request_server], client_request_handler=handler
+    )
+    try:
+        await process.initialize()
+        notification = await process.next_notification(timeout=3)
+        assert notification is not None
+        reply = notification["params"]["reply"]
+        assert reply["result"] == {"content": "safe"}
+        assert seen == [("fs/read_text_file", {"path": "x"})]
     finally:
         await process.close()
 
@@ -152,7 +191,7 @@ async def test_malformed_stream_is_typed():
         sys.executable,
         "-c",
         "import sys, time; "
-        "sys.stdout.buffer.write(b'Content-Length: xyz\\r\\n\\r\\n{}'); "
+        "sys.stdout.buffer.write(b'{not-json}\\n'); "
         "sys.stdout.buffer.flush(); time.sleep(30)",
     ]
     process = await _launched(argv)

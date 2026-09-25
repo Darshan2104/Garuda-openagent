@@ -88,7 +88,10 @@ class AcpNormalizer:
         if not isinstance(update, dict):
             raise AcpProtocolError(f"update must be an object, got {update!r}")
         self._diagnostics.append(dict(update))
-        kind = update.get("updateType") or update.get("kind", "")
+        # ACP v1 uses ``sessionUpdate`` as the tagged union discriminator.
+        # Keep the pre-v1 aliases temporarily so historical session diagnostics
+        # remain readable, but every live fake/vendor path emits the v1 shape.
+        kind = update.get("sessionUpdate") or update.get("updateType") or update.get("kind", "")
         handler = {
             "agent_message_chunk": self._on_message_chunk,
             "tool_call": self._on_tool_call,
@@ -125,7 +128,10 @@ class AcpNormalizer:
         return [self._emit(RuntimeEventKind.LIFECYCLE, payload)]
 
     def _on_message_chunk(self, update: dict[str, Any]) -> list[RuntimeEvent]:
+        content = update.get("content")
         text = update.get("text", "")
+        if isinstance(content, dict) and content.get("type") == "text":
+            text = content.get("text", "")
         if not isinstance(text, str):
             raise AcpProtocolError("agent_message_chunk.text must be a string")
         return [self._emit(RuntimeEventKind.MESSAGE, {"chunk": text})]
@@ -211,7 +217,9 @@ class AcpNormalizer:
                 RuntimeEventKind.MESSAGE,
                 {
                     "text": "",
-                    "acp_update": update.get("updateType") or update.get("kind", "unknown"),
+                    "acp_update": update.get("sessionUpdate")
+                    or update.get("updateType")
+                    or update.get("kind", "unknown"),
                 },
             )
         ]
