@@ -125,17 +125,22 @@ def _project_runtime_refs(raw: object, *, source: str, base, warnings: list[str]
     return accepted
 
 
-def _trusted_manifests(global_settings) -> list:
+def _trusted_manifests(global_settings, *, include_builtins: bool = True) -> list:
     """Shipped harness manifests plus the user's global ones.
 
     Shipped manifests are package configuration, trusted like the code that
     ships them. A global `runtimes:` entry with the same id replaces the
     shipped one: the user's file stays the anchor for what may launch.
+    Duplicates *within* the global list still fail closed.
     """
     from garuda.acp.catalog import builtin_manifest_dicts
     from garuda.runtime.registry import parse_global_manifests
 
-    shipped = parse_global_manifests(builtin_manifest_dicts(), source="shipped harness manifests")
+    shipped = (
+        parse_global_manifests(builtin_manifest_dicts(), source="shipped harness manifests")
+        if include_builtins
+        else []
+    )
     configured = parse_global_manifests(
         global_settings.get("runtimes"), source="trusted global runtimes"
     )
@@ -143,35 +148,38 @@ def _trusted_manifests(global_settings) -> list:
     return [m for m in shipped if m.runtime_id not in overridden] + configured
 
 
-def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
-    """Build the shared trusted runtime boundary for CLI and SDK launches.
+def build_runtime_catalog(
+    *,
+    global_settings,
+    project_settings=None,
+    disabled: frozenset[str] | set[str] | None = None,
+    include_builtins: bool = True,
+    source: str = "project runtime refs",
+) -> RuntimeCatalog:
+    """The one runtime-registry builder, for every launch, list, and inspect path.
 
-    This deliberately reads the global file through the strict runtime loader,
-    rather than ``AgentHome.global_settings``: malformed global YAML must not
-    erase a user's safety disablement and silently authorize a launch.
-    Nothing is executed here — discovery probes run only via
-    `RuntimeCatalog.discover()`.
+    `global_settings` is the trusted mapping (manifests under `runtimes:`,
+    `disabled_runtimes`); `project_settings` may only contribute `runtime_refs`
+    aliases and advisory `disabled_runtimes`. `disabled` overrides the global
+    set only for callers that already loaded it from the same trust anchor.
+    Nothing is executed here.
     """
     import logging
 
-    from garuda.acp.catalog import load_trusted_disabled, load_trusted_runtime_settings
-    from garuda.config.agent_home import resolve_agent_home
+    from garuda.acp.catalog import load_trusted_disabled
     from garuda.runtime.registry import RuntimeRegistry
 
-    global_settings = load_trusted_runtime_settings()
-    home = resolve_agent_home(workspace)
-    manifests = _trusted_manifests(global_settings)
-    disabled = load_trusted_disabled(global_settings)
+    project_settings = project_settings or {}
+    manifests = _trusted_manifests(global_settings, include_builtins=include_builtins)
+    if disabled is None:
+        disabled = load_trusted_disabled(global_settings)
     base = RuntimeRegistry(manifests, disabled=disabled)
     warnings: list[str] = []
     project_refs = _project_runtime_refs(
-        home.settings.get("runtime_refs"),
-        source=f"project runtime refs ({home.workspace})",
-        base=base,
-        warnings=warnings,
+        project_settings.get("runtime_refs"), source=source, base=base, warnings=warnings
     )
     project_disabled = _advisory_project_disabled(
-        home.settings.get("disabled_runtimes"), warnings
+        project_settings.get("disabled_runtimes"), warnings
     )
     for warning in warnings:
         logging.getLogger(__name__).warning("%s", warning)
@@ -179,6 +187,27 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
         registry=RuntimeRegistry(manifests, project_refs, disabled=disabled),
         project_disabled=project_disabled,
         warnings=tuple(warnings),
+    )
+
+
+def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
+    """Build the shared trusted runtime boundary for a workspace.
+
+    This deliberately reads the global file through the strict runtime loader,
+    rather than ``AgentHome.global_settings``: malformed global YAML must not
+    erase a user's safety disablement and silently authorize a launch.
+    Nothing is executed here — discovery probes run only via
+    `RuntimeCatalog.discover()`.
+    """
+    from garuda.acp.catalog import load_trusted_runtime_settings
+    from garuda.config.agent_home import resolve_agent_home
+
+    global_settings = load_trusted_runtime_settings()
+    home = resolve_agent_home(workspace)
+    return build_runtime_catalog(
+        global_settings=global_settings,
+        project_settings=home.settings,
+        source=f"project runtime refs ({home.workspace})",
     )
 
 

@@ -30,7 +30,7 @@ from typing import Any
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
-from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests, parse_project_refs
+from garuda.runtime.registry import RuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -477,13 +477,24 @@ def shared_registry(
     disabled: frozenset[str] | set[str] | None = None,
     include_builtins: bool = True,
 ) -> RuntimeRegistry:
-    """Build the one registry for builtins and trusted configured adapters."""
-    dicts = (builtin_manifest_dicts() if include_builtins else []) + list(extra_manifests or [])
-    manifests = parse_global_manifests(dicts, source="shared registry")
-    refs = parse_project_refs(list(project_refs or []), source="shared registry")
+    """Registry for explicit manifest/ref lists, via the one shared builder.
+
+    A thin adapter over `garuda.agents.setup.build_runtime_catalog`, so
+    shipped manifests, global overrides, advisory project refs, and
+    disablement behave exactly as on the launch path. `disabled=None` reads
+    the trusted global set.
+    """
+    from garuda.agents.setup import build_runtime_catalog
+
     if disabled is None:
         disabled = load_trusted_disabled()
-    return RuntimeRegistry(manifests, refs, disabled=disabled)
+    return build_runtime_catalog(
+        global_settings={"runtimes": list(extra_manifests or [])},
+        project_settings={"runtime_refs": list(project_refs or [])},
+        disabled=disabled,
+        include_builtins=include_builtins,
+        source="shared registry project refs",
+    ).registry
 
 
 def adapter_for_registry(
@@ -492,7 +503,23 @@ def adapter_for_registry(
     *,
     argv_override: list[str] | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
 ) -> AcpRuntime:
-    """Resolve through the registry, then apply the exact-path launch gate."""
+    """Resolve through the registry, discover that one manifest, then bind
+    the executable discovery accepted (`adapter_for_discovered`).
+
+    Resolution applies the disabled/alias gates; discovery runs only this
+    runtime's declared probes, because a launch is about to execute it.
+    """
     resolved = registry.get(ref)
-    return adapter_for_manifest(resolved, argv_override=argv_override, policy=policy)
+    if argv_override is not None:
+        return adapter_for_manifest(
+            resolved, argv_override=argv_override, policy=policy, cwd=cwd
+        )
+    manifest = next(m for m in registry.manifests if m.runtime_id == resolved.runtime_id)
+    (record,) = [
+        entry
+        for entry in discover([manifest], disabled=registry.disabled_ids)
+        if entry.runtime_id == manifest.runtime_id
+    ]
+    return adapter_for_discovered(manifest, record, policy=policy, cwd=cwd)

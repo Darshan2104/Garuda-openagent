@@ -360,9 +360,11 @@ def _generic_dict(runtime_id="my-agent"):
 
 
 async def test_generic_registration_flows_through_the_shared_registry():
-    """Production path: builtins + trusted manifests parse once; duplicates,
-    disabled ids, and untrusted project entries are refused; resolution
-    (the only route to launch) enforces the same boundary."""
+    """Production path: builtins + trusted manifests parse once through the one
+    builder; global entries override shipped ids, duplicates within the global
+    list and project authority attempts are refused, disabled ids cannot
+    resolve, and resolution (the only route to launch) enforces the same
+    boundary."""
     from garuda.runtime import RegistryError
 
     registry = shared_registry(
@@ -370,9 +372,13 @@ async def test_generic_registration_flows_through_the_shared_registry():
     )
     assert registry.get("my-agent").runtime_id == "my-agent"
     assert registry.get("claude").runtime_id == "claude"
+    overridden = shared_registry(
+        extra_manifests=[_generic_dict(runtime_id="claude")], disabled=frozenset()
+    )
+    assert overridden.get("claude").command == ("my-agent", "--stdio")
     with pytest.raises(RegistryError, match="duplicate"):
         shared_registry(
-            extra_manifests=[_generic_dict(runtime_id="claude")],
+            extra_manifests=[_generic_dict(), _generic_dict()],
             disabled=frozenset(),
         )
     disabled_registry = shared_registry(
@@ -382,10 +388,18 @@ async def test_generic_registration_flows_through_the_shared_registry():
         disabled_registry.get("my-agent")
     with pytest.raises(RegistryError, match="disabled"):
         adapter_for_registry(disabled_registry, "my-agent")
+    # An alias to an unknown id is advice: dropped, so it cannot resolve.
+    ghostly = shared_registry(
+        extra_manifests=[_generic_dict()],
+        project_refs=[{"alias": "ghost", "runtime_id": "nope"}],
+        disabled=frozenset(),
+    )
     with pytest.raises(RegistryError, match="unknown runtime"):
+        ghostly.get("ghost")
+    with pytest.raises(RegistryError, match="cannot authorize"):
         shared_registry(
             extra_manifests=[_generic_dict()],
-            project_refs=[{"alias": "ghost", "runtime_id": "nope"}],
+            project_refs=[{"alias": "evil", "runtime_id": "my-agent", "command": ["sh"]}],
             disabled=frozenset(),
         )
     adapter = adapter_for_registry(
@@ -396,13 +410,54 @@ async def test_generic_registration_flows_through_the_shared_registry():
     await run_conformance_suite(lambda adapter=adapter: adapter)
 
 
-def test_registry_adapter_uses_the_discovered_executable(monkeypatch):
-    """The registry route keeps the checked path; it cannot re-resolve PATH."""
-    import garuda.acp.catalog as catalog
-
+async def test_registry_adapter_uses_the_discovered_executable(tmp_path, monkeypatch):
+    """The registry route binds the path discovery accepted at construction:
+    swapping PATH before start cannot launch a different same-named binary."""
+    marker = tmp_path / "ran"
+    _shim(tmp_path / "a", "my-agent", "A", marker)
+    _shim(tmp_path / "b", "my-agent", "B", marker)
+    base_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", str(tmp_path / "a") + os.pathsep + base_path)
     registry = shared_registry(extra_manifests=[_generic_dict()], disabled=frozenset())
-    monkeypatch.setattr(catalog.shutil, "which", lambda _: sys.executable)
-    adapter = adapter_for_registry(registry, "my-agent")
-    assert adapter._argv == [sys.executable, "--stdio"]
-    monkeypatch.setattr(catalog.shutil, "which", lambda _: "/tmp/replaced-agent")
-    assert adapter._argv == [sys.executable, "--stdio"]
+    adapter = adapter_for_registry(registry, "my-agent", cwd=str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "b") + os.pathsep + base_path)
+    await adapter.start(task="which binary", session_id="registry-path-swap")
+    try:
+        assert marker.read_text(encoding="utf-8").split() == ["A"]
+    finally:
+        await adapter.close()
+
+
+def test_one_builder_serves_launch_and_registry_paths(tmp_path, monkeypatch):
+    """`prepare_runtime_catalog` (CLI/SDK launch) and `shared_registry` build
+    the same registry from the same inputs: one builder, one policy."""
+    from garuda.agents.setup import prepare_runtime_catalog
+
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "disabled_runtimes: [goose]\n"
+        "runtimes:\n  - runtime_id: my-agent\n    kind: acp\n"
+        "    command: [my-agent, --stdio]\n    version: '1.0'\n"
+        "    capabilities: [prompt, cancel]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "settings.yaml").write_text(
+        "runtime_refs:\n  - alias: mine\n    runtime_id: my-agent\n"
+        "  - alias: ghost\n    runtime_id: nowhere\n",
+        encoding="utf-8",
+    )
+    launch = prepare_runtime_catalog(tmp_path).registry
+    listed = shared_registry(
+        extra_manifests=[
+            {"runtime_id": "my-agent", "kind": "acp", "command": ["my-agent", "--stdio"],
+             "version": "1.0", "capabilities": ["prompt", "cancel"]}
+        ],
+        project_refs=[
+            {"alias": "mine", "runtime_id": "my-agent"},
+            {"alias": "ghost", "runtime_id": "nowhere"},
+        ],
+    )
+    assert launch.list() == listed.list()
+    assert launch.disabled_ids == listed.disabled_ids == frozenset({"goose"})
