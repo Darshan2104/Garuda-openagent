@@ -57,7 +57,8 @@ class LoginFlow:
     """How a user authenticates, declared — never performed — by Garuda.
 
     Only user-driven flows exist: `user-cli` (run the vendor login yourself)
-    and `api-key` (export the key yourself). Garuda opens no login flow on
+    and `api-key` (configure the key in the vendor's own CLI or config — Garuda
+    passes no API-key environment variables to a harness). Garuda opens no login flow on
     its own, and missing credentials only ever produce guidance.
     """
 

@@ -23,7 +23,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -220,15 +220,10 @@ def discover(
             continue
         record = _inspect(manifest, run, probe_timeout)
         if manifest.runtime_id in project_warned:
-            record = DiscoveredRuntime(
-                runtime_id=record.runtime_id,
-                kind=record.kind,
-                available=record.available,
-                executable=record.executable,
-                version=record.version,
-                auth=record.auth,
-                health=record.health,
-                capabilities=record.capabilities,
+            # `replace` keeps every other field (login flow, instructions, …)
+            # so the advisory warning cannot silently drop login guidance.
+            record = replace(
+                record,
                 warnings=(
                     *record.warnings,
                     "project suggests disabling this runtime — ignored: "
