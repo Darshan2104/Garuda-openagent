@@ -285,6 +285,27 @@ class LeaseStore:
         """Inspect current holders, if any. Never mutates."""
         return self._read_all(self._path_for(workspace_key(workspace)))
 
+    def live_holders_for_session(
+        self, session_id: str, *, now: float | None = None
+    ) -> list[Lease]:
+        """Every unexpired lease held by `session_id`, across all workspaces.
+
+        Restart recovery asks this before touching a session: a live holder
+        means another Garuda process may still own it. Session meta does not
+        carry a trustworthy workspace path, so every lease file is inspected.
+        Never mutates; a corrupt lease file raises (fail closed), exactly as
+        acquisition does.
+        """
+        if not self.root.is_dir():
+            return []
+        moment = now if now is not None else time.time()
+        live: list[Lease] = []
+        for path in sorted(self.root.glob("*.json")):
+            for holder in self._read_all(path):
+                if holder.session_id == session_id and not holder.is_stale(moment):
+                    live.append(holder)
+        return live
+
 
 def is_worktree(path: str | Path) -> bool:
     """True when `path` is inside a git worktree (main or linked)."""

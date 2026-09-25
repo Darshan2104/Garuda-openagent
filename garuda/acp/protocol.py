@@ -1,8 +1,8 @@
-"""ACP wire codec and typed failures (P0.12, issue #21).
+"""ACP v1 wire codec and typed failures (P0.12, issue #21).
 
-JSON-RPC 2.0 over stdio with `Content-Length` framing (headers + `\\r\\n\\r\\n`
-+ body, LSP-style). The framing functions are pure so every malformed shape is
-a unit test without a process.
+ACP stdio uses one JSON-RPC value per newline-delimited line. Keeping the
+codec pure makes malformed, partial, oversized, and non-object messages
+testable without spawning a process.
 """
 
 from __future__ import annotations
@@ -12,16 +12,14 @@ from typing import Any
 
 from garuda.runtime.protocol import AgentRuntimeError
 
-#: The ACP wire subset this client speaks. Negotiated at initialize; a fake or
-#: adapter speaking anything else fails closed at handshake, not mid-session.
-ACP_VERSION = "0.4"
+#: ACP v1 is negotiated at initialize; mismatches fail before sessions start.
+ACP_VERSION = 1
 
+#: One NDJSON line — a complete JSON-RPC message — may be at most this long.
+#: The same bound applies to an unterminated line still being read, so a peer
+#: that never sends `\n` cannot grow the reader buffer forever, while a large
+#: but legitimate message (a big diff, long tool output) still fits.
 MAX_FRAME_BYTES = 16 * 1024 * 1024
-
-#: A peer that never sends `\r\n\r\n` must not grow the reader buffer forever.
-#: Headers are a handful of ASCII lines; anything beyond this without a
-#: terminator is a malformed/dead peer, failed closed.
-MAX_HEADER_BYTES = 16 * 1024
 
 
 class AcpError(AgentRuntimeError):
@@ -50,47 +48,40 @@ class AcpCancelledError(AcpError):
 
 
 def encode_frame(payload: dict[str, Any]) -> bytes:
-    """Serialize one JSON-RPC message with its Content-Length framing."""
-    body = json.dumps(payload).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    """Serialize one JSON-RPC message as a single NDJSON line."""
+    if not isinstance(payload, dict):
+        raise AcpProtocolError("JSON-RPC message must be an object")
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    ) + b"\n"
 
 
 def decode_frame(buffer: bytes) -> tuple[dict[str, Any], bytes]:
     """Split one frame off `buffer`. Returns (message, rest).
 
-    Raises `AcpProtocolError` on malformed headers, bad lengths, oversize
-    frames, or invalid JSON. Raises `ValueError` when the buffer holds no
-    complete frame yet — the reader's signal to read more, not a failure.
+    Raises `AcpProtocolError` on malformed, oversize, or invalid JSON lines.
+    Raises `ValueError` when the buffer holds no complete line yet — the
+    reader's signal to read more, not a failure.
     """
-    head, sep, rest = buffer.partition(b"\r\n\r\n")
-    if not sep:
-        if len(buffer) > MAX_HEADER_BYTES:
+    newline = buffer.find(b"\n")
+    if newline < 0:
+        if len(buffer) > MAX_FRAME_BYTES:
             raise AcpProtocolError(
-                f"frame header exceeds bound of {MAX_HEADER_BYTES} bytes without terminator"
+                f"frame exceeds bound of {MAX_FRAME_BYTES} bytes without newline"
             )
-        raise ValueError("incomplete frame header")
-    length: int | None = None
-    seen_lengths = 0
-    for line in head.split(b"\r\n"):
-        name, colon, value = line.partition(b":")
-        if colon and name.strip().lower() == b"content-length":
-            seen_lengths += 1
-            if seen_lengths > 1:
-                raise AcpProtocolError("duplicate Content-Length header")
-            try:
-                length = int(value.strip())
-            except ValueError:
-                raise AcpProtocolError(f"bad Content-Length: {value!r}") from None
-    if length is None:
-        raise AcpProtocolError("frame has no Content-Length header")
-    if length < 0 or length > MAX_FRAME_BYTES:
-        raise AcpProtocolError(f"frame length out of bounds: {length}")
-    if len(rest) < length:
-        raise ValueError("incomplete frame body")
+        raise ValueError("incomplete frame")
+    line = buffer[:newline].rstrip(b"\r")
+    rest = buffer[newline + 1 :]
+    if not line:
+        raise AcpProtocolError("empty ACP frame")
+    if len(line) > MAX_FRAME_BYTES:
+        raise AcpProtocolError(f"frame length out of bounds: {len(line)}")
     try:
-        message = json.loads(rest[:length])
-    except json.JSONDecodeError as exc:
-        raise AcpProtocolError(f"frame body is not JSON: {exc}") from exc
+        message = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AcpProtocolError(f"frame is not valid JSON: {exc}") from exc
     if not isinstance(message, dict):
         raise AcpProtocolError("JSON-RPC message must be an object")
-    return message, rest[length:]
+    if message.get("jsonrpc") != "2.0":
+        raise AcpProtocolError("JSON-RPC message must declare jsonrpc='2.0'")
+    return message, rest

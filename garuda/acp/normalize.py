@@ -1,9 +1,12 @@
 """ACP event normalizer (P0.14, issue #23).
 
-Transforms ACP `session/update` notifications — message chunks, tool calls and
-their updates, diffs, approval requests, errors — into the `RuntimeEvent`
-vocabulary, so one reader renders native and external trails. Raw protocol
-records stay in session-local diagnostics, redacted on read.
+Transforms ACP v1 `session/update` payloads — keyed by `sessionUpdate`:
+message/thought chunks carrying content blocks, tool calls and their updates
+(whose `content` may hold diffs), plans and mode/command updates — into the
+`RuntimeEvent` vocabulary, so one reader renders native and external trails.
+Permission requests are JSON-RPC *requests* in v1, not updates; the adapter
+turns them into `APPROVAL_REQUEST` events. Raw protocol records stay in
+session-local diagnostics, redacted on read.
 
 Ordering rules, stated once because every consumer depends on them:
 
@@ -28,11 +31,16 @@ from garuda.acp.protocol import AcpProtocolError
 from garuda.context.redact import redact_text
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 
+#: ACP v1 `StopReason` values, plus the two Garuda-internal closes the adapter
+#: uses for transport failure (`failed`) and a caller-closed turn (`completed`).
+#: A stop that ends only the turn keeps the session open for the next prompt.
 _TERMINAL_REASONS = {
-    "completed": "completed",
     "end_turn": "completed",
+    "max_tokens": "completed",
+    "max_turn_requests": "completed",
+    "refusal": "completed",
     "cancelled": "cancelled",
-    "error": "failed",
+    "completed": "completed",
     "failed": "failed",
 }
 
@@ -83,19 +91,21 @@ class AcpNormalizer:
         return event
 
     def feed(self, update: dict[str, Any]) -> list[RuntimeEvent]:
-        """Normalize one `session/update` payload. Never raises on unknown kinds."""
+        """Normalize one v1 `session/update` payload. Unknown kinds are kept
+        as informational events, never dropped; a missing discriminator is a
+        protocol error."""
         self._ensure_open()
         if not isinstance(update, dict):
             raise AcpProtocolError(f"update must be an object, got {update!r}")
+        kind = update.get("sessionUpdate")
+        if not isinstance(kind, str) or not kind:
+            raise AcpProtocolError("session/update requires a sessionUpdate kind")
         self._diagnostics.append(dict(update))
-        kind = update.get("updateType") or update.get("kind", "")
         handler = {
             "agent_message_chunk": self._on_message_chunk,
+            "agent_thought_chunk": self._on_thought_chunk,
             "tool_call": self._on_tool_call,
             "tool_call_update": self._on_tool_call_update,
-            "diff": self._on_diff,
-            "approval_request": self._on_approval_request,
-            "error": self._on_error,
         }.get(kind, self._on_unknown)
         return handler(update)
 
@@ -106,6 +116,12 @@ class AcpNormalizer:
         `cancelled`/`failed` end the session — anything after is rejected.
         """
         self._ensure_open()
+        if self._pending_updates:
+            pending = sorted(self._pending_updates)
+            raise AcpProtocolError(
+                "turn ended with updates for unknown tool calls: "
+                f"{pending}"
+            )
         try:
             state = _TERMINAL_REASONS[stop_reason]
         except KeyError:
@@ -125,15 +141,22 @@ class AcpNormalizer:
         return [self._emit(RuntimeEventKind.LIFECYCLE, payload)]
 
     def _on_message_chunk(self, update: dict[str, Any]) -> list[RuntimeEvent]:
-        text = update.get("text", "")
-        if not isinstance(text, str):
-            raise AcpProtocolError("agent_message_chunk.text must be a string")
-        return [self._emit(RuntimeEventKind.MESSAGE, {"chunk": text})]
+        text, block_type = _block_text(update.get("content"), where="agent_message_chunk")
+        payload: dict[str, Any] = {"chunk": text}
+        if block_type != "text":
+            payload["content_type"] = block_type
+        return [self._emit(RuntimeEventKind.MESSAGE, payload)]
+
+    def _on_thought_chunk(self, update: dict[str, Any]) -> list[RuntimeEvent]:
+        text, _ = _block_text(update.get("content"), where="agent_thought_chunk")
+        return [self._emit(RuntimeEventKind.MESSAGE, {"thought": text})]
 
     def _on_tool_call(self, update: dict[str, Any]) -> list[RuntimeEvent]:
         call_id = update.get("toolCallId", "")
         if not call_id or not isinstance(call_id, str):
             raise AcpProtocolError("tool_call.toolCallId is required")
+        if call_id in self._seen_calls:
+            raise AcpProtocolError(f"duplicate tool_call id {call_id!r}")
         self._seen_calls.add(call_id)
         events = [
             self._emit(
@@ -142,10 +165,11 @@ class AcpNormalizer:
                     "tool_call_id": call_id,
                     "title": update.get("title", ""),
                     "kind": update.get("kind", ""),
-                    "status": update.get("status", "running"),
+                    "status": update.get("status", "pending"),
                 },
             )
         ]
+        events.extend(self._content_results(call_id, update.get("content")))
         for buffered in self._pending_updates.pop(call_id, []):
             events.extend(self._on_tool_call_update(buffered, known_id=call_id))
         return events
@@ -159,60 +183,54 @@ class AcpNormalizer:
         if not known_id and call_id not in self._seen_calls:
             self._pending_updates.setdefault(call_id, []).append(update)
             return []
-        return [
+        content = update.get("content")
+        events = [
             self._emit(
                 RuntimeEventKind.TOOL_RESULT,
                 {
                     "tool_call_id": call_id,
                     "status": update.get("status", ""),
-                    "content": update.get("content", ""),
+                    "content": _content_text(content),
                 },
             )
         ]
+        events.extend(self._content_results(call_id, content))
+        return events
 
-    def _on_diff(self, update: dict[str, Any]) -> list[RuntimeEvent]:
-        path = update.get("path", "")
-        if not path or not isinstance(path, str):
-            raise AcpProtocolError("diff.path is required")
-        return [
-            self._emit(
-                RuntimeEventKind.TOOL_RESULT,
-                {
-                    "tool_call_id": f"diff:{path}",
-                    "status": "diff",
-                    "path": path,
-                    "old_text": update.get("oldText", ""),
-                    "new_text": update.get("newText", ""),
-                },
+    def _content_results(self, call_id: str, content: object) -> list[RuntimeEvent]:
+        """Diffs inside tool-call content become their own results."""
+        if content is None:
+            return []
+        if not isinstance(content, list):
+            raise AcpProtocolError("tool call content must be a list")
+        events = []
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "diff":
+                continue
+            path = item.get("path", "")
+            if not path or not isinstance(path, str):
+                raise AcpProtocolError("diff content requires a path")
+            events.append(
+                self._emit(
+                    RuntimeEventKind.TOOL_RESULT,
+                    {
+                        "tool_call_id": call_id,
+                        "status": "diff",
+                        "path": path,
+                        "old_text": item.get("oldText") or "",
+                        "new_text": item.get("newText") or "",
+                    },
+                )
             )
-        ]
-
-    def _on_approval_request(self, update: dict[str, Any]) -> list[RuntimeEvent]:
-        approval_id = update.get("approvalId", "")
-        if not approval_id or not isinstance(approval_id, str):
-            raise AcpProtocolError("approval_request.approvalId is required")
-        return [
-            self._emit(
-                RuntimeEventKind.APPROVAL_REQUEST,
-                {
-                    "approval_id": approval_id,
-                    "action": update.get("action", ""),
-                    "detail": update.get("detail", ""),
-                },
-            )
-        ]
-
-    def _on_error(self, update: dict[str, Any]) -> list[RuntimeEvent]:
-        return [self._emit(RuntimeEventKind.ERROR, {"message": str(update.get("message", ""))})]
+        return events
 
     def _on_unknown(self, update: dict[str, Any]) -> list[RuntimeEvent]:
+        # `plan`, `available_commands_update`, `current_mode_update`,
+        # `user_message_chunk` (history replay) and future kinds.
         return [
             self._emit(
                 RuntimeEventKind.MESSAGE,
-                {
-                    "text": "",
-                    "acp_update": update.get("updateType") or update.get("kind", "unknown"),
-                },
+                {"text": "", "acp_update": update["sessionUpdate"]},
             )
         ]
 
@@ -223,6 +241,37 @@ class AcpNormalizer:
             cleaned, _ = redact_text(_freeze(record))
             trail.append({"raw": cleaned})
         return trail
+
+
+def _block_text(block: object, *, where: str) -> tuple[str, str]:
+    """Text of one v1 content block, plus its type. Non-text blocks carry no
+    text here; their type is kept so a reader knows something was elided."""
+    if not isinstance(block, dict):
+        raise AcpProtocolError(f"{where}.content must be a content block")
+    block_type = block.get("type")
+    if not isinstance(block_type, str) or not block_type:
+        raise AcpProtocolError(f"{where}.content requires a type")
+    if block_type == "text":
+        text = block.get("text", "")
+        if not isinstance(text, str):
+            raise AcpProtocolError(f"{where}.content.text must be a string")
+        return text, block_type
+    return "", block_type
+
+
+def _content_text(content: object) -> str:
+    """Joined text of `{"type": "content", "content": <block>}` items."""
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "content":
+            block = item.get("content")
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts)
 
 
 def _freeze(value: Any) -> str:
