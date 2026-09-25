@@ -120,8 +120,8 @@ def test_non_finite_cost_and_budget_refuse():
 
 
 def test_resolve_and_record_persists_on_session(tmp_path, monkeypatch):
+    from garuda.agents.setup import resolve_and_record_routing
     from garuda.core.sessions import SessionStore
-    from garuda.runtime.router import resolve_and_record_routing
 
     settings = tmp_path / "settings.yaml"
     settings.write_text("routing:\n  enabled: true\n", encoding="utf-8")
@@ -154,8 +154,8 @@ def test_resolve_and_record_persists_on_session(tmp_path, monkeypatch):
 
 
 def test_pin_over_budget_refuses_on_product_path(tmp_path, monkeypatch):
+    from garuda.agents.setup import resolve_and_record_routing
     from garuda.core.sessions import SessionStore
-    from garuda.runtime.router import resolve_and_record_routing
 
     monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(tmp_path / "missing.yaml"))
     monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(tmp_path / "sessions"))

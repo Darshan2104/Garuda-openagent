@@ -294,6 +294,63 @@ def route_session(
     return decision
 
 
+def resolve_and_record_routing(
+    *,
+    workspace: str,
+    store: object,
+    session_id: str,
+    pin: str | None = None,
+    budget_usd: float | None = None,
+    mutating: bool = True,
+    required_capabilities: tuple[str, ...] = (),
+    enabled: bool | None = None,
+    costs: Mapping[str, float | None] | None = None,
+    history: Mapping[str, tuple[int, int]] | None = None,
+    mutating_allowed: Mapping[str, bool] | None = None,
+) -> RoutingDecision | None:
+    """Discover, route, and persist through the shared product wiring boundary.
+
+    Runtime policy remains provider-neutral. Provider discovery and trusted
+    configuration belong here, outside :mod:`garuda.runtime`, and the decision
+    is persisted before callers start a runtime.
+    """
+    from garuda.config.agent_home import resolve_agent_home
+
+    home = resolve_agent_home(workspace)
+    global_settings = getattr(home, "global_settings", None) or {}
+    project_settings = getattr(home, "settings", None) or {}
+    routing_cfg = global_settings.get("routing") or {}
+    if enabled is None:
+        enabled = (
+            bool(routing_cfg.get("enabled", False))
+            if isinstance(routing_cfg, dict)
+            else False
+        )
+    if not enabled:
+        return None
+    if budget_usd is None and isinstance(routing_cfg, dict):
+        raw_budget = routing_cfg.get("budget_usd")
+        if raw_budget is not None:
+            budget_usd = float(raw_budget)
+
+    return route_session(
+        store,
+        session_id,
+        workspace=workspace,
+        request=RoutingRequest(
+            required_capabilities=required_capabilities,
+            pin=pin,
+            budget_usd=budget_usd,
+            mutating=mutating,
+        ),
+        costs=costs,
+        history=history,
+        mutating_allowed=mutating_allowed,
+        global_settings=global_settings,
+        project_settings=project_settings,
+    )
+
+
 async def prepare_agent_run(
     agent_name: str,
     *,

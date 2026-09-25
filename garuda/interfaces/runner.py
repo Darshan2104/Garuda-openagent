@@ -243,6 +243,21 @@ async def run_agent_task(
     # instead of hanging until timeout.
     try:
         install_session_broker(permissions, store, events.session_id)
+        # Persist the trusted routing decision before the runtime is started.
+        # The caller has already resolved any automatic selection, so this
+        # pin protects the executor actually being launched.
+        try:
+            from garuda.agents.setup import resolve_and_record_routing
+
+            resolve_and_record_routing(
+                workspace=workspace,
+                store=store,
+                session_id=events.session_id,
+                pin=runtime_ref,
+            )
+        except Exception:
+            logger.warning("Runtime routing failed", exc_info=True)
+            raise
         await runtime.start(task=task, session_id=events.session_id)
         # This is before environment setup, hooks, or a model prompt.  A
         # host-backed run which cannot persist its immutable start state must
