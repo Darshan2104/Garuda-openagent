@@ -240,6 +240,14 @@ advertising `fs`/`terminal` client capabilities, serving those methods through
 the broker, and deriving ownership from what was advertised rather than
 declared.
 
+**Restart recovery has no production ACP or handoff caller.** `recover()` reaps
+only children that `AcpRuntime(store=…)` recorded, and only
+`HandoffTransaction(store=…)` records switch cancels, but no entry point builds an
+`AcpRuntime` or calls `execute_handoff` yet, so today the reaping path runs only in
+tests. Wiring the first ACP entry point must pass the session store (the adapter
+warns when it has none). The `cancellations` audit list is also not consumed by
+classification yet.
+
 **Interactive sessions take no workspace lease.** Only `run_agent_task` acquires
 the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
 SDK `Conversation` call `agent.run` directly, so they can interleave with a

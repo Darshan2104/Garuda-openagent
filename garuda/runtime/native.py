@@ -9,6 +9,8 @@ down; that code path is untouched.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -30,6 +32,8 @@ from garuda.runtime.protocol import (
     RuntimeStartError,
     check_transition,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Native event types mapped onto the normalized vocabulary. Anything absent
 #: renders as a MESSAGE carrying the original type — lossy but explicit, and
@@ -204,6 +208,14 @@ class NativeGarudaRuntime:
         if self._state is not LifecycleState.DISCOVERED:
             raise RuntimeStartError(f"cannot resume (state={self._state.value})")
         resolved = self._store.resolve(native_session_id)
+        # Classify first: a prepared-but-unacknowledged switch rolls back, and
+        # a malformed or ambiguous trail refuses the resume outright.
+        try:
+            from garuda.runtime.recovery import RecoveryError, recover
+
+            await asyncio.to_thread(recover, self._store, resolved)
+        except RecoveryError as exc:
+            raise RuntimeStartError(f"cannot resume session {resolved}: {exc}") from exc
         self._move(LifecycleState.STARTING)
         self._session_id = resolved
         unified = self._store.ensure_unified(resolved)
@@ -250,6 +262,13 @@ class NativeGarudaRuntime:
             self._move(LifecycleState.FAILED)
             raise
         self._last_result = result
+        # Direct `NativeGarudaRuntime` users do not pass the facade's
+        # checkpoint callback.  Persist the returned transcript here as well,
+        # so every successful prompt has the restart checkpoint that recovery
+        # requires rather than making direct-runtime sessions second class.
+        messages = getattr(result, "messages", None)
+        if isinstance(messages, list):
+            self._store.checkpoint_messages(self._session_id, messages)
         self._normalize_trail(self._trail, skip=seen)
         self._store.advance_event_cursor(self._session_id, len(self._events))
         if self._cancel_requested is not None:
@@ -288,12 +307,31 @@ class NativeGarudaRuntime:
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
+        from garuda.runtime.recovery import CancellationAuditError, record_cancel
+
+        # Best-effort audit first, cancellation always, audit failure last: a
+        # store outage must never keep a turn running past its cancel.
+        audit_error: Exception | None = None
+        try:
+            record_cancel(
+                self._store,
+                self._session_id,
+                boundary="turn",
+                reason=reason or "cancelled",
+            )
+        except Exception as exc:
+            logger.warning("Could not persist turn cancellation", exc_info=True)
+            audit_error = exc
         if self._state is LifecycleState.RUNNING:
             self._cancel_requested = reason or "cancelled"
-            return
-        self._move(LifecycleState.CANCELLING)
-        self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
-        self._move(LifecycleState.CLOSED)
+        else:
+            self._move(LifecycleState.CANCELLING)
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
+            self._move(LifecycleState.CLOSED)
+        if audit_error is not None:
+            raise CancellationAuditError(
+                f"turn cancelled but its audit record failed: {audit_error}"
+            ) from audit_error
 
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):

@@ -312,6 +312,31 @@ class SessionStore:
         """Merge fields into this session's meta under an exclusive lock."""
         merge_meta(self.session_dir(session_id) / "meta.json", updates)
 
+    def mutate_meta(self, session_id: str, mutate) -> dict:
+        """Read-modify-write this session's meta inside one lock hold.
+
+        ``update_meta`` merges keys under the lock but callers that must derive
+        the new value from the current one (appending to a list, flipping one
+        record) would otherwise read outside it and drop a concurrent append.
+        ``mutate`` receives the current document and returns the keys to
+        replace; it must not touch the store itself (the lock is not
+        re-entrant). Unlike ``merge_meta``, a missing or unparseable meta fails
+        instead of being rebuilt — these writers are recovery evidence. The
+        lock is the same best-effort sidecar `flock` as ``merge_meta``: where
+        locking is unavailable it degrades to an unlocked write, so concurrent
+        writers from different processes are serialized only where `flock` works.
+        """
+        meta_path = self.session_dir(session_id) / "meta.json"
+        with _meta_lock(meta_path):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError(f"session {session_id} meta is not a mapping")
+            updates = mutate(dict(meta))
+            meta.update(updates)
+            meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
+        return meta
+
     def load_unified(self, session_id: str) -> UnifiedSession:
         """Validate this session's meta as a unified session (issue #13).
 
@@ -340,6 +365,22 @@ class SessionStore:
         segments = list(meta.get("runtime_segments", []))
         segments.append(segment.to_dict())
         self.update_meta(session_id, {**meta, "runtime_segments": segments})
+
+    def update_active_runtime_segment(self, session_id: str, segment: RuntimeSegment) -> None:
+        """Replace only the active segment after its runtime has started.
+
+        A child identity is valid only when its runtime identity, agent session,
+        and authority snapshot are persisted together.  Replacing a historical
+        segment would rewrite an already-audited tenure, so it is refused.
+        """
+        unified = self.load_unified(session_id)
+        if unified.active.runtime_id != segment.runtime_id:
+            raise ValueError(
+                f"active runtime is {unified.active.runtime_id!r}, not {segment.runtime_id!r}"
+            )
+        segments = [item.to_dict() for item in unified.segments]
+        segments[-1] = segment.to_dict()
+        self.update_meta(session_id, {"runtime_segments": segments})
 
     def record_handoff(self, session_id: str, *, state: str, attempts: int = 0, **extra) -> None:
         """Record handoff transaction state. Unknown states fail closed."""
