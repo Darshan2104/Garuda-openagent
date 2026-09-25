@@ -334,8 +334,19 @@ class AcpProcess:
         finally:
             self._fail_all_pending(AcpCancelledError("cancelled by caller"))
 
-    async def next_notification(self) -> dict[str, Any]:
-        return await self._notifications.get()
+    async def session_approve(self, session_id: str, approval_id: str, approved: bool) -> None:
+        """Answer a pending approval request (notification; no reply expected)."""
+        await self._notify(
+            "session/approve",
+            {"sessionId": session_id, "approvalId": approval_id, "approved": approved},
+        )
+
+    async def next_notification(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Wait for the next agent notification. None on timeout, never raises."""
+        try:
+            return await asyncio.wait_for(self._notifications.get(), timeout)
+        except TimeoutError:
+            return None
 
     async def next_request(self) -> dict[str, Any]:
         """Wait for an agent request that requires a client response."""
