@@ -41,6 +41,7 @@ def test_public_profile_sets_are_pinned():
         "resume",
         "version-mismatch",
         "odd-stop",
+        "cancel-stop",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",
@@ -220,3 +221,16 @@ async def test_unknown_stop_reason_fails_and_reaps():
         await asyncio.wait_for(runtime.prompt("go"), 15)
     assert runtime.state is LifecycleState.FAILED
     assert await runtime.health() is HealthStatus.UNAVAILABLE
+
+
+async def test_agent_returned_cancelled_closes_the_runtime():
+    """A v1 agent may end a turn `cancelled` on its own; the session is over,
+    so the runtime closes and reaps instead of idling on a dead trail."""
+    runtime = _adapter("cancel-stop")
+    await runtime.start(task="t", session_id="cs1")
+    with pytest.raises(AcpCancelledError):
+        await asyncio.wait_for(runtime.prompt("go"), 15)
+    assert runtime.state is LifecycleState.CLOSED
+    assert await runtime.health() is HealthStatus.UNAVAILABLE
+    with pytest.raises(RuntimeClosedError):
+        await runtime.prompt("again")

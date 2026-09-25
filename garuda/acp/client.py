@@ -221,8 +221,10 @@ class AcpProcess:
         self._fail_all_pending(exc)
 
     async def _call(
-        self, method: str, params: dict[str, Any], *, timeout: float | None = None
+        self, method: str, params: dict[str, Any], *, timeout: Any = _MISSING
     ) -> Any:
+        """One request. `timeout` omitted uses the call deadline; `None` waits
+        without one (a prompt turn is bounded by its caller, not here)."""
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         if self._process.returncode is not None:
@@ -245,7 +247,8 @@ class AcpProcess:
             self._pending.pop(call_id, None)
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
         try:
-            return await asyncio.wait_for(future, timeout or self._call_timeout)
+            deadline = self._call_timeout if timeout is _MISSING else timeout
+            return await asyncio.wait_for(future, deadline)
         except TimeoutError as exc:
             self._pending.pop(call_id, None)
             raise AcpTimeoutError(f"{method} exceeded its deadline") from exc

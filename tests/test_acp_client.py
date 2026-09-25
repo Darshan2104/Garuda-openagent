@@ -276,3 +276,20 @@ async def test_agent_request_is_exposed_and_can_be_answered():
     assert not rest
     assert response["id"] == 7
     assert response["result"]["outcome"]["outcome"] == "cancelled"
+
+
+async def test_prompt_turns_have_no_call_deadline():
+    """The per-call deadline bounds handshake-style calls, not a prompt turn,
+    which can legitimately outlast it (long edits, slow human approvals)."""
+    process = AcpProcess(
+        [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "streaming"],
+        call_timeout=0.001,
+    )
+    try:
+        await process.launch()
+        await process.initialize()
+        session_id = await process.session_new(cwd=os.getcwd())
+        result = await process.session_prompt(session_id, "hi")
+        assert result == {"stopReason": "end_turn"}
+    finally:
+        await process.close()

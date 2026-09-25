@@ -12,7 +12,7 @@ only inputs, so the test server is isolated from credentials by construction.
 
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
 resume (stable ids via --state-file), version-mismatch, odd-stop (a stop
-reason outside v1), capabilities-<name>.
+reason outside v1), cancel-stop (the agent ends the turn `cancelled`), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ BASE_PROFILES = frozenset(
         "resume",
         "version-mismatch",
         "odd-stop",
+        "cancel-stop",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -228,6 +229,8 @@ def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
                           "content": _text("approved" if allowed else "denied")}]},
         )
         _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "cancel-stop":
+        _result(call_id, {"stopReason": "cancelled"})
     elif profile == "odd-stop":
         _result(call_id, {"stopReason": "mystery"})
     elif profile == "diff":

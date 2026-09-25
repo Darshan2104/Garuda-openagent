@@ -202,9 +202,11 @@ class AcpRuntime:
             raise RuntimeNotActiveError(f"prompt needs IDLE, state={self._state.value}")
         if not text:
             raise RuntimeNotActiveError("prompt text must not be empty")
+        # Open the normalizer turn before RUNNING: if it refuses, the runtime
+        # is not left mid-turn with nothing driving it.
+        self._normalizer.new_turn()
         self._move(LifecycleState.RUNNING)
         self._turn += 1
-        self._normalizer.new_turn()
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
         )
@@ -235,7 +237,7 @@ class AcpRuntime:
         try:
             if not isinstance(stop, str):
                 raise AcpProtocolError(f"session/prompt returned no stopReason: {result!r}")
-            self._absorb(self._normalizer.finish(stop))
+            closing = self._normalizer.finish(stop)
         except AcpProtocolError as exc:
             # An unknown stop reason or an orphaned tool_call_update means the
             # trail cannot be closed truthfully: fail and reap, never stay
@@ -244,6 +246,16 @@ class AcpRuntime:
             await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
+        self._absorb(closing)
+        if stop == "cancelled":
+            # The agent ended the turn cancelled (e.g. its permission request
+            # was answered `cancelled`). The normalizer has closed the
+            # session, so the runtime closes too instead of idling on a trail
+            # that can take no further turn.
+            await self._close_process()
+            self._move(LifecycleState.CANCELLING)
+            self._move(LifecycleState.CLOSED)
+            raise AcpCancelledError("agent ended the turn cancelled")
         self._move(LifecycleState.IDLE)
         return self._turn
 
@@ -292,7 +304,8 @@ class AcpRuntime:
         params = request.get("params") or {}
         tool_call = params.get("toolCall") if isinstance(params, dict) else None
         options = params.get("options") if isinstance(params, dict) else None
-        approval_id = f"perm-{request_id}"
+        # Typed so JSON-RPC ids 1 and "1" cannot collide.
+        approval_id = f"perm-{type(request_id).__name__}-{request_id}"
         if (
             not isinstance(tool_call, dict)
             or not isinstance(options, list)
@@ -360,6 +373,9 @@ class AcpRuntime:
                 pass
 
     async def _close_process(self) -> None:
+        # No interactive answerer outlives the process it would answer.
+        for task in list(self._answer_tasks):
+            task.cancel()
         if self._process is not None:
             await self._process.close()
 
