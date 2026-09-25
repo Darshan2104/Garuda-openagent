@@ -60,7 +60,7 @@ async def _launched(argv: list[str], **kwargs) -> AcpProcess:
 
 
 def test_frame_codec_round_trip_and_rejects():
-    from garuda.acp.protocol import MAX_HEADER_BYTES
+    from garuda.acp.protocol import MAX_FRAME_BYTES
 
     message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     decoded, rest = decode_frame(encode_frame(message) + b"leftover")
@@ -74,9 +74,14 @@ def test_frame_codec_round_trip_and_rejects():
         decode_frame(b"[1, 2, 3]\n")
     with pytest.raises(AcpProtocolError):
         decode_frame(b'{"jsonrpc":"1.0"}\n')
-    # Fail-closed framing: an unterminated line cannot grow forever.
+    # A large message split across many reads is still one frame...
+    big = encode_frame({"jsonrpc": "2.0", "method": "x", "params": {"t": "a" * 200_000}})
+    with pytest.raises(ValueError):
+        decode_frame(big[:150_000])
+    assert decode_frame(big)[0]["params"]["t"] == "a" * 200_000
+    # ...but fail-closed framing: an unterminated line cannot grow forever.
     with pytest.raises(AcpProtocolError, match="exceeds bound"):
-        decode_frame(b"a" * (MAX_HEADER_BYTES + 1))
+        decode_frame(b"a" * (MAX_FRAME_BYTES + 1))
 
 
 async def test_handshake_session_prompt_and_notifications():
