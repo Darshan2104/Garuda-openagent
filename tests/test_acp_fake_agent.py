@@ -196,6 +196,9 @@ async def test_acp_process_identity_and_cancel_are_persisted(tmp_path):
         "reason": "operator stop",
     }
     await runtime.close()
+    # A clean close retires the record, so a restart never probes a PID the
+    # OS may since have handed to an unrelated process.
+    assert store.load_meta("persisted-acp")["runtime_children"][0]["state"] == "exited"
     from garuda.runtime.recovery import recover
 
     # The stored authority snapshot and child identity are sufficient for the

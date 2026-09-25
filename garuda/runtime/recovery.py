@@ -95,6 +95,25 @@ def record_child(
     store.update_meta(session_id, {"runtime_children": children})
 
 
+def record_child_exit(store, session_id: str, *, pid: int) -> None:
+    """Retire a recorded child after Garuda itself reaped it.
+
+    Only `live` records are signal candidates, so a clean close must flip its
+    record; otherwise a later restart would probe a PID the OS may have reused.
+    """
+    meta = store.load_meta(session_id)
+    children = meta.get("runtime_children", [])
+    if not isinstance(children, list):
+        raise RecoveryError("persisted runtime children must be a list")
+    updated = [
+        {**child, "state": "exited"}
+        if isinstance(child, dict) and child.get("pid") == pid and child.get("state") == "live"
+        else child
+        for child in children
+    ]
+    store.update_meta(session_id, {"runtime_children": updated})
+
+
 def _recorded_child_pids(store, session_id: str) -> list[int]:
     """Load only well-formed, live identities recorded by Garuda itself."""
     meta = store.load_meta(session_id)
@@ -149,13 +168,31 @@ def _process_live(pid: int) -> bool | None:
 
 
 def _reap_group(pid: int) -> None:
+    """SIGKILL a recorded child's process group — only while it still leads it.
+
+    Garuda launches every ACP child with `start_new_session`, so the recorded
+    PID is its own group leader. A live PID that no longer leads its group is
+    not provably ours (the OS may have reused it), so recovery refuses rather
+    than signalling it.
+    """
+    try:
+        group = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        raise RecoveryError(
+            f"cannot confirm process group of child {pid}: {exc}; refusing"
+        ) from exc
+    if group != pid:
+        raise RecoveryError(
+            f"pid {pid} no longer leads its recorded process group; refusing to signal"
+        )
     try:
         os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        raise RecoveryError(f"could not signal child group {pid}: {exc}") from exc
 
 
 def reap_orphans(

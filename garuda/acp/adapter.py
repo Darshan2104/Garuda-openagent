@@ -14,6 +14,7 @@ does not have.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -41,6 +42,8 @@ from garuda.runtime.protocol import (
     check_transition,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class AcpRuntime:
     """`AgentRuntime` speaking ACP to one subprocess."""
@@ -59,6 +62,7 @@ class AcpRuntime:
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._store = store
+        self._recorded_child_pid: int | None = None
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -177,6 +181,7 @@ class AcpRuntime:
                     pid=process.pid,
                     process_group=process.pid,
                 )
+                self._recorded_child_pid = process.pid
         except Exception:
             await process.close()
             self._move(LifecycleState.FAILED)
@@ -257,6 +262,23 @@ class AcpRuntime:
     async def _close_process(self) -> None:
         if self._process is not None:
             await self._process.close()
+        self._mark_child_exited()
+
+    def _mark_child_exited(self) -> None:
+        """Retire the recorded child once `AcpProcess.close` has reaped it.
+
+        A record left `live` after a clean exit would make a later recovery
+        probe — and possibly signal — whatever process reuses that PID.
+        """
+        pid, self._recorded_child_pid = self._recorded_child_pid, None
+        if pid is None or self._store is None:
+            return
+        from garuda.runtime.recovery import record_child_exit
+
+        try:
+            record_child_exit(self._store, self._garuda_session_id, pid=pid)
+        except Exception:
+            logger.warning("Could not retire ACP child %s", pid, exc_info=True)
 
     async def poll_events(self, cursor: int) -> tuple[list[RuntimeEvent], int]:
         if cursor < 0:
@@ -308,8 +330,7 @@ class AcpRuntime:
 
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
-            if self._process is not None:
-                await self._process.close()
+            await self._close_process()
             return
         if self._state is LifecycleState.RUNNING:
             await self.cancel(reason="close")
@@ -317,8 +338,7 @@ class AcpRuntime:
             return
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "closed"})
         self._move(LifecycleState.CLOSED)
-        if self._process is not None:
-            await self._process.close()
+        await self._close_process()
 
     def _info(self) -> RuntimeInfo:
         names: set[str] = set()

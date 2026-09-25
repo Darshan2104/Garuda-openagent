@@ -338,3 +338,30 @@ async def test_handoff_cancel_records_the_real_switch_boundary(tmp_path):
         "boundary": "switch",
         "reason": "operator stopped handoff",
     }
+
+
+def test_reap_refuses_a_pid_that_no_longer_leads_its_group(monkeypatch):
+    """A live recorded PID whose group changed is not provably Garuda's child."""
+    import garuda.runtime.recovery as recovery
+
+    signalled: list[int] = []
+    monkeypatch.setattr(recovery.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(recovery.os, "killpg", lambda pid, sig: signalled.append(pid))
+    with pytest.raises(recovery.RecoveryError, match="no longer leads"):
+        recovery._reap_group(424242)
+    assert signalled == []
+
+
+def test_exited_children_are_never_probed(tmp_path):
+    from garuda.runtime.recovery import record_child, record_child_exit, recover
+
+    store = SessionStore(tmp_path)
+    store.begin("s-exit", task="t", model="m", agent="a", workspace="w")
+    store.checkpoint_messages("s-exit", [])
+    store.ensure_unified("s-exit")
+    record_child(store, "s-exit", runtime_id="native", pid=424242)
+    record_child_exit(store, "s-exit", pid=424242)
+    probed: list[int] = []
+    report = recover(store, "s-exit", is_alive=lambda pid: probed.append(pid) or True)
+    assert probed == []
+    assert report.reaped_pids == ()
