@@ -12,6 +12,11 @@ from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.runtime.native import NativeGarudaRuntime
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.docker import DockerWorkspace
+from garuda.workspace.evidence import (
+    begin_session_evidence,
+    finish_session_evidence,
+    record_startup_refusal,
+)
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
@@ -267,13 +272,15 @@ async def run_agent_task(
 
     try:
         await runtime.start(task=task, session_id=events.session_id)
-        # This is before environment setup, hooks, or a model prompt.  A local
-        # run which cannot persist its immutable start state must not mutate and
-        # later pretend its delta is attributable.  The helper also records
-        # explicit non-local unsupported status instead of silently skipping it.
-        from garuda.workspace.diff import record_session_baseline
-
-        record_session_baseline(store, events.session_id, workspace, workspace_kind)
+        # This is before environment setup, hooks, or a model prompt.  A
+        # host-backed run which cannot persist its immutable start state must
+        # not mutate and later pretend its delta is attributable.  The shared
+        # boundary also records explicit unsupported (non-repo / non-local)
+        # state instead of silently skipping it.  On resume this is the *new*
+        # session's baseline: prior-session work reads as preexisting.
+        workspace_delta_loader = begin_session_evidence(
+            store, events.session_id, workspace, workspace_kind
+        )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
         if resumed_from:
@@ -320,12 +327,6 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
-            workspace_delta_loader = None
-            if workspace_kind == "local":
-                from garuda.workspace.diff import load_session_delta
-
-                def workspace_delta_loader():
-                    return load_session_delta(store, events.session_id, workspace)
             return await agent.run(
                 task=task,
                 model=model,
@@ -347,14 +348,15 @@ async def run_agent_task(
             )
 
         runtime.install_driver(_driver)
-    except Exception:
+    except BaseException:
+        # `BaseException`, not `Exception`: a job cancelled mid-startup (a
+        # docker pull, a slow session-start hook) raises `CancelledError`, and
+        # skipping the release would leave the heartbeat holding the
+        # workspace for the life of the process.
         # `runtime.start` has created the durable session by this point.  Mark a
         # baseline/startup refusal failed when the store is still writable; the
         # original error remains authoritative if it is not.
-        try:
-            store.update_meta(events.session_id, {"status": "failed", "startup_refused": True})
-        except Exception:
-            logger.warning("Failed to record startup refusal", exc_info=True)
+        record_startup_refusal(store, events.session_id)
         try:
             await runtime.close()
         except Exception:
@@ -363,9 +365,20 @@ async def run_agent_task(
         raise
     try:
         prompt_task = asyncio.ensure_future(runtime.prompt(task))
-        done, _ = await asyncio.wait(
-            {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # `asyncio.wait` does not cancel what it waits on. Without this the
+            # agent would keep executing tools after teardown released the
+            # lease and closed its environment.
+            prompt_task.cancel()
+            try:
+                await prompt_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
         if heartbeat_task in done:
             heartbeat_error = heartbeat_task.exception()
             if not prompt_task.done():
@@ -426,31 +439,17 @@ async def run_agent_task(
                 # Persist final workspace evidence before the result.  A failed
                 # read/write is a failed run rather than a successful result with a
                 # warning-only hole in the evidence trail.
-                if workspace_kind == "local":
-                    try:
-                        from garuda.workspace.diff import load_session_delta
-
-                        delta = load_session_delta(store, events.session_id, workspace)
-                        store.update_meta(
-                            events.session_id,
-                            {
-                                "baseline_commit": delta.baseline_commit,
-                                "delta_changed": list(delta.changed[:200]),
-                                "delta_preexisting": list(delta.preexisting[:200]),
-                            },
-                        )
-                        result.metadata["workspace_delta"] = {
-                            "baseline_commit": delta.baseline_commit,
-                            "changed": list(delta.changed),
-                            "preexisting": list(delta.preexisting),
-                        }
-                    except Exception as exc:
-                        result.success = False
-                        result.final_message = (
-                            "Run failed: authoritative workspace delta could not be "
-                            f"recorded ({type(exc).__name__})."
-                        )
-                        result.metadata["workspace_delta_error"] = type(exc).__name__
+                try:
+                    result.metadata["workspace_delta"] = await asyncio.to_thread(
+                        finish_session_evidence, store, events.session_id, workspace
+                    )
+                except Exception as exc:
+                    result.success = False
+                    result.final_message = (
+                        "Run failed: authoritative workspace delta could not be "
+                        f"recorded ({type(exc).__name__})."
+                    )
+                    result.metadata["workspace_delta_error"] = type(exc).__name__
                 store.finish(events.session_id, result)
                 summary = {
                     "session_id": events.session_id,

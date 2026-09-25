@@ -2,7 +2,9 @@
 
 `AcpProcess` launches one configured agent process and speaks ACP v1:
 initialize, session/new, session/prompt, session/cancel, and bidirectional
-JSON-RPC notifications/requests over newline-delimited JSON. stderr is drained
+JSON-RPC notifications/requests over newline-delimited JSON. Agent-initiated
+requests (`session/request_permission`, and any client method Garuda did not
+advertise) are queued for the adapter, which answers each exactly once. stderr is drained
 separately into a bounded diagnostics ring that never touches the protocol.
 
 Safety posture: the argv comes from the caller (the registry-resolved
@@ -26,7 +28,6 @@ from typing import Any
 from garuda.acp.protocol import (
     ACP_VERSION,
     MAX_FRAME_BYTES,
-    MAX_HEADER_BYTES,
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
@@ -120,11 +121,15 @@ class AcpProcess:
                     self._on_eof()
                     return
                 self._buffer += chunk
-                if len(self._buffer) > MAX_FRAME_BYTES + MAX_HEADER_BYTES:
-                    self._on_transport_error(
-                        AcpProtocolError("reader buffer exceeds maximum frame size")
-                    )
-                    return
+                if b"\n" not in chunk:
+                    # Still inside one line: skip re-scanning the whole buffer
+                    # (quadratic for a large frame) and only enforce the bound.
+                    if len(self._buffer) > MAX_FRAME_BYTES:
+                        self._on_transport_error(
+                            AcpProtocolError("reader buffer exceeds maximum frame size")
+                        )
+                        return
+                    continue
                 while True:
                     try:
                         message, self._buffer = decode_frame(self._buffer)
@@ -216,8 +221,10 @@ class AcpProcess:
         self._fail_all_pending(exc)
 
     async def _call(
-        self, method: str, params: dict[str, Any], *, timeout: float | None = None
+        self, method: str, params: dict[str, Any], *, timeout: Any = _MISSING
     ) -> Any:
+        """One request. `timeout` omitted uses the call deadline; `None` waits
+        without one (a prompt turn is bounded by its caller, not here)."""
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         if self._process.returncode is not None:
@@ -240,7 +247,8 @@ class AcpProcess:
             self._pending.pop(call_id, None)
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
         try:
-            return await asyncio.wait_for(future, timeout or self._call_timeout)
+            deadline = self._call_timeout if timeout is _MISSING else timeout
+            return await asyncio.wait_for(future, deadline)
         except TimeoutError as exc:
             self._pending.pop(call_id, None)
             raise AcpTimeoutError(f"{method} exceeded its deadline") from exc
@@ -334,13 +342,6 @@ class AcpProcess:
         finally:
             self._fail_all_pending(AcpCancelledError("cancelled by caller"))
 
-    async def session_approve(self, session_id: str, approval_id: str, approved: bool) -> None:
-        """Answer a pending approval request (notification; no reply expected)."""
-        await self._notify(
-            "session/approve",
-            {"sessionId": session_id, "approvalId": approval_id, "approved": approved},
-        )
-
     async def next_notification(self, timeout: float | None = None) -> dict[str, Any] | None:
         """Wait for the next agent notification. None on timeout, never raises."""
         try:
@@ -368,6 +369,13 @@ class AcpProcess:
         else:
             payload["result"] = result
         await self._notify_payload(payload)
+
+    def drain_requests(self) -> list[dict[str, Any]]:
+        """Agent-initiated requests waiting for a response, oldest first."""
+        out = []
+        while not self._requests.empty():
+            out.append(self._requests.get_nowait())
+        return out
 
     def drain_notifications(self) -> list[dict[str, Any]]:
         out = []

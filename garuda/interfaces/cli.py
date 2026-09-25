@@ -10,6 +10,7 @@ from garuda.interfaces.session import AgentSession
 from garuda.interfaces.tui import ChatRenderer
 from garuda.plugins.hooks import build_hook_registry
 from garuda.types import AgentResult
+from garuda.workspace import evidence
 
 
 async def stdin_approval(action: str, stream=None) -> bool:
@@ -104,14 +105,6 @@ async def chat_loop(args) -> int:
         docker_host=getattr(args, "docker_host", None),
     )
 
-    # One workspace/environment for the whole chat session, reused across turns.
-    env, env_handle = await resolve_environment(
-        session.config.workspace_kind,
-        args.workspace,
-        session.config.docker_image,
-        docker_host=session.config.docker_host,
-    )
-
     store = SessionStore()
     events_path = store.begin(
         session_id=session.events.session_id,
@@ -119,6 +112,26 @@ async def chat_loop(args) -> int:
         model=args.model,
         agent=session.profile.name,
         workspace=args.workspace,
+    )
+    # The same session-evidence boundary as `run_agent_task` and the dashboard:
+    # the baseline is persisted before an environment exists or a prompt is read,
+    # and a chat that cannot record it does not start.
+    try:
+        workspace_delta_loader = evidence.begin_session_evidence(
+            store, session.events.session_id, args.workspace, session.config.workspace_kind
+        )
+    except Exception as exc:
+        evidence.record_startup_refusal(store, session.events.session_id)
+        await session.close()
+        print(f"Error: chat refused to start: {exc}", file=human)
+        return 1
+
+    # One workspace/environment for the whole chat session, reused across turns.
+    env, env_handle = await resolve_environment(
+        session.config.workspace_kind,
+        args.workspace,
+        session.config.docker_image,
+        docker_host=session.config.docker_host,
     )
     session.events.attach_persistence(events_path)
     hooks = build_hook_registry(args.workspace)
@@ -160,6 +173,7 @@ async def chat_loop(args) -> int:
                     hooks=hooks,
                     agents_dir=session.agents_dir,
                     context=context,
+                    workspace_delta_loader=workspace_delta_loader,
                 )
             )
             # Run the turn in the background and drain events as they arrive so
@@ -199,24 +213,29 @@ async def chat_loop(args) -> int:
     finally:
         await cleanup_workspace(env_handle)
         await session.close()
-        _persist_chat_session(store, session, last_result)
+        persisted = await _persist_chat_session(store, session, last_result, args.workspace)
         await hooks.on_session_end(
             {
                 "session_id": session.events.session_id,
-                "success": last_result.success if last_result else True,
-                "turns": last_result.turns if last_result else 0,
+                "success": persisted.success,
+                "turns": persisted.turns,
             }
         )
     print("Bye.", file=human)
     return 0
 
 
-def _persist_chat_session(
+async def _persist_chat_session(
     store: SessionStore,
     session: AgentSession,
     last_result: AgentResult | None,
-) -> None:
-    """Save the chat conversation so it can be listed and resumed later."""
+    workspace: str,
+) -> AgentResult:
+    """Save the chat conversation so it can be listed and resumed later.
+
+    The final workspace delta is persisted first, from the baseline recorded
+    when the chat opened; if it cannot be, the session is saved as failed.
+    """
     if last_result is not None:
         result = last_result
         if session.context is not None:
@@ -226,12 +245,24 @@ def _persist_chat_session(
                 final_message=last_result.final_message,
                 messages=session.context.get_messages(),
                 turns=last_result.turns,
-                metadata=last_result.metadata,
+                metadata=dict(last_result.metadata),
             )
     else:
         messages = session.context.get_messages() if session.context else []
         result = AgentResult(success=True, final_message="", messages=messages, turns=0)
     try:
+        result.metadata["workspace_delta"] = await asyncio.to_thread(
+            evidence.finish_session_evidence, store, session.events.session_id, workspace
+        )
+    except Exception as exc:
+        result.success = False
+        result.final_message = (
+            "Chat failed: authoritative workspace delta could not be recorded "
+            f"({type(exc).__name__})."
+        )
+        result.metadata["workspace_delta_error"] = type(exc).__name__
+    try:
         store.finish(session.events.session_id, result)
     except OSError:
         pass
+    return result

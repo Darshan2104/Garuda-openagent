@@ -61,7 +61,8 @@ class CompletionGate:
     permissions: PermissionEngine | None = None
     ledger: SideEffectLedger | None = None
     verifier: CompletionVerifier = field(default_factory=CompletionVerifier)
-    # Entry points with a local workspace provide this loader.  It reaches the
+    # Entry points that record a session baseline provide this loader
+    # (`garuda.workspace.evidence.begin_session_evidence`).  It reaches the
     # recorded session baseline at the actual verifier gate, never a fresh
     # inspection-time capture.
     workspace_delta_loader: object | None = None
@@ -145,17 +146,19 @@ class CompletionGate:
             gate=self.gate,
             workspace_delta_loader=self.workspace_delta_loader,
         )
-        self.events.append(
-            EventType.VERIFICATION,
-            {
-                "approved": result.approved,
-                "checklist": result.checklist,
-                "feedback": result.feedback,
-                "evidence": result.evidence,
-                "attempt": self.gate.rejections + 1,
-                "turn": turn,
-            },
-        )
+        payload = {
+            "approved": result.approved,
+            "checklist": result.checklist,
+            "feedback": result.feedback,
+            "evidence": result.evidence,
+            "attempt": self.gate.rejections + 1,
+            "turn": turn,
+        }
+        if result.workspace:
+            # Separate key: `evidence` stays a list of command outputs, which
+            # the judge prompt and the dashboard render as such.
+            payload["workspace_delta"] = result.workspace
+        self.events.append(EventType.VERIFICATION, payload)
         if result.approved:
             self.gate.approvals += 1
             return True, summary

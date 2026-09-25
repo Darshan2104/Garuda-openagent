@@ -2,7 +2,15 @@
 
 `AcpRuntime` is the `AgentRuntime` over one managed agent subprocess: launch,
 version-checked handshake, capability negotiation, prompting with normalized
-events, approval replies, cancellation, and close. Vendor-specific manifests
+events, approval replies, cancellation, and close.
+
+Approvals follow ACP v1: the agent sends a `session/request_permission`
+*request* carrying options; the adapter emits an `APPROVAL_REQUEST` event and
+answers exactly once — via an injected `approval_handler`, or later through
+`permission_response` — by selecting an `allow_once` / `reject_*` option.
+Allow never widens to `allow_always`: without an `allow_once` option the
+answer is `cancelled`. Any other agent-to-client method is refused with a
+JSON-RPC error, because Garuda advertises no `fs` or `terminal` capability. Vendor-specific manifests
 and registry wiring arrive with the P1 adapters; every one of them runs the
 shared conformance suite through this class.
 
@@ -16,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from garuda.acp.authority import (
@@ -26,7 +35,12 @@ from garuda.acp.authority import (
 )
 from garuda.acp.client import AcpProcess
 from garuda.acp.normalize import AcpNormalizer
-from garuda.acp.protocol import AcpCancelledError, AcpError, AcpTimeoutError
+from garuda.acp.protocol import (
+    AcpCancelledError,
+    AcpError,
+    AcpProtocolError,
+    AcpTimeoutError,
+)
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 from garuda.runtime.protocol import (
     AuthStatus,
@@ -44,6 +58,10 @@ from garuda.runtime.protocol import (
 
 logger = logging.getLogger(__name__)
 
+#: JSON-RPC error codes used when refusing agent-initiated requests.
+_METHOD_NOT_FOUND = -32601
+_INVALID_PARAMS = -32602
+
 
 class AcpRuntime:
     """`AgentRuntime` speaking ACP to one subprocess."""
@@ -55,9 +73,11 @@ class AcpRuntime:
         runtime_id: str = "acp",
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
+        approval_handler: Callable[[str], Awaitable[bool]] | None = None,
         store=None,
     ):
         self._argv = list(argv)
+        self._approval_handler = approval_handler
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
@@ -71,7 +91,9 @@ class AcpRuntime:
         self._agent_session_id: str | None = None
         self._turn = 0
         self._events: list[RuntimeEvent] = []
-        self._pending_approvals: set[str] = set()
+        # approval_id -> (JSON-RPC request id, offered options)
+        self._pending_approvals: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
+        self._answer_tasks: set[asyncio.Task] = set()
 
     @property
     def runtime_id(self) -> str:
@@ -126,10 +148,6 @@ class AcpRuntime:
 
     def _absorb(self, normalized: list[RuntimeEvent]) -> None:
         for event in normalized:
-            if event.kind is RuntimeEventKind.APPROVAL_REQUEST:
-                approval_id = event.payload.get("approval_id", "")
-                if approval_id:
-                    self._pending_approvals.add(approval_id)
             self._events.append(
                 RuntimeEvent(
                     kind=event.kind,
@@ -213,9 +231,11 @@ class AcpRuntime:
             raise RuntimeNotActiveError(f"prompt needs IDLE, state={self._state.value}")
         if not text:
             raise RuntimeNotActiveError("prompt text must not be empty")
+        # Open the normalizer turn before RUNNING: if it refuses, the runtime
+        # is not left mid-turn with nothing driving it.
+        self._normalizer.new_turn()
         self._move(LifecycleState.RUNNING)
         self._turn += 1
-        self._normalizer.new_turn()
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
         )
@@ -231,21 +251,54 @@ class AcpRuntime:
             self._move(LifecycleState.FAILED)
             raise AcpTimeoutError("prompt exceeded its deadline") from exc
         except AcpCancelledError:
-            self._absorb(self._normalizer.finish("cancelled"))
+            self._finish_turn("cancelled")
             await self._close_process()
             self._move(LifecycleState.CANCELLING)
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled"})
             self._move(LifecycleState.CLOSED)
             raise
         except AcpError as exc:
-            self._absorb(self._normalizer.finish("failed", detail=str(exc)))
+            self._finish_turn("failed", detail=str(exc))
             await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
-        stop = result.get("stopReason", "end_turn") if isinstance(result, dict) else "end_turn"
-        self._absorb(self._normalizer.finish(stop))
+        stop = result.get("stopReason") if isinstance(result, dict) else None
+        try:
+            if not isinstance(stop, str):
+                raise AcpProtocolError(f"session/prompt returned no stopReason: {result!r}")
+            closing = self._normalizer.finish(stop)
+        except AcpProtocolError as exc:
+            # An unknown stop reason or an orphaned tool_call_update means the
+            # trail cannot be closed truthfully: fail and reap, never stay
+            # RUNNING with a live process.
+            self._emit(RuntimeEventKind.ERROR, {"message": str(exc)})
+            await self._close_process()
+            self._move(LifecycleState.FAILED)
+            raise
+        self._absorb(closing)
+        if stop == "cancelled":
+            # The agent ended the turn cancelled (e.g. its permission request
+            # was answered `cancelled`). The normalizer has closed the
+            # session, so the runtime closes too instead of idling on a trail
+            # that can take no further turn.
+            await self._close_process()
+            self._move(LifecycleState.CANCELLING)
+            self._move(LifecycleState.CLOSED)
+            raise AcpCancelledError("agent ended the turn cancelled")
         self._move(LifecycleState.IDLE)
         return self._turn
+
+    def _finish_turn(self, reason: str, *, detail: str = "") -> None:
+        """Close the normalizer turn on a path that must still reap.
+
+        A trail that cannot close cleanly (updates for unknown tool calls) is
+        recorded as an error event rather than raised past the cleanup.
+        """
+        assert self._normalizer is not None
+        try:
+            self._absorb(self._normalizer.finish(reason, detail=detail))
+        except AcpProtocolError as exc:
+            self._emit(RuntimeEventKind.ERROR, {"message": str(exc)})
 
     async def _drain_until_done(self, prompt_task: asyncio.Task) -> Any:
         """Feed notifications as they stream, returning the prompt result."""
@@ -253,13 +306,105 @@ class AcpRuntime:
         while True:
             done, _ = await asyncio.wait({prompt_task}, timeout=0.05)
             for notification in self._process.drain_notifications():
+                if notification.get("method") != "session/update":
+                    continue
                 update = (notification.get("params") or {}).get("update")
                 if update:
                     self._absorb(self._normalizer.feed(update))
+            for request in self._process.drain_requests():
+                await self._on_agent_request(request)
             if done:
                 return prompt_task.result()
 
+    async def _on_agent_request(self, request: dict[str, Any]) -> None:
+        """Answer one agent-initiated request, or park it as an approval."""
+        assert self._process is not None
+        method = request.get("method")
+        request_id = request.get("id")
+        if method != "session/request_permission":
+            await self._process.respond(
+                request_id,
+                error={
+                    "code": _METHOD_NOT_FOUND,
+                    "message": f"client does not support {method!r}",
+                },
+            )
+            return
+        params = request.get("params") or {}
+        tool_call = params.get("toolCall") if isinstance(params, dict) else None
+        options = params.get("options") if isinstance(params, dict) else None
+        # Typed so JSON-RPC ids 1 and "1" cannot collide.
+        approval_id = f"perm-{type(request_id).__name__}-{request_id}"
+        if (
+            not isinstance(tool_call, dict)
+            or not isinstance(options, list)
+            or not options
+            or any(not isinstance(option, dict) for option in options)
+            or approval_id in self._pending_approvals
+        ):
+            await self._process.respond(
+                request_id,
+                error={"code": _INVALID_PARAMS, "message": "malformed permission request"},
+            )
+            return
+        self._pending_approvals[approval_id] = (request_id, options)
+        action = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")
+        self._emit(
+            RuntimeEventKind.APPROVAL_REQUEST,
+            {
+                "approval_id": approval_id,
+                "action": action,
+                "tool_call_id": tool_call.get("toolCallId", ""),
+                "options": [
+                    {
+                        "option_id": option.get("optionId", ""),
+                        "kind": option.get("kind", ""),
+                        "name": option.get("name", ""),
+                    }
+                    for option in options
+                ],
+            },
+        )
+        if self._approval_handler is not None:
+            task = asyncio.ensure_future(self._answer_with_handler(approval_id, action))
+            self._answer_tasks.add(task)
+            task.add_done_callback(self._answer_tasks.discard)
+
+    async def _answer_with_handler(self, approval_id: str, action: str) -> None:
+        assert self._approval_handler is not None
+        try:
+            allowed = bool(await self._approval_handler(action))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ACP approval handler failed for %s; denying", approval_id, exc_info=True)
+            allowed = False
+        try:
+            await self.permission_response(approval_id=approval_id, allow=allowed)
+        except (RuntimeProtocolError, RuntimeStartError, AcpError):
+            # Already answered, cancelled, or the process is gone.
+            pass
+
+    async def _cancel_pending_approvals(self) -> None:
+        """v1 requires every open permission request to be answered
+        `cancelled` when its turn is cancelled."""
+        for task in list(self._answer_tasks):
+            task.cancel()
+        pending, self._pending_approvals = self._pending_approvals, {}
+        if self._process is None:
+            return
+        for request_id, _options in pending.values():
+            try:
+                await self._process.respond(
+                    request_id, result={"outcome": {"outcome": "cancelled"}}
+                )
+            except AcpError:
+                pass
+
     async def _close_process(self) -> None:
+        # No interactive answerer outlives the process it would answer.
+        for task in list(self._answer_tasks):
+            task.cancel()
         if self._process is not None:
             await self._process.close()
         self._mark_child_exited()
@@ -297,14 +442,19 @@ class AcpRuntime:
         self._move(LifecycleState.IDLE)
 
     async def permission_response(self, *, approval_id: str, allow: bool) -> None:
-        if approval_id not in self._pending_approvals:
-            raise RuntimeProtocolError(f"no pending approval {approval_id!r}")
         if self._process is None:
             raise RuntimeStartError("runtime is not started")
-        await self._process.session_approve(
-            self._agent_session_id or "", approval_id, allow
+        entry = self._pending_approvals.pop(approval_id, None)
+        if entry is None:
+            raise RuntimeProtocolError(f"no pending approval {approval_id!r}")
+        request_id, options = entry
+        option_id = _pick_option(options, allow)
+        outcome = (
+            {"outcome": "selected", "optionId": option_id}
+            if option_id is not None
+            else {"outcome": "cancelled"}
         )
-        self._pending_approvals.discard(approval_id)
+        await self._process.respond(request_id, result={"outcome": outcome})
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -318,6 +468,7 @@ class AcpRuntime:
                 boundary="process",
                 reason=reason or "cancelled",
             )
+        await self._cancel_pending_approvals()
         if self._process is not None:
             await self._process.session_cancel(self._agent_session_id or "")
         if self._state is LifecycleState.RUNNING:
@@ -353,3 +504,14 @@ class AcpRuntime:
             auth=AuthStatus.AUTHENTICATED,
             native_session_id=self._agent_session_id,
         )
+
+
+def _pick_option(options: list[dict[str, Any]], allow: bool) -> str | None:
+    """The narrowest option matching the decision, or None (answer cancelled)."""
+    kinds = ("allow_once",) if allow else ("reject_once", "reject_always")
+    for kind in kinds:
+        for option in options:
+            option_id = option.get("optionId")
+            if option.get("kind") == kind and isinstance(option_id, str) and option_id:
+                return option_id
+    return None
