@@ -347,11 +347,22 @@ def adapter_for_manifest(
     manifest,
     *,
     argv_override: list[str] | None = None,
+    executable: str | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
 ) -> AcpRuntime:
-    """Build the generic adapter for one manifest. Tests override argv with fakes."""
+    """Build the generic adapter using the exact executable discovery accepted.
+
+    Production construction resolves the trusted manifest once and replaces its
+    bare command with that absolute checked path. A later PATH substitution
+    therefore cannot launch a different binary. ``argv_override`` is only the
+    deterministic test seam for the protocol fixture.
+    """
+    argv = list(argv_override) if argv_override is not None else require_acp_argv(
+        manifest,
+        executable=executable or _resolve_executable(manifest.command),
+    )
     return AcpRuntime(
-        list(argv_override) if argv_override is not None else list(manifest.command or ()),
+        argv,
         runtime_id=manifest.runtime_id,
         policy=policy,
         setup_hint=manifest.setup,
@@ -371,9 +382,18 @@ class AcpUnavailableError(Exception):
 
 
 def require_acp_argv(manifest, *, executable: str | None) -> list[str]:
-    """Resolve a manifest to launch argv, or refuse loudly with setup guidance."""
+    """Bind an accepted absolute executable to the manifest's launch argv.
+
+    This is the shared production start gate: the command used for launch is
+    the exact path discovery resolved, never a second bare PATH lookup.
+    """
     if not manifest.command:
         raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "no launch command configured")
-    if executable is None:
+    if not isinstance(executable, str) or not executable:
         raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "executable not found")
-    return list(manifest.command)
+    if not os.path.isabs(executable) or not os.access(executable, os.X_OK):
+        raise AcpUnavailableError(
+            manifest.runtime_id,
+            manifest.setup or "discovery did not resolve an executable file",
+        )
+    return [executable, *manifest.command[1:]]

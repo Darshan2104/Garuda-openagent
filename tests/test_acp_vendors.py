@@ -42,6 +42,9 @@ def test_builtin_manifests_parse_and_cover_all_vendors():
         )
         assert manifest.setup
         assert "never reads" in manifest.setup
+    cursor = next(manifest for manifest in manifests if manifest.runtime_id == "cursor")
+    assert cursor.command == ("agent", "acp")
+    assert cursor.version_args == ("agent", "--version")
 
 
 def test_no_private_endpoints_or_credential_use():
@@ -60,23 +63,37 @@ def test_setup_names_untouchable_credential_paths():
     assert "~/.claude/.credentials.json" in setups
     assert "~/.codex/auth.json" in setups
     by_id = {m.runtime_id: m for m in _manifests()}
+    assert "~/.local/bin/agent" in by_id["cursor"].setup
+    assert "~/" not in by_id["opencode"].setup, "OpenCode must not invent credential paths"
     for vendor in ("cursor", "opencode"):
-        assert "~/" not in by_id[vendor].setup, f"{vendor} must not invent credential paths"
         assert by_id[vendor].warnings, f"{vendor} must warn about undeclared mediation"
 
 
-async def test_non_acp_fallback_is_never_silent():
+async def test_non_acp_fallback_is_never_silent_and_binds_the_checked_binary():
     by_id = {m.runtime_id: m for m in _manifests()}
-    with pytest.raises(AcpUnavailableError, match="cursor-agent"):
+    with pytest.raises(AcpUnavailableError, match="agent"):
         require_acp_argv(by_id["cursor"], executable=None)
     try:
         require_acp_argv(by_id["cursor"], executable=None)
     except AcpUnavailableError as exc:
         assert "Add a global harness manifest" in exc.setup or "Install" in exc.setup
-    assert require_acp_argv(by_id["cursor"], executable="/usr/bin/cursor-agent") == [
-        "cursor-agent",
+    assert require_acp_argv(by_id["cursor"], executable=sys.executable) == [
+        sys.executable,
         "acp",
     ]
+
+
+def test_factory_launches_the_exact_discovered_path_after_path_changes(monkeypatch):
+    """The executable accepted at construction replaces the bare command, so
+    a later PATH substitution cannot change what AcpRuntime starts."""
+    import garuda.acp.catalog as catalog
+
+    cursor = next(manifest for manifest in _manifests() if manifest.runtime_id == "cursor")
+    monkeypatch.setattr(catalog.shutil, "which", lambda _: sys.executable)
+    adapter = adapter_for_manifest(cursor)
+    assert adapter._argv == [sys.executable, "acp"]
+    monkeypatch.setattr(catalog.shutil, "which", lambda _: "/tmp/attacker-agent")
+    assert adapter._argv == [sys.executable, "acp"]
 
 
 async def test_version_incompatibility_is_actionable():

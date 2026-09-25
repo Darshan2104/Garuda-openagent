@@ -25,7 +25,7 @@ from garuda.acp.authority import (
 )
 from garuda.acp.client import AcpProcess, ClientRequestHandler
 from garuda.acp.normalize import AcpNormalizer
-from garuda.acp.protocol import AcpCancelledError, AcpError, AcpTimeoutError
+from garuda.acp.protocol import AcpCancelledError, AcpError, AcpProtocolError, AcpTimeoutError
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 from garuda.runtime.protocol import (
     AuthStatus,
@@ -53,6 +53,7 @@ class AcpRuntime:
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
         client_request_handler: ClientRequestHandler | None = None,
+        setup_hint: str = "",
         store=None,
     ):
         self._argv = list(argv)
@@ -60,6 +61,7 @@ class AcpRuntime:
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._client_request_handler = client_request_handler
+        self._setup_hint = setup_hint
         self._store = store
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
@@ -183,6 +185,12 @@ class AcpRuntime:
                     pid=process.pid,
                     process_group=process.pid,
                 )
+        except AcpProtocolError as exc:
+            await process.close()
+            self._move(LifecycleState.FAILED)
+            if "speaks ACP" in str(exc) and self._setup_hint:
+                raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
+            raise
         except Exception:
             await process.close()
             self._move(LifecycleState.FAILED)

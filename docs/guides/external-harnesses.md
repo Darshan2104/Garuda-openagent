@@ -27,9 +27,10 @@ never sees, reads, or stores subscription credentials.
 
 ## Cursor Agent
 
-- Launch command: `cursor-agent acp` (native subcommand of the Cursor Agent CLI).
-- Setup: install the Cursor Agent CLI and authenticate with your Cursor
-  account, then verify `cursor-agent --version`.
+- Launch command: `agent acp` (native subcommand of the Cursor Agent CLI).
+- Setup: install the Cursor Agent CLI (whose documented default binary is
+  `~/.local/bin/agent`) and authenticate with your Cursor account, then verify
+  `agent --version`.
 - Auth stays in your Cursor login. Garuda never reads your Cursor credentials.
 
 ## OpenCode
@@ -50,6 +51,9 @@ never sees, reads, or stores subscription credentials.
   that subset (modes, sessions lists, images) are not driven.
 - No private HTTP endpoint is used anywhere: both adapters are stdio
   subprocesses of commands you authorized in global configuration.
+- Discovery resolves the executable once and the launch factory uses that
+  exact absolute path. Changing `PATH` after discovery cannot substitute a
+  different adapter binary.
 
 ## Custom ACP servers
 
