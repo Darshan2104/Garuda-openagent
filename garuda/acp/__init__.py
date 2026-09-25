@@ -1,10 +1,9 @@
 """ACP client foundation (P0.12+, issues #21-#24).
 
 A minimal, version-pinned ACP-over-stdio client: JSON-RPC 2.0 with
-Content-Length framing, process-group lifecycle, and typed failures. No vendor
-SDK — the wire subset Garuda needs (initialize, session/new, session/prompt,
-session/cancel, session/update) is small enough to own, and owning it keeps
-every framing, timeout, and cleanup path under test with fake processes.
+newline-delimited framing, process-group lifecycle, and typed failures. No
+vendor SDK — the transport owns framing and lifecycle while exposing agent
+notifications and requests for the capability/authority layers above it.
 """
 
 from garuda.acp.protocol import (

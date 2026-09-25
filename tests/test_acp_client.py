@@ -25,22 +25,13 @@ ECHO_SERVER = r"""
 import json, sys
 
 def read_frame():
-    header = b""
-    while b"\r\n\r\n" not in header:
-        chunk = sys.stdin.buffer.read(1)
-        if not chunk:
-            raise EOFError
-        header += chunk
-    head, _, rest = header.partition(b"\r\n\r\n")
-    length = int(head.split(b":")[1])
-    body = rest
-    while len(body) < length:
-        body += sys.stdin.buffer.read(length - len(body))
-    return json.loads(body)
+    line = sys.stdin.buffer.readline()
+    if not line:
+        raise EOFError
+    return json.loads(line)
 
 def send(message):
-    body = json.dumps(message).encode()
-    sys.stdout.buffer.write(b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    sys.stdout.buffer.write(json.dumps(message).encode() + b"\n")
     sys.stdout.buffer.flush()
 
 RESULTS = json.loads(sys.argv[1])
@@ -76,31 +67,25 @@ def test_frame_codec_round_trip_and_rejects():
     assert decoded == message
     assert rest == b"leftover"
     with pytest.raises(ValueError):
-        decode_frame(b"Content-Length: 10\r\n\r\nabc")
+        decode_frame(b'{"jsonrpc":"2.0"}')
     with pytest.raises(AcpProtocolError):
-        decode_frame(b"no headers here\r\n\r\n{}")
+        decode_frame(b"not-json\n")
     with pytest.raises(AcpProtocolError):
-        decode_frame(encode_frame([1, 2, 3]))
+        decode_frame(b"[1, 2, 3]\n")
     with pytest.raises(AcpProtocolError):
-        decode_frame(b"Content-Length: xyz\r\n\r\n{}")
-    # Fail-closed framing: unbounded header + duplicate lengths.
+        decode_frame(b'{"jsonrpc":"1.0"}\n')
+    # Fail-closed framing: an unterminated line cannot grow forever.
     with pytest.raises(AcpProtocolError, match="exceeds bound"):
-        decode_frame(b"X: " + b"a" * (MAX_HEADER_BYTES + 1))
-    body = b"{}"
-    with pytest.raises(AcpProtocolError, match="duplicate Content-Length"):
-        decode_frame(
-            f"Content-Length: {len(body)}\r\nContent-Length: {len(body)}\r\n\r\n".encode()
-            + body
-        )
+        decode_frame(b"a" * (MAX_HEADER_BYTES + 1))
 
 
 async def test_handshake_session_prompt_and_notifications():
     process = await _launched(
-        _argv({"initialize": {"protocolVersion": "0.4"}, "session/new": {"sessionId": "s1"}})
+        _argv({"initialize": {"protocolVersion": 1}, "session/new": {"sessionId": "s1"}})
     )
     try:
         result = await process.initialize()
-        assert result["protocolVersion"] == "0.4"
+        assert result["protocolVersion"] == 1
         session_id = await process.session_new()
         assert session_id == "s1"
         await process.session_prompt(session_id, "hello")
@@ -112,7 +97,7 @@ async def test_handshake_session_prompt_and_notifications():
 
 
 async def test_handshake_rejects_missing_or_mismatched_version():
-    for result in ({}, {"protocolVersion": "99.0"}):
+    for result in ({}, {"protocolVersion": 99}):
         process = await _launched(_argv({"initialize": result}))
         try:
             with pytest.raises(AcpProtocolError, match="version mismatch"):
@@ -124,10 +109,10 @@ async def test_handshake_rejects_missing_or_mismatched_version():
 async def test_stderr_never_corrupts_the_stream():
     script = "import sys; sys.stderr.write('diagnostic line\\n'); sys.stderr.flush()\n" + ECHO_SERVER
     process = await _launched(
-        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}}, extra=script)
+        _argv({"initialize": {"ok": True, "protocolVersion": 1}}, extra=script)
     )
     try:
-        assert (await process.initialize()) == {"ok": True, "protocolVersion": "0.4"}
+        assert (await process.initialize()) == {"ok": True, "protocolVersion": 1}
         assert "diagnostic line" in process.stderr_tail
     finally:
         await process.close()
@@ -157,7 +142,7 @@ async def test_malformed_stream_is_typed():
         sys.executable,
         "-c",
         "import sys, time; "
-        "sys.stdout.buffer.write(b'Content-Length: xyz\\r\\n\\r\\n{}'); "
+        "sys.stdout.buffer.write(b'not-json\\n'); "
         "sys.stdout.buffer.flush(); time.sleep(30)",
     ]
     process = await _launched(argv)
@@ -210,7 +195,7 @@ async def test_cancel_fails_pending_with_cancelled():
 
 async def test_close_reaps_the_group_and_is_idempotent():
     process = await _launched(
-        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}}), call_timeout=5
+        _argv({"initialize": {"ok": True, "protocolVersion": 1}}), call_timeout=5
     )
     pid = process.pid
     assert pid
@@ -223,7 +208,7 @@ async def test_close_reaps_the_group_and_is_idempotent():
 
 async def test_launch_after_close_is_refused():
     process = await _launched(
-        _argv({"initialize": {"ok": True, "protocolVersion": "0.4"}})
+        _argv({"initialize": {"ok": True, "protocolVersion": 1}})
     )
     await process.close()
     with pytest.raises(AcpProtocolError, match="closed"):
@@ -252,3 +237,32 @@ async def test_cancel_notification_is_flushed_before_pending_fails():
     await process._notify("session/cancel", {"sessionId": "s9"})
     assert fake_stdin.drained
     assert received and b"session/cancel" in received[0]
+
+
+async def test_agent_request_is_exposed_and_can_be_answered():
+    received: list[bytes] = []
+
+    class _Stdin:
+        def write(self, data: bytes):
+            received.append(data)
+
+        async def drain(self):
+            return None
+
+    process = AcpProcess([sys.executable, "-c", "pass"])
+    process._process = type("_P", (), {"stdin": _Stdin(), "returncode": None})()
+    process._route(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "session/request_permission",
+            "params": {"sessionId": "s1"},
+        }
+    )
+    request = await process.next_request()
+    assert request["id"] == 7
+    await process.respond(7, result={"outcome": {"outcome": "cancelled"}})
+    response, rest = decode_frame(received[0])
+    assert not rest
+    assert response["id"] == 7
+    assert response["result"]["outcome"]["outcome"] == "cancelled"
