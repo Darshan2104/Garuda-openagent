@@ -16,16 +16,19 @@ import json
 from typing import Any
 
 from garuda.acp.catalog import (
-    adapter_for_manifest,
+    BUILTIN_STUBS,
     adapter_for_registry,
     builtin_manifest_dicts,
     discover,
     health_of,
     load_trusted_disabled,
+    load_trusted_runtime_settings,
     require_acp_argv,
+    shared_registry,
 )
+from garuda.runtime import RegistryError
 from garuda.runtime.recovery import recover, report_to_dict
-from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
+from garuda.runtime.registry import RuntimeRegistry
 
 
 def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[dict]:
@@ -47,8 +50,69 @@ def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[
     return [native, *dicts, *extra]
 
 
-def cmd_list(manifests, *, as_json: bool = False) -> str:
-    found = discover(manifests)
+def configured_registry(
+    workspace: str = ".",
+    *,
+    disabled=None,
+    global_settings: dict | None = None,
+    project_settings: dict | None = None,
+) -> RuntimeRegistry:
+    """Build the one trusted registry used by CLI discovery and execution."""
+    from garuda.config.agent_home import resolve_agent_home
+
+    if global_settings is None or project_settings is None:
+        home = resolve_agent_home(workspace)
+        if global_settings is None:
+            global_settings = load_trusted_runtime_settings()
+        if project_settings is None:
+            project_settings = getattr(home, "settings", None) or {}
+    extras = global_settings.get("runtimes", [])
+    if not isinstance(extras, list):
+        raise ValueError("global settings 'runtimes' must be a list of manifests")
+    refs = project_settings.get("runtime_refs", [])
+    if refs is None:
+        refs = []
+    if not isinstance(refs, list):
+        raise ValueError("project settings 'runtime_refs' must be a list of references")
+    if disabled is None:
+        disabled = load_trusted_disabled(global_settings)
+    return shared_registry(extra_manifests=extras, project_refs=refs, disabled=disabled)
+
+
+def acp_adapter_for_workspace(
+    workspace: str,
+    runtime_name: str,
+    *,
+    argv_override: list[str] | None = None,
+    disabled=None,
+    policy=None,
+    global_settings: dict | None = None,
+    project_settings: dict | None = None,
+):
+    """Resolve one configured ACP id through policy and availability gates."""
+    registry = configured_registry(
+        workspace,
+        disabled=disabled,
+        global_settings=global_settings,
+        project_settings=project_settings,
+    )
+    try:
+        manifest = registry.get(runtime_name)
+    except RegistryError as exc:
+        raise ValueError(f"Cannot use runtime {runtime_name!r} ({exc})") from exc
+    if argv_override is None:
+        found = {entry.runtime_id: entry for entry in discover([manifest])}
+        entry = found.get(manifest.runtime_id)
+        argv = require_acp_argv(manifest, executable=entry.executable if entry else None)
+    else:
+        argv = list(argv_override)
+    return registry, adapter_for_registry(
+        registry, runtime_name, argv_override=argv, policy=policy
+    )
+
+
+def cmd_list(manifests, *, as_json: bool = False, disabled=None) -> str:
+    found = discover(manifests, disabled=disabled or frozenset())
     if as_json:
         return json.dumps([health_of(d) for d in found], indent=2)
     lines = []
@@ -57,14 +121,26 @@ def cmd_list(manifests, *, as_json: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def cmd_inspect(manifests, runtime_id: str, *, as_json: bool = False) -> str:
-    found = {d.runtime_id: d for d in discover(manifests)}
+def cmd_list_registry(registry: RuntimeRegistry, *, as_json: bool = False) -> str:
+    return cmd_list(registry.manifests, as_json=as_json, disabled=registry.disabled_ids)
+
+
+def cmd_inspect(manifests, runtime_id: str, *, as_json: bool = False, disabled=None) -> str:
+    found = {d.runtime_id: d for d in discover(manifests, disabled=disabled or frozenset())}
     if runtime_id not in found:
         raise KeyError(f"unknown runtime {runtime_id!r}")
     entry = found[runtime_id]
     if as_json:
         return json.dumps(health_of(entry), indent=2)
     return "\n".join([*entry.describe(), *entry.describe_auth()]) + "\n"
+
+
+def cmd_inspect_registry(
+    registry: RuntimeRegistry, runtime_id: str, *, as_json: bool = False
+) -> str:
+    return cmd_inspect(
+        registry.manifests, runtime_id, as_json=as_json, disabled=registry.disabled_ids
+    )
 
 
 def cmd_handoff_preview(store, session_id: str, target_id: str) -> str:
@@ -112,13 +188,19 @@ async def cmd_handoff_confirm(
             "handoff refused: the target is the native runtime itself — "
             "resume the session instead (`garuda runtime resume`).\n"
         )
-    parsed = parse_global_manifests(
-        [m for m in (manifests or []) if m.get("runtime_id") != "native"],
-        source="runtime handoff",
-    )
-    if disabled is None:
-        disabled = load_trusted_disabled()
-    registry = RuntimeRegistry(parsed, disabled=disabled)
+    if workspace is None:
+        workspace = store.load_meta(session_id).get("workspace", ".")
+    if manifests is None:
+        registry = configured_registry(workspace, disabled=disabled)
+    else:
+        # Explicit manifests are an isolated test seam, never project authority.
+        extras = [
+            item for item in manifests
+            if isinstance(item, dict) and item.get("runtime_id") not in {"native", *[s["runtime_id"] for s in BUILTIN_STUBS]}
+        ]
+        if disabled is None:
+            disabled = load_trusted_disabled()
+        registry = shared_registry(extra_manifests=extras, disabled=disabled)
     resolved = registry.get(target_id)  # unknown/disabled fail closed here
     if target_argv_override is None:
         import shutil
@@ -135,17 +217,17 @@ async def cmd_handoff_confirm(
             state = WorkingState(task=unified.legacy.get("task", session_id))
         if not state.task:
             state.task = unified.legacy.get("task", session_id)
-    if workspace is None:
-        workspace = store.load_meta(session_id).get("workspace", ".")
+    handoff_body: list[str] = []
 
     def _checkpoint() -> None:
+        doc, body = compile_handoff(
+            state,
+            source_runtime=unified.active.runtime_id,
+            session_id=session_id,
+            native_session_id=unified.active.native_session_id or "",
+        )
+        handoff_body[:] = [body]
         if pack_manager is not None:
-            doc, body = compile_handoff(
-                state,
-                source_runtime=unified.active.runtime_id,
-                session_id=session_id,
-                native_session_id=unified.active.native_session_id or "",
-            )
             pack_manager.write_handoff(doc, body)
 
     source = NativeGarudaRuntime(
@@ -158,18 +240,32 @@ async def cmd_handoff_confirm(
             registry, target_id, argv_override=target_argv_override
         )
 
-    tx, _ = await execute_handoff(
+    async def _deliver(target) -> None:
+        if not handoff_body:
+            raise RuntimeError("handoff package was not generated")
+        # The transfer is an actual target turn, not merely a file written for
+        # a process that is immediately forgotten. Its subprocess remains
+        # supervised until this turn finishes and the caller deterministically
+        # closes it below.
+        await target.prompt(handoff_body[0])
+        await target.poll_events(0)
+
+    tx, target = await execute_handoff(
         session_id=session_id,
         source=source,
         target_factory=_target_factory,
         store=store,
         checkpoint=_checkpoint,
+        deliver=_deliver,
         workspace=workspace,
     )
-    return (
-        f"handoff acknowledged: {session_id} -> {target_id} "
-        f"(phase={tx.phase.value})\n"
-    )
+    try:
+        return (
+            f"handoff acknowledged: {session_id} -> {target_id} "
+            f"(phase={tx.phase.value}; handoff delivered)\n"
+        )
+    finally:
+        await target.close()
 
 
 async def cmd_resume(
@@ -227,14 +323,22 @@ def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def run_acp_task(manifest, task: str, *, session_id: str | None = None) -> dict[str, Any]:
-    """Run one task on an ACP runtime, streaming normalized events to stdout."""
-    found = {d.runtime_id: d for d in discover([manifest])}
-    entry = found.get(manifest.runtime_id)
-    argv = require_acp_argv(
-        manifest, executable=entry.executable if entry else None
+async def run_acp_task(
+    task: str,
+    *,
+    runtime_id: str,
+    workspace: str = ".",
+    session_id: str | None = None,
+    argv_override: list[str] | None = None,
+    disabled=None,
+) -> dict[str, Any]:
+    """Run one ACP task through the same trusted registry as every CLI path."""
+    _registry, runtime = acp_adapter_for_workspace(
+        workspace,
+        runtime_id,
+        argv_override=argv_override,
+        disabled=disabled,
     )
-    runtime = adapter_for_manifest(manifest, argv_override=list(argv))
     info = await runtime.start(task=task, session_id=session_id)
     try:
         turn = await runtime.prompt(task)
@@ -247,12 +351,16 @@ async def run_acp_task(manifest, task: str, *, session_id: str | None = None) ->
 
 
 __all__ = [
+    "acp_adapter_for_workspace",
     "cmd_handoff_confirm",
     "cmd_handoff_preview",
     "cmd_inspect",
+    "cmd_inspect_registry",
     "cmd_list",
+    "cmd_list_registry",
     "cmd_recover",
     "cmd_resume",
+    "configured_registry",
     "load_configured_manifest_dicts",
     "run_acp_task",
 ]

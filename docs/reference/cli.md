@@ -11,7 +11,7 @@
 | `garuda recipe run file.yaml` | Execute a YAML workflow. |
 | `garuda runtime list [--json]` | List configured runtimes with health. |
 | `garuda runtime inspect <id> [--json]` | Inspect one runtime, login, and quota. |
-| `garuda runtime handoff --session S --to R [--confirm]` | Preview (default) or execute the handoff transaction (pause → checkpoint → capture → start target → acknowledge or rollback). |
+| `garuda runtime handoff --session S --to R [--confirm]` | Preview (default) or execute the handoff transaction (pause → checkpoint → capture → start target → deliver package → acknowledge or rollback; the target is explicitly reaped when the command exits). |
 | `garuda runtime resume --session S -t TASK` | Resume a persisted session through the real run lifecycle (classifies first). |
 | `garuda runtime recover --session S [--json]` | Classify and recover a session. |
 

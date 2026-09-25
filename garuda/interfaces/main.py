@@ -137,11 +137,6 @@ def build_parser():
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
     run_parser.add_argument("--trajectory", help="Save event trajectory to JSONL file")
     run_parser.add_argument(
-        "--runtime",
-        default="native",
-        help="Executor runtime id (default: native). Names a configured harness.",
-    )
-    run_parser.add_argument(
         "--resume",
         metavar="ID",
         help="Resume a saved session (full id, unique prefix, or 'latest')",
@@ -414,17 +409,11 @@ async def run_mcp_list(args) -> int:
     return 0
 
 
-def _configured_manifests(workspace: str = "."):
-    """Builtin manifests plus the trusted global `runtimes:` list."""
-    from garuda.config.agent_home import resolve_agent_home
-    from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
-    from garuda.runtime.registry import parse_global_manifests
+def _configured_registry(workspace: str = "."):
+    """The single product registry for CLI runtime commands."""
+    from garuda.interfaces.runtime_cli import configured_registry
 
-    home = resolve_agent_home(workspace)
-    return parse_global_manifests(
-        load_configured_manifest_dicts(home.global_settings),
-        source="runtimes (builtin + global settings)",
-    )
+    return configured_registry(workspace)
 
 
 async def run_runtime_command(args) -> int:
@@ -434,18 +423,23 @@ async def run_runtime_command(args) -> int:
     from garuda.interfaces.runtime_cli import (
         cmd_handoff_confirm,
         cmd_handoff_preview,
-        cmd_inspect,
-        cmd_list,
+        cmd_inspect_registry,
+        cmd_list_registry,
         cmd_recover,
     )
 
     command = args.runtime_command
     if command == "list":
-        print(cmd_list(_configured_manifests(), as_json=args.json), end="")
+        print(cmd_list_registry(_configured_registry(), as_json=args.json), end="")
         return 0
     if command == "inspect":
         try:
-            print(cmd_inspect(_configured_manifests(), args.runtime_id, as_json=args.json), end="")
+            print(
+                cmd_inspect_registry(
+                    _configured_registry(), args.runtime_id, as_json=args.json
+                ),
+                end="",
+            )
         except KeyError as exc:
             print(f"Error: {exc}")
             return 2
@@ -455,17 +449,12 @@ async def run_runtime_command(args) -> int:
         if not args.confirm:
             print(cmd_handoff_preview(store, args.session, args.to), end="")
             return 0
-        from garuda.config.agent_home import resolve_agent_home
-        from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
-
-        home = resolve_agent_home(".")
-        dicts = load_configured_manifest_dicts(home.global_settings)
         manager = ContextPackManager(store.session_dir(args.session))
         try:
             print(
                 await cmd_handoff_confirm(
                     store, args.session, args.to,
-                    manifests=dicts, pack_manager=manager,
+                    pack_manager=manager,
                 ),
                 end="",
             )
@@ -523,12 +512,10 @@ async def run_acp_command(args, task: str) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
     from garuda.interfaces.runtime_cli import run_acp_task
 
-    manifests = {m.runtime_id: m for m in _configured_manifests(args.workspace)}
-    if args.runtime not in manifests:
-        print(f"Error: unknown runtime {args.runtime!r}. See `garuda runtime list`.")
-        return 2
     try:
-        summary = await run_acp_task(manifests[args.runtime], task)
+        summary = await run_acp_task(
+            task, runtime_id=args.runtime, workspace=args.workspace
+        )
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -547,6 +534,10 @@ async def run_task(args) -> int:
         return 1
 
     if getattr(args, "runtime", "native") != "native":
+        # Resolve before constructing any model, tools, or workspace state.
+        # This preserves the fail-closed disabled/alias policy on the public
+        # `garuda run` entry point.
+        _configured_registry(args.workspace).get(args.runtime)
         return await run_acp_command(args, task)
 
     # Native selection still goes through the common trusted boundary before

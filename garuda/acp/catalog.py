@@ -463,8 +463,18 @@ def shared_registry(
     disabled: frozenset[str] | set[str] | None = None,
     include_builtins: bool = True,
 ) -> RuntimeRegistry:
-    """Build the one registry for builtins and trusted configured adapters."""
-    dicts = (builtin_manifest_dicts() if include_builtins else []) + list(extra_manifests or [])
+    """Build the one registry for native, builtins, and trusted adapters."""
+    native = {
+        "runtime_id": "native",
+        "kind": "native",
+        "version": "builtin",
+        "description": "The in-process Garuda loop.",
+    }
+    dicts = (
+        ([native] if include_builtins else [])
+        + (builtin_manifest_dicts() if include_builtins else [])
+        + list(extra_manifests or [])
+    )
     manifests = parse_global_manifests(dicts, source="shared registry")
     refs = parse_project_refs(list(project_refs or []), source="shared registry")
     if disabled is None:

@@ -75,9 +75,9 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   file is a configuration error, never an empty set that could reactivate a
   disabled executable. Project `disabled_runtimes` remains recommendation-only
   and disabled built-in stubs stay visible with their policy annotation.
-- Until the ACP launch facade is wired, selecting a configured ACP runtime
-  refuses before any toolkit, workspace, prompt, or process is started; it
-  never silently falls back to the native runtime.
+- Before the ACP launch facade was wired, selecting a configured ACP runtime
+  refused before any toolkit, workspace, prompt, or process was started; it
+  never silently fell back to the native runtime.
 
 ## 2026-09-25 — ACP adapters speak the public v1 stdio contract
 
@@ -101,3 +101,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `~/.local/bin/agent` installation location). As with every vendor adapter,
   setup guidance may name the user's CLI but never reads or proxies its
   credentials.
+
+## 2026-09-25 — CLI execution shares the runtime authority boundary
+
+- `garuda runtime list`, `inspect`, handoff confirmation, and `garuda run
+  --runtime` resolve through one configured registry: native and built-ins plus
+  trusted global manifests, with project aliases constrained to references.
+  Duplicate IDs, untrusted command-bearing project data, and globally disabled
+  targets refuse before discovery can present them as launchable or a process
+  can start.
+- A confirmed handoff generates and sends the handoff package to the started
+  target before acknowledgement. Delivery failure closes the target and rolls
+  the source back; successful CLI delivery is supervised through its target
+  turn and then explicitly closed/reaped when the command exits.

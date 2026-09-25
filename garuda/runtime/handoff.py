@@ -216,6 +216,7 @@ async def execute_handoff(
     checkpoint: Callable[[], None] | None = None,
     capture: Callable[[], dict[str, Any]] | None = None,
     generate: Callable[[], None] | None = None,
+    deliver: Callable[[Any], Any] | None = None,
     emit: Callable[[RuntimeEvent], None] | None = None,
     workspace: str | Path | None = None,
 ) -> tuple[HandoffTransaction, Any]:
@@ -226,6 +227,10 @@ async def execute_handoff(
     `AgentRuntime` instances, with the session store recording the outcome so
     exactly one authoritative owner survives either branch.
 
+    - When supplied, ``deliver`` runs against the started target before
+      acknowledgement. A delivery failure closes that target and rolls the
+      source back, so the audit trail cannot claim an owner that never
+      received the handoff package.
     - Success returns `(tx, target)` with `tx.phase == ACKNOWLEDGED`,
       `source` CLOSED and `target` active; the store records `acknowledged`.
     - Target-startup failure rolls back inside `start_target` (source resumed
@@ -289,6 +294,24 @@ async def execute_handoff(
             except Exception:
                 logger.warning("Handoff failure audit failed", exc_info=True)
         raise
+    if deliver is not None:
+        try:
+            result = deliver(target)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as exc:
+            try:
+                await target.close()
+            finally:
+                await tx._rollback(source, f"target handoff delivery failed: {exc}")
+            if store is not None:
+                try:
+                    store.record_handoff(
+                        session_id, state="failed", attempts=1, reason="target_delivery"
+                    )
+                except Exception:
+                    logger.warning("Handoff delivery failure audit failed", exc_info=True)
+            raise HandoffError(f"target handoff delivery failed: {exc}") from exc
     await tx.acknowledge(source, target)
     if store is not None:
         try:

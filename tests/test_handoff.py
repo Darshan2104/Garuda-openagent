@@ -9,7 +9,12 @@ import pytest
 
 from garuda.runtime.events import RuntimeEventKind
 from garuda.runtime.fake import FakeRuntime, FakeScenario
-from garuda.runtime.handoff import HandoffError, HandoffPhase, HandoffTransaction
+from garuda.runtime.handoff import (
+    HandoffError,
+    HandoffPhase,
+    HandoffTransaction,
+    execute_handoff,
+)
 from garuda.runtime.protocol import LifecycleState
 
 
@@ -91,6 +96,49 @@ async def test_acknowledge_refuses_two_mutating_owners():
     assert source.state is LifecycleState.IDLE
     with pytest.raises(HandoffError, match="two active mutating owners"):
         await tx.acknowledge(source, target)
+
+
+async def test_delivery_runs_on_the_target_before_acknowledgement():
+    source = await _started()()
+    target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
+    delivered: list[str] = []
+
+    async def deliver(runtime):
+        delivered.append("handoff package")
+        await runtime.prompt(delivered[-1])
+
+    tx, returned = await execute_handoff(
+        session_id="s",
+        source=source,
+        target_factory=lambda: target,
+        deliver=deliver,
+    )
+    assert tx.phase is HandoffPhase.ACKNOWLEDGED
+    assert returned is target
+    assert source.state is LifecycleState.CLOSED
+    assert target.state is LifecycleState.IDLE
+    events, _ = await target.poll_events(0)
+    assert any(event.payload.get("text") == "done: handoff package" for event in events)
+    await target.close()
+    assert target.state is LifecycleState.CLOSED
+
+
+async def test_delivery_failure_reaps_target_and_rolls_back_source():
+    source = await _started()()
+    target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
+
+    async def fail_delivery(_runtime):
+        raise RuntimeError("package rejected")
+
+    with pytest.raises(HandoffError, match="delivery failed"):
+        await execute_handoff(
+            session_id="s",
+            source=source,
+            target_factory=lambda: target,
+            deliver=fail_delivery,
+        )
+    assert source.state is LifecycleState.IDLE
+    assert target.state is LifecycleState.CLOSED
 
 
 async def test_illegal_moves_and_double_begin_fail():

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from garuda.acp.catalog import builtin_manifest_dicts
+from garuda.acp.catalog import adapter_for_manifest, builtin_manifest_dicts
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.main import build_parser
 from garuda.interfaces.runtime_cli import (
@@ -74,6 +74,39 @@ def test_global_manifests_merge_and_validate():
         load_configured_manifest_dicts({"runtimes": "nope"})
 
 
+def test_product_registry_surfaces_and_refuses_disabled_runtime():
+    from garuda.interfaces.runtime_cli import (
+        acp_adapter_for_workspace,
+        cmd_inspect_registry,
+        cmd_list_registry,
+        configured_registry,
+    )
+
+    extra = {
+        "runtime_id": "blocked-agent",
+        "kind": "acp",
+        "command": ["blocked-agent", "acp"],
+        "version": "1",
+        "setup": "Install blocked-agent.",
+    }
+    registry = configured_registry(
+        global_settings={"runtimes": [extra]},
+        project_settings={},
+        disabled=frozenset({"blocked-agent"}),
+    )
+    assert "disabled by user configuration" in cmd_list_registry(registry)
+    assert "unavailable" in cmd_inspect_registry(registry, "blocked-agent")
+    with pytest.raises(ValueError, match="disabled"):
+        acp_adapter_for_workspace(
+            ".",
+            "blocked-agent",
+            argv_override=_fake_argv(),
+            disabled=frozenset({"blocked-agent"}),
+            global_settings={"runtimes": [extra]},
+            project_settings={},
+        )
+
+
 async def test_handoff_preview_mutates_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(tmp_path / "sessions"))
     store = SessionStore()
@@ -107,6 +140,15 @@ def _fake_argv(profile="success"):
     return [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", profile]
 
 
+def _checkpoint(store, session_id="s1", workspace=None):
+    """Handoff/recovery requires a durable transcript before resuming."""
+    store.checkpoint_messages(session_id, [])
+    if workspace is not None:
+        from garuda.workspace.diff import capture_baseline
+
+        store.record_baseline(session_id, capture_baseline(workspace).to_dict())
+
+
 async def test_handoff_confirm_runs_the_transaction(tmp_path, monkeypatch):
     from garuda.context.pack import ContextPackManager
     from garuda.interfaces.runtime_cli import cmd_handoff_confirm
@@ -116,6 +158,7 @@ async def test_handoff_confirm_runs_the_transaction(tmp_path, monkeypatch):
     store = SessionStore()
     store.begin("s1", task="move it", model="m", agent="a", workspace="w")
     store.ensure_unified("s1")
+    _checkpoint(store, workspace=tmp_path)
 
     manager = ContextPackManager(store.session_dir("s1"))
     done = await cmd_handoff_confirm(
@@ -140,6 +183,7 @@ async def test_handoff_confirm_failure_rolls_back_to_source(tmp_path, monkeypatc
     store = SessionStore()
     store.begin("s1", task="move it", model="m", agent="a", workspace="w")
     store.ensure_unified("s1")
+    _checkpoint(store, workspace=tmp_path)
     with pytest.raises(HandoffError, match="target startup failed"):
         await cmd_handoff_confirm(
             store, "s1", "fakevendor",
@@ -160,6 +204,7 @@ async def test_handoff_confirm_refuses_unknown_disabled_and_native(tmp_path, mon
     store = SessionStore()
     store.begin("s1", task="move it", model="m", agent="a", workspace="w")
     store.ensure_unified("s1")
+    _checkpoint(store)
     with pytest.raises(RegistryError, match="unknown runtime"):
         await cmd_handoff_confirm(
             store, "s1", "ghost", manifests=_fake_manifests(), disabled=frozenset()
@@ -185,6 +230,7 @@ async def test_handoff_confirm_refuses_missing_executable_before_moving(tmp_path
     store = SessionStore()
     store.begin("s1", task="move it", model="m", agent="a", workspace="w")
     store.ensure_unified("s1")
+    _checkpoint(store)
     missing = [
         {
             "runtime_id": "ghost",
@@ -259,34 +305,26 @@ async def test_recover_command_reports(tmp_path, monkeypatch):
     store = SessionStore()
     store.begin("s1", task="t", model="m", agent="a", workspace="w")
     store.ensure_unified("s1")
+    _checkpoint(store)
     text = cmd_recover(store, "s1")
     assert "resumable" in text
     report = json.loads(cmd_recover(store, "s1", as_json=True))
     assert report["state"] == "resumable"
 
 
-async def test_acp_run_streams_through_fake():
+async def test_acp_run_streams_through_fake(monkeypatch):
     manifests = {m.runtime_id: m for m in _manifests()}
     assert manifests["claude"].command == ("claude-agent-acp",)
     import garuda.interfaces.runtime_cli as cli
 
-    fake_manifest = parse_global_manifests(
-        [
-            {
-                "runtime_id": "fakevendor",
-                "kind": "acp",
-                "command": [
-                    sys.executable,
-                    "-m",
-                    "garuda.acp.fake_agent",
-                    "--profile",
-                    "success",
-                ],
-                "version": "1",
-                "setup": "fake",
-            }
-        ]
-    )[0]
-    summary = await cli.run_acp_task(fake_manifest, "hello via cli")
+    monkeypatch.setattr(
+        cli,
+        "acp_adapter_for_workspace",
+        lambda *_args, **_kwargs: (
+            None,
+            adapter_for_manifest(manifests["claude"], argv_override=_fake_argv("success")),
+        ),
+    )
+    summary = await cli.run_acp_task("hello via cli", runtime_id="fakevendor")
     assert summary["turn"] == 1
     assert summary["events"] >= 2
