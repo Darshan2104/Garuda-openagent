@@ -15,9 +15,12 @@ from garuda.acp.catalog import (
     discover,
     health_of,
     load_trusted_disabled,
+    load_trusted_runtime_settings,
 )
+from garuda.agents.setup import prepare_runtime_catalog
+from garuda.interfaces.main import build_parser, run_task
 from garuda.runtime.protocol import AuthStatus
-from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
+from garuda.runtime.registry import RegistryError, RuntimeRegistry, parse_global_manifests
 
 GUARD_VAR = "GARUDA_DISCOVERY_PARENT_SECRET"
 
@@ -147,6 +150,19 @@ def test_trusted_disablement_flows_from_global_settings(tmp_path, monkeypatch):
         registry.get("fake")
 
 
+def test_malformed_global_runtime_settings_refuse_discovery_and_selection(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("disabled_runtimes: [fake\n", encoding="utf-8")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings_path))
+
+    with pytest.raises(ValueError, match="trusted runtime settings"):
+        load_trusted_runtime_settings()
+    with pytest.raises(ValueError, match="trusted runtime settings"):
+        load_trusted_disabled()
+    with pytest.raises(ValueError, match="trusted runtime settings"):
+        prepare_runtime_catalog(tmp_path)
+
+
 def test_project_suggestions_are_recommendation_only():
     manifests = _manifest(command=["definitely-not-installed-xyz"])
     found = discover(manifests, project_disabled={"fake"})
@@ -174,6 +190,64 @@ def test_stubs_listed_until_configured():
     found = discover(manifests)
     claude = next(d for d in found if d.runtime_id == "claude")
     assert "Add a global harness manifest" not in " ".join(claude.warnings)
+
+
+def test_disabled_builtin_stub_stays_visible_with_its_policy_annotation():
+    claude = next(entry for entry in discover([], disabled={"claude"}) if entry.runtime_id == "claude")
+    assert claude.available is False
+    assert any("disabled by user configuration" in warning for warning in claude.warnings)
+
+
+def _write_runtime_settings(workspace, *, disabled=True):
+    global_settings = workspace / "global-settings.yaml"
+    global_settings.write_text(
+        "runtimes:\n"
+        "  - runtime_id: fake\n"
+        "    kind: acp\n"
+        "    command: [fake-acp]\n"
+        "    version: '1'\n"
+        + ("disabled_runtimes: [fake]\n" if disabled else ""),
+        encoding="utf-8",
+    )
+    agent = workspace / ".agent"
+    agent.mkdir()
+    (agent / "settings.yaml").write_text(
+        "runtime_refs:\n  - alias: preferred\n    runtime_id: fake\n"
+        "disabled_runtimes: [native]\n",
+        encoding="utf-8",
+    )
+    return global_settings
+
+
+def test_shared_catalog_keeps_project_disablement_advisory_and_blocks_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path)))
+    catalog = prepare_runtime_catalog(tmp_path)
+    fake = next(entry for entry in catalog.discovered if entry.runtime_id == "fake")
+    assert fake.available is False
+    assert any("disabled by user configuration" in warning for warning in fake.warnings)
+    # The project's attempt to disable native remains a suggestion only.
+    assert catalog.select("native").runtime_id == "native"
+    with pytest.raises(RegistryError, match="disabled"):
+        catalog.select("preferred")
+
+
+@pytest.mark.asyncio
+async def test_cli_and_sdk_start_gate_block_globally_disabled_alias(tmp_path, monkeypatch):
+    """Both public launch surfaces select through the shared trusted catalog
+    before tool construction, model calls, or workspace startup."""
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path)))
+
+    args = build_parser().parse_args(
+        ["run", "--task", "must not run", "--workspace", str(tmp_path), "--runtime", "preferred"]
+    )
+    with pytest.raises(RegistryError, match="disabled"):
+        await run_task(args)
+
+    from garuda.sdk import SoftwareAgent
+
+    sdk = SoftwareAgent(workspace=tmp_path, runtime="preferred")
+    with pytest.raises(RegistryError, match="disabled"):
+        await sdk.run("must not run")
 
 
 def test_discovery_reads_no_tokens(tmp_path, monkeypatch):

@@ -59,3 +59,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. A local session must persist its baseline before any prompt; its verifier, handoff, and close path consume that exact record or fail closed. Non-local attribution is recorded as unsupported rather than silently omitted.
 - Recovery signals only a persisted Garuda-launched child/process-group identity bound to the session runtime. It audits a readable message checkpoint and runtime identity before resume, validates ACP authority snapshots, and refuses indeterminate liveness before or after reaping. Turn, switch, and process cancellation boundaries persist their audit record before terminal transition.
+
+## 2026-09-25 — trusted runtime selection is a shared launch gate
+
+- `prepare_runtime_catalog()` is the only CLI/SDK runtime builder. It reads
+  manifests and `disabled_runtimes` from the trusted global settings file,
+  resolves project aliases only against those manifests, and feeds the same
+  disabled set to discovery and selection.
+- Runtime settings parsing is fail-closed: a malformed or unreadable global
+  file is a configuration error, never an empty set that could reactivate a
+  disabled executable. Project `disabled_runtimes` remains recommendation-only
+  and disabled built-in stubs stay visible with their policy annotation.
+- Until the ACP launch facade is wired, selecting a configured ACP runtime
+  refuses before any toolkit, workspace, prompt, or process is started; it
+  never silently falls back to the native runtime.

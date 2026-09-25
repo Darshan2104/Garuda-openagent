@@ -154,7 +154,15 @@ async def run_agent_task(
     close_mcp: bool = True,
     resume: str | None = None,
     store: SessionStore | None = None,
+    runtime_catalog=None,
+    runtime_ref: str = "native",
 ) -> AgentResult:
+    # Selection happens before sessions, leases, environments, hooks, tools, or
+    # prompts. A disabled runtime must therefore be unable to cause even a
+    # partial launch. ACP execution is introduced by the ACP adapter work; until
+    # then only the native runtime may cross this facade.
+    if runtime_catalog is not None:
+        runtime_catalog.select_for_native_facade(runtime_ref)
     # Callers that read sessions back from a specific root must be able to write to that
     # same root. The dashboard's `--sessions-dir` is the case: without this, a run it
     # launched would persist to the default location and be invisible in the list that

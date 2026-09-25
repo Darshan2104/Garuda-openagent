@@ -1,5 +1,6 @@
-"""Shared agent profile setup for run, serve, recipes, and eval entry points."""
+"""Shared agent and trusted runtime setup for every launch entry point."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
@@ -10,6 +11,88 @@ from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig
+
+
+@dataclass(frozen=True)
+class RuntimeCatalog:
+    """The one trusted registry and inspectable discovery result for a run.
+
+    Global settings authorize executable manifests and disablement. Project
+    settings may only name aliases and offer disablement suggestions; neither
+    can authorize a command or override the global disabled set.
+    """
+
+    registry: object
+    discovered: tuple[object, ...]
+
+    def select(self, ref: str):
+        """Resolve a launch selection through the global disablement gate."""
+        return self.registry.get(ref)
+
+    def select_for_native_facade(self, ref: str):
+        """Resolve a launchable selection before the ACP facade exists.
+
+        The registry is already authoritative for all configured ids. This
+        second check prevents a configured-but-not-yet-supported ACP command
+        from being presented as selected and then silently running native.
+        """
+        selected = self.select(ref)
+        if selected.kind.value != "native":
+            from garuda.runtime.registry import RegistryError
+
+            raise RegistryError(
+                f"runtime {selected.runtime_id!r} is selected but is not launchable "
+                "by this runtime facade yet"
+            )
+        return selected
+
+
+def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
+    """Build the shared trusted runtime boundary for CLI and SDK launches.
+
+    This deliberately reads the global file through the strict runtime loader,
+    rather than ``AgentHome.global_settings``: malformed global YAML must not
+    erase a user's safety disablement and silently authorize a launch.
+    """
+    from garuda.acp.catalog import (
+        discover,
+        load_trusted_disabled,
+        load_trusted_runtime_settings,
+    )
+    from garuda.config.agent_home import resolve_agent_home
+    from garuda.runtime.registry import (
+        RuntimeRegistry,
+        parse_global_manifests,
+        parse_project_refs,
+    )
+
+    global_settings = load_trusted_runtime_settings()
+    home = resolve_agent_home(workspace)
+    manifests = parse_global_manifests(
+        global_settings.get("runtimes"), source="trusted global runtimes"
+    )
+    project_refs = parse_project_refs(
+        home.settings.get("runtime_refs"), source=f"project runtime refs ({home.workspace})"
+    )
+    disabled = load_trusted_disabled(global_settings)
+    project_disabled = home.settings.get("disabled_runtimes", [])
+    if project_disabled is None:
+        project_disabled = []
+    if not isinstance(project_disabled, list) or any(
+        not isinstance(runtime_id, str) or not runtime_id for runtime_id in project_disabled
+    ):
+        raise ValueError("project disabled_runtimes must be a list of runtime id strings")
+    registry = RuntimeRegistry(manifests, project_refs, disabled=disabled)
+    return RuntimeCatalog(
+        registry=registry,
+        discovered=tuple(
+            discover(
+                registry.manifests,
+                disabled=registry.disabled_ids,
+                project_disabled=frozenset(project_disabled),
+            )
+        ),
+    )
 
 
 async def prepare_agent_run(

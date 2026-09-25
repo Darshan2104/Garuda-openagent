@@ -16,7 +16,6 @@ the discovered record and never applied.
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 import shutil
@@ -27,8 +26,6 @@ from pathlib import Path
 from typing import Any
 
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
-
-logger = logging.getLogger(__name__)
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -178,8 +175,10 @@ def discover(
             )
         found.append(record)
     for stub in BUILTIN_STUBS:
-        if stub["runtime_id"] not in by_id and stub["runtime_id"] not in disabled:
+        if stub["runtime_id"] not in by_id:
             warnings = [stub["description"] + " " + stub["setup"]]
+            if stub["runtime_id"] in disabled:
+                warnings.append("disabled by user configuration")
             if stub["runtime_id"] in project_warned:
                 warnings.append(
                     "project suggests disabling this runtime — ignored: "
@@ -200,14 +199,16 @@ def discover(
 def load_trusted_disabled(settings: Mapping[str, Any] | None = None) -> frozenset[str]:
     """The runtime ids the user disabled in trusted global settings.
 
-    With `settings=None` the global settings file is read (missing or
-    unparsable files mean nothing disabled, mirroring the settings loader).
+    With `settings=None` the global settings file is read. A missing file
+    means nothing is disabled, but an unreadable or malformed file is an
+    actionable error: substituting an empty mapping could start a runtime the
+    user deliberately disabled.
     A present-but-malformed `disabled_runtimes` value raises `ValueError`:
     silently enabling a runtime the user meant to disable is the wrong
     direction to fail.
     """
     if settings is None:
-        settings = _read_global_settings()
+        settings = load_trusted_runtime_settings()
     if not isinstance(settings, Mapping):
         raise ValueError("global settings must be a mapping")
     raw = settings.get("disabled_runtimes", [])
@@ -218,7 +219,14 @@ def load_trusted_disabled(settings: Mapping[str, Any] | None = None) -> frozense
     return frozenset(raw)
 
 
-def _read_global_settings() -> dict[str, Any]:
+def load_trusted_runtime_settings() -> Mapping[str, Any]:
+    """Read the runtime trust anchor without converting parse failure to allow.
+
+    Other settings consumers may safely fall back to their built-in defaults.
+    Runtime disablement is different: an unreadable trust anchor is ambiguous
+    about whether launching an executable is authorized, so callers must stop
+    before discovery or selection.
+    """
     from garuda.config.agent_home import global_settings_path
 
     path = global_settings_path()
@@ -228,10 +236,11 @@ def _read_global_settings() -> dict[str, Any]:
         import yaml
 
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    except Exception:
-        logger.warning("Failed to parse global settings %s", path, exc_info=True)
-        return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"cannot read trusted runtime settings {path}: {exc}") from exc
+    if not isinstance(data, Mapping):
+        raise ValueError(f"trusted runtime settings {path} must be a mapping")
+    return data
 
 
 def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> DiscoveredRuntime:
