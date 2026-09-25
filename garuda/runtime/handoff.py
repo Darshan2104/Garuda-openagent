@@ -264,7 +264,6 @@ async def execute_handoff(
       record persists the baseline commit for the target session.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit)
-    authoritative_delta = None
     if workspace is not None:
         if store is None:
             raise HandoffError(
@@ -273,10 +272,10 @@ async def execute_handoff(
         try:
             from garuda.workspace.diff import load_session_delta
 
-            # Do this before pausing/transferring anything. A handoff cannot
-            # claim a workspace delta it failed to derive from the recorded
-            # start-of-session baseline.
-            authoritative_delta = load_session_delta(store, session_id, workspace)
+            # Preflight before pausing anything: a handoff cannot claim a
+            # workspace delta it cannot derive from the recorded
+            # start-of-session baseline, so refuse while the source is live.
+            load_session_delta(store, session_id, workspace)
         except Exception as exc:
             raise HandoffError(
                 f"handoff refused: authoritative workspace delta is unavailable: {exc}"
@@ -290,10 +289,16 @@ async def execute_handoff(
 
     def _capture_with_delta() -> dict[str, Any]:
         data = dict(capture() if capture else {})
-        if authoritative_delta is not None:
-            data.setdefault("baseline_commit", authoritative_delta.baseline_commit)
-            data.setdefault("changed", list(authoritative_delta.changed))
-            data.setdefault("preexisting", list(authoritative_delta.preexisting))
+        if workspace is not None:
+            from garuda.workspace.diff import load_session_delta
+
+            # Recomputed after the pause so the package reflects the paused
+            # tree, not the preflight snapshot. A failure here raises inside
+            # `begin`, which resumes the source instead of transferring.
+            delta = load_session_delta(store, session_id, workspace)
+            data.setdefault("baseline_commit", delta.baseline_commit)
+            data.setdefault("changed", list(delta.changed))
+            data.setdefault("preexisting", list(delta.preexisting))
         return data
 
     await tx.begin(

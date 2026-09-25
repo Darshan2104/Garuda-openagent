@@ -387,3 +387,51 @@ async def test_handoff_refuses_a_workspace_without_a_recorded_baseline(repo, tmp
             store=store,
             workspace=repo,
         )
+
+
+async def test_handoff_delta_reflects_the_paused_tree(repo, tmp_path, monkeypatch):
+    """The package's delta is recomputed after the pause, so a write that lands
+    between the preflight check and the checkpoint is still attributed."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.fake import FakeRuntime, FakeScenario
+    from garuda.runtime.handoff import execute_handoff
+    from garuda.workspace.diff import capture_baseline
+
+    store = SessionStore(tmp_path / "sessions")
+    import tests.test_handoff as handoff_tests
+
+    source = await handoff_tests._native_source(tmp_path, store, "handoff-late-write")
+    store.record_baseline("handoff-late-write", capture_baseline(repo).to_dict())
+
+    def _checkpoint() -> None:
+        (repo / "late.txt").write_text("written at the boundary\n")
+
+    tx, _ = await execute_handoff(
+        session_id="handoff-late-write",
+        source=source,
+        target_factory=lambda: FakeRuntime(FakeScenario.SUCCESS, runtime_id="target-l"),
+        store=store,
+        workspace=repo,
+        checkpoint=_checkpoint,
+    )
+    assert "late.txt" in tx.captured["changed"]
+
+
+def test_non_local_workspace_records_unsupported_attribution(tmp_path):
+    """A container/remote workspace is marked unsupported, never silently skipped,
+    and a store that cannot record even that refuses startup."""
+    from garuda.core.sessions import SessionStore
+    from garuda.workspace.diff import record_session_baseline
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin(session_id="docker-1", task="t", model="m", agent="a", workspace=str(tmp_path))
+    assert record_session_baseline(store, "docker-1", tmp_path, "docker") is None
+    assert store.load_meta("docker-1")["baseline_state"] == "unsupported_nonlocal"
+
+    class _Broken:
+        def update_meta(self, *_args, **_kwargs):
+            raise OSError("read-only")
+
+    with pytest.raises(BaselineError, match="non-local baseline state"):
+        record_session_baseline(_Broken(), "docker-2", tmp_path, "docker")
