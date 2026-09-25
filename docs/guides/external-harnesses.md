@@ -7,13 +7,15 @@ is governed by each vendor's policy, not by Garuda: quota appears only when the
 harness itself reports it, and Garuda never estimates, infers, or zero-fills
 usage.
 
-**Status:** the shipped manifests are part of the trusted runtime catalog, so
-`--runtime claude` and `--runtime codex` resolve, show up in discovery, and
-honor `disabled_runtimes`. No `garuda run`, SDK, or dashboard path launches an
-ACP harness yet: selecting one refuses with "not launchable by this runtime
-facade yet" instead of running the native loop. The adapters are exercised
-only against Garuda's strict ACP v1 test fixture; neither vendor CLI has been
-verified end to end by this repository's tests.
+**Status:** the shipped manifests (`claude`, `codex`, `cursor`, `opencode`,
+`pi`, `goose`) are part of the trusted runtime catalog, so they resolve, show
+up in `garuda runtime list`, and honor `disabled_runtimes`. `garuda run
+--runtime <id>` routes an ACP selection to the ACP launch path (see the
+[CLI reference](../reference/cli.md)); the SDK and the dashboard still run only
+the native loop and refuse an ACP selection instead of silently running
+native. The adapters are exercised only against Garuda's strict ACP v1 test
+fixture; no vendor CLI has been verified end to end by this repository's
+tests.
 
 ## Claude Code
 
