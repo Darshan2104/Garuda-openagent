@@ -15,7 +15,7 @@ from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityOwner
 from garuda.acp.protocol import AcpCancelledError, AcpError, AcpProtocolError, AcpTimeoutError
 from garuda.runtime import HealthStatus, LifecycleState, RuntimeClosedError
-from garuda.runtime.protocol import RuntimeStartError
+from garuda.runtime.protocol import RuntimeProtocolError, RuntimeStartError
 from tests.test_runtime_conformance import run_conformance_suite
 
 FAKE = [sys.executable, "-m", "garuda.acp.fake_agent"]
@@ -40,6 +40,7 @@ def test_public_profile_sets_are_pinned():
         "exit-early",
         "resume",
         "version-mismatch",
+        "odd-stop",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",
@@ -131,7 +132,7 @@ async def test_malformed_slow_exit_and_version_pinned():
     await exiting.close()
 
     mismatch = _adapter("version-mismatch")
-    with pytest.raises(AcpProtocolError, match="99.99"):
+    with pytest.raises(AcpProtocolError, match="got 99"):
         await mismatch.start(task="t", session_id="v1")
     await mismatch.close()
 
@@ -147,9 +148,18 @@ async def test_approval_flow_and_cancel_paths():
         if requests:
             break
     assert requests, "fake agent must request approval"
-    await approval.permission_response(approval_id="a1", allow=True)
+    request = requests[0].payload
+    assert request["tool_call_id"] == "c-apr"
+    assert {o["kind"] for o in request["options"]} == {"allow_once", "allow_always", "reject_once"}
+    await approval.permission_response(approval_id=request["approval_id"], allow=True)
     await asyncio.wait_for(prompting, 15)
     assert approval.state is LifecycleState.IDLE
+    events, _ = await approval.poll_events(0)
+    [result] = [e for e in events if e.kind.value == "tool_result"]
+    # `allow_once` was selected — never the wider `allow_always`.
+    assert (result.payload["status"], result.payload["content"]) == ("completed", "approved")
+    with pytest.raises(RuntimeProtocolError):
+        await approval.permission_response(approval_id=request["approval_id"], allow=True)
     await approval.close()
 
     cancelling = _adapter("slow")
@@ -165,3 +175,48 @@ async def test_approval_flow_and_cancel_paths():
         await cancelling.prompt("too late")
     with pytest.raises(RuntimeStartError):
         await cancelling.resume(native_session_id="elsewhere")
+
+
+async def test_approval_handler_answers_v1_permission_requests():
+    """An injected handler answers `session/request_permission` exactly once;
+    a denial selects a reject option and the agent reports the call failed."""
+    asked: list[str] = []
+
+    async def deny(action: str) -> bool:
+        asked.append(action)
+        return False
+
+    runtime = _adapter("approval", approval_handler=deny)
+    await runtime.start(task="t", session_id="h1")
+    await asyncio.wait_for(runtime.prompt("drop the table"), 15)
+    assert asked == ["drop the table"]
+    events, _ = await runtime.poll_events(0)
+    [result] = [e for e in events if e.kind.value == "tool_result"]
+    assert (result.payload["status"], result.payload["content"]) == ("failed", "denied")
+    await runtime.close()
+
+
+async def test_cancel_answers_open_permission_requests_cancelled():
+    runtime = _adapter("approval")
+    await runtime.start(task="t", session_id="c1")
+    prompting = asyncio.ensure_future(runtime.prompt("wait for me"))
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        events, _ = await runtime.poll_events(0)
+        if any(e.kind.value == "approval_request" for e in events):
+            break
+    await runtime.cancel(reason="user stopped")
+    with pytest.raises(AcpCancelledError):
+        await asyncio.wait_for(prompting, 15)
+    assert runtime.state is LifecycleState.CLOSED
+
+
+async def test_unknown_stop_reason_fails_and_reaps():
+    """A stop the normalizer cannot close truthfully fails the runtime and
+    reaps the process instead of leaving it RUNNING."""
+    runtime = _adapter("odd-stop")
+    await runtime.start(task="t", session_id="o1")
+    with pytest.raises(AcpProtocolError, match="mystery"):
+        await asyncio.wait_for(runtime.prompt("go"), 15)
+    assert runtime.state is LifecycleState.FAILED
+    assert await runtime.health() is HealthStatus.UNAVAILABLE

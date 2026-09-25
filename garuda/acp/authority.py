@@ -9,7 +9,12 @@ defaults apply — when Garuda cannot mediate, the agent's own sandbox owns
 execution, and when the agent cannot act, Garuda does.
 
 The map persists through the unified session's capability snapshot as
-`"<family>=<owner>"` names, so a resumed session can prove who owned what.
+`"<family>=<owner>"` names, so a resumed session carries the negotiated
+assignment. What it records is negotiated *intent*, not an enforced boundary:
+`families`/`mediated`/`sandbox` are Garuda extension fields an agent declares
+about itself (standard ACP v1 agents send none), the sandbox flag is
+unverified, and because Garuda advertises no `fs`/`terminal` client
+capability, a v1 agent executes its own tools whatever the map says.
 """
 
 from __future__ import annotations

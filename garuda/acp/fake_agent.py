@@ -1,13 +1,18 @@
 """Deterministic fake ACP agent for conformance tests (P0.15, issue #24).
 
 Run as `python -m garuda.acp.fake_agent --profile NAME [--state-file PATH]`.
-Speaks the owned ACP v1 subset (initialize, session/new, session/prompt,
-session/cancel, session/approve) with newline-delimited JSON over stdio.
+Speaks an ACP v1 subset — initialize, session/new, session/prompt,
+session/cancel, `session/update` notifications keyed by `sessionUpdate`, and
+the agent-to-client `session/request_permission` request — with
+newline-delimited JSON over stdio. `agentCapabilities` additionally carries
+Garuda's authority extension fields (`families`/`mediated`/`sandbox`), which
+real agents do not send.
 No network, no subscription, no workspace access — argv and files here are the
 only inputs, so the test server is isolated from credentials by construction.
 
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
-resume (stable ids via --state-file), version-mismatch, capabilities-<name>.
+resume (stable ids via --state-file), version-mismatch, odd-stop (a stop
+reason outside v1), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ BASE_PROFILES = frozenset(
         "exit-early",
         "resume",
         "version-mismatch",
+        "odd-stop",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -70,8 +76,28 @@ def _send(message: dict) -> None:
     sys.stdout.buffer.flush()
 
 
-def _update(update: dict) -> None:
-    _send({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
+def _update(session_id: str, update: dict) -> None:
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session_id, "update": update},
+        }
+    )
+
+
+def _text(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def _prompt_text(prompt: object) -> str:
+    if not isinstance(prompt, list):
+        return ""
+    return "".join(
+        block.get("text", "")
+        for block in prompt
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
 
 
 def _result(call_id: int, result: dict) -> None:
@@ -115,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             params = request.get("params", {})
             if method == "initialize":
                 if profile == "version-mismatch":
-                    _result(call_id, {"protocolVersion": "99.99"})
+                    _result(call_id, {"protocolVersion": 99})
                 else:
                     _result(
                         call_id,
@@ -136,18 +162,16 @@ def main(argv: list[str] | None = None) -> int:
                 _result(call_id, {"sessionId": session_id})
             elif method == "session/prompt":
                 _handle_prompt(profile, call_id, params)
-            elif method == "session/approve":
-                _update({"updateType": "tool_call_update", "toolCallId": "c-apr",
-                         "status": "approved" if params.get("approved") else "denied"})
             elif method == "session/cancel":
-                _update({"updateType": "error", "message": "cancelled by client"})
+                pass  # a notification; nothing is in flight outside a prompt
     except EOFError:
         pass
     return 0
 
 
 def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
-    text = params.get("prompt", "")
+    session_id = params.get("sessionId", "")
+    text = _prompt_text(params.get("prompt"))
     if profile == "malformed":
         sys.stdout.buffer.write(b"not-json\n")
         sys.stdout.buffer.flush()
@@ -161,24 +185,66 @@ def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
         sys.exit(3)
     elif profile == "streaming":
         for chunk in ("hel", "lo, ", "world"):
-            _update({"updateType": "agent_message_chunk", "text": chunk})
+            _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text(chunk)})
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "approval":
-        _update({"updateType": "approval_request", "approvalId": "a1", "action": text})
-        nested = _read_frame()
-        if nested.get("method") == "session/cancel":
-            _update({"updateType": "error", "message": "cancelled by client"})
+        _update(
+            session_id,
+            {"sessionUpdate": "tool_call", "toolCallId": "c-apr", "title": text,
+             "kind": "execute", "status": "pending"},
+        )
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "id": "perm-1",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": session_id,
+                    "toolCall": {"toolCallId": "c-apr", "title": text},
+                    "options": [
+                        {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "always", "name": "Always", "kind": "allow_always"},
+                        {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+                    ],
+                },
+            }
+        )
+        while True:
+            reply = _read_frame()
+            if reply.get("method") == "session/cancel":
+                continue  # the client must still answer the request `cancelled`
+            if reply.get("id") == "perm-1" and "method" not in reply:
+                break
+        outcome = (reply.get("result") or {}).get("outcome") or {}
+        if outcome.get("outcome") == "cancelled":
             _result(call_id, {"stopReason": "cancelled"})
-        else:
-            _update({"updateType": "tool_call", "toolCallId": "c-apr", "title": text})
-            _result(call_id, {"stopReason": "end_turn"})
+            return
+        allowed = outcome.get("optionId") == "allow"
+        _update(
+            session_id,
+            {"sessionUpdate": "tool_call_update", "toolCallId": "c-apr",
+             "status": "completed" if allowed else "failed",
+             "content": [{"type": "content",
+                          "content": _text("approved" if allowed else "denied")}]},
+        )
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "odd-stop":
+        _result(call_id, {"stopReason": "mystery"})
     elif profile == "diff":
-        _update({"updateType": "diff", "path": "a.py", "oldText": "", "newText": "x = 1"})
+        _update(
+            session_id,
+            {"sessionUpdate": "tool_call", "toolCallId": "c-diff", "title": "edit a.py",
+             "kind": "edit", "status": "completed",
+             "content": [{"type": "diff", "path": "a.py", "oldText": None,
+                          "newText": "x = 1"}]},
+        )
         _result(call_id, {"stopReason": "end_turn"})
     else:
-        _update({"updateType": "agent_message_chunk", "text": f"done: {text}"})
+        _update(
+            session_id,
+            {"sessionUpdate": "agent_message_chunk", "content": _text(f"done: {text}")},
+        )
         _result(call_id, {"stopReason": "end_turn"})
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

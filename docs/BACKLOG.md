@@ -230,6 +230,21 @@ The same config gave 49 and then 37 turns on the same task. Do not tune on one t
 
 ## Open work
 
+**ACP authority is recorded, not enforced.** `acp/authority.py` negotiates one
+owner per tool family from `families`/`mediated`/`sandbox`, which are Garuda
+extension fields in `agentCapabilities` — standard ACP v1 agents send none, and
+the sandbox flag is the agent's own unverified claim. Garuda advertises
+`clientCapabilities: {}`, so a v1 agent runs its own edits and commands; nothing
+routes them through Garuda even where the map says `garuda`. Enforcing it means
+advertising `fs`/`terminal` client capabilities, serving those methods through
+the broker, and deriving ownership from what was advertised rather than
+declared.
+
+**Interactive sessions take no workspace lease.** Only `run_agent_task` acquires
+the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
+SDK `Conversation` call `agent.run` directly, so they can interleave with a
+leased run on the same workspace.
+
 **The dashboard still parks approvals outside the P0.17 broker.**
 `garuda.acp.broker.ApprovalBroker` is installed only by `run_agent_task`
 (`interfaces/runner.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
