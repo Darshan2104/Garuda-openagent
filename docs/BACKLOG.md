@@ -248,6 +248,15 @@ tests. Wiring the first ACP entry point must pass the session store (the adapter
 warns when it has none). The `cancellations` audit list is also not consumed by
 classification yet.
 
+**ACP harnesses get no API-key or custom config-dir passthrough.** The adapter
+child environment is `PATH`/`HOME`/`LANG` only (`acp/client.py::_child_env`),
+and manifests reject `env`. A user who authenticates a vendor CLI only through
+`CODEX_API_KEY`/`ANTHROPIC_API_KEY`, or keeps its config under a custom
+`CODEX_HOME`/`CLAUDE_CONFIG_DIR`, cannot use the shipped adapters. A fix would
+be a per-manifest allowlist of variable *names* in trusted global settings only,
+passed through without Garuda reading or logging the values, with a decision
+record on why that is not token proxying.
+
 **Interactive sessions take no workspace lease.** Only `run_agent_task` acquires
 the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
 SDK `Conversation` call `agent.run` directly, so they can interleave with a
