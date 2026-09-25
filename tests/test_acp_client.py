@@ -94,7 +94,13 @@ async def test_handshake_session_prompt_and_notifications():
         session_id = await process.session_new()
         assert session_id == "s1"
         await process.session_prompt(session_id, "hello")
-        seen = {n["params"]["seen"] for n in process.drain_notifications()}
+        notifications = [await process.next_notification(timeout=1.0) for _ in range(3)]
+        assert all(notification is not None for notification in notifications)
+        seen = {
+            notification["params"]["seen"]
+            for notification in notifications
+            if notification is not None
+        }
         assert {"initialize", "session/new", "session/prompt"} <= seen
     finally:
         await process.close()
