@@ -79,7 +79,11 @@ last — concurrent runs on one workspace are refused, never interleaved.
 captured at session start and persisted in the unified session, per-file
 added/modified/deleted/renamed/untracked with preexisting dirt flagged
 separately, bounded diff text recoverable from disk, ACP hints reconciled
-against filesystem truth and never applied.
+against filesystem truth and never applied. CLI, SDK, and dashboard session
+starts refuse before a prompt when a local baseline cannot be persisted;
+completion, handoff, and dashboard close consume that exact record and refuse
+or mark failure if it cannot later be read. Non-local attribution is explicit
+unsupported state, not an empty success claim.
 
 ## `context/` — fitting the conversation in the window
 

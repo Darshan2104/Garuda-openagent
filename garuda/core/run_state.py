@@ -572,6 +572,7 @@ async def prepare_run(
     pack_source_runtime: str = "native",
     pack_git_evidence: str = "",
     initial_state: dict | WorkingState | None = None,
+    workspace_delta_loader=None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -752,6 +753,7 @@ async def prepare_run(
             model=model,
             permissions=permissions,
             ledger=ledger,
+            workspace_delta_loader=workspace_delta_loader,
         ),
         steering=Steering(
             max_turns=config.max_turns,

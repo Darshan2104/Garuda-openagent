@@ -225,6 +225,23 @@ async def execute_handoff(
       record persists the baseline commit for the target session.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit)
+    authoritative_delta = None
+    if workspace is not None:
+        if store is None:
+            raise HandoffError(
+                "handoff with a workspace requires a session store holding its baseline"
+            )
+        try:
+            from garuda.workspace.diff import load_session_delta
+
+            # Do this before pausing/transferring anything. A handoff cannot
+            # claim a workspace delta it failed to derive from the recorded
+            # start-of-session baseline.
+            authoritative_delta = load_session_delta(store, session_id, workspace)
+        except Exception as exc:
+            raise HandoffError(
+                f"handoff refused: authoritative workspace delta is unavailable: {exc}"
+            ) from exc
     if store is not None:
         try:
             store.record_handoff(session_id, state="prepared", attempts=1)
@@ -234,16 +251,10 @@ async def execute_handoff(
 
     def _capture_with_delta() -> dict[str, Any]:
         data = dict(capture() if capture else {})
-        if workspace is not None and store is not None:
-            try:
-                from garuda.workspace.diff import load_session_delta
-
-                delta = load_session_delta(store, session_id, workspace)
-                data.setdefault("baseline_commit", delta.baseline_commit)
-                data.setdefault("changed", list(delta.changed))
-                data.setdefault("preexisting", list(delta.preexisting))
-            except Exception:
-                logger.warning("Handoff delta capture failed", exc_info=True)
+        if authoritative_delta is not None:
+            data.setdefault("baseline_commit", authoritative_delta.baseline_commit)
+            data.setdefault("changed", list(authoritative_delta.changed))
+            data.setdefault("preexisting", list(authoritative_delta.preexisting))
         return data
 
     await tx.begin(

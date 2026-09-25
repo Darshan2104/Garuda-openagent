@@ -104,6 +104,7 @@ class DefaultAgent:
         pack_source_runtime: str = "native",
         pack_git_evidence: str = "",
         initial_state=None,
+        workspace_delta_loader=None,
     ) -> AgentResult:
         state = await prepare_run(
             task=task,
@@ -126,6 +127,7 @@ class DefaultAgent:
             pack_source_runtime=pack_source_runtime,
             pack_git_evidence=pack_git_evidence,
             initial_state=initial_state,
+            workspace_delta_loader=workspace_delta_loader,
         )
 
         turn = 0

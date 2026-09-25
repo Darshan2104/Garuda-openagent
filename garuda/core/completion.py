@@ -61,6 +61,10 @@ class CompletionGate:
     permissions: PermissionEngine | None = None
     ledger: SideEffectLedger | None = None
     verifier: CompletionVerifier = field(default_factory=CompletionVerifier)
+    # Entry points with a local workspace provide this loader.  It reaches the
+    # recorded session baseline at the actual verifier gate, never a fresh
+    # inspection-time capture.
+    workspace_delta_loader: object | None = None
     gate: CompletionGateState = field(default_factory=CompletionGateState)
     # Acceptance criteria are derived lazily, at the first completion attempt.
     # Deriving them up-front would put a model call in front of every run
@@ -139,6 +143,7 @@ class CompletionGate:
             messages=self.context.get_messages(),
             answer_rationale=answer_rationale,
             gate=self.gate,
+            workspace_delta_loader=self.workspace_delta_loader,
         )
         self.events.append(
             EventType.VERIFICATION,

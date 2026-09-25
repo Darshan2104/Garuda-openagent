@@ -241,16 +241,39 @@ class LiveRuns:
             workspace_kind=spec.workspace_kind or self.workspace_kind,
         )
         holder["events"] = session.events
-        env, env_handle = await resolve_environment(
-            session.config.workspace_kind, str(workspace), session.config.docker_image,
-            docker_host=getattr(session.config, "docker_host", None),
-        )
         events_path = self.store.begin(
             session_id=session.events.session_id,
             task="(dashboard chat)",
             model=model,
             agent=session.profile.name,
             workspace=str(workspace),
+        )
+        try:
+            from garuda.workspace.diff import record_session_baseline
+
+            # The dashboard does not use `run_agent_task` for held multi-turn
+            # chats, so it must enter the same authoritative session-evidence
+            # boundary itself before allocating an environment or accepting a
+            # prompt.  No capture means no runnable chat.
+            record_session_baseline(
+                self.store,
+                session.events.session_id,
+                workspace,
+                session.config.workspace_kind,
+            )
+        except Exception:
+            try:
+                self.store.update_meta(
+                    session.events.session_id,
+                    {"status": "failed", "startup_refused": True},
+                )
+            except Exception:
+                logger.warning("Failed to record dashboard startup refusal", exc_info=True)
+            await session.close()
+            raise
+        env, env_handle = await resolve_environment(
+            session.config.workspace_kind, str(workspace), session.config.docker_image,
+            docker_host=getattr(session.config, "docker_host", None),
         )
         session.events.attach_persistence(events_path)
 
@@ -298,6 +321,12 @@ class LiveRuns:
             chat.session_task = task[:200]
             self.store.update_meta(chat.session_id, {"task": chat.session_task})
         context = chat.session.prepare_context(prompt)
+        workspace_delta_loader = None
+        if chat.session.config.workspace_kind == "local":
+            from garuda.workspace.diff import load_session_delta
+
+            def workspace_delta_loader():
+                return load_session_delta(self.store, chat.session_id, chat.workspace)
         job = self.jobs.submit(
             lambda job: chat.session.agent.run(
                 task=prompt,
@@ -309,6 +338,7 @@ class LiveRuns:
                 permissions=chat.session.permissions,
                 agents_dir=chat.session.agents_dir,
                 context=context,
+                workspace_delta_loader=workspace_delta_loader,
             ),
             task=prompt,
             events=chat.session.events,
@@ -405,7 +435,28 @@ class LiveRuns:
             await cleanup_workspace(chat.env_handle)
         except Exception:
             logger.warning("Tearing down chat %s workspace failed", chat_id, exc_info=True)
-        self.store.update_meta(chat.session_id, {"status": "finished"})
+        if chat.session.config.workspace_kind == "local":
+            try:
+                from garuda.workspace.diff import load_session_delta
+
+                delta = load_session_delta(self.store, chat.session_id, chat.workspace)
+                self.store.update_meta(
+                    chat.session_id,
+                    {
+                        "status": "finished",
+                        "baseline_commit": delta.baseline_commit,
+                        "delta_changed": list(delta.changed[:200]),
+                        "delta_preexisting": list(delta.preexisting[:200]),
+                    },
+                )
+            except Exception as exc:
+                # Closing cannot turn missing evidence into a successful chat.
+                self.store.update_meta(
+                    chat.session_id,
+                    {"status": "failed", "workspace_delta_error": type(exc).__name__},
+                )
+        else:
+            self.store.update_meta(chat.session_id, {"status": "finished"})
         return {**summary, "closed": True, "denied_approvals": denied}
 
     async def reap(self) -> dict[str, int]:
