@@ -1,8 +1,8 @@
 """Deterministic fake ACP agent for conformance tests (P0.15, issue #24).
 
 Run as `python -m garuda.acp.fake_agent --profile NAME [--state-file PATH]`.
-Speaks the owned wire subset (initialize, session/new, session/prompt,
-session/cancel, session/approve) with Content-Length framing over stdio.
+Speaks the owned ACP v1 subset (initialize, session/new, session/prompt,
+session/cancel, session/approve) with newline-delimited JSON over stdio.
 No network, no subscription, no workspace access — argv and files here are the
 only inputs, so the test server is isolated from credentials by construction.
 
@@ -58,32 +58,15 @@ PROFILES = BASE_PROFILES | frozenset(
 
 
 def _read_frame() -> dict:
-    header = b""
-    while b"\r\n\r\n" not in header:
-        chunk = sys.stdin.buffer.read(1)
-        if not chunk:
-            raise EOFError
-        header += chunk
-    head, _, rest = header.partition(b"\r\n\r\n")
-    length = 0
-    for line in head.split(b"\r\n"):
-        name, colon, value = line.partition(b":")
-        if colon and name.strip().lower() == b"content-length":
-            length = int(value.strip())
-    body = rest
-    while len(body) < length:
-        more = sys.stdin.buffer.read(length - len(body))
-        if not more:
-            raise EOFError
-        body += more
-    return json.loads(body)
+    line = sys.stdin.buffer.readline()
+    if not line:
+        raise EOFError
+    return json.loads(line)
 
 
 def _send(message: dict) -> None:
-    body = json.dumps(message).encode()
-    sys.stdout.buffer.write(
-        b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
-    )
+    body = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode()
+    sys.stdout.buffer.write(body + b"\n")
     sys.stdout.buffer.flush()
 
 
@@ -137,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                     _result(
                         call_id,
                         {
-                            "protocolVersion": "0.4",
+                            "protocolVersion": 1,
                             "agentCapabilities": capabilities,
                         },
                     )
@@ -166,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
 def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
     text = params.get("prompt", "")
     if profile == "malformed":
-        sys.stdout.buffer.write(b"Content-Length: nope\r\n\r\n{}")
+        sys.stdout.buffer.write(b"not-json\n")
         sys.stdout.buffer.flush()
     elif profile == "slow":
         import time
