@@ -1,0 +1,13 @@
+{
+  "runtime_id": "codex",
+  "kind": "acp",
+  "command": ["codex-acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "Codex CLI via the registry ACP adapter (@agentclientprotocol/codex-acp; successor of @zed-industries/codex-acp). Subscription access stays in your Codex login; Garuda never reads it.",
+  "warnings": [],
+  "version_args": ["codex-acp", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install Node.js 20+ and the Codex CLI, then authenticate with ChatGPT login (codex login); Garuda does not pass CODEX_API_KEY or CODEX_HOME to the adapter. 2. Run: npm install -g @agentclientprotocol/codex-acp. 3. Verify: codex-acp --version. Garuda never reads ~/.codex/auth.json."
+}

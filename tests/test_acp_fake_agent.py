@@ -45,6 +45,7 @@ def test_public_profile_sets_are_pinned():
         "version-mismatch",
         "odd-stop",
         "cancel-stop",
+        "strict-v1",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",

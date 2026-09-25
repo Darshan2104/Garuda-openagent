@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -71,12 +72,18 @@ class AcpRuntime:
         argv: list[str],
         *,
         runtime_id: str = "acp",
+        cwd: str | None = None,
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
         approval_handler: Callable[[str], Awaitable[bool]] | None = None,
         store=None,
     ):
         self._argv = list(argv)
+        # The agent's session root. `None` keeps the client's historical
+        # default (Garuda's own cwd); launch paths pass the workspace.
+        if cwd is not None and not os.path.isabs(cwd):
+            raise RuntimeStartError("ACP session cwd must be an absolute path")
+        self._cwd = cwd
         self._approval_handler = approval_handler
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
@@ -173,7 +180,7 @@ class AcpRuntime:
                 self._policy,
                 AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
             )
-            self._agent_session_id = await process.session_new()
+            self._agent_session_id = await process.session_new(cwd=self._cwd)
             if self._store is None:
                 # No store means no persisted child record: a Garuda crash
                 # would leave this child unrecoverable by `recover()`.

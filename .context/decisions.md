@@ -56,6 +56,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - One generic AcpRuntime carries every adapter through the shared conformance suite against the fake test server; version mismatches fail at handshake, and cross-process resume stays out until the wire grows the methods for it.
 - Approvals flow through one broker: ceilings decide, asks park with timeout and disconnect denial, every outcome persists to the session, and strict gaps refuse before running.
 - Discovery probes only what trusted manifests declare (version/auth argv) with a minimal child env: missing tools explain setup, unknown versions display as unknown, login state is never guessed, and users can disable any runtime.
+- Vendor adapters ship bare adapter binaries (never npx auto-download): Claude Code and Codex run on the user's own subscription login with credential paths documented as untouchable, login state stays unknown (no login probe ships), and the wire subset limits are written down.
+- Shipped adapter manifests are package configuration and join the one trusted runtime catalog; a global `runtimes:` entry with the same id replaces them. Adapter children get only PATH/HOME/LANG, so API-key variables and custom vendor config dirs never reach them and the docs do not advise exporting keys. Adapters take an absolute session root; product launch of ACP harnesses is not wired at this layer and selection refuses loudly.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation`, `recipe run`, and product handoffs (no caller passes `workspace=`) carry no baseline yet.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
@@ -84,3 +86,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `chat`, `serve`, the web dashboard, and `recipe run` accept no runtime
   selection and always run the native loop, which cannot be disabled, so they
   do not consult runtime settings.
+
+## 2026-09-25 — ACP adapters speak the public v1 stdio contract
+
+- ACP subprocesses use bounded NDJSON, numeric `protocolVersion: 1`, absolute
+  `cwd` plus `mcpServers` in `session/new`, and text content blocks in
+  `session/prompt`; Content-Length framing and string prompts are not accepted.
+- ACP is bidirectional JSON-RPC. Agent-originated client requests receive a
+  controller response or an explicit fail-closed JSON-RPC error; they cannot
+  be silently queued as notifications and hang a vendor process.
+- Vendor conformance uses a strict v1 fixture that rejects the previous
+  private transport and request shapes. Installed vendor smoke remains opt-in
+  and creates a session only; it never sends subscription-consuming work.

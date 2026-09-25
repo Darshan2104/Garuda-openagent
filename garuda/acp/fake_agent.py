@@ -12,7 +12,9 @@ only inputs, so the test server is isolated from credentials by construction.
 
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
 resume (stable ids via --state-file), version-mismatch, odd-stop (a stop
-reason outside v1), cancel-stop (the agent ends the turn `cancelled`), capabilities-<name>.
+reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
+numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
+capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ BASE_PROFILES = frozenset(
         "version-mismatch",
         "odd-stop",
         "cancel-stop",
+        "strict-v1",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -105,6 +108,10 @@ def _result(call_id: int, result: dict) -> None:
     _send({"jsonrpc": "2.0", "id": call_id, "result": result})
 
 
+def _invalid(call_id, message: str) -> None:
+    _send({"jsonrpc": "2.0", "id": call_id, "error": {"code": -32602, "message": message}})
+
+
 def _load_state(path: str | None) -> dict:
     if path and os.path.exists(path):
         with open(path, encoding="utf-8") as handle:
@@ -141,7 +148,13 @@ def main(argv: list[str] | None = None) -> int:
             call_id = request.get("id")
             params = request.get("params", {})
             if method == "initialize":
-                if profile == "version-mismatch":
+                if profile == "version-mismatch" or (
+                    profile == "strict-v1"
+                    and (
+                        isinstance(params.get("protocolVersion"), bool)
+                        or params.get("protocolVersion") != 1
+                    )
+                ):
                     _result(call_id, {"protocolVersion": 99})
                 else:
                     _result(
@@ -152,6 +165,13 @@ def main(argv: list[str] | None = None) -> int:
                         },
                     )
             elif method == "session/new":
+                if profile == "strict-v1" and (
+                    not isinstance(params.get("cwd"), str)
+                    or not os.path.isabs(params["cwd"])
+                    or not isinstance(params.get("mcpServers"), list)
+                ):
+                    _invalid(call_id, "session/new requires absolute cwd and mcpServers")
+                    continue
                 sessions += 1
                 state = _load_state(args.state_file)
                 if profile == "resume":
@@ -162,6 +182,15 @@ def main(argv: list[str] | None = None) -> int:
                     session_id = f"fake-s{sessions}"
                 _result(call_id, {"sessionId": session_id})
             elif method == "session/prompt":
+                if profile == "strict-v1":
+                    prompt = params.get("prompt")
+                    if not (
+                        isinstance(prompt, list)
+                        and prompt
+                        and all(isinstance(b, dict) and b.get("type") for b in prompt)
+                    ):
+                        _invalid(call_id, "session/prompt requires content blocks")
+                        continue
                 _handle_prompt(profile, call_id, params)
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt

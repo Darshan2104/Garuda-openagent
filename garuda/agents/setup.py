@@ -125,6 +125,24 @@ def _project_runtime_refs(raw: object, *, source: str, base, warnings: list[str]
     return accepted
 
 
+def _trusted_manifests(global_settings) -> list:
+    """Shipped harness manifests plus the user's global ones.
+
+    Shipped manifests are package configuration, trusted like the code that
+    ships them. A global `runtimes:` entry with the same id replaces the
+    shipped one: the user's file stays the anchor for what may launch.
+    """
+    from garuda.acp.catalog import builtin_manifest_dicts
+    from garuda.runtime.registry import parse_global_manifests
+
+    shipped = parse_global_manifests(builtin_manifest_dicts(), source="shipped harness manifests")
+    configured = parse_global_manifests(
+        global_settings.get("runtimes"), source="trusted global runtimes"
+    )
+    overridden = {manifest.runtime_id for manifest in configured}
+    return [m for m in shipped if m.runtime_id not in overridden] + configured
+
+
 def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     """Build the shared trusted runtime boundary for CLI and SDK launches.
 
@@ -138,13 +156,11 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
 
     from garuda.acp.catalog import load_trusted_disabled, load_trusted_runtime_settings
     from garuda.config.agent_home import resolve_agent_home
-    from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
+    from garuda.runtime.registry import RuntimeRegistry
 
     global_settings = load_trusted_runtime_settings()
     home = resolve_agent_home(workspace)
-    manifests = parse_global_manifests(
-        global_settings.get("runtimes"), source="trusted global runtimes"
-    )
+    manifests = _trusted_manifests(global_settings)
     disabled = load_trusted_disabled(global_settings)
     base = RuntimeRegistry(manifests, disabled=disabled)
     warnings: list[str] = []

@@ -16,6 +16,8 @@ the discovered record and never applied.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
@@ -25,7 +27,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from garuda.acp.adapter import AcpRuntime
+from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
+
+logger = logging.getLogger(__name__)
+
+BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
+BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json")
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -332,3 +341,35 @@ def health_of(discovered: DiscoveredRuntime) -> dict[str, Any]:
         "capabilities": list(discovered.capabilities),
         "warnings": list(discovered.warnings),
     }
+
+
+def builtin_manifest_dicts() -> list[dict[str, Any]]:
+    """Raw JSON dicts of the shipped vendor manifests, for `parse_global_manifests`."""
+    dicts = []
+    for filename in BUILTIN_MANIFEST_FILES:
+        with open(os.path.join(BUILTIN_DIR, filename), encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError(f"builtin manifest {filename} must be an object")
+        dicts.append(data)
+    return dicts
+
+
+def adapter_for_manifest(
+    manifest,
+    *,
+    argv_override: list[str] | None = None,
+    policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
+) -> AcpRuntime:
+    """Build the generic adapter for one manifest. Tests override argv with fakes.
+
+    `cwd` is the absolute session root sent in `session/new`; launch paths pass
+    the workspace so the harness never defaults to Garuda's own directory.
+    """
+    return AcpRuntime(
+        list(argv_override) if argv_override is not None else list(manifest.command or ()),
+        runtime_id=manifest.runtime_id,
+        policy=policy,
+        cwd=cwd,
+    )
