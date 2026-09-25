@@ -360,10 +360,16 @@ def adapter_for_manifest(
     *,
     argv_override: list[str] | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
 ) -> AcpRuntime:
-    """Build the generic adapter for one manifest. Tests override argv with fakes."""
+    """Build the generic adapter for one manifest. Tests override argv with fakes.
+
+    `cwd` is the absolute session root sent in `session/new`; launch paths pass
+    the workspace so the harness never defaults to Garuda's own directory.
+    """
     return AcpRuntime(
         list(argv_override) if argv_override is not None else list(manifest.command or ()),
         runtime_id=manifest.runtime_id,
         policy=policy,
+        cwd=cwd,
     )
