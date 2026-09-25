@@ -157,15 +157,26 @@ class AcpProcess:
         if "id" in message and ("result" in message or "error" in message):
             future = self._pending.pop(message["id"], None)
             if future is not None and not future.done():
+                # Resolve only after the current read callback returns. An
+                # ACP response can be followed by a notification in the same
+                # stdout chunk; completing inline lets a waiter run before
+                # that notification is routed, making drain_notifications()
+                # timing-dependent across event-loop implementations.
+                loop = asyncio.get_running_loop()
                 if "error" in message:
                     error = message["error"] or {}
-                    future.set_exception(
+                    loop.call_soon(
+                        self._settle_future,
+                        future,
+                        _MISSING,
                         AcpProtocolError(
                             f"agent error {error.get('code')}: {error.get('message')}"
-                        )
+                        ),
                     )
                 else:
-                    future.set_result(message.get("result"))
+                    loop.call_soon(
+                        self._settle_future, future, message.get("result"), None
+                    )
         elif message.get("method"):
             if "id" in message:
                 self._requests.put_nowait(message)
@@ -173,6 +184,17 @@ class AcpProcess:
                 self._notifications.put_nowait(message)
         else:
             self._on_transport_error(AcpProtocolError(f"unroutable message: {message!r}"))
+
+    @staticmethod
+    def _settle_future(
+        future: asyncio.Future, result: Any = _MISSING, error: Exception | None = None
+    ) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
 
     def _fail_all_pending(self, exc: Exception) -> None:
         pending, self._pending = self._pending, {}
