@@ -9,7 +9,12 @@ defaults apply — when Garuda cannot mediate, the agent's own sandbox owns
 execution, and when the agent cannot act, Garuda does.
 
 The map persists through the unified session's capability snapshot as
-`"<family>=<owner>"` names, so a resumed session can prove who owned what.
+`"<family>=<owner>"` names, so a resumed session carries the negotiated
+assignment. What it records is negotiated *intent*, not an enforced boundary:
+`families`/`mediated`/`sandbox` are Garuda extension fields an agent declares
+about itself (standard ACP v1 agents send none), the sandbox flag is
+unverified, and because Garuda advertises no `fs`/`terminal` client
+capability, a v1 agent executes its own tools whatever the map says.
 """
 
 from __future__ import annotations
@@ -162,7 +167,7 @@ class AuthorityMap:
 
 
 def negotiate(
-    policy: dict[str, AuthorityPolicy],
+    policy: dict[str, AuthorityPolicy | str],
     agent: AgentCapabilities,
 ) -> AuthorityMap:
     """Assign one owner per family. Strict policies fail closed when unenforceable."""
@@ -172,11 +177,20 @@ def negotiate(
     owners: dict[str, str] = {}
     for family in _ALL_FAMILIES:
         name = family.value
-        want = policy.get(name, AuthorityPolicy.AGENT_PREFERRED)
+        raw_want = policy.get(name, AuthorityPolicy.AGENT_PREFERRED)
+        try:
+            want = AuthorityPolicy(raw_want)
+        except (TypeError, ValueError):
+            raise NegotiationError(
+                f"unknown authority policy for {name!r}: {raw_want!r}"
+            ) from None
         supported = name in agent.families
         mediated = name in agent.mediated
+        # Approval interaction does not execute workspace actions itself; the
+        # sandbox requirement applies to edit/terminal/MCP execution families.
+        sandbox_safe = agent.sandbox or family is ToolFamily.APPROVAL
         if want is AuthorityPolicy.GARUDA_ONLY:
-            if not mediated:
+            if supported and not mediated:
                 raise NegotiationError(
                     f"strict {want.value} for {name!r} refused: agent offers no mediation"
                 )
@@ -188,13 +202,23 @@ def negotiate(
                 )
             owners[name] = AuthorityOwner.AGENT.value
         elif want is AuthorityPolicy.GARUDA_PREFERRED:
-            owners[name] = (
-                AuthorityOwner.GARUDA.value
-                if mediated or not supported
-                else AuthorityOwner.AGENT.value
-            )
+            if mediated or not supported:
+                owners[name] = AuthorityOwner.GARUDA.value
+            elif sandbox_safe:
+                owners[name] = AuthorityOwner.AGENT.value
+            else:
+                raise NegotiationError(
+                    f"safe default for {name!r} refused: agent offers neither "
+                    "mediation nor sandboxed execution"
+                )
         else:
-            owners[name] = (
-                AuthorityOwner.AGENT.value if supported else AuthorityOwner.GARUDA.value
-            )
+            if supported and sandbox_safe:
+                owners[name] = AuthorityOwner.AGENT.value
+            elif mediated or not supported:
+                owners[name] = AuthorityOwner.GARUDA.value
+            else:
+                raise NegotiationError(
+                    f"safe default for {name!r} refused: agent offers neither "
+                    "sandboxed execution nor mediation"
+                )
     return AuthorityMap(owners=owners, agent_sandbox=agent.sandbox)

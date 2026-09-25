@@ -9,6 +9,8 @@ down; that code path is untouched.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -30,6 +32,8 @@ from garuda.runtime.protocol import (
     RuntimeStartError,
     check_transition,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Native event types mapped onto the normalized vocabulary. Anything absent
 #: renders as a MESSAGE carrying the original type — lossy but explicit, and
@@ -209,7 +213,7 @@ class NativeGarudaRuntime:
         try:
             from garuda.runtime.recovery import RecoveryError, recover
 
-            recover(self._store, resolved)
+            await asyncio.to_thread(recover, self._store, resolved)
         except RecoveryError as exc:
             raise RuntimeStartError(f"cannot resume session {resolved}: {exc}") from exc
         self._move(LifecycleState.STARTING)
@@ -303,9 +307,12 @@ class NativeGarudaRuntime:
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
-        try:
-            from garuda.runtime.recovery import record_cancel
+        from garuda.runtime.recovery import CancellationAuditError, record_cancel
 
+        # Best-effort audit first, cancellation always, audit failure last: a
+        # store outage must never keep a turn running past its cancel.
+        audit_error: Exception | None = None
+        try:
             record_cancel(
                 self._store,
                 self._session_id,
@@ -313,13 +320,18 @@ class NativeGarudaRuntime:
                 reason=reason or "cancelled",
             )
         except Exception as exc:
-            raise RuntimeStartError(f"could not persist turn cancellation: {exc}") from exc
+            logger.warning("Could not persist turn cancellation", exc_info=True)
+            audit_error = exc
         if self._state is LifecycleState.RUNNING:
             self._cancel_requested = reason or "cancelled"
-            return
-        self._move(LifecycleState.CANCELLING)
-        self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
-        self._move(LifecycleState.CLOSED)
+        else:
+            self._move(LifecycleState.CANCELLING)
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
+            self._move(LifecycleState.CLOSED)
+        if audit_error is not None:
+            raise CancellationAuditError(
+                f"turn cancelled but its audit record failed: {audit_error}"
+            ) from audit_error
 
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):

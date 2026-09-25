@@ -104,10 +104,14 @@ def test_brief_respects_budget_and_keeps_sources():
     )
     full = render(doc.to_frontmatter(), body)
     brief = build_brief(doc.to_frontmatter(), body, budget_chars=400)
+    assert len(brief) <= 400
     assert len(brief) <= len(full)
     assert "Sources:" in brief
     assert "[… clipped to budget]" in brief
     assert "Migrate sessions" in brief
+
+    with pytest.raises(PackError, match="too small"):
+        build_brief(doc.to_frontmatter(), body, budget_chars=100)
 
 
 async def test_pack_syncs_through_production_run_path(tmp_path):
