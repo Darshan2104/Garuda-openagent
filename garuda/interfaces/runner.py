@@ -363,6 +363,15 @@ async def run_agent_task(
     try:
         await runtime.prompt(task)
         result = runtime.last_result
+    except asyncio.CancelledError:
+        try:
+            from garuda.runtime.recovery import record_cancel
+
+            record_cancel(store, events.session_id, boundary="turn", reason="task cancelled")
+        except Exception:
+            logger.warning("Failed to record task cancellation", exc_info=True)
+        result = None
+        raise
     except Exception:
         result = None
         raise

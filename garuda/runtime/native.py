@@ -258,6 +258,13 @@ class NativeGarudaRuntime:
             self._move(LifecycleState.FAILED)
             raise
         self._last_result = result
+        # Direct `NativeGarudaRuntime` users do not pass the facade's
+        # checkpoint callback.  Persist the returned transcript here as well,
+        # so every successful prompt has the restart checkpoint that recovery
+        # requires rather than making direct-runtime sessions second class.
+        messages = getattr(result, "messages", None)
+        if isinstance(messages, list):
+            self._store.checkpoint_messages(self._session_id, messages)
         self._normalize_trail(self._trail, skip=seen)
         self._store.advance_event_cursor(self._session_id, len(self._events))
         if self._cancel_requested is not None:
@@ -296,6 +303,17 @@ class NativeGarudaRuntime:
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
+        try:
+            from garuda.runtime.recovery import record_cancel
+
+            record_cancel(
+                self._store,
+                self._session_id,
+                boundary="turn",
+                reason=reason or "cancelled",
+            )
+        except Exception as exc:
+            raise RuntimeStartError(f"could not persist turn cancellation: {exc}") from exc
         if self._state is LifecycleState.RUNNING:
             self._cancel_requested = reason or "cancelled"
             return

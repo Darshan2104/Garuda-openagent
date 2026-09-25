@@ -39,6 +39,7 @@ from garuda.runtime.recovery import (
     classify,
     reap_orphans,
     record_cancel,
+    record_child,
     recover,
     report_to_dict,
 )
@@ -108,6 +109,7 @@ __all__ = [
     "parse_global_manifests",
     "parse_project_refs",
     "reap_orphans",
+    "record_child",
     "record_cancel",
     "recover",
     "report_to_dict",

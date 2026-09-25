@@ -144,8 +144,10 @@ success transfers single ownership and target failure keeps the source
 promptable. `recovery.py` classifies restarts from persisted records
 (resumable, rolled-back, ambiguous), reaps orphan agent children with
 verification, records cancellations at turn/switch/process boundaries, and
-never invents success — a bare exit proves nothing; startup/resume classifies
-first and indeterminate liveness refuses without operator action.
+never invents success — a bare exit proves nothing. Only positive, isolated
+process-group leaders recorded against a known runtime/session may be reaped;
+pre- and post-reap indeterminate liveness, missing checkpoints, native identity
+mismatch, or invalid ACP authority snapshots refuse startup/resume.
 
 ## `interfaces/` — entry points
 
