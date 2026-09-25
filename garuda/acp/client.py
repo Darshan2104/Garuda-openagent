@@ -1,0 +1,435 @@
+"""ACP subprocess lifecycle over stdio (P0.12, issue #21).
+
+`AcpProcess` launches one configured agent process and speaks ACP v1:
+initialize, session/new, session/prompt, session/cancel, and bidirectional
+JSON-RPC notifications/requests over newline-delimited JSON. Agent-initiated
+requests (`session/request_permission`, and any client method Garuda did not
+advertise) are queued for the adapter, which answers each exactly once. stderr is drained
+separately into a bounded diagnostics ring that never touches the protocol.
+
+Safety posture: the argv comes from the caller (the registry-resolved
+allowlist, wired by a later adapter issue) — this module never searches PATH
+beyond what execvp already does and never inherits the parent environment.
+The child gets a minimal explicit environment plus caller-supplied extras, so
+no secret crosses the boundary by accident. Processes launch in their own
+session (`start_new_session`) and close() always reaps: SIGTERM to the group,
+a grace period, SIGKILL, then wait.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import signal
+from collections import deque
+from typing import Any
+
+from garuda.acp.protocol import (
+    ACP_VERSION,
+    MAX_FRAME_BYTES,
+    AcpCancelledError,
+    AcpExitError,
+    AcpProtocolError,
+    AcpTimeoutError,
+    decode_frame,
+    encode_frame,
+)
+
+logger = logging.getLogger(__name__)
+
+HANDSHAKE_TIMEOUT = 30.0
+CALL_TIMEOUT = 120.0
+TERM_GRACE = 5.0
+STDERR_RING = 50
+_MISSING = object()
+
+
+class AcpProcess:
+    """One managed ACP agent subprocess."""
+
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        extra_env: dict[str, str] | None = None,
+        call_timeout: float = CALL_TIMEOUT,
+    ):
+        if not argv or any(not isinstance(p, str) or not p for p in argv):
+            raise AcpProtocolError("argv must be a non-empty list of strings")
+        self._argv = list(argv)
+        self._extra_env = dict(extra_env or {})
+        self._call_timeout = call_timeout
+        self._process: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._buffer = b""
+        self._next_id = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._stderr_ring: deque[str] = deque(maxlen=STDERR_RING)
+        self._closed = False
+
+    @property
+    def pid(self) -> int | None:
+        return self._process.pid if self._process else None
+
+    @property
+    def stderr_tail(self) -> str:
+        return "\n".join(self._stderr_ring)
+
+    def _child_env(self) -> dict[str, str]:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", ""),
+            "LANG": "C.UTF-8",
+        }
+        env.update(self._extra_env)
+        return {k: v for k, v in env.items() if v}
+
+    async def launch(self) -> None:
+        """Spawn the process and start the reader + stderr-drain tasks."""
+        if self._closed:
+            raise AcpProtocolError("process is closed; launch after close is refused")
+        if self._process is not None:
+            raise AcpProtocolError("already launched")
+        self._process = await asyncio.create_subprocess_exec(
+            *self._argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self._child_env(),
+            start_new_session=True,
+        )
+        self._reader_task = asyncio.ensure_future(self._read_loop())
+        self._stderr_task = asyncio.ensure_future(self._drain_stderr())
+
+    async def _read_loop(self) -> None:
+        assert self._process is not None and self._process.stdout is not None
+        try:
+            while True:
+                chunk = await self._process.stdout.read(65536)
+                if not chunk:
+                    # stdout EOF usually means the exit follows within
+                    # milliseconds; reap first so the error carries the real
+                    # code instead of a None the process hadn't published yet.
+                    try:
+                        await asyncio.wait_for(self._process.wait(), 5.0)
+                    except TimeoutError:
+                        pass
+                    self._on_eof()
+                    return
+                self._buffer += chunk
+                if b"\n" not in chunk:
+                    # Still inside one line: skip re-scanning the whole buffer
+                    # (quadratic for a large frame) and only enforce the bound.
+                    if len(self._buffer) > MAX_FRAME_BYTES:
+                        self._on_transport_error(
+                            AcpProtocolError("reader buffer exceeds maximum frame size")
+                        )
+                        return
+                    continue
+                while True:
+                    try:
+                        message, self._buffer = decode_frame(self._buffer)
+                    except ValueError:
+                        break
+                    except AcpProtocolError as exc:
+                        self._on_transport_error(exc)
+                        return
+                    self._route(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # reader must never die silently
+            logger.warning("ACP reader failed for %r", self._argv, exc_info=True)
+            self._on_transport_error(AcpProtocolError(f"reader failed: {exc}"))
+
+    async def _drain_stderr(self) -> None:
+        assert self._process is not None and self._process.stderr is not None
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    return
+                self._stderr_ring.append(line.decode("utf-8", "replace").rstrip())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("ACP stderr drain ended", exc_info=True)
+
+    def _route(self, message: dict[str, Any]) -> None:
+        if "id" in message and ("result" in message or "error" in message):
+            future = self._pending.pop(message["id"], None)
+            if future is not None and not future.done():
+                # Resolve only after the current read callback returns. An
+                # ACP response can be followed by a notification in the same
+                # stdout chunk; completing inline lets a waiter run before
+                # that notification is routed, making drain_notifications()
+                # timing-dependent across event-loop implementations.
+                loop = asyncio.get_running_loop()
+                if "error" in message:
+                    error = message["error"] or {}
+                    loop.call_soon(
+                        self._settle_future,
+                        future,
+                        _MISSING,
+                        AcpProtocolError(
+                            f"agent error {error.get('code')}: {error.get('message')}"
+                        ),
+                    )
+                else:
+                    loop.call_soon(
+                        self._settle_future, future, message.get("result"), None
+                    )
+        elif message.get("method"):
+            if "id" in message:
+                self._requests.put_nowait(message)
+            else:
+                self._notifications.put_nowait(message)
+        else:
+            self._on_transport_error(AcpProtocolError(f"unroutable message: {message!r}"))
+
+    @staticmethod
+    def _settle_future(
+        future: asyncio.Future, result: Any = _MISSING, error: Exception | None = None
+    ) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def _fail_all_pending(self, exc: Exception) -> None:
+        pending, self._pending = self._pending, {}
+        for future in pending.values():
+            if not future.done():
+                future.set_exception(exc)
+
+    def _on_eof(self) -> None:
+        code = self._process.returncode if self._process else None
+        self._fail_all_pending(
+            AcpExitError(
+                f"agent exited (code={code}); stderr: {self.stderr_tail[-500:]}",
+                exit_code=code,
+                stderr_tail=self.stderr_tail,
+            )
+        )
+
+    def _on_transport_error(self, exc: Exception) -> None:
+        self._fail_all_pending(exc)
+
+    async def _call(
+        self, method: str, params: dict[str, Any], *, timeout: Any = _MISSING
+    ) -> Any:
+        """One request. `timeout` omitted uses the call deadline; `None` waits
+        without one (a prompt turn is bounded by its caller, not here)."""
+        if self._process is None or self._process.stdin is None:
+            raise AcpProtocolError("process is not running")
+        if self._process.returncode is not None:
+            raise AcpExitError(
+                f"agent already exited (code={self._process.returncode})",
+                exit_code=self._process.returncode,
+                stderr_tail=self.stderr_tail,
+            )
+        self._next_id += 1
+        call_id = self._next_id
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending[call_id] = future
+        try:
+            self._process.stdin.write(
+                encode_frame({"jsonrpc": "2.0", "id": call_id, "method": method, "params": params})
+            )
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            self._pending.pop(call_id, None)
+            raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
+        try:
+            deadline = self._call_timeout if timeout is _MISSING else timeout
+            return await asyncio.wait_for(future, deadline)
+        except TimeoutError as exc:
+            self._pending.pop(call_id, None)
+            raise AcpTimeoutError(f"{method} exceeded its deadline") from exc
+
+    async def _notify(self, method: str, params: dict[str, Any]) -> None:
+        """Write one notification and flush it.
+
+        Awaiting the drain matters: `session/cancel` (and later approval
+        answers) must reach the agent before the caller proceeds. A bare
+        `stdin.write` can leave the bytes buffered in the transport while the
+        local pending calls are already failed — a cancel the agent never saw.
+        """
+        await self._notify_payload(
+            {"jsonrpc": "2.0", "method": method, "params": params}
+        )
+
+    async def _notify_payload(self, payload: dict[str, Any]) -> None:
+        if self._process is None or self._process.stdin is None:
+            raise AcpProtocolError("process is not running")
+        try:
+            self._process.stdin.write(encode_frame(payload))
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
+
+    async def initialize(self, *, timeout: float = HANDSHAKE_TIMEOUT) -> dict[str, Any]:
+        """Handshake. A version mismatch fails here, never mid-session."""
+        result = await self._call(
+            "initialize",
+            {
+                "protocolVersion": ACP_VERSION,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "garuda", "version": "0.1.0"},
+            },
+            timeout=timeout,
+        )
+        if not isinstance(result, dict):
+            raise AcpProtocolError("initialize result must be an object")
+        version = result.get("protocolVersion")
+        if version != ACP_VERSION or isinstance(version, bool):
+            raise AcpProtocolError(
+                f"ACP version mismatch: expected {ACP_VERSION!r}, got {version!r}"
+            )
+        return result
+
+    async def session_new(
+        self,
+        cwd: str | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
+        *,
+        timeout: float = HANDSHAKE_TIMEOUT,
+    ) -> str:
+        if cwd is None:
+            cwd = os.getcwd()
+        if not os.path.isabs(cwd):
+            raise AcpProtocolError("session/new cwd must be absolute")
+        if mcp_servers is not None and any(
+            not isinstance(server, dict) for server in mcp_servers
+        ):
+            raise AcpProtocolError("session/new mcpServers must contain objects")
+        result = await self._call(
+            "session/new",
+            {"cwd": cwd, "mcpServers": list(mcp_servers or [])},
+            timeout=timeout,
+        )
+        session_id = result.get("sessionId") if isinstance(result, dict) else None
+        if not session_id:
+            raise AcpProtocolError("session/new returned no sessionId")
+        return session_id
+
+    async def session_prompt(
+        self,
+        session_id: str,
+        text: str | list[dict[str, Any]],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        prompt = [{"type": "text", "text": text}] if isinstance(text, str) else text
+        if not prompt or any(not isinstance(block, dict) for block in prompt):
+            raise AcpProtocolError("session/prompt requires content blocks")
+        return await self._call(
+            "session/prompt",
+            {"sessionId": session_id, "prompt": prompt},
+            timeout=timeout,
+        )
+
+    async def session_cancel(self, session_id: str) -> None:
+        """Cancel a prompt: notify the agent and fail local pending calls."""
+        try:
+            await self._notify("session/cancel", {"sessionId": session_id})
+        finally:
+            self._fail_all_pending(AcpCancelledError("cancelled by caller"))
+
+    async def next_notification(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Wait for the next agent notification. None on timeout, never raises."""
+        try:
+            return await asyncio.wait_for(self._notifications.get(), timeout)
+        except TimeoutError:
+            return None
+
+    async def next_request(self) -> dict[str, Any]:
+        """Wait for an agent request that requires a client response."""
+        return await self._requests.get()
+
+    async def respond(
+        self,
+        request_id: int | str | None,
+        *,
+        result: Any = _MISSING,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Respond to an agent-initiated JSON-RPC request exactly once."""
+        if (result is _MISSING) == (error is None):
+            raise AcpProtocolError("response requires exactly one of result or error")
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
+        if error is not None:
+            payload["error"] = error
+        else:
+            payload["result"] = result
+        await self._notify_payload(payload)
+
+    def drain_requests(self) -> list[dict[str, Any]]:
+        """Agent-initiated requests waiting for a response, oldest first."""
+        out = []
+        while not self._requests.empty():
+            out.append(self._requests.get_nowait())
+        return out
+
+    def drain_notifications(self) -> list[dict[str, Any]]:
+        out = []
+        while not self._notifications.empty():
+            out.append(self._notifications.get_nowait())
+        return out
+
+    @property
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.returncode is None
+
+    async def close(self) -> None:
+        """Terminate the group, escalate, and reap. Idempotent and total."""
+        if self._closed:
+            if self._process is not None:
+                await self._process.wait()
+            return
+        self._closed = True
+        for task in (self._reader_task, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        process, self._process = self._process, None
+        if process is None:
+            return
+        if process.returncode is None:
+            self._kill_group(process.pid)
+            try:
+                await asyncio.wait_for(process.wait(), TERM_GRACE)
+            except TimeoutError:
+                self._kill_group(process.pid, force=True)
+                await process.wait()
+        else:
+            await process.wait()
+        for task in (self._reader_task, self._stderr_task):
+            if task is not None:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._fail_all_pending(AcpCancelledError("process closed"))
+
+    def _kill_group(self, pid: int, *, force: bool = False) -> None:
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+    async def __aenter__(self) -> "AcpProcess":
+        await self.launch()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()

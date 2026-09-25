@@ -181,6 +181,15 @@ class PermissionEngine:
     def approval_handler(self) -> "ApprovalHandler | None":
         return self._approval_handler
 
+    def install_approval_handler(self, handler: "ApprovalHandler | None") -> None:
+        """Replace the ASK responder, e.g. with the shared approval broker.
+
+        The runner installs the session broker here so every ASK flows through
+        one audited path; a caller-supplied interactive handler is re-expressed
+        as a broker answerer rather than bypassing it.
+        """
+        self._approval_handler = handler
+
     def check_tool(self, tool_name: str) -> PermissionDecision:
         if tool_name in self._tool_rules:
             return PermissionDecision(self._tool_rules[tool_name])
