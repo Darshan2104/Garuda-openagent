@@ -230,6 +230,17 @@ The same config gave 49 and then 37 turns on the same task. Do not tune on one t
 
 ## Open work
 
+**The dashboard still parks approvals outside the P0.17 broker.**
+`garuda.acp.broker.ApprovalBroker` is installed only by `run_agent_task`
+(`interfaces/runner.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
+`interfaces/web/approvals.ApprovalBroker` and runs turns through `agent.run`
+directly, so browser allow/deny/timeout outcomes are not persisted as
+`approval:<id>` session records. `ApprovalBroker.decide_acp()` is exercised only by
+tests; no ACP adapter screens terminal/edit requests through it yet. The fix is to
+keep the web module as a transport (thread marshalling, heartbeat, structured
+arguments) over the shared broker, and to route ACP family requests through
+`decide_acp` before execution, with an integration test on each path.
+
 **The deliverable check is new and its hit rate is unknown.**
 `eval/answer_checks.py` extracts the output files a task statement unconditionally
 asks for and rejects a completion when one is missing, or not the format its name
