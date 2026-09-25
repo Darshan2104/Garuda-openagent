@@ -601,3 +601,35 @@ def test_unborn_repository_has_an_empty_commit_and_a_real_delta(tmp_path):
 def test_baseline_record_rejects_an_unknown_state():
     with pytest.raises(DiffError, match="state"):
         Baseline.from_dict({"state": "unsupported_nonlocal", "commit": ""})
+
+
+def test_committed_session_work_stays_in_the_delta(repo):
+    """Work the session commits is still session work: the delta compares the
+    tree with the baseline commit, not only what `git status` shows dirty."""
+    (repo / "b.txt").write_text("preexisting dirt\n")
+    baseline = capture_baseline(repo)
+    (repo / "a.txt").write_text("agent edit\n")
+    (repo / "new.txt").write_text("agent file\n")
+    (repo / "b.txt").write_text("dirt, then edited and committed\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "agent commit")
+    delta = session_delta(baseline, repo)
+    kinds = {f.path: f.kind for f in delta.files}
+    assert kinds == {"a.txt": "modified", "new.txt": "added", "b.txt": "modified"}
+    assert set(delta.changed) == {"a.txt", "new.txt", "b.txt"}
+    assert delta.head_commit and delta.head_commit != delta.baseline_commit
+
+
+def test_first_commit_in_an_unborn_repo_is_attributed(tmp_path):
+    root = tmp_path / "unborn"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.t")
+    _git(root, "config", "user.name", "t")
+    baseline = capture_baseline(root)
+    assert baseline.commit == ""
+    (root / "first.txt").write_text("hello\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "first")
+    delta = session_delta(baseline, root)
+    assert delta.changed == ("first.txt",)

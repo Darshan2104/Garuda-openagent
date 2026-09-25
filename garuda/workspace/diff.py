@@ -131,6 +131,9 @@ class DeltaFile:
 class SessionDelta:
     files: tuple[DeltaFile, ...] = ()
     baseline_commit: str = ""
+    #: HEAD when the delta was taken. Differs from `baseline_commit` when the
+    #: session committed; committed work is still in `files`.
+    head_commit: str = ""
     #: `captured` for a real delta; otherwise the reason there is none. An
     #: unattributable delta has no files, and that emptiness is *not* a claim
     #: that nothing changed.
@@ -157,12 +160,19 @@ class SessionDelta:
         preexisting = list(self.preexisting)
         if limit is not None:
             changed, preexisting = changed[:limit], preexisting[:limit]
-        return {
+        evidence = {
             "attribution": self.attribution,
             "baseline_commit": self.baseline_commit,
             "changed": changed,
             "preexisting": preexisting,
         }
+        if self.head_commit and self.head_commit != self.baseline_commit:
+            evidence["head_commit"] = self.head_commit
+        return evidence
+
+
+#: Git's well-known empty tree object; valid in every repository.
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def _split_z(stdout: str) -> list[str]:
@@ -382,14 +392,16 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
     base_paths = set(_entries_from_lines(baseline.status_lines))
     base_prints = baseline.fingerprints
 
-    renamed: dict[str, str] = {}
-    letters: dict[str, str] = {}
-    if baseline.commit:
-        renamed, letters = _name_status(path, baseline.commit)
+    # An unborn baseline (no commit yet) compares against the empty tree, so a
+    # first commit made by the session is still attributed.
+    renamed, letters = _name_status(path, baseline.commit or _EMPTY_TREE)
 
     files: list[DeltaFile] = []
     rename_sources = set(renamed.values())
-    for rel in sorted(set(current) | base_paths):
+    # `letters`/`renamed` compare the baseline commit with the working tree, so
+    # they also carry work the session *committed* — a file clean in `status`
+    # now is still a change if it differs from the baseline commit.
+    for rel in sorted(set(current) | base_paths | set(letters) | set(renamed)):
         if rel in rename_sources:
             continue
         current_fingerprint = _fingerprint(path, rel)
@@ -403,9 +415,10 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
             kind = "added"
         elif letters.get(rel) == "D" or not current_fingerprint:
             kind = "deleted"
-        elif inherited and rel not in current:
-            # The dirty baseline path is clean now. It was restored to HEAD,
-            # which is a session change, not a deleted pre-existing row.
+        elif inherited and rel not in current and rel not in letters:
+            # The dirty baseline path is clean now and matches the baseline
+            # commit: it was restored, which is a session change, not a
+            # deleted pre-existing row.
             kind = "restored"
         else:
             kind = "modified"
@@ -418,7 +431,11 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
                 preexisting_at_start=inherited and not preexisting,
             )
         )
-    return SessionDelta(files=tuple(files), baseline_commit=baseline.commit)
+    return SessionDelta(
+        files=tuple(files),
+        baseline_commit=baseline.commit,
+        head_commit=_head_commit(path),
+    )
 
 
 def diff_text(path: str | Path, *, limit: int = MAX_DIFF_CHARS) -> tuple[str, str]:

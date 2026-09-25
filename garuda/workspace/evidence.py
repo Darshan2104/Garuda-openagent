@@ -11,7 +11,11 @@ mutates. `local`, `sandbox` (a guarded `LocalEnvironment` on the host root),
 workspace bind-mounted at `/workspace`) all qualify. `remote` bind-mounts a
 path on the remote daemon's host, so the local path says nothing about what
 changed there; it is recorded as `unsupported_nonlocal`, never as an empty
-delta. An unknown kind fails closed.
+delta. An unknown kind fails closed. `docker` is classified by kind: a
+`DOCKER_HOST`/context pointing at a remote daemon is the `remote` kind's case
+and must be configured as such, or the host path is not what the container
+sees. Files a root container creates unreadable to the host user fail the
+delta closed (`DiffError`) rather than being skipped.
 """
 
 from __future__ import annotations

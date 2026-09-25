@@ -245,9 +245,11 @@ the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
 SDK `Conversation` call `agent.run` directly, so they can interleave with a
 leased run on the same workspace.
 
-**SDK `Conversation` and `recipe run` carry no workspace baseline.** They persist
-no session (`sdk/conversation.py`, `config/recipes.run_recipe` via
-`interfaces/main.run_recipe_command`), so they never enter
+**SDK `Conversation`, `recipe run`, and eval runners carry no workspace
+baseline.** They persist no session (`sdk/conversation.py`,
+`config/recipes.run_recipe` via `interfaces/main.run_recipe_command`,
+`eval/harbor_adapter.py`, `eval/ablation.py`, subagents in `core/subagent.py`),
+so they never enter
 `workspace/evidence.begin_session_evidence`: their verifier gets no
 `workspace_delta_loader` and nothing records what the run changed versus
 preexisting dirt. Fix by giving them a persisted session (or an explicit
