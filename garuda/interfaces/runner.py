@@ -328,14 +328,29 @@ async def run_agent_task(
             )
 
         runtime.install_driver(_driver)
-    except Exception:
+    except BaseException:
+        # `BaseException`, not `Exception`: a job cancelled mid-startup (a
+        # docker pull, a slow session-start hook) raises `CancelledError`, and
+        # skipping the release would leave the heartbeat holding the
+        # workspace for the life of the process.
         await _abandon_lease()
         raise
     try:
         prompt_task = asyncio.ensure_future(runtime.prompt(task))
-        done, _ = await asyncio.wait(
-            {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # `asyncio.wait` does not cancel what it waits on. Without this the
+            # agent would keep executing tools after teardown released the
+            # lease and closed its environment.
+            prompt_task.cancel()
+            try:
+                await prompt_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
         if heartbeat_task in done:
             heartbeat_error = heartbeat_task.exception()
             if not prompt_task.done():
