@@ -414,6 +414,16 @@ async def run_acp_task(
         agent=runtime_id,
         workspace=workspace,
     )
+    from garuda.agents.setup import resolve_and_record_routing
+
+    # Pin the explicit ACP runtime through budget/mutation gates when routing
+    # is enabled; the decision is on the session before the adapter starts.
+    resolve_and_record_routing(
+        workspace=workspace,
+        store=store,
+        session_id=session_id,
+        pin=runtime_id,
+    )
     _registry, runtime = acp_adapter_for_workspace(
         workspace,
         runtime_id,
