@@ -179,17 +179,40 @@ async def run_agent_task(
         events=events,
     )
 
+    # One mutating session owns a workspace (P0.16). Acquired before any
+    # environment is resolved — and before restart recovery below — so a
+    # refused run burns nothing and another live Garuda on this workspace is
+    # refused before recovery may touch its processes. Held for the whole
+    # facade call and released last in `finally`. A live foreign mutating
+    # lease — including a second concurrent `run_agent_task` on this
+    # workspace — fails here instead of interleaving mutations. Fail-closed:
+    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
+    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
+
+    lease_store = LeaseStore()
+    lease_store.acquire(workspace, events.session_id, mode="mutating")
+
     resumed_from: str | None = None
     initial_state: dict | None = None
     if resume:
-        resumed_from = store.resolve(resume)
-        # Classify the retained session before resuming it: prepared switches
-        # roll back (marked failed), ambiguous trails refuse. Fail-closed.
-        from garuda.runtime.recovery import recover
+        try:
+            resumed_from = store.resolve(resume)
+            # Recover the retained session before resuming it (resume only; a
+            # fresh run has nothing to recover): a live owner or lease holder
+            # refuses, prepared switches roll back (marked failed), orphans
+            # whose persisted identity still matches are reaped, ambiguous
+            # trails refuse. Fail-closed.
+            from garuda.runtime.recovery import recover
 
-        recover(store, resumed_from)
-        if context is None:
-            context = build_resumed_context(store, resumed_from, task, model, config)
+            recover(store, resumed_from, leases=lease_store)
+            if context is None:
+                context = build_resumed_context(store, resumed_from, task, model, config)
+        except BaseException:
+            try:
+                lease_store.release(workspace, events.session_id)
+            except Exception:
+                logger.warning("Lease release failed", exc_info=True)
+            raise
         # Restore pack facts after restart: the persisted WorkingState is the
         # input the pack compiler renders from, so hydrating it here means the
         # re-synced current-task/handoff carry the pre-restart facts verbatim.
@@ -199,16 +222,6 @@ async def run_agent_task(
             logger.warning("Failed to load persisted working state", exc_info=True)
             initial_state = None
 
-    # One mutating session owns a workspace (P0.16). Acquired before any
-    # environment is resolved so a refused run burns nothing, held for the
-    # whole facade call, and released last in `finally`. A live foreign
-    # mutating lease — including a second concurrent `run_agent_task` on this
-    # workspace — fails here instead of interleaving mutations. Fail-closed:
-    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
-
-    lease_store = LeaseStore()
-    lease_store.acquire(workspace, events.session_id, mode="mutating")
     lease_ttl = DEFAULT_TTL_SEC
 
     async def _lease_heartbeat() -> None:

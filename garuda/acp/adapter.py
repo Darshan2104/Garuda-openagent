@@ -174,7 +174,15 @@ class AcpRuntime:
                 AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
             )
             self._agent_session_id = await process.session_new()
-            if self._store is not None:
+            if self._store is None:
+                # No store means no persisted child record: a Garuda crash
+                # would leave this child unrecoverable by `recover()`.
+                logger.warning(
+                    "ACP runtime %s started without a session store; its child "
+                    "process is not recorded for restart recovery",
+                    self._runtime_id,
+                )
+            else:
                 from garuda.runtime.recovery import record_child
                 from garuda.runtime.session import RuntimeSegment
 
@@ -412,8 +420,10 @@ class AcpRuntime:
     def _mark_child_exited(self) -> None:
         """Retire the recorded child once `AcpProcess.close` has reaped it.
 
-        A record left `live` after a clean exit would make a later recovery
-        probe — and possibly signal — whatever process reuses that PID.
+        A record left `live` after a clean exit makes a later recovery probe
+        whatever process reuses that PID. A crash between `close` and this
+        write still leaves it `live`; recovery's persisted start-time/command
+        identity check is what keeps that record from signalling a stranger.
         """
         pid, self._recorded_child_pid = self._recorded_child_pid, None
         if pid is None or self._store is None:
@@ -459,33 +469,48 @@ class AcpRuntime:
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
+        # The audit is best-effort *before* cancelling and surfaced *after*:
+        # a persistence failure must never keep the agent running.
+        audit_error: Exception | None = None
         if self._store is not None:
             from garuda.runtime.recovery import record_cancel
 
-            record_cancel(
-                self._store,
-                self._garuda_session_id,
-                boundary="process",
-                reason=reason or "cancelled",
-            )
+            try:
+                record_cancel(
+                    self._store,
+                    self._garuda_session_id,
+                    boundary="process",
+                    reason=reason or "cancelled",
+                )
+            except Exception as exc:
+                logger.warning("Could not persist ACP cancellation", exc_info=True)
+                audit_error = exc
         await self._cancel_pending_approvals()
         if self._process is not None:
             await self._process.session_cancel(self._agent_session_id or "")
-        if self._state is LifecycleState.RUNNING:
-            # The in-flight prompt owns the transition to CLOSED; notifying
-            # above is what unblocks it. Moving here too would race it.
-            return
-        self._move(LifecycleState.CANCELLING)
-        self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
-        self._move(LifecycleState.CLOSED)
+        if self._state is not LifecycleState.RUNNING:
+            # While RUNNING the in-flight prompt owns the transition to
+            # CLOSED; notifying above is what unblocks it.
+            self._move(LifecycleState.CANCELLING)
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
+            self._move(LifecycleState.CLOSED)
+        if audit_error is not None:
+            from garuda.runtime.recovery import CancellationAuditError
+
+            raise CancellationAuditError(
+                f"ACP runtime cancelled but its audit record failed: {audit_error}"
+            ) from audit_error
 
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             await self._close_process()
             return
         if self._state is LifecycleState.RUNNING:
-            await self.cancel(reason="close")
-            await self._close_process()
+            try:
+                await self.cancel(reason="close")
+            finally:
+                # A cancel audit failure must not leave the child running.
+                await self._close_process()
             return
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "closed"})
         self._move(LifecycleState.CLOSED)

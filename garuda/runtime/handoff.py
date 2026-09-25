@@ -199,21 +199,16 @@ class HandoffTransaction:
 
     async def cancel(self, source, target=None, *, reason: str = "") -> None:
         """Cancel the switch. The source returns to a resumable state and a
-        started target is closed, so exactly one resumable owner remains."""
+        started target is closed, so exactly one resumable owner remains.
+
+        Cleanup runs first and always; the `switch` cancellation audit is
+        written afterwards (never for a refused cancel of a terminal
+        transaction). An audit write failure therefore cannot leave a started
+        target alive or the source paused: the transaction moves to FAILED —
+        not CANCELLED, since the move is unaudited — and the error surfaces.
+        """
         if self._phase is HandoffPhase.IDLE:
             raise HandoffError("nothing to cancel")
-        if self._store is not None:
-            try:
-                from garuda.runtime.recovery import record_cancel
-
-                record_cancel(
-                    self._store,
-                    self._session_id,
-                    boundary="switch",
-                    reason=reason or "cancelled",
-                )
-            except Exception as exc:
-                raise self._fail(f"handoff cancellation audit failed: {exc}") from exc
         if self._phase in (
             HandoffPhase.ACKNOWLEDGED,
             HandoffPhase.ROLLED_BACK,
@@ -228,12 +223,36 @@ class HandoffTransaction:
             try:
                 await target.close()
             except Exception as exc:
+                self._record_cancel(reason)
                 raise self._fail(
                     "target cleanup could not be confirmed; source remains paused: "
                     f"{exc}"
                 ) from exc
         await self._resume_source(source)
+        audit_error = self._record_cancel(reason)
+        if audit_error is not None:
+            raise self._fail(
+                f"handoff cancelled but its audit record failed: {audit_error}"
+            ) from audit_error
         self._move(HandoffPhase.CANCELLED, reason=reason)
+
+    def _record_cancel(self, reason: str) -> Exception | None:
+        """Persist the switch-boundary cancel; return (never raise) a failure."""
+        if self._store is None:
+            return None
+        try:
+            from garuda.runtime.recovery import record_cancel
+
+            record_cancel(
+                self._store,
+                self._session_id,
+                boundary="switch",
+                reason=reason or "cancelled",
+            )
+        except Exception as exc:
+            logger.warning("Handoff cancellation audit failed", exc_info=True)
+            return exc
+        return None
 
     async def _rollback(self, source, reason: str) -> None:
         await self._resume_source(source)
@@ -341,7 +360,11 @@ async def execute_handoff(
     try:
         target = target_factory()
     except Exception as exc:
-        await tx.cancel(source, reason="target construction failed")
+        cancel_error: HandoffError | None = None
+        try:
+            await tx.cancel(source, reason="target construction failed")
+        except HandoffError as cancel_exc:
+            cancel_error = cancel_exc
         if store is not None:
             try:
                 store.record_handoff(
@@ -349,7 +372,8 @@ async def execute_handoff(
                 )
             except Exception:
                 logger.warning("Handoff failure audit failed", exc_info=True)
-        raise HandoffError(f"target construction failed: {exc}") from exc
+        detail = f"; {cancel_error}" if cancel_error is not None else ""
+        raise HandoffError(f"target construction failed: {exc}{detail}") from exc
     try:
         await tx.start_target(source, target)
     except HandoffError:
@@ -380,7 +404,12 @@ async def execute_handoff(
             )
         except Exception as exc:
             logger.warning("Handoff acknowledge audit failed", exc_info=True)
-            await tx.cancel(source, target, reason="acknowledgement audit failed")
+            try:
+                await tx.cancel(source, target, reason="acknowledgement audit failed")
+            except HandoffError as cancel_exc:
+                raise HandoffError(
+                    f"handoff acknowledge audit failed: {exc}; {cancel_exc}"
+                ) from exc
             raise HandoffError(f"handoff acknowledge audit failed: {exc}") from exc
     try:
         await tx.acknowledge(source, target)

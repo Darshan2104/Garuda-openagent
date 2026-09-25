@@ -32,6 +32,7 @@ from garuda.runtime.protocol import (
     check_transition,
 )
 from garuda.runtime.recovery import (
+    CancellationAuditError,
     RecoveryError,
     RecoveryReport,
     RestartState,
@@ -76,6 +77,7 @@ __all__ = [
     "TERMINAL_LIFECYCLE_STATES",
     "AgentRuntime",
     "AgentRuntimeError",
+    "CancellationAuditError",
     "AuthStatus",
     "HealthStatus",
     "LifecycleState",

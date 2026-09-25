@@ -312,6 +312,28 @@ class SessionStore:
         """Merge fields into this session's meta under an exclusive lock."""
         merge_meta(self.session_dir(session_id) / "meta.json", updates)
 
+    def mutate_meta(self, session_id: str, mutate) -> dict:
+        """Read-modify-write this session's meta inside one lock hold.
+
+        ``update_meta`` merges keys under the lock but callers that must derive
+        the new value from the current one (appending to a list, flipping one
+        record) would otherwise read outside it and drop a concurrent append.
+        ``mutate`` receives the current document and returns the keys to
+        replace; it must not touch the store itself (the lock is not
+        re-entrant). Unlike ``merge_meta``, a missing or unparseable meta fails
+        instead of being rebuilt — these writers are recovery evidence.
+        """
+        meta_path = self.session_dir(session_id) / "meta.json"
+        with _meta_lock(meta_path):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError(f"session {session_id} meta is not a mapping")
+            updates = mutate(dict(meta))
+            meta.update(updates)
+            meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
+        return meta
+
     def load_unified(self, session_id: str) -> UnifiedSession:
         """Validate this session's meta as a unified session (issue #13).
 
