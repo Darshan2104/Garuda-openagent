@@ -1,10 +1,11 @@
 """ACP subprocess lifecycle over stdio (P0.12, issue #21).
 
-`AcpProcess` launches one configured agent process and speaks the ACP wire
-subset: initialize, session/new, session/prompt, session/cancel, with
-session/update notifications streamed to a queue. stdin/stdout carry framed
-protocol bytes only; stderr is drained separately into a bounded diagnostics
-ring that never touches the frame parser.
+`AcpProcess` launches one configured agent process and speaks ACP v1:
+initialize, session/new, session/prompt, session/cancel, and bidirectional
+JSON-RPC notifications/requests over newline-delimited JSON. Agent-initiated
+requests (`session/request_permission`, and any client method Garuda did not
+advertise) are queued for the adapter, which answers each exactly once. stderr is drained
+separately into a bounded diagnostics ring that never touches the protocol.
 
 Safety posture: the argv comes from the caller (the registry-resolved
 allowlist, wired by a later adapter issue) — this module never searches PATH
@@ -22,13 +23,11 @@ import logging
 import os
 import signal
 from collections import deque
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from garuda.acp.protocol import (
     ACP_VERSION,
     MAX_FRAME_BYTES,
-    MAX_HEADER_BYTES,
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
@@ -43,8 +42,7 @@ HANDSHAKE_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0
 TERM_GRACE = 5.0
 STDERR_RING = 50
-
-ClientRequestHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+_MISSING = object()
 
 
 class AcpProcess:
@@ -56,14 +54,12 @@ class AcpProcess:
         *,
         extra_env: dict[str, str] | None = None,
         call_timeout: float = CALL_TIMEOUT,
-        client_request_handler: ClientRequestHandler | None = None,
     ):
         if not argv or any(not isinstance(p, str) or not p for p in argv):
             raise AcpProtocolError("argv must be a non-empty list of strings")
         self._argv = list(argv)
         self._extra_env = dict(extra_env or {})
         self._call_timeout = call_timeout
-        self._client_request_handler = client_request_handler
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -71,9 +67,9 @@ class AcpProcess:
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._stderr_ring: deque[str] = deque(maxlen=STDERR_RING)
         self._closed = False
-        self._inbound_tasks: set[asyncio.Task] = set()
 
     @property
     def pid(self) -> int | None:
@@ -125,11 +121,15 @@ class AcpProcess:
                     self._on_eof()
                     return
                 self._buffer += chunk
-                if len(self._buffer) > MAX_FRAME_BYTES + MAX_HEADER_BYTES:
-                    self._on_transport_error(
-                        AcpProtocolError("reader buffer exceeds maximum frame size")
-                    )
-                    return
+                if b"\n" not in chunk:
+                    # Still inside one line: skip re-scanning the whole buffer
+                    # (quadratic for a large frame) and only enforce the bound.
+                    if len(self._buffer) > MAX_FRAME_BYTES:
+                        self._on_transport_error(
+                            AcpProtocolError("reader buffer exceeds maximum frame size")
+                        )
+                        return
+                    continue
                 while True:
                     try:
                         message, self._buffer = decode_frame(self._buffer)
@@ -162,84 +162,44 @@ class AcpProcess:
         if "id" in message and ("result" in message or "error" in message):
             future = self._pending.pop(message["id"], None)
             if future is not None and not future.done():
+                # Resolve only after the current read callback returns. An
+                # ACP response can be followed by a notification in the same
+                # stdout chunk; completing inline lets a waiter run before
+                # that notification is routed, making drain_notifications()
+                # timing-dependent across event-loop implementations.
+                loop = asyncio.get_running_loop()
                 if "error" in message:
                     error = message["error"] or {}
-                    future.set_exception(
+                    loop.call_soon(
+                        self._settle_future,
+                        future,
+                        _MISSING,
                         AcpProtocolError(
                             f"agent error {error.get('code')}: {error.get('message')}"
-                        )
+                        ),
                     )
                 else:
-                    future.set_result(message.get("result"))
-        elif "id" in message and message.get("method"):
-            task = asyncio.ensure_future(self._respond_to_agent_request(message))
-            self._inbound_tasks.add(task)
-            task.add_done_callback(self._inbound_tasks.discard)
+                    loop.call_soon(
+                        self._settle_future, future, message.get("result"), None
+                    )
         elif message.get("method"):
-            self._notifications.put_nowait(message)
+            if "id" in message:
+                self._requests.put_nowait(message)
+            else:
+                self._notifications.put_nowait(message)
         else:
             self._on_transport_error(AcpProtocolError(f"unroutable message: {message!r}"))
 
-    async def _respond_to_agent_request(self, message: dict[str, Any]) -> None:
-        """Answer a request sent by the agent to the ACP client endpoint.
-
-        ACP is bidirectional JSON-RPC. Treating a request as a notification
-        leaves the agent waiting forever and can make a cancelled permission
-        look like a successful tool call. Callers may install a controller
-        handler; without one every operation is rejected explicitly, which is
-        safer than executing an agent-provided filesystem or terminal request.
-        """
-        request_id = message["id"]
-        method = message.get("method")
-        params = message.get("params", {})
-        if not isinstance(method, str) or not isinstance(params, dict):
-            await self._send_response(
-                request_id,
-                error={"code": -32600, "message": "invalid client request"},
-            )
-            return
-        if self._client_request_handler is None:
-            await self._send_response(
-                request_id,
-                error={
-                    "code": -32601,
-                    "message": f"client method {method!r} is not authorized",
-                },
-            )
-            return
-        try:
-            result = await self._client_request_handler(method, params)
-            if not isinstance(result, dict):
-                raise AcpProtocolError("client request handler must return an object")
-        except AcpProtocolError as exc:
-            await self._send_response(request_id, error={"code": -32602, "message": str(exc)})
-        except Exception:
-            logger.warning("ACP client request handler failed for %s", method, exc_info=True)
-            await self._send_response(
-                request_id,
-                error={"code": -32603, "message": "client request refused"},
-            )
-        else:
-            await self._send_response(request_id, result=result)
-
-    async def _send_response(
-        self, request_id: int | str, *, result: dict[str, Any] | None = None,
-        error: dict[str, Any] | None = None,
+    @staticmethod
+    def _settle_future(
+        future: asyncio.Future, result: Any = _MISSING, error: Exception | None = None
     ) -> None:
-        if self._process is None or self._process.stdin is None:
+        if future.done():
             return
-        message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
         if error is not None:
-            message["error"] = error
+            future.set_exception(error)
         else:
-            message["result"] = result or {}
-        try:
-            self._process.stdin.write(encode_frame(message))
-            await self._process.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            # A dead agent cannot observe the response; the regular reader/EOF
-            # path will fail its pending calls with the process diagnostics.
-            return
+            future.set_result(result)
 
     def _fail_all_pending(self, exc: Exception) -> None:
         pending, self._pending = self._pending, {}
@@ -261,8 +221,10 @@ class AcpProcess:
         self._fail_all_pending(exc)
 
     async def _call(
-        self, method: str, params: dict[str, Any], *, timeout: float | None = None
+        self, method: str, params: dict[str, Any], *, timeout: Any = _MISSING
     ) -> Any:
+        """One request. `timeout` omitted uses the call deadline; `None` waits
+        without one (a prompt turn is bounded by its caller, not here)."""
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         if self._process.returncode is not None:
@@ -285,7 +247,8 @@ class AcpProcess:
             self._pending.pop(call_id, None)
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
         try:
-            return await asyncio.wait_for(future, timeout or self._call_timeout)
+            deadline = self._call_timeout if timeout is _MISSING else timeout
+            return await asyncio.wait_for(future, deadline)
         except TimeoutError as exc:
             self._pending.pop(call_id, None)
             raise AcpTimeoutError(f"{method} exceeded its deadline") from exc
@@ -298,12 +261,15 @@ class AcpProcess:
         `stdin.write` can leave the bytes buffered in the transport while the
         local pending calls are already failed — a cancel the agent never saw.
         """
+        await self._notify_payload(
+            {"jsonrpc": "2.0", "method": method, "params": params}
+        )
+
+    async def _notify_payload(self, payload: dict[str, Any]) -> None:
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         try:
-            self._process.stdin.write(
-                encode_frame({"jsonrpc": "2.0", "method": method, "params": params})
-            )
+            self._process.stdin.write(encode_frame(payload))
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
@@ -314,34 +280,38 @@ class AcpProcess:
             "initialize",
             {
                 "protocolVersion": ACP_VERSION,
-                "clientInfo": {"name": "garuda", "version": "0"},
                 "clientCapabilities": {},
+                "clientInfo": {"name": "garuda", "version": "0.1.0"},
             },
             timeout=timeout,
         )
         if not isinstance(result, dict):
             raise AcpProtocolError("initialize result must be an object")
-        if result.get("protocolVersion") != ACP_VERSION:
+        version = result.get("protocolVersion")
+        if version != ACP_VERSION or isinstance(version, bool):
             raise AcpProtocolError(
-                f"agent speaks ACP {result.get('protocolVersion')!r}, "
-                f"client requires {ACP_VERSION!r}"
+                f"ACP version mismatch: expected {ACP_VERSION!r}, got {version!r}"
             )
         return result
 
     async def session_new(
         self,
-        *,
         cwd: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        *,
         timeout: float = HANDSHAKE_TIMEOUT,
     ) -> str:
-        """Create an ACP v1 session with its explicit absolute workspace root."""
-        resolved_cwd = os.path.abspath(cwd or os.getcwd())
-        if not os.path.isabs(resolved_cwd):  # defensive despite abspath above
+        if cwd is None:
+            cwd = os.getcwd()
+        if not os.path.isabs(cwd):
             raise AcpProtocolError("session/new cwd must be absolute")
+        if mcp_servers is not None and any(
+            not isinstance(server, dict) for server in mcp_servers
+        ):
+            raise AcpProtocolError("session/new mcpServers must contain objects")
         result = await self._call(
             "session/new",
-            {"cwd": resolved_cwd, "mcpServers": list(mcp_servers or [])},
+            {"cwd": cwd, "mcpServers": list(mcp_servers or [])},
             timeout=timeout,
         )
         session_id = result.get("sessionId") if isinstance(result, dict) else None
@@ -350,14 +320,18 @@ class AcpProcess:
         return session_id
 
     async def session_prompt(
-        self, session_id: str, text: str, *, timeout: float | None = None
+        self,
+        session_id: str,
+        text: str | list[dict[str, Any]],
+        *,
+        timeout: float | None = None,
     ) -> Any:
+        prompt = [{"type": "text", "text": text}] if isinstance(text, str) else text
+        if not prompt or any(not isinstance(block, dict) for block in prompt):
+            raise AcpProtocolError("session/prompt requires content blocks")
         return await self._call(
             "session/prompt",
-            {
-                "sessionId": session_id,
-                "prompt": [{"type": "text", "text": text}],
-            },
+            {"sessionId": session_id, "prompt": prompt},
             timeout=timeout,
         )
 
@@ -368,19 +342,40 @@ class AcpProcess:
         finally:
             self._fail_all_pending(AcpCancelledError("cancelled by caller"))
 
-    async def session_approve(self, session_id: str, approval_id: str, approved: bool) -> None:
-        """Answer a pending approval request (notification; no reply expected)."""
-        await self._notify(
-            "session/approve",
-            {"sessionId": session_id, "approvalId": approval_id, "approved": approved},
-        )
-
     async def next_notification(self, timeout: float | None = None) -> dict[str, Any] | None:
         """Wait for the next agent notification. None on timeout, never raises."""
         try:
             return await asyncio.wait_for(self._notifications.get(), timeout)
         except TimeoutError:
             return None
+
+    async def next_request(self) -> dict[str, Any]:
+        """Wait for an agent request that requires a client response."""
+        return await self._requests.get()
+
+    async def respond(
+        self,
+        request_id: int | str | None,
+        *,
+        result: Any = _MISSING,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Respond to an agent-initiated JSON-RPC request exactly once."""
+        if (result is _MISSING) == (error is None):
+            raise AcpProtocolError("response requires exactly one of result or error")
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
+        if error is not None:
+            payload["error"] = error
+        else:
+            payload["result"] = result
+        await self._notify_payload(payload)
+
+    def drain_requests(self) -> list[dict[str, Any]]:
+        """Agent-initiated requests waiting for a response, oldest first."""
+        out = []
+        while not self._requests.empty():
+            out.append(self._requests.get_nowait())
+        return out
 
     def drain_notifications(self) -> list[dict[str, Any]]:
         out = []
@@ -420,10 +415,6 @@ class AcpProcess:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
-        for task in list(self._inbound_tasks):
-            task.cancel()
-        if self._inbound_tasks:
-            await asyncio.gather(*self._inbound_tasks, return_exceptions=True)
         self._fail_all_pending(AcpCancelledError("process closed"))
 
     def _kill_group(self, pid: int, *, force: bool = False) -> None:

@@ -8,8 +8,8 @@ timeout or requester disconnect. Every outcome — allow, deny, timeout,
 disconnect — is persisted, so an audit can replay each one.
 
 Strict ceilings never silently downgrade: `describe_gaps` reports the
-capabilities a strict policy needs but the adapter lacks, and `refuse_if_gaps`
-turns that report into a refusal before anything runs.
+capabilities a strict policy needs but the adapter lacks; negotiation itself
+refuses such a policy when the runtime starts.
 """
 
 from __future__ import annotations

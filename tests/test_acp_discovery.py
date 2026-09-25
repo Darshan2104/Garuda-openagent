@@ -222,7 +222,7 @@ def _write_runtime_settings(workspace, *, disabled=True):
 def test_shared_catalog_keeps_project_disablement_advisory_and_blocks_alias(tmp_path, monkeypatch):
     monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path)))
     catalog = prepare_runtime_catalog(tmp_path)
-    fake = next(entry for entry in catalog.discovered if entry.runtime_id == "fake")
+    fake = next(entry for entry in catalog.discover() if entry.runtime_id == "fake")
     assert fake.available is False
     assert any("disabled by user configuration" in warning for warning in fake.warnings)
     # The project's attempt to disable native remains a suggestion only.
@@ -296,3 +296,173 @@ def test_probe_fields_validated():
                 }
             ]
         )
+
+
+def _forbid_startup(monkeypatch):
+    """Make any post-selection startup step fail the test loudly."""
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("startup ran after a refused runtime selection")
+
+    import garuda.interfaces.main as cli_main
+    import garuda.sdk.conversation as sdk_conversation
+    import garuda.sdk.software_agent as sdk_agent
+
+    monkeypatch.setattr(cli_main, "load_profile", _boom)
+    monkeypatch.setattr(cli_main, "build_toolkit", _boom)
+    monkeypatch.setattr(cli_main, "LitellmModel", _boom)
+    monkeypatch.setattr(sdk_agent, "load_profile", _boom)
+    monkeypatch.setattr(sdk_conversation.AgentSession, "create", _boom)
+    monkeypatch.setattr(sdk_conversation, "resolve_environment", _boom)
+
+
+@pytest.mark.asyncio
+async def test_enabled_acp_runtime_is_refused_not_silently_native(tmp_path, monkeypatch):
+    """A configured, enabled ACP runtime is not launchable by the native facade:
+    every launch surface refuses instead of running the native loop."""
+    monkeypatch.setenv(
+        "GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path, disabled=False))
+    )
+    _forbid_startup(monkeypatch)
+    for ref in ("fake", "preferred"):
+        args = build_parser().parse_args(
+            ["run", "--task", "must not run", "--workspace", str(tmp_path), "--runtime", ref]
+        )
+        with pytest.raises(RegistryError, match="not launchable"):
+            await run_task(args)
+
+        from garuda.sdk import SoftwareAgent
+
+        with pytest.raises(RegistryError, match="not launchable"):
+            await SoftwareAgent(workspace=tmp_path, runtime=ref).run("must not run")
+
+
+@pytest.mark.asyncio
+async def test_conversation_gate_refuses_before_session_or_environment(tmp_path, monkeypatch):
+    from garuda.sdk.conversation import Conversation
+
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path)))
+    _forbid_startup(monkeypatch)
+    with pytest.raises(RegistryError, match="disabled"):
+        await Conversation(workspace=tmp_path, runtime="preferred").run("must not run")
+
+    monkeypatch.setenv(
+        "GARUDA_GLOBAL_SETTINGS", str(tmp_path / "global-settings.yaml")
+    )
+    (tmp_path / "global-settings.yaml").write_text(
+        "runtimes:\n  - runtime_id: fake\n    kind: acp\n    command: [fake-acp]\n"
+        "    version: '1'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match="not launchable"):
+        await Conversation(workspace=tmp_path, runtime="fake").run("must not run")
+
+
+def test_cli_main_refuses_disabled_runtime_with_message_and_no_startup(
+    tmp_path, monkeypatch, capsys
+):
+    """The outermost entry point: `garuda run --runtime <disabled>` exits nonzero
+    with an actionable message before any profile, toolkit, or model exists."""
+    from garuda.interfaces.main import main
+
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path)))
+    _forbid_startup(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["garuda", "run", "--task", "x", "--workspace", str(tmp_path), "--runtime", "fake"],
+    )
+    with pytest.raises(SystemExit) as exited:
+        main()
+    assert exited.value.code == 2
+    err = capsys.readouterr().err
+    assert "runtime selection refused" in err and "disabled" in err
+    assert "Traceback" not in err
+
+
+def test_launch_path_runs_no_probes_and_probes_get_no_stdin(tmp_path, monkeypatch):
+    """Building and selecting through the catalog executes nothing; the probes
+    run only when a list/inspect caller asks for discovery."""
+    marker = tmp_path / "probed"
+    probe = tmp_path / "bin" / "probe-acp"
+    probe.parent.mkdir()
+    probe.write_text(f"#!/bin/sh\ntouch {marker}\necho 'probe-acp 1.0'\n", encoding="utf-8")
+    probe.chmod(probe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(probe.parent) + os.pathsep + os.environ.get("PATH", ""))
+    settings = tmp_path / "global-settings.yaml"
+    settings.write_text(
+        "runtimes:\n  - runtime_id: probe\n    kind: acp\n    command: [probe-acp]\n"
+        "    version: '1'\n    version_args: [probe-acp, --version]\n"
+        "    auth_probe:\n      argv: [probe-acp, auth]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
+
+    catalog = prepare_runtime_catalog(tmp_path)
+    assert catalog.select_for_native_facade("native").runtime_id == "native"
+    with pytest.raises(RegistryError, match="not launchable"):
+        catalog.select_for_native_facade("probe")
+    assert not marker.exists()
+
+    import subprocess
+
+    seen: list = []
+    real_run = subprocess.run
+
+    def _recording_run(*args, **kwargs):
+        seen.append(kwargs.get("stdin"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _recording_run)
+    (entry,) = [d for d in catalog.discover() if d.runtime_id == "probe"]
+    assert entry.available is True
+    assert marker.exists()
+    assert seen and all(value is subprocess.DEVNULL for value in seen)
+
+
+def test_malformed_project_advice_warns_but_authority_attempts_refuse(tmp_path, monkeypatch):
+    settings = tmp_path / "global-settings.yaml"
+    settings.write_text(
+        "runtimes:\n  - runtime_id: fake\n    kind: acp\n    command: [fake-acp]\n"
+        "    version: '1'\n    capabilities: [prompt]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
+    project = tmp_path / ".agent" / "settings.yaml"
+    project.parent.mkdir()
+
+    # Advisory malformations are ignored with a warning: runs still start.
+    project.write_text(
+        "disabled_runtimes: native\n"
+        "runtime_refs:\n"
+        "  - alias: ok\n    runtime_id: fake\n"
+        "  - alias: ghost\n    runtime_id: nowhere\n"
+        "  - alias: typo\n    runtime_id: fake\n    colour: blue\n"
+        "  - alias: ok\n    runtime_id: fake\n",
+        encoding="utf-8",
+    )
+    catalog = prepare_runtime_catalog(tmp_path)
+    assert catalog.select("native").runtime_id == "native"
+    assert catalog.select("ok").runtime_id == "fake"
+    joined = " ".join(catalog.warnings)
+    assert "disabled_runtimes" in joined
+    assert "nowhere" in joined and "colour" in joined and "duplicate" in joined
+    with pytest.raises(RegistryError, match="unknown runtime"):
+        catalog.select("ghost")
+
+    project.write_text("runtime_refs: not-a-list\n", encoding="utf-8")
+    assert "must be a list" in " ".join(prepare_runtime_catalog(tmp_path).warnings)
+
+    # Authority attempts still fail closed.
+    project.write_text(
+        "runtime_refs:\n  - alias: evil\n    runtime_id: fake\n    command: [sh]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match="cannot authorize an executable"):
+        prepare_runtime_catalog(tmp_path)
+    project.write_text(
+        "runtime_refs:\n  - alias: wide\n    runtime_id: fake\n"
+        "    capabilities: [prompt, terminal]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match="widens capabilities"):
+        prepare_runtime_catalog(tmp_path)

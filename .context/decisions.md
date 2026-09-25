@@ -46,20 +46,20 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Unified sessions version the meta document (v1): legacy sessions resume unchanged and migrate in memory; the migrated form publishes via the atomic locked meta write, unknown future versions fail actionably, and event cursors never regress.
 - `run_agent_task` is a facade over `NativeGarudaRuntime`: all entry points run through the boundary with identical execution (same agent call, same teardown); the bridge owns session/unified records, lifecycle, normalized events, and parked approvals only.
 - Runtime switches are transactions: acknowledgement requires the source frozen at the boundary (never merely idle), so two mutating owners cannot exist; pre-ack failure or cancellation returns to exactly one resumable owner with a typed event per move. `execute_handoff` runs the full flow against real runtimes with the session store recording prepared/acknowledged/failed.
-- Recovery classifies from persisted records only: resumable sources resume, prepared switches roll back first, orphans are reaped and verified dead, ambiguous terminals refuse, and no exit code ever becomes a success claim. Startup/resume runs classification first; indeterminate liveness is non-recoverable without operator action.
+- Recovery classifies from persisted records only: resumable sources resume, prepared switches roll back first, identity-matched orphans are reaped and verified dead, ambiguous terminals refuse, and no exit code ever becomes a success claim. It runs on resume only, after the resuming run's lease; indeterminate liveness, identity, or owner state is non-recoverable without operator action.
 - Generated context files are versioned Markdown+frontmatter (v1): required task/source_runtime, bounded lists, unknown fields round-trip, unknown versions rejected. Raw transcripts, reasoning, and secrets never belong in them.
 - `ContextPackManager` is the sole writer of generated context files: deterministic compile from card/session/git evidence, atomic publish, any other target refused, briefs budgeted with provenance intact. `RunState` syncs at checkpoint and after compaction; resume restores the persisted card first so pack facts survive compaction and restart.
 - Pack writes scrub secrets automatically (flagged, never silent) with best-effort pattern redaction over every string/key including nested unknown fields and full PEM blocks, rebuilt from the scrubbed map; oversize bodies, escaping paths, or reasoning markers block. Redaction transforms in-memory pack text only and cannot reach durable docs.
-- The ACP wire subset is owned, not vendored: JSON-RPC with Content-Length framing pinned to a negotiated version, one subprocess per agent in its own process group, minimal child environment with explicit extras, stderr as diagnostics only, and close() that always reaps.
-- Execution authority assigns exactly one owner per tool family; strict policies fail closed when the agent cannot honor them, and the map snapshots into session capability records so resumed sessions prove prior ownership.
+- The ACP v1 wire subset is owned, not vendored: newline-delimited JSON-RPC with numeric protocol version 1, required session workspace/MCP parameters, structured prompt blocks, `sessionUpdate`-keyed updates, permission as an agent-to-client request answered exactly once (never widened to `allow_always`; unadvertised client methods refused), one subprocess per agent in its own process group, minimal child environment with explicit extras, stderr as diagnostics only, and close() that always reaps.
+- Execution authority assigns exactly one owner per tool family; strict policies fail closed when the agent cannot honor them, and the map snapshots into session capability records. It records negotiated intent from agent-declared extension fields; it is not an enforcement boundary.
 - ACP normalization is per-session and stateful: causal order beats arrival order, partials emit once with no duplicate final, turn completion reopens on new_turn while cancellation/failure terminate, and raw records stay redacted diagnostics.
 - One generic AcpRuntime carries every adapter through the shared conformance suite against the fake test server; version mismatches fail at handshake, and cross-process resume stays out until the wire grows the methods for it.
 - Approvals flow through one broker: ceilings decide, asks park with timeout and disconnect denial, every outcome persists to the session, and strict gaps refuse before running.
 - Discovery probes only what trusted manifests declare (version/auth argv) with a minimal child env: missing tools explain setup, unknown versions display as unknown, login state is never guessed, and users can disable any runtime.
 - Vendor adapters ship bare adapter binaries (never npx auto-download): Claude Code and Codex run on the user's own subscription login with credential paths documented as untouchable, login state stays unknown until a run, and the wire subset limits are written down.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
-- Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. A local session must persist its baseline before any prompt; its verifier, handoff, and close path consume that exact record or fail closed. Non-local attribution is recorded as unsupported rather than silently omitted.
-- Recovery signals only a persisted Garuda-launched child/process-group identity bound to the session runtime. It audits a readable message checkpoint and runtime identity before resume, validates ACP authority snapshots, and refuses indeterminate liveness before or after reaping. Turn, switch, and process cancellation boundaries persist their audit record before terminal transition.
+- Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation`, `recipe run`, and product handoffs (no caller passes `workspace=`) carry no baseline yet.
+- Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
 
 ## 2026-09-25 — trusted runtime selection is a shared launch gate
 
@@ -71,9 +71,20 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   file is a configuration error, never an empty set that could reactivate a
   disabled executable. Project `disabled_runtimes` remains recommendation-only
   and disabled built-in stubs stay visible with their policy annotation.
+- Project runtime settings fail closed on authority, not on advice: a project
+  `command` or capability widening refuses the run, while a malformed
+  `disabled_runtimes` or alias entry is ignored with a warning so a repository
+  cannot block every run through advisory settings.
+- Building the catalog and selecting a runtime execute nothing. Version and
+  auth probes run only when a list/inspect caller asks for discovery, with
+  stdin closed.
 - Until the ACP launch facade is wired, selecting a configured ACP runtime
-  refuses before any toolkit, workspace, prompt, or process is started; it
-  never silently falls back to the native runtime.
+  refuses before any toolkit, workspace, prompt, or harness process is
+  started; it never silently falls back to the native runtime. `garuda run`
+  reports the refusal as a message with exit status 2.
+- `chat`, `serve`, the web dashboard, and `recipe run` accept no runtime
+  selection and always run the native loop, which cannot be disabled, so they
+  do not consult runtime settings.
 
 ## 2026-09-25 — ACP adapters speak the public v1 stdio contract
 

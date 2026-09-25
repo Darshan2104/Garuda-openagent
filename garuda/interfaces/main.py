@@ -17,6 +17,7 @@ from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import DEFAULT_MODEL, MODEL_ENV_VAR
 from garuda.tools import build_toolkit
+from garuda.workspace.factory import WORKSPACE_KINDS
 
 
 def build_parser():
@@ -33,7 +34,7 @@ def build_parser():
     run_parser.add_argument("--workspace", default=".", help="Workspace root directory")
     run_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
         help="Execution environment type",
     )
@@ -147,7 +148,7 @@ def build_parser():
     chat_parser.add_argument("--workspace", default=".")
     chat_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
@@ -180,7 +181,7 @@ def build_parser():
     serve_parser.add_argument("--workspace", default=".")
     serve_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     serve_parser.add_argument("--docker-image", default="ubuntu:22.04")
@@ -255,7 +256,7 @@ def build_parser():
     )
     web_parser.add_argument(
         "--web-workspace-kind",
-        choices=["local", "sandbox", "docker", "tmux", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
         help="Workspace kind for dashboard conversations (default: local)",
     )
@@ -289,7 +290,7 @@ def build_parser():
     recipe_run.add_argument("--workspace", default=".")
     recipe_run.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     recipe_run.add_argument("--docker-image", default="ubuntu:22.04")
@@ -589,13 +590,33 @@ async def run_web(args) -> int:
     return 0
 
 
+def _run_with_runtime_gate(args) -> int:
+    """`garuda run`, with a refused runtime selection as a message, not a traceback."""
+    import asyncio
+    import sys
+
+    from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return asyncio.run(run_task(args))
+    except (RegistryError, RuntimeSettingsError) as exc:
+        print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
+        print(
+            "Check `runtimes`/`disabled_runtimes` in your global settings and the "
+            "project's `runtime_refs`, or pass `--runtime native`.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 def main() -> None:
     import asyncio
 
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "run":
-        raise SystemExit(asyncio.run(run_task(args)))
+        raise SystemExit(_run_with_runtime_gate(args))
     if args.command == "chat":
         raise SystemExit(asyncio.run(chat_loop(args)))
     if args.command == "serve":

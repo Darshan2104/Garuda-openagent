@@ -126,26 +126,36 @@ def build_brief(frontmatter: dict, body: str, *, budget_chars: int) -> str:
     """
     head = yaml.safe_dump(dict(frontmatter), sort_keys=True, allow_unicode=True)
     head_text = f"---\n{head}---\n"
-    allowance = max(0, budget_chars - len(head_text))
     paragraphs = [p for p in body.split("\n\n") if p.strip()]
     sources = ""
     if paragraphs and paragraphs[-1].startswith("Sources:"):
         sources = paragraphs.pop()
+
+    def _render(parts: list[str]) -> str:
+        text = "\n\n".join(parts)
+        return head_text + text.strip() + "\n"
+
+    full_parts = [*paragraphs, *([sources] if sources else [])]
+    full = _render(full_parts)
+    if len(full) <= budget_chars:
+        return full
+
+    marker = "[… clipped to budget]"
+    required = [marker, *([sources] if sources else [])]
+    minimum = _render(required)
+    if len(minimum) > budget_chars:
+        raise PackError(
+            "brief budget is too small for required frontmatter and provenance "
+            f"({budget_chars} < {len(minimum)})"
+        )
+
     kept: list[str] = []
-    used = 0
     for paragraph in paragraphs:
-        cost = len(paragraph) + 2
-        if used + cost > allowance:
+        candidate = _render([*kept, paragraph, *required])
+        if len(candidate) > budget_chars:
             break
         kept.append(paragraph)
-        used += cost
-    clipped = len(kept) < len(paragraphs)
-    text = "\n\n".join(kept)
-    if clipped:
-        text += "\n\n[… clipped to budget]"
-    if sources:
-        text += f"\n\n{sources}"
-    return head_text + text.strip() + "\n"
+    return _render([*kept, *required])
 
 
 class ContextPackManager:

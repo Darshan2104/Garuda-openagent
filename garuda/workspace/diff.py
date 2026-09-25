@@ -1,36 +1,40 @@
-"""Baseline and authoritative diff manager (P0.18, issue #28).
+"""Baseline and authoritative diff mechanics (P0.18, issue #28).
 
-Git and the filesystem are the truth; ACP diff hints are advisory. A session
-captures a baseline (commit, porcelain status, content fingerprints) up front;
+Git and the filesystem are the truth; ACP diff hints are advisory. A baseline
+records the commit, porcelain status, and content fingerprints of a workspace;
 the delta later reports each file as added/modified/deleted/renamed/untracked
-with a `preexisting` flag separating dirt that predates the session from work
-the session did. Large diffs are clipped inline but recoverable from disk, and
-nothing here ever mutates the repository — only read-only git verbs appear.
+with a `preexisting` flag separating dirt that predates the baseline from work
+done since. Large diffs are clipped inline but recoverable from disk, and
+nothing here ever mutates the repository — only read-only git verbs appear,
+with optional index locks disabled.
+
+Session persistence (which baseline a session may use, and which workspace
+kinds can be attributed at all) lives in `garuda.workspace.evidence`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_DIFF_CHARS = 20_000
 
+#: A baseline captured from a Git work tree: deltas are attributable.
+BASELINE_CAPTURED = "captured"
+#: The workspace is not a Git work tree; there is no authoritative delta.
+BASELINE_UNSUPPORTED_NONREPO = "unsupported_nonrepo"
+#: The mutated tree is not the host path (a remote daemon's filesystem).
+BASELINE_UNSUPPORTED_NONLOCAL = "unsupported_nonlocal"
+
+_BASELINE_RECORD_STATES = frozenset({BASELINE_CAPTURED, BASELINE_UNSUPPORTED_NONREPO})
+
 #: The only git verbs this module may run. Anything else (checkout, clean,
 #: reset, ...) would make the observer a participant.
 _READONLY_VERBS = frozenset({"status", "diff", "rev-parse", "hash-object", "ls-files"})
-
-
-def _git(path: str | Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
-    if not args or args[0] not in _READONLY_VERBS:
-        raise DiffError(f"refusing non-read-only git invocation: {args!r}")
-    return subprocess.run(
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
 
 
 class DiffError(Exception):
@@ -41,15 +45,46 @@ class BaselineError(DiffError):
     """The session cannot make the immutable workspace-evidence claim."""
 
 
+def _git(path: str | Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+    if not args or args[0] not in _READONLY_VERBS:
+        raise DiffError(f"refusing non-read-only git invocation: {args!r}")
+    # A stable locale keeps the "not a git repository" check meaningful, and
+    # GIT_OPTIONAL_LOCKS=0 stops `git status` from refreshing the index — an
+    # observer must not write to the repository it observes.
+    env = {**os.environ, "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            timeout=timeout,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DiffError(f"git could not run: {exc}") from exc
+
+
 @dataclass(frozen=True)
 class Baseline:
     commit: str
+    #: `"XY path"` entries, paths relative to the workspace (not the repo root).
     status_lines: tuple[str, ...]
     fingerprints: dict[str, str] = field(default_factory=dict)
+    state: str = BASELINE_CAPTURED
+    #: `git rev-parse --show-prefix` of the workspace inside its repository.
+    prefix: str = ""
+
+    @property
+    def attributable(self) -> bool:
+        return self.state == BASELINE_CAPTURED
 
     def to_dict(self) -> dict:
         return {
+            "state": self.state,
             "commit": self.commit,
+            "prefix": self.prefix,
             "status_lines": list(self.status_lines),
             "fingerprints": dict(self.fingerprints),
         }
@@ -58,6 +93,12 @@ class Baseline:
     def from_dict(cls, data: dict) -> "Baseline":
         if not isinstance(data, dict):
             raise DiffError("baseline must be a mapping")
+        state = data.get("state", BASELINE_CAPTURED)
+        if state not in _BASELINE_RECORD_STATES:
+            raise DiffError(f"baseline.state {state!r} is not a recorded baseline state")
+        prefix = data.get("prefix", "")
+        if not isinstance(prefix, str):
+            raise DiffError("baseline.prefix must be a string")
         status_lines = data.get("status_lines", [])
         fingerprints = data.get("fingerprints", {})
         if not isinstance(status_lines, list) or any(not isinstance(line, str) for line in status_lines):
@@ -71,6 +112,8 @@ class Baseline:
             commit=str(data.get("commit", "")),
             status_lines=tuple(status_lines),
             fingerprints=dict(fingerprints),
+            state=state,
+            prefix=prefix,
         )
 
 
@@ -88,6 +131,17 @@ class DeltaFile:
 class SessionDelta:
     files: tuple[DeltaFile, ...] = ()
     baseline_commit: str = ""
+    #: HEAD when the delta was taken. Differs from `baseline_commit` when the
+    #: session committed; committed work is still in `files`.
+    head_commit: str = ""
+    #: `captured` for a real delta; otherwise the reason there is none. An
+    #: unattributable delta has no files, and that emptiness is *not* a claim
+    #: that nothing changed.
+    attribution: str = BASELINE_CAPTURED
+
+    @property
+    def attributable(self) -> bool:
+        return self.attribution == BASELINE_CAPTURED
 
     @property
     def changed(self) -> tuple[str, ...]:
@@ -97,130 +151,276 @@ class SessionDelta:
     def preexisting(self) -> tuple[str, ...]:
         return tuple(f.path for f in self.files if f.preexisting)
 
+    def to_evidence(self, *, limit: int | None = None) -> dict:
+        """The persisted/attached shape. Unattributable deltas carry no file
+        lists at all, so no reader can mistake them for "no changes"."""
+        if not self.attributable:
+            return {"attribution": self.attribution}
+        changed = list(self.changed)
+        preexisting = list(self.preexisting)
+        if limit is not None:
+            changed, preexisting = changed[:limit], preexisting[:limit]
+        evidence = {
+            "attribution": self.attribution,
+            "baseline_commit": self.baseline_commit,
+            "changed": changed,
+            "preexisting": preexisting,
+        }
+        if self.head_commit and self.head_commit != self.baseline_commit:
+            evidence["head_commit"] = self.head_commit
+        return evidence
 
-def _porcelain_lines(path: str | Path) -> list[str]:
-    result = _git(path, "status", "--porcelain=v1", "-uall")
+
+#: Git's well-known empty tree object; valid in every repository.
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _split_z(stdout: str) -> list[str]:
+    tokens = stdout.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
+    return tokens
+
+
+def _workspace_relative(repo_path: str, prefix: str) -> str:
+    """Porcelain paths are repo-root relative; the delta speaks workspace paths."""
+    if prefix and not repo_path.startswith(prefix):
+        raise DiffError(f"git reported {repo_path!r} outside workspace prefix {prefix!r}")
+    return repo_path[len(prefix):]
+
+
+def _repo_prefix(path: str | Path) -> str:
+    result = _git(path, "rev-parse", "--show-prefix")
+    if result.returncode != 0:
+        raise DiffError(f"could not read workspace prefix: {result.stderr.strip()}")
+    return result.stdout.rstrip("\n")
+
+
+def _status_entries(path: str | Path, prefix: str) -> dict[str, str]:
+    """Map workspace-relative path -> XY code, NUL-delimited so no quoting or
+    C-escaping applies, and restricted to the workspace subtree."""
+    result = _git(
+        path, "status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", "."
+    )
     if result.returncode != 0:
         raise DiffError(f"git status failed: {result.stderr.strip()}")
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
-def _porcelain_paths(lines: list[str]) -> dict[str, str]:
-    """Map path -> XY status code from porcelain v1 lines."""
     out: dict[str, str] = {}
-    for line in lines:
-        code, _, rest = line[:2], line[2:3], line[3:]
-        if " -> " in rest:
-            rest = rest.split(" -> ", 1)[1]
-        out[rest.strip().strip('"')] = code
+    tokens = _split_z(result.stdout)
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        index += 1
+        if len(entry) < 4 or entry[2] != " ":
+            raise DiffError(f"unparseable porcelain entry: {entry!r}")
+        code = entry[:2]
+        if code[0] in "RC":
+            # Defensive: with --no-renames there is no source token, but a
+            # future flag change must not shift every later entry by one.
+            index += 1
+        out[_workspace_relative(entry[3:], prefix)] = code
     return out
 
 
-def _hash_file(path: str | Path, rel: str) -> str:
+def _entries_from_lines(lines: tuple[str, ...] | list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in lines:
+        if len(line) < 4 or line[2] != " ":
+            raise DiffError(f"unparseable baseline status entry: {line!r}")
+        out[line[3:]] = line[:2]
+    return out
+
+
+def _name_status(path: str | Path, commit: str) -> tuple[dict[str, str], dict[str, str]]:
+    """(renamed dst -> src, path -> status letter) against ``commit``.
+
+    `--relative` keeps paths workspace-relative and inside the workspace.
+    """
+    result = _git(
+        path, "diff", "--name-status", "-z", "-M", "--relative", commit, "--", "."
+    )
+    if result.returncode != 0:
+        raise DiffError(f"git diff --name-status failed: {result.stderr.strip()}")
+    renamed: dict[str, str] = {}
+    letters: dict[str, str] = {}
+    tokens = _split_z(result.stdout)
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        if not status:
+            raise DiffError("empty name-status token")
+        if status[0] in "RC":
+            if index + 2 > len(tokens):
+                raise DiffError(f"truncated name-status rename entry: {status!r}")
+            source, destination = tokens[index], tokens[index + 1]
+            index += 2
+            if status[0] == "R":
+                renamed[destination] = source
+                letters[destination] = "R"
+            else:
+                letters[destination] = "A"
+            continue
+        if index >= len(tokens):
+            raise DiffError(f"truncated name-status entry: {status!r}")
+        letters[tokens[index]] = status[0]
+        index += 1
+    return renamed, letters
+
+
+def _fingerprint(root: str | Path, rel: str) -> str:
+    """Content identity without following links or opening non-regular files.
+
+    Symlinks hash their link text (as git does); FIFOs, devices, sockets and
+    directories get a stable type marker and are never opened, so a link to
+    /dev/zero or a FIFO cannot hang the delta. "" means absent.
+    """
+    full = os.path.join(os.fspath(root), rel)
     try:
-        digest = hashlib.sha256()
-        with open(Path(path) / rel, "rb") as handle:
-            for chunk in iter(lambda: handle.read(65536), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
+        info = os.lstat(full)
+    except (FileNotFoundError, NotADirectoryError):
         return ""
+    except OSError as exc:
+        raise DiffError(f"could not stat {rel!r}: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.readlink(os.fsencode(full))
+        except OSError as exc:
+            raise DiffError(f"could not read link {rel!r}: {exc}") from exc
+        return "symlink:" + hashlib.sha256(target).hexdigest()
+    if not stat.S_ISREG(info.st_mode):
+        return f"special:{_special_kind(info.st_mode)}"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(full, flags)
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise DiffError(f"could not open {rel!r}: {exc}") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            # Swapped between lstat and open; still never read it.
+            return f"special:{_special_kind(opened.st_mode)}"
+        digest = hashlib.sha256()
+        while chunk := os.read(fd, 65536):
+            digest.update(chunk)
+    except OSError as exc:
+        raise DiffError(f"could not read {rel!r}: {exc}") from exc
+    finally:
+        os.close(fd)
+    return "sha256:" + digest.hexdigest()
+
+
+def _special_kind(mode: int) -> str:
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISCHR(mode):
+        return "char-device"
+    if stat.S_ISBLK(mode):
+        return "block-device"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    return "other"
+
+
+def _head_commit(path: str | Path) -> str:
+    """HEAD's object id, or "" for an unborn branch.
+
+    Porcelain v2's branch header states "(initial)" explicitly, so an unborn
+    HEAD is distinguishable from a failed read (which raises).
+    """
+    result = _git(path, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=no")
+    if result.returncode != 0:
+        raise DiffError(f"could not read baseline commit: {result.stderr.strip()}")
+    for token in _split_z(result.stdout):
+        if token.startswith("# branch.oid "):
+            oid = token[len("# branch.oid "):].strip()
+            return "" if oid == "(initial)" else oid
+    raise DiffError("git status reported no branch.oid header")
 
 
 def capture_baseline(path: str | Path) -> Baseline:
-    """Record commit, status, and fingerprints. Empty baseline outside a repo."""
+    """Record commit, status, and fingerprints.
+
+    Outside a Git work tree the baseline is explicitly `unsupported_nonrepo`;
+    any other failure to read the repository raises `DiffError`.
+    """
     repository = _git(path, "rev-parse", "--is-inside-work-tree")
     if repository.returncode != 0:
         if "not a git repository" not in repository.stderr.lower():
             raise DiffError(f"could not determine repository state: {repository.stderr.strip()}")
-        return Baseline(commit="", status_lines=(), fingerprints={})
+        return Baseline(commit="", status_lines=(), state=BASELINE_UNSUPPORTED_NONREPO)
     if repository.stdout.strip() != "true":
-        return Baseline(commit="", status_lines=(), fingerprints={})
-    commit_result = _git(path, "rev-parse", "HEAD")
-    if commit_result.returncode != 0 and "unknown revision" not in commit_result.stderr.lower():
-        raise DiffError(f"could not read baseline commit: {commit_result.stderr.strip()}")
-    lines = _porcelain_lines(path)
+        # Inside a .git directory or a bare repository: not a work tree we can
+        # attribute, and not the plain "no repository" case either.
+        raise DiffError("workspace is inside a git directory, not a work tree")
+    commit = _head_commit(path)
+    prefix = _repo_prefix(path)
+    entries = _status_entries(path, prefix)
     # Keep the empty fingerprint too.  It represents a path that was already
     # deleted at baseline; dropping it made an unchanged deletion indistinguishable
     # from a deletion performed by this session.
-    fingerprints = {rel: _hash_file(path, rel) for rel in _porcelain_paths(lines)}
+    fingerprints = {rel: _fingerprint(path, rel) for rel in entries}
     return Baseline(
-        commit=commit_result.stdout.strip(),
-        status_lines=tuple(lines),
+        commit=commit,
+        status_lines=tuple(f"{code} {rel}" for rel, code in sorted(entries.items())),
         fingerprints=fingerprints,
+        state=BASELINE_CAPTURED,
+        prefix=prefix,
     )
 
 
-def record_session_baseline(
-    store, session_id: str, workspace: str | Path, workspace_kind: str
-) -> Baseline | None:
-    """Persist the one baseline a session is allowed to use later.
-
-    Local workspace attribution is a security and verification claim, so an
-    unreadable Git view or metadata write refuses startup.  Remote/container
-    workspaces cannot be truthfully attributed from the host path; record that
-    limitation explicitly instead of quietly pretending there was no delta.
-    """
-    if workspace_kind != "local":
-        try:
-            store.update_meta(
-                session_id,
-                {"baseline_state": "unsupported_nonlocal", "baseline": {}},
-            )
-        except Exception as exc:
-            raise BaselineError(f"could not record non-local baseline state: {exc}") from exc
-        return None
-    try:
-        baseline = capture_baseline(workspace)
-        store.record_baseline(session_id, baseline.to_dict())
-    except Exception as exc:
-        raise BaselineError(f"could not capture and persist workspace baseline: {exc}") from exc
-    return baseline
-
-
 def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
-    """Diff the working tree against the baseline commit, flagging preexisting dirt."""
-    try:
-        current_lines = _porcelain_lines(path)
-    except DiffError:
-        return SessionDelta(baseline_commit=baseline.commit)
-    current = _porcelain_paths(current_lines)
-    base_paths = set(_porcelain_paths(list(baseline.status_lines)))
+    """Diff the working tree against the baseline, flagging preexisting dirt.
+
+    A non-repo baseline yields an explicit unattributable delta. For a
+    repository baseline every git failure raises `DiffError`: a failed read is
+    never reported as "nothing changed".
+    """
+    if baseline.state == BASELINE_UNSUPPORTED_NONREPO:
+        return SessionDelta(attribution=BASELINE_UNSUPPORTED_NONREPO)
+    if baseline.state != BASELINE_CAPTURED:
+        raise DiffError(f"baseline state {baseline.state!r} cannot produce a delta")
+    prefix = _repo_prefix(path)
+    if prefix != baseline.prefix:
+        raise DiffError(
+            f"workspace prefix changed since baseline ({baseline.prefix!r} -> {prefix!r})"
+        )
+    current = _status_entries(path, prefix)
+    base_paths = set(_entries_from_lines(baseline.status_lines))
     base_prints = baseline.fingerprints
 
-    renamed: dict[str, str] = {}
-    letters: dict[str, str] = {}
-    if baseline.commit:
-        names = _git(path, "diff", "--name-status", "-M", baseline.commit, "--")
-        if names.returncode == 0:
-            for line in names.stdout.splitlines():
-                parts = line.split("\t")
-                if not parts:
-                    continue
-                if parts[0].startswith("R") and len(parts) == 3:
-                    renamed[parts[2]] = parts[1]
-                    letters[parts[2]] = "R"
-                elif len(parts) == 2:
-                    letters[parts[1]] = parts[0][:1]
+    # An unborn baseline (no commit yet) compares against the empty tree, so a
+    # first commit made by the session is still attributed.
+    renamed, letters = _name_status(path, baseline.commit or _EMPTY_TREE)
 
     files: list[DeltaFile] = []
     rename_sources = set(renamed.values())
-    for rel in sorted(set(current) | set(base_paths)):
-        if rel in rename_sources:
+    # `letters`/`renamed` compare the baseline commit with the working tree, so
+    # they also carry work the session *committed* — a file clean in `status`
+    # now is still a change if it differs from the baseline commit.
+    for rel in sorted(set(current) | base_paths | set(letters) | set(renamed)):
+        current_fingerprint = _fingerprint(path, rel)
+        if rel in rename_sources and not current_fingerprint:
+            # The rename's destination row covers it — unless a new file now
+            # sits at the old path, which is its own change.
             continue
-        current_fingerprint = _hash_file(path, rel)
         inherited = rel in base_paths
+        code = current.get(rel, "  ")
         if rel in renamed:
             kind = "renamed"
-        elif current.get(rel) == "??":
+        elif code == "??":
             kind = "untracked"
-        elif letters.get(rel) == "A":
+        elif letters.get(rel) == "A" or code[0] == "A":
             kind = "added"
         elif letters.get(rel) == "D" or not current_fingerprint:
             kind = "deleted"
-        elif inherited and rel not in current:
-            # The dirty baseline path is clean now. It was restored to HEAD,
-            # which is a session change, not a deleted pre-existing row.
+        elif inherited and rel not in current and rel not in letters:
+            # The dirty baseline path is clean now and matches the baseline
+            # commit: it was restored, which is a session change, not a
+            # deleted pre-existing row.
             kind = "restored"
         else:
             kind = "modified"
@@ -233,7 +433,11 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
                 preexisting_at_start=inherited and not preexisting,
             )
         )
-    return SessionDelta(files=tuple(files), baseline_commit=baseline.commit)
+    return SessionDelta(
+        files=tuple(files),
+        baseline_commit=baseline.commit,
+        head_commit=_head_commit(path),
+    )
 
 
 def diff_text(path: str | Path, *, limit: int = MAX_DIFF_CHARS) -> tuple[str, str]:
@@ -264,19 +468,3 @@ def reconcile(acp_hints: list[str], delta: SessionDelta) -> Reconciliation:
     confirmed = tuple(h for h in acp_hints if h in on_disk)
     disagreed = tuple(h for h in acp_hints if h not in on_disk)
     return Reconciliation(confirmed=confirmed, disagreed=disagreed)
-
-
-def load_session_delta(store, session_id: str, workspace: str | Path) -> SessionDelta:
-    """Compute the delta from the baseline the session recorded at start.
-
-    Handoff and verification consume the *recorded* baseline — never a fresh
-    capture — so pre-existing dirt and agent work stay attributed exactly as
-    the session saw them. Raises `DiffError` when no baseline was recorded.
-    """
-    try:
-        recorded = store.load_meta(session_id).get("baseline") or {}
-    except Exception as exc:
-        raise DiffError(f"no readable session meta for {session_id}: {exc}") from exc
-    if not recorded:
-        raise DiffError(f"session {session_id} recorded no baseline")
-    return session_delta(Baseline.from_dict(recorded), workspace)
