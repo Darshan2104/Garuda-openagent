@@ -78,15 +78,38 @@ last (also on cancellation) — concurrent `run_agent_task` runs on one workspac
 are refused, never interleaved. Interactive paths that call `agent.run`
 directly (dashboard chat, CLI chat, SDK `Conversation`) take no lease yet; see
 `BACKLOG.md`.
-`diff.py` manages the authoritative delta: baseline commit/status/fingerprints
-captured at session start and persisted in the unified session, per-file
-added/modified/deleted/renamed/untracked with preexisting dirt flagged
-separately, bounded diff text recoverable from disk, ACP hints reconciled
-against filesystem truth and never applied. CLI, SDK, and dashboard session
-starts refuse before a prompt when a local baseline cannot be persisted;
-completion, handoff, and dashboard close consume that exact record and refuse
-or mark failure if it cannot later be read. Non-local attribution is explicit
-unsupported state, not an empty success claim.
+`diff.py` holds the git mechanics of the authoritative delta: baseline
+commit/status/fingerprints, per-file added/modified/deleted/renamed/untracked
+with preexisting dirt flagged separately, bounded diff text recoverable from
+disk, and ACP hints reconciled against filesystem truth and never applied. It
+reads `git status --porcelain=v1 -z` and `git diff --name-status -z --relative`
+scoped to the workspace (so quoted, non-ASCII, and space-padded names and
+repo-subdirectory workspaces map to real files), hashes symlinks by link text,
+never opens FIFOs/devices, and raises on any git failure for a repository
+baseline rather than reporting an empty delta. A non-repo workspace records an
+explicit `unsupported_nonrepo` baseline.
+`evidence.py` is the shared session boundary over it. `host_backed()` is the one
+workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
+workspace bind-mounted) are attributable; `remote` is recorded
+`unsupported_nonlocal`; unknown kinds fail closed. `begin_session_evidence()`
+persists the baseline before an environment is resolved or a prompt is sent and
+returns the loader the verifier consumes; `finish_session_evidence()` persists
+the final delta. Entry points that persist a session use it — `run_agent_task`
+(CLI `run`, `serve`, SDK `SoftwareAgent`), interactive `garuda chat`, and
+dashboard chat — and refuse to start (session marked failed) when the baseline
+cannot be recorded; a completion whose recorded baseline or delta cannot be read
+is rejected by the verifier, and a finish/close that cannot persist it marks the
+session failed. The verifier's verdict depends on the delta being readable, not
+on its contents: `task_complete` carries no file-change claim to check it
+against, so the delta is attached as `workspace_delta` evidence on the
+verification event. Unsupported attribution is reported as such, never as an
+empty "nothing changed" delta. SDK `Conversation` and `garuda recipe run`
+persist no session and run without a baseline (see `BACKLOG.md`). A resumed run
+is a new session with a fresh baseline, so the prior session's work reads as
+preexisting. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
+into a handoff, but no production caller passes `workspace` yet. The
+`.context/` pack files the harness syncs into the workspace appear in the delta
+as session changes.
 
 ## `context/` — fitting the conversation in the window
 
