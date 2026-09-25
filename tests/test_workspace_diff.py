@@ -633,3 +633,13 @@ def test_first_commit_in_an_unborn_repo_is_attributed(tmp_path):
     _git(root, "commit", "-qm", "first")
     delta = session_delta(baseline, root)
     assert delta.changed == ("first.txt",)
+
+
+def test_new_file_at_a_renamed_path_is_its_own_change(repo):
+    baseline = capture_baseline(repo)
+    _git(repo, "mv", "a.txt", "moved.txt")
+    (repo / "a.txt").write_text("a new file where the old one was\n")
+    delta = session_delta(baseline, repo)
+    kinds = {f.path: f.kind for f in delta.files}
+    assert kinds["moved.txt"] == "renamed"
+    assert kinds["a.txt"] == "untracked"

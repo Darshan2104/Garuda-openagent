@@ -402,9 +402,11 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
     # they also carry work the session *committed* — a file clean in `status`
     # now is still a change if it differs from the baseline commit.
     for rel in sorted(set(current) | base_paths | set(letters) | set(renamed)):
-        if rel in rename_sources:
-            continue
         current_fingerprint = _fingerprint(path, rel)
+        if rel in rename_sources and not current_fingerprint:
+            # The rename's destination row covers it — unless a new file now
+            # sits at the old path, which is its own change.
+            continue
         inherited = rel in base_paths
         code = current.get(rel, "  ")
         if rel in renamed:
