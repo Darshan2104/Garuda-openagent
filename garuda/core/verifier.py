@@ -185,6 +185,9 @@ class VerificationResult:
     # Observed output of each verification command, so the judge reasons about
     # what the workspace actually printed rather than the agent's account of it.
     evidence: list[dict] = field(default_factory=list)
+    #: The session's workspace delta from its recorded baseline, when the entry
+    #: point supplied one. Kept apart from ``evidence`` (command outputs only).
+    workspace: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -340,6 +343,55 @@ class CompletionVerifier:
         messages: list[Message] | None = None,
         answer_rationale: str | None = None,
         gate: CompletionGateState | None = None,
+        workspace_delta_loader=None,
+    ) -> VerificationResult:
+        # A run whose entry point recorded a session baseline may complete only
+        # when the verifier can read that exact record.  This is deliberately
+        # here, at the decision point, rather than as runner-only metadata:
+        # otherwise a broken record could still receive an approved
+        # task_complete verdict.  The delta's *contents* do not change the
+        # verdict — task_complete carries no file-change claim to check them
+        # against — they are attached as evidence (`VerificationResult.workspace`).
+        if workspace_delta_loader is None:
+            return await self._verify(
+                task, summary, verification_commands, env, config, permissions,
+                model, messages, answer_rationale, gate,
+            )
+        try:
+            # Git and hashing are blocking; keep them off the event loop.
+            delta = await asyncio.to_thread(workspace_delta_loader)
+        except Exception as exc:
+            return VerificationResult(
+                approved=False,
+                checklist={"workspace_baseline": False},
+                feedback=(
+                    "Completion rejected: the authoritative workspace baseline "
+                    f"is unavailable ({type(exc).__name__})."
+                ),
+                workspace={"attribution": "unavailable", "error": type(exc).__name__},
+            )
+        result = await self._verify(
+            task, summary, verification_commands, env, config, permissions,
+            model, messages, answer_rationale, gate,
+        )
+        result.checklist = {**result.checklist, "workspace_baseline": True}
+        # An unattributable delta (non-repo, non-local) carries only its
+        # `attribution` reason — never an empty "nothing changed" list.
+        result.workspace = delta.to_evidence()
+        return result
+
+    async def _verify(
+        self,
+        task: str,
+        summary: str,
+        verification_commands: list[str],
+        env: Environment,
+        config: AgentConfig,
+        permissions: "PermissionEngine | None",
+        model: "Model | None",
+        messages: list[Message] | None,
+        answer_rationale: str | None,
+        gate: CompletionGateState | None,
     ) -> VerificationResult:
         if not config.enable_verifier:
             return VerificationResult(approved=True, checklist={"disabled": True})
@@ -348,7 +400,6 @@ class CompletionVerifier:
             "summary_present": bool(summary.strip()),
             "summary_length": len(summary.strip()) >= 10,
         }
-
         if not checklist["summary_present"]:
             return VerificationResult(
                 approved=False,

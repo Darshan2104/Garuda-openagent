@@ -12,6 +12,11 @@ from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.runtime.native import NativeGarudaRuntime
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.docker import DockerWorkspace
+from garuda.workspace.evidence import (
+    begin_session_evidence,
+    finish_session_evidence,
+    record_startup_refusal,
+)
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
@@ -262,6 +267,15 @@ async def run_agent_task(
 
     try:
         await runtime.start(task=task, session_id=events.session_id)
+        # This is before environment setup, hooks, or a model prompt.  A
+        # host-backed run which cannot persist its immutable start state must
+        # not mutate and later pretend its delta is attributable.  The shared
+        # boundary also records explicit unsupported (non-repo / non-local)
+        # state instead of silently skipping it.  On resume this is the *new*
+        # session's baseline: prior-session work reads as preexisting.
+        workspace_delta_loader = begin_session_evidence(
+            store, events.session_id, workspace, workspace_kind
+        )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
         if resumed_from:
@@ -325,6 +339,7 @@ async def run_agent_task(
                 pack_source_runtime="native",
                 pack_git_evidence=pack_git_evidence,
                 initial_state=initial_state,
+                workspace_delta_loader=workspace_delta_loader,
             )
 
         runtime.install_driver(_driver)
@@ -333,6 +348,14 @@ async def run_agent_task(
         # docker pull, a slow session-start hook) raises `CancelledError`, and
         # skipping the release would leave the heartbeat holding the
         # workspace for the life of the process.
+        # `runtime.start` has created the durable session by this point.  Mark a
+        # baseline/startup refusal failed when the store is still writable; the
+        # original error remains authoritative if it is not.
+        record_startup_refusal(store, events.session_id)
+        try:
+            await runtime.close()
+        except Exception:
+            logger.warning("Failed to close refused runtime", exc_info=True)
         await _abandon_lease()
         raise
     try:
@@ -399,6 +422,20 @@ async def run_agent_task(
                 except Exception:
                     logger.warning("MCP manager close failed", exc_info=True)
             if result is not None:
+                # Persist final workspace evidence before the result.  A failed
+                # read/write is a failed run rather than a successful result with a
+                # warning-only hole in the evidence trail.
+                try:
+                    result.metadata["workspace_delta"] = await asyncio.to_thread(
+                        finish_session_evidence, store, events.session_id, workspace
+                    )
+                except Exception as exc:
+                    result.success = False
+                    result.final_message = (
+                        "Run failed: authoritative workspace delta could not be "
+                        f"recorded ({type(exc).__name__})."
+                    )
+                    result.metadata["workspace_delta_error"] = type(exc).__name__
                 store.finish(events.session_id, result)
                 summary = {
                     "session_id": events.session_id,

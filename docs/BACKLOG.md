@@ -245,6 +245,22 @@ the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
 SDK `Conversation` call `agent.run` directly, so they can interleave with a
 leased run on the same workspace.
 
+**SDK `Conversation`, `recipe run`, and eval runners carry no workspace
+baseline.** They persist no session (`sdk/conversation.py`,
+`config/recipes.run_recipe` via `interfaces/main.run_recipe_command`,
+`eval/harbor_adapter.py`, `eval/ablation.py`, subagents in `core/subagent.py`),
+so they never enter
+`workspace/evidence.begin_session_evidence`: their verifier gets no
+`workspace_delta_loader` and nothing records what the run changed versus
+preexisting dirt. Fix by giving them a persisted session (or an explicit
+in-memory evidence store) and routing them through the same boundary, with a
+refusal test per entry point.
+
+**Handoff and resume do not carry the session delta forward.** No production
+caller passes `workspace=` to `runtime/handoff.execute_handoff`, so product
+handoffs carry no delta. `--resume` starts a new session with a fresh baseline,
+so the prior session's work is attributed as preexisting dirt.
+
 **The dashboard still parks approvals outside the P0.17 broker.**
 `garuda.acp.broker.ApprovalBroker` is installed only by `run_agent_task`
 (`interfaces/runner.py`). Dashboard chat (`interfaces/web/live.py`) builds its own

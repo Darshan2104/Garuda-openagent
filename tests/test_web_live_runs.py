@@ -352,6 +352,7 @@ class _FakeSession:
         self.agent = self
         self.runs = 0
         self.tasks = []
+        self.run_kwargs = []
 
     def prepare_context(self, task):
         self.contexts.append(task)
@@ -360,6 +361,7 @@ class _FakeSession:
     async def run(self, **kwargs):
         self.runs += 1
         self.tasks.append(kwargs.get("task"))
+        self.run_kwargs.append(kwargs)
         await self.release.wait()
         from garuda.types import AgentResult
 
@@ -399,6 +401,66 @@ async def test_a_chat_opens_with_a_session_and_a_workspace(chatting):
     assert payload["busy"] is False
     # The session directory exists, so the trace view can open it immediately.
     assert (store_dir := live.store.session_dir(payload["session_id"])).is_dir(), store_dir
+
+
+async def test_dashboard_refuses_chat_when_baseline_cannot_be_recorded(chatting, monkeypatch):
+    """The held dashboard path must not bypass session-start attribution."""
+    live, session, _ctx = chatting
+    import garuda.workspace.evidence as evidence
+    from garuda.workspace.diff import BaselineError
+
+    def fail_baseline(*_args, **_kwargs):
+        raise BaselineError("session metadata unavailable")
+
+    monkeypatch.setattr(evidence, "record_session_baseline", fail_baseline)
+    with pytest.raises(BaselineError, match="metadata unavailable"):
+        await live.start_chat(ChatSpec())
+    assert session.closed is True
+    assert live.store.load_meta(session.events.session_id)["status"] == "failed"
+
+
+async def test_each_turn_verifies_against_the_baseline_recorded_at_open(chatting):
+    """A turn's verifier gets the loader bound to the chat's recorded baseline."""
+    live, session, ctx = chatting
+    payload = payload_of(await call(ctx, "/api/chat", method="POST", body={}))
+    meta = live.store.load_meta(payload["session_id"])
+    assert meta["baseline_state"] == "unsupported_nonrepo"
+    await call(ctx, f"/api/chat/{payload['chat_id']}/turn", method="POST", body={"task": "one"})
+    await asyncio.sleep(0.05)
+    loader = session.run_kwargs[-1]["workspace_delta_loader"]
+    assert callable(loader)
+    delta = loader()
+    assert delta.attributable is False
+    assert delta.to_evidence() == {"attribution": "unsupported_nonrepo"}
+    session.release.set()
+
+
+async def test_closing_a_chat_persists_its_delta_as_finished(chatting):
+    live, session, ctx = chatting
+    chat_id = payload_of(await call(ctx, "/api/chat", method="POST", body={}))["chat_id"]
+    await call(ctx, f"/api/chat/{chat_id}", method="DELETE")
+    meta = live.store.load_meta(session.events.session_id)
+    assert meta["status"] == "finished"
+    assert meta["delta_attribution"] == "unsupported_nonrepo"
+
+
+async def test_closing_a_chat_with_an_unreadable_delta_is_failed(chatting, monkeypatch):
+    """Closing cannot turn missing evidence into a finished chat."""
+    live, session, ctx = chatting
+    import garuda.workspace.evidence as evidence
+    from garuda.workspace.diff import DiffError
+
+    chat_id = payload_of(await call(ctx, "/api/chat", method="POST", body={}))["chat_id"]
+
+    def broken(*_args, **_kwargs):
+        raise DiffError("baseline record disappeared")
+
+    monkeypatch.setattr(evidence, "load_session_delta", broken)
+    response = await call(ctx, f"/api/chat/{chat_id}", method="DELETE")
+    assert response.status == 200
+    meta = live.store.load_meta(session.events.session_id)
+    assert meta["status"] == "failed"
+    assert meta["workspace_delta_error"] == "DiffError"
 
 
 async def test_a_turn_is_a_job_readable_by_id(chatting):
