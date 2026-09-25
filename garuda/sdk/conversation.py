@@ -21,6 +21,7 @@ class Conversation:
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,
         mode: str = "standard",
+        runtime: str = "native",
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
@@ -31,6 +32,7 @@ class Conversation:
         self._agents_dir = Path(agents_dir) if agents_dir else None
         self._mcp_config = mcp_config
         self._mode = mode
+        self._runtime = runtime
         self._workspace_kind = workspace_kind
         self._docker_image = docker_image
         self._docker_host = docker_host
@@ -40,6 +42,12 @@ class Conversation:
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
+            # A conversation owns an environment for several turns, so enforce
+            # trusted runtime selection before that environment is allocated.
+            from garuda.agents.setup import prepare_runtime_catalog
+
+            catalog = prepare_runtime_catalog(self._workspace)
+            catalog.select_for_native_facade(self._runtime)
             self._session = await AgentSession.create(
                 agent_name=self._agent_name,
                 model=self._model_name,

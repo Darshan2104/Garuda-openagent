@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from garuda.agents.loader import load_profile, resolve_system_prompt
+from garuda.agents.setup import prepare_runtime_catalog
 from garuda.core.events import EventStore
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
@@ -36,6 +37,7 @@ class SoftwareAgent:
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
         mode: str | None = None,
+        runtime: str = "native",
         extra_tools: list[Tool] | None = None,
         load_project_tools: bool | None = None,
     ):
@@ -48,6 +50,7 @@ class SoftwareAgent:
         self.docker_image = docker_image
         self.docker_host = docker_host
         self.mode = mode
+        self.runtime = runtime
         self._extra_tools: list[Tool] = list(extra_tools or [])
         self._load_project_tools = load_project_tools
 
@@ -74,6 +77,11 @@ class SoftwareAgent:
         seed the run with a prior session's conversation.
         """
         from garuda.config.agent_home import resolve_agents_dirs
+
+        # Resolve before building tools or invoking the model. This is the SDK
+        # counterpart to the CLI gate and keeps global disablement authoritative.
+        runtime_catalog = prepare_runtime_catalog(self.workspace)
+        runtime_catalog.select_for_native_facade(self.runtime)
 
         agents_dir = resolve_agents_dirs(self.workspace, self.agents_dir)
         profile = load_profile(self.agent_name, extra_dir=agents_dir)
@@ -124,6 +132,8 @@ class SoftwareAgent:
             mcp_manager=mcp_manager,
             agents_dir=agents_dir,
             resume=resume,
+            runtime_catalog=runtime_catalog,
+            runtime_ref=self.runtime,
         )
 
     def conversation(self) -> "Conversation":
@@ -136,6 +146,7 @@ class SoftwareAgent:
             agents_dir=self.agents_dir,
             mcp_config=self.mcp_config,
             mode=self.mode,
+            runtime=self.runtime,
             workspace_kind=self.workspace_kind,
             docker_image=self.docker_image,
             docker_host=self.docker_host,

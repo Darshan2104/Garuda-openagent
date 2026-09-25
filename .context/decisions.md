@@ -55,6 +55,32 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - ACP normalization is per-session and stateful: causal order beats arrival order, partials emit once with no duplicate final, turn completion reopens on new_turn while cancellation/failure terminate, and raw records stay redacted diagnostics.
 - One generic AcpRuntime carries every adapter through the shared conformance suite against the fake test server; version mismatches fail at handshake, and cross-process resume stays out until the wire grows the methods for it.
 - Approvals flow through one broker: ceilings decide, asks park with timeout and disconnect denial, every outcome persists to the session, and strict gaps refuse before running.
+- Discovery probes only what trusted manifests declare (version/auth argv) with a minimal child env: missing tools explain setup, unknown versions display as unknown, login state is never guessed, and users can disable any runtime.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation`, `recipe run`, and product handoffs (no caller passes `workspace=`) carry no baseline yet.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
+
+## 2026-09-25 — trusted runtime selection is a shared launch gate
+
+- `prepare_runtime_catalog()` is the only CLI/SDK runtime builder. It reads
+  manifests and `disabled_runtimes` from the trusted global settings file,
+  resolves project aliases only against those manifests, and feeds the same
+  disabled set to discovery and selection.
+- Runtime settings parsing is fail-closed: a malformed or unreadable global
+  file is a configuration error, never an empty set that could reactivate a
+  disabled executable. Project `disabled_runtimes` remains recommendation-only
+  and disabled built-in stubs stay visible with their policy annotation.
+- Project runtime settings fail closed on authority, not on advice: a project
+  `command` or capability widening refuses the run, while a malformed
+  `disabled_runtimes` or alias entry is ignored with a warning so a repository
+  cannot block every run through advisory settings.
+- Building the catalog and selecting a runtime execute nothing. Version and
+  auth probes run only when a list/inspect caller asks for discovery, with
+  stdin closed.
+- Until the ACP launch facade is wired, selecting a configured ACP runtime
+  refuses before any toolkit, workspace, prompt, or harness process is
+  started; it never silently falls back to the native runtime. `garuda run`
+  reports the refusal as a message with exit status 2.
+- `chat`, `serve`, the web dashboard, and `recipe run` accept no runtime
+  selection and always run the native loop, which cannot be disabled, so they
+  do not consult runtime settings.

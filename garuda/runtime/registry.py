@@ -11,6 +11,7 @@ explicitly, so server jobs cannot leak registrations into each other.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from garuda.runtime.protocol import (
@@ -30,12 +31,38 @@ _FORBIDDEN_MANIFEST_KEYS = frozenset(
 )
 
 _MANIFEST_FIELDS = frozenset(
-    {"runtime_id", "kind", "command", "version", "capabilities", "description", "warnings"}
+    {
+        "runtime_id",
+        "kind",
+        "command",
+        "version",
+        "capabilities",
+        "description",
+        "warnings",
+        "version_args",
+        "version_pattern",
+        "auth_probe",
+        "setup",
+    }
 )
 
 
 class RegistryError(AgentRuntimeError):
     """Malformed configuration or an unresolvable reference. Fail-closed."""
+
+
+@dataclass(frozen=True)
+class AuthProbe:
+    """How to check login state without logging in: run `argv`, match output.
+
+    A match on `authenticated_pattern` means logged in, on
+    `unauthenticated_pattern` means logged out, anything else is UNKNOWN —
+    never guessed. The probe must not install, authenticate, or read tokens.
+    """
+
+    argv: tuple[str, ...]
+    authenticated_pattern: str = ""
+    unauthenticated_pattern: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,6 +76,10 @@ class RuntimeManifest:
     capabilities: RuntimeCapabilities = field(default_factory=RuntimeCapabilities)
     description: str = ""
     warnings: tuple[str, ...] = ()
+    version_args: tuple[str, ...] | None = None
+    version_pattern: str = ""
+    auth_probe: AuthProbe | None = None
+    setup: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,6 +137,30 @@ def _parse_capabilities(value: object, *, where: str) -> RuntimeCapabilities:
     return RuntimeCapabilities(names=frozenset(value))
 
 
+def _parse_auth_probe(value: object, *, where: str) -> AuthProbe | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RegistryError(f"{where}: auth_probe must be a mapping")
+    unknown = set(value) - {"argv", "authenticated_pattern", "unauthenticated_pattern"}
+    if unknown:
+        raise RegistryError(f"{where}: unknown auth_probe fields {sorted(unknown)}")
+    argv = _parse_command(value.get("argv"), where=f"{where}.argv")
+    for key in ("authenticated_pattern", "unauthenticated_pattern"):
+        pattern = value.get(key, "")
+        if not isinstance(pattern, str):
+            raise RegistryError(f"{where}.{key}: must be a string")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise RegistryError(f"{where}.{key}: invalid regex: {exc}") from exc
+    return AuthProbe(
+        argv=argv,
+        authenticated_pattern=value.get("authenticated_pattern", "") or "",
+        unauthenticated_pattern=value.get("unauthenticated_pattern", "") or "",
+    )
+
+
 def parse_global_manifests(data: object, *, source: str = "global runtimes") -> list[RuntimeManifest]:
     """Parse trusted global manifests. Unknown or secret-carrying keys fail closed."""
     if data is None:
@@ -143,6 +198,20 @@ def parse_global_manifests(data: object, *, source: str = "global runtimes") -> 
         description = item.get("description", "")
         if not isinstance(description, str):
             raise RegistryError(f"{where}.description: must be a string")
+        version_args = None
+        if item.get("version_args") is not None:
+            version_args = _parse_command(item["version_args"], where=f"{where}.version_args")
+        version_pattern = item.get("version_pattern", "")
+        if not isinstance(version_pattern, str):
+            raise RegistryError(f"{where}.version_pattern: must be a string")
+        if version_pattern:
+            try:
+                re.compile(version_pattern)
+            except re.error as exc:
+                raise RegistryError(f"{where}.version_pattern: invalid regex: {exc}") from exc
+        setup = item.get("setup", "")
+        if not isinstance(setup, str):
+            raise RegistryError(f"{where}.setup: must be a string")
         manifests.append(
             RuntimeManifest(
                 runtime_id=runtime_id,
@@ -154,6 +223,10 @@ def parse_global_manifests(data: object, *, source: str = "global runtimes") -> 
                 ),
                 description=description,
                 warnings=tuple(warnings),
+                version_args=version_args,
+                version_pattern=version_pattern,
+                auth_probe=_parse_auth_probe(item.get("auth_probe"), where=f"{where}.auth_probe"),
+                setup=setup,
             )
         )
     return manifests
@@ -197,9 +270,23 @@ class RuntimeRegistry:
         self,
         manifests: list[RuntimeManifest] | None = None,
         project_refs: list[ProjectRuntimeRef] | None = None,
+        disabled: frozenset[str] | set[str] | None = None,
     ):
+        """`disabled` is the trusted global set (see `catalog.load_trusted_disabled`).
+
+        The builtin native runtime cannot be disabled — it is the fallback every
+        selection path assumes. Unknown ids in the set are inert (a stale entry
+        must not brick the registry); malformed entries fail closed.
+        """
         manifests = list(manifests or [])
         project_refs = list(project_refs or [])
+        disabled_set = frozenset(disabled or ())
+        for entry in disabled_set:
+            if not isinstance(entry, str) or not entry:
+                raise RegistryError(f"disabled runtime ids must be non-empty strings, got {entry!r}")
+        if BUILTIN_NATIVE_ID in disabled_set:
+            raise RegistryError("the builtin native runtime cannot be disabled")
+        self._disabled = disabled_set
         self._manifests: dict[str, RuntimeManifest] = {}
         for manifest in manifests:
             if manifest.runtime_id in self._manifests:
@@ -229,8 +316,40 @@ class RuntimeRegistry:
                 )
             self._aliases[ref.alias] = ref
 
+    @property
+    def manifests(self) -> list[RuntimeManifest]:
+        """The trusted manifests, builtin native first, for discovery."""
+        return [self._manifests[key] for key in sorted(self._manifests)]
+
+    @property
+    def disabled_ids(self) -> frozenset[str]:
+        """Runtime ids disabled by trusted global configuration."""
+        return self._disabled
+
+    def is_disabled(self, ref: str) -> bool:
+        """True when resolving `ref` would hit a disabled runtime. Unknown refs
+        fail closed like `get`."""
+        return self._resolve_id(ref) in self._disabled
+
+    def _resolve_id(self, ref: str) -> str:
+        if ref in self._manifests:
+            return ref
+        project_ref = self._aliases.get(ref)
+        if project_ref is None:
+            raise RegistryError(f"unknown runtime {ref!r}")
+        return project_ref.runtime_id
+
     def get(self, ref: str) -> ResolvedRuntime:
-        """Resolve a runtime id or project alias. Unknown refs fail closed."""
+        """Resolve a runtime id or project alias.
+
+        Unknown refs fail closed; disabled runtimes — directly or via alias —
+        are refused so they cannot be selected or started.
+        """
+        runtime_id = self._resolve_id(ref)
+        if runtime_id in self._disabled:
+            raise RegistryError(
+                f"runtime {runtime_id!r} is disabled by user configuration"
+            )
         if ref in self._manifests:
             manifest = self._manifests[ref]
             return ResolvedRuntime(
@@ -242,9 +361,7 @@ class RuntimeRegistry:
                 description=manifest.description,
                 warnings=manifest.warnings,
             )
-        project_ref = self._aliases.get(ref)
-        if project_ref is None:
-            raise RegistryError(f"unknown runtime {ref!r}")
+        project_ref = self._aliases[ref]
         manifest = self._manifests[project_ref.runtime_id]
         capabilities = manifest.capabilities
         if project_ref.capabilities is not None:
@@ -261,10 +378,49 @@ class RuntimeRegistry:
         )
 
     def list(self) -> list[ResolvedRuntime]:
-        """Every registered runtime, including aliases, in deterministic order."""
-        ids = sorted(self._manifests)
-        aliases = sorted(self._aliases)
-        return [self.get(ref) for ref in ids + aliases]
+        """Every registered runtime, including aliases, in deterministic order.
+
+        Disabled entries are listed — UIs need to show them — annotated with
+        the disablement warning instead of resolving.
+        """
+        resolved: list[ResolvedRuntime] = []
+        for ref in sorted(self._manifests):
+            manifest = self._manifests[ref]
+            warnings = manifest.warnings
+            if ref in self._disabled:
+                warnings = (*warnings, "disabled by user configuration")
+            resolved.append(
+                ResolvedRuntime(
+                    runtime_id=manifest.runtime_id,
+                    kind=manifest.kind,
+                    version=manifest.version,
+                    command=manifest.command,
+                    capabilities=manifest.capabilities,
+                    description=manifest.description,
+                    warnings=warnings,
+                )
+            )
+        for alias in sorted(self._aliases):
+            project_ref = self._aliases[alias]
+            try:
+                entry = self.get(alias)
+            except RegistryError:
+                manifest = self._manifests[project_ref.runtime_id]
+                capabilities = manifest.capabilities
+                if project_ref.capabilities is not None:
+                    capabilities = RuntimeCapabilities(names=project_ref.capabilities)
+                entry = ResolvedRuntime(
+                    runtime_id=manifest.runtime_id,
+                    kind=manifest.kind,
+                    version=manifest.version,
+                    command=manifest.command,
+                    capabilities=capabilities,
+                    description=manifest.description,
+                    warnings=(*manifest.warnings, "disabled by user configuration"),
+                    via_alias=alias,
+                )
+            resolved.append(entry)
+        return resolved
 
     def default(self) -> ResolvedRuntime:
         return self.get(BUILTIN_NATIVE_ID)

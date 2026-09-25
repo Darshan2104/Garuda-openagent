@@ -59,6 +59,9 @@ def build_parser():
     run_parser.add_argument("--docker-memory", default="2g", help="Container memory limit (e.g. 2g)")
     run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
+    run_parser.add_argument(
+        "--runtime", default="native", help="Trusted global runtime id or project alias"
+    )
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
     run_parser.add_argument(
         "--mcp-config",
@@ -392,6 +395,14 @@ async def run_task(args) -> int:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
 
+    # Construct and select through the common boundary before any toolkit or
+    # workspace startup. A project alias still resolves to the global runtime
+    # id, so it cannot evade a user-level disabled_runtimes policy.
+    from garuda.agents.setup import prepare_runtime_catalog
+
+    runtime_catalog = prepare_runtime_catalog(args.workspace)
+    runtime_catalog.select_for_native_facade(args.runtime)
+
     from garuda.config.agent_home import resolve_agents_dirs
 
     agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
@@ -472,6 +483,8 @@ async def run_task(args) -> int:
         mcp_manager=mcp_manager,
         agents_dir=agents_dir,
         resume=args.resume,
+        runtime_catalog=runtime_catalog,
+        runtime_ref=args.runtime,
     )
 
     if args.trajectory:
@@ -577,13 +590,33 @@ async def run_web(args) -> int:
     return 0
 
 
+def _run_with_runtime_gate(args) -> int:
+    """`garuda run`, with a refused runtime selection as a message, not a traceback."""
+    import asyncio
+    import sys
+
+    from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return asyncio.run(run_task(args))
+    except (RegistryError, RuntimeSettingsError) as exc:
+        print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
+        print(
+            "Check `runtimes`/`disabled_runtimes` in your global settings and the "
+            "project's `runtime_refs`, or pass `--runtime native`.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 def main() -> None:
     import asyncio
 
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "run":
-        raise SystemExit(asyncio.run(run_task(args)))
+        raise SystemExit(_run_with_runtime_gate(args))
     if args.command == "chat":
         raise SystemExit(asyncio.run(chat_loop(args)))
     if args.command == "serve":
