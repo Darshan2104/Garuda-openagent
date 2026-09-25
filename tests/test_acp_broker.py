@@ -124,8 +124,12 @@ async def test_strict_gaps_reported_not_downgraded():
     gaps = describe_gaps({"terminal": AuthorityPolicy.GARUDA_ONLY}, agent)
     assert len(gaps) == 1
     assert "garuda_only" in gaps[0]
-    assert describe_gaps({"terminal": AuthorityPolicy.AGENT_PREFERRED}, agent) == []
-    assert describe_gaps({}, agent) == []
+    safe_default_gaps = describe_gaps(
+        {"terminal": AuthorityPolicy.AGENT_PREFERRED}, agent
+    )
+    assert len(safe_default_gaps) == 1
+    assert "safe default" in safe_default_gaps[0]
+    assert describe_gaps({}, agent) == safe_default_gaps
 
 
 class _FailingStore:
