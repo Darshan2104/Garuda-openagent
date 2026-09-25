@@ -9,6 +9,7 @@ down; that code path is untouched.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -212,7 +213,7 @@ class NativeGarudaRuntime:
         try:
             from garuda.runtime.recovery import RecoveryError, recover
 
-            recover(self._store, resolved)
+            await asyncio.to_thread(recover, self._store, resolved)
         except RecoveryError as exc:
             raise RuntimeStartError(f"cannot resume session {resolved}: {exc}") from exc
         self._move(LifecycleState.STARTING)

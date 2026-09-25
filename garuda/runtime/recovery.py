@@ -143,14 +143,18 @@ def _use_proc() -> bool:
 
 
 def _process_identity(pid: int) -> str | None:
-    """A PID-reuse-resistant identity: start time plus command.
+    """A PID-reuse-resistant identity: start time plus, where stable, the
+    exec-time command name.
 
     Returns None when no such process exists and raises
     `ProcessIdentityUnavailable` when the probe itself fails (indeterminate).
-    Linux reads `/proc/<pid>/stat` (boot id, starttime in ticks since boot,
-    comm); other POSIX hosts use `ps -o lstart= -o comm=` under C/UTC. A PID the
-    OS recycled for a different program, or the same program started later,
-    yields a different identity.
+    Linux reads `/proc/<pid>/stat` (boot id plus starttime in ticks since boot);
+    other POSIX hosts use `ps -o lstart= -o ucomm=` under C/UTC. Only names the
+    process cannot rewrite are used: `/proc` comm and macOS `comm` follow
+    `prctl(PR_SET_NAME)` / argv[0] (Node's `process.title`), so a child that
+    renames itself would be misread as a recycled PID and left running. A PID
+    the OS recycled — or the same program started later — still yields a
+    different start time.
     """
     if _use_proc():
         fields = _linux_stat(pid)
@@ -162,9 +166,10 @@ def _process_identity(pid: int) -> str | None:
             boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         except OSError:
             boot_id = ""
-        # fields[0] is comm (stat field 2); starttime is stat field 22.
-        return f"linux:{boot_id}:{fields[20]}:{fields[0]}"
-    out = _run_ps(pid, "lstart", "comm")
+        # starttime is stat field 22 (fields[20]). comm (fields[0]) is left
+        # out: the process can change it with prctl(PR_SET_NAME).
+        return f"linux:{boot_id}:{fields[20]}"
+    out = _run_ps(pid, "lstart", "ucomm")
     if not out:
         try:
             os.kill(pid, 0)

@@ -204,7 +204,8 @@ async def run_agent_task(
             # trails refuse. Fail-closed.
             from garuda.runtime.recovery import recover
 
-            recover(store, resumed_from, leases=lease_store)
+            # Off the loop: probes shell out to `ps` and reaping polls for death.
+            await asyncio.to_thread(recover, store, resumed_from, leases=lease_store)
             if context is None:
                 context = build_resumed_context(store, resumed_from, task, model, config)
         except BaseException:

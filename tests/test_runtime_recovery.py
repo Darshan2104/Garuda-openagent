@@ -5,6 +5,8 @@ prepared switches, orphan children, ambiguous terminals, and the guarantee
 that a bare exit never becomes a success claim.
 """
 
+import shutil
+
 import pytest
 
 from garuda.core.sessions import SessionStore
@@ -823,3 +825,29 @@ async def test_resume_refuses_while_another_garuda_owns_the_session(tmp_path):
             task="third", resume="owned", **_runner_kwargs(tmp_path, "resumer-2", _script())
         )
     leases.release(tmp_path / "other-ws", "owned")
+
+
+@pytest.mark.skipif(shutil.which("perl") is None, reason="needs perl to rename a live process")
+def test_identity_survives_a_process_renaming_itself():
+    """A child that rewrites its own title (Node's `process.title`, perl `$0`)
+    is still the same process; misreading it as a recycled PID would retire its
+    record and leave the orphan running."""
+    import subprocess
+    import time
+
+    from garuda.runtime.recovery import _process_identity
+
+    child = subprocess.Popen(
+        ["perl", "-e", '$| = 1; print "ready\\n"; sleep 1; $0 = "renamed-agent"; sleep 30'],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == b"ready"
+        before = _process_identity(child.pid)
+        time.sleep(1.5)
+        after = _process_identity(child.pid)
+        assert before is not None and before == after
+    finally:
+        child.kill()
+        child.wait()

@@ -175,8 +175,9 @@ never invents success — a bare exit proves nothing. It runs on resume only
 `NativeGarudaRuntime.resume`); a fresh run has nothing to recover. A child is
 a signal candidate only when `record_child` persisted it against a known
 runtime/session as its own process-group leader together with two process
-identities (start time plus command — `/proc/<pid>/stat` on Linux, `ps -o
-lstart= -o comm=` elsewhere): the child's and its owning Garuda process's.
+identities (boot id plus start time from `/proc/<pid>/stat` on Linux; `ps -o
+lstart= -o ucomm=` elsewhere — never a name the process can rewrite, such as
+Node's `process.title`): the child's and its owning Garuda process's.
 Recovery refuses while a live workspace lease names the session or the
 recorded owner is still alive, audits the trail and classifies before any
 signal, then SIGKILLs the group only if the pid's current identity still

@@ -321,7 +321,10 @@ class SessionStore:
         ``mutate`` receives the current document and returns the keys to
         replace; it must not touch the store itself (the lock is not
         re-entrant). Unlike ``merge_meta``, a missing or unparseable meta fails
-        instead of being rebuilt — these writers are recovery evidence.
+        instead of being rebuilt — these writers are recovery evidence. The
+        lock is the same best-effort sidecar `flock` as ``merge_meta``: where
+        locking is unavailable it degrades to an unlocked write, so concurrent
+        writers from different processes are serialized only where `flock` works.
         """
         meta_path = self.session_dir(session_id) / "meta.json"
         with _meta_lock(meta_path):
