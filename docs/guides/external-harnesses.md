@@ -10,12 +10,17 @@ usage.
 **Status:** the shipped manifests (`claude`, `codex`, `cursor`, `opencode`,
 `pi`, `goose`) are part of the trusted runtime catalog, so they resolve, show
 up in `garuda runtime list`, and honor `disabled_runtimes`. `garuda run
---runtime <id>` routes an ACP selection to the ACP launch path (see the
-[CLI reference](../reference/cli.md)); the SDK and the dashboard still run only
-the native loop and refuse an ACP selection instead of silently running
-native. The adapters are exercised only against Garuda's strict ACP v1 test
-fixture; no vendor CLI has been verified end to end by this repository's
-tests.
+--runtime <id>` launches an installed ACP harness under the native run's
+invariants (workspace lease, persisted session and child record, baseline and
+delta, broker approvals), and `garuda runtime handoff --confirm` hands a native
+session to one — see [ACP runs and handoffs](../reference/cli.md#acp-runs-and-handoffs).
+A handed-off session stays with the harness: Garuda does not resume it
+natively. The SDK and the dashboard still run only the native loop and refuse
+an ACP selection instead of silently running native. Garuda does not verify an
+ACP result, and ACP authority is recorded, not enforced (the harness runs its
+own edits and commands). The adapters are exercised only against Garuda's
+strict ACP v1 test fixture through an installed shim; no vendor CLI has been
+verified end to end by this repository's tests.
 
 ## Claude Code
 

@@ -107,7 +107,7 @@ empty "nothing changed" delta. SDK `Conversation` and `garuda recipe run`
 persist no session and run without a baseline (see `BACKLOG.md`). A resumed run
 is a new session with a fresh baseline, so the prior session's work reads as
 preexisting. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
-into a handoff, but no production caller passes `workspace` yet. The
+into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
 `.context/` pack files the harness syncs into the workspace appear in the delta
 as session changes.
 
@@ -167,8 +167,15 @@ transfer, with rollback and cancellation returning to one resumable owner and a
 typed event per move. `execute_handoff` runs the full flow against real
 runtimes with the session store recording prepared/acknowledged/failed, so
 success transfers single ownership and target failure keeps the source
-promptable. `recovery.py` classifies restarts from persisted records
-(resumable, rolled-back, ambiguous), reaps orphan agent children with
+promptable. Acknowledgement is one locked write (handoff `acknowledged` plus the
+target appended as the active segment); a target with `bind_session` then
+records its child, the source closes, and only then does an optional `deliver`
+send the package as the target's first prompt. A delivery failure is a target
+failure (`HandoffDeliveryError`, `target_state: failed`), never a rollback over
+the target's changes; `record_target_outcome` records how the owner ended. `recovery.py` classifies restarts from persisted records
+(resumable, rolled-back, ambiguous, external — an ACP-owned session the native
+loop must not resume; `require_native_resumable` is the check every native resume
+path applies), reaps orphan agent children with
 verification, appends cancellations at turn/switch/process boundaries, and
 never invents success — a bare exit proves nothing. It runs on resume only
 (`run_agent_task --resume`, after this run's workspace lease is taken, and
@@ -193,15 +200,18 @@ before the cancel and surfaced afterwards as `CancellationAuditError` (a
 handoff cancel cleans up first and ends FAILED when its audit write fails), so
 a store outage never keeps work running. The `cancellations` list is audit
 evidence that classification does not consume yet. Only `AcpRuntime(store=…)`
-and `HandoffTransaction(store=…)` record children and switch cancels; no
-production entry point constructs an `AcpRuntime` or calls `execute_handoff`
-yet, and without a store the adapter logs a warning and records nothing.
+(or `bind_session` after a handoff acknowledgement) and
+`HandoffTransaction(store=…)` record children and switch cancels; `garuda run
+--runtime <acp>` and `garuda runtime handoff --confirm` are the production
+callers. Without a store the adapter logs a warning and records nothing.
 
 ## `interfaces/` — entry points
 
 `main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
 (interactive chat), `runtime_cli.py` (`garuda runtime list|inspect|handoff|recover`
-plus `run --runtime` selection), `server.py` + `jobs.py` (job-queue server: submit/status/
+plus the `run --runtime <acp>` launch path), `run_guard.py` (run invariants shared
+by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat and
+race, and the P0.17 broker approval path), `server.py` + `jobs.py` (job-queue server: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
 `runner.py` (assembles a run and owns workspace teardown).
 

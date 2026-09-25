@@ -240,13 +240,21 @@ advertising `fs`/`terminal` client capabilities, serving those methods through
 the broker, and deriving ownership from what was advertised rather than
 declared.
 
-**Restart recovery has no production ACP or handoff caller.** `recover()` reaps
-only children that `AcpRuntime(store=…)` recorded, and only
-`HandoffTransaction(store=…)` records switch cancels, but no entry point builds an
-`AcpRuntime` or calls `execute_handoff` yet, so today the reaping path runs only in
-tests. Wiring the first ACP entry point must pass the session store (the adapter
-warns when it has none). The `cancellations` audit list is also not consumed by
-classification yet.
+**Recovery does not consume the cancellation audit, and a handoff target's
+pre-acknowledgement window is unrecorded.** `recover()` classifies from handoff
+state, checkpoints, and the trail; the `cancellations` list is evidence only. A
+CLI handoff target starts before ownership moves, so its child record is
+written only after the acknowledgement (`AcpRuntime.bind_session`); a Garuda
+crash between target start and that write leaves an ACP child no record names.
+Closing it needs a recordable "prepared target" child state that `recover()`
+may reap while the handoff is still `prepared`.
+
+**A session handed to an external runtime cannot come back.** After an
+acknowledged handoff the session's active segment is the ACP target, `recover()`
+reports it `external`, and native resume refuses; there is no ACP-to-native (or
+ACP-to-ACP) handoff and no cross-process ACP resume, so continuing means starting
+a new session. The one-shot CLI closes the target after the package turn;
+continued supervised work on the target is not wired.
 
 **ACP harnesses get no API-key or custom config-dir passthrough.** The adapter
 child environment is `PATH`/`HOME`/`LANG` only (`acp/client.py::_child_env`),
@@ -273,18 +281,23 @@ preexisting dirt. Fix by giving them a persisted session (or an explicit
 in-memory evidence store) and routing them through the same boundary, with a
 refusal test per entry point.
 
-**Handoff and resume do not carry the session delta forward.** No production
-caller passes `workspace=` to `runtime/handoff.execute_handoff`, so product
-handoffs carry no delta. `--resume` starts a new session with a fresh baseline,
-so the prior session's work is attributed as preexisting dirt.
+**Resume does not carry the session delta forward.** `--resume` starts a new
+session with a fresh baseline, so the prior session's work is attributed as
+preexisting dirt. (The CLI handoff passes `workspace=` and carries the delta;
+native sessions still record `workspace: "."`, so `garuda runtime handoff`
+requires `--workspace` for them.)
 
 **The dashboard still parks approvals outside the P0.17 broker.**
-`garuda.acp.broker.ApprovalBroker` is installed only by `run_agent_task`
-(`interfaces/runner.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
+`garuda.acp.broker.ApprovalBroker` is installed by `run_agent_task`
+(`interfaces/runner.py`) and, for ACP `session/request_permission` asks, by
+`garuda run --runtime` and `garuda runtime handoff --confirm`
+(`interfaces/run_guard.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
 `interfaces/web/approvals.ApprovalBroker` and runs turns through `agent.run`
 directly, so browser allow/deny/timeout outcomes are not persisted as
-`approval:<id>` session records. `ApprovalBroker.decide_acp()` is exercised only by
-tests; no ACP adapter screens terminal/edit requests through it yet. The fix is to
+`approval:<id>` session records. ACP asks reach the broker as generic
+`approval` parks (headless: deny, audited; TTY: y/N prompt);
+`ApprovalBroker.decide_acp()` is exercised only by tests, so no ACP adapter
+screens terminal/edit requests against the ceiling yet. The fix is to
 keep the web module as a transport (thread marshalling, heartbeat, structured
 arguments) over the shared broker, and to route ACP family requests through
 `decide_acp` before execution, with an integration test on each path.
