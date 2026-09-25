@@ -169,11 +169,32 @@ runtimes with the session store recording prepared/acknowledged/failed, so
 success transfers single ownership and target failure keeps the source
 promptable. `recovery.py` classifies restarts from persisted records
 (resumable, rolled-back, ambiguous), reaps orphan agent children with
-verification, records cancellations at turn/switch/process boundaries, and
-never invents success — a bare exit proves nothing. Only positive, isolated
-process-group leaders recorded against a known runtime/session may be reaped;
-pre- and post-reap indeterminate liveness, missing checkpoints, native identity
-mismatch, or invalid ACP authority snapshots refuse startup/resume.
+verification, appends cancellations at turn/switch/process boundaries, and
+never invents success — a bare exit proves nothing. It runs on resume only
+(`run_agent_task --resume`, after this run's workspace lease is taken, and
+`NativeGarudaRuntime.resume`); a fresh run has nothing to recover. A child is
+a signal candidate only when `record_child` persisted it against a known
+runtime/session as its own process-group leader together with two process
+identities (start time plus command — `/proc/<pid>/stat` on Linux, `ps -o
+lstart= -o comm=` elsewhere): the child's and its owning Garuda process's.
+Recovery refuses while a live workspace lease names the session or the
+recorded owner is still alive, audits the trail and classifies before any
+signal, then SIGKILLs the group only if the pid's current identity still
+matches and polls (bounded, `REAP_TIMEOUT_SEC`) until it is dead or a zombie.
+Gone children are retired `exited`, recycled PIDs `reused` (never signalled),
+killed ones `reaped`. Indeterminate liveness, identity, or owner probes,
+missing checkpoints, native identity mismatch, or invalid ACP authority
+snapshots refuse the resume. This is a guardrail, not a sandbox: descendants
+that left the child's process group are not found, and a crash between
+`AcpProcess.close` and the retiring write leaves a `live` record that only the
+identity check keeps from misfiring. Cancellation audits are best-effort
+before the cancel and surfaced afterwards as `CancellationAuditError` (a
+handoff cancel cleans up first and ends FAILED when its audit write fails), so
+a store outage never keeps work running. The `cancellations` list is audit
+evidence that classification does not consume yet. Only `AcpRuntime(store=…)`
+and `HandoffTransaction(store=…)` record children and switch cancels; no
+production entry point constructs an `AcpRuntime` or calls `execute_handoff`
+yet, and without a store the adapter logs a warning and records nothing.
 
 ## `interfaces/` — entry points
 
