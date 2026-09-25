@@ -340,14 +340,49 @@ class CompletionVerifier:
         messages: list[Message] | None = None,
         answer_rationale: str | None = None,
         gate: CompletionGateState | None = None,
+        workspace_delta_loader=None,
     ) -> VerificationResult:
+        # A local run that makes workspace-attribution claims may complete only
+        # when the verifier can read the immutable baseline captured before its
+        # first prompt.  This is deliberately here, at the decision point,
+        # rather than as runner-only metadata: otherwise a broken record could
+        # still receive an approved task_complete verdict.
+        workspace_evidence: list[dict] = []
+        if workspace_delta_loader is not None:
+            try:
+                delta = workspace_delta_loader()
+            except Exception as exc:
+                return VerificationResult(
+                    approved=False,
+                    checklist={"workspace_baseline": False},
+                    feedback=(
+                        "Completion rejected: the authoritative workspace baseline "
+                        f"is unavailable ({type(exc).__name__})."
+                    ),
+                )
+            workspace_evidence.append(
+                {
+                    "kind": "workspace_delta",
+                    "baseline_commit": delta.baseline_commit,
+                    "changed": list(delta.changed),
+                    "preexisting": list(delta.preexisting),
+                }
+            )
         if not config.enable_verifier:
-            return VerificationResult(approved=True, checklist={"disabled": True})
+            return VerificationResult(
+                approved=True,
+                checklist={"disabled": True, "workspace_baseline": True}
+                if workspace_delta_loader is not None
+                else {"disabled": True},
+                evidence=workspace_evidence,
+            )
 
         checklist = {
             "summary_present": bool(summary.strip()),
             "summary_length": len(summary.strip()) >= 10,
         }
+        if workspace_delta_loader is not None:
+            checklist["workspace_baseline"] = True
 
         if not checklist["summary_present"]:
             return VerificationResult(
@@ -407,7 +442,7 @@ class CompletionVerifier:
                     feedback=WEAK_EVIDENCE_FEEDBACK.format(breakdown=breakdown),
                 )
 
-        observed: list[dict] = []
+        observed: list[dict] = list(workspace_evidence)
         early = await self._run_commands(
             verification_commands, env, config, permissions, checklist, observed
         )

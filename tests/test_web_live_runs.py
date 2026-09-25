@@ -401,6 +401,21 @@ async def test_a_chat_opens_with_a_session_and_a_workspace(chatting):
     assert (store_dir := live.store.session_dir(payload["session_id"])).is_dir(), store_dir
 
 
+async def test_dashboard_refuses_chat_when_baseline_cannot_be_recorded(chatting, monkeypatch):
+    """The held dashboard path must not bypass session-start attribution."""
+    live, session, _ctx = chatting
+    import garuda.workspace.diff as diff
+
+    def fail_baseline(*_args, **_kwargs):
+        raise diff.BaselineError("session metadata unavailable")
+
+    monkeypatch.setattr(diff, "record_session_baseline", fail_baseline)
+    with pytest.raises(diff.BaselineError, match="metadata unavailable"):
+        await live.start_chat(ChatSpec())
+    assert session.closed is True
+    assert live.store.load_meta(session.events.session_id)["status"] == "failed"
+
+
 async def test_a_turn_is_a_job_readable_by_id(chatting):
     """The turn's job id is returned so the client can watch and cancel it — which is what
     the stop button is, and the reason the job routes outlived the run launcher."""

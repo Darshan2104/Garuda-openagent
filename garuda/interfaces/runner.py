@@ -262,20 +262,13 @@ async def run_agent_task(
 
     try:
         await runtime.start(task=task, session_id=events.session_id)
-        # Authoritative baseline (P0.18): captured once the session exists, on
-        # the local working tree only — other workspace kinds do not share the
-        # host filesystem, so a host-side capture would attribute wrongly.
-        # Persisted in the unified session; handoff and verification consume
-        # this recorded baseline, never a fresh capture.
-        if workspace_kind == "local":
-            try:
-                from garuda.workspace.diff import capture_baseline
+        # This is before environment setup, hooks, or a model prompt.  A local
+        # run which cannot persist its immutable start state must not mutate and
+        # later pretend its delta is attributable.  The helper also records
+        # explicit non-local unsupported status instead of silently skipping it.
+        from garuda.workspace.diff import record_session_baseline
 
-                store.record_baseline(
-                    events.session_id, capture_baseline(workspace).to_dict()
-                )
-            except Exception:
-                logger.warning("Baseline capture failed", exc_info=True)
+        record_session_baseline(store, events.session_id, workspace, workspace_kind)
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
         if resumed_from:
@@ -322,6 +315,12 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
+            workspace_delta_loader = None
+            if workspace_kind == "local":
+                from garuda.workspace.diff import load_session_delta
+
+                def workspace_delta_loader():
+                    return load_session_delta(store, events.session_id, workspace)
             return await agent.run(
                 task=task,
                 model=model,
@@ -339,10 +338,22 @@ async def run_agent_task(
                 pack_source_runtime="native",
                 pack_git_evidence=pack_git_evidence,
                 initial_state=initial_state,
+                workspace_delta_loader=workspace_delta_loader,
             )
 
         runtime.install_driver(_driver)
     except Exception:
+        # `runtime.start` has created the durable session by this point.  Mark a
+        # baseline/startup refusal failed when the store is still writable; the
+        # original error remains authoritative if it is not.
+        try:
+            store.update_meta(events.session_id, {"status": "failed", "startup_refused": True})
+        except Exception:
+            logger.warning("Failed to record startup refusal", exc_info=True)
+        try:
+            await runtime.close()
+        except Exception:
+            logger.warning("Failed to close refused runtime", exc_info=True)
         await _abandon_lease()
         raise
     try:
@@ -398,17 +409,15 @@ async def run_agent_task(
                 except Exception:
                     logger.warning("MCP manager close failed", exc_info=True)
             if result is not None:
-                store.finish(events.session_id, result)
-                # Verifier-facing delta: computed from the exact baseline recorded
-                # at session start, so pre-existing dirt stays distinct from agent
-                # changes for anyone reading the session afterwards. Best-effort.
+                # Persist final workspace evidence before the result.  A failed
+                # read/write is a failed run rather than a successful result with a
+                # warning-only hole in the evidence trail.
                 if workspace_kind == "local":
                     try:
                         from garuda.workspace.diff import load_session_delta
 
                         delta = load_session_delta(store, events.session_id, workspace)
-                        update_session_meta(
-                            store,
+                        store.update_meta(
                             events.session_id,
                             {
                                 "baseline_commit": delta.baseline_commit,
@@ -416,8 +425,19 @@ async def run_agent_task(
                                 "delta_preexisting": list(delta.preexisting[:200]),
                             },
                         )
-                    except Exception:
-                        logger.warning("Session delta attach failed", exc_info=True)
+                        result.metadata["workspace_delta"] = {
+                            "baseline_commit": delta.baseline_commit,
+                            "changed": list(delta.changed),
+                            "preexisting": list(delta.preexisting),
+                        }
+                    except Exception as exc:
+                        result.success = False
+                        result.final_message = (
+                            "Run failed: authoritative workspace delta could not be "
+                            f"recorded ({type(exc).__name__})."
+                        )
+                        result.metadata["workspace_delta_error"] = type(exc).__name__
+                store.finish(events.session_id, result)
                 summary = {
                     "session_id": events.session_id,
                     "success": result.success,

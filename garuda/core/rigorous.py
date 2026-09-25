@@ -90,6 +90,7 @@ class RigorousAgent:
         pack_source_runtime: str = "native",
         pack_git_evidence: str = "",
         initial_state=None,
+        workspace_delta_loader=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -177,6 +178,7 @@ class RigorousAgent:
                 pack_source_runtime=pack_source_runtime,
                 pack_git_evidence=pack_git_evidence,
                 initial_state=initial_state,
+                workspace_delta_loader=workspace_delta_loader,
             )
 
             approved, feedback = await self._critic_review(

@@ -37,6 +37,10 @@ class DiffError(Exception):
     """Git is absent, the path is not a repository, or a read failed."""
 
 
+class BaselineError(DiffError):
+    """The session cannot make the immutable workspace-evidence claim."""
+
+
 @dataclass(frozen=True)
 class Baseline:
     commit: str
@@ -54,10 +58,19 @@ class Baseline:
     def from_dict(cls, data: dict) -> "Baseline":
         if not isinstance(data, dict):
             raise DiffError("baseline must be a mapping")
+        status_lines = data.get("status_lines", [])
+        fingerprints = data.get("fingerprints", {})
+        if not isinstance(status_lines, list) or any(not isinstance(line, str) for line in status_lines):
+            raise DiffError("baseline.status_lines must be a list of strings")
+        if not isinstance(fingerprints, dict) or any(
+            not isinstance(path, str) or not isinstance(digest, str)
+            for path, digest in fingerprints.items()
+        ):
+            raise DiffError("baseline.fingerprints must be a string mapping")
         return cls(
             commit=str(data.get("commit", "")),
-            status_lines=tuple(data.get("status_lines", [])),
-            fingerprints=dict(data.get("fingerprints", {})),
+            status_lines=tuple(status_lines),
+            fingerprints=dict(fingerprints),
         )
 
 
@@ -66,6 +79,9 @@ class DeltaFile:
     path: str
     kind: str
     preexisting: bool = False
+    #: This path was already dirty when the session started, but changed again
+    #: during this session.  It is session work, not a pre-existing-only row.
+    preexisting_at_start: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,19 +129,53 @@ def _hash_file(path: str | Path, rel: str) -> str:
 
 def capture_baseline(path: str | Path) -> Baseline:
     """Record commit, status, and fingerprints. Empty baseline outside a repo."""
-    commit_result = _git(path, "rev-parse", "HEAD")
-    if commit_result.returncode != 0:
+    repository = _git(path, "rev-parse", "--is-inside-work-tree")
+    if repository.returncode != 0:
+        if "not a git repository" not in repository.stderr.lower():
+            raise DiffError(f"could not determine repository state: {repository.stderr.strip()}")
         return Baseline(commit="", status_lines=(), fingerprints={})
-    try:
-        lines = _porcelain_lines(path)
-    except DiffError:
-        lines = []
+    if repository.stdout.strip() != "true":
+        return Baseline(commit="", status_lines=(), fingerprints={})
+    commit_result = _git(path, "rev-parse", "HEAD")
+    if commit_result.returncode != 0 and "unknown revision" not in commit_result.stderr.lower():
+        raise DiffError(f"could not read baseline commit: {commit_result.stderr.strip()}")
+    lines = _porcelain_lines(path)
+    # Keep the empty fingerprint too.  It represents a path that was already
+    # deleted at baseline; dropping it made an unchanged deletion indistinguishable
+    # from a deletion performed by this session.
     fingerprints = {rel: _hash_file(path, rel) for rel in _porcelain_paths(lines)}
     return Baseline(
         commit=commit_result.stdout.strip(),
         status_lines=tuple(lines),
-        fingerprints={k: v for k, v in fingerprints.items() if v},
+        fingerprints=fingerprints,
     )
+
+
+def record_session_baseline(
+    store, session_id: str, workspace: str | Path, workspace_kind: str
+) -> Baseline | None:
+    """Persist the one baseline a session is allowed to use later.
+
+    Local workspace attribution is a security and verification claim, so an
+    unreadable Git view or metadata write refuses startup.  Remote/container
+    workspaces cannot be truthfully attributed from the host path; record that
+    limitation explicitly instead of quietly pretending there was no delta.
+    """
+    if workspace_kind != "local":
+        try:
+            store.update_meta(
+                session_id,
+                {"baseline_state": "unsupported_nonlocal", "baseline": {}},
+            )
+        except Exception as exc:
+            raise BaselineError(f"could not record non-local baseline state: {exc}") from exc
+        return None
+    try:
+        baseline = capture_baseline(workspace)
+        store.record_baseline(session_id, baseline.to_dict())
+    except Exception as exc:
+        raise BaselineError(f"could not capture and persist workspace baseline: {exc}") from exc
+    return baseline
 
 
 def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
@@ -158,23 +208,31 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
     for rel in sorted(set(current) | set(base_paths)):
         if rel in rename_sources:
             continue
+        current_fingerprint = _hash_file(path, rel)
+        inherited = rel in base_paths
         if rel in renamed:
             kind = "renamed"
         elif current.get(rel) == "??":
             kind = "untracked"
         elif letters.get(rel) == "A":
             kind = "added"
-        elif letters.get(rel) == "D" or rel not in current:
+        elif letters.get(rel) == "D" or not current_fingerprint:
             kind = "deleted"
+        elif inherited and rel not in current:
+            # The dirty baseline path is clean now. It was restored to HEAD,
+            # which is a session change, not a deleted pre-existing row.
+            kind = "restored"
         else:
             kind = "modified"
-        preexisting = False
-        if rel in base_paths:
-            if rel not in current:
-                preexisting = True
-            elif _hash_file(path, rel) == base_prints.get(rel, "\x00"):
-                preexisting = True
-        files.append(DeltaFile(path=rel, kind=kind, preexisting=preexisting))
+        preexisting = inherited and current_fingerprint == base_prints.get(rel, "\x00")
+        files.append(
+            DeltaFile(
+                path=rel,
+                kind=kind,
+                preexisting=preexisting,
+                preexisting_at_start=inherited and not preexisting,
+            )
+        )
     return SessionDelta(files=tuple(files), baseline_commit=baseline.commit)
 
 
