@@ -70,6 +70,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   file is a configuration error, never an empty set that could reactivate a
   disabled executable. Project `disabled_runtimes` remains recommendation-only
   and disabled built-in stubs stay visible with their policy annotation.
+- Project runtime settings fail closed on authority, not on advice: a project
+  `command` or capability widening refuses the run, while a malformed
+  `disabled_runtimes` or alias entry is ignored with a warning so a repository
+  cannot block every run through advisory settings.
+- Building the catalog and selecting a runtime execute nothing. Version and
+  auth probes run only when a list/inspect caller asks for discovery, with
+  stdin closed.
 - Until the ACP launch facade is wired, selecting a configured ACP runtime
-  refuses before any toolkit, workspace, prompt, or process is started; it
-  never silently falls back to the native runtime.
+  refuses before any toolkit, workspace, prompt, or harness process is
+  started; it never silently falls back to the native runtime. `garuda run`
+  reports the refusal as a message with exit status 2.
+- `chat`, `serve`, the web dashboard, and `recipe run` accept no runtime
+  selection and always run the native loop, which cannot be disabled, so they
+  do not consult runtime settings.

@@ -216,7 +216,7 @@ reported cost does not move when an upstream table does).
 
 | Package | Owns |
 |---|---|
-| `config/` | `agent_home.py` — all `.agent/` discovery. `recipes.py` — YAML multi-step workflows. `agents/setup.py::prepare_runtime_catalog()` is the shared trusted runtime builder: it reads global manifests and disablement, treats project refs as non-authoritative, and is the required CLI/SDK launch gate. |
+| `config/` | `agent_home.py` — all `.agent/` discovery. `recipes.py` — YAML multi-step workflows. `agents/setup.py::prepare_runtime_catalog()` is the shared trusted runtime builder: it reads global manifests and disablement, treats project refs as non-authoritative (authority attempts refuse, malformed advice warns), executes no probes (discovery runs only through `RuntimeCatalog.discover()`), and is the required CLI/SDK launch gate. |
 | `mcp/` | `config.py` (merge + allowlist), `client.py` (per-run server manager). |
 | `skills/` | `loader.py` — progressive disclosure, `allowed-tools` validation. |
 | `sdk/` | `software_agent.py`, `conversation.py` — the library surface. |

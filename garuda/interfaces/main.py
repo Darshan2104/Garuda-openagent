@@ -590,13 +590,33 @@ async def run_web(args) -> int:
     return 0
 
 
+def _run_with_runtime_gate(args) -> int:
+    """`garuda run`, with a refused runtime selection as a message, not a traceback."""
+    import asyncio
+    import sys
+
+    from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return asyncio.run(run_task(args))
+    except (RegistryError, RuntimeSettingsError) as exc:
+        print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
+        print(
+            "Check `runtimes`/`disabled_runtimes` in your global settings and the "
+            "project's `runtime_refs`, or pass `--runtime native`.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 def main() -> None:
     import asyncio
 
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "run":
-        raise SystemExit(asyncio.run(run_task(args)))
+        raise SystemExit(_run_with_runtime_gate(args))
     if args.command == "chat":
         raise SystemExit(asyncio.run(chat_loop(args)))
     if args.command == "serve":

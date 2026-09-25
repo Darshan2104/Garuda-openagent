@@ -66,6 +66,10 @@ BUILTIN_STUBS: tuple[dict[str, str], ...] = (
 PROBE_TIMEOUT = 10.0
 
 
+class RuntimeSettingsError(ValueError):
+    """The trusted runtime settings are unreadable or malformed. Fail-closed."""
+
+
 @dataclass(frozen=True)
 class DiscoveredRuntime:
     runtime_id: str
@@ -106,7 +110,14 @@ def _minimal_env() -> dict[str, str]:
 def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     try:
         result = subprocess.run(
-            list(argv), capture_output=True, text=True, timeout=timeout, env=_minimal_env()
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_minimal_env(),
+            # A probe must never read the user's terminal: an interactive
+            # prompt would otherwise block discovery until the timeout.
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -203,19 +214,20 @@ def load_trusted_disabled(settings: Mapping[str, Any] | None = None) -> frozense
     means nothing is disabled, but an unreadable or malformed file is an
     actionable error: substituting an empty mapping could start a runtime the
     user deliberately disabled.
-    A present-but-malformed `disabled_runtimes` value raises `ValueError`:
+    A present-but-malformed `disabled_runtimes` value raises
+    `RuntimeSettingsError` (a `ValueError`):
     silently enabling a runtime the user meant to disable is the wrong
     direction to fail.
     """
     if settings is None:
         settings = load_trusted_runtime_settings()
     if not isinstance(settings, Mapping):
-        raise ValueError("global settings must be a mapping")
+        raise RuntimeSettingsError("global settings must be a mapping")
     raw = settings.get("disabled_runtimes", [])
     if raw is None or raw == []:
         return frozenset()
     if not isinstance(raw, list) or any(not isinstance(v, str) or not v for v in raw):
-        raise ValueError("disabled_runtimes must be a list of runtime id strings")
+        raise RuntimeSettingsError("disabled_runtimes must be a list of runtime id strings")
     return frozenset(raw)
 
 
@@ -237,9 +249,9 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
 
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
-        raise ValueError(f"cannot read trusted runtime settings {path}: {exc}") from exc
+        raise RuntimeSettingsError(f"cannot read trusted runtime settings {path}: {exc}") from exc
     if not isinstance(data, Mapping):
-        raise ValueError(f"trusted runtime settings {path} must be a mapping")
+        raise RuntimeSettingsError(f"trusted runtime settings {path} must be a mapping")
     return data
 
 
