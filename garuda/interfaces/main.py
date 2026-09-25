@@ -17,6 +17,7 @@ from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.litellm_model import LitellmModel
 from garuda.model.protocol import DEFAULT_MODEL, MODEL_ENV_VAR
 from garuda.tools import build_toolkit
+from garuda.workspace.factory import WORKSPACE_KINDS
 
 
 def build_parser():
@@ -33,7 +34,7 @@ def build_parser():
     run_parser.add_argument("--workspace", default=".", help="Workspace root directory")
     run_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
         help="Execution environment type",
     )
@@ -144,7 +145,7 @@ def build_parser():
     chat_parser.add_argument("--workspace", default=".")
     chat_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
@@ -177,7 +178,7 @@ def build_parser():
     serve_parser.add_argument("--workspace", default=".")
     serve_parser.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     serve_parser.add_argument("--docker-image", default="ubuntu:22.04")
@@ -252,7 +253,7 @@ def build_parser():
     )
     web_parser.add_argument(
         "--web-workspace-kind",
-        choices=["local", "sandbox", "docker", "tmux", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
         help="Workspace kind for dashboard conversations (default: local)",
     )
@@ -286,7 +287,7 @@ def build_parser():
     recipe_run.add_argument("--workspace", default=".")
     recipe_run.add_argument(
         "--workspace-kind",
-        choices=["local", "sandbox", "tmux", "docker", "remote"],
+        choices=list(WORKSPACE_KINDS),
         default="local",
     )
     recipe_run.add_argument("--docker-image", default="ubuntu:22.04")

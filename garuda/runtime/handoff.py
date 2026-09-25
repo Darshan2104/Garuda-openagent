@@ -260,8 +260,11 @@ async def execute_handoff(
       FAILED rather than transferring ownership without an audit trail.
     - With `workspace` (and a store holding the session's recorded baseline),
       the capture carries the authoritative delta — changed vs preexisting
-      files from the exact start-of-session baseline — and the acknowledge
-      record persists the baseline commit for the target session.
+      files from the exact start-of-session baseline, or only an explicit
+      `workspace_attribution` reason when the baseline is unattributable —
+      and the acknowledge record persists the baseline commit for the target
+      session. No production entry point passes `workspace` yet; until one
+      does, product handoffs carry no workspace delta.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit)
     if workspace is not None:
@@ -270,12 +273,12 @@ async def execute_handoff(
                 "handoff with a workspace requires a session store holding its baseline"
             )
         try:
-            from garuda.workspace.diff import load_session_delta
+            from garuda.workspace import evidence
 
             # Preflight before pausing anything: a handoff cannot claim a
             # workspace delta it cannot derive from the recorded
             # start-of-session baseline, so refuse while the source is live.
-            load_session_delta(store, session_id, workspace)
+            evidence.load_session_delta(store, session_id, workspace)
         except Exception as exc:
             raise HandoffError(
                 f"handoff refused: authoritative workspace delta is unavailable: {exc}"
@@ -290,23 +293,37 @@ async def execute_handoff(
     def _capture_with_delta() -> dict[str, Any]:
         data = dict(capture() if capture else {})
         if workspace is not None:
-            from garuda.workspace.diff import load_session_delta
+            from garuda.workspace import evidence
 
             # Recomputed after the pause so the package reflects the paused
             # tree, not the preflight snapshot. A failure here raises inside
             # `begin`, which resumes the source instead of transferring.
-            delta = load_session_delta(store, session_id, workspace)
-            data.setdefault("baseline_commit", delta.baseline_commit)
-            data.setdefault("changed", list(delta.changed))
-            data.setdefault("preexisting", list(delta.preexisting))
+            delta = evidence.load_session_delta(store, session_id, workspace)
+            data.setdefault("workspace_attribution", delta.attribution)
+            if delta.attributable:
+                data.setdefault("baseline_commit", delta.baseline_commit)
+                data.setdefault("changed", list(delta.changed))
+                data.setdefault("preexisting", list(delta.preexisting))
         return data
 
-    await tx.begin(
-        source,
-        checkpoint=checkpoint or (lambda: None),
-        capture=_capture_with_delta,
-        generate=generate,
-    )
+    try:
+        await tx.begin(
+            source,
+            checkpoint=checkpoint or (lambda: None),
+            capture=_capture_with_delta,
+            generate=generate,
+        )
+    except HandoffError:
+        # The source side failed (and was resumed, or the error says it could
+        # not be). Record it so the prepared audit is not left dangling.
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="source_side"
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+        raise
     try:
         target = target_factory()
     except Exception as exc:
