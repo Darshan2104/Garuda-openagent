@@ -346,3 +346,103 @@ async def test_production_run_releases_lease_when_end_hook_fails(tmp_path, monke
             store=SessionStore(tmp_path / "sessions"),
         )
     assert LeaseStore(tmp_path / "leases").holders_of(workspace) == []
+
+
+async def test_cancelling_a_production_run_stops_the_agent_and_releases(tmp_path, monkeypatch):
+    """Cancelling the job must cancel the prompt itself — not just the waiter —
+    before teardown releases the lease."""
+    import asyncio
+
+    from garuda.core.events import EventStore
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.types import AgentConfig
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    started = asyncio.Event()
+    ticks: list[int] = []
+    stopped: list[bool] = []
+
+    class TickingAgent:
+        async def run(self, **kwargs):
+            started.set()
+            try:
+                while True:
+                    ticks.append(1)
+                    await asyncio.sleep(0.02)
+            except asyncio.CancelledError:
+                stopped.append(True)
+                raise
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    job = asyncio.ensure_future(
+        run_agent_task(
+            task="cancel me",
+            model=object(),
+            agent=TickingAgent(),
+            tools=[],
+            config=AgentConfig(max_turns=1, enable_verifier=False),
+            permissions=PermissionEngine(mode="yolo"),
+            workspace=str(workspace),
+            events=EventStore(session_id="lease-cancel"),
+            store=SessionStore(tmp_path / "sessions"),
+        )
+    )
+    await asyncio.wait_for(started.wait(), 5)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+    assert stopped == [True]
+    after = len(ticks)
+    await asyncio.sleep(0.1)
+    assert len(ticks) == after, "agent kept running after the job was cancelled"
+    assert LeaseStore(tmp_path / "leases").holders_of(workspace) == []
+
+
+async def test_cancelling_during_startup_releases_the_lease(tmp_path, monkeypatch):
+    import asyncio
+
+    from garuda.core.events import EventStore
+    from garuda.core.permissions import PermissionEngine
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.types import AgentConfig
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    in_start_hook = asyncio.Event()
+
+    class SlowStartHooks:
+        async def on_session_start(self, **kwargs):
+            in_start_hook.set()
+            await asyncio.sleep(30)
+
+        async def on_session_end(self, summary):
+            return None
+
+    class NeverAgent:
+        async def run(self, **kwargs):
+            raise AssertionError("must not prompt")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    job = asyncio.ensure_future(
+        run_agent_task(
+            task="cancel during startup",
+            model=object(),
+            agent=NeverAgent(),
+            tools=[],
+            config=AgentConfig(max_turns=1, enable_verifier=False),
+            permissions=PermissionEngine(mode="yolo"),
+            workspace=str(workspace),
+            events=EventStore(session_id="lease-startup-cancel"),
+            hooks=SlowStartHooks(),
+            store=SessionStore(tmp_path / "sessions"),
+        )
+    )
+    await asyncio.wait_for(in_start_hook.wait(), 5)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+    assert LeaseStore(tmp_path / "leases").holders_of(workspace) == []

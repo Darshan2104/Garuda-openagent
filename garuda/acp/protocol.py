@@ -15,14 +15,11 @@ from garuda.runtime.protocol import AgentRuntimeError
 #: ACP v1 is negotiated at initialize; mismatches fail before sessions start.
 ACP_VERSION = 1
 
+#: One NDJSON line — a complete JSON-RPC message — may be at most this long.
+#: The same bound applies to an unterminated line still being read, so a peer
+#: that never sends `\n` cannot grow the reader buffer forever, while a large
+#: but legitimate message (a big diff, long tool output) still fits.
 MAX_FRAME_BYTES = 16 * 1024 * 1024
-
-#: A peer that never sends `\r\n\r\n` must not grow the reader buffer forever.
-#: Headers are a handful of ASCII lines; anything beyond this without a
-#: terminator is a malformed/dead peer, failed closed.
-# Kept as a compatibility name for callers that used the old framing bound.
-# It now bounds an unterminated NDJSON line rather than a header block.
-MAX_HEADER_BYTES = 16 * 1024
 
 
 class AcpError(AgentRuntimeError):
@@ -68,9 +65,9 @@ def decode_frame(buffer: bytes) -> tuple[dict[str, Any], bytes]:
     """
     newline = buffer.find(b"\n")
     if newline < 0:
-        if len(buffer) > MAX_HEADER_BYTES:
+        if len(buffer) > MAX_FRAME_BYTES:
             raise AcpProtocolError(
-                f"frame exceeds bound of {MAX_HEADER_BYTES} bytes without newline"
+                f"frame exceeds bound of {MAX_FRAME_BYTES} bytes without newline"
             )
         raise ValueError("incomplete frame")
     line = buffer[:newline].rstrip(b"\r")
