@@ -73,10 +73,12 @@ class HandoffTransaction:
         *,
         session_id: str,
         emit: Callable[[RuntimeEvent], None] | None = None,
+        store=None,
     ):
         self._session_id = session_id
         self._phase = HandoffPhase.IDLE
         self._emit_sink = emit
+        self._store = store
         self._seq = 0
         self.captured: dict[str, Any] = {}
         self.target_info: Any = None
@@ -200,6 +202,18 @@ class HandoffTransaction:
         started target is closed, so exactly one resumable owner remains."""
         if self._phase is HandoffPhase.IDLE:
             raise HandoffError("nothing to cancel")
+        if self._store is not None:
+            try:
+                from garuda.runtime.recovery import record_cancel
+
+                record_cancel(
+                    self._store,
+                    self._session_id,
+                    boundary="switch",
+                    reason=reason or "cancelled",
+                )
+            except Exception as exc:
+                raise self._fail(f"handoff cancellation audit failed: {exc}") from exc
         if self._phase in (
             HandoffPhase.ACKNOWLEDGED,
             HandoffPhase.ROLLED_BACK,
@@ -263,7 +277,7 @@ async def execute_handoff(
       files from the exact start-of-session baseline — and the acknowledge
       record persists the baseline commit for the target session.
     """
-    tx = HandoffTransaction(session_id=session_id, emit=emit)
+    tx = HandoffTransaction(session_id=session_id, emit=emit, store=store)
     if workspace is not None:
         if store is None:
             raise HandoffError(

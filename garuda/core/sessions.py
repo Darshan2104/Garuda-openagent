@@ -341,6 +341,22 @@ class SessionStore:
         segments.append(segment.to_dict())
         self.update_meta(session_id, {**meta, "runtime_segments": segments})
 
+    def update_active_runtime_segment(self, session_id: str, segment: RuntimeSegment) -> None:
+        """Replace only the active segment after its runtime has started.
+
+        A child identity is valid only when its runtime identity, agent session,
+        and authority snapshot are persisted together.  Replacing a historical
+        segment would rewrite an already-audited tenure, so it is refused.
+        """
+        unified = self.load_unified(session_id)
+        if unified.active.runtime_id != segment.runtime_id:
+            raise ValueError(
+                f"active runtime is {unified.active.runtime_id!r}, not {segment.runtime_id!r}"
+            )
+        segments = [item.to_dict() for item in unified.segments]
+        segments[-1] = segment.to_dict()
+        self.update_meta(session_id, {"runtime_segments": segments})
+
     def record_handoff(self, session_id: str, *, state: str, attempts: int = 0, **extra) -> None:
         """Record handoff transaction state. Unknown states fail closed."""
         if state not in HANDOFF_STATES:

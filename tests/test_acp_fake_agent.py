@@ -14,8 +14,10 @@ import pytest
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityOwner
 from garuda.acp.protocol import AcpCancelledError, AcpError, AcpProtocolError, AcpTimeoutError
+from garuda.core.sessions import SessionStore
 from garuda.runtime import HealthStatus, LifecycleState, RuntimeClosedError
 from garuda.runtime.protocol import RuntimeStartError
+from garuda.runtime.session import RuntimeSegment
 from tests.test_runtime_conformance import run_conformance_suite
 
 FAKE = [sys.executable, "-m", "garuda.acp.fake_agent"]
@@ -165,3 +167,37 @@ async def test_approval_flow_and_cancel_paths():
         await cancelling.prompt("too late")
     with pytest.raises(RuntimeStartError):
         await cancelling.resume(native_session_id="elsewhere")
+
+
+async def test_acp_process_identity_and_cancel_are_persisted(tmp_path):
+    """A real spawned ACP child is recoverable only through its stored identity."""
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("persisted-acp", task="t", model="m", agent="a", workspace="w")
+    store.checkpoint_messages("persisted-acp", [])
+    store.ensure_unified("persisted-acp")
+    store.attach_runtime_segment(
+        "persisted-acp",
+        RuntimeSegment(runtime_id="fake-slow", kind="acp", native_session_id="pending"),
+    )
+    runtime = _adapter("slow", store=store)
+    await runtime.start(task="t", session_id="persisted-acp")
+    child = store.load_meta("persisted-acp")["runtime_children"][0]
+    assert child["runtime_id"] == "fake-slow"
+    assert child["pid"] > 1
+    assert child["process_group"] == child["pid"]
+
+    prompting = asyncio.ensure_future(runtime.prompt("slow work"))
+    await asyncio.sleep(0.2)
+    await runtime.cancel(reason="operator stop")
+    with pytest.raises(AcpCancelledError):
+        await asyncio.wait_for(prompting, 15)
+    assert store.load_meta("persisted-acp")["cancellation"] == {
+        "boundary": "process",
+        "reason": "operator stop",
+    }
+    await runtime.close()
+    from garuda.runtime.recovery import recover
+
+    # The stored authority snapshot and child identity are sufficient for the
+    # production recovery path; a dead child is observed, not re-signalled.
+    assert (await asyncio.to_thread(recover, store, "persisted-acp")).state.value == "resumable"

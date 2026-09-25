@@ -16,6 +16,7 @@ from garuda.runtime.recovery import (
     classify,
     reap_orphans,
     record_cancel,
+    record_child,
     recover,
     report_to_dict,
 )
@@ -23,6 +24,7 @@ from garuda.runtime.recovery import (
 
 def _begin(store: SessionStore, session_id: str = "s1") -> None:
     store.begin(session_id, task="t", model="m", agent="a", workspace="w")
+    store.checkpoint_messages(session_id, [])
 
 
 def _event(terminal: bool, seq: int) -> RuntimeEvent:
@@ -79,6 +81,46 @@ def test_orphans_reaped_and_verified():
     assert reap_orphans([4242, 9999], is_alive=is_alive, reap=reap) == (4242,)
     with pytest.raises(RecoveryError, match="survived reaping"):
         reap_orphans([4242], is_alive=lambda pid: True, reap=lambda pid: None)
+    states = iter((True, None))
+    with pytest.raises(RecoveryError, match="indeterminate liveness after reaping"):
+        reap_orphans(
+            [4242],
+            is_alive=lambda _pid: next(states),
+            reap=lambda pid: None,
+        )
+    for invalid in (0, -1, "4242", True):
+        with pytest.raises(RecoveryError, match="invalid persisted child pid"):
+            reap_orphans([invalid], is_alive=lambda _pid: False)
+
+
+def test_recovery_uses_only_persisted_validated_child_identity(tmp_path):
+    store = SessionStore(tmp_path)
+    _begin(store)
+    store.ensure_unified("s1")
+    record_child(store, "s1", runtime_id="native", pid=4242)
+    live = {4242}
+    report = recover(
+        store,
+        "s1",
+        is_alive=lambda pid: pid in live,
+        reap=lambda pid: live.discard(pid),
+    )
+    assert report.reaped_pids == (4242,)
+    store.update_meta(
+        "s1",
+        {
+            "runtime_children": [
+                {
+                    "session_id": "other",
+                    "runtime_id": "native",
+                    "pid": 4242,
+                    "process_group": 4242,
+                }
+            ]
+        },
+    )
+    with pytest.raises(RecoveryError, match="mismatched session identity"):
+        recover(store, "s1")
 
 
 def test_ambiguous_terminal_and_unreadable_refuse(tmp_path):
@@ -94,6 +136,33 @@ def test_ambiguous_terminal_and_unreadable_refuse(tmp_path):
     store.update_meta("bad", {"session_id": ""})
     with pytest.raises(RecoveryError, match="no identity"):
         classify(store, "bad")
+
+
+def test_classify_requires_checkpoint_identity_and_acp_authority(tmp_path):
+    store = SessionStore(tmp_path)
+    store.begin("missing-checkpoint", task="t", model="m", agent="a", workspace="w")
+    store.ensure_unified("missing-checkpoint")
+    with pytest.raises(RecoveryError, match="message checkpoint"):
+        classify(store, "missing-checkpoint")
+
+    _begin(store, "bad-native")
+    store.ensure_unified("bad-native")
+    meta = store.load_meta("bad-native")
+    meta["runtime_segments"][0]["native_session_id"] = "other"
+    store.update_meta("bad-native", meta)
+    with pytest.raises(RecoveryError, match="identity does not match"):
+        classify(store, "bad-native")
+
+    _begin(store, "bad-acp")
+    store.ensure_unified("bad-acp")
+    from garuda.runtime.session import RuntimeSegment
+
+    store.attach_runtime_segment(
+        "bad-acp",
+        RuntimeSegment(runtime_id="acp", kind="acp", native_session_id="agent", capabilities=frozenset()),
+    )
+    with pytest.raises(RecoveryError, match="authority snapshot"):
+        classify(store, "bad-acp")
 
 
 def test_cancel_boundaries_recorded(tmp_path):
@@ -123,16 +192,18 @@ def test_indeterminate_liveness_refuses_without_operator_action(tmp_path, monkey
 
     store = SessionStore(tmp_path)
     _begin(store)
+    store.ensure_unified("s1")
+    record_child(store, "s1", runtime_id="native", pid=1234)
     # PermissionError (another owner's process) is unknown, not dead.
     monkeypatch.setattr(_os, "kill", lambda pid, sig: (_ for _ in ()).throw(PermissionError()))
     assert recovery_mod._process_live(1234) is None
     with pytest.raises(RecoveryError, match="indeterminate liveness"):
-        recover(store, "s1", child_pids=[1234])
+        recover(store, "s1")
     # ...and an injected unknown verdict refuses the same way.
     monkeypatch.setattr(_os, "kill", lambda pid, sig: None)
     assert recovery_mod._process_live(1234) is True
     with pytest.raises(RecoveryError, match="indeterminate liveness"):
-        recover(store, "s1", child_pids=[1234], is_alive=lambda pid: None)
+        recover(store, "s1", is_alive=lambda pid: None)
 
 
 def test_malformed_or_ambiguous_trail_blocks_recovery(tmp_path):
@@ -234,6 +305,7 @@ async def test_native_resume_refuses_ambiguous_trail(tmp_path):
 
     store = SessionStore(tmp_path)
     store.begin("amb", task="t", model="m", agent="a", workspace="w")
+    store.checkpoint_messages("amb", [])
     events_path = store.events_path("amb")
     events_path.parent.mkdir(parents=True, exist_ok=True)
     events_path.write_text(
@@ -249,3 +321,20 @@ async def test_native_resume_refuses_ambiguous_trail(tmp_path):
     )
     with pytest.raises(RuntimeStartError, match="ambiguous terminal"):
         await runtime.resume(native_session_id="amb")
+
+
+async def test_handoff_cancel_records_the_real_switch_boundary(tmp_path):
+    from garuda.runtime.fake import FakeRuntime, FakeScenario
+    from garuda.runtime.handoff import HandoffTransaction
+
+    store = SessionStore(tmp_path)
+    _begin(store, "switch-cancel")
+    source = FakeRuntime(FakeScenario.SUCCESS, runtime_id="native")
+    await source.start(task="t", session_id="switch-cancel")
+    tx = HandoffTransaction(session_id="switch-cancel", store=store)
+    await tx.begin(source, checkpoint=lambda: None, capture=lambda: {}, generate=lambda: None)
+    await tx.cancel(source, reason="operator stopped handoff")
+    assert store.load_meta("switch-cancel")["cancellation"] == {
+        "boundary": "switch",
+        "reason": "operator stopped handoff",
+    }

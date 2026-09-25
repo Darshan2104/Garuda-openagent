@@ -21,9 +21,31 @@ SESSION_SCHEMA_VERSION = 1
 #: Handoff transaction states. Unknown values are rejected, never defaulted.
 HANDOFF_STATES = frozenset({"none", "prepared", "acknowledged", "failed"})
 
+# Session persistence validates the neutral `family=owner` authority evidence
+# without importing an ACP implementation.  The runtime boundary owns this
+# format because it decides whether a saved external-runtime session is safe to
+# resume; the ACP adapter merely writes the matching snapshot.
+_AUTHORITY_FAMILIES = frozenset({"edit", "terminal", "mcp", "approval"})
+_AUTHORITY_OWNERS = frozenset({"garuda", "agent"})
+
 
 class UnifiedSessionError(AgentRuntimeError):
     """Unknown schema version or malformed unified session document."""
+
+
+def validate_authority_snapshot(capabilities: frozenset[str]) -> None:
+    """Validate persisted external-runtime ownership evidence without ACP imports."""
+    entries = [name for name in capabilities if "=" in name]
+    owners: dict[str, str] = {}
+    for entry in entries:
+        family, sep, owner = entry.partition("=")
+        if not sep or family not in _AUTHORITY_FAMILIES or owner not in _AUTHORITY_OWNERS:
+            raise UnifiedSessionError(f"invalid authority snapshot entry {entry!r}")
+        if family in owners:
+            raise UnifiedSessionError(f"duplicate authority snapshot family {family!r}")
+        owners[family] = owner
+    if set(owners) != _AUTHORITY_FAMILIES:
+        raise UnifiedSessionError("authority snapshot must name every family exactly once")
 
 
 @dataclass(frozen=True)

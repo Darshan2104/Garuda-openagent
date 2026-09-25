@@ -51,6 +51,77 @@ class RecoveryError(Exception):
     """Recovery refused: ambiguous terminal state or an unreapable child."""
 
 
+def _validate_pid(pid: object) -> int:
+    """Accept only a safe, concrete child/process-group leader id.
+
+    PID 0 addresses the caller's process group and negative values have
+    similarly broad signal semantics. Recovery may only signal an explicitly
+    recorded positive child that is not Garuda itself or its current group.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        raise RecoveryError(f"invalid persisted child pid {pid!r}")
+    if pid in {os.getpid(), os.getpgrp()}:
+        raise RecoveryError(f"refusing to signal Garuda's own pid/process group {pid}")
+    return pid
+
+
+def record_child(
+    store, session_id: str, *, runtime_id: str, pid: int, process_group: int | None = None
+) -> None:
+    """Record a Garuda-launched child bound to this persisted session.
+
+    This is the only source `recover()` consults in production.  Binding the
+    runtime identity to a known unified segment prevents an arbitrary value in
+    a session JSON file from becoming a signal target after restart.
+    """
+    pid = _validate_pid(pid)
+    process_group = _validate_pid(process_group if process_group is not None else pid)
+    unified = store.load_unified(session_id)
+    if runtime_id not in {segment.runtime_id for segment in unified.segments}:
+        raise RecoveryError(
+            f"child runtime {runtime_id!r} is not bound to session {session_id}"
+        )
+    meta = store.load_meta(session_id)
+    children = list(meta.get("runtime_children", []))
+    children.append(
+        {
+            "session_id": session_id,
+            "runtime_id": runtime_id,
+            "pid": pid,
+            "process_group": process_group,
+            "state": "live",
+        }
+    )
+    store.update_meta(session_id, {"runtime_children": children})
+
+
+def _recorded_child_pids(store, session_id: str) -> list[int]:
+    """Load only well-formed, live identities recorded by Garuda itself."""
+    meta = store.load_meta(session_id)
+    children = meta.get("runtime_children", [])
+    if not isinstance(children, list):
+        raise RecoveryError("persisted runtime children must be a list")
+    unified = store.load_unified(session_id)
+    runtime_ids = {segment.runtime_id for segment in unified.segments}
+    pids: list[int] = []
+    for child in children:
+        if not isinstance(child, dict):
+            raise RecoveryError("persisted runtime child must be a mapping")
+        if child.get("state", "live") != "live":
+            continue
+        if child.get("session_id") != session_id:
+            raise RecoveryError("persisted runtime child has a mismatched session identity")
+        runtime_id = child.get("runtime_id")
+        if not isinstance(runtime_id, str) or runtime_id not in runtime_ids:
+            raise RecoveryError("persisted runtime child is not bound to a session runtime")
+        pid = _validate_pid(child.get("pid"))
+        process_group = _validate_pid(child.get("process_group"))
+        if process_group != pid:
+            raise RecoveryError("persisted child must lead its isolated process group")
+        pids.append(pid)
+    return pids
+
+
 def audit_terminal(events: list) -> bool:
     """True when terminal state is unambiguous: at most one terminal event,
     and when present it is the last event in the trail."""
@@ -98,6 +169,7 @@ def reap_orphans(
     refuses recovery until an operator confirms the process is gone."""
     reaped: list[int] = []
     for pid in pids:
+        pid = _validate_pid(pid)
         alive = is_alive(pid)
         if alive is None:
             raise RecoveryError(
@@ -107,7 +179,13 @@ def reap_orphans(
         if not alive:
             continue
         reap(pid)
-        if is_alive(pid):
+        after_reap = is_alive(pid)
+        if after_reap is None:
+            raise RecoveryError(
+                f"child process {pid} has indeterminate liveness after reaping; "
+                "refusing without operator action"
+            )
+        if after_reap:
             raise RecoveryError(f"child process {pid} survived reaping; refusing")
         reaped.append(pid)
     return tuple(reaped)
@@ -170,6 +248,24 @@ def classify(store, session_id: str) -> RecoveryReport:
         unified = store.load_unified(session_id)
     except Exception as exc:
         raise RecoveryError(f"session {session_id} fails validation: {exc}") from exc
+    try:
+        store.load_messages(session_id)
+    except Exception as exc:
+        raise RecoveryError(
+            f"session {session_id} has no readable message checkpoint: {exc}"
+        ) from exc
+    active = unified.active
+    if active.kind == "native" and active.native_session_id != session_id:
+        raise RecoveryError("native runtime identity does not match the persisted session")
+    if active.kind == "acp":
+        try:
+            from garuda.runtime.session import validate_authority_snapshot
+
+            validate_authority_snapshot(active.capabilities)
+        except Exception as exc:
+            raise RecoveryError(
+                f"ACP authority snapshot is missing or inconsistent: {exc}"
+            ) from exc
     handoff_state = unified.handoff.get("state", "none")
     if handoff_state == "prepared":
         return RecoveryReport(
@@ -192,7 +288,6 @@ def recover(
     store,
     session_id: str,
     *,
-    child_pids: list[int] | None = None,
     is_alive: Callable[[int], bool | None] = _process_live,
     reap: Callable[[int], None] = _reap_group,
 ) -> RecoveryReport:
@@ -203,7 +298,10 @@ def recover(
     selected: a malformed or ambiguous terminal trail refuses recovery even
     when the session meta alone looks resumable.
     """
-    reaped = reap_orphans(child_pids or [], is_alive=is_alive, reap=reap)
+    # The session record is the only source of signal targets.  Callers may
+    # customise the liveness/reap operations for deterministic tests, but may
+    # not smuggle an arbitrary PID into a production recovery operation.
+    reaped = reap_orphans(_recorded_child_pids(store, session_id), is_alive=is_alive, reap=reap)
     events_path = getattr(store, "events_path", None)
     if callable(events_path):
         try:

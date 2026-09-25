@@ -52,11 +52,13 @@ class AcpRuntime:
         runtime_id: str = "acp",
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
+        store=None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
+        self._store = store
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -150,6 +152,31 @@ class AcpRuntime:
                 AgentCapabilities.from_dict(handshake.get("agentCapabilities")),
             )
             self._agent_session_id = await process.session_new()
+            if self._store is not None:
+                from garuda.runtime.recovery import record_child
+                from garuda.runtime.session import RuntimeSegment
+
+                # ACP launches with start_new_session, so its PID is also the
+                # isolated process-group leader recovery may safely signal.
+                if process.pid is None:
+                    raise RuntimeStartError("ACP process launched without a pid")
+                self._store.update_active_runtime_segment(
+                    self._garuda_session_id,
+                    RuntimeSegment(
+                        runtime_id=self._runtime_id,
+                        kind=self.kind.value,
+                        native_session_id=self._agent_session_id,
+                        version=self.version,
+                        capabilities=self._authority.to_snapshot(),
+                    ),
+                )
+                record_child(
+                    self._store,
+                    self._garuda_session_id,
+                    runtime_id=self._runtime_id,
+                    pid=process.pid,
+                    process_group=process.pid,
+                )
         except Exception:
             await process.close()
             self._move(LifecycleState.FAILED)
@@ -260,6 +287,15 @@ class AcpRuntime:
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             return
+        if self._store is not None:
+            from garuda.runtime.recovery import record_cancel
+
+            record_cancel(
+                self._store,
+                self._garuda_session_id,
+                boundary="process",
+                reason=reason or "cancelled",
+            )
         if self._process is not None:
             await self._process.session_cancel(self._agent_session_id or "")
         if self._state is LifecycleState.RUNNING:
