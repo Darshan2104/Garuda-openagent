@@ -55,18 +55,19 @@ def test_absent_and_logged_out_states_guide_without_scanning():
 CREDENTIAL_COMPONENTS = frozenset(
     {".codex", "auth.json", "credentials.json", ".credentials.json"}
 )
-#: Substrings no production string constant may contain.
+#: Substrings no production string constant may contain, matched
+#: case-insensitively (so `CLAUDE_CODE_OAUTH_TOKEN` is caught like `oauth`).
 CREDENTIAL_SUBSTRINGS = (
     "auth.json",
     "credentials.json",
-    "Claude Code-credentials",
-    "Keychain",
+    "claude code-credentials",
     "keychain",
     "oauth",
-    "OAuth",
     "find-generic-password",
     "find-internet-password",
     "dump-keychain",
+    # Goose keeps provider secrets in a plain file when no keyring is present.
+    "goose/secrets.yaml",
 )
 #: Secret-store libraries: importing any of them anywhere in garuda/ fails.
 FORBIDDEN_MODULES = frozenset({"keyring", "secretstorage", "win32cred", "keychain"})
@@ -106,7 +107,8 @@ def _folded(node: ast.AST) -> str | None:
 
 
 def _string_hits(text: str) -> list[str]:
-    hits = [marker for marker in CREDENTIAL_SUBSTRINGS if marker in text]
+    lowered = text.lower()
+    hits = [marker for marker in CREDENTIAL_SUBSTRINGS if marker in lowered]
     if text in FORBIDDEN_MODULES:  # importlib.import_module("keyring")
         hits.append(f"module name {text}")
     components = set(re.split(r"[\\/\s'\"]+", text))
@@ -164,6 +166,8 @@ def test_credential_scanner_catches_planted_readers():
         "security-cli": 'ARGV = ["security", "find-generic-password", "-s", "x"]\n',
         "helper": "def read_token():\n    return None\n",
         "oauth-helper": "def refresh_oauth():\n    return None\n",
+        "oauth-env": 'import os\nT = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")\n',
+        "goose-secrets": 'P = "~/.config/goose/secrets.yaml"\n',
     }
     for label, source in planted.items():
         assert _scan_source(source, label), f"scanner missed {label}"
@@ -227,3 +231,40 @@ def test_project_disable_suggestion_keeps_login_guidance():
     assert warned["codex"].login_instructions == plain["codex"].login_instructions
     assert warned["codex"].login_instructions
 
+
+
+#: Manifest fields that are guidance prose for the user (they may *name* a
+#: credential store to say Garuda never touches it). Everything else in a
+#: shipped manifest is data Garuda acts on — argv it launches or probes with.
+_MANIFEST_PROSE = frozenset({"description", "setup", "warnings", "login"})
+
+
+def _manifest_values(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [v for item in value.values() for v in _manifest_values(item)]
+    if isinstance(value, list):
+        return [v for item in value for v in _manifest_values(item)]
+    return []
+
+
+def test_shipped_manifests_never_act_on_credential_stores():
+    """`command`, `version_args`, `auth_probe`, … are executed by discovery or
+    launch, so no shipped manifest may name a credential store outside prose."""
+    import json
+
+    builtin = pathlib.Path(__file__).resolve().parents[1] / "garuda" / "acp" / "builtin"
+    manifests = sorted(builtin.glob("*.json"))
+    assert {p.stem for p in manifests} >= {"claude", "codex", "cursor", "goose", "opencode", "pi"}
+    hits: list[str] = []
+    for path in manifests:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for key, value in data.items():
+            if key in _MANIFEST_PROSE:
+                continue
+            for text in _manifest_values(value):
+                hits.extend(f"{path.name}:{key}:{marker}" for marker in _string_hits(text))
+    assert hits == [], f"shipped manifests act on credential stores: {hits}"
+    planted = {"auth_probe": ["cat", "~/.codex/auth.json"]}
+    assert any(_string_hits(t) for v in planted.values() for t in _manifest_values(v))
