@@ -52,7 +52,6 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Pack writes scrub secrets automatically (flagged, never silent) with best-effort pattern redaction over every string/key including nested unknown fields and full PEM blocks, rebuilt from the scrubbed map; oversize bodies, escaping paths, or reasoning markers block. Redaction transforms in-memory pack text only and cannot reach durable docs.
 - The ACP v1 wire subset is owned, not vendored: newline-delimited JSON-RPC with numeric protocol version 1, required session workspace/MCP parameters, structured prompt blocks, `sessionUpdate`-keyed updates, permission as an agent-to-client request answered exactly once (never widened to `allow_always`; unadvertised client methods refused), one subprocess per agent in its own process group, minimal child environment with explicit extras, stderr as diagnostics only, and close() that always reaps.
 - Execution authority assigns exactly one owner per tool family; strict policies fail closed when the agent cannot honor them, and the map snapshots into session capability records. It records negotiated intent from agent-declared extension fields; it is not an enforcement boundary.
-- The ACP wire subset is owned, not vendored: JSON-RPC over bounded NDJSON pinned to public protocol version 1, one subprocess per agent in its own process group, minimal child environment with explicit extras, stderr as diagnostics only, and close() that always reaps.
 - ACP normalization is per-session and stateful: causal order beats arrival order, partials emit once with no duplicate final, turn completion reopens on new_turn while cancellation/failure terminate, and raw records stay redacted diagnostics.
 - One generic AcpRuntime carries every adapter through the shared conformance suite against the fake test server; version mismatches fail at handshake, and cross-process resume stays out until the wire grows the methods for it.
 - Approvals flow through one broker: ceilings decide, asks park with timeout and disconnect denial, every outcome persists to the session, and strict gaps refuse before running.
@@ -104,9 +103,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 ## 2026-09-25 — ACP launch binds discovery to execution
 
 - The shared ACP adapter factory replaces a manifest's bare command with the
-  exact absolute executable accepted during discovery. It rejects missing,
-  relative, or non-executable paths, so a later `PATH` change cannot substitute
-  a different process at launch.
+  exact absolute executable a discovery record accepted
+  (`adapter_for_discovered`). It never performs a second `PATH` lookup and
+  rejects missing, relative, directory, or non-executable paths, so a later
+  `PATH` change cannot substitute a different process at launch. Replacing
+  the file at the accepted path is out of scope (binding, not sandbox).
+- Unsupported agent-to-client methods, including Cursor's blocking
+  `cursor/ask_question` and `cursor/create_plan`, fail closed with
+  METHOD_NOT_FOUND.
 - Cursor uses the documented `agent acp` command (with the usual
   `~/.local/bin/agent` installation location). As with every vendor adapter,
   setup guidance may name the user's CLI but never reads or proxies its
