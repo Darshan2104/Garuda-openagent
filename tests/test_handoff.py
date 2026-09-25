@@ -100,47 +100,107 @@ async def test_acknowledge_refuses_two_mutating_owners():
     assert target.state is LifecycleState.CLOSED
 
 
-async def test_delivery_runs_on_the_target_before_acknowledgement():
-    source = await _started()()
+async def test_delivery_runs_on_the_target_only_after_acknowledgement(tmp_path):
+    """The package is the new owner's first prompt: by the time it runs,
+    ownership and the target segment are persisted and the source is closed."""
+    from garuda.core.sessions import SessionStore
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "deliver-after-ack")
     target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
-    delivered: list[str] = []
+    observed: dict = {}
 
     async def deliver(runtime):
-        delivered.append("handoff package")
-        await runtime.prompt(delivered[-1])
+        unified = store.load_unified("deliver-after-ack")
+        observed["handoff"] = unified.handoff["state"]
+        observed["active"] = unified.active.runtime_id
+        observed["source"] = source.state
+        await runtime.prompt("handoff package")
 
     tx, returned = await execute_handoff(
-        session_id="s",
+        session_id="deliver-after-ack",
         source=source,
         target_factory=lambda: target,
+        store=store,
         deliver=deliver,
     )
+    assert observed == {
+        "handoff": "acknowledged",
+        "active": "fake-target",
+        "source": LifecycleState.CLOSED,
+    }
     assert tx.phase is HandoffPhase.ACKNOWLEDGED
     assert returned is target
-    assert source.state is LifecycleState.CLOSED
     assert target.state is LifecycleState.IDLE
     events, _ = await target.poll_events(0)
     assert any(event.payload.get("text") == "done: handoff package" for event in events)
+    unified = store.load_unified("deliver-after-ack")
+    assert [segment.runtime_id for segment in unified.segments] == ["native", "fake-target"]
+    assert unified.handoff["target_state"] == "delivered"
     await target.close()
-    assert target.state is LifecycleState.CLOSED
 
 
-async def test_delivery_failure_reaps_target_and_rolls_back_source():
-    source = await _started()()
+async def test_delivery_failure_is_a_target_failure_not_a_rollback(tmp_path):
+    """After acknowledgement the target may have mutated: a failed delivery
+    closes it and records the failure, but never resumes the source."""
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.handoff import HandoffDeliveryError
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "deliver-fails")
     target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
 
     async def fail_delivery(_runtime):
         raise RuntimeError("package rejected")
 
-    with pytest.raises(HandoffError, match="delivery failed"):
+    with pytest.raises(HandoffDeliveryError, match="package rejected") as caught:
         await execute_handoff(
-            session_id="s",
+            session_id="deliver-fails",
             source=source,
             target_factory=lambda: target,
+            store=store,
             deliver=fail_delivery,
+        )
+    assert caught.value.transaction.phase is HandoffPhase.ACKNOWLEDGED
+    assert source.state is LifecycleState.CLOSED
+    assert target.state is LifecycleState.CLOSED
+    unified = store.load_unified("deliver-fails")
+    assert unified.active.runtime_id == "fake-target"
+    assert unified.handoff["state"] == "acknowledged"
+    assert unified.handoff["target_state"] == "failed"
+    assert unified.handoff["reason"].startswith("target_delivery")
+
+
+async def test_target_bind_failure_returns_ownership_to_the_source(tmp_path):
+    """A target that cannot record its child is closed before any turn, and
+    the session records the source as its owner again."""
+    from garuda.core.sessions import SessionStore
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "bind-fails")
+    target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
+
+    def _bind(_store):
+        raise OSError("cannot record child")
+
+    target.bind_session = _bind
+    with pytest.raises(HandoffError, match="could not be bound"):
+        await execute_handoff(
+            session_id="bind-fails",
+            source=source,
+            target_factory=lambda: target,
+            store=store,
         )
     assert source.state is LifecycleState.IDLE
     assert target.state is LifecycleState.CLOSED
+    unified = store.load_unified("bind-fails")
+    assert [segment.runtime_id for segment in unified.segments] == [
+        "native",
+        "fake-target",
+        "native",
+    ]
+    assert unified.handoff["state"] == "failed"
+    assert unified.handoff["reason"] == "target_binding"
 
 
 async def test_illegal_moves_and_double_begin_fail():

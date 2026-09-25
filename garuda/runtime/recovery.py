@@ -53,6 +53,10 @@ class RestartState(str, Enum):
     RESUMABLE = "resumable"
     ROLLED_BACK = "rolled_back"
     AMBIGUOUS = "ambiguous"
+    #: The active segment is an external runtime (an acknowledged handoff or
+    #: an ACP run). Its children are recovered like any other, but the native
+    #: loop never resumes it: ownership only moves by an explicit handoff.
+    EXTERNAL = "external"
 
 
 @dataclass(frozen=True)
@@ -506,15 +510,18 @@ def classify(store, session_id: str) -> RecoveryReport:
         unified = store.load_unified(session_id)
     except Exception as exc:
         raise RecoveryError(f"session {session_id} fails validation: {exc}") from exc
-    try:
-        store.load_messages(session_id)
-    except Exception as exc:
-        raise RecoveryError(
-            f"session {session_id} has no readable message checkpoint: {exc}"
-        ) from exc
     active = unified.active
-    if active.kind == "native" and active.native_session_id != session_id:
-        raise RecoveryError("native runtime identity does not match the persisted session")
+    if active.kind == "native":
+        # Only a native tenure resumes from Garuda's own transcript; an
+        # external runtime's conversation lives in that runtime.
+        try:
+            store.load_messages(session_id)
+        except Exception as exc:
+            raise RecoveryError(
+                f"session {session_id} has no readable message checkpoint: {exc}"
+            ) from exc
+        if active.native_session_id != session_id:
+            raise RecoveryError("native runtime identity does not match the persisted session")
     if active.kind == "acp":
         try:
             from garuda.runtime.session import validate_authority_snapshot
@@ -531,6 +538,19 @@ def classify(store, session_id: str) -> RecoveryReport:
             state=RestartState.ROLLED_BACK,
             resume_session_id=session_id,
             notes=("switch prepared but never acknowledged; source retained",),
+        )
+    if active.kind != "native":
+        target_state = unified.handoff.get("target_state")
+        detail = f"; last recorded target state {target_state}" if target_state else ""
+        return RecoveryReport(
+            session_id=session_id,
+            state=RestartState.EXTERNAL,
+            resume_session_id=session_id,
+            notes=(
+                f"session is owned by external runtime {active.runtime_id!r} "
+                f"(handoff state {handoff_state}{detail}); the native loop will not "
+                "resume it — ownership moves only by an explicit new handoff",
+            ),
         )
     if handoff_state in ("failed", "none", "acknowledged"):
         return RecoveryReport(
@@ -679,6 +699,21 @@ def recover(
         reaped_pids=tuple(reaped),
         notes=(*report.notes, *notes, *(f"reaped child {pid}" for pid in reaped)),
     )
+
+
+def require_native_resumable(report: RecoveryReport) -> RecoveryReport:
+    """Refuse a native resume of a session another runtime owns.
+
+    The one check every native resume path applies after `recover()`: an
+    acknowledged handoff moved the single mutating ownership away, so a
+    native continuation would silently take it back.
+    """
+    if report.state is RestartState.EXTERNAL:
+        raise RecoveryError(
+            f"session {report.session_id} is owned by an external runtime; "
+            "native resume refused. " + " ".join(report.notes)
+        )
+    return report
 
 
 def report_to_dict(report: RecoveryReport) -> dict[str, Any]:

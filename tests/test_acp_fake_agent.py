@@ -278,7 +278,9 @@ async def test_acp_process_identity_and_cancel_are_persisted(tmp_path):
     assert store.load_meta("persisted-acp")["runtime_children"][0]["state"] == "exited"
     # The stored authority snapshot and child identity are sufficient for the
     # production recovery path; a dead child is observed, not re-signalled.
-    assert (await asyncio.to_thread(recover, store, "persisted-acp")).state.value == "resumable"
+    # The ACP segment is still the active owner, so recovery reports it
+    # external rather than natively resumable.
+    assert (await asyncio.to_thread(recover, store, "persisted-acp")).state.value == "external"
 
 
 def _acp_session(store: SessionStore, session_id: str, runtime_id: str) -> None:

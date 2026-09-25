@@ -309,12 +309,23 @@ def build_parser():
     runtime_sub = runtime_parser.add_subparsers(dest="runtime_command")
     runtime_list = runtime_sub.add_parser("list", help="List configured runtimes")
     runtime_list.add_argument("--json", action="store_true", help="Print JSON health records")
+    runtime_list.add_argument(
+        "--workspace", default=".", help="Workspace whose project runtime refs apply"
+    )
     runtime_inspect = runtime_sub.add_parser("inspect", help="Inspect one runtime")
     runtime_inspect.add_argument("runtime_id", help="Runtime id or alias")
     runtime_inspect.add_argument("--json", action="store_true", help="Print JSON health record")
+    runtime_inspect.add_argument(
+        "--workspace", default=".", help="Workspace whose project runtime refs apply"
+    )
     runtime_handoff = runtime_sub.add_parser("handoff", help="Preview or execute a handoff")
     runtime_handoff.add_argument("--session", required=True, help="Source session id")
     runtime_handoff.add_argument("--to", required=True, help="Target runtime id")
+    runtime_handoff.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace root (default: the session's recorded workspace)",
+    )
     runtime_handoff.add_argument(
         "--confirm",
         action="store_true",
@@ -410,15 +421,37 @@ async def run_mcp_list(args) -> int:
     return 0
 
 
-def _configured_registry(workspace: str = "."):
-    """The single product registry for CLI runtime commands."""
-    from garuda.interfaces.runtime_cli import configured_registry
+def _configured_catalog(workspace: str = "."):
+    """The single trusted runtime catalog for CLI runtime commands."""
+    from garuda.interfaces.runtime_cli import configured_catalog
 
-    return configured_registry(workspace)
+    return configured_catalog(workspace)
+
+
+def _print_runtime_refusal(exc: Exception) -> int:
+    import sys
+
+    print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
+    print(
+        "Check `runtimes`/`disabled_runtimes` in your global settings and the "
+        "project's `runtime_refs`, or pass `--runtime native`.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 async def run_runtime_command(args) -> int:
     """Dispatch `garuda runtime ...`. Preview paths never mutate."""
+    from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return await _run_runtime_command(args)
+    except (RegistryError, RuntimeSettingsError) as exc:
+        return _print_runtime_refusal(exc)
+
+
+async def _run_runtime_command(args) -> int:
     from garuda.context.pack import ContextPackManager
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.runtime_cli import (
@@ -428,16 +461,27 @@ async def run_runtime_command(args) -> int:
         cmd_list_registry,
         cmd_recover,
     )
+    from garuda.runtime.registry import RegistryError
 
     command = args.runtime_command
     if command == "list":
-        print(cmd_list_registry(_configured_registry(), as_json=args.json), end="")
+        catalog = _configured_catalog(args.workspace)
+        print(
+            cmd_list_registry(
+                catalog.registry, as_json=args.json, project_disabled=catalog.project_disabled
+            ),
+            end="",
+        )
         return 0
     if command == "inspect":
+        catalog = _configured_catalog(args.workspace)
         try:
             print(
                 cmd_inspect_registry(
-                    _configured_registry(), args.runtime_id, as_json=args.json
+                    catalog.registry,
+                    args.runtime_id,
+                    as_json=args.json,
+                    project_disabled=catalog.project_disabled,
                 ),
                 end="",
             )
@@ -450,15 +494,23 @@ async def run_runtime_command(args) -> int:
         if not args.confirm:
             print(cmd_handoff_preview(store, args.session, args.to), end="")
             return 0
+        from garuda.interfaces.run_guard import interactive_approval
+
         manager = ContextPackManager(store.session_dir(args.session))
         try:
             print(
                 await cmd_handoff_confirm(
-                    store, args.session, args.to,
+                    store,
+                    args.session,
+                    args.to,
+                    workspace=args.workspace,
                     pack_manager=manager,
+                    approval=interactive_approval(),
                 ),
                 end="",
             )
+        except RegistryError:
+            raise
         except Exception as exc:
             print(f"Error: {exc}")
             return 1
@@ -503,25 +555,40 @@ async def run_runtime_command(args) -> int:
                     pass
         return 0
     if command == "recover":
-        print(cmd_recover(store, args.session, as_json=args.json), end="")
+        from garuda.runtime.recovery import RecoveryError
+
+        try:
+            print(cmd_recover(store, args.session, as_json=args.json), end="")
+        except RecoveryError as exc:
+            print(f"Error: recovery refused: {exc}")
+            return 1
         return 0
     build_parser().parse_args(["runtime", "--help"])
     return 1
 
 
-async def run_acp_command(args, task: str) -> int:
+async def run_acp_command(args, task: str, catalog) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
+    from garuda.interfaces.run_guard import interactive_approval
     from garuda.interfaces.runtime_cli import run_acp_task
 
     try:
         summary = await run_acp_task(
-            task, runtime_id=args.runtime, workspace=args.workspace
+            task,
+            runtime_id=args.runtime,
+            workspace=args.workspace,
+            catalog=catalog,
+            approval=interactive_approval(),
         )
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
-    print(f"done: turn {summary['turn']}, {summary['events']} normalized events")
-    return 0
+    print(
+        f"session {summary['session_id']}: {summary['status']} "
+        f"(turn {summary['turn']}, {summary['events']} normalized events; "
+        "the ACP result is not verified by Garuda)"
+    )
+    return 0 if summary["status"] == "completed" else 1
 
 
 async def run_task(args) -> int:
@@ -535,11 +602,18 @@ async def run_task(args) -> int:
         return 1
 
     if getattr(args, "runtime", "native") != "native":
-        # Resolve before constructing any model, tools, or workspace state.
-        # This preserves the fail-closed disabled/alias policy on the public
-        # `garuda run` entry point.
-        _configured_registry(args.workspace).get(args.runtime)
-        return await run_acp_command(args, task)
+        # Resolved before constructing any model, tools, or workspace state,
+        # preserving the fail-closed disabled/alias policy on `garuda run`.
+        # An ACP selection launches through the ACP path with the same
+        # catalog; an alias of the native loop continues below. A refused
+        # selection raises `RegistryError`, which `main()` reports as a
+        # message with exit status 2 (`_run_with_runtime_gate`).
+        from garuda.runtime.protocol import RuntimeKind
+
+        catalog = _configured_catalog(args.workspace)
+        selected = catalog.registry.get(args.runtime)
+        if selected.kind is RuntimeKind.ACP:
+            return await run_acp_command(args, task, catalog)
 
     # Native selection still goes through the common trusted boundary before
     # any toolkit or workspace startup. ACP selection is resolved by
@@ -739,7 +813,6 @@ async def run_web(args) -> int:
 def _run_with_runtime_gate(args) -> int:
     """`garuda run`, with a refused runtime selection as a message, not a traceback."""
     import asyncio
-    import sys
 
     from garuda.acp.catalog import RuntimeSettingsError
     from garuda.runtime.registry import RegistryError
@@ -747,13 +820,7 @@ def _run_with_runtime_gate(args) -> int:
     try:
         return asyncio.run(run_task(args))
     except (RegistryError, RuntimeSettingsError) as exc:
-        print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
-        print(
-            "Check `runtimes`/`disabled_runtimes` in your global settings and the "
-            "project's `runtime_refs`, or pass `--runtime native`.",
-            file=sys.stderr,
-        )
-        return 2
+        return _print_runtime_refusal(exc)
 
 
 def main() -> None:

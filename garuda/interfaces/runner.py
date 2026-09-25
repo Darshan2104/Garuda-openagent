@@ -195,10 +195,10 @@ async def run_agent_task(
     # lease — including a second concurrent `run_agent_task` on this
     # workspace — fails here instead of interleaving mutations. Fail-closed:
     # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard, install_session_broker
 
-    lease_store = LeaseStore()
-    lease_store.acquire(workspace, events.session_id, mode="mutating")
+    lease = WorkspaceLeaseGuard(workspace, events.session_id)
+    lease.acquire()
 
     resumed_from: str | None = None
     initial_state: dict | None = None
@@ -209,18 +209,19 @@ async def run_agent_task(
             # fresh run has nothing to recover): a live owner or lease holder
             # refuses, prepared switches roll back (marked failed), orphans
             # whose persisted identity still matches are reaped, ambiguous
-            # trails refuse. Fail-closed.
-            from garuda.runtime.recovery import recover
+            # trails refuse, and a session an external runtime owns (an
+            # acknowledged handoff) is never taken back. Fail-closed.
+            from garuda.runtime.recovery import recover, require_native_resumable
 
             # Off the loop: probes shell out to `ps` and reaping polls for death.
-            await asyncio.to_thread(recover, store, resumed_from, leases=lease_store)
+            report = await asyncio.to_thread(
+                recover, store, resumed_from, leases=lease.leases
+            )
+            require_native_resumable(report)
             if context is None:
                 context = build_resumed_context(store, resumed_from, task, model, config)
         except BaseException:
-            try:
-                lease_store.release(workspace, events.session_id)
-            except Exception:
-                logger.warning("Lease release failed", exc_info=True)
+            await lease.release()
             raise
         # Restore pack facts after restart: the persisted WorkingState is the
         # input the pack compiler renders from, so hydrating it here means the
@@ -231,18 +232,7 @@ async def run_agent_task(
             logger.warning("Failed to load persisted working state", exc_info=True)
             initial_state = None
 
-    lease_ttl = DEFAULT_TTL_SEC
-
-    async def _lease_heartbeat() -> None:
-        while True:
-            await asyncio.sleep(lease_ttl / 3)
-            # Losing the lease means this run can no longer prove exclusive
-            # mutation authority. Propagate the error to the driver below;
-            # continuing would let a stale takeover and this run mutate at
-            # the same time.
-            lease_store.heartbeat(workspace, events.session_id)
-
-    heartbeat_task = asyncio.ensure_future(_lease_heartbeat())
+    lease.start_heartbeat()
 
     # One approval path for every run through this facade (P0.17): the engine's
     # ASK responder becomes the session broker, so native tool approvals and
@@ -251,48 +241,8 @@ async def run_agent_task(
     # A caller-supplied interactive handler is not bypassed; it becomes the
     # broker's answerer. With no handler, asks deny immediately (audited)
     # instead of hanging until timeout.
-    from garuda.acp.broker import ApprovalBroker
-
-    approval_broker = ApprovalBroker(engine=permissions, store=store)
-    previous_handler = permissions.approval_handler
-    if previous_handler is not None:
-        def _make_answerer(handler):
-            async def _answer(request) -> bool:
-                try:
-                    return bool(await handler(request.action))
-                except Exception:
-                    logger.warning(
-                        "Approval answerer failed; denying", exc_info=True
-                    )
-                    return False
-
-            return _answer
-
-        approval_broker.set_answerer(_make_answerer(previous_handler))
-    else:
-        async def _deny_all(request) -> bool:
-            return False
-
-        approval_broker.set_answerer(_deny_all)
-    permissions.install_approval_handler(
-        approval_broker.handler(session_id=events.session_id)
-    )
-
-    async def _abandon_lease() -> None:
-        """Cancel the heartbeat and release, for startup paths that never
-        reach the main `try/finally` below. Best-effort; never masks the
-        original error."""
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        try:
-            lease_store.release(workspace, events.session_id)
-        except Exception:
-            logger.warning("Lease release failed", exc_info=True)
-
     try:
+        install_session_broker(permissions, store, events.session_id)
         await runtime.start(task=task, session_id=events.session_id)
         # This is before environment setup, hooks, or a model prompt.  A
         # host-backed run which cannot persist its immutable start state must
@@ -383,38 +333,12 @@ async def run_agent_task(
             await runtime.close()
         except Exception:
             logger.warning("Failed to close refused runtime", exc_info=True)
-        await _abandon_lease()
+        await lease.release()
         raise
     try:
-        prompt_task = asyncio.ensure_future(runtime.prompt(task))
-        try:
-            done, _ = await asyncio.wait(
-                {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-        except asyncio.CancelledError:
-            # `asyncio.wait` does not cancel what it waits on. Without this the
-            # agent would keep executing tools after teardown released the
-            # lease and closed its environment.
-            prompt_task.cancel()
-            try:
-                await prompt_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            raise
-        if heartbeat_task in done:
-            heartbeat_error = heartbeat_task.exception()
-            if not prompt_task.done():
-                prompt_task.cancel()
-                try:
-                    await prompt_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if heartbeat_error is None:
-                from garuda.workspace.lease import LeaseError
-
-                raise LeaseError("lease heartbeat stopped unexpectedly")
-            raise heartbeat_error
-        await prompt_task
+        # The prompt races the lease heartbeat: a lost lease cancels the turn,
+        # and cancelling this call cancels the turn before teardown.
+        await lease.race(runtime.prompt(task))
         result = runtime.last_result
     except asyncio.CancelledError:
         try:
@@ -491,7 +415,7 @@ async def run_agent_task(
             # Release the mutating lease last even if session persistence or a
             # lifecycle hook fails. Otherwise the heartbeat task can outlive
             # this call and hold the workspace indefinitely.
-            await _abandon_lease()
+            await lease.release()
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))

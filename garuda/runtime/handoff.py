@@ -13,6 +13,7 @@ fully fault-injectable.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from enum import Enum
@@ -65,6 +66,19 @@ class HandoffError(AgentRuntimeError):
     """An illegal transaction move or a violated ownership invariant."""
 
 
+class HandoffDeliveryError(HandoffError):
+    """Ownership moved, then the target failed taking over (package delivery).
+
+    Never rolled back: the target may already have mutated the workspace, so
+    resuming the source over those changes would be unaudited. The target is
+    closed, its outcome recorded, and the session is left for normal recovery.
+    """
+
+    def __init__(self, message: str, *, transaction: "HandoffTransaction"):
+        super().__init__(message)
+        self.transaction = transaction
+
+
 class HandoffTransaction:
     """One boundary-only runtime switch."""
 
@@ -82,6 +96,9 @@ class HandoffTransaction:
         self._seq = 0
         self.captured: dict[str, Any] = {}
         self.target_info: Any = None
+        #: Fields of the persisted `acknowledged` record, reused by later
+        #: target-outcome writes so they never drop the ownership evidence.
+        self.ack_record: dict[str, Any] = {}
 
     @property
     def phase(self) -> HandoffPhase:
@@ -149,7 +166,11 @@ class HandoffTransaction:
             raise HandoffError(f"cannot start target from {self._phase.value}")
         self._move(HandoffPhase.STARTING_TARGET, target=target.runtime_id)
         try:
-            self.target_info = await target.start(task=f"handoff from {self._session_id}")
+            # The target joins *this* session: its events, segment, and child
+            # record are keyed by the Garuda session it takes over.
+            self.target_info = await target.start(
+                task=f"handoff from {self._session_id}", session_id=self._session_id
+            )
         except Exception as exc:
             try:
                 await target.close()
@@ -278,31 +299,42 @@ async def execute_handoff(
     emit: Callable[[RuntimeEvent], None] | None = None,
     workspace: str | Path | None = None,
 ) -> tuple[HandoffTransaction, Any]:
-    """Run the full pause → checkpoint → capture → start → ack transaction.
+    """Run the full pause → checkpoint → capture → start → ack → deliver transaction.
 
     The production entry point `HandoffTransaction` unit tests never reached:
     every `begin`/`start_target`/`acknowledge` here runs against real
     `AgentRuntime` instances, with the session store recording the outcome so
     exactly one authoritative owner survives either branch.
 
-    - When supplied, ``deliver`` runs against the started target before
-      acknowledgement. A delivery failure closes that target and rolls the
-      source back, so the audit trail cannot claim an owner that never
-      received the handoff package.
+    - Acknowledgement is one locked meta write: handoff `acknowledged` plus the
+      target appended as the active runtime segment (runtime id, native
+      session id, authority snapshot). A target with `bind_session` then
+      records its child process for recovery. Only after that is the source
+      closed.
+    - When supplied, ``deliver`` runs against the target *after*
+      acknowledgement — the package is the new owner's first prompt, never a
+      mutating turn while the source still owns the session. A delivery
+      failure is a target failure: the target is closed, `target_state:
+      failed` is recorded, and `HandoffDeliveryError` propagates. The source
+      is not resumed over changes the target may have made; recovery treats
+      the session as externally owned.
     - Success returns `(tx, target)` with `tx.phase == ACKNOWLEDGED`,
-      `source` CLOSED and `target` active; the store records `acknowledged`.
+      `source` CLOSED and `target` active; the store records `acknowledged`
+      (and `target_state: delivered` when a package was delivered).
     - Target-startup failure rolls back inside `start_target` (source resumed
       to IDLE and still promptable) and the store records `failed`; the
       `HandoffError` propagates so callers cannot mistake it for a move.
     - A `store.record_handoff` failure fails closed: the transaction moves to
-      FAILED rather than transferring ownership without an audit trail.
+      FAILED rather than transferring ownership without an audit trail. A
+      failure between the ownership write and closing the source re-appends
+      the source's segment, so the recorded owner is the one left running.
     - With `workspace` (and a store holding the session's recorded baseline),
       the capture carries the authoritative delta — changed vs preexisting
       files from the exact start-of-session baseline, or only an explicit
       `workspace_attribution` reason when the baseline is unattributable —
       and the acknowledge record persists the baseline commit for the target
-      session. No production entry point passes `workspace` yet; until one
-      does, product handoffs carry no workspace delta.
+      session. The CLI handoff (`garuda runtime handoff --confirm`) passes
+      its workspace; SDK and dashboard handoffs do not exist yet.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit, store=store)
     if workspace is not None:
@@ -390,43 +422,26 @@ async def execute_handoff(
             except Exception:
                 logger.warning("Handoff failure audit failed", exc_info=True)
         raise
-    if deliver is not None:
-        # The package reaches the started target before ownership is recorded,
-        # so the audit trail never names an owner that never received it.
-        try:
-            result = deliver(target)
-            if hasattr(result, "__await__"):
-                await result
-        except Exception as exc:
-            cancel_error: HandoffError | None = None
-            try:
-                await tx.cancel(source, target, reason="target handoff delivery failed")
-            except HandoffError as cancel_exc:
-                cancel_error = cancel_exc
-            if store is not None:
-                try:
-                    store.record_handoff(
-                        session_id, state="failed", attempts=1, reason="target_delivery"
-                    )
-                except Exception:
-                    logger.warning("Handoff delivery failure audit failed", exc_info=True)
-            detail = f"; {cancel_error}" if cancel_error is not None else ""
-            raise HandoffError(f"target handoff delivery failed: {exc}{detail}") from exc
-    # Persist the ownership decision before closing the source. If this write
-    # fails, the target is closed and the source resumes; ownership never moves
-    # without a durable recovery record. A crash after this write still has one
-    # potential mutator because the source is frozen at its boundary.
+    # Persist the ownership decision before closing the source. The handoff
+    # state and the target's active segment land in one locked write, so no
+    # reader sees one without the other. If it fails, the target is closed and
+    # the source resumes; ownership never moves without a durable record. A
+    # crash after this write still has one potential mutator because the
+    # source is frozen at its boundary.
+    prior_active = None
     if store is not None:
+        extra: dict[str, Any] = {
+            "target_runtime": getattr(target, "runtime_id", ""),
+        }
+        if "baseline_commit" in tx.captured:
+            extra["baseline_commit"] = tx.captured["baseline_commit"]
         try:
-            extra: dict[str, Any] = {
-                "target_runtime": getattr(target, "runtime_id", ""),
-            }
-            if "baseline_commit" in tx.captured:
-                extra["baseline_commit"] = tx.captured["baseline_commit"]
+            prior_active = store.load_unified(session_id).active
             store.record_handoff(
                 session_id,
                 state="acknowledged",
                 attempts=1,
+                active_segment=_target_segment(target, tx.target_info),
                 **extra,
             )
         except Exception as exc:
@@ -438,15 +453,119 @@ async def execute_handoff(
                     f"handoff acknowledge audit failed: {exc}; {cancel_exc}"
                 ) from exc
             raise HandoffError(f"handoff acknowledge audit failed: {exc}") from exc
+        tx.ack_record = dict(extra)
+        bind = getattr(target, "bind_session", None)
+        if callable(bind):
+            try:
+                bind(store)
+            except Exception as exc:
+                # The target never ran a turn, so returning to the source is
+                # safe; re-append its segment so the record names it again.
+                cancel_error: HandoffError | None = None
+                try:
+                    await tx.cancel(source, target, reason="target session binding failed")
+                except HandoffError as cancel_exc:
+                    cancel_error = cancel_exc
+                _record_return_to_source(store, session_id, prior_active, "target_binding")
+                detail = f"; {cancel_error}" if cancel_error is not None else ""
+                raise HandoffError(
+                    f"target could not be bound to the session: {exc}{detail}"
+                ) from exc
     try:
         await tx.acknowledge(source, target)
     except HandoffError:
         if store is not None:
-            try:
-                store.record_handoff(
-                    session_id, state="failed", attempts=1, reason="acknowledgement"
-                )
-            except Exception:
-                logger.warning("Handoff rollback audit failed", exc_info=True)
+            _record_return_to_source(store, session_id, prior_active, "acknowledgement")
         raise
+    if deliver is not None:
+        # Ownership has moved: the package is the new owner's first prompt.
+        try:
+            result = deliver(target)
+            if hasattr(result, "__await__"):
+                await result
+        except (Exception, asyncio.CancelledError) as exc:
+            await _close_quietly(target)
+            if store is not None:
+                try:
+                    record_target_outcome(
+                        store,
+                        session_id,
+                        tx,
+                        "failed",
+                        reason=f"target_delivery: {type(exc).__name__}",
+                    )
+                except Exception:
+                    logger.warning("Handoff delivery failure audit failed", exc_info=True)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise HandoffDeliveryError(
+                f"handoff acknowledged but the target failed taking over: {exc}",
+                transaction=tx,
+            ) from exc
+        if store is not None:
+            record_target_outcome(store, session_id, tx, "delivered")
     return tx, target
+
+
+def record_target_outcome(store, session_id: str, tx: HandoffTransaction, state: str, **details) -> None:
+    """Record what became of an acknowledged target (delivered/closed/failed).
+
+    Rewrites the `acknowledged` record with its original ownership evidence
+    plus `target_state`, so recovery can report how the owner ended.
+    """
+    if tx.phase is not HandoffPhase.ACKNOWLEDGED:
+        raise HandoffError(f"no acknowledged target to record (phase={tx.phase.value})")
+    store.record_handoff(
+        session_id,
+        state="acknowledged",
+        attempts=1,
+        **tx.ack_record,
+        target_state=state,
+        **details,
+    )
+
+
+def _target_segment(target, info):
+    from garuda.runtime.session import RuntimeSegment
+
+    authority = getattr(target, "authority", None)
+    if authority is not None and hasattr(authority, "to_snapshot"):
+        capabilities = frozenset(authority.to_snapshot())
+    else:
+        names = getattr(getattr(info, "capabilities", None), "names", None)
+        capabilities = frozenset(names or ())
+    kind = getattr(getattr(target, "kind", None), "value", None) or "unknown"
+    native = getattr(target, "native_session_id", None) or getattr(
+        info, "native_session_id", None
+    )
+    return RuntimeSegment(
+        runtime_id=target.runtime_id,
+        kind=str(kind),
+        native_session_id=native,
+        version=str(getattr(target, "version", "") or "unknown"),
+        capabilities=capabilities,
+    )
+
+
+def _record_return_to_source(store, session_id: str, prior_active, reason: str) -> None:
+    """Mark the attempt failed; re-append the source segment if it had moved."""
+    try:
+        moved = prior_active is not None and store.load_unified(
+            session_id
+        ).active.runtime_id != prior_active.runtime_id
+        store.record_handoff(
+            session_id,
+            state="failed",
+            attempts=1,
+            reason=reason,
+            active_segment=prior_active if moved else None,
+        )
+    except Exception:
+        logger.warning("Handoff rollback audit failed", exc_info=True)
+
+
+async def _close_quietly(target) -> None:
+    try:
+        await target.close()
+    except Exception:
+        logger.warning("Handoff target close failed", exc_info=True)

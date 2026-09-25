@@ -134,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="success")
     parser.add_argument("--state-file", default=None)
     parser.add_argument("--quota-json", default=None)
+    parser.add_argument(
+        "--report-cwd",
+        action="store_true",
+        help="Append the session/new cwd to the default reply (launch-path tests).",
+    )
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -142,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         profile[len("capabilities-") :] if profile.startswith("capabilities-") else "full"
     )
     sessions = 0
+    session_cwd = ""
     try:
         while True:
             request = _read_frame()
@@ -179,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     _invalid(call_id, "session/new requires absolute cwd and mcpServers")
                     continue
                 sessions += 1
+                session_cwd = str(params.get("cwd", ""))
                 state = _load_state(args.state_file)
                 if profile == "resume":
                     session_id = state.get("session_id", "resume-s1")
@@ -197,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
                     ):
                         _invalid(call_id, "session/prompt requires content blocks")
                         continue
-                _handle_prompt(profile, call_id, params)
+                _handle_prompt(
+                    profile, call_id, params, cwd=session_cwd if args.report_cwd else None
+                )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
     except EOFError:
@@ -205,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
+def _handle_prompt(profile: str, call_id: int, params: dict, *, cwd: str | None = None) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
     if profile == "malformed":
@@ -278,9 +287,10 @@ def _handle_prompt(profile: str, call_id: int, params: dict) -> None:
         )
         _result(call_id, {"stopReason": "end_turn"})
     else:
+        reply = f"done: {text}" if cwd is None else f"done: {text} (cwd={cwd})"
         _update(
             session_id,
-            {"sessionUpdate": "agent_message_chunk", "content": _text(f"done: {text}")},
+            {"sessionUpdate": "agent_message_chunk", "content": _text(reply)},
         )
         _result(call_id, {"stopReason": "end_turn"})
 
