@@ -223,6 +223,11 @@ events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
 `atif_export.py`, `dashboard.py`, `costs.py` (four-tier cost resolution),
 `pricing.py` (the versioned price snapshot `costs.py` resolves against, so a
 reported cost does not move when an upstream table does).
+`contract_matrix.py` (P1.10: every adapter against the common scenarios from
+declared capabilities — scenario coverage derives from manifest/runtime
+capabilities plus harness behaviors, vendor rows run stand-ins and are
+labeled simulated, support needs zero failures plus a PASS; per-adapter JSON
+reports; the shared lifecycle itself lives in `garuda/runtime/conformance.py`).
 
 ## Everything else
 
