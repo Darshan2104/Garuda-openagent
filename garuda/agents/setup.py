@@ -12,14 +12,6 @@ from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
-from garuda.runtime.router import (
-    RoutingCandidate,
-    RoutingDecision,
-    RoutingRequest,
-    candidates_from_discovered,
-    record_routing_decision,
-    route,
-)
 from garuda.model.config import (
     CollectionPolicy,
     ConfigError,
@@ -31,6 +23,14 @@ from garuda.model.config import (
 )
 from garuda.model.factory import ModelFactory, ResolvedModels, safe_model_identity
 from garuda.model.protocol import DEFAULT_MODEL
+from garuda.runtime.router import (
+    RoutingCandidate,
+    RoutingDecision,
+    RoutingRequest,
+    candidates_from_discovered,
+    record_routing_decision,
+    route,
+)
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig

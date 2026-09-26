@@ -363,7 +363,7 @@ def build_parser():
     runtime_resume.add_argument("-t", "--task", required=True, help="Continuation task")
     runtime_resume.add_argument("--workspace", default=".", help="Workspace root")
     runtime_resume.add_argument("--agent", default="build", help="Agent profile")
-    runtime_resume.add_argument("--model", default=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
+    _add_model_flags(runtime_resume)
     runtime_recover = runtime_sub.add_parser("recover", help="Classify and recover a session")
     runtime_recover.add_argument("--session", required=True, help="Session id")
     runtime_recover.add_argument("--json", action="store_true", help="Print JSON report")
@@ -552,16 +552,22 @@ async def _run_runtime_command(args) -> int:
     if command == "resume":
         from garuda.agents.setup import prepare_agent_run
         from garuda.interfaces.runtime_cli import cmd_resume
-        from garuda.model.litellm_model import LitellmModel
+        from garuda.model.config import ConfigError
 
-        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
-            args.agent, workspace=args.workspace
-        )
-        model = LitellmModel(
-            model_name=args.model,
-            reasoning_effort=config.reasoning_effort,
-            thinking_budget_tokens=config.thinking_budget_tokens,
-        )
+        try:
+            prepared = await prepare_agent_run(
+                args.agent,
+                workspace=args.workspace,
+                model=args.model,
+                reasoning_model=args.reasoning_model,
+                collection_model=args.collection_model,
+                no_collection=args.no_collection,
+            )
+        except ConfigError as exc:
+            print(f"Error: {exc}")
+            return 2
+        profile, config, permissions, tools, agent, mcp_manager = prepared
+        model = prepared.reasoning
         try:
             print(
                 await cmd_resume(
