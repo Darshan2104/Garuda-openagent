@@ -11,8 +11,8 @@ pinned `fake_agent` profiles, and native uses the loop's `{"prompt",
 "cancel"}`.
 
 Vendor rows run stand-in fakes, so they are labeled `simulated`: they prove
-the harness-agnostic wiring (lifecycle, cancellation, resume, handoff,
-recovery), never vendor support. An adapter is `supported` only with zero
+the harness-agnostic wiring (lifecycle, cancellation, handoff, recovery),
+never vendor support. An adapter is `supported` only with zero
 failures AND at least one PASS — all-SKIP never passes.
 
 Run: `python -m garuda.eval.contract_matrix --out contract-reports`.
@@ -64,9 +64,16 @@ SCENARIO_BEHAVIORS: dict[str, frozenset[str]] = {
     "cancellation": frozenset(),
     "permission": frozenset({"approval"}),
     "diff": frozenset({"diff-event"}),
-    "resume": frozenset(),
-    "handoff": frozenset(),
-    "recovery": frozenset(),
+    # ACP does not support cross-process resume yet; a refusal is not a
+    # passing contract result. Only adapters that explicitly declare resume
+    # behavior enter this row.
+    "resume": frozenset({"resumable"}),
+    # Handoff must consume a delivered package, so a target must be able to
+    # answer a prompt rather than merely start and stop.
+    "handoff": frozenset({"responds"}),
+    # Recovery must be grounded in an adapter turn, not only a synthetic
+    # session record. Adapters that cannot answer a turn are skipped here.
+    "recovery": frozenset({"responds"}),
 }
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"
@@ -137,10 +144,12 @@ FAKE_RUNTIME_CAPS = frozenset({"prompt", "cancel"})
 #: Behaviors each fake scenario affords. Keyed by scenario name; the matrix
 #: refuses unknown names so a renamed scenario cannot silently change coverage.
 FAKE_BEHAVIORS: dict[str, frozenset[str]] = {
-    "success": frozenset({"responds"}),
-    "streaming": frozenset({"responds"}),
-    "approval": frozenset({"responds", "approval"}),
-    "cancellation": frozenset({"responds"}),
+    "success": frozenset({"responds", "resumable"}),
+    "streaming": frozenset({"responds", "resumable"}),
+    # Approval intentionally does not claim an unattended response: its
+    # prompt remains blocked until the permission contract answers it.
+    "approval": frozenset({"approval", "resumable"}),
+    "cancellation": frozenset({"responds", "resumable"}),
 }
 
 #: Behaviors each fake_agent profile affords. Subset of the pinned
@@ -302,7 +311,7 @@ def _native_entry() -> AdapterEntry:
         # The loop's real capabilities; approval, diff, and unattended
         # answers hold structurally (parked approvals, git diffs, real model).
         capabilities=frozenset({"prompt", "cancel"}),
-        behaviors=frozenset({"responds", "approval", "diff-event"}),
+        behaviors=frozenset({"responds", "approval", "diff-event", "resumable"}),
         make=_make,
     )
 
@@ -483,8 +492,18 @@ async def _check_handoff(entry: AdapterEntry, scratch: Path) -> None:
     await source.start(task="work", session_id="matrix-s")
     target = entry.make(scratch)
     tx = HandoffTransaction(session_id="matrix-s")
+    package = "handoff package for matrix-s"
     await tx.begin(source, checkpoint=lambda: None)
     await tx.start_target(source, target)
+    # A newly-started target is not enough: deliver the package as a real
+    # target turn and require observable progress before ownership is
+    # acknowledged.  Different adapters expose different event payloads
+    # (messages, diffs, or tool calls), so the turn boundary—not a particular
+    # response shape—is the portable consumption proof.
+    await target.prompt(package)
+    target_events, _ = await target.poll_events(0)
+    assert target_events, f"{entry.id} emitted no events while consuming handoff"
+    assert target.state is LifecycleState.IDLE, target.state
     await tx.acknowledge(source, target)
     assert source.state is LifecycleState.CLOSED
     assert target.state is LifecycleState.IDLE
@@ -496,23 +515,50 @@ async def _check_recovery(entry: AdapterEntry, scratch: Path) -> None:
     from garuda.runtime.recovery import RestartState, recover
     from garuda.runtime.session import RuntimeSegment
 
-    # The adapter itself starts and stops here: recovery classifies a tenure
-    # that really ran, not a store fixture.
-    runtime = entry.make(scratch)
-    await runtime.start(task="t", session_id=f"rec-{entry.id}")
-    native_id = runtime.native_session_id or "n1"
-    await runtime.close()
+    # The adapter itself starts and stops here, using the same persisted session
+    # identity that recovery later audits rather than a separate fixture id.
     store = SessionStore(scratch / "sessions")
-    store.begin("rec-1", task="t", model="m", agent="a", workspace="w")
-    store.ensure_unified("rec-1")
-    store.attach_runtime_segment(
-        "rec-1",
-        RuntimeSegment(runtime_id=entry.id, kind=entry.kind, native_session_id=native_id),
+    session_id = f"rec-{entry.id}"
+    store.begin(session_id, task="t", model="m", agent="a", workspace=str(scratch))
+    store.checkpoint_messages(session_id, [])
+    store.ensure_unified(session_id)
+    runtime = entry.make(scratch)
+    await runtime.start(task="t", session_id=session_id)
+    await runtime.prompt("recovery evidence")
+    events, event_cursor = await runtime.poll_events(0)
+    assert events, f"{entry.id} produced no evidence before recovery"
+    store.checkpoint_state(
+        session_id,
+        {
+            "runtime_id": runtime.runtime_id,
+            "native_session_id": runtime.native_session_id,
+            "event_cursor": event_cursor,
+            "event_kinds": [event.kind.value for event in events],
+        },
     )
-    store.record_handoff("rec-1", state="failed", attempts=1)
-    report = recover(store, "rec-1")
+    native_id = runtime.native_session_id or "n1"
+    if entry.kind != "native":
+        authority = getattr(runtime, "authority", None)
+        capabilities = (
+            frozenset(set(authority.owners) | set(authority.to_snapshot()))
+            if authority is not None
+            else frozenset()
+        )
+        store.attach_runtime_segment(
+            session_id,
+            RuntimeSegment(
+                runtime_id=runtime.runtime_id,
+                kind=entry.kind,
+                native_session_id=native_id,
+                capabilities=capabilities,
+                event_cursor=event_cursor,
+            ),
+        )
+    await runtime.close()
+    store.record_handoff(session_id, state="failed", attempts=1)
+    report = recover(store, session_id)
     assert report.state is RestartState.RESUMABLE, report
-    assert report.resume_session_id == "rec-1"
+    assert report.resume_session_id == session_id
 
 
 def _skip_reason(entry: AdapterEntry, scenario: str) -> str:
@@ -560,7 +606,12 @@ async def run_matrix(out_dir: str | Path, *, work_root: str | Path | None = None
         summary = {
             "generated_at": time.time(),
             "adapters": len(reports),
-            "supported": sorted(r.adapter_id for r in reports if r.supported),
+            "supported": sorted(
+                r.adapter_id for r in reports if r.supported and not r.simulated
+            ),
+            "simulated_supported": sorted(
+                r.adapter_id for r in reports if r.supported and r.simulated
+            ),
             "unsupported": sorted(r.adapter_id for r in reports if not r.supported),
             "simulated": sorted(r.adapter_id for r in reports if r.simulated),
         }
@@ -578,11 +629,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     reports = asyncio.run(run_matrix(args.out, work_root=args.work_root))
     failed = [(r.adapter_id, c.scenario) for r in reports for c in r.results if c.status == FAIL]
+    unsupported = [r.adapter_id for r in reports if not r.supported]
     for adapter_id, scenario in failed:
         print(f"FAIL {adapter_id} :: {scenario}")
     supported = sum(1 for r in reports if r.supported)
     print(f"{supported}/{len(reports)} adapters supported; reports in {args.out}/")
-    return 1 if failed else 0
+    return 1 if failed or unsupported else 0
 
 
 if __name__ == "__main__":

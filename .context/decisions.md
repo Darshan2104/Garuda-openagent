@@ -153,3 +153,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   targets fail closed; native remains the explicit in-process target.
 - Browser coverage exercises configured, disabled, unavailable, and unknown
   targets so the visible controls cannot drift from the route policy.
+
+## 2026-09-26 — Contract-matrix support totals are non-vacuous
+
+- Scenario selection is declaration-driven: ACP resume is not counted unless
+  an adapter explicitly declares resumability, and a handoff requires a target
+  response behavior before it is selected.
+- Handoff checks deliver the compiled package through a real target prompt and
+  require observable target events and an idle boundary before acknowledging
+  ownership; adapters may expose messages, diffs, or tool events.
+- Recovery checks start the selected adapter, consume a real turn, persist its
+  identity/event evidence, then classify the same session. Vendor rows remain
+  simulated and are reported separately from non-simulated support totals.
+- The executable gate treats any failed or all-SKIP adapter identity as
+  unsupported, including a mutation that forces an all-SKIP report.
