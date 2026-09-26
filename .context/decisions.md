@@ -207,6 +207,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Runtime metrics use the statistical median for even samples, while native
   turn accounting remains on its existing schema and path.
 
+## 2026-09-26 — Direct model transports require admission at construction
+
+- Direct transports are registered only with a canonical, fully-admitted
+  `TransportRecord`; factory builds re-check that record so test-only catalog
+  coverage cannot be bypassed by a new builder.
+- Admission requires structural auth kind, primary HTTPS citations, capability,
+  cost, migration, test-double, and collectable integration-test artifacts.
+- ACP CLI execution relies on the adapter's post-handshake store attachment;
+  callers do not manually append a pre-start segment, preventing duplicate or
+  authority-free runtime lanes.
+
 ## 2026-09-26 — Inbound ACP uses the public v1 transport
 
 - Garuda's inbound stdio ACP server uses the same newline-delimited JSON-RPC

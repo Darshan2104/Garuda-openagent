@@ -328,3 +328,28 @@ async def test_acp_run_streams_through_fake(monkeypatch):
     summary = await cli.run_acp_task("hello via cli", runtime_id="fakevendor")
     assert summary["turn"] == 1
     assert summary["events"] >= 2
+
+
+async def test_acp_run_persists_one_populated_segment(tmp_path, monkeypatch):
+    manifests = {m.runtime_id: m for m in _manifests()}
+    import garuda.interfaces.runtime_cli as cli
+
+    store = SessionStore(tmp_path / "sessions")
+
+    def _factory(*_args, **kwargs):
+        return None, adapter_for_manifest(
+            manifests["claude"],
+            argv_override=_fake_argv("success"),
+            store=kwargs["store"],
+            persist_dir=kwargs["persist_dir"],
+        )
+
+    monkeypatch.setattr(cli, "acp_adapter_for_workspace", _factory)
+    summary = await cli.run_acp_task(
+        "hello via cli", runtime_id="fakevendor", store=store
+    )
+    unified = store.load_unified(summary["garuda_session_id"])
+    external = [segment for segment in unified.segments if segment.kind == "acp"]
+    assert len(external) == 1
+    assert external[0].native_session_id
+    assert external[0].capabilities

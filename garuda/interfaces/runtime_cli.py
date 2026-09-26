@@ -428,7 +428,6 @@ async def run_acp_task(
         trail, _ = await runtime.poll_events(0)
         for event in trail:
             print(f"[{event.kind.value} t{event.turn}] {event.payload}")
-        attach_acp_segment(store, events.session_id, runtime)
         return {
             "session_id": info.native_session_id,
             "garuda_session_id": events.session_id,
