@@ -130,6 +130,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   conversation refuses until it can use that same transaction, preventing two
   mutating owners.
 
+## 2026-09-26 — External trace lanes use per-tenure event identity
+
+- Every persisted ACP event carries the immutable ACP session identifier for
+  the tenure that produced it. Cross-runtime readers group external records by
+  that identifier rather than treating one shared file as one lane.
+- ACP cursors describe the external stream and never become ranges in the
+  native `events.jsonl` stream. Native ranges remain based only on native
+  event cursors; ambiguous legacy external records are not copied into every
+  lane.
+- SDK, CLI, and transactional handoff adapters receive the session store and
+  external persistence directory at construction, so production execution
+  populates the same trace lanes as direct adapter tests.
+
 ## 2026-09-26 — Dashboard runtime controls use the shared registry
 
 - The web dashboard resolves runtimes through the same trusted global settings,

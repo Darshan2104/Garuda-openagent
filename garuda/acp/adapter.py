@@ -14,7 +14,9 @@ does not have.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 from garuda.acp.authority import (
@@ -55,6 +57,7 @@ class AcpRuntime:
         client_request_handler: ClientRequestHandler | None = None,
         setup_hint: str = "",
         store=None,
+        persist_dir: str | None = None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
@@ -63,6 +66,7 @@ class AcpRuntime:
         self._client_request_handler = client_request_handler
         self._setup_hint = setup_hint
         self._store = store
+        self._persist_dir = persist_dir
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -146,6 +150,32 @@ class AcpRuntime:
                     payload=dict(event.payload),
                 )
             )
+            self._persist(self._events[-1])
+
+    def _persist(self, event: RuntimeEvent) -> None:
+        """Append normalized external events with their immutable ACP session id."""
+        if self._persist_dir is None:
+            return
+        try:
+            path = Path(self._persist_dir) / "acp-events.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "segment_id": self._agent_session_id or self._garuda_session_id,
+                            "kind": event.kind.value,
+                            "session_id": event.session_id,
+                            "turn": event.turn,
+                            "seq": event.seq,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            # Observability must not turn a running external agent into a failure.
+            return
 
     async def start(self, *, task: str, session_id: str | None = None) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:
@@ -177,16 +207,20 @@ class AcpRuntime:
                 # isolated process-group leader recovery may safely signal.
                 if process.pid is None:
                     raise RuntimeStartError("ACP process launched without a pid")
-                self._store.update_active_runtime_segment(
-                    self._garuda_session_id,
-                    RuntimeSegment(
-                        runtime_id=self._runtime_id,
-                        kind=self.kind.value,
-                        native_session_id=self._agent_session_id,
-                        version=self.version,
-                        capabilities=self._authority.to_snapshot(),
-                    ),
+                segment = RuntimeSegment(
+                    runtime_id=self._runtime_id,
+                    kind=self.kind.value,
+                    native_session_id=self._agent_session_id,
+                    version=self.version,
+                    capabilities=self._authority.to_snapshot(),
                 )
+                unified = self._store.load_unified(self._garuda_session_id)
+                if unified.active.runtime_id == self._runtime_id:
+                    self._store.update_active_runtime_segment(
+                        self._garuda_session_id, segment
+                    )
+                else:
+                    self._store.attach_runtime_segment(self._garuda_session_id, segment)
                 record_child(
                     self._store,
                     self._garuda_session_id,

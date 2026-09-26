@@ -492,7 +492,15 @@ def adapter_for_registry(
     *,
     argv_override: list[str] | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    store=None,
+    persist_dir: str | None = None,
 ) -> AcpRuntime:
     """Resolve through the registry, then apply the exact-path launch gate."""
     resolved = registry.get(ref)
-    return adapter_for_manifest(resolved, argv_override=argv_override, policy=policy)
+    return adapter_for_manifest(
+        resolved,
+        argv_override=argv_override,
+        policy=policy,
+        store=store,
+        persist_dir=persist_dir,
+    )

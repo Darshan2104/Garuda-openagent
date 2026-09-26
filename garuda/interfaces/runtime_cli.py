@@ -92,6 +92,8 @@ def acp_adapter_for_workspace(
     policy=None,
     global_settings: dict | None = None,
     project_settings: dict | None = None,
+    store=None,
+    persist_dir: str | None = None,
 ):
     """Resolve one configured ACP id through policy and availability gates."""
     registry = configured_registry(
@@ -112,13 +114,26 @@ def acp_adapter_for_workspace(
     else:
         argv = list(argv_override)
     return registry, adapter_for_registry(
-        registry, runtime_name, argv_override=argv, policy=policy
+        registry,
+        runtime_name,
+        argv_override=argv,
+        policy=policy,
+        store=store,
+        persist_dir=persist_dir,
     )
 
 
 def attach_acp_segment(store, session_id: str, adapter) -> None:
     """Persist one ACP tenure in the session's unified runtime history."""
     from garuda.runtime.session import RuntimeSegment
+
+    unified = store.load_unified(session_id)
+    if (
+        unified.active.kind == "acp"
+        and unified.active.runtime_id == adapter.runtime_id
+        and unified.active.native_session_id == adapter.native_session_id
+    ):
+        return
 
     authority = adapter.authority
     capabilities = (
@@ -264,7 +279,11 @@ async def cmd_handoff_confirm(
 
     def _target_factory():
         return adapter_for_registry(
-            registry, target_id, argv_override=target_argv_override
+            registry,
+            target_id,
+            argv_override=target_argv_override,
+            store=store,
+            persist_dir=str(store.session_dir(session_id)),
         )
 
     async def _deliver(target) -> None:
@@ -362,21 +381,42 @@ async def run_acp_task(
     session_id: str | None = None,
     argv_override: list[str] | None = None,
     disabled=None,
+    store=None,
 ) -> dict[str, Any]:
     """Run one ACP task through the same trusted registry as every CLI path."""
+    from garuda.core.events import EventStore
+    from garuda.core.sessions import SessionStore
+
+    store = store or SessionStore()
+    events = EventStore(session_id=session_id)
+    store.begin(
+        events.session_id,
+        task=task,
+        model="acp",
+        agent=runtime_id,
+        workspace=workspace,
+    )
     _registry, runtime = acp_adapter_for_workspace(
         workspace,
         runtime_id,
         argv_override=argv_override,
         disabled=disabled,
+        store=store,
+        persist_dir=str(store.session_dir(events.session_id)),
     )
-    info = await runtime.start(task=task, session_id=session_id)
+    info = await runtime.start(task=task, session_id=events.session_id)
     try:
         turn = await runtime.prompt(task)
-        events, _ = await runtime.poll_events(0)
-        for event in events:
+        trail, _ = await runtime.poll_events(0)
+        for event in trail:
             print(f"[{event.kind.value} t{event.turn}] {event.payload}")
-        return {"session_id": info.native_session_id, "turn": turn, "events": len(events)}
+        attach_acp_segment(store, events.session_id, runtime)
+        return {
+            "session_id": info.native_session_id,
+            "garuda_session_id": events.session_id,
+            "turn": turn,
+            "events": len(trail),
+        }
     finally:
         await runtime.close()
 

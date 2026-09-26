@@ -133,7 +133,6 @@ class Conversation:
         )
 
         if self._acp is None:
-            _, adapter = acp_adapter_for_workspace(self._workspace, self._runtime_name)
             store = self._store or SessionStore()
             self._store = store
             events = EventStore()
@@ -143,6 +142,12 @@ class Conversation:
                 model=self._model_name,
                 agent=self._agent_name,
                 workspace=self._workspace,
+            )
+            _, adapter = acp_adapter_for_workspace(
+                self._workspace,
+                self._runtime_name,
+                store=store,
+                persist_dir=str(store.session_dir(events.session_id)),
             )
             await adapter.start(task=task, session_id=events.session_id)
             self._acp = adapter
@@ -168,10 +173,9 @@ class Conversation:
                 self._approval_broker.set_answerer(lambda request: False)
             self._approval_task = self._launch_approval_responder()
         turn = await self._acp.prompt(task)
-        events, cursor = await self._acp.poll_events(len(self._acp_trail))
+        events, _ = await self._acp.poll_events(len(self._acp_trail))
         self._acp_trail.extend(events)
         assert self._store is not None and self._sdk_session_id is not None
-        self._store.advance_event_cursor(self._sdk_session_id, cursor)
         texts = [
             e.payload.get("chunk", "") or e.payload.get("text", "")
             for e in events
@@ -275,7 +279,12 @@ class Conversation:
             await target_runtime.poll_events(0)
 
         def _factory():
-            _, built = acp_adapter_for_workspace(self._workspace, target)
+            _, built = acp_adapter_for_workspace(
+                self._workspace,
+                target,
+                store=store,
+                persist_dir=str(store.session_dir(self._sdk_session_id)),
+            )
             return built
 
         tx, started = await execute_handoff(
@@ -288,8 +297,6 @@ class Conversation:
             workspace=self._workspace,
         )
         attach_acp_segment(store, self._sdk_session_id, started)
-        _, cursor = await started.poll_events(0)
-        store.advance_event_cursor(self._sdk_session_id, cursor)
         await self._replace_adapter(started, target)
         return {
             "session_id": self._sdk_session_id,

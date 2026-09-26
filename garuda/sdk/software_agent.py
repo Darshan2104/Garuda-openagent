@@ -150,12 +150,6 @@ class SoftwareAgent:
         )
         from garuda.runtime import RegistryError
 
-        try:
-            _, adapter = acp_adapter_for_workspace(self.workspace, self.runtime_name)
-        except ValueError as exc:
-            if "disabled by user configuration" in str(exc):
-                raise RegistryError(str(exc)) from exc
-            raise
         store = self._store or SessionStore()
         events = EventStore()
         store.begin(
@@ -165,6 +159,17 @@ class SoftwareAgent:
             agent=self.agent_name,
             workspace=self.workspace,
         )
+        try:
+            _, adapter = acp_adapter_for_workspace(
+                self.workspace,
+                self.runtime_name,
+                store=store,
+                persist_dir=str(store.session_dir(events.session_id)),
+            )
+        except ValueError as exc:
+            if "disabled by user configuration" in str(exc):
+                raise RegistryError(str(exc)) from exc
+            raise
         if self.workspace_kind == "local":
             try:
                 from garuda.workspace.diff import capture_baseline
@@ -177,7 +182,7 @@ class SoftwareAgent:
         await adapter.start(task=task, session_id=events.session_id)
         try:
             turn = await adapter.prompt(task)
-            trail, cursor = await adapter.poll_events(0)
+            trail, _ = await adapter.poll_events(0)
         finally:
             await adapter.close()
         texts = [
@@ -193,7 +198,6 @@ class SoftwareAgent:
             metadata={"runtime": self.runtime_name, "api": RUNTIME_API_VERSION},
         )
         attach_acp_segment(store, events.session_id, adapter)
-        store.advance_event_cursor(events.session_id, cursor)
         store.finish(events.session_id, result)
         result.metadata["session_id"] = events.session_id
         return result

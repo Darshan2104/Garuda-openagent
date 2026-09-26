@@ -143,7 +143,10 @@ class HandoffTransaction:
             raise HandoffError(f"cannot start target from {self._phase.value}")
         self._move(HandoffPhase.STARTING_TARGET, target=target.runtime_id)
         try:
-            self.target_info = await target.start(task=f"handoff from {self._session_id}")
+            self.target_info = await target.start(
+                task=f"handoff from {self._session_id}",
+                session_id=self._session_id,
+            )
         except Exception as exc:
             await self._rollback(source, f"target startup failed: {exc}")
             raise HandoffError(f"target startup failed: {exc}") from exc
