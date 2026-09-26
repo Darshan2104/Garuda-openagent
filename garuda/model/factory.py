@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from garuda.model.config import ConfigError, ModelBindings, ModelSpec, Provenance
-from garuda.model.transports import TransportRecord, assert_admissible, registry as transport_registry
+from garuda.model.transports import TransportRecord, assert_admissible
+from garuda.model.transports import registry as transport_registry
 
 
 @dataclass(frozen=True)
