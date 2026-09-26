@@ -344,6 +344,26 @@ async def _main_async(args) -> int:
         status = "PASS" if r.graded_pass else "FAIL"
         detail = f" ({r.error})" if r.error else ""
         print(f"  [{status}] {r.task_id:14s} {r.variant:14s} turns={r.turns} tokens={r.total_tokens}{detail}")
+    matrix_out = getattr(args, "matrix_out", None)
+    if matrix_out:
+        from garuda.eval.harness_matrix import (
+            load_trials,
+            trials_from_ablation,
+            write_matrix,
+        )
+        from garuda.eval.harness_matrix import (
+            render_table as matrix_render_table,
+        )
+
+        trials = trials_from_ablation(
+            BUILTIN_TASKS, results, model=args.model,
+            harness=getattr(args, "harness", "native"),
+        )
+        for feed in getattr(args, "external_trials", []):
+            trials.extend(load_trials(feed))
+        cells = write_matrix(matrix_out, trials)
+        print("\nHarness matrix:")
+        print(matrix_render_table(cells))
     return 0
 
 
@@ -351,6 +371,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="garuda-ablation", description="Harness ablation runner")
     parser.add_argument("--model", required=True, help="LiteLLM model string")
     parser.add_argument("--variants", help="Comma-separated subset of variant names")
+    parser.add_argument("--harness", default="native", help="Harness label for ablation trials")
+    parser.add_argument(
+        "--matrix-out", type=Path,
+        help="Persist a model × harness JSON matrix artifact after the run",
+    )
+    parser.add_argument(
+        "--external-trials", action="append", default=[], metavar="PATH",
+        help="Validated external-harness trial feed to combine with this run",
+    )
     args = parser.parse_args()
     raise SystemExit(asyncio.run(_main_async(args)))
 

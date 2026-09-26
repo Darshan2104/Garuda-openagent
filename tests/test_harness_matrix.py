@@ -8,6 +8,7 @@ persisting, and single-trial cells show their n.
 import pytest
 
 from garuda.eval.harness_matrix import (
+    HarnessTrial,
     prompt_hash,
     record_trial,
     render_table,
@@ -107,6 +108,31 @@ def test_ingestion_validates_shapes():
             HarnessTrial.from_dict(shape)
 
 
+def test_direct_construction_and_recording_validate_the_same_fields():
+    with pytest.raises(ValueError, match="latency_ms"):
+        record_trial("t1", "hi", model="m", harness="h", latency_ms=-1)
+    with pytest.raises(ValueError, match="approvals"):
+        record_trial("t1", "hi", model="m", harness="h", approvals=-1)
+    with pytest.raises(ValueError, match="prompt_hash"):
+        HarnessTrial(
+            task_id="t1", prompt_hash="not-hex", model="m", harness="h"
+        )
+
+
+def test_ablation_result_with_unknown_task_is_rejected():
+    from types import SimpleNamespace
+
+    from garuda.eval.harness_matrix import trials_from_ablation
+
+    with pytest.raises(ValueError, match="unknown task"):
+        trials_from_ablation(
+            [SimpleNamespace(id="known", prompt="prompt")],
+            [SimpleNamespace(task_id="missing", graded_pass=True, error="", agent_success=True,
+                             duration_ms=1)],
+            model="m",
+        )
+
+
 async def test_trials_come_from_real_eval_runs(tmp_path, monkeypatch):
     """`trials_from_ablation` populates the comparison from measured runs:
     ungraded successes stay unknown, hashes match, costs stay unknown."""
@@ -135,3 +161,36 @@ async def test_trials_come_from_real_eval_runs(tmp_path, monkeypatch):
     assert cells[0].to_dict()["unknown_completions"] == 1
     assert cells[0].to_dict()["completion_rate"] is None
     assert cells[0].to_dict()["latency_ms_median"] == 120
+
+
+async def test_ablation_command_writes_native_and_external_matrix(tmp_path, monkeypatch):
+    """The production eval command persists both measured dimensions."""
+    import json
+    from argparse import Namespace
+
+    import garuda.eval.ablation as ablation_mod
+    from garuda.eval.ablation import VariantResult
+    from garuda.eval.harness_matrix import record_trial
+
+    async def fake_run_ablation(*args, **kwargs):
+        return [VariantResult(
+            variant="baseline", task_id="create_file", agent_success=True,
+            graded_pass=True, turns=1, prompt_tokens=1, completion_tokens=1,
+            total_tokens=2, duration_ms=7,
+        )]
+
+    monkeypatch.setattr(ablation_mod, "run_ablation", fake_run_ablation)
+    external = tmp_path / "external.json"
+    external.write_text(json.dumps({"trials": [record_trial(
+        "remote-1", "external prompt", model=None, harness="codex",
+        harness_version="1.2.3", capabilities=("prompt",), completed=None,
+    ).to_dict()]}))
+    output = tmp_path / "matrix.json"
+    args = Namespace(
+        variants=None, model="script/test", matrix_out=output,
+        harness="native", external_trials=[str(external)],
+    )
+    assert await ablation_mod._main_async(args) == 0
+    artifact = json.loads(output.read_text())
+    assert {cell["harness"] for cell in artifact["cells"]} == {"native", "codex"}
+    assert artifact["trials"][0]["harness_version"] == "native"

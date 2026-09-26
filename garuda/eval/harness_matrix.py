@@ -16,9 +16,11 @@ approvals, and handoff success. Three rules are structural, not advisory:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -39,14 +41,43 @@ class HarnessTrial:
     timestamp: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
-        if not self.task_id:
+        if not isinstance(self.task_id, str) or not self.task_id:
             raise ValueError("task_id is required")
-        if not self.harness:
+        if not isinstance(self.prompt_hash, str) or not self.prompt_hash:
+            raise ValueError("prompt_hash must be a non-empty string")
+        if not re.fullmatch(r"[0-9a-f]+", self.prompt_hash):
+            raise ValueError("prompt_hash must be hex")
+        if not isinstance(self.harness, str) or not self.harness:
             raise ValueError("harness is required")
-        if self.cost_usd is not None and self.cost_usd < 0:
+        if not isinstance(self.harness_version, str) or not self.harness_version:
+            raise ValueError("harness_version must be a non-empty string")
+        if any(not isinstance(capability, str) or not capability for capability in self.capabilities):
+            raise ValueError("capabilities must contain non-empty strings")
+        if self.model is not None and (not isinstance(self.model, str) or not self.model):
+            raise ValueError("model must be a non-empty string or null")
+        if self.completed is not None and not isinstance(self.completed, bool):
+            raise ValueError("completed must be a boolean or null")
+        if self.cost_usd is not None and (
+            not isinstance(self.cost_usd, (int, float))
+            or isinstance(self.cost_usd, bool)
+            or self.cost_usd < 0
+        ):
             raise ValueError("cost_usd cannot be negative")
-        if self.handoff not in ("none", "prepared", "acknowledged", "failed"):
+        if self.latency_ms is not None and (
+            not isinstance(self.latency_ms, int) or isinstance(self.latency_ms, bool)
+            or self.latency_ms < 0
+        ):
+            raise ValueError("latency_ms must be a non-negative integer or null")
+        if not isinstance(self.approvals, int) or isinstance(self.approvals, bool) or self.approvals < 0:
+            raise ValueError("approvals must be a non-negative integer")
+        if not isinstance(self.handoff, str) or self.handoff not in (
+            "none", "prepared", "acknowledged", "failed"
+        ):
             raise ValueError(f"unknown handoff state {self.handoff!r}")
+        if not isinstance(self.error, str):
+            raise ValueError("error must be a string")
+        if not isinstance(self.timestamp, (int, float)) or isinstance(self.timestamp, bool):
+            raise ValueError("timestamp must be a number")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +179,34 @@ def record_trial(
         task_id=task_id, prompt_hash=prompt_hash(prompt),
         model=model, harness=harness, **fields,
     )
+
+
+def load_trials(path: str) -> list[HarnessTrial]:
+    """Load an external harness result feed through the same validation path."""
+    source = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = source.get("trials") if isinstance(source, dict) else source
+    if not isinstance(raw, list):
+        raise ValueError("trial feed must be a list or an object with a trials list")
+    return [HarnessTrial.from_dict(item) for item in raw]
+
+
+def write_matrix(path: str, trials: list[HarnessTrial]) -> list[MatrixCell]:
+    """Persist the measured trials and rendered cells as one report artifact."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    cells = summarize(trials)
+    destination.write_text(
+        json.dumps(
+            {
+                "trials": [trial.to_dict() for trial in trials],
+                "cells": [cell.to_dict() for cell in cells],
+                "markdown": render_table(cells),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return cells
 
 
 @dataclass
@@ -256,7 +315,9 @@ def trials_from_ablation(
     prompts = {t.id: t.prompt for t in tasks}
     trials = []
     for result in results:
-        prompt = prompts.get(result.task_id, result.task_id)
+        if result.task_id not in prompts:
+            raise ValueError(f"ablation result references unknown task {result.task_id!r}")
+        prompt = prompts[result.task_id]
         if result.graded_pass is not None:
             completed: bool | None = result.graded_pass
         elif result.error or not result.agent_success:
@@ -269,6 +330,8 @@ def trials_from_ablation(
                 prompt,
                 model=model,
                 harness=harness,
+                harness_version="native" if harness == "native" else "unknown",
+                capabilities=("prompt", "cancel") if harness == "native" else (),
                 completed=completed,
                 latency_ms=result.duration_ms,
                 error=result.error or "",
