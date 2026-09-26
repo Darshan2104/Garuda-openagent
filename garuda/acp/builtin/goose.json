@@ -11,5 +11,9 @@
   "version_args": ["goose", "--version"],
   "version_pattern": "",
   "auth_probe": null,
-  "setup": "1. Install the Goose CLI and log in. 2. Verify: goose --version. Garuda never reads your Goose credentials."
+  "setup": "1. Install the Goose CLI and log in. 2. Verify: goose --version. Garuda never reads your Goose credentials.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Log in to Goose, then select this runtime."
+  }
 }

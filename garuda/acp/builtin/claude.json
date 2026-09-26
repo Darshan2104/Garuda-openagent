@@ -9,5 +9,9 @@
   "version_args": ["claude-agent-acp", "--version"],
   "version_pattern": "",
   "auth_probe": null,
-  "setup": "1. Install Node.js 20+ and Claude Code, then authenticate with your Claude Pro/Max login. 2. Run: npm install -g @agentclientprotocol/claude-agent-acp. 3. Verify: claude-agent-acp --version. Garuda never reads ~/.claude/.credentials.json or the macOS Keychain entry; Garuda does not pass ANTHROPIC_API_KEY or CLAUDE_CONFIG_DIR to the adapter, so it uses your default Claude Code login."
+  "setup": "1. Install Node.js 20+ and Claude Code, then authenticate with your Claude Pro/Max login. 2. Run: npm install -g @agentclientprotocol/claude-agent-acp. 3. Verify: claude-agent-acp --version. Garuda never reads ~/.claude/.credentials.json or the macOS Keychain entry; Garuda does not pass ANTHROPIC_API_KEY or CLAUDE_CONFIG_DIR to the adapter, so it uses your default Claude Code login.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Run `claude login` with your Claude Pro/Max account, then select this runtime."
+  }
 }

@@ -11,5 +11,9 @@
   "version_args": ["agent", "--version"],
   "version_pattern": "",
   "auth_probe": null,
-  "setup": "1. Install the Cursor Agent CLI and log in with your Cursor account. 2. Verify: agent --version. The documented default binary is ~/.local/bin/agent; Garuda never reads your Cursor credentials."
+  "setup": "1. Install the Cursor Agent CLI and log in with your Cursor account. 2. Verify: agent --version. The documented default binary is ~/.local/bin/agent; Garuda never reads your Cursor credentials.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Log in to the Cursor Agent CLI, then select this runtime."
+  }
 }

@@ -2,7 +2,10 @@
 
 Garuda ships ACP adapter manifests for subscription-backed coding harnesses
 while its native runtime stays the default. You authenticate in your own CLI;
-Garuda never sees, reads, or stores subscription credentials.
+Garuda never sees, reads, or stores subscription credentials. Subscription use
+is governed by each vendor's policy, not by Garuda: quota appears only when the
+harness itself reports it, and Garuda never estimates, infers, or zero-fills
+usage.
 
 **Status:** the shipped manifests are part of the trusted runtime catalog, so
 `--runtime claude` and `--runtime codex` resolve, show up in discovery, and

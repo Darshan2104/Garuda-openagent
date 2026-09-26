@@ -133,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deterministic fake ACP agent.")
     parser.add_argument("--profile", default="success")
     parser.add_argument("--state-file", default=None)
+    parser.add_argument("--quota-json", default=None)
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -157,13 +158,18 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     _result(call_id, {"protocolVersion": 99})
                 else:
-                    _result(
-                        call_id,
-                        {
-                            "protocolVersion": 1,
-                            "agentCapabilities": capabilities,
-                        },
-                    )
+                    hello: dict = {
+                        "protocolVersion": 1,
+                        "agentCapabilities": capabilities,
+                    }
+                    if args.quota_json:
+                        try:
+                            quota = json.loads(args.quota_json)
+                        except ValueError:
+                            quota = None
+                        if isinstance(quota, dict):
+                            hello["quota"] = quota
+                    _result(call_id, hello)
             elif method == "session/new":
                 if profile == "strict-v1" and (
                     not isinstance(params.get("cwd"), str)

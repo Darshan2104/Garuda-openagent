@@ -11,5 +11,9 @@
   "version_args": ["pi-acp", "--version"],
   "version_pattern": "",
   "auth_probe": null,
-  "setup": "1. Install the Pi ACP adapter: npm install -g pi-acp. 2. Log in to Pi itself. 3. Verify: pi-acp --version. Garuda never reads your Pi credentials."
+  "setup": "1. Install the Pi ACP adapter: npm install -g pi-acp. 2. Log in to Pi itself. 3. Verify: pi-acp --version. Garuda never reads your Pi credentials.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Log in to Pi, then select this runtime."
+  }
 }

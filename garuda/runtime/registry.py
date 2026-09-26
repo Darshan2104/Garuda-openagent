@@ -43,12 +43,46 @@ _MANIFEST_FIELDS = frozenset(
         "version_pattern",
         "auth_probe",
         "setup",
+        "login",
     }
 )
 
 
 class RegistryError(AgentRuntimeError):
     """Malformed configuration or an unresolvable reference. Fail-closed."""
+
+
+@dataclass(frozen=True)
+class LoginFlow:
+    """How a user authenticates, declared — never performed — by Garuda.
+
+    Only user-driven flows exist: `user-cli` (run the vendor login yourself)
+    and `api-key` (configure the key in the vendor's own CLI or config — Garuda
+    passes no API-key environment variables to a harness). Garuda opens no login flow on
+    its own, and missing credentials only ever produce guidance.
+    """
+
+    flow: str = "user-cli"
+    instructions: str = ""
+
+    @classmethod
+    def parse(cls, value: object, *, where: str = "login") -> "LoginFlow":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise RegistryError(f"{where}: login must be a mapping")
+        unknown = set(value) - {"flow", "instructions"}
+        if unknown:
+            raise RegistryError(f"{where}: unknown login fields {sorted(unknown)}")
+        flow = value.get("flow", "user-cli")
+        if flow not in ("user-cli", "api-key"):
+            raise RegistryError(
+                f"{where}.flow: must be 'user-cli' or 'api-key', got {flow!r}"
+            )
+        instructions = value.get("instructions", "")
+        if not isinstance(instructions, str):
+            raise RegistryError(f"{where}.instructions: must be a string")
+        return cls(flow=flow, instructions=instructions)
 
 
 @dataclass(frozen=True)
@@ -80,6 +114,7 @@ class RuntimeManifest:
     version_pattern: str = ""
     auth_probe: AuthProbe | None = None
     setup: str = ""
+    login: LoginFlow = field(default_factory=LoginFlow)
 
 
 @dataclass(frozen=True)
@@ -228,6 +263,7 @@ def parse_global_manifests(data: object, *, source: str = "global runtimes") -> 
                 version_pattern=version_pattern,
                 auth_probe=_parse_auth_probe(item.get("auth_probe"), where=f"{where}.auth_probe"),
                 setup=setup,
+                login=LoginFlow.parse(item.get("login"), where=f"{where}.login"),
             )
         )
     return manifests
