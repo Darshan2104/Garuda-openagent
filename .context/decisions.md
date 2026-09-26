@@ -153,3 +153,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   audited, TTY prompt) plus a persisted session with the ACP segment, child
   record, and baseline/delta. An ACP run is recorded `completed`, not
   `success`: Garuda does not verify its result.
+ ## 2026-09-26 — Dashboard runtime controls use the shared registry
+
+- The web dashboard resolves runtimes through the same trusted global settings,
+  project aliases, built-ins, and disablement rules as the CLI and SDK.
+- Handoff preview and prepare resolve and availability-check the target before
+  reading or writing handoff state. Unknown, disabled, and unavailable ACP
+  targets fail closed; native remains the explicit in-process target.
+- Browser coverage exercises configured, disabled, unavailable, and unknown
+  targets so the visible controls cannot drift from the route policy.

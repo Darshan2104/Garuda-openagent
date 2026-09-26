@@ -11,38 +11,87 @@ from __future__ import annotations
 
 from typing import Any
 
-from garuda.acp.catalog import (
-    discover,
-    health_of,
-)
+from garuda.acp.catalog import discover, health_of, load_trusted_disabled
+from garuda.runtime import RegistryError
 from garuda.runtime.recovery import recover, report_to_dict
+from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests
 from garuda.workspace.diff import session_delta
 
 
-def manifests_from_extra(extra: dict) -> list[dict]:
-    """Configured manifests: explicit extras win, builtins plus native otherwise."""
+def manifests_from_extra(extra: dict, workspace: str = ".") -> list[dict]:
+    """Compatibility helper for callers that explicitly provide manifests.
+
+    Keep legacy callers on the trusted global settings path; dashboard routes
+    use :func:`registry_from_context` directly so aliases and disablement are
+    enforced as well.
+    """
     raw = extra.get("manifests")
     if raw is None:
+        from garuda.acp.catalog import load_trusted_runtime_settings
         from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
 
-        return load_configured_manifest_dicts({})
+        return load_configured_manifest_dicts(load_trusted_runtime_settings())
     if not isinstance(raw, list):
         raise ValueError("context manifests must be a list of manifest dicts")
     return raw
 
 
-def list_runtimes(manifest_dicts: list[dict]) -> list[dict[str, Any]]:
-    from garuda.runtime.registry import parse_global_manifests
+def registry_from_context(extra: dict | None = None, workspace: str = ".") -> RuntimeRegistry:
+    """Resolve dashboard runtimes through the trusted product registry.
 
-    manifests = parse_global_manifests(manifest_dicts, source="dashboard runtimes")
-    return [health_of(entry) for entry in discover(manifests)]
+    An explicit ``manifests`` list remains a deterministic test seam. The
+    production dashboard has no such override and therefore reads the same
+    global settings/project aliases as the CLI and SDK.
+    """
+    extra = extra or {}
+    raw = extra.get("manifests")
+    if raw is None:
+        from garuda.interfaces.runtime_cli import configured_registry
+
+        return configured_registry(workspace)
+    if not isinstance(raw, list):
+        raise ValueError("context manifests must be a list of manifest dicts")
+    return RuntimeRegistry(
+        parse_global_manifests(raw, source="dashboard runtimes"),
+        disabled=load_trusted_disabled(),
+    )
 
 
-def inspect_runtime(manifest_dicts: list[dict], runtime_id: str) -> dict[str, Any] | None:
-    from garuda.runtime.registry import parse_global_manifests
+def _discovered(registry: RuntimeRegistry):
+    return discover(registry.manifests, disabled=registry.disabled_ids)
 
-    manifests = parse_global_manifests(manifest_dicts, source="dashboard runtimes")
-    found = {entry.runtime_id: entry for entry in discover(manifests)}
+
+def _require_target(registry: RuntimeRegistry, target_id: str):
+    """Resolve and availability-check a handoff target before any mutation."""
+    target = registry.get(target_id)
+    if target.kind.value == "native":
+        return target
+    found = {entry.runtime_id: entry for entry in _discovered(registry)}
+    entry = found.get(target.runtime_id)
+    if entry is None or not entry.available:
+        detail = "; ".join(entry.warnings) if entry else "not discovered"
+        raise RegistryError(f"runtime {target_id!r} is unavailable: {detail}")
+    return target
+
+
+def list_runtimes(
+    manifest_dicts: list[dict] | None = None, *, workspace: str = ".", extra: dict | None = None
+) -> list[dict[str, Any]]:
+    context = extra or (
+        {"manifests": manifest_dicts} if manifest_dicts is not None else {}
+    )
+    registry = registry_from_context(context, workspace)
+    return [health_of(entry) for entry in _discovered(registry)]
+
+
+def inspect_runtime(
+    manifest_dicts: list[dict] | None, runtime_id: str, *, workspace: str = ".", extra: dict | None = None
+) -> dict[str, Any] | None:
+    context = extra or (
+        {"manifests": manifest_dicts} if manifest_dicts is not None else {}
+    )
+    registry = registry_from_context(context, workspace)
+    found = {entry.runtime_id: entry for entry in _discovered(registry)}
     entry = found.get(runtime_id)
     if entry is None:
         return None
@@ -51,8 +100,12 @@ def inspect_runtime(manifest_dicts: list[dict], runtime_id: str) -> dict[str, An
     return record
 
 
-def handoff_preview(store, session_id: str, target_id: str) -> dict[str, Any]:
+def handoff_preview(
+    store, session_id: str, target_id: str, *, registry: RuntimeRegistry | None = None
+) -> dict[str, Any]:
     """Read-only switch preview. Never mutates the session."""
+    if registry is not None:
+        _require_target(registry, target_id)
     unified = store.load_unified(session_id)
     return {
         "session_id": session_id,
@@ -65,11 +118,20 @@ def handoff_preview(store, session_id: str, target_id: str) -> dict[str, Any]:
     }
 
 
-def handoff_prepare(store, session_id: str, target_id: str, *, pack_manager=None) -> dict[str, Any]:
+def handoff_prepare(
+    store,
+    session_id: str,
+    target_id: str,
+    *,
+    pack_manager=None,
+    registry: RuntimeRegistry | None = None,
+) -> dict[str, Any]:
     """Compile the handoff package and record it prepared. Write-mode only."""
     from garuda.context.pack import compile_handoff
     from garuda.context.state_card import WorkingState
 
+    if registry is not None:
+        _require_target(registry, target_id)
     unified = store.load_unified(session_id)
     state = WorkingState(task=unified.legacy.get("task", session_id))
     doc, body = compile_handoff(

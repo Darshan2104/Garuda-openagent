@@ -90,6 +90,7 @@ def build_context(
         allow_run=config.allow_run,
         agents_dir=Path(config.agents_dir) if config.agents_dir else None,
         loop=loop,
+        workspace=(tuple(Path(p).expanduser().resolve() for p in config.workspaces) or (Path.cwd().resolve(),))[0],
     )
     if config.allow_run and loop is not None:
         ctx.live = LiveRuns(

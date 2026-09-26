@@ -56,6 +56,7 @@ def payload(response):
 
 def _seed(store, session_id="s1"):
     store.begin(session_id, task="move it", model="m", agent="a", workspace="w")
+    store.checkpoint_messages(session_id, [])
     store.ensure_unified(session_id)
     return session_id
 
@@ -69,6 +70,38 @@ def test_runtimes_picker_lists_health(ctx):
     assert by_id["claude"]["login"]["flow"] == "user-cli"
 
 
+def test_runtimes_use_trusted_global_registry(ctx, tmp_path, monkeypatch):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "runtimes:\n"
+        "  - runtime_id: offline\n"
+        "    kind: acp\n"
+        "    command: [not-installed-garuda-runtime]\n"
+        "    version: '1'\n"
+        "    setup: Install offline.\n"
+        "  - runtime_id: disabled\n"
+        "    kind: acp\n"
+        "    command: [not-installed-garuda-disabled]\n"
+        "    version: '1'\n"
+        "disabled_runtimes: [disabled]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
+    ctx.workspace = tmp_path
+
+    records = payload(call(ctx, "/api/runtimes"))
+    by_id = {record["runtime_id"]: record for record in records}
+    assert by_id["offline"]["available"] is False
+    assert by_id["disabled"]["available"] is False
+    assert any("disabled by user configuration" in warning for warning in by_id["disabled"]["warnings"])
+
+    _seed(ctx.store)
+    for target in ("offline", "disabled"):
+        refused = call(ctx, "/api/runs/s1/handoff", method="POST", body={"target": target})
+        assert refused.status == 404
+    assert ctx.store.load_unified("s1").handoff["state"] == "none"
+
+
 def test_runtime_inspect_shows_auth_guidance(ctx):
     record = payload(call(ctx, "/api/runtimes/claude"))
     assert record["runtime_id"] == "claude"
@@ -79,18 +112,39 @@ def test_runtime_inspect_shows_auth_guidance(ctx):
 
 def test_handoff_preview_is_read_only_but_prepare_writes(ctx, ro_ctx, store):
     _seed(store)
-    preview = payload(call(ro_ctx, "/api/runs/s1/handoff", query="to=codex"))
-    assert preview["target_runtime"] == "codex"
+    preview = payload(call(ro_ctx, "/api/runs/s1/handoff", query="to=native"))
+    assert preview["target_runtime"] == "native"
     assert preview["requires_confirm"] is True
     assert store.load_unified("s1").handoff["state"] == "none"
 
-    refused = call(ro_ctx, "/api/runs/s1/handoff", method="POST", body={"target": "codex"})
+    refused = call(ro_ctx, "/api/runs/s1/handoff", method="POST", body={"target": "native"})
     assert refused.status == 503
     assert store.load_unified("s1").handoff["state"] == "none"
 
-    prepared = payload(call(ctx, "/api/runs/s1/handoff", method="POST", body={"target": "codex"}))
+    prepared = payload(call(ctx, "/api/runs/s1/handoff", method="POST", body={"target": "native"}))
     assert prepared["handoff_state"] == "prepared"
     assert store.load_unified("s1").handoff["state"] == "prepared"
+
+    unknown = call(ro_ctx, "/api/runs/s1/handoff", query="to=missing-runtime")
+    assert unknown.status == 404
+
+
+def test_handoff_rejects_unavailable_custom_target(ctx, store):
+    _seed(store)
+    ctx.extra = {
+        "manifests": [
+            {
+                "runtime_id": "offline",
+                "kind": "acp",
+                "command": ["not-installed-garuda-runtime"],
+                "version": "1",
+                "setup": "Install offline.",
+            }
+        ]
+    }
+    refused = call(ctx, "/api/runs/s1/handoff", method="POST", body={"target": "offline"})
+    assert refused.status == 404
+    assert store.load_unified("s1").handoff["state"] == "none"
 
     bad = call(ctx, "/api/runs/s1/handoff", method="POST", body={})
     assert bad.status == 400

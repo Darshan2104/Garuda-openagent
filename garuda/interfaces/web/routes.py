@@ -31,6 +31,7 @@ from garuda.interfaces.web.wire import (
     ok,
 )
 from garuda.model.protocol import DEFAULT_MODEL
+from garuda.runtime import RegistryError
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class DashboardContext:
     loop: Any = None
     live: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
+    workspace: Path = field(default_factory=lambda: Path.cwd())
 
     @property
     def capabilities(self) -> dict[str, bool]:
@@ -556,16 +558,16 @@ def _job_expired(job_id: str) -> Response:
 
 @route("GET", r"/api/runtimes")
 def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
-    from garuda.interfaces.web.runtimes import list_runtimes, manifests_from_extra
+    from garuda.interfaces.web.runtimes import list_runtimes
 
-    return ok(list_runtimes(manifests_from_extra(ctx.extra)))
+    return ok(list_runtimes(workspace=str(ctx.workspace), extra=ctx.extra))
 
 
 @route("GET", r"/api/runtimes/(?P<rid>[A-Za-z0-9._-]+)")
 def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.interfaces.web.runtimes import inspect_runtime, manifests_from_extra
+    from garuda.interfaces.web.runtimes import inspect_runtime
 
-    payload = inspect_runtime(manifests_from_extra(ctx.extra), match["rid"])
+    payload = inspect_runtime(None, match["rid"], workspace=str(ctx.workspace), extra=ctx.extra)
     if payload is None:
         return not_found(f"No runtime {match['rid']!r}.")
     return ok(payload)
@@ -574,22 +576,29 @@ def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/handoff")
 def _handoff_preview(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.core.sessions import validate_session_ref
-    from garuda.interfaces.web.runtimes import handoff_preview
+    from garuda.interfaces.web.runtimes import handoff_preview, registry_from_context
 
     session_id = validate_session_ref(match["sid"])
     target = request.first("to")
     if not target:
         return invalid("`to` query parameter is required.")
     try:
-        return ok(handoff_preview(ctx.store, session_id, target))
-    except (OSError, ValueError) as exc:
+        return ok(
+            handoff_preview(
+                ctx.store,
+                session_id,
+                target,
+                registry=registry_from_context(ctx.extra, str(ctx.workspace)),
+            )
+        )
+    except (OSError, ValueError, RegistryError) as exc:
         return not_found(f"No readable session {session_id!r}: {exc}")
 
 
 @route("POST", r"/api/runs/(?P<sid>[^/]+)/handoff")
 def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.core.sessions import validate_session_ref
-    from garuda.interfaces.web.runtimes import handoff_prepare
+    from garuda.interfaces.web.runtimes import handoff_prepare, registry_from_context
 
     refusal = requires_write(ctx)
     if refusal is not None:
@@ -600,8 +609,15 @@ def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response
     if not target or not isinstance(target, str):
         return invalid("JSON body `target` is required.")
     try:
-        return ok(handoff_prepare(ctx.store, session_id, target))
-    except (OSError, ValueError) as exc:
+        return ok(
+            handoff_prepare(
+                ctx.store,
+                session_id,
+                target,
+                registry=registry_from_context(ctx.extra, str(ctx.workspace)),
+            )
+        )
+    except (OSError, ValueError, RegistryError) as exc:
         return not_found(f"Cannot prepare handoff for {session_id!r}: {exc}")
 
 

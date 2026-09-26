@@ -50,7 +50,14 @@ def free_port(start: int) -> int:
     raise SystemExit("no free port found")
 
 
-def start_dashboard(sessions: Path, port: int, log: Path, *, read_only: bool = True):
+def start_dashboard(
+    sessions: Path,
+    port: int,
+    log: Path,
+    *,
+    read_only: bool = True,
+    extra_env: dict[str, str] | None = None,
+):
     command = [
         sys.executable, "-m", "garuda.interfaces.main", "web",
         "--port", str(port), "--sessions-dir", str(sessions), "--no-browser",
@@ -61,7 +68,7 @@ def start_dashboard(sessions: Path, port: int, log: Path, *, read_only: bool = T
         command.append("--read-only")
     handle = log.open("w")
     process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT,
-                              env={**os.environ, "GARUDA_WEB_TOKEN": TOKEN})
+                              env={**os.environ, "GARUDA_WEB_TOKEN": TOKEN, **(extra_env or {})})
     for _ in range(80):
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", port)) == 0:
@@ -145,14 +152,35 @@ def main() -> int:
             f"store = SessionStore(r'{rt_sessions}');"
             "store.begin('rt-demo', task='board task', model='m', agent='a', "
             f"workspace=r'{rt_workspace}');"
+            "store.checkpoint_messages('rt-demo', []);"
             "store.ensure_unified('rt-demo');"
             f"store.record_baseline('rt-demo', capture_baseline(r'{rt_workspace}').to_dict());"
         )
         subprocess.run([sys.executable, "-c", seed_code], check=True)
         (rt_workspace / "work.txt").write_text("session work\n")
+        runtime_settings = workdir / "runtime-settings.yaml"
+        runtime_settings.write_text(
+            "runtimes:\n"
+            "  - runtime_id: offline\n"
+            "    kind: acp\n"
+            "    command: [not-installed-garuda-runtime]\n"
+            "    version: '1'\n"
+            "  - runtime_id: disabled\n"
+            "    kind: acp\n"
+            "    command: [not-installed-garuda-disabled]\n"
+            "    version: '1'\n"
+            "disabled_runtimes: [disabled]\n",
+            encoding="utf-8",
+        )
         rt_port = free_port(live_port + 1)
         processes.append(
-            start_dashboard(rt_sessions, rt_port, workdir / "web-rt.log", read_only=False)
+            start_dashboard(
+                rt_sessions,
+                rt_port,
+                workdir / "web-rt.log",
+                read_only=False,
+                extra_env={"GARUDA_GLOBAL_SETTINGS": str(runtime_settings)},
+            )
         )
         if not run_check("check_runtimes.py", rt_port, shots,
                          {"GARUDA_CHECK_SESSIONS": str(rt_sessions),
