@@ -557,7 +557,12 @@ async def _check_recovery(entry: AdapterEntry, scratch: Path) -> None:
     await runtime.close()
     store.record_handoff(session_id, state="failed", attempts=1)
     report = recover(store, session_id)
-    assert report.state is RestartState.RESUMABLE, report
+    # A native session whose transfer failed remains resumable. An external
+    # segment is deliberately not taken back by the native loop merely
+    # because the handoff audit says failed: recovery must preserve the last
+    # recorded owner until an explicit reclaim or new handoff.
+    expected = RestartState.RESUMABLE if entry.kind == "native" else RestartState.EXTERNAL
+    assert report.state is expected, report
     assert report.resume_session_id == session_id
 
 
