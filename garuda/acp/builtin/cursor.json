@@ -1,0 +1,15 @@
+{
+  "runtime_id": "cursor",
+  "kind": "acp",
+  "command": ["agent", "acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "Cursor Agent via its native ACP subcommand. Subscription access stays in your Cursor login; Garuda never reads it.",
+  "warnings": [
+    "Vendor capability mediation is negotiated at handshake; strict garuda-only policies may be refused — review before mutating runs."
+  ],
+  "version_args": ["agent", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install the Cursor Agent CLI and log in with your Cursor account. 2. Verify: agent --version. The documented default binary is ~/.local/bin/agent; Garuda never reads your Cursor credentials."
+}

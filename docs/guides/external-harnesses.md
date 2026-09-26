@@ -32,6 +32,28 @@ verified end to end by this repository's tests.
   and verify `codex-acp --version`.
 - Auth stays in your Codex login (`~/.codex/auth.json`). Garuda never reads it.
 
+## Cursor Agent
+
+- Launch command: `agent acp` (native subcommand of the Cursor Agent CLI).
+- Setup: install the Cursor Agent CLI (whose documented default binary is
+  `~/.local/bin/agent`) and authenticate with your Cursor account, then verify
+  `agent --version`.
+- Auth stays in your Cursor login. Garuda never reads your Cursor credentials.
+- Limit: Garuda answers only `session/request_permission` from the agent.
+  Cursor's blocking extension requests such as `cursor/ask_question` and
+  `cursor/create_plan` get a JSON-RPC "method not found" error (fail closed),
+  so turns that depend on them end with the agent's error handling rather
+  than a question or plan in Garuda.
+
+## OpenCode
+
+- Launch command: `opencode acp` (native subcommand; registry package
+  `opencode-ai`).
+- Setup: install the OpenCode CLI and authenticate it, then verify
+  `opencode --version`.
+- Auth stays in your OpenCode login. Garuda never reads your OpenCode auth
+  configuration.
+
 ## Version and capability limits
 
 - Login state shows `unknown`: the shipped manifests declare no login probe,
@@ -47,6 +69,12 @@ verified end to end by this repository's tests.
 - No private HTTP endpoint is used anywhere: both adapters are stdio
   subprocesses of commands from the shipped manifests or your global
   configuration.
+- Discovery resolves the executable once and the launch factory
+  (`adapter_for_discovered`) uses that exact absolute path; without a
+  discovered path the factory refuses instead of looking `PATH` up again.
+  Changing `PATH` after discovery cannot substitute a different adapter
+  binary, but replacing the file at that path can: this is a binding, not a
+  sandbox.
 
 ## Custom ACP servers
 

@@ -58,6 +58,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Discovery probes only what trusted manifests declare (version/auth argv) with a minimal child env: missing tools explain setup, unknown versions display as unknown, login state is never guessed, and users can disable any runtime.
 - Vendor adapters ship bare adapter binaries (never npx auto-download): Claude Code and Codex run on the user's own subscription login with credential paths documented as untouchable, login state stays unknown (no login probe ships), and the wire subset limits are written down.
 - Shipped adapter manifests are package configuration and join the one trusted runtime catalog; a global `runtimes:` entry with the same id replaces them. Adapter children get only PATH/HOME/LANG, so API-key variables and custom vendor config dirs never reach them and the docs do not advise exporting keys. Adapters take an absolute session root; product launch of ACP harnesses is not wired at this layer and selection refuses loudly.
+- Cursor and OpenCode follow the same shape over native subcommands; unavailable ACP paths refuse loudly (never silent fallback) and version mismatches name the upgrade.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation`, `recipe run`, and product handoffs (no caller passes `workspace=`) carry no baseline yet.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
@@ -98,3 +99,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Vendor conformance uses a strict v1 fixture that rejects the previous
   private transport and request shapes. Installed vendor smoke remains opt-in
   and creates a session only; it never sends subscription-consuming work.
+
+## 2026-09-25 — ACP launch binds discovery to execution
+
+- The shared ACP adapter factory replaces a manifest's bare command with the
+  exact absolute executable a discovery record accepted
+  (`adapter_for_discovered`). It never performs a second `PATH` lookup and
+  rejects missing, relative, directory, or non-executable paths, so a later
+  `PATH` change cannot substitute a different process at launch. Replacing
+  the file at the accepted path is out of scope (binding, not sandbox).
+- Unsupported agent-to-client methods, including Cursor's blocking
+  `cursor/ask_question` and `cursor/create_plan`, fail closed with
+  METHOD_NOT_FOUND.
+- Cursor uses the documented `agent acp` command (with the usual
+  `~/.local/bin/agent` installation location). As with every vendor adapter,
+  setup guidance may name the user's CLI but never reads or proxies its
+  credentials.

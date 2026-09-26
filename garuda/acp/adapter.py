@@ -76,6 +76,7 @@ class AcpRuntime:
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
         approval_handler: Callable[[str], Awaitable[bool]] | None = None,
+        setup_hint: str = "",
         store=None,
     ):
         self._argv = list(argv)
@@ -88,6 +89,7 @@ class AcpRuntime:
         self._runtime_id = runtime_id
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
+        self._setup_hint = setup_hint
         self._store = store
         self._recorded_child_pid: int | None = None
         self._process: AcpProcess | None = None
@@ -215,6 +217,12 @@ class AcpRuntime:
                     process_group=process.pid,
                 )
                 self._recorded_child_pid = process.pid
+        except AcpProtocolError as exc:
+            await process.close()
+            self._move(LifecycleState.FAILED)
+            if "version mismatch" in str(exc) and self._setup_hint:
+                raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
+            raise
         except Exception:
             await process.close()
             self._move(LifecycleState.FAILED)

@@ -34,7 +34,7 @@ from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
 logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
-BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json")
+BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json", "cursor.json", "opencode.json")
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -140,8 +140,13 @@ def _resolve_executable(command: tuple[str, ...] | None) -> str | None:
         return None
     binary = command[0]
     if os.path.isabs(binary):
-        return binary if os.access(binary, os.X_OK) else None
+        return binary if _is_executable_file(binary) else None
     return shutil.which(binary)
+
+
+def _is_executable_file(path: str) -> bool:
+    """A regular file with the execute bit; `os.access` alone accepts directories."""
+    return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def discover(
@@ -359,17 +364,84 @@ def adapter_for_manifest(
     manifest,
     *,
     argv_override: list[str] | None = None,
+    executable: str | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
     cwd: str | None = None,
 ) -> AcpRuntime:
-    """Build the generic adapter for one manifest. Tests override argv with fakes.
+    """Build the generic adapter using the exact executable discovery accepted.
 
-    `cwd` is the absolute session root sent in `session/new`; launch paths pass
-    the workspace so the harness never defaults to Garuda's own directory.
+    `executable` must be the absolute path a discovery record resolved (see
+    `adapter_for_discovered`); it replaces the manifest's bare command, and no
+    second PATH lookup happens here, so a PATH change after discovery cannot
+    substitute a different binary. Without it the factory refuses rather than
+    re-resolving. ``argv_override`` is only the deterministic test seam for the
+    protocol fixture. `cwd` is the absolute session root sent in `session/new`;
+    launch paths pass the workspace so the harness never defaults to Garuda's
+    own directory.
     """
+    argv = list(argv_override) if argv_override is not None else require_acp_argv(
+        manifest, executable=executable
+    )
     return AcpRuntime(
-        list(argv_override) if argv_override is not None else list(manifest.command or ()),
+        argv,
         runtime_id=manifest.runtime_id,
         policy=policy,
         cwd=cwd,
+        setup_hint=manifest.setup,
+    )
+
+
+class AcpUnavailableError(Exception):
+    """The ACP path cannot launch. Carries setup guidance so no fallback is silent."""
+
+    def __init__(self, runtime_id: str, setup: str):
+        super().__init__(
+            f"ACP adapter {runtime_id!r} is unavailable and no non-ACP fallback "
+            f"was requested: {setup}"
+        )
+        self.runtime_id = runtime_id
+        self.setup = setup
+
+
+def require_acp_argv(manifest, *, executable: str | None) -> list[str]:
+    """Bind an accepted absolute executable to the manifest's launch argv.
+
+    This is the shared production start gate: the command used for launch is
+    the exact path discovery resolved, never a second bare PATH lookup.
+    """
+    if not manifest.command:
+        raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "no launch command configured")
+    if not isinstance(executable, str) or not executable:
+        raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "executable not found")
+    if not os.path.isabs(executable) or not _is_executable_file(executable):
+        raise AcpUnavailableError(
+            manifest.runtime_id,
+            manifest.setup or "discovery did not resolve an executable file",
+        )
+    return [executable, *manifest.command[1:]]
+
+
+def adapter_for_discovered(
+    manifest,
+    discovered: DiscoveredRuntime,
+    *,
+    policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
+) -> AcpRuntime:
+    """Launch exactly what a discovery record accepted — the production factory.
+
+    The record must describe this manifest and be available; its resolved
+    executable is bound into the argv, so what `discover()` reported is what
+    starts.
+    """
+    if discovered.runtime_id != manifest.runtime_id:
+        raise AcpUnavailableError(
+            manifest.runtime_id,
+            f"discovery record is for {discovered.runtime_id!r}, not this runtime",
+        )
+    if not discovered.available or not discovered.executable:
+        detail = "; ".join(discovered.warnings) or manifest.setup or "executable not found"
+        raise AcpUnavailableError(manifest.runtime_id, detail)
+    return adapter_for_manifest(
+        manifest, executable=discovered.executable, policy=policy, cwd=cwd
     )
