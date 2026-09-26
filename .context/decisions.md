@@ -63,6 +63,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - One runtime-registry builder: `agents/setup.py::build_runtime_catalog()` owns shipped manifests, global overrides, advisory project refs, and disablement; `prepare_runtime_catalog()` and `acp.catalog.shared_registry()` only feed it inputs. `adapter_for_registry` discovers the one resolved manifest and binds its accepted executable.
 - Auth UX presents, never performs: login flows are manifest-declared user actions, missing credentials yield guidance, quota is pass-through-or-unknown, vendor policy governs use, and Python code may not name credential stores. The gate is a token-level AST scan of the whole `garuda/` package (string constants and folded `+` chains outside docstrings, secret-store imports such as `keyring`, token-helper identifiers) with a self-test of known bypass shapes; it is a regression tripwire, not proof that no code path can reach a credential.
 - CLI runtime controls preview by default and mutate only on explicit flags: handoff needs --confirm, --runtime defaults to native, and every command renders text and JSON diagnostics.
+- Dashboard runtime controls are pure read models plus write-gated prepares: the UI renders discovered health, auth guidance, diffs, and recovery reports exactly as returned, with unknown states displayed, never invented.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation` and `recipe run` carry no baseline yet; the CLI handoff passes `workspace=` and carries the recorded delta.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
@@ -152,3 +153,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   audited, TTY prompt) plus a persisted session with the ACP segment, child
   record, and baseline/delta. An ACP run is recorded `completed`, not
   `success`: Garuda does not verify its result.
+ ## 2026-09-26 — Dashboard runtime controls use the shared registry
+
+- The web dashboard resolves runtimes through the same trusted global settings,
+  project aliases, built-ins, and disablement rules as the CLI and SDK.
+- Handoff preview and prepare resolve and availability-check the target before
+  reading or writing handoff state. Unknown, disabled, and unavailable ACP
+  targets fail closed; native remains the explicit in-process target.
+- Browser coverage exercises configured, disabled, unavailable, and unknown
+  targets so the visible controls cannot drift from the route policy.

@@ -50,17 +50,25 @@ def free_port(start: int) -> int:
     raise SystemExit("no free port found")
 
 
-def start_dashboard(sessions: Path, port: int, log: Path):
+def start_dashboard(
+    sessions: Path,
+    port: int,
+    log: Path,
+    *,
+    read_only: bool = True,
+    extra_env: dict[str, str] | None = None,
+):
     command = [
         sys.executable, "-m", "garuda.interfaces.main", "web",
         "--port", str(port), "--sessions-dir", str(sessions), "--no-browser",
         # These two checks read history only; the conversation surface has its own server
         # below, with a scripted model.
-        "--read-only",
     ]
+    if read_only:
+        command.append("--read-only")
     handle = log.open("w")
     process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT,
-                              env={**os.environ, "GARUDA_WEB_TOKEN": TOKEN})
+                              env={**os.environ, "GARUDA_WEB_TOKEN": TOKEN, **(extra_env or {})})
     for _ in range(80):
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", port)) == 0:
@@ -121,6 +129,63 @@ def main() -> int:
         if not run_check("check_live.py", live_port, shots,
                          {"GARUDA_CHECK_SESSIONS": str(live_sessions)}):
             failures.append("check_live.py")
+
+        # --- runtimes board, against a write-mode dashboard ------------------
+        rt_sessions = workdir / "rt-sessions"
+        rt_sessions.mkdir()
+        rt_workspace = workdir / "rt-workspace"
+        rt_workspace.mkdir()
+        subprocess.run(["git", "init", "-q", str(rt_workspace)], check=True)
+        subprocess.run(
+            ["git", "-C", str(rt_workspace), "config", "user.email", "t@t.t"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(rt_workspace), "config", "user.name", "t"], check=True
+        )
+        (rt_workspace / "keep.txt").write_text("committed\n")
+        subprocess.run(["git", "-C", str(rt_workspace), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(rt_workspace), "commit", "-qm", "init"], check=True)
+        (rt_workspace / "dirt.txt").write_text("pre-existing dirt\n")
+        seed_code = (
+            "from garuda.core.sessions import SessionStore;"
+            "from garuda.workspace.diff import capture_baseline;"
+            f"store = SessionStore(r'{rt_sessions}');"
+            "store.begin('rt-demo', task='board task', model='m', agent='a', "
+            f"workspace=r'{rt_workspace}');"
+            "store.checkpoint_messages('rt-demo', []);"
+            "store.ensure_unified('rt-demo');"
+            f"store.record_baseline('rt-demo', capture_baseline(r'{rt_workspace}').to_dict());"
+        )
+        subprocess.run([sys.executable, "-c", seed_code], check=True)
+        (rt_workspace / "work.txt").write_text("session work\n")
+        runtime_settings = workdir / "runtime-settings.yaml"
+        runtime_settings.write_text(
+            "runtimes:\n"
+            "  - runtime_id: offline\n"
+            "    kind: acp\n"
+            "    command: [not-installed-garuda-runtime]\n"
+            "    version: '1'\n"
+            "  - runtime_id: disabled\n"
+            "    kind: acp\n"
+            "    command: [not-installed-garuda-disabled]\n"
+            "    version: '1'\n"
+            "disabled_runtimes: [disabled]\n",
+            encoding="utf-8",
+        )
+        rt_port = free_port(live_port + 1)
+        processes.append(
+            start_dashboard(
+                rt_sessions,
+                rt_port,
+                workdir / "web-rt.log",
+                read_only=False,
+                extra_env={"GARUDA_GLOBAL_SETTINGS": str(runtime_settings)},
+            )
+        )
+        if not run_check("check_runtimes.py", rt_port, shots,
+                         {"GARUDA_CHECK_SESSIONS": str(rt_sessions),
+                          "GARUDA_CHECK_RO_BASE": f"http://127.0.0.1:{port}/"}):
+            failures.append("check_runtimes.py")
 
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
