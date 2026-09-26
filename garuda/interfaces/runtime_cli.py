@@ -130,6 +130,7 @@ def acp_adapter_for_workspace(
     project_settings: dict | None = None,
 ):
     """Resolve one configured ACP target before constructing its adapter."""
+    from garuda.acp.catalog import AcpUnavailableError
     from garuda.runtime import RegistryError
     from garuda.runtime.protocol import RuntimeKind
 
@@ -155,7 +156,11 @@ def acp_adapter_for_workspace(
                 manifest, argv_override=list(argv_override), policy=policy, cwd=workspace
             )
     except RegistryError as exc:
+        if "disabled by user configuration" in str(exc):
+            raise
         raise ValueError(f"Cannot use runtime {runtime_name!r} ({exc})") from exc
+    except AcpUnavailableError as exc:
+        raise RegistryError(f"runtime {runtime_name!r} is not launchable: {exc}") from exc
     return catalog.registry, adapter
 
 
