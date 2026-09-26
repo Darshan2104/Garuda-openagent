@@ -66,6 +66,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Dashboard runtime controls are pure read models plus write-gated prepares: the UI renders discovered health, auth guidance, diffs, and recovery reports exactly as returned, with unknown states displayed, never invented.
 - SDK and JSON-RPC runtimes default to native with identical behavior; explicit harnesses run ACP turns with wrapped results and held sessions, methods are versioned (runtime/v1), and manifests resolve per request so jobs share no registry state.
 - Traces gain lanes, not rewrites: unified segments overlay identity/authority/recovery on the untouched native rebuild, normalized ACP trails persist per session, and exports carry counts only.
+- Runtime metrics record per-adapter phases with triage buckets while native accounting stays pinned; support bundles redact every string and tally kinds instead of copying payloads.
 - The contract matrix generates scenarios from declared capabilities with skips named, not hidden; interactive and never-answering profiles prove their lifecycle under driven checks instead of the unattended suite; any failure blocks support.
 - Live harness checks are gated, capped, and reported: env-selected harnesses only, one trivial prompt in a fixture workspace, exact harness/version/auth/elapsed in the report, and CI spends nothing by never opting in.
 - Eval comparisons keep model and harness as separate dimensions with unknown costs never zero-filled, prompts hashed instead of stored, per-cell trial counts, and no vendor claim from thin cells.
@@ -228,3 +229,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   hashes, non-negative measures, completion unknowns, and handoff states.
   Ablation conversion rejects any result whose task id is absent from the task
   set rather than hashing the id as a substitute prompt.
+
+## 2026-09-26 — Runtime observability is persistent and least-privilege
+
+- ACP adapters always own a `RuntimeMetrics` recorder; session-aware CLI, SDK,
+  and handoff construction passes the session store and persistence directory so
+  metrics survive adapter close and are available to support reporting.
+- Support bundles expose only an explicit metadata allowlist plus lane/tally
+  structure and metrics. Raw task prompts, workspace paths, transcripts, and
+  arbitrary session fields are excluded; every public string and event-tally
+  key is recursively scrubbed.
+- Runtime metrics use the statistical median for even samples, while native
+  turn accounting remains on its existing schema and path.

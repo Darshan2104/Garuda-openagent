@@ -344,6 +344,8 @@ def build_parser():
         "reclaim", help="Return a handed-off session whose target stopped to native"
     )
     runtime_reclaim.add_argument("--session", required=True, help="Session id")
+    runtime_support = runtime_sub.add_parser("support", help="Print a redacted support bundle")
+    runtime_support.add_argument("--session", required=True, help="Session id")
 
     return parser
 
@@ -577,6 +579,15 @@ async def _run_runtime_command(args) -> int:
         except RecoveryError as exc:
             print(f"Error: recovery refused: {exc}")
             return 1
+        return 0
+    if command == "support":
+        from garuda.interfaces.runtime_cli import cmd_support_bundle
+
+        try:
+            print(cmd_support_bundle(store, args.session), end="")
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
         return 0
     build_parser().parse_args(["runtime", "--help"])
     return 1
