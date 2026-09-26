@@ -230,6 +230,65 @@ The same config gave 49 and then 37 turns on the same task. Do not tune on one t
 
 ## Open work
 
+**ACP authority is recorded, not enforced.** `acp/authority.py` negotiates one
+owner per tool family from `families`/`mediated`/`sandbox`, which are Garuda
+extension fields in `agentCapabilities` — standard ACP v1 agents send none, and
+the sandbox flag is the agent's own unverified claim. Garuda advertises
+`clientCapabilities: {}`, so a v1 agent runs its own edits and commands; nothing
+routes them through Garuda even where the map says `garuda`. Enforcing it means
+advertising `fs`/`terminal` client capabilities, serving those methods through
+the broker, and deriving ownership from what was advertised rather than
+declared.
+
+**Restart recovery has no production ACP or handoff caller.** `recover()` reaps
+only children that `AcpRuntime(store=…)` recorded, and only
+`HandoffTransaction(store=…)` records switch cancels, but no entry point builds an
+`AcpRuntime` or calls `execute_handoff` yet, so today the reaping path runs only in
+tests. Wiring the first ACP entry point must pass the session store (the adapter
+warns when it has none). The `cancellations` audit list is also not consumed by
+classification yet.
+
+**ACP harnesses get no API-key or custom config-dir passthrough.** The adapter
+child environment is `PATH`/`HOME`/`LANG` only (`acp/client.py::_child_env`),
+and manifests reject `env`. A user who authenticates a vendor CLI only through
+`CODEX_API_KEY`/`ANTHROPIC_API_KEY`, or keeps its config under a custom
+`CODEX_HOME`/`CLAUDE_CONFIG_DIR`, cannot use the shipped adapters. A fix would
+be a per-manifest allowlist of variable *names* in trusted global settings only,
+passed through without Garuda reading or logging the values, with a decision
+record on why that is not token proxying.
+
+**Interactive sessions take no workspace lease.** Only `run_agent_task` acquires
+the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
+SDK `Conversation` call `agent.run` directly, so they can interleave with a
+leased run on the same workspace.
+
+**SDK `Conversation`, `recipe run`, and eval runners carry no workspace
+baseline.** They persist no session (`sdk/conversation.py`,
+`config/recipes.run_recipe` via `interfaces/main.run_recipe_command`,
+`eval/harbor_adapter.py`, `eval/ablation.py`, subagents in `core/subagent.py`),
+so they never enter
+`workspace/evidence.begin_session_evidence`: their verifier gets no
+`workspace_delta_loader` and nothing records what the run changed versus
+preexisting dirt. Fix by giving them a persisted session (or an explicit
+in-memory evidence store) and routing them through the same boundary, with a
+refusal test per entry point.
+
+**Handoff and resume do not carry the session delta forward.** No production
+caller passes `workspace=` to `runtime/handoff.execute_handoff`, so product
+handoffs carry no delta. `--resume` starts a new session with a fresh baseline,
+so the prior session's work is attributed as preexisting dirt.
+
+**The dashboard still parks approvals outside the P0.17 broker.**
+`garuda.acp.broker.ApprovalBroker` is installed only by `run_agent_task`
+(`interfaces/runner.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
+`interfaces/web/approvals.ApprovalBroker` and runs turns through `agent.run`
+directly, so browser allow/deny/timeout outcomes are not persisted as
+`approval:<id>` session records. `ApprovalBroker.decide_acp()` is exercised only by
+tests; no ACP adapter screens terminal/edit requests through it yet. The fix is to
+keep the web module as a transport (thread marshalling, heartbeat, structured
+arguments) over the shared broker, and to route ACP family requests through
+`decide_acp` before execution, with an integration test on each path.
+
 **The deliverable check is new and its hit rate is unknown.**
 `eval/answer_checks.py` extracts the output files a task statement unconditionally
 asks for and rejects a completion when one is missing, or not the format its name
