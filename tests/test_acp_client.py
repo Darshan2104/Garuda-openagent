@@ -196,6 +196,24 @@ async def test_exit_becomes_typed_error_with_stderr():
         await process.close()
 
 
+async def test_preexited_agent_keeps_stderr_in_typed_error():
+    argv = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stderr.write('pre-exit detail\\n'); sys.exit(4)",
+    ]
+    process = await _launched(argv)
+    try:
+        assert process._process is not None
+        await process._process.wait()
+        with pytest.raises(AcpExitError) as exc:
+            await process.initialize()
+        assert exc.value.exit_code == 4
+        assert "pre-exit detail" in exc.value.stderr_tail
+    finally:
+        await process.close()
+
+
 async def test_cancel_fails_pending_with_cancelled():
     script = "import time; time.sleep(30)"
     process = await _launched([sys.executable, "-c", script], call_timeout=20)

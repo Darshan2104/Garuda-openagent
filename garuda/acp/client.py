@@ -117,8 +117,11 @@ class AcpProcess:
                     try:
                         await asyncio.wait_for(self._process.wait(), 5.0)
                     except TimeoutError:
-                        pass
-                    self._on_eof()
+                        self._on_transport_error(
+                            AcpProtocolError("agent closed stdout without exiting")
+                        )
+                        return
+                    await self._on_eof()
                     return
                 self._buffer += chunk
                 if b"\n" not in chunk:
@@ -207,15 +210,28 @@ class AcpProcess:
             if not future.done():
                 future.set_exception(exc)
 
-    def _on_eof(self) -> None:
+    async def _wait_for_stderr(self) -> None:
+        """Finish the existing drain after child exit before surfacing diagnostics."""
+        if self._stderr_task is None:
+            return
+        try:
+            await asyncio.shield(self._stderr_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("ACP stderr drain did not finish cleanly", exc_info=True)
+
+    def _exit_error(self, message: str) -> AcpExitError:
         code = self._process.returncode if self._process else None
-        self._fail_all_pending(
-            AcpExitError(
-                f"agent exited (code={code}); stderr: {self.stderr_tail[-500:]}",
-                exit_code=code,
-                stderr_tail=self.stderr_tail,
-            )
+        return AcpExitError(
+            f"{message} (code={code}); stderr: {self.stderr_tail[-500:]}",
+            exit_code=code,
+            stderr_tail=self.stderr_tail,
         )
+
+    async def _on_eof(self) -> None:
+        await self._wait_for_stderr()
+        self._fail_all_pending(self._exit_error("agent exited"))
 
     def _on_transport_error(self, exc: Exception) -> None:
         self._fail_all_pending(exc)
@@ -228,11 +244,8 @@ class AcpProcess:
         if self._process is None or self._process.stdin is None:
             raise AcpProtocolError("process is not running")
         if self._process.returncode is not None:
-            raise AcpExitError(
-                f"agent already exited (code={self._process.returncode})",
-                exit_code=self._process.returncode,
-                stderr_tail=self.stderr_tail,
-            )
+            await self._wait_for_stderr()
+            raise self._exit_error("agent already exited")
         self._next_id += 1
         call_id = self._next_id
         loop = asyncio.get_running_loop()
