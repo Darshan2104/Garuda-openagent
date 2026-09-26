@@ -87,8 +87,9 @@ verified end to end by this repository's tests.
   it, and manifests cannot add environment variables. Use each vendor CLI's
   own login in its default location under your home directory.
 - The adapters speak Garuda's owned ACP wire subset: initialize, session/new,
-  session/prompt, session/cancel, and approval replies. Vendor extras outside
-  that subset (modes, sessions lists, images) are not driven.
+  session/prompt, session/cancel, and bidirectional permission requests.
+  Vendor extras outside that subset (modes, sessions lists, images) are not
+  driven.
 - No private HTTP endpoint is used anywhere: both adapters are stdio
   subprocesses of commands from the shipped manifests or your global
   configuration.
@@ -123,6 +124,15 @@ Project `.agent/settings.yaml` may only add `runtime_refs` aliases to these
 ids; it cannot declare commands. Generic adapters have no vendor-specific
 guarantees: modes, model lists, and extras beyond the wire subset are not
 driven. See the [ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+
+Garuda can also be launched as the agent side of an ACP editor session:
+
+```bash
+python -m garuda.acp.server --workspace /path/to/workspace
+```
+
+The server is stdio-only and uses the native Garuda runtime by default;
+`--driver echo` is reserved for protocol tests.
 
 ## Optional live compatibility checks
 

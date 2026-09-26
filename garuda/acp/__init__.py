@@ -1,4 +1,4 @@
-"""ACP client foundation (P0.12+, issues #21-#24).
+"""ACP client foundation (P0.12+, issues #21-#24) and inbound server (P2.1, #47).
 
 A minimal, version-pinned ACP-over-stdio client: JSON-RPC 2.0 with
 newline-delimited framing, process-group lifecycle, and typed failures. No
@@ -51,6 +51,7 @@ from garuda.acp.protocol import (
     decode_frame,
     encode_frame,
 )
+from garuda.acp.server import AcpServer
 
 __all__ = [
     "ACP_VERSION",
@@ -60,6 +61,7 @@ __all__ = [
     "AcpNormalizer",
     "AcpProtocolError",
     "AcpRuntime",
+    "AcpServer",
     "AcpTimeoutError",
     "AcpUnavailableError",
     "AgentCapabilities",
