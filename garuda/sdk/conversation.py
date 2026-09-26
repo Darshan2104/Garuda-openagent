@@ -27,7 +27,6 @@ class Conversation:
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
-        runtime: str = "native",
         store=None,
         approval_handler=None,
     ):
@@ -51,6 +50,7 @@ class Conversation:
         self._acp_trail: list = []
         self._sdk_session_id: str | None = None
         self._approval_task: Any | None = None
+        self._approval_broker: Any | None = None
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
@@ -149,6 +149,23 @@ class Conversation:
             self._sdk_session_id = events.session_id
             self._record_baseline(store, events.session_id)
             attach_acp_segment(store, events.session_id, adapter)
+            from garuda.acp.broker import ApprovalBroker
+            from garuda.core.permissions import PermissionEngine
+
+            self._approval_broker = ApprovalBroker(
+                engine=PermissionEngine(), store=store
+            )
+
+            if self._approval_handler is not None:
+                async def _answer(request) -> bool:
+                    try:
+                        return bool(await self._approval_handler(request.action))
+                    except Exception:
+                        return False
+
+                self._approval_broker.set_answerer(_answer)
+            else:
+                self._approval_broker.set_answerer(lambda request: False)
             self._approval_task = self._launch_approval_responder()
         turn = await self._acp.prompt(task)
         events, cursor = await self._acp.poll_events(len(self._acp_trail))
@@ -174,10 +191,11 @@ class Conversation:
 
     def _launch_approval_responder(self):
         """Relay agent approval requests to the human handler, if any."""
-        if self._approval_handler is None or self._acp is None:
+        if self._approval_broker is None or self._acp is None:
             return None
 
         adapter = self._acp
+        broker = self._approval_broker
         seen: set[str] = set()
 
         async def _respond() -> None:
@@ -192,12 +210,13 @@ class Conversation:
                         if not approval_id or approval_id in seen:
                             continue
                         seen.add(approval_id)
-                        try:
-                            allow = await self._approval_handler(
-                                event.payload.get("action", "")
-                            )
-                        except Exception:
-                            allow = False
+                        allow, _reason = await broker.decide_acp(
+                            event.payload.get("family", "approval"),
+                            event.payload.get("action", ""),
+                            runtime_id=adapter.runtime_id,
+                            session_id=self._sdk_session_id or "",
+                            approval_id=approval_id,
+                        )
                         try:
                             await adapter.permission_response(
                                 approval_id=approval_id, allow=bool(allow)
@@ -223,40 +242,37 @@ class Conversation:
         from garuda.runtime.handoff import execute_handoff
 
         _, new_adapter = acp_adapter_for_workspace(self._workspace, target)
-        store = self._store
-        if store is None or self._sdk_session_id is None or self._acp is None:
-            if store is None:
-                from garuda.core.events import EventStore
-                from garuda.core.sessions import SessionStore
-
-                store = SessionStore()
-                self._store = store
-                events = EventStore()
-                store.begin(
-                    events.session_id,
-                    task=f"handoff to {target}",
-                    model=self._model_name,
-                    agent=self._agent_name,
-                    workspace=self._workspace,
-                )
-                self._sdk_session_id = events.session_id
-            self._record_baseline(store, self._sdk_session_id)
-            await new_adapter.start(task=f"handoff to {target}")
-            attach_acp_segment(store, self._sdk_session_id, new_adapter)
-            store.record_handoff(
-                self._sdk_session_id,
-                state="acknowledged",
-                attempts=1,
-                target_runtime=target,
-                note="source in-process session retained",
+        if self._acp is None:
+            await new_adapter.close()
+            raise ValueError(
+                "native-to-ACP switching is not available through Conversation; "
+                "start an ACP conversation or use the transactional runtime handoff"
             )
-            await self._replace_adapter(new_adapter, target)
-            return {
-                "session_id": self._sdk_session_id,
-                "target_runtime": target,
-                "phase": "acknowledged",
-            }
+        store = self._store
+        assert store is not None and self._sdk_session_id is not None
         previous = self._runtime_name
+
+        from garuda.context.pack import compile_handoff
+        from garuda.context.state_card import WorkingState
+
+        unified = store.load_unified(self._sdk_session_id)
+        state = WorkingState(task=unified.legacy.get("task", self._sdk_session_id))
+        package: list[str] = []
+
+        def checkpoint() -> None:
+            _doc, body = compile_handoff(
+                state,
+                source_runtime=unified.active.runtime_id,
+                session_id=self._sdk_session_id,
+                native_session_id=unified.active.native_session_id or "",
+            )
+            package[:] = [body]
+
+        async def deliver(target_runtime) -> None:
+            if not package:
+                raise RuntimeError("handoff package was not generated")
+            await target_runtime.prompt(package[0])
+            await target_runtime.poll_events(0)
 
         def _factory():
             _, built = acp_adapter_for_workspace(self._workspace, target)
@@ -267,6 +283,8 @@ class Conversation:
             source=self._acp,
             target_factory=_factory,
             store=store,
+            checkpoint=checkpoint,
+            deliver=deliver,
             workspace=self._workspace,
         )
         attach_acp_segment(store, self._sdk_session_id, started)

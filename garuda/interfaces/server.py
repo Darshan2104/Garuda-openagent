@@ -209,44 +209,42 @@ class JsonRpcServer:
 
         return {"status": "ok", "version": __version__}
 
-    def _runtime_manifests(self, params: dict[str, Any]) -> list:
-        """Manifests for one request: builtins plus per-request extras.
+    def _runtime_registry(self, params: dict[str, Any]):
+        """Build the trusted registry; request data may only select an ID."""
+        if "runtimes" in params:
+            raise ValueError("request-defined runtime manifests are not permitted")
+        from garuda.config.agent_home import resolve_agent_home
+        from garuda.interfaces.runtime_cli import configured_registry
 
-        Resolved fresh per call, so jobs never share registry state through
-        the process.
-        """
-        from garuda.interfaces.runtime_cli import load_configured_manifest_dicts
-
-        extra = params.get("runtimes", [])
-        if not isinstance(extra, list):
-            raise ValueError("params.runtimes must be a list of manifests")
-        return load_configured_manifest_dicts({"runtimes": extra})
+        home = resolve_agent_home(self._config.workspace)
+        return configured_registry(
+            self._config.workspace,
+            global_settings=getattr(home, "global_settings", None),
+        )
 
     async def _runtime_list(self, params: dict[str, Any]) -> dict[str, Any]:
         from garuda.acp.catalog import discover, health_of
         from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
-        from garuda.runtime.registry import parse_global_manifests
-
-        manifests = parse_global_manifests(
-            self._runtime_manifests(params), source="server runtimes"
-        )
+        registry = self._runtime_registry(params)
         return {
             "api": f"runtime/v{RUNTIME_API_VERSION}",
-            "runtimes": [health_of(entry) for entry in discover(manifests)],
+            "runtimes": [
+                health_of(entry)
+                for entry in discover(registry.manifests, disabled=registry.disabled_ids)
+            ],
         }
 
     async def _runtime_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
         from garuda.acp.catalog import discover, health_of
         from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
-        from garuda.runtime.registry import parse_global_manifests
-
         runtime_id = params.get("runtime")
         if not runtime_id:
             raise ValueError("params.runtime is required")
-        manifests = parse_global_manifests(
-            self._runtime_manifests(params), source="server runtimes"
-        )
-        found = {entry.runtime_id: entry for entry in discover(manifests)}
+        registry = self._runtime_registry(params)
+        found = {
+            entry.runtime_id: entry
+            for entry in discover(registry.manifests, disabled=registry.disabled_ids)
+        }
         if runtime_id not in found:
             raise ValueError(f"Unknown runtime {runtime_id!r}")
         entry = found[runtime_id]
@@ -267,15 +265,26 @@ class JsonRpcServer:
         target = params.get("target")
         if not session_id or not target:
             raise ValueError("params.session and params.target are required")
+        registry = self._runtime_registry(params)
+        resolved = registry.get(target)
+        if resolved.kind.value != "native":
+            from garuda.acp.catalog import discover
+
+            found = {
+                entry.runtime_id: entry
+                for entry in discover(registry.manifests, disabled=registry.disabled_ids)
+            }
+            if not found.get(target) or not found[target].available:
+                raise ValueError(f"Runtime {target!r} is unavailable")
         store = SessionStore()
         if params.get("confirm"):
             from garuda.context.pack import ContextPackManager
 
             manager = ContextPackManager(store.session_dir(session_id))
-            dicts = self._runtime_manifests(params)
             text = await cmd_handoff_confirm(
                 store, session_id, target,
-                manifests=dicts,
+                workspace=self._config.workspace,
+                disabled=registry.disabled_ids,
                 pack_manager=manager,
             )
             return {"api": f"runtime/v{RUNTIME_API_VERSION}", "acknowledged": True, "detail": text}

@@ -117,6 +117,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   the source back; successful CLI delivery is supervised through its target
   turn and then explicitly closed/reaped when the command exits.
 
+## 2026-09-26 — SDK and JSON-RPC runtime authority stays trusted and transactional
+
+- JSON-RPC runtime methods resolve only the server's trusted configured registry;
+  request parameters select an existing runtime id and cannot define commands.
+- SDK ACP approval requests enter the persisted `ApprovalBroker`, including the
+  permission ceiling and fail-closed audit path, before an adapter receives a
+  response.
+- ACP-to-ACP SDK switches deliver the compiled handoff package inside the one
+  pause/checkpoint/start/ack transaction. Native-to-ACP switching through a
+  conversation refuses until it can use that same transaction, preventing two
+  mutating owners.
+
 ## 2026-09-26 — Dashboard runtime controls use the shared registry
 
 - The web dashboard resolves runtimes through the same trusted global settings,

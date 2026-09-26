@@ -30,6 +30,8 @@ from garuda.runtime import RegistryError
 from garuda.runtime.recovery import recover, report_to_dict
 from garuda.runtime.registry import RuntimeRegistry
 
+RUNTIME_API_VERSION = "1"
+
 
 def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[dict]:
     """Builtin manifests plus the trusted global `runtimes:` list.
@@ -63,7 +65,9 @@ def configured_registry(
     if global_settings is None or project_settings is None:
         home = resolve_agent_home(workspace)
         if global_settings is None:
-            global_settings = load_trusted_runtime_settings()
+            global_settings = getattr(home, "global_settings", None)
+            if global_settings is None:
+                global_settings = load_trusted_runtime_settings()
         if project_settings is None:
             project_settings = getattr(home, "settings", None) or {}
     extras = global_settings.get("runtimes", [])
@@ -97,7 +101,8 @@ def acp_adapter_for_workspace(
         project_settings=project_settings,
     )
     try:
-        manifest = registry.get(runtime_name)
+        registry.get(runtime_name)
+        manifest = registry.manifest_for(runtime_name)
     except RegistryError as exc:
         raise ValueError(f"Cannot use runtime {runtime_name!r} ({exc})") from exc
     if argv_override is None:
@@ -108,6 +113,28 @@ def acp_adapter_for_workspace(
         argv = list(argv_override)
     return registry, adapter_for_registry(
         registry, runtime_name, argv_override=argv, policy=policy
+    )
+
+
+def attach_acp_segment(store, session_id: str, adapter) -> None:
+    """Persist one ACP tenure in the session's unified runtime history."""
+    from garuda.runtime.session import RuntimeSegment
+
+    authority = adapter.authority
+    capabilities = (
+        frozenset(set(authority.owners) | set(authority.to_snapshot()))
+        if authority is not None
+        else frozenset()
+    )
+    store.attach_runtime_segment(
+        session_id,
+        RuntimeSegment(
+            runtime_id=adapter.runtime_id,
+            kind="acp",
+            native_session_id=adapter.native_session_id,
+            version=adapter.version,
+            capabilities=capabilities,
+        ),
     )
 
 
@@ -323,6 +350,10 @@ def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def recover_dict(store, session_id: str) -> dict[str, Any]:
+    return report_to_dict(recover(store, session_id))
+
+
 async def run_acp_task(
     task: str,
     *,
@@ -351,7 +382,9 @@ async def run_acp_task(
 
 
 __all__ = [
+    "RUNTIME_API_VERSION",
     "acp_adapter_for_workspace",
+    "attach_acp_segment",
     "cmd_handoff_confirm",
     "cmd_handoff_preview",
     "cmd_inspect",
@@ -362,5 +395,6 @@ __all__ = [
     "cmd_resume",
     "configured_registry",
     "load_configured_manifest_dicts",
+    "recover_dict",
     "run_acp_task",
 ]
