@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from garuda.agents.loader import load_profile  # noqa: F401
 from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
 from garuda.interfaces.runner import run_agent_task

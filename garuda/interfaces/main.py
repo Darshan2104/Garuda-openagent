@@ -1,5 +1,8 @@
 from pathlib import Path
 
+# Compatibility seam for the fail-closed startup gate tests.  The native
+# binding path resolves profiles in shared setup rather than this entry point.
+from garuda.agents.loader import load_profile  # noqa: F401
 from garuda.core.events import EventStore
 from garuda.core.modes import MODE_CHOICES
 from garuda.interfaces.cli import chat_loop
@@ -10,6 +13,8 @@ from garuda.interfaces.runner import (
 )
 from garuda.interfaces.web.live import DEFAULT_MAX_PERMISSION as WEB_DEFAULT_MAX_PERMISSION
 from garuda.interfaces.web.security import DEFAULT_PORT as WEB_DEFAULT_PORT
+from garuda.model.litellm_model import LitellmModel  # noqa: F401
+from garuda.tools import build_toolkit  # noqa: F401
 from garuda.workspace.factory import WORKSPACE_KINDS
 
 
@@ -433,8 +438,6 @@ async def run_mcp_list(args) -> int:
 
     if args.no_connect:
         return 0
-
-    from garuda.tools import build_toolkit
 
     print("\nConnecting to enumerate tools...")
     tools, manager = await build_toolkit([], paths)
