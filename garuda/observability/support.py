@@ -15,6 +15,13 @@ from typing import Any
 
 from garuda.context.redact import redact_text
 
+_PUBLIC_META_FIELDS = frozenset(
+    {
+        "session_id", "schema_version", "status", "created_at", "updated_at",
+        "turns", "runtime_segments", "handoff", "mode", "metrics", "acceptance",
+    }
+)
+
 
 def _scrub(value: Any) -> Any:
     """Recursively secret-scrub every string *and* mapping key.
@@ -55,7 +62,7 @@ def _tally(path: Path) -> dict[str, int]:
             kinds["malformed"] = kinds.get("malformed", 0) + 1
             continue
         if isinstance(record, dict):
-            kind = str(record.get("type", record.get("kind", "unknown")))
+            kind = _scrub_key(str(record.get("type", record.get("kind", "unknown"))))
             kinds[kind] = kinds.get(kind, 0) + 1
         else:
             kinds["malformed"] = kinds.get("malformed", 0) + 1
@@ -101,9 +108,12 @@ def build_support_bundle(
                 metrics_payload = loaded if isinstance(loaded, dict) else {}
             except (OSError, ValueError):
                 metrics_payload = {}
+    public_meta = {
+        key: value for key, value in meta.items() if key in _PUBLIC_META_FIELDS
+    }
     return {
         "session_id": _scrub(meta.get("session_id", root.name)),
-        "meta": _scrub({k: v for k, v in meta.items() if k != "session_id"}),
+        "meta": _scrub(public_meta),
         "lanes": lanes,
         "native_event_kinds": _tally(root / "events.jsonl"),
         "external_event_kinds": _tally(root / "acp-events.jsonl"),

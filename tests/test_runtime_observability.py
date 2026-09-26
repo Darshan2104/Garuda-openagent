@@ -52,6 +52,8 @@ def test_metric_schema_and_triage_buckets():
     assert set(metrics.to_dict()["phases"]) == set(PHASES)
     assert set(metrics.to_dict()["errors"]) == set(TRIAGE_BUCKETS)
     assert metrics.to_dict()["phases"]["turn"]["count"] == 1
+    metrics.note("turn", 20.0)
+    assert metrics.to_dict()["phases"]["turn"]["median_ms"] == 16.25
 
     assert classify_error(AcpProtocolError("bad frame")) == "protocol"
     assert classify_error(AcpTimeoutError("slow")) == "harness"
@@ -107,12 +109,13 @@ async def test_support_bundle_redacts_and_excludes_transcripts(tmp_path):
 
     store = SessionStore(tmp_path / "sessions")
     store.begin(
-        "s1", task="rotate token=supersecret9 now", model="m", agent="a", workspace="w"
+        "s1", task="ordinary prompt that must never be exported", model="m", agent="a", workspace="w"
     )
     store.ensure_unified("s1")
     session_dir = store.session_dir("s1")
     (session_dir / "events.jsonl").write_text(
-        json.dumps({"type": "user_message", "payload": {"content": "password=hunter2"}}) + "\n",
+        json.dumps({"type": "user_message", "payload": {"content": "password=hunter2"}}) + "\n"
+        + json.dumps({"type": "token=eventsecret"}) + "\n",
         encoding="utf-8",
     )
     metrics = RuntimeMetrics(adapter_version="0.4")
@@ -120,9 +123,9 @@ async def test_support_bundle_redacts_and_excludes_transcripts(tmp_path):
     bundle = build_support_bundle(session_dir, metrics=metrics.to_dict(), garuda_version="1.2.0")
 
     blob = json.dumps(bundle)
-    assert "supersecret9" not in blob
+    assert "ordinary prompt that must never be exported" not in blob
     assert "hunter2" not in blob
-    assert bundle["native_event_kinds"] == {"user_message": 1}
+    assert all("eventsecret" not in key for key in bundle["native_event_kinds"])
     assert bundle["metrics"]["phases"]["turn"]["count"] == 1
     assert bundle["garuda_version"] == "1.2.0"
     assert bundle["lanes"] == [] or isinstance(bundle["lanes"], list)

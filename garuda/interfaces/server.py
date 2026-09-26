@@ -190,6 +190,8 @@ class JsonRpcServer:
                 result = await self._runtime_recover(params)
             elif method == "runtime_support":
                 result = await self._runtime_support(params)
+            elif method == "runtime_support":
+                result = await self._runtime_support(params)
             else:
                 raise ValueError(f"Unknown method: {method}")
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -323,8 +325,7 @@ class JsonRpcServer:
         session_id = params.get("session")
         if not session_id:
             raise ValueError("params.session is required")
-        store = SessionStore()
-        payload = support_bundle_dict(store, session_id)
+        payload = support_bundle_dict(SessionStore(), session_id)
         payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
         return payload
 

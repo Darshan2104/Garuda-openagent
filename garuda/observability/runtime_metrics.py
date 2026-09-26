@@ -91,7 +91,15 @@ class RuntimeMetrics:
             samples = sorted(self.durations_ms.get(phase, []))
             summary[phase] = {
                 "count": self.counts.get(phase, 0),
-                "median_ms": samples[len(samples) // 2] if samples else None,
+                "median_ms": (
+                    samples[0]
+                    if len(samples) == 1
+                    else (
+                        (samples[(len(samples) - 1) // 2] + samples[len(samples) // 2]) / 2
+                        if samples
+                        else None
+                    )
+                ),
             }
         return {
             "adapter_version": self.adapter_version,

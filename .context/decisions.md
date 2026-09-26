@@ -229,3 +229,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   hashes, non-negative measures, completion unknowns, and handoff states.
   Ablation conversion rejects any result whose task id is absent from the task
   set rather than hashing the id as a substitute prompt.
+
+## 2026-09-26 — Runtime observability is persistent and least-privilege
+
+- ACP adapters always own a `RuntimeMetrics` recorder; session-aware CLI, SDK,
+  and handoff construction passes the session store and persistence directory so
+  metrics survive adapter close and are available to support reporting.
+- Support bundles expose only an explicit metadata allowlist plus lane/tally
+  structure and metrics. Raw task prompts, workspace paths, transcripts, and
+  arbitrary session fields are excluded; every public string and event-tally
+  key is recursively scrubbed.
+- Runtime metrics use the statistical median for even samples, while native
+  turn accounting remains on its existing schema and path.

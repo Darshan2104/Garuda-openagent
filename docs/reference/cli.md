@@ -16,6 +16,7 @@
 | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. |
 | `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped: no lease names it, no recorded child is alive, and the target left a retired child or a `closed`/`failed` state. |
 | `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
+| `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
 
 ## ACP runs and handoffs
 
