@@ -548,7 +548,12 @@ def _target_segment(target, info):
 
 
 def _record_return_to_source(store, session_id: str, prior_active, reason: str) -> None:
-    """Mark the attempt failed; re-append the source segment if it had moved."""
+    """Mark the attempt failed; re-append the source segment if it had moved.
+
+    If this write fails too, the persisted owner may still name a target that
+    never took over. That double fault is surfaced as a `HandoffError` naming
+    the manual fix (`garuda runtime reclaim`), never just logged.
+    """
     try:
         moved = prior_active is not None and store.load_unified(
             session_id
@@ -560,8 +565,13 @@ def _record_return_to_source(store, session_id: str, prior_active, reason: str) 
             reason=reason,
             active_segment=prior_active if moved else None,
         )
-    except Exception:
+    except Exception as exc:
         logger.warning("Handoff rollback audit failed", exc_info=True)
+        raise HandoffError(
+            f"handoff {reason} failed and ownership could not be returned to the "
+            f"source ({exc}); the session record may name a target that never took "
+            f"over — once it is stopped, run `garuda runtime reclaim --session {session_id}`"
+        ) from exc
 
 
 async def _close_quietly(target) -> None:

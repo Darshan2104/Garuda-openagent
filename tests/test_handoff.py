@@ -427,3 +427,33 @@ async def test_acknowledgement_audit_failure_never_transfers_ownership(tmp_path)
         )
     assert source.state is LifecycleState.IDLE
     assert target.state is LifecycleState.CLOSED
+
+
+async def test_double_fault_on_return_to_source_names_the_manual_fix(tmp_path, monkeypatch):
+    """Acknowledgement fails and the return-to-source write fails too: the
+    caller gets an error naming `garuda runtime reclaim`, not a log line."""
+    from garuda.core.sessions import SessionStore
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "double-fault")
+    target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="fake-target")
+
+    async def close_fails():
+        raise OSError("source will not close")
+
+    monkeypatch.setattr(source, "close", close_fails)
+    real_record = store.record_handoff
+
+    def record(session_id, *, state, **kwargs):
+        if state == "failed":
+            raise OSError("disk full")
+        return real_record(session_id, state=state, **kwargs)
+
+    monkeypatch.setattr(store, "record_handoff", record)
+    with pytest.raises(HandoffError, match="garuda runtime reclaim --session double-fault"):
+        await execute_handoff(
+            session_id="double-fault",
+            source=source,
+            target_factory=lambda: target,
+            store=store,
+        )

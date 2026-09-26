@@ -139,8 +139,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - The CLI handoff is one-shot and ends consistent: the target is closed and
   reaped and `target_state: closed` recorded. Ownership stays with the target:
   `recover()` classifies an ACP-active session `external` (children still
-  reaped) and every native resume path refuses it; ownership moves only by an
-  explicit new handoff, and none back to native exists yet.
+  reaped) and every native resume path refuses it. The way back is explicit:
+  `reclaim_native` (`garuda runtime reclaim`) re-appends the native segment in
+  one locked write, only when the target is recorded `closed`/`failed`, no lease
+  names the session, recovery leaves no live recorded child, and a native
+  checkpoint exists. A double fault on return-to-source raises naming reclaim.
 - `garuda run --runtime <acp>` and the CLI handoff share the native run's
   invariants through `interfaces/run_guard.py` (workspace lease with heartbeat
   race and release on every path, P0.17 broker approvals: headless deny-all

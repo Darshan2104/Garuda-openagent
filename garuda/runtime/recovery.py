@@ -716,6 +716,60 @@ def require_native_resumable(report: RecoveryReport) -> RecoveryReport:
     return report
 
 
+#: Recorded target states after which an external owner is known to have
+#: stopped acting on the session, so ownership may be reclaimed explicitly.
+_RECLAIMABLE_TARGET_STATES = frozenset({"closed", "failed"})
+
+
+def reclaim_native(store, session_id: str, *, leases=None, **recover_kwargs) -> RecoveryReport:
+    """Return ownership of a handed-off session to its native tenure.
+
+    The explicit way back from `EXTERNAL` — e.g. after a delivery failure
+    (expired vendor login, timeout) closed the target. Refused unless the
+    session is externally owned, its recorded target state is `closed` or
+    `failed`, no lease names it, and recovery leaves no live recorded child
+    (orphans whose identity matches are reaped first; anything indeterminate
+    refuses). The ownership move is one locked write that re-appends the
+    session's native segment and records the reclaim in the handoff record.
+    """
+    report = recover(store, session_id, leases=leases, **recover_kwargs)
+    if report.state is not RestartState.EXTERNAL:
+        raise RecoveryError(
+            f"session {session_id} is {report.state.value}, not externally owned; "
+            "nothing to reclaim"
+        )
+    unified = store.load_unified(session_id)
+    target_state = unified.handoff.get("target_state")
+    if target_state not in _RECLAIMABLE_TARGET_STATES:
+        raise RecoveryError(
+            f"external runtime {unified.active.runtime_id!r} has recorded target state "
+            f"{target_state!r}; reclaim needs it closed or failed"
+        )
+    if _live_children(store, session_id):
+        raise RecoveryError(
+            f"session {session_id} still has live recorded children; refusing to reclaim"
+        )
+    native = next((seg for seg in unified.segments if seg.kind == "native"), None)
+    if native is None or native.native_session_id != session_id:
+        raise RecoveryError(f"session {session_id} has no native tenure to reclaim")
+    try:
+        store.load_messages(session_id)
+    except Exception as exc:
+        raise RecoveryError(
+            f"session {session_id} has no readable native checkpoint to resume from: {exc}"
+        ) from exc
+    store.record_handoff(
+        session_id,
+        state="acknowledged",
+        attempts=1,
+        target_runtime="native",
+        reclaimed_from=unified.active.runtime_id,
+        reason=f"reclaim after target {target_state}",
+        active_segment=native,
+    )
+    return classify(store, session_id)
+
+
 def report_to_dict(report: RecoveryReport) -> dict[str, Any]:
     return {
         "session_id": report.session_id,

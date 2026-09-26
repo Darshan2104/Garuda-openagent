@@ -419,6 +419,18 @@ def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cmd_reclaim(store, session_id: str, *, leases=None) -> str:
+    """Return a handed-off session to its native tenure (see `reclaim_native`)."""
+    from garuda.runtime.recovery import reclaim_native
+
+    report = reclaim_native(store, session_id, leases=leases)
+    return (
+        f"session {report.session_id}: ownership reclaimed by native "
+        f"({report.state.value}); resume with `garuda runtime resume --session "
+        f"{report.session_id}`\n"
+    )
+
+
 async def run_acp_task(
     task: str,
     *,
@@ -535,6 +547,7 @@ __all__ = [
     "cmd_inspect_registry",
     "cmd_list",
     "cmd_list_registry",
+    "cmd_reclaim",
     "cmd_recover",
     "cmd_resume",
     "configured_catalog",

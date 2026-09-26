@@ -340,6 +340,10 @@ def build_parser():
     runtime_recover = runtime_sub.add_parser("recover", help="Classify and recover a session")
     runtime_recover.add_argument("--session", required=True, help="Session id")
     runtime_recover.add_argument("--json", action="store_true", help="Print JSON report")
+    runtime_reclaim = runtime_sub.add_parser(
+        "reclaim", help="Return a handed-off session whose target stopped to native"
+    )
+    runtime_reclaim.add_argument("--session", required=True, help="Session id")
 
     return parser
 
@@ -459,6 +463,7 @@ async def _run_runtime_command(args) -> int:
         cmd_handoff_preview,
         cmd_inspect_registry,
         cmd_list_registry,
+        cmd_reclaim,
         cmd_recover,
     )
     from garuda.runtime.registry import RegistryError
@@ -553,6 +558,16 @@ async def _run_runtime_command(args) -> int:
                     await mcp_manager.close()
                 except Exception:
                     pass
+        return 0
+    if command == "reclaim":
+        from garuda.runtime.recovery import RecoveryError
+        from garuda.workspace.lease import LeaseStore
+
+        try:
+            print(cmd_reclaim(store, args.session, leases=LeaseStore()), end="")
+        except RecoveryError as exc:
+            print(f"Error: reclaim refused: {exc}")
+            return 1
         return 0
     if command == "recover":
         from garuda.runtime.recovery import RecoveryError

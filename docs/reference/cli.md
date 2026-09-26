@@ -14,6 +14,7 @@
 | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime (see below). |
 | `garuda runtime resume --session S -t TASK` | Resume a persisted native session through the real run lifecycle (classifies first; refuses a session an external runtime owns). |
 | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. |
+| `garuda runtime reclaim --session S` | Return an `external` session to native once its target is recorded `closed`/`failed`, no lease names it, and no recorded child is alive. |
 
 ## ACP runs and handoffs
 
@@ -38,8 +39,10 @@ failure before acknowledgement rolls back to the source; a failure after it is
 a target failure — the target is closed and `target_state: failed` recorded,
 with no rollback over changes it may have made. Either way the session then
 belongs to the target: `recover` reports `external`, and native resume or a
-second handoff refuses. Native sessions record a relative workspace, so pass
-`--workspace`.
+second handoff refuses until `garuda runtime reclaim` returns it to native
+(refused while the target may still be acting). If a failed handoff cannot even
+record its return to the source, the error names this command. Native sessions
+record a relative workspace, so pass `--workspace`.
 
 ## Common `run` flags
 

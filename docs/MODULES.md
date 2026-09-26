@@ -175,7 +175,8 @@ failure (`HandoffDeliveryError`, `target_state: failed`), never a rollback over
 the target's changes; `record_target_outcome` records how the owner ended. `recovery.py` classifies restarts from persisted records
 (resumable, rolled-back, ambiguous, external — an ACP-owned session the native
 loop must not resume; `require_native_resumable` is the check every native resume
-path applies), reaps orphan agent children with
+path applies; `reclaim_native` is the explicit way back once the target is
+recorded stopped), reaps orphan agent children with
 verification, appends cancellations at turn/switch/process boundaries, and
 never invents success — a bare exit proves nothing. It runs on resume only
 (`run_agent_task --resume`, after this run's workspace lease is taken, and

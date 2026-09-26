@@ -11,9 +11,11 @@ an installed fake ACP executable: a shell shim on a temp PATH that execs
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -119,6 +121,23 @@ def _main(monkeypatch, capsys, *argv) -> tuple[int, str]:
         main()
     captured = capsys.readouterr()
     return exited.value.code, captured.out + captured.err
+
+
+@contextlib.contextmanager
+def _hard_deadline(seconds: int):
+    """Fail — rather than hang CI — if a guarded path stops answering (e.g. an
+    unanswered ACP permission request or a delivery with no timeout)."""
+
+    def _expired(_signum, _frame):
+        raise TimeoutError(f"guarded path still running after {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _expired)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _pid_gone(pid: int) -> bool:
@@ -334,10 +353,11 @@ def test_run_runtime_acp_headless_approvals_are_denied_and_audited(
     _install_shim(tmp_path / "bin", profile="approval")
     _trusted_settings(tmp_path, monkeypatch)
 
-    code, out = _main(
-        monkeypatch, capsys, "run", "-t", "rm -rf build", "--workspace", str(ws),
-        "--runtime", "fakeacp",
-    )
+    with _hard_deadline(60):
+        code, out = _main(
+            monkeypatch, capsys, "run", "-t", "rm -rf build", "--workspace", str(ws),
+            "--runtime", "fakeacp",
+        )
     assert code == 0, out
     (meta,) = SessionStore().list_sessions()
     approvals = [v for k, v in meta.items() if k.startswith("approval:")]
@@ -416,6 +436,24 @@ def test_handoff_confirm_then_recover_end_to_end(tmp_path, monkeypatch, capsys):
     )
     assert code == 1 and "native resume refused" in out
     assert store.load_unified("src-1").active.runtime_id == "fakeacp"
+
+    # `external` is not a dead end: with the target recorded stopped and its
+    # child reaped, an explicit reclaim returns ownership to the native tenure.
+    handoff = store.load_unified("src-1").handoff
+    store.update_meta("src-1", {"handoff": {**handoff, "target_state": "delivered"}})
+    code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
+    assert code == 1 and "reclaim needs it closed or failed" in out
+    store.update_meta("src-1", {"handoff": handoff})
+    code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
+    assert code == 0 and "ownership reclaimed by native" in out, out
+    unified = store.load_unified("src-1")
+    assert unified.active.kind == "native"
+    assert [s.runtime_id for s in unified.segments] == ["native", "fakeacp", "native"]
+    assert unified.handoff["reclaimed_from"] == "fakeacp"
+    code, out = _main(monkeypatch, capsys, "runtime", "recover", "--session", "src-1", "--json")
+    assert code == 0 and json.loads(out)["state"] == "resumable"
+    code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
+    assert code == 1 and "not externally owned" in out
 
 
 def test_handoff_refuses_a_foreign_mutating_lease_before_moving(
@@ -511,8 +549,11 @@ async def test_handoff_delivery_timeout_is_a_target_failure(tmp_path, monkeypatc
     _trusted_settings(tmp_path, monkeypatch)
     store = SessionStore()
     with pytest.raises(HandoffDeliveryError, match="deadline"):
-        await cmd_handoff_confirm(
-            store, "src-slow", "fakeacp", workspace=str(ws), delivery_timeout=0.5
+        await asyncio.wait_for(
+            cmd_handoff_confirm(
+                store, "src-slow", "fakeacp", workspace=str(ws), delivery_timeout=0.5
+            ),
+            60,
         )
     unified = store.load_unified("src-slow")
     assert unified.active.runtime_id == "fakeacp"
