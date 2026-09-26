@@ -101,11 +101,16 @@ async def test_sessions_prompts_and_cancellation():
     assert server.session_count() == 1
 
     result = await duplex.call(
-        "session/prompt", {"sessionId": session_id, "prompt": "hello inbound"}
+        "session/prompt", {
+            "sessionId": session_id,
+            "prompt": [{"type": "text", "text": "hello inbound"}],
+        }
     )
     assert result["stopReason"] == "end_turn"
     updates = duplex.notifications()
-    assert any(u.get("text", "").startswith("done:") for u in updates), updates
+    assert any(
+        (u.get("content", {}).get("text", "")).startswith("done:") for u in updates
+    ), updates
 
     await duplex.call("session/cancel", {"sessionId": session_id})
     with pytest.raises(AssertionError, match="unknown session"):
@@ -163,7 +168,8 @@ async def test_subprocess_conformance_against_echo_driver():
     assert process.stdin is not None and process.stdout is not None
     try:
         process.stdin.write(
-            encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                          "params": {"protocolVersion": ACP_VERSION}})
         )
         await process.stdin.drain()
         assert (await _read_reply(process.stdout, 1))["result"][
@@ -185,7 +191,7 @@ async def test_subprocess_conformance_against_echo_driver():
                     "method": "session/prompt",
                     "params": {
                         "sessionId": created["result"]["sessionId"],
-                        "prompt": "hello",
+                    "prompt": [{"type": "text", "text": "hello"}],
                     },
                 }
             )
@@ -249,7 +255,8 @@ async def test_cancel_processed_while_prompt_blocked():
 
     server = AcpServer(_make, _send)
     await server.handle(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": ACP_VERSION}}
     )
     await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
     created, _ = decode_frame(sent[-1])
@@ -258,7 +265,8 @@ async def test_cancel_processed_while_prompt_blocked():
     prompt_task = asyncio.ensure_future(
         server.handle(
             {"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
-             "params": {"sessionId": session_id, "prompt": "blocked work"}}
+             "params": {"sessionId": session_id,
+                        "prompt": [{"type": "text", "text": "blocked work"}]}}
         )
     )
     await asyncio.sleep(0.2)
@@ -275,6 +283,85 @@ async def test_cancel_processed_while_prompt_blocked():
             replies[message["id"]] = message
     assert replies[4]["result"] == {"cancelled": True}
     assert replies[3]["result"] == {"stopReason": "cancelled"}
+
+
+async def test_permission_request_roundtrip_streams_mid_turn():
+    """The server emits an ACP request while the runtime waits for approval."""
+    from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
+
+    class ApprovalRuntime:
+        runtime_id = "approval"
+
+        def __init__(self):
+            self._approved = asyncio.Event()
+            self._events = []
+
+        async def start(self, *, task, session_id=None):
+            self._session_id = session_id
+
+        async def prompt(self, text):
+            self._events.append(RuntimeEvent(
+                kind=RuntimeEventKind.APPROVAL_REQUEST,
+                session_id=self._session_id, turn=1, seq=0,
+                payload={"approval_id": "a1", "action": text},
+            ))
+            await self._approved.wait()
+            self._events.append(RuntimeEvent(
+                kind=RuntimeEventKind.MESSAGE,
+                session_id=self._session_id, turn=1, seq=1,
+                payload={"chunk": "approved"},
+            ))
+            return 1
+
+        async def permission_response(self, *, approval_id, allow):
+            assert approval_id == "a1" and allow is True
+            self._approved.set()
+
+        async def poll_events(self, cursor):
+            return self._events[cursor:], len(self._events)
+
+        async def cancel(self, *, reason=""):
+            self._approved.set()
+
+        async def close(self):
+            self._approved.set()
+
+    sent: list[bytes] = []
+
+    async def _send(frame: bytes) -> None:
+        sent.append(frame)
+
+    async def _make(session_id: str):
+        return ApprovalRuntime()
+
+    server = AcpServer(_make, _send)
+    await server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": ACP_VERSION}})
+    await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    created, _ = decode_frame(sent[-1])
+    session_id = created["result"]["sessionId"]
+    prompt_task = asyncio.create_task(server.handle({
+        "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+        "params": {"sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "write file"}]},
+    }))
+    request = None
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        for frame in sent:
+            message, _ = decode_frame(frame)
+            if message.get("method") == "session/request_permission":
+                request = message
+                break
+        if request:
+            break
+    assert request is not None
+    assert request["params"]["approvalId"] == "a1"
+    await server.handle({"jsonrpc": "2.0", "id": request["id"],
+                         "result": {"approved": True}})
+    await asyncio.wait_for(prompt_task, 5)
+    replies = [decode_frame(frame)[0] for frame in sent if decode_frame(frame)[0].get("id") == 3]
+    assert replies[-1]["result"]["stopReason"] == "end_turn"
 
 
 async def test_malformed_framing_exits_nonzero_without_details():
@@ -327,7 +414,8 @@ async def test_internal_errors_do_not_leak():
 
     server = Server(_make, _send)
     await server.handle(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": ACP_VERSION}}
     )
     await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
     message, _ = decode_frame(sent[-1])
