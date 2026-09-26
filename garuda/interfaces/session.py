@@ -2,18 +2,14 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
-from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
+from garuda.agents.loader import AgentProfile
+from garuda.agents.setup import PreparedNativeRun, prepare_agent_run
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
-from garuda.core.modes import apply_mode_preset
-from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
 from garuda.core.run_state import reserved_output_tokens
-from garuda.mcp.config import resolve_mcp_config_paths
-from garuda.model.litellm_model import LitellmModel
-from garuda.tools import build_toolkit
+from garuda.model.config import CollectionPolicy, ModelBindings, ResolvedField
 from garuda.types import AgentConfig, Message, Role
 
 ApprovalHandler = Callable[[str], Awaitable[bool]]
@@ -25,21 +21,25 @@ class AgentSession:
 
     profile: AgentProfile
     config: AgentConfig
-    model: LitellmModel
-    permissions: PermissionEngine
+    model: Any
+    permissions: Any
     tools: list
     agent: object
     events: EventStore = field(default_factory=EventStore)
     mcp_manager: object | None = None
     agents_dir: Path | list[Path] | None = None
     context: ContextManager | None = None
+    bindings: ModelBindings | None = None
+    provenance: dict[str, ResolvedField] = field(default_factory=dict)
+    collection: Any | None = None
+    collection_policy: CollectionPolicy | None = None
 
     @classmethod
     async def create(
         cls,
         *,
         agent_name: str,
-        model: str,
+        model: str | Any | None = None,
         workspace: str,
         agents_dir: Path | list[Path] | None = None,
         mcp_config_path: str | None = None,
@@ -49,51 +49,46 @@ class AgentSession:
         workspace_kind: str = "local",
         docker_image: str = "ubuntu:22.04",
         docker_host: str | None = None,
+        reasoning_model: str | Any | None = None,
+        collection_model: str | Any | None = None,
+        no_collection: bool = False,
+        model_binding: str | None = None,
     ) -> "AgentSession":
         from garuda.config.agent_home import resolve_agents_dirs
 
+        # Resolved (not just stored) so forked subagents search the same
+        # `.agent/agents` then `.garuda/agents` roots; idempotent with setup.
         agents_dir = resolve_agents_dirs(workspace, agents_dir)
-        profile = load_profile(agent_name, extra_dir=agents_dir)
-        config = profile.to_agent_config()
-        if mode:  # else honor the profile's own mode
-            config.mode = mode
-        apply_mode_preset(config, declared_fields=profile.declared_fields)
-        # After the preset, and narrower than it — same precedence `garuda run`
-        # uses, so `--mode readonly` and `--permission-mode` mean the same thing
-        # in both interfaces.
-        if permission_mode:
-            config.permission_mode = permission_mode
-        config.workspace_kind = workspace_kind
-        config.docker_image = docker_image
-        config.docker_host = docker_host
-        config.system_prompt = resolve_system_prompt(profile, workspace)
-        mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
-        permissions = PermissionEngine(
-            # config, not profile: the profile value is only the starting point, and
-            # reading it here meant a chat session ignored both the mode preset and
-            # the flag. `--mode readonly` left the agent writing files.
-            mode=config.permission_mode,
-            tool_rules=profile.tool_rules,
-            path_rules=profile.path_rules,
-            bash_rules=profile.bash_rules,
-            approval_handler=approval_handler,
-        )
-        tools, mcp_manager = await build_toolkit(
-            profile.tools, mcp_paths, workspace=workspace, mcp_servers=profile.mcp_servers
-        )
-        return cls(
-            profile=profile,
-            config=config,
-            model=LitellmModel(
-                model_name=model,
-                reasoning_effort=config.reasoning_effort,
-                thinking_budget_tokens=config.thinking_budget_tokens,
-            ),
-            permissions=permissions,
-            tools=tools,
-            mcp_manager=mcp_manager,
+        prepared: PreparedNativeRun = await prepare_agent_run(
+            agent_name,
+            workspace=workspace,
             agents_dir=agents_dir,
-            agent=create_agent(profile.name, mode=config.mode),
+            mcp_config_path=mcp_config_path,
+            mode=mode,
+            permission_mode=permission_mode,
+            approval_handler=approval_handler,
+            model=model,
+            reasoning_model=reasoning_model,
+            collection_model=collection_model,
+            no_collection=no_collection,
+            model_binding=model_binding,
+        )
+        prepared.config.workspace_kind = workspace_kind
+        prepared.config.docker_image = docker_image
+        prepared.config.docker_host = docker_host
+        return cls(
+            profile=prepared.profile,
+            config=prepared.config,
+            model=prepared.reasoning,
+            permissions=prepared.permissions,
+            tools=prepared.tools,
+            mcp_manager=prepared.mcp_manager,
+            agents_dir=agents_dir,
+            agent=prepared.agent,
+            bindings=prepared.bindings,
+            provenance=prepared.provenance,
+            collection=prepared.collection,
+            collection_policy=prepared.collection_policy,
         )
 
     def prepare_context(self, task: str) -> ContextManager:

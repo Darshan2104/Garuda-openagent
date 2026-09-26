@@ -71,3 +71,26 @@ def test_same_provider_shares_governor_bucket():
 def test_identity_hides_credentials_and_query():
     model = ScriptModel([ModelResponse(content="hi", tool_calls=[])], model_name="x/m?key=secret")
     assert "secret" not in safe_model_identity(model)
+
+
+def test_legacy_from_config_construction_still_works():
+    from garuda.model.litellm_model import LitellmModel
+    from garuda.types import AgentConfig
+
+    config = AgentConfig(reasoning_effort="high", thinking_budget_tokens=5000)
+    model = LitellmModel.from_config("provider-a/m", config)
+    assert model.model_name == "provider-a/m"
+    assert model._reasoning_effort == "high"
+    assert model._thinking_budget_tokens == 5000
+
+
+def test_no_api_key_survives_build_or_repr():
+    import dataclasses
+
+    from garuda.model.litellm_model import LitellmModel
+
+    factory = ModelFactory()
+    resolved = factory.build(ModelBindings(reasoning=ModelSpec(model="provider-a/m")))
+    assert isinstance(resolved.reasoning, LitellmModel)
+    assert resolved.reasoning._api_key is None
+    assert "sk-" not in repr(dataclasses.astuple(resolved.bindings.reasoning))

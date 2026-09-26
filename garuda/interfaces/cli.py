@@ -8,9 +8,15 @@ from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import cleanup_workspace, resolve_environment
 from garuda.interfaces.session import AgentSession
 from garuda.interfaces.tui import ChatRenderer
+from garuda.model.factory import safe_model_identity
 from garuda.plugins.hooks import build_hook_registry
 from garuda.types import AgentResult
 from garuda.workspace import evidence
+
+
+def resolved_model_name(session: AgentSession) -> str:
+    """The event-safe resolved reasoning identity every entry point logs."""
+    return safe_model_identity(session.model)
 
 
 async def stdin_approval(action: str, stream=None) -> bool:
@@ -91,7 +97,10 @@ async def chat_loop(args) -> int:
 
     session = await AgentSession.create(
         agent_name=args.agent,
-        model=args.model,
+        model=getattr(args, "model", None),
+        reasoning_model=getattr(args, "reasoning_model", None),
+        collection_model=getattr(args, "collection_model", None),
+        no_collection=getattr(args, "no_collection", False),
         workspace=args.workspace,
         agents_dir=agents_dir,
         mcp_config_path=getattr(args, "mcp_config", None),
@@ -109,7 +118,7 @@ async def chat_loop(args) -> int:
     events_path = store.begin(
         session_id=session.events.session_id,
         task="(interactive chat)",
-        model=args.model,
+        model=resolved_model_name(session),
         agent=session.profile.name,
         workspace=args.workspace,
     )
@@ -140,7 +149,7 @@ async def chat_loop(args) -> int:
     render = not args.json
     renderer = ChatRenderer(use_rich=render, stream=human)
     renderer.header(
-        model=args.model,
+        model=resolved_model_name(session),
         agent=session.profile.name,
         workspace=session.config.workspace_kind,
         session_id=session.events.session_id,

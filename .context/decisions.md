@@ -268,3 +268,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - EOF cleanup cancels pending turns and closes sessions/writers under a bound.
   Native server sessions retain and close the MCP manager returned by setup so
   editor disconnects do not leak subprocess resources.
+## 2026-09-26 — P1 model role bindings (issue #79, part of #74)
+
+- `prepare_agent_run` is the single binding-resolution point returning `PreparedNativeRun`; `--model` is the explicit reasoning alias and parser defaults are `None` so omission never masks profile/project/global bindings.
+- SDK `Model` objects are kept by identity per run; no API keys in specs; project/profile collection overlays narrow key-wise against the global ceiling; the server builds fresh clients per request.

@@ -927,13 +927,15 @@ def test_dashboard_reads_a_well_formed_trajectory(tmp_path: Path):
 
 
 async def test_one_tasks_failed_setup_does_not_lose_the_matrix(tmp_path: Path, monkeypatch):
-    from garuda.eval import ablation
+    import garuda.model.factory as factory_module
     from garuda.eval.ablation import AblationTask, run_ablation
 
-    monkeypatch.setattr(
-        ablation,
-        "LitellmModel",
-        lambda model_name: ScriptModel(responses=[_complete()]),
+    # Eval trials resolve through the shared ModelFactory (fresh per variant),
+    # so the stub hooks the transport registry with a fresh script per build.
+    monkeypatch.setitem(
+        factory_module._registry,
+        "litellm",
+        lambda spec, **kwargs: ScriptModel(responses=[_complete()]),
     )
 
     def explode(_workspace):

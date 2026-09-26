@@ -57,6 +57,15 @@ class AgentProfile:
     subagent: bool = False
     reasoning_effort: str | None = None
     thinking_budget_tokens: int | None = None
+    # Dual-model role binding: a reference to a globally authorized
+    # `model_bindings` alias (resolved in agents/setup.py). A profile may only
+    # reference an alias and narrow collection limits — never define providers,
+    # endpoints, or wider ceilings.
+    model_binding: str | None = None
+    # Raw collection narrowing block (parsed into a CollectionPolicy by setup).
+    # Kept as a plain dict so profile YAML stays declarative and trust checks
+    # see the profile as the source.
+    collection: dict | None = None
     source_path: Path | None = None
     # Field names this profile set explicitly, so a mode preset can leave authored
     # intent alone. Diffing against dataclass defaults would not do: a profile
@@ -169,6 +178,8 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
         subagent=data.get("subagent", False),
         reasoning_effort=data.get("reasoning_effort"),
         thinking_budget_tokens=data.get("thinking_budget_tokens"),
+        model_binding=data.get("model_binding", data.get("model_bindings")),
+        collection=data.get("collection"),
         source_path=source,
     )
 

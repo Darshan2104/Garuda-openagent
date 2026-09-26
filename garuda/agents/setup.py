@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Iterator, Mapping
 
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
+from garuda.model.config import (
+    CollectionPolicy,
+    ConfigError,
+    ModelBindings,
+    ResolvedField,
+    narrow_collection_policy,
+    resolve_model_bindings,
+    with_compat_reasoning_settings,
+)
+from garuda.model.factory import ModelFactory, ResolvedModels, safe_model_identity
+from garuda.model.protocol import DEFAULT_MODEL
 from garuda.runtime.router import (
     RoutingCandidate,
     RoutingDecision,
@@ -22,6 +34,110 @@ from garuda.runtime.router import (
 from garuda.tools import build_toolkit
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _is_sdk_model(candidate: Any) -> bool:
+    """True when the caller supplied a live `Model` object rather than a name."""
+    return isinstance(getattr(candidate, "model_name", None), str) and callable(
+        getattr(candidate, "complete", None)
+    )
+
+
+def coerce_reasoning_flag(model: str | Any | None, reasoning_model: str | Any | None) -> Any | None:
+    """Merge the legacy `--model` alias with `--reasoning-model`.
+
+    `--model` remains the explicit reasoning alias. When both flags name
+    different string models the request is ambiguous and fails closed with an
+    actionable error; identical values (or one side unset) resolve to one.
+    Live `Model` objects compare by identity.
+    """
+    if model is None:
+        return reasoning_model
+    if reasoning_model is None:
+        return model
+    if _is_sdk_model(model) or _is_sdk_model(reasoning_model):
+        if model is reasoning_model:
+            return model
+        raise ConfigError(
+            "conflicting model flags: --model and --reasoning-model name different models"
+        )
+    if model != reasoning_model:
+        raise ConfigError(
+            f"conflicting model flags: --model ({model!r}) and "
+            f"--reasoning-model ({reasoning_model!r}) differ; pass one"
+        )
+    return reasoning_model
+
+
+def _explicit_string(value: str | Any | None) -> str | None:
+    """An explicit model *name*, or None when unset or a live SDK object."""
+    if value is None or _is_sdk_model(value):
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("model flags must be non-empty model names or Model objects")
+    return value
+
+
+@dataclass
+class PreparedNativeRun:
+    """Everything one native run needs, resolved once through shared setup.
+
+    `profile`, `config`, `permissions`, `tools`, `agent`, and `mcp_manager`
+    are the historical run dependencies. `bindings` is the resolved
+    reasoning/collection mapping (collection is None on single-model runs, so
+    the tool schema and call path stay unchanged), `resolved` holds the built
+    clients, `provenance` reports where each role resolved from, and
+    `collection_policy` carries the immutable collection setup — the live
+    coordinator is constructed later, once the environment and parent context
+    exist. Exactly two configurable model slots: reasoning and collection.
+
+    Iterable as the historical 6-tuple so existing unpack sites keep working.
+    """
+
+    profile: AgentProfile
+    config: AgentConfig
+    permissions: PermissionEngine
+    tools: list
+    agent: object
+    mcp_manager: object | None
+    bindings: ModelBindings
+    resolved: ResolvedModels
+    provenance: dict[str, ResolvedField]
+    collection_policy: CollectionPolicy
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.profile
+        yield self.config
+        yield self.permissions
+        yield self.tools
+        yield self.agent
+        yield self.mcp_manager
+
+    def __len__(self) -> int:
+        return 6
+
+    @property
+    def reasoning(self) -> Any:
+        """The reasoning client (owns the controller loop)."""
+        return self.resolved.reasoning
+
+    @property
+    def collection(self) -> Any | None:
+        """The collection client, or None on single-model runs."""
+        return self.resolved.collection
+
+
+def _profile_binding_alias(profile: AgentProfile) -> str | None:
+    alias = profile.model_binding
+    if alias is None:
+        return None
+    if not isinstance(alias, str) or not alias.strip():
+        raise ConfigError(
+            f"profile {profile.name!r}: model_binding must be a model_bindings alias string"
+        )
+    return alias
 
 
 @dataclass(frozen=True)
@@ -411,16 +527,33 @@ async def prepare_agent_run(
     approval_handler=None,
     extra_tools: list[Tool] | None = None,
     load_project_tools: bool | None = None,
-) -> tuple[AgentProfile, AgentConfig, PermissionEngine, list, object, object | None]:
-    """Load profile, resolve skills, build toolkit, and return run dependencies.
+    # Dual-model role bindings (Tasks 1-3). `model` is the legacy explicit
+    # reasoning alias; `reasoning_model` is its new spelling. Strings are model
+    # names resolved through the shared precedence chain; live `Model` objects
+    # are SDK-supplied clients kept by identity for their run only.
+    model: str | Any | None = None,
+    reasoning_model: str | Any | None = None,
+    collection_model: str | Any | None = None,
+    no_collection: bool = False,
+    model_binding: str | None = None,
+    reasoning_effort: str | None = None,
+    thinking_budget_tokens: int | None = None,
+) -> PreparedNativeRun:
+    """Load profile, resolve model bindings, build toolkit, return run dependencies.
 
     ``permission_mode`` overrides both the profile's declaration and the mode preset.
     It has to be applied here rather than by the caller because ``PermissionEngine`` takes
     its mode at construction and exposes no setter — a caller that assigned
     ``config.permission_mode`` afterwards would change the reported posture while the
     engine kept enforcing the old one, which is the worst of the three outcomes.
+
+    Model precedence per role: explicit args > role env > legacy GARUDA_MODEL
+    (reasoning) > route binding > profile > project > global > built-in. Omitted
+    flags stay None so lower-precedence configuration is never masked by an
+    eager parser default. Prepared clients are built fresh per call: concurrent
+    server jobs never share them.
     """
-    from garuda.config.agent_home import resolve_agents_dirs
+    from garuda.config.agent_home import resolve_agent_home, resolve_agents_dirs
 
     # Default the profiles dirs to the project's `.agent/agents` then `.garuda/agents`
     # when the caller didn't pass any. Idempotent: an explicit dir/list is kept as-is.
@@ -439,7 +572,123 @@ async def prepare_agent_run(
     # wins — the same ordering the CLI uses for its own flags.
     if permission_mode:
         config.permission_mode = permission_mode
+    # Legacy reasoning knobs from CLI flags narrow the profile's own before the
+    # compatibility translation below turns them into the reasoning ModelSpec.
+    if reasoning_effort is not None:
+        config.reasoning_effort = reasoning_effort
+    if thinking_budget_tokens is not None:
+        config.thinking_budget_tokens = thinking_budget_tokens
     config.system_prompt = resolve_system_prompt(profile, workspace)
+
+    # --- Model bindings -----------------------------------------------------
+    from garuda.config.routing import load_global_orchestration, project_orchestration_from_home
+
+    home = resolve_agent_home(workspace)
+    global_orch = load_global_orchestration()
+    try:
+        project_orch = project_orchestration_from_home(home, global_orch)
+    except ConfigError:
+        raise
+    except Exception as exc:
+        raise ConfigError(f"project settings: cannot parse orchestration: {exc}") from exc
+
+    if model_binding is not None and model_binding not in global_orch.model_bindings:
+        raise ConfigError(
+            f"explicit model_binding: unknown alias {model_binding!r} "
+            f"(known: {sorted(global_orch.model_bindings)})"
+        )
+    route_binding = global_orch.model_bindings.get(model_binding) if model_binding else None
+
+    profile_alias = _profile_binding_alias(profile)
+    profile_binding: ModelBindings | None = None
+    if profile_alias is not None:
+        if profile_alias not in global_orch.model_bindings:
+            raise ConfigError(
+                f"profile {profile.name!r}: unknown model_binding alias {profile_alias!r} "
+                f"(known: {sorted(global_orch.model_bindings)})"
+            )
+        profile_binding = global_orch.model_bindings[profile_alias]
+
+    project_binding: ModelBindings | None = None
+    if project_orch.model_binding is not None:
+        project_binding = global_orch.model_bindings[project_orch.model_binding]
+
+    default_binding: ModelBindings | None = None
+    if global_orch.model_bindings:
+        default_binding = global_orch.model_bindings.get(global_orch.default_binding)
+        if default_binding is None and len(global_orch.model_bindings) == 1:
+            default_binding = next(iter(global_orch.model_bindings.values()))
+
+    merged_reasoning = coerce_reasoning_flag(model, reasoning_model)
+    sdk_reasoning = merged_reasoning if _is_sdk_model(merged_reasoning) else None
+    sdk_collection = collection_model if _is_sdk_model(collection_model) else None
+    explicit_reasoning = _explicit_string(merged_reasoning)
+    explicit_collection = _explicit_string(collection_model)
+
+    # A bare SDK/CLI default equal to the built-in is "unspecified", not
+    # explicit: otherwise the default would mask env, profile, project, and
+    # global bindings below it. An explicit identical value resolves the same.
+    if explicit_reasoning == DEFAULT_MODEL:
+        explicit_reasoning = None
+    if explicit_collection == DEFAULT_MODEL:
+        explicit_collection = None
+
+    bindings, provenance = resolve_model_bindings(
+        explicit_reasoning=explicit_reasoning,
+        explicit_collection=explicit_collection,
+        no_collection=no_collection,
+        route_binding=route_binding,
+        profile_binding=profile_binding,
+        project_binding=project_binding,
+        global_binding=default_binding,
+    )
+
+    # Compatibility period: legacy profile/config reasoning knobs become the
+    # reasoning spec's unset fields. The spec wins where it speaks.
+    bindings = ModelBindings(
+        reasoning=with_compat_reasoning_settings(
+            bindings.reasoning,
+            reasoning_effort=config.reasoning_effort,
+            thinking_budget_tokens=config.thinking_budget_tokens,
+        ),
+        collection=bindings.collection,
+    )
+
+    # Effective collection policy: global authorizes, profile/project narrow.
+    # Numeric budgets may only shrink; toggles are restated per source.
+    collection_policy = global_orch.collection
+    if profile.collection is not None:
+        collection_policy = narrow_collection_policy(
+            profile.collection,
+            global_policy=collection_policy,
+            source=f"profile {profile.name!r}",
+        )
+    project_raw_collection = (
+        home.settings.get("collection") if isinstance(home.settings, dict) else None
+    )
+    if project_raw_collection is not None:
+        collection_policy = narrow_collection_policy(
+            project_raw_collection,
+            global_policy=collection_policy,
+            source=f"project settings ({home.workspace})",
+        )
+
+    resolved = ModelFactory().build(
+        bindings,
+        provenance,
+        reasoning_model=sdk_reasoning,
+        collection_model=sdk_collection,
+    )
+
+    logger.info(
+        "Resolved models: reasoning=%s (%s), collection=%s (%s)",
+        safe_model_identity(resolved.reasoning),
+        provenance["reasoning"].provenance.value,
+        safe_model_identity(resolved.collection) if resolved.collection is not None else "none",
+        provenance["collection"].provenance.value,
+    )
+
+    # --- Toolkit ------------------------------------------------------------
     mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
     permissions = PermissionEngine(
         mode=config.permission_mode,
@@ -457,4 +706,15 @@ async def prepare_agent_run(
         mcp_servers=profile.mcp_servers,
     )
     agent = create_agent(profile.name, mode=config.mode)
-    return profile, config, permissions, tools, agent, mcp_manager
+    return PreparedNativeRun(
+        profile=profile,
+        config=config,
+        permissions=permissions,
+        tools=tools,
+        agent=agent,
+        mcp_manager=mcp_manager,
+        bindings=bindings,
+        resolved=resolved,
+        provenance=provenance,
+        collection_policy=collection_policy,
+    )

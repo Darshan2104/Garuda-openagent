@@ -127,10 +127,12 @@ async def test_software_agent_sdk(tmp_path):
 
     runner_mod.resolve_environment = local_env
 
-    import garuda.sdk.software_agent as sdk_mod
+    import garuda.model.factory as factory_module
 
-    orig_model = sdk_mod.LitellmModel
-    sdk_mod.LitellmModel = lambda model_name, **kw: ScriptModel(
+    # The SDK resolves through shared setup's ModelFactory (fresh per run), so
+    # the scripted trial hooks the transport registry, not a module constructor.
+    orig_model = factory_module._registry["litellm"]
+    factory_module._registry["litellm"] = lambda spec, **kw: ScriptModel(
         [
             ModelResponse(
                 content=None,
@@ -152,7 +154,7 @@ async def test_software_agent_sdk(tmp_path):
     try:
         result = await agent.run("sdk smoke test")
     finally:
-        sdk_mod.LitellmModel = orig_model
+        factory_module._registry["litellm"] = orig_model
         runner_mod.resolve_environment = orig
 
     assert result.success

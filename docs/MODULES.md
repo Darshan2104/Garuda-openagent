@@ -147,6 +147,10 @@ implementation (streaming, tool calls, reasoning effort, prompt caching, retries
 test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost
 semantics, and migration notes required; private endpoints never admissible.
+`config.py` owns role specs/bindings, provenance, compat translation, and
+collection-narrowing; `factory.py` builds one client per role per run.
+`agents/setup.py::prepare_agent_run` returns `PreparedNativeRun` and is the
+single resolution point for every entry point.
 
 ## `runtime/` — harness boundary
 

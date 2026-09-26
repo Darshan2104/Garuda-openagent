@@ -10,6 +10,11 @@ The OpenRouter prefix is load-bearing, not cosmetic: `_apply_usage_accounting` o
 asks for real per-call costs on `openrouter/` models, so a default that lost the
 prefix would silently downgrade every default run's cost figure from the provider's
 own number to a pricing-table estimate.
+
+Parsers deliberately default the model flags to None rather than this constant:
+an eager built-in default would mask profile, project, and global bindings below
+it. The constant is the *resolution* default (provenance `builtin`), applied in
+shared setup when nothing more specific resolves.
 """
 
 import inspect
@@ -37,26 +42,59 @@ def test_default_model_is_routed_through_openrouter():
     assert DEFAULT_MODEL.count("/") == 2, DEFAULT_MODEL
 
 
-def test_every_cli_subcommand_defaults_to_the_shared_constant(monkeypatch):
+def test_cli_model_flags_default_to_none_so_bindings_are_honored(monkeypatch):
+    """Omitted flags stay None: the parser must not mask lower-precedence config."""
     monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
+    monkeypatch.delenv("GARUDA_REASONING_MODEL", raising=False)
     parser = build_parser()
     for command, extra in MODEL_SUBCOMMANDS.items():
         args = parser.parse_args([command, *extra])
-        assert args.model == DEFAULT_MODEL, f"{command} disagrees"
+        assert args.model is None, f"{command} eagerly defaults --model"
+        assert args.reasoning_model is None, f"{command} eagerly defaults --reasoning-model"
+        assert args.collection_model is None, f"{command} eagerly defaults --collection-model"
+        assert args.no_collection is False
 
 
-def test_recipe_run_defaults_to_the_shared_constant(monkeypatch):
+def test_recipe_run_model_flags_default_to_none(monkeypatch):
     """Parsed separately because `recipe` is a nested subparser with a required path."""
     monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
+    monkeypatch.delenv("GARUDA_REASONING_MODEL", raising=False)
     args = build_parser().parse_args(["recipe", "run", "some.yaml"])
-    assert args.model == DEFAULT_MODEL
+    assert args.model is None
+    assert args.reasoning_model is None
+    assert args.collection_model is None
 
 
-def test_the_env_var_overrides_the_default(monkeypatch):
+async def test_unset_flags_resolve_to_the_shared_constant(tmp_path, monkeypatch):
+    """Resolution (not parsing) applies the built-in default with builtin provenance."""
+    from garuda.agents.setup import prepare_agent_run
+
+    monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
+    monkeypatch.delenv("GARUDA_REASONING_MODEL", raising=False)
+    monkeypatch.delenv("GARUDA_COLLECTION_MODEL", raising=False)
+    prepared = await prepare_agent_run("build", workspace=str(tmp_path))
+    try:
+        assert prepared.bindings.reasoning.model == DEFAULT_MODEL
+        assert prepared.provenance["reasoning"].provenance.value == "builtin"
+        assert prepared.collection is None
+    finally:
+        if prepared.mcp_manager is not None:
+            await prepared.mcp_manager.close()
+
+
+async def test_the_env_var_overrides_the_default(tmp_path, monkeypatch):
+    """GARUDA_MODEL is honored at resolution time (legacy reasoning fallback)."""
+    from garuda.agents.setup import prepare_agent_run
+
+    monkeypatch.delenv("GARUDA_REASONING_MODEL", raising=False)
     monkeypatch.setenv(MODEL_ENV_VAR, "anthropic/claude-sonnet-5")
-    # Read at parser-build time, so the parser has to be rebuilt under the new env.
-    args = build_parser().parse_args(["run", "-t", "task"])
-    assert args.model == "anthropic/claude-sonnet-5"
+    prepared = await prepare_agent_run("build", workspace=str(tmp_path))
+    try:
+        assert prepared.bindings.reasoning.model == "anthropic/claude-sonnet-5"
+        assert prepared.provenance["reasoning"].provenance.value == "legacy_env"
+    finally:
+        if prepared.mcp_manager is not None:
+            await prepared.mcp_manager.close()
 
 
 def test_server_and_sdk_agree_with_the_cli():

@@ -27,7 +27,6 @@ from garuda.core.events import EventStore
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import create_agent
-from garuda.model.litellm_model import LitellmModel
 from garuda.tools import default_tools
 from garuda.types import AgentConfig
 
@@ -118,10 +117,14 @@ async def run_variant(
             )
 
     config = _base_config(**overrides)
+    from garuda.model.config import ModelBindings, ModelSpec
+    from garuda.model.factory import ModelFactory
     from garuda.workspace.local import LocalEnvironment
 
     env = LocalEnvironment(workspace_root=workspace)
-    model = LitellmModel(model_name=model_name)
+    # Built fresh per variant through the shared factory: eval trials never
+    # share a client, and an explicit eval model keeps its explicit provenance.
+    model = ModelFactory().build(ModelBindings(reasoning=ModelSpec(model=model_name))).reasoning
     agent = create_agent("build", mode=config.mode)
     events = EventStore()
     permissions = PermissionEngine(mode="yolo")

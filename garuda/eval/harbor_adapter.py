@@ -7,7 +7,7 @@ from typing import Any, override
 
 import yaml
 
-from garuda.agents.setup import prepare_agent_run
+from garuda.agents.setup import PreparedNativeRun, prepare_agent_run
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.eval.atif_export import events_to_atif, save_atif_trajectory
@@ -255,13 +255,13 @@ class GarudaHarborAgent(BaseAgent):
         # critic (`rigorous`) mode is still deliberately *not* used: it multiplies
         # turns and cost and isn't what we're scoring, so a `mode: rigorous` line
         # in the profile is overridden here.
-        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+        profile, config, permissions, tools, agent, mcp_manager = prepared = await prepare_agent_run(
             self._agent_profile,
             workspace=workspace_root,
             agents_dir=self._resolved_agents_dirs(),
             mode="eval",
-        )
-        # Prompt is a benchmark variable, not an agent property: measuring how much
+            model=self.model_name,
+        )        # Prompt is a benchmark variable, not an agent property: measuring how much
         # of a score is scaffold vs instruction needs the prompt swappable per job,
         # without editing a profile the rest of the system shares.
         base_prompt = self._base_system_prompt(profile)
@@ -309,7 +309,14 @@ class GarudaHarborAgent(BaseAgent):
                 bash_rules=profile.bash_rules,
             )
 
-        model = _UsageTrackingModel(LitellmModel(model_name=self.model_name))
+        if isinstance(prepared, PreparedNativeRun):
+            reasoning = prepared.reasoning
+        else:
+            # Test doubles stand in for shared setup with the historical 6-tuple;
+            # they supply their own agent behavior, so build the named model
+            # directly rather than reaching for fields the tuple never had.
+            reasoning = LitellmModel(model_name=self.model_name)
+        model = _UsageTrackingModel(reasoning)
         events = EventStore()
 
         result = None

@@ -97,14 +97,24 @@ async def run_recipe(
     recipe: Recipe,
     params: dict[str, Any],
     *,
-    model: Model,
+    model: Model | str | None = None,
+    reasoning_model: Model | str | None = None,
+    collection_model: Model | str | None = None,
+    no_collection: bool = False,
+    model_binding: str | None = None,
     env: Environment,
     workspace: str,
     events: EventStore | None = None,
     agents_dir: Path | None = None,
     mcp_config_path: str | None = None,
 ) -> list[AgentResult]:
-    """Execute each recipe step sequentially, passing context forward."""
+    """Execute each recipe step sequentially, passing context forward.
+
+    Model overrides are scoped to this recipe run: every step resolves through
+    shared setup from the same inputs, so one recipe's models never leak into
+    another run. ``model`` is the legacy reasoning alias for the run.
+    """
+    from garuda.agents.setup import coerce_reasoning_flag
     from garuda.plugins.hooks import build_hook_registry
 
     events = events or EventStore()
@@ -112,6 +122,8 @@ async def run_recipe(
     # repo's before_tool guard was previously ignored under `garuda recipe run`.
     hooks = build_hook_registry(workspace)
     resolved = resolve_recipe_params(recipe, params)
+    # Fail closed once for the run, not once per step with partial work done.
+    run_reasoning = coerce_reasoning_flag(model, reasoning_model)
     results: list[AgentResult] = []
     prior_context = ""
 
@@ -120,19 +132,24 @@ async def run_recipe(
         if prior_context:
             prompt = f"{prompt}\n\n## Prior step output\n{prior_context}"
 
-        profile, config, permissions, tools, agent, mcp_manager = await prepare_agent_run(
+        prepared = await prepare_agent_run(
             step.agent,
             workspace=workspace,
             agents_dir=agents_dir,
             mcp_config_path=mcp_config_path,
             mode=step.mode,
+            model=run_reasoning,
+            collection_model=collection_model,
+            no_collection=no_collection,
+            model_binding=model_binding,
         )
+        profile, config, permissions, tools, agent, mcp_manager = prepared
         config.enable_verifier = step.agent != "plan"
         config.system_prompt = resolve_system_prompt(profile, workspace)
 
         result = await agent.run(
             task=prompt,
-            model=model,
+            model=prepared.reasoning,
             env=env,
             tools=tools,
             config=config,
