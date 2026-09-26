@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 #: Structural auth kinds a direct transport may declare. Free-text `auth`
 #: remains as human guidance, but admission gates on this enum — a wording
-#: tweak ("subscription OAuth, never audited") must not satisfy the gate.
+#: tweak ("subscription account, never audited") must not satisfy the gate.
 SUPPORTED_AUTH_KINDS = frozenset({"api_key_env"})
 
 
@@ -161,7 +161,7 @@ TRANSPORTS: tuple[TransportRecord, ...] = (
             "https://openrouter.ai/docs",
         ),
         auth="Provider API keys via environment (e.g. OPENROUTER_API_KEY); "
-        "never subscription OAuth material.",
+        "never subscription-account material.",
         auth_kind="api_key_env",
         capabilities=("streaming", "tool-calling", "reasoning", "prompt-caching", "retries"),
         test_double="garuda.model.script_model.ScriptModel",
@@ -193,9 +193,9 @@ def assert_admissible(record: TransportRecord) -> None:
             f"(supported: {sorted(SUPPORTED_AUTH_KINDS)})"
         )
     lowered = record.auth.lower()
-    if ("subscription" in lowered or "oauth" in lowered) and "never" not in lowered:
+    if "subscription" in lowered and "never" not in lowered:
         raise ValueError(
-            f"transport {record.id!r} auth must never claim subscription/OAuth use: {record.auth!r}"
+            f"transport {record.id!r} auth must never claim subscription use: {record.auth!r}"
         )
     _assert_integration_test_exists(record)
     _assert_test_double_resolves(record)

@@ -77,17 +77,17 @@ def test_incomplete_records_are_refused():
         assert_admissible(
             TransportRecord(
                 id="y", vendor="y", support_citation=("https://example.com",),
-                auth="a", auth_kind="subscription-oauth",
+                auth="a", auth_kind="subscription-account",
                 capabilities=("c",), test_double="d",
                 integration_test="tests/test_model_transports.py::test_live_transport_opt_in",
                 cost_semantics="s", migration_notes="m",
             )
         )
-    with pytest.raises(ValueError, match="subscription|OAuth|admission artifacts"):
+    with pytest.raises(ValueError, match="subscription|admission artifacts"):
         assert_admissible(
             TransportRecord(
                 id="z", vendor="z", support_citation=("https://example.com",),
-                auth="subscription OAuth via device flow",
+                auth="subscription account via device flow",
                 auth_kind="api_key_env",
                 capabilities=("c",), test_double="d",
                 integration_test="tests/test_model_transports.py::test_live_transport_opt_in",
