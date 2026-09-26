@@ -53,7 +53,9 @@ def test_absent_and_logged_out_states_guide_without_scanning():
 #: against each `/`- or whitespace-separated piece of a string constant, so
 #: `Path.home() / ".codex" / "auth.json"` is caught piece by piece.
 CREDENTIAL_COMPONENTS = frozenset(
-    {".codex", "auth.json", "credentials.json", ".credentials.json"}
+    # `secrets.yaml` is Goose's plain-file provider store (`~/.config/goose/`),
+    # caught as a component so `Path(...) / "goose" / "secrets.yaml"` is too.
+    {".codex", "auth.json", "credentials.json", ".credentials.json", "secrets.yaml"}
 )
 #: Substrings no production string constant may contain, matched
 #: case-insensitively (so `CLAUDE_CODE_OAUTH_TOKEN` is caught like `oauth`).
@@ -168,6 +170,7 @@ def test_credential_scanner_catches_planted_readers():
         "oauth-helper": "def refresh_oauth():\n    return None\n",
         "oauth-env": 'import os\nT = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")\n',
         "goose-secrets": 'P = "~/.config/goose/secrets.yaml"\n',
+        "goose-secrets-join": 'from pathlib import Path\nP = Path.home() / ".config" / "goose" / "secrets.yaml"\n',
     }
     for label, source in planted.items():
         assert _scan_source(source, label), f"scanner missed {label}"
