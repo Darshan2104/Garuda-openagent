@@ -492,6 +492,7 @@ def adapter_for_discovered(
     store=None,
     approval_handler=None,
     persist_dir: str | None = None,
+    metrics=None,
 ) -> AcpRuntime:
     """Launch exactly what a discovery record accepted — the production factory.
 
@@ -515,6 +516,7 @@ def adapter_for_discovered(
         store=store,
         approval_handler=approval_handler,
         persist_dir=persist_dir,
+        metrics=metrics,
     )
 
 
