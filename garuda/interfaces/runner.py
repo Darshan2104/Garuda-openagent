@@ -12,6 +12,11 @@ from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.runtime.native import NativeGarudaRuntime
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.docker import DockerWorkspace
+from garuda.workspace.evidence import (
+    begin_session_evidence,
+    finish_session_evidence,
+    record_startup_refusal,
+)
 from garuda.workspace.factory import create_workspace
 from garuda.workspace.protocol import Environment
 from garuda.workspace.remote import RemoteWorkspace
@@ -182,17 +187,41 @@ async def run_agent_task(
         events=events,
     )
 
+    # One mutating session owns a workspace (P0.16). Acquired before any
+    # environment is resolved — and before restart recovery below — so a
+    # refused run burns nothing and another live Garuda on this workspace is
+    # refused before recovery may touch its processes. Held for the whole
+    # facade call and released last in `finally`. A live foreign mutating
+    # lease — including a second concurrent `run_agent_task` on this
+    # workspace — fails here instead of interleaving mutations. Fail-closed:
+    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
+    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
+
+    lease_store = LeaseStore()
+    lease_store.acquire(workspace, events.session_id, mode="mutating")
+
     resumed_from: str | None = None
     initial_state: dict | None = None
     if resume:
-        resumed_from = store.resolve(resume)
-        # Classify the retained session before resuming it: prepared switches
-        # roll back (marked failed), ambiguous trails refuse. Fail-closed.
-        from garuda.runtime.recovery import recover
+        try:
+            resumed_from = store.resolve(resume)
+            # Recover the retained session before resuming it (resume only; a
+            # fresh run has nothing to recover): a live owner or lease holder
+            # refuses, prepared switches roll back (marked failed), orphans
+            # whose persisted identity still matches are reaped, ambiguous
+            # trails refuse. Fail-closed.
+            from garuda.runtime.recovery import recover
 
-        recover(store, resumed_from)
-        if context is None:
-            context = build_resumed_context(store, resumed_from, task, model, config)
+            # Off the loop: probes shell out to `ps` and reaping polls for death.
+            await asyncio.to_thread(recover, store, resumed_from, leases=lease_store)
+            if context is None:
+                context = build_resumed_context(store, resumed_from, task, model, config)
+        except BaseException:
+            try:
+                lease_store.release(workspace, events.session_id)
+            except Exception:
+                logger.warning("Lease release failed", exc_info=True)
+            raise
         # Restore pack facts after restart: the persisted WorkingState is the
         # input the pack compiler renders from, so hydrating it here means the
         # re-synced current-task/handoff carry the pre-restart facts verbatim.
@@ -202,29 +231,16 @@ async def run_agent_task(
             logger.warning("Failed to load persisted working state", exc_info=True)
             initial_state = None
 
-    # One mutating session owns a workspace (P0.16). Acquired before any
-    # environment is resolved so a refused run burns nothing, held for the
-    # whole facade call, and released last in `finally`. A live foreign
-    # mutating lease — including a second concurrent `run_agent_task` on this
-    # workspace — fails here instead of interleaving mutations. Fail-closed:
-    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
-
-    lease_store = LeaseStore()
-    lease_store.acquire(workspace, events.session_id, mode="mutating")
     lease_ttl = DEFAULT_TTL_SEC
 
     async def _lease_heartbeat() -> None:
-        try:
-            while True:
-                await asyncio.sleep(lease_ttl / 3)
-                try:
-                    lease_store.heartbeat(workspace, events.session_id)
-                except Exception:
-                    logger.warning("Lease heartbeat failed", exc_info=True)
-                    return
-        except asyncio.CancelledError:
-            raise
+        while True:
+            await asyncio.sleep(lease_ttl / 3)
+            # Losing the lease means this run can no longer prove exclusive
+            # mutation authority. Propagate the error to the driver below;
+            # continuing would let a stale takeover and this run mutate at
+            # the same time.
+            lease_store.heartbeat(workspace, events.session_id)
 
     heartbeat_task = asyncio.ensure_future(_lease_heartbeat())
 
@@ -262,11 +278,15 @@ async def run_agent_task(
         approval_broker.handler(session_id=events.session_id)
     )
 
-    def _abandon_lease() -> None:
+    async def _abandon_lease() -> None:
         """Cancel the heartbeat and release, for startup paths that never
         reach the main `try/finally` below. Best-effort; never masks the
         original error."""
         heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
         try:
             lease_store.release(workspace, events.session_id)
         except Exception:
@@ -274,13 +294,15 @@ async def run_agent_task(
 
     try:
         await runtime.start(task=task, session_id=events.session_id)
-        # This is before environment setup, hooks, or a model prompt.  A local
-        # run which cannot persist its immutable start state must not mutate and
-        # later pretend its delta is attributable.  The helper also records
-        # explicit non-local unsupported status instead of silently skipping it.
-        from garuda.workspace.diff import record_session_baseline
-
-        record_session_baseline(store, events.session_id, workspace, workspace_kind)
+        # This is before environment setup, hooks, or a model prompt.  A
+        # host-backed run which cannot persist its immutable start state must
+        # not mutate and later pretend its delta is attributable.  The shared
+        # boundary also records explicit unsupported (non-repo / non-local)
+        # state instead of silently skipping it.  On resume this is the *new*
+        # session's baseline: prior-session work reads as preexisting.
+        workspace_delta_loader = begin_session_evidence(
+            store, events.session_id, workspace, workspace_kind
+        )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
         if resumed_from:
@@ -327,12 +349,6 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
-            workspace_delta_loader = None
-            if workspace_kind == "local":
-                from garuda.workspace.diff import load_session_delta
-
-                def workspace_delta_loader():
-                    return load_session_delta(store, events.session_id, workspace)
             return await agent.run(
                 task=task,
                 model=model,
@@ -354,22 +370,51 @@ async def run_agent_task(
             )
 
         runtime.install_driver(_driver)
-    except Exception:
+    except BaseException:
+        # `BaseException`, not `Exception`: a job cancelled mid-startup (a
+        # docker pull, a slow session-start hook) raises `CancelledError`, and
+        # skipping the release would leave the heartbeat holding the
+        # workspace for the life of the process.
         # `runtime.start` has created the durable session by this point.  Mark a
         # baseline/startup refusal failed when the store is still writable; the
         # original error remains authoritative if it is not.
-        try:
-            store.update_meta(events.session_id, {"status": "failed", "startup_refused": True})
-        except Exception:
-            logger.warning("Failed to record startup refusal", exc_info=True)
+        record_startup_refusal(store, events.session_id)
         try:
             await runtime.close()
         except Exception:
             logger.warning("Failed to close refused runtime", exc_info=True)
-        _abandon_lease()
+        await _abandon_lease()
         raise
     try:
-        await runtime.prompt(task)
+        prompt_task = asyncio.ensure_future(runtime.prompt(task))
+        try:
+            done, _ = await asyncio.wait(
+                {prompt_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # `asyncio.wait` does not cancel what it waits on. Without this the
+            # agent would keep executing tools after teardown released the
+            # lease and closed its environment.
+            prompt_task.cancel()
+            try:
+                await prompt_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+        if heartbeat_task in done:
+            heartbeat_error = heartbeat_task.exception()
+            if not prompt_task.done():
+                prompt_task.cancel()
+                try:
+                    await prompt_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if heartbeat_error is None:
+                from garuda.workspace.lease import LeaseError
+
+                raise LeaseError("lease heartbeat stopped unexpectedly")
+            raise heartbeat_error
+        await prompt_task
         result = runtime.last_result
     except asyncio.CancelledError:
         try:
@@ -384,55 +429,42 @@ async def run_agent_task(
         result = None
         raise
     finally:
-        # Kill any background tasks this session left running before tearing down
-        # the workspace (essential for the local env, where nothing else reaps them).
         try:
-            from garuda.tools.background import reap_session
+            # Kill any background tasks this session left running before tearing down
+            # the workspace (essential for the local env, where nothing else reaps them).
+            try:
+                from garuda.tools.background import reap_session
 
-            await reap_session(events.session_id, env)
-        except Exception:
-            pass
-        # Close a persistent shell if the local env opened one.
-        if hasattr(env, "aclose"):
-            try:
-                await env.aclose()
+                await reap_session(events.session_id, env)
             except Exception:
-                logger.warning("Failed to close persistent shell", exc_info=True)
-        # Each teardown step is guarded individually: a failure to stop a container
-        # or close an MCP server must not skip the two things that follow, or the
-        # session stays marked "running" in the index forever and no session-end
-        # hook ever fires — the state you most need after a crash.
-        try:
-            await cleanup_workspace(handle)
-        except Exception:
-            logger.warning("Workspace cleanup failed", exc_info=True)
-        if close_mcp and mcp_manager is not None:
-            try:
-                await mcp_manager.close()
-            except Exception:
-                logger.warning("MCP manager close failed", exc_info=True)
-        if result is not None:
-            # Persist final workspace evidence before the result.  A failed
-            # read/write is a failed run rather than a successful result with a
-            # warning-only hole in the evidence trail.
-            if workspace_kind == "local":
+                pass
+            # Close a persistent shell if the local env opened one.
+            if hasattr(env, "aclose"):
                 try:
-                    from garuda.workspace.diff import load_session_delta
-
-                    delta = load_session_delta(store, events.session_id, workspace)
-                    store.update_meta(
-                        events.session_id,
-                        {
-                            "baseline_commit": delta.baseline_commit,
-                            "delta_changed": list(delta.changed[:200]),
-                            "delta_preexisting": list(delta.preexisting[:200]),
-                        },
+                    await env.aclose()
+                except Exception:
+                    logger.warning("Failed to close persistent shell", exc_info=True)
+            # Each teardown step is guarded individually: a failure to stop a container
+            # or close an MCP server must not skip the two things that follow, or the
+            # session stays marked "running" in the index forever and no session-end
+            # hook ever fires — the state you most need after a crash.
+            try:
+                await cleanup_workspace(handle)
+            except Exception:
+                logger.warning("Workspace cleanup failed", exc_info=True)
+            if close_mcp and mcp_manager is not None:
+                try:
+                    await mcp_manager.close()
+                except Exception:
+                    logger.warning("MCP manager close failed", exc_info=True)
+            if result is not None:
+                # Persist final workspace evidence before the result.  A failed
+                # read/write is a failed run rather than a successful result with a
+                # warning-only hole in the evidence trail.
+                try:
+                    result.metadata["workspace_delta"] = await asyncio.to_thread(
+                        finish_session_evidence, store, events.session_id, workspace
                     )
-                    result.metadata["workspace_delta"] = {
-                        "baseline_commit": delta.baseline_commit,
-                        "changed": list(delta.changed),
-                        "preexisting": list(delta.preexisting),
-                    }
                 except Exception as exc:
                     result.success = False
                     result.final_message = (
@@ -440,33 +472,26 @@ async def run_agent_task(
                         f"recorded ({type(exc).__name__})."
                     )
                     result.metadata["workspace_delta_error"] = type(exc).__name__
-            store.finish(events.session_id, result)
-            summary = {
-                "session_id": events.session_id,
-                "success": result.success,
-                "turns": result.turns,
-                "final_message": result.final_message[:2000],
-            }
-        else:
-            update_session_meta(store, events.session_id, {"status": "failed"})
-            summary = {"session_id": events.session_id, "success": False, "turns": 0}
-        try:
-            await runtime.close()
-        except Exception:
-            logger.warning("Runtime close failed", exc_info=True)
-        await hooks.on_session_end(summary)
-        # Release the mutating lease last: the whole session lifecycle above
-        # ran under it. Best-effort — a release failure is logged, and the
-        # heartbeat TTL bounds how long a stale holder can block the workspace.
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        try:
-            lease_store.release(workspace, events.session_id)
-        except Exception:
-            logger.warning("Lease release failed", exc_info=True)
+                store.finish(events.session_id, result)
+                summary = {
+                    "session_id": events.session_id,
+                    "success": result.success,
+                    "turns": result.turns,
+                    "final_message": result.final_message[:2000],
+                }
+            else:
+                update_session_meta(store, events.session_id, {"status": "failed"})
+                summary = {"session_id": events.session_id, "success": False, "turns": 0}
+            try:
+                await runtime.close()
+            except Exception:
+                logger.warning("Runtime close failed", exc_info=True)
+            await hooks.on_session_end(summary)
+        finally:
+            # Release the mutating lease last even if session persistence or a
+            # lifecycle hook fails. Otherwise the heartbeat task can outlive
+            # this call and hold the workspace indefinitely.
+            await _abandon_lease()
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))

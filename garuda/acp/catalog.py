@@ -23,14 +23,14 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
-from garuda.runtime.registry import RuntimeRegistry, parse_global_manifests, parse_project_refs
+from garuda.runtime.registry import RuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,10 @@ BUILTIN_STUBS: tuple[dict[str, str], ...] = (
 PROBE_TIMEOUT = 10.0
 
 
+class RuntimeSettingsError(ValueError):
+    """The trusted runtime settings are unreadable or malformed. Fail-closed."""
+
+
 @dataclass(frozen=True)
 class DiscoveredRuntime:
     runtime_id: str
@@ -150,7 +154,14 @@ def _minimal_env() -> dict[str, str]:
 def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     try:
         result = subprocess.run(
-            list(argv), capture_output=True, text=True, timeout=timeout, env=_minimal_env()
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_minimal_env(),
+            # A probe must never read the user's terminal: an interactive
+            # prompt would otherwise block discovery until the timeout.
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -164,8 +175,13 @@ def _resolve_executable(command: tuple[str, ...] | None) -> str | None:
         return None
     binary = command[0]
     if os.path.isabs(binary):
-        return binary if os.access(binary, os.X_OK) else None
+        return binary if _is_executable_file(binary) else None
     return shutil.which(binary)
+
+
+def _is_executable_file(path: str) -> bool:
+    """A regular file with the execute bit; `os.access` alone accepts directories."""
+    return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def discover(
@@ -204,15 +220,10 @@ def discover(
             continue
         record = _inspect(manifest, run, probe_timeout)
         if manifest.runtime_id in project_warned:
-            record = DiscoveredRuntime(
-                runtime_id=record.runtime_id,
-                kind=record.kind,
-                available=record.available,
-                executable=record.executable,
-                version=record.version,
-                auth=record.auth,
-                health=record.health,
-                capabilities=record.capabilities,
+            # `replace` keeps every other field (login flow, instructions, …)
+            # so the advisory warning cannot silently drop login guidance.
+            record = replace(
+                record,
                 warnings=(
                     *record.warnings,
                     "project suggests disabling this runtime — ignored: "
@@ -249,19 +260,20 @@ def load_trusted_disabled(settings: Mapping[str, Any] | None = None) -> frozense
     means nothing is disabled, but an unreadable or malformed file is an
     actionable error: substituting an empty mapping could start a runtime the
     user deliberately disabled.
-    A present-but-malformed `disabled_runtimes` value raises `ValueError`:
+    A present-but-malformed `disabled_runtimes` value raises
+    `RuntimeSettingsError` (a `ValueError`):
     silently enabling a runtime the user meant to disable is the wrong
     direction to fail.
     """
     if settings is None:
         settings = load_trusted_runtime_settings()
     if not isinstance(settings, Mapping):
-        raise ValueError("global settings must be a mapping")
+        raise RuntimeSettingsError("global settings must be a mapping")
     raw = settings.get("disabled_runtimes", [])
     if raw is None or raw == []:
         return frozenset()
     if not isinstance(raw, list) or any(not isinstance(v, str) or not v for v in raw):
-        raise ValueError("disabled_runtimes must be a list of runtime id strings")
+        raise RuntimeSettingsError("disabled_runtimes must be a list of runtime id strings")
     return frozenset(raw)
 
 
@@ -283,9 +295,9 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
 
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
-        raise ValueError(f"cannot read trusted runtime settings {path}: {exc}") from exc
+        raise RuntimeSettingsError(f"cannot read trusted runtime settings {path}: {exc}") from exc
     if not isinstance(data, Mapping):
-        raise ValueError(f"trusted runtime settings {path} must be a mapping")
+        raise RuntimeSettingsError(f"trusted runtime settings {path} must be a mapping")
     return data
 
 
@@ -406,22 +418,27 @@ def adapter_for_manifest(
     argv_override: list[str] | None = None,
     executable: str | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
-    Production construction resolves the trusted manifest once and replaces its
-    bare command with that absolute checked path. A later PATH substitution
-    therefore cannot launch a different binary. ``argv_override`` is only the
-    deterministic test seam for the protocol fixture.
+    `executable` must be the absolute path a discovery record resolved (see
+    `adapter_for_discovered`); it replaces the manifest's bare command, and no
+    second PATH lookup happens here, so a PATH change after discovery cannot
+    substitute a different binary. Without it the factory refuses rather than
+    re-resolving. ``argv_override`` is only the deterministic test seam for the
+    protocol fixture. `cwd` is the absolute session root sent in `session/new`;
+    launch paths pass the workspace so the harness never defaults to Garuda's
+    own directory.
     """
     argv = list(argv_override) if argv_override is not None else require_acp_argv(
-        manifest,
-        executable=executable or _resolve_executable(manifest.command),
+        manifest, executable=executable
     )
     return AcpRuntime(
         argv,
         runtime_id=manifest.runtime_id,
         policy=policy,
+        cwd=cwd,
         setup_hint=manifest.setup,
     )
 
@@ -448,12 +465,38 @@ def require_acp_argv(manifest, *, executable: str | None) -> list[str]:
         raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "no launch command configured")
     if not isinstance(executable, str) or not executable:
         raise AcpUnavailableError(manifest.runtime_id, manifest.setup or "executable not found")
-    if not os.path.isabs(executable) or not os.access(executable, os.X_OK):
+    if not os.path.isabs(executable) or not _is_executable_file(executable):
         raise AcpUnavailableError(
             manifest.runtime_id,
             manifest.setup or "discovery did not resolve an executable file",
         )
     return [executable, *manifest.command[1:]]
+
+
+def adapter_for_discovered(
+    manifest,
+    discovered: DiscoveredRuntime,
+    *,
+    policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
+) -> AcpRuntime:
+    """Launch exactly what a discovery record accepted — the production factory.
+
+    The record must describe this manifest and be available; its resolved
+    executable is bound into the argv, so what `discover()` reported is what
+    starts.
+    """
+    if discovered.runtime_id != manifest.runtime_id:
+        raise AcpUnavailableError(
+            manifest.runtime_id,
+            f"discovery record is for {discovered.runtime_id!r}, not this runtime",
+        )
+    if not discovered.available or not discovered.executable:
+        detail = "; ".join(discovered.warnings) or manifest.setup or "executable not found"
+        raise AcpUnavailableError(manifest.runtime_id, detail)
+    return adapter_for_manifest(
+        manifest, executable=discovered.executable, policy=policy, cwd=cwd
+    )
 
 
 def shared_registry(
@@ -463,23 +506,24 @@ def shared_registry(
     disabled: frozenset[str] | set[str] | None = None,
     include_builtins: bool = True,
 ) -> RuntimeRegistry:
-    """Build the one registry for native, builtins, and trusted adapters."""
-    native = {
-        "runtime_id": "native",
-        "kind": "native",
-        "version": "builtin",
-        "description": "The in-process Garuda loop.",
-    }
-    dicts = (
-        ([native] if include_builtins else [])
-        + (builtin_manifest_dicts() if include_builtins else [])
-        + list(extra_manifests or [])
-    )
-    manifests = parse_global_manifests(dicts, source="shared registry")
-    refs = parse_project_refs(list(project_refs or []), source="shared registry")
+    """Registry for explicit manifest/ref lists, via the one shared builder.
+
+    A thin adapter over `garuda.agents.setup.build_runtime_catalog`, so
+    shipped manifests, global overrides, advisory project refs, and
+    disablement behave exactly as on the launch path. `disabled=None` reads
+    the trusted global set.
+    """
+    from garuda.agents.setup import build_runtime_catalog
+
     if disabled is None:
         disabled = load_trusted_disabled()
-    return RuntimeRegistry(manifests, refs, disabled=disabled)
+    return build_runtime_catalog(
+        global_settings={"runtimes": list(extra_manifests or [])},
+        project_settings={"runtime_refs": list(project_refs or [])},
+        disabled=disabled,
+        include_builtins=include_builtins,
+        source="shared registry project refs",
+    ).registry
 
 
 def adapter_for_registry(
@@ -488,7 +532,23 @@ def adapter_for_registry(
     *,
     argv_override: list[str] | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
 ) -> AcpRuntime:
-    """Resolve through the registry, then apply the exact-path launch gate."""
+    """Resolve through the registry, discover that one manifest, then bind
+    the executable discovery accepted (`adapter_for_discovered`).
+
+    Resolution applies the disabled/alias gates; discovery runs only this
+    runtime's declared probes, because a launch is about to execute it.
+    """
     resolved = registry.get(ref)
-    return adapter_for_manifest(resolved, argv_override=argv_override, policy=policy)
+    if argv_override is not None:
+        return adapter_for_manifest(
+            resolved, argv_override=argv_override, policy=policy, cwd=cwd
+        )
+    manifest = next(m for m in registry.manifests if m.runtime_id == resolved.runtime_id)
+    (record,) = [
+        entry
+        for entry in discover([manifest], disabled=registry.disabled_ids)
+        if entry.runtime_id == manifest.runtime_id
+    ]
+    return adapter_for_discovered(manifest, record, policy=policy, cwd=cwd)

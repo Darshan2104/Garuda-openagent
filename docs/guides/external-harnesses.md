@@ -1,11 +1,19 @@
 # External harnesses
 
-Garuda can supervise subscription-backed coding harnesses through ACP while its
-native runtime stays the default. You authenticate in your own CLI; Garuda
-never sees, reads, or stores subscription credentials. Subscription use is
-governed by each vendor's policy, not by Garuda: quota appears only when the
+Garuda ships ACP adapter manifests for subscription-backed coding harnesses
+while its native runtime stays the default. You authenticate in your own CLI;
+Garuda never sees, reads, or stores subscription credentials. Subscription use
+is governed by each vendor's policy, not by Garuda: quota appears only when the
 harness itself reports it, and Garuda never estimates, infers, or zero-fills
 usage.
+
+**Status:** the shipped manifests are part of the trusted runtime catalog, so
+`--runtime claude` and `--runtime codex` resolve, show up in discovery, and
+honor `disabled_runtimes`. No `garuda run`, SDK, or dashboard path launches an
+ACP harness yet: selecting one refuses with "not launchable by this runtime
+facade yet" instead of running the native loop. The adapters are exercised
+only against Garuda's strict ACP v1 test fixture; neither vendor CLI has been
+verified end to end by this repository's tests.
 
 ## Claude Code
 
@@ -23,9 +31,8 @@ usage.
 - Launch command: `codex-acp` (registry package
   `@agentclientprotocol/codex-acp`, successor of `@zed-industries/codex-acp`).
 - Setup: install Node.js 20+ and the Codex CLI, authenticate with ChatGPT
-  login (`codex login`) or export `CODEX_API_KEY` yourself, then
-  `npm install -g @agentclientprotocol/codex-acp` and verify
-  `codex-acp --version`.
+  login (`codex login`), then `npm install -g @agentclientprotocol/codex-acp`
+  and verify `codex-acp --version`.
 - Auth stays in your Codex login (`~/.codex/auth.json`). Garuda never reads it.
 
 ## Cursor Agent
@@ -35,6 +42,11 @@ usage.
   `~/.local/bin/agent`) and authenticate with your Cursor account, then verify
   `agent --version`.
 - Auth stays in your Cursor login. Garuda never reads your Cursor credentials.
+- Limit: Garuda answers only `session/request_permission` from the agent.
+  Cursor's blocking extension requests such as `cursor/ask_question` and
+  `cursor/create_plan` get a JSON-RPC "method not found" error (fail closed),
+  so turns that depend on them end with the agent's error handling rather
+  than a question or plan in Garuda.
 
 ## OpenCode
 
@@ -60,24 +72,50 @@ usage.
 
 ## Version and capability limits
 
-- Login state shows `unknown` until a run: Garuda cannot check it without
-  reading your credential stores, and it will not do that.
+- Login state shows `unknown`: the shipped manifests declare no login probe,
+  and Garuda will not read your credential stores to find out.
+- The adapter process gets only `PATH`, `HOME`, and `LANG` from Garuda's
+  environment. API-key variables (`ANTHROPIC_API_KEY`, `CODEX_API_KEY`) and
+  custom config directories (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) do not reach
+  it, and manifests cannot add environment variables. Use each vendor CLI's
+  own login in its default location under your home directory.
 - The adapters speak Garuda's owned ACP wire subset: initialize, session/new,
   session/prompt, session/cancel, and approval replies. Vendor extras outside
   that subset (modes, sessions lists, images) are not driven.
 - No private HTTP endpoint is used anywhere: both adapters are stdio
-  subprocesses of commands you authorized in global configuration.
-- Discovery resolves the executable once and the launch factory uses that
-  exact absolute path. Changing `PATH` after discovery cannot substitute a
-  different adapter binary.
+  subprocesses of commands from the shipped manifests or your global
+  configuration.
+- Discovery resolves the executable once and the launch factory
+  (`adapter_for_discovered`) uses that exact absolute path; without a
+  discovered path the factory refuses instead of looking `PATH` up again.
+  Changing `PATH` after discovery cannot substitute a different adapter
+  binary, but replacing the file at that path can: this is a binding, not a
+  sandbox.
 
 ## Custom ACP servers
 
 Any stdio ACP server works through a global harness manifest with its launch
-command — no code changes are needed for a standard capability set. Generic
-adapters have no vendor-specific guarantees: modes, model lists, and extras
-beyond the wire subset are not driven. See the
-[ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+command — no code changes are needed for a standard capability set — in the
+`runtimes:` list of your global settings file (`~/.agent/settings.yaml`, or the
+path in `GARUDA_GLOBAL_SETTINGS`). An entry with a shipped id such as `claude`
+replaces the shipped manifest:
+
+```yaml
+runtimes:
+  - runtime_id: my-agent
+    kind: acp
+    command: [my-agent-acp]
+    version: "1"
+    capabilities: [prompt, cancel]
+    version_args: [my-agent-acp, --version]
+    setup: Install my-agent-acp and log in with its own CLI.
+disabled_runtimes: [codex]
+```
+
+Project `.agent/settings.yaml` may only add `runtime_refs` aliases to these
+ids; it cannot declare commands. Generic adapters have no vendor-specific
+guarantees: modes, model lists, and extras beyond the wire subset are not
+driven. See the [ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
 
 ## Optional live compatibility checks
 

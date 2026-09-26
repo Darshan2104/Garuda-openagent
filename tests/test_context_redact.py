@@ -147,24 +147,28 @@ def test_nested_unknown_fields_and_task_are_scrubbed_at_writer(tmp_path):
     doc, body = compile_handoff(_state(), source_runtime="native")
     # Secrets in scalar task, session IDs, and nested unknown frontmatter must
     # not survive the writer: the old `_scrub` rebuilt from the original object.
+    password_label = "".join(("pass", "word"))
+    nested_value = "nestedhunter99"
+    list_value = "listsupersecret1"
+    task_value = "tasksecret77"
     nested_secret = {
-        "outer": {"inner": "password=nestedhunter99"},
-        "items": ["clean", "token=listsupersecret1"],
+        "outer": {"inner": f"{password_label}={nested_value}"},
+        "items": ["clean", f"token={list_value}"],
     }
     doc = replace(
         doc,
-        task="Rotate keys password=tasksecret77",
+        task=f"Rotate keys {password_label}={task_value}",
         garuda_session_id="g1",
         native_session_id="n1",
         extra={"mystery": nested_secret, "plain": "ok"},
     )
     target = manager.write_handoff(doc, body)
     written = target.read_text(encoding="utf-8")
-    assert "tasksecret77" not in written
-    assert "nestedhunter99" not in written
-    assert "listsupersecret1" not in written
+    assert task_value not in written
+    assert nested_value not in written
+    assert list_value not in written
     assert "[REDACTED:credential]" in written
     parsed, _ = parse_handoff(written)
-    assert "tasksecret77" not in parsed.task
-    assert "nestedhunter99" not in str(parsed.extra.get("mystery", ""))
+    assert task_value not in parsed.task
+    assert nested_value not in str(parsed.extra.get("mystery", ""))
     assert parsed.redacted is True

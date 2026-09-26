@@ -8,6 +8,11 @@ from garuda.workspace.sandbox import SandboxEnvironment
 from garuda.workspace.sandbox_policy import DockerLimits, SandboxPolicy
 from garuda.workspace.tmux import TmuxEnvironment
 
+#: Every workspace kind `create_workspace` accepts. Entry-point `choices` and
+#: the workspace-evidence classification (`garuda.workspace.evidence`) are
+#: tested against this set, so a new kind cannot ship unclassified.
+WORKSPACE_KINDS = ("local", "sandbox", "tmux", "docker", "remote")
+
 
 def create_environment(
     kind: str,

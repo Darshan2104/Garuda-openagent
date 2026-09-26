@@ -96,6 +96,8 @@ async def test_acknowledge_refuses_two_mutating_owners():
     assert source.state is LifecycleState.IDLE
     with pytest.raises(HandoffError, match="two active mutating owners"):
         await tx.acknowledge(source, target)
+    assert source.state is LifecycleState.IDLE
+    assert target.state is LifecycleState.CLOSED
 
 
 async def test_delivery_runs_on_the_target_before_acknowledgement():
@@ -161,6 +163,7 @@ async def test_source_failure_mid_begin_reaches_failed():
     with pytest.raises(HandoffError, match="source side failed"):
         await _begin(tx, source, checkpoint=_boom)
     assert tx.phase is HandoffPhase.FAILED
+    assert source.state is LifecycleState.IDLE
 
 
 def _boom():
@@ -314,3 +317,53 @@ async def test_execute_handoff_target_failure_keeps_source_authoritative(tmp_pat
     assert turn >= 1
     assert source.state is LifecycleState.IDLE
     await source.close()
+
+
+async def test_execute_handoff_target_factory_failure_resumes_source(tmp_path):
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.handoff import HandoffError, execute_handoff
+    from garuda.runtime.protocol import LifecycleState
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "handoff-factory-fail")
+
+    def _bad_factory():
+        raise RuntimeError("factory exploded")
+
+    with pytest.raises(HandoffError, match="target construction failed"):
+        await execute_handoff(
+            session_id="handoff-factory-fail",
+            source=source,
+            target_factory=_bad_factory,
+            store=store,
+        )
+    assert source.state is LifecycleState.IDLE
+    assert store.load_unified("handoff-factory-fail").handoff["state"] == "failed"
+
+
+async def test_acknowledgement_audit_failure_never_transfers_ownership(tmp_path):
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.fake import FakeRuntime, FakeScenario
+    from garuda.runtime.handoff import HandoffError, execute_handoff
+    from garuda.runtime.protocol import LifecycleState
+
+    store = SessionStore(tmp_path / "sessions")
+    source = await _native_source(tmp_path, store, "handoff-audit-fail")
+    target = FakeRuntime(FakeScenario.SUCCESS, runtime_id="target-audit-fail")
+    original_record = store.record_handoff
+
+    def _record(session_id, *, state, attempts=0, **extra):
+        if state == "acknowledged":
+            raise OSError("disk full")
+        return original_record(session_id, state=state, attempts=attempts, **extra)
+
+    store.record_handoff = _record
+    with pytest.raises(HandoffError, match="acknowledge audit failed"):
+        await execute_handoff(
+            session_id="handoff-audit-fail",
+            source=source,
+            target_factory=lambda: target,
+            store=store,
+        )
+    assert source.state is LifecycleState.IDLE
+    assert target.state is LifecycleState.CLOSED

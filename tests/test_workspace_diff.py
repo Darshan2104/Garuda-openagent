@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from garuda.workspace.diff import (
+    BASELINE_UNSUPPORTED_NONREPO,
     Baseline,
     BaselineError,
     DiffError,
@@ -70,10 +71,17 @@ def test_rename_delete_untracked_represented(repo):
     assert kinds.get("new.txt") == "untracked"
 
 
-def test_large_diff_clips_but_persists(tmp_path):
+def test_non_repo_baseline_is_explicitly_unsupported_not_empty(tmp_path):
+    """Outside a repo there is no delta, and the record says so rather than
+    reporting an empty "nothing changed" delta."""
     baseline = capture_baseline(tmp_path)
     assert baseline.commit == ""
-    assert session_delta(baseline, tmp_path).files == ()
+    assert baseline.state == BASELINE_UNSUPPORTED_NONREPO
+    assert baseline.attributable is False
+    delta = session_delta(baseline, tmp_path)
+    assert delta.attributable is False
+    assert delta.attribution == BASELINE_UNSUPPORTED_NONREPO
+    assert delta.to_evidence() == {"attribution": BASELINE_UNSUPPORTED_NONREPO}
 
 
 def test_diff_text_bounded_and_recoverable(repo):
@@ -198,7 +206,7 @@ async def test_baseline_captured_at_start_and_delta_separates_dirt(repo, tmp_pat
 async def test_baseline_failure_refuses_before_agent_prompt(repo, tmp_path, monkeypatch):
     """Neither capture nor its metadata write may degrade to an unaudited run."""
     monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
-    import garuda.workspace.diff as diff
+    import garuda.workspace.evidence as diff
     from garuda.core.events import EventStore
     from garuda.core.loop import DefaultAgent
     from garuda.core.permissions import PermissionEngine
@@ -249,7 +257,7 @@ async def test_baseline_failure_refuses_before_agent_prompt(repo, tmp_path, monk
 
 async def test_verifier_and_finish_refuse_missing_delta(repo, tmp_path, monkeypatch):
     monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
-    import garuda.workspace.diff as diff
+    import garuda.workspace.evidence as diff
     from garuda.core.events import EventStore
     from garuda.core.loop import DefaultAgent
     from garuda.core.permissions import PermissionEngine
@@ -299,7 +307,7 @@ async def test_verifier_and_finish_refuse_missing_delta(repo, tmp_path, monkeypa
 async def test_verifier_rejects_when_the_recorded_baseline_disappears(repo, tmp_path, monkeypatch):
     """The verifier gate, not only final metadata, consumes the baseline."""
     monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
-    import garuda.workspace.diff as diff
+    import garuda.workspace.evidence as diff
     from garuda.core.events import EventStore, EventType
     from garuda.core.loop import DefaultAgent
     from garuda.core.permissions import PermissionEngine
@@ -387,3 +395,251 @@ async def test_handoff_refuses_a_workspace_without_a_recorded_baseline(repo, tmp
             store=store,
             workspace=repo,
         )
+
+
+async def test_handoff_delta_reflects_the_paused_tree(repo, tmp_path, monkeypatch):
+    """The package's delta is recomputed after the pause, so a write that lands
+    between the preflight check and the checkpoint is still attributed."""
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.fake import FakeRuntime, FakeScenario
+    from garuda.runtime.handoff import execute_handoff
+    from garuda.workspace.diff import capture_baseline
+
+    store = SessionStore(tmp_path / "sessions")
+    import tests.test_handoff as handoff_tests
+
+    source = await handoff_tests._native_source(tmp_path, store, "handoff-late-write")
+    store.record_baseline("handoff-late-write", capture_baseline(repo).to_dict())
+
+    def _checkpoint() -> None:
+        (repo / "late.txt").write_text("written at the boundary\n")
+
+    tx, _ = await execute_handoff(
+        session_id="handoff-late-write",
+        source=source,
+        target_factory=lambda: FakeRuntime(FakeScenario.SUCCESS, runtime_id="target-l"),
+        store=store,
+        workspace=repo,
+        checkpoint=_checkpoint,
+    )
+    assert "late.txt" in tx.captured["changed"]
+
+
+def test_remote_workspace_records_unsupported_attribution(tmp_path):
+    """A remote-daemon workspace is marked unsupported, never silently skipped,
+    and a store that cannot record even that refuses startup."""
+    from garuda.core.sessions import SessionStore
+    from garuda.workspace.evidence import load_session_delta, record_session_baseline
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin(session_id="remote-1", task="t", model="m", agent="a", workspace=str(tmp_path))
+    assert record_session_baseline(store, "remote-1", tmp_path, "remote") is None
+    assert store.load_meta("remote-1")["baseline_state"] == "unsupported_nonlocal"
+    delta = load_session_delta(store, "remote-1", tmp_path)
+    assert delta.to_evidence() == {"attribution": "unsupported_nonlocal"}
+
+    class _Broken:
+        def update_meta(self, *_args, **_kwargs):
+            raise OSError("read-only")
+
+    with pytest.raises(BaselineError, match="non-local baseline state"):
+        record_session_baseline(_Broken(), "remote-2", tmp_path, "remote")
+
+
+# -- porcelain parsing, subdirectories, special files ---------------------------
+
+
+def _fail_git_verb(monkeypatch, verb):
+    import garuda.workspace.diff as diff
+
+    real = diff._git
+
+    def failing(path, *args, **kwargs):
+        if args and args[0] == verb:
+            return subprocess.CompletedProcess(args, 128, "", f"fatal: {verb} broke")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(diff, "_git", failing)
+
+
+def test_git_status_failure_raises_instead_of_an_empty_delta(repo, monkeypatch):
+    (repo / "a.txt").write_text("session work\n")
+    baseline = capture_baseline(repo)
+    _fail_git_verb(monkeypatch, "status")
+    with pytest.raises(DiffError, match="git status failed"):
+        session_delta(baseline, repo)
+
+
+def test_vanished_repository_raises_instead_of_an_empty_delta(repo):
+    import shutil
+
+    baseline = capture_baseline(repo)
+    shutil.rmtree(repo / ".git")
+    with pytest.raises(DiffError):
+        session_delta(baseline, repo)
+
+
+def test_name_status_failure_raises(repo, monkeypatch):
+    baseline = capture_baseline(repo)
+    (repo / "a.txt").write_text("session work\n")
+    _fail_git_verb(monkeypatch, "diff")
+    with pytest.raises(DiffError, match="name-status failed"):
+        session_delta(baseline, repo)
+
+
+@pytest.mark.parametrize(
+    "name", ['q"uote.txt', "\u00e9.txt", " leading.txt", "trailing .txt", "arrow -> x.txt"]
+)
+def test_escaped_and_spaced_names_map_to_real_files(repo, name):
+    """Names git would C-quote, or that `.strip()` would mangle, keep a real
+    fingerprint: unchanged dirt stays preexisting, and a rewrite is session work."""
+    (repo / name).write_text("preexisting\n")
+    (repo / "other.txt").write_text("preexisting\n")
+    baseline = capture_baseline(repo)
+    assert baseline.fingerprints[name].startswith("sha256:")
+    assert session_delta(baseline, repo).changed == ()
+
+    (repo / name).write_text("changed by the session\n")
+    delta = session_delta(baseline, repo)
+    by_path = {item.path: item for item in delta.files}
+    assert by_path[name].kind == "untracked"
+    assert by_path[name].preexisting is False
+    assert by_path["other.txt"].preexisting is True
+    assert delta.changed == (name,)
+
+
+def test_subdirectory_workspace_uses_workspace_relative_paths(repo):
+    sub = repo / "pkg"
+    sub.mkdir()
+    (sub / "kept.txt").write_text("one\n")
+    (sub / "moved.txt").write_text("two\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "pkg")
+    (sub / "kept.txt").write_text("preexisting dirt\n")
+    (repo / "a.txt").write_text("outside the workspace\n")
+
+    baseline = capture_baseline(sub)
+    assert baseline.prefix == "pkg/"
+    assert baseline.fingerprints["kept.txt"].startswith("sha256:")
+    assert "a.txt" not in baseline.fingerprints
+
+    _git(sub, "mv", "moved.txt", "renamed.txt")
+    (sub / "new.txt").write_text("session\n")
+    delta = session_delta(baseline, sub)
+    by_path = {item.path: item for item in delta.files}
+    assert by_path["kept.txt"].preexisting is True
+    assert by_path["renamed.txt"].kind == "renamed"
+    assert by_path["new.txt"].kind == "untracked"
+    assert "moved.txt" not in by_path
+    assert set(delta.changed) == {"renamed.txt", "new.txt"}
+    assert not any(path.startswith("pkg/") or path == "a.txt" for path in by_path)
+
+
+def _within(seconds, fn, *args):
+    """Run ``fn`` on a daemon thread; fail (rather than hang the suite) if it blocks."""
+    import threading
+
+    box = {}
+
+    def target():
+        try:
+            box["value"] = fn(*args)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), f"{fn.__name__} blocked for more than {seconds}s"
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def test_symlink_to_dev_zero_hashes_the_link_not_the_target(repo):
+    import os
+
+    os.symlink("/dev/zero", repo / "zero")
+    baseline = _within(10, capture_baseline, repo)
+    assert baseline.fingerprints["zero"].startswith("symlink:")
+    assert _within(10, session_delta, baseline, repo).changed == ()
+
+    os.unlink(repo / "zero")
+    os.symlink("/dev/null", repo / "zero")
+    delta = _within(10, session_delta, baseline, repo)
+    assert delta.changed == ("zero",)
+
+
+def test_fifo_is_never_opened(repo):
+    import os
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no mkfifo")
+    # A tracked path replaced by a FIFO is reported dirty, so it is fingerprinted.
+    (repo / "a.txt").unlink()
+    os.mkfifo(repo / "a.txt")
+    baseline = _within(10, capture_baseline, repo)
+    assert baseline.fingerprints["a.txt"] == "special:fifo"
+    delta = _within(10, session_delta, baseline, repo)
+    assert delta.preexisting == ("a.txt",)
+
+
+def test_unborn_repository_has_an_empty_commit_and_a_real_delta(tmp_path):
+    root = tmp_path / "fresh"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "dirt.txt").write_text("before\n")
+    baseline = capture_baseline(root)
+    assert baseline.attributable and baseline.commit == ""
+    (root / "made.txt").write_text("session\n")
+    delta = session_delta(baseline, root)
+    assert delta.changed == ("made.txt",)
+    assert delta.preexisting == ("dirt.txt",)
+
+
+def test_baseline_record_rejects_an_unknown_state():
+    with pytest.raises(DiffError, match="state"):
+        Baseline.from_dict({"state": "unsupported_nonlocal", "commit": ""})
+
+
+def test_committed_session_work_stays_in_the_delta(repo):
+    """Work the session commits is still session work: the delta compares the
+    tree with the baseline commit, not only what `git status` shows dirty."""
+    (repo / "b.txt").write_text("preexisting dirt\n")
+    baseline = capture_baseline(repo)
+    (repo / "a.txt").write_text("agent edit\n")
+    (repo / "new.txt").write_text("agent file\n")
+    (repo / "b.txt").write_text("dirt, then edited and committed\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "agent commit")
+    delta = session_delta(baseline, repo)
+    kinds = {f.path: f.kind for f in delta.files}
+    assert kinds == {"a.txt": "modified", "new.txt": "added", "b.txt": "modified"}
+    assert set(delta.changed) == {"a.txt", "new.txt", "b.txt"}
+    assert delta.head_commit and delta.head_commit != delta.baseline_commit
+
+
+def test_first_commit_in_an_unborn_repo_is_attributed(tmp_path):
+    root = tmp_path / "unborn"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.t")
+    _git(root, "config", "user.name", "t")
+    baseline = capture_baseline(root)
+    assert baseline.commit == ""
+    (root / "first.txt").write_text("hello\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "first")
+    delta = session_delta(baseline, root)
+    assert delta.changed == ("first.txt",)
+
+
+def test_new_file_at_a_renamed_path_is_its_own_change(repo):
+    baseline = capture_baseline(repo)
+    _git(repo, "mv", "a.txt", "moved.txt")
+    (repo / "a.txt").write_text("a new file where the old one was\n")
+    delta = session_delta(baseline, repo)
+    kinds = {f.path: f.kind for f in delta.files}
+    assert kinds["moved.txt"] == "renamed"
+    assert kinds["a.txt"] == "untracked"

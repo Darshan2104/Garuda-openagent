@@ -135,6 +135,12 @@ class HandoffTransaction:
         except HandoffError:
             raise
         except Exception as exc:
+            try:
+                await self._resume_source(source)
+            except Exception as resume_exc:
+                raise self._fail(
+                    f"source side failed: {exc}; source resume failed: {resume_exc}"
+                ) from exc
             raise self._fail(f"source side failed: {exc}") from exc
 
     async def start_target(self, source, target) -> Any:
@@ -145,6 +151,13 @@ class HandoffTransaction:
         try:
             self.target_info = await target.start(task=f"handoff from {self._session_id}")
         except Exception as exc:
+            try:
+                await target.close()
+            except Exception as close_exc:
+                raise self._fail(
+                    "target startup failed and target cleanup could not be confirmed; "
+                    f"source remains paused: {close_exc}"
+                ) from exc
             await self._rollback(source, f"target startup failed: {exc}")
             raise HandoffError(f"target startup failed: {exc}") from exc
         self._move(HandoffPhase.AWAITING_ACK, target=target.runtime_id)
@@ -155,32 +168,47 @@ class HandoffTransaction:
         if self._phase is not HandoffPhase.AWAITING_ACK:
             raise HandoffError(f"cannot acknowledge from {self._phase.value}")
         if source.state is not LifecycleState.PAUSED_AT_BOUNDARY:
+            if target.state not in (LifecycleState.CLOSED, LifecycleState.FAILED):
+                try:
+                    await target.close()
+                except Exception as exc:
+                    raise self._fail(
+                        "source is active and target cleanup could not be confirmed; "
+                        f"manual recovery required: {exc}"
+                    ) from exc
             raise HandoffError(
                 "source is not frozen at the switch boundary; "
                 "two active mutating owners cannot exist"
             )
         if target.state not in (LifecycleState.IDLE, LifecycleState.RUNNING):
             raise HandoffError("target is not active; acknowledgement refused")
-        await source.close()
+        try:
+            await source.close()
+        except Exception as exc:
+            try:
+                await target.close()
+                await self._resume_source(source)
+            except Exception as cleanup_exc:
+                raise self._fail(
+                    "source close failed and rollback could not be confirmed; "
+                    f"manual recovery required: {cleanup_exc}"
+                ) from exc
+            self._move(HandoffPhase.ROLLED_BACK, reason=f"source close failed: {exc}")
+            raise HandoffError(f"source close failed: {exc}") from exc
         self._move(HandoffPhase.ACKNOWLEDGED, target=target.runtime_id)
 
     async def cancel(self, source, target=None, *, reason: str = "") -> None:
         """Cancel the switch. The source returns to a resumable state and a
-        started target is closed, so exactly one resumable owner remains."""
+        started target is closed, so exactly one resumable owner remains.
+
+        Cleanup runs first and always; the `switch` cancellation audit is
+        written afterwards (never for a refused cancel of a terminal
+        transaction). An audit write failure therefore cannot leave a started
+        target alive or the source paused: the transaction moves to FAILED —
+        not CANCELLED, since the move is unaudited — and the error surfaces.
+        """
         if self._phase is HandoffPhase.IDLE:
             raise HandoffError("nothing to cancel")
-        if self._store is not None:
-            try:
-                from garuda.runtime.recovery import record_cancel
-
-                record_cancel(
-                    self._store,
-                    self._session_id,
-                    boundary="switch",
-                    reason=reason or "cancelled",
-                )
-            except Exception as exc:
-                raise self._fail(f"handoff cancellation audit failed: {exc}") from exc
         if self._phase in (
             HandoffPhase.ACKNOWLEDGED,
             HandoffPhase.ROLLED_BACK,
@@ -192,9 +220,39 @@ class HandoffTransaction:
             LifecycleState.CLOSED,
             LifecycleState.FAILED,
         ):
-            await target.close()
+            try:
+                await target.close()
+            except Exception as exc:
+                self._record_cancel(reason)
+                raise self._fail(
+                    "target cleanup could not be confirmed; source remains paused: "
+                    f"{exc}"
+                ) from exc
         await self._resume_source(source)
+        audit_error = self._record_cancel(reason)
+        if audit_error is not None:
+            raise self._fail(
+                f"handoff cancelled but its audit record failed: {audit_error}"
+            ) from audit_error
         self._move(HandoffPhase.CANCELLED, reason=reason)
+
+    def _record_cancel(self, reason: str) -> Exception | None:
+        """Persist the switch-boundary cancel; return (never raise) a failure."""
+        if self._store is None:
+            return None
+        try:
+            from garuda.runtime.recovery import record_cancel
+
+            record_cancel(
+                self._store,
+                self._session_id,
+                boundary="switch",
+                reason=reason or "cancelled",
+            )
+        except Exception as exc:
+            logger.warning("Handoff cancellation audit failed", exc_info=True)
+            return exc
+        return None
 
     async def _rollback(self, source, reason: str) -> None:
         await self._resume_source(source)
@@ -240,23 +298,25 @@ async def execute_handoff(
       FAILED rather than transferring ownership without an audit trail.
     - With `workspace` (and a store holding the session's recorded baseline),
       the capture carries the authoritative delta — changed vs preexisting
-      files from the exact start-of-session baseline — and the acknowledge
-      record persists the baseline commit for the target session.
+      files from the exact start-of-session baseline, or only an explicit
+      `workspace_attribution` reason when the baseline is unattributable —
+      and the acknowledge record persists the baseline commit for the target
+      session. No production entry point passes `workspace` yet; until one
+      does, product handoffs carry no workspace delta.
     """
     tx = HandoffTransaction(session_id=session_id, emit=emit, store=store)
-    authoritative_delta = None
     if workspace is not None:
         if store is None:
             raise HandoffError(
                 "handoff with a workspace requires a session store holding its baseline"
             )
         try:
-            from garuda.workspace.diff import load_session_delta
+            from garuda.workspace import evidence
 
-            # Do this before pausing/transferring anything. A handoff cannot
-            # claim a workspace delta it failed to derive from the recorded
-            # start-of-session baseline.
-            authoritative_delta = load_session_delta(store, session_id, workspace)
+            # Preflight before pausing anything: a handoff cannot claim a
+            # workspace delta it cannot derive from the recorded
+            # start-of-session baseline, so refuse while the source is live.
+            evidence.load_session_delta(store, session_id, workspace)
         except Exception as exc:
             raise HandoffError(
                 f"handoff refused: authoritative workspace delta is unavailable: {exc}"
@@ -270,19 +330,55 @@ async def execute_handoff(
 
     def _capture_with_delta() -> dict[str, Any]:
         data = dict(capture() if capture else {})
-        if authoritative_delta is not None:
-            data.setdefault("baseline_commit", authoritative_delta.baseline_commit)
-            data.setdefault("changed", list(authoritative_delta.changed))
-            data.setdefault("preexisting", list(authoritative_delta.preexisting))
+        if workspace is not None:
+            from garuda.workspace import evidence
+
+            # Recomputed after the pause so the package reflects the paused
+            # tree, not the preflight snapshot. A failure here raises inside
+            # `begin`, which resumes the source instead of transferring.
+            delta = evidence.load_session_delta(store, session_id, workspace)
+            data.setdefault("workspace_attribution", delta.attribution)
+            if delta.attributable:
+                data.setdefault("baseline_commit", delta.baseline_commit)
+                data.setdefault("changed", list(delta.changed))
+                data.setdefault("preexisting", list(delta.preexisting))
         return data
 
-    await tx.begin(
-        source,
-        checkpoint=checkpoint or (lambda: None),
-        capture=_capture_with_delta,
-        generate=generate,
-    )
-    target = target_factory()
+    try:
+        await tx.begin(
+            source,
+            checkpoint=checkpoint or (lambda: None),
+            capture=_capture_with_delta,
+            generate=generate,
+        )
+    except HandoffError:
+        # The source side failed (and was resumed, or the error says it could
+        # not be). Record it so the prepared audit is not left dangling.
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="source_side"
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+        raise
+    try:
+        target = target_factory()
+    except Exception as exc:
+        cancel_error: HandoffError | None = None
+        try:
+            await tx.cancel(source, reason="target construction failed")
+        except HandoffError as cancel_exc:
+            cancel_error = cancel_exc
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="target_factory"
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+        detail = f"; {cancel_error}" if cancel_error is not None else ""
+        raise HandoffError(f"target construction failed: {exc}{detail}") from exc
     try:
         await tx.start_target(source, target)
     except HandoffError:
@@ -295,15 +391,18 @@ async def execute_handoff(
                 logger.warning("Handoff failure audit failed", exc_info=True)
         raise
     if deliver is not None:
+        # The package reaches the started target before ownership is recorded,
+        # so the audit trail never names an owner that never received it.
         try:
             result = deliver(target)
             if hasattr(result, "__await__"):
                 await result
         except Exception as exc:
+            cancel_error: HandoffError | None = None
             try:
-                await target.close()
-            finally:
-                await tx._rollback(source, f"target handoff delivery failed: {exc}")
+                await tx.cancel(source, target, reason="target handoff delivery failed")
+            except HandoffError as cancel_exc:
+                cancel_error = cancel_exc
             if store is not None:
                 try:
                     store.record_handoff(
@@ -311,8 +410,12 @@ async def execute_handoff(
                     )
                 except Exception:
                     logger.warning("Handoff delivery failure audit failed", exc_info=True)
-            raise HandoffError(f"target handoff delivery failed: {exc}") from exc
-    await tx.acknowledge(source, target)
+            detail = f"; {cancel_error}" if cancel_error is not None else ""
+            raise HandoffError(f"target handoff delivery failed: {exc}{detail}") from exc
+    # Persist the ownership decision before closing the source. If this write
+    # fails, the target is closed and the source resumes; ownership never moves
+    # without a durable recovery record. A crash after this write still has one
+    # potential mutator because the source is frozen at its boundary.
     if store is not None:
         try:
             extra: dict[str, Any] = {
@@ -328,5 +431,22 @@ async def execute_handoff(
             )
         except Exception as exc:
             logger.warning("Handoff acknowledge audit failed", exc_info=True)
+            try:
+                await tx.cancel(source, target, reason="acknowledgement audit failed")
+            except HandoffError as cancel_exc:
+                raise HandoffError(
+                    f"handoff acknowledge audit failed: {exc}; {cancel_exc}"
+                ) from exc
             raise HandoffError(f"handoff acknowledge audit failed: {exc}") from exc
+    try:
+        await tx.acknowledge(source, target)
+    except HandoffError:
+        if store is not None:
+            try:
+                store.record_handoff(
+                    session_id, state="failed", attempts=1, reason="acknowledgement"
+                )
+            except Exception:
+                logger.warning("Handoff rollback audit failed", exc_info=True)
+        raise
     return tx, target

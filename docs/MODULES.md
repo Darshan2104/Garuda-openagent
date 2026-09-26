@@ -74,16 +74,42 @@ files never touched; TTLs validated positive/finite, locking fail-closed when
 `fcntl` is unavailable or `flock` fails) plus worktree isolation keys and
 creation hooks. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
-last — concurrent runs on one workspace are refused, never interleaved.
-`diff.py` manages the authoritative delta: baseline commit/status/fingerprints
-captured at session start and persisted in the unified session, per-file
-added/modified/deleted/renamed/untracked with preexisting dirt flagged
-separately, bounded diff text recoverable from disk, ACP hints reconciled
-against filesystem truth and never applied. CLI, SDK, and dashboard session
-starts refuse before a prompt when a local baseline cannot be persisted;
-completion, handoff, and dashboard close consume that exact record and refuse
-or mark failure if it cannot later be read. Non-local attribution is explicit
-unsupported state, not an empty success claim.
+last (also on cancellation) — concurrent `run_agent_task` runs on one workspace
+are refused, never interleaved. Interactive paths that call `agent.run`
+directly (dashboard chat, CLI chat, SDK `Conversation`) take no lease yet; see
+`BACKLOG.md`.
+`diff.py` holds the git mechanics of the authoritative delta: baseline
+commit/status/fingerprints, per-file added/modified/deleted/renamed/untracked
+with preexisting dirt flagged separately, bounded diff text recoverable from
+disk, and ACP hints reconciled against filesystem truth and never applied. It
+reads `git status --porcelain=v1 -z` and `git diff --name-status -z --relative`
+scoped to the workspace (so quoted, non-ASCII, and space-padded names and
+repo-subdirectory workspaces map to real files), hashes symlinks by link text,
+never opens FIFOs/devices, and raises on any git failure for a repository
+baseline rather than reporting an empty delta. A non-repo workspace records an
+explicit `unsupported_nonrepo` baseline.
+`evidence.py` is the shared session boundary over it. `host_backed()` is the one
+workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
+workspace bind-mounted) are attributable; `remote` is recorded
+`unsupported_nonlocal`; unknown kinds fail closed. `begin_session_evidence()`
+persists the baseline before an environment is resolved or a prompt is sent and
+returns the loader the verifier consumes; `finish_session_evidence()` persists
+the final delta. Entry points that persist a session use it — `run_agent_task`
+(CLI `run`, `serve`, SDK `SoftwareAgent`), interactive `garuda chat`, and
+dashboard chat — and refuse to start (session marked failed) when the baseline
+cannot be recorded; a completion whose recorded baseline or delta cannot be read
+is rejected by the verifier, and a finish/close that cannot persist it marks the
+session failed. The verifier's verdict depends on the delta being readable, not
+on its contents: `task_complete` carries no file-change claim to check it
+against, so the delta is attached as `workspace_delta` evidence on the
+verification event. Unsupported attribution is reported as such, never as an
+empty "nothing changed" delta. SDK `Conversation` and `garuda recipe run`
+persist no session and run without a baseline (see `BACKLOG.md`). A resumed run
+is a new session with a fresh baseline, so the prior session's work reads as
+preexisting. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
+into a handoff, but no production caller passes `workspace` yet. The
+`.context/` pack files the harness syncs into the workspace appear in the delta
+as session changes.
 
 ## `context/` — fitting the conversation in the window
 
@@ -143,11 +169,33 @@ runtimes with the session store recording prepared/acknowledged/failed, so
 success transfers single ownership and target failure keeps the source
 promptable. `recovery.py` classifies restarts from persisted records
 (resumable, rolled-back, ambiguous), reaps orphan agent children with
-verification, records cancellations at turn/switch/process boundaries, and
-never invents success — a bare exit proves nothing. Only positive, isolated
-process-group leaders recorded against a known runtime/session may be reaped;
-pre- and post-reap indeterminate liveness, missing checkpoints, native identity
-mismatch, or invalid ACP authority snapshots refuse startup/resume.
+verification, appends cancellations at turn/switch/process boundaries, and
+never invents success — a bare exit proves nothing. It runs on resume only
+(`run_agent_task --resume`, after this run's workspace lease is taken, and
+`NativeGarudaRuntime.resume`); a fresh run has nothing to recover. A child is
+a signal candidate only when `record_child` persisted it against a known
+runtime/session as its own process-group leader together with two process
+identities (boot id plus start time from `/proc/<pid>/stat` on Linux; `ps -o
+lstart= -o ucomm=` elsewhere — never a name the process can rewrite, such as
+Node's `process.title`): the child's and its owning Garuda process's.
+Recovery refuses while a live workspace lease names the session or the
+recorded owner is still alive, audits the trail and classifies before any
+signal, then SIGKILLs the group only if the pid's current identity still
+matches and polls (bounded, `REAP_TIMEOUT_SEC`) until it is dead or a zombie.
+Gone children are retired `exited`, recycled PIDs `reused` (never signalled),
+killed ones `reaped`. Indeterminate liveness, identity, or owner probes,
+missing checkpoints, native identity mismatch, or invalid ACP authority
+snapshots refuse the resume. This is a guardrail, not a sandbox: descendants
+that left the child's process group are not found, and a crash between
+`AcpProcess.close` and the retiring write leaves a `live` record that only the
+identity check keeps from misfiring. Cancellation audits are best-effort
+before the cancel and surfaced afterwards as `CancellationAuditError` (a
+handoff cancel cleans up first and ends FAILED when its audit write fails), so
+a store outage never keeps work running. The `cancellations` list is audit
+evidence that classification does not consume yet. Only `AcpRuntime(store=…)`
+and `HandoffTransaction(store=…)` record children and switch cancels; no
+production entry point constructs an `AcpRuntime` or calls `execute_handoff`
+yet, and without a store the adapter logs a warning and records nothing.
 
 ## `interfaces/` — entry points
 
@@ -169,15 +217,14 @@ reported cost does not move when an upstream table does).
 
 | Package | Owns |
 |---|---|
-| `config/` | `agent_home.py` — all `.agent/` discovery. `recipes.py` — YAML multi-step workflows. `agents/setup.py::prepare_runtime_catalog()` is the shared trusted runtime builder: it reads global manifests and disablement, treats project refs as non-authoritative, and is the required CLI/SDK launch gate. |
+| `config/` | `agent_home.py` — all `.agent/` discovery. `recipes.py` — YAML multi-step workflows. `agents/setup.py::build_runtime_catalog()` is the one trusted runtime-registry builder (`prepare_runtime_catalog(workspace)` feeds it the global and project files; `acp/catalog.py::shared_registry` is a thin adapter over it): it reads global manifests and disablement, treats project refs as non-authoritative (authority attempts refuse, malformed advice warns), executes no probes (discovery runs only through `RuntimeCatalog.discover()`), and is the required CLI/SDK launch gate. |
 | `mcp/` | `config.py` (merge + allowlist), `client.py` (per-run server manager). |
 | `skills/` | `loader.py` — progressive disclosure, `allowed-tools` validation. |
 | `sdk/` | `software_agent.py`, `conversation.py` — the library surface. |
 | `interfaces/web/` | The `garuda web` dashboard: read past runs, and talk to an agent. `security.py` — Host/Origin/token gate (its own, because `interfaces/server.py` blanket-refuses browsers). `http.py` — threaded stdlib server + static. `routes.py` — pure `dispatch`, so routes test without a socket. `reads.py` — the read model over `SessionStore` + the trajectory reader, plus the `ReaderCache` whose lock spans `refresh()` (a shared reader appends its tail twice otherwise). `tail.py` — byte-offset tailing; the offset only advances past the last newline, because `EventStore.append` is not atomic and consuming a torn line desyncs the cursor permanently. `live.py` — conversations: the workspace allowlist, the permission ceiling, the turn lifecycle and cancellation. `grounding.py` — an uploaded file or fetched page becomes a workspace file the agent reads with its own tools; URLs go through `tools/web.py`'s SSRF-vetted fetcher, never a second one. `approvals.py` — parked approvals; the only thread-and-loop code here, so read its docstring before touching it. `static/` — no-build frontend; `views_trajectory.js` is the trace view, where a turn renders as in/thinking/says/does, tool colour carries the *family* rather than the outcome, and the turn timeline and gate lane are one CSS grid so alignment cannot drift. Checked by executing it in Chrome — see `tests/browser/`. |
 | `observability/` | `trajectory.py` — rebuilds turn structure from an `events.jsonl` (one reader for local sessions and Harbor trials alike); `tracing.py` — spans. |
 | `plugins/` | `hooks.py` — lifecycle hooks. |
-| `acp/` | `protocol.py` owns the public ACP v1 wire subset: bounded NDJSON JSON-RPC, typed transport failures, and no vendor SDK dependency. `client.py` manages one subprocess with a minimal child environment, process-group lifecycle, deadlines, and bidirectional controller requests. `authority.py`, `normalize.py`, and `broker.py` negotiate and enforce one fail-closed tool owner per family while preserving normalized, redacted session evidence. `adapter.py` supplies the shared `AcpRuntime` conformance path and passes only harness-reported quota through unchanged. `fake_agent.py` is the isolated strict-v1 deterministic fixture. `catalog.py` discovers only trusted manifests, sends generic adapters through the same registry and exact-path launch gate, and never logs in, installs, reads credentials, or estimates quota. `builtin/` contains the user-authenticated Claude Code, Codex, Cursor, OpenCode, Pi, and Goose manifests. |
-
+ | `acp/` | `protocol.py` — the owned ACP v1 wire subset (JSON-RPC + newline-delimited framing; one line, complete or partial, is bounded at 16 MiB; numeric version pin, typed transport failures). `client.py` — one managed agent subprocess: minimal child env, process-group launch, stderr diagnostics off the protocol stream, deadlines, drained cancel notifications, queued agent-initiated requests, launch-after-close refusal, reader buffer cap, and guaranteed reap. `authority.py` — capability negotiation (recorded intent from Garuda extension fields, not an enforced boundary) assigning exactly one owner per tool family (strict policies refused, safe agent-sandbox defaults; every construction/restore path validates all families present with exactly one valid owner), with snapshot round-trips into session capability records. `normalize.py` — the stateful per-session ACP normalizer over v1 `sessionUpdate` payloads (message/thought chunks as content blocks, tool calls whose content carries diffs, v1 stop reasons; unknown kinds kept as informational events): causal ordering (calls before their updates), partials preserved exactly once, turn-close vs session-terminal rules, raw records as redacted session-local diagnostics. `adapter.py` — the generic `AcpRuntime` every adapter runs the shared conformance suite through (launch, version-checked handshake, negotiation, streaming prompt, v1 `session/request_permission` answered once with `allow_once`/`reject_*` or `cancelled` — never widened to `allow_always` — refusal of unadvertised client methods, cancel, close). `fake_agent.py` — the deterministic `python -m` test server with capability/streaming/approval/diff/malformed/slow/exit/resume/mismatch profiles (the public set is pinned by name in tests, unknown profiles rejected); stdio only, isolated from workspaces and credentials. `broker.py` — the one approval path: engine ceilings applied to native and ACP requests, parked approvals with timeout and disconnect denial, every outcome persisted to the session (audit-write failure denies), attachable answerers (interactive prompt or headless deny-all), strict-policy gaps reported before anything runs; `run_agent_task` installs the session broker on the engine so facade runs share it. `catalog.py` — built-in stubs plus discovery (executable, probed version, login state, capabilities, setup guidance) that never logs in, installs, or reads tokens; malformed trusted settings refuse discovery rather than clear disablement, disabled built-ins remain visible, and `builtin/` holds Claude Code/Codex user-authenticated adapter manifests, which `agents/setup.py` merges into the trusted catalog under global overrides; `adapter_for_discovered` binds the executable a discovery record accepted into the launch argv, with no second `PATH` lookup. |
 ## Working on it
 
 ACP adapters use stable v1 NDJSON with bidirectional JSON-RPC. The shared
