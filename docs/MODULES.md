@@ -240,6 +240,10 @@ so linked checkouts work; CI never sets the gate variable).
 `harness_matrix.py` (P1.12: model × harness comparison fed by real eval runs,
 unknown costs/completions kept unknown, true medians, validated ingestion,
 hashed prompts, per-cell trial counts, and handoff rates).
+`dual_model.py` (P1 #81: paired model schema and release gates; committed
+fixtures are synthetic contract examples, never evidence that a live release
+gate has passed—only paired trajectories collected after #82 may support that
+claim).
 
 ## Everything else
 

@@ -1,0 +1,55 @@
+{
+  "mix_version": "2026-09-21",
+  "scope": "Schema portion of issue #81 (epic #74). Live paired single/dual trials land after #82; this file pins the task classes those trials must cover.",
+  "metric": "Reports compare total trajectory cost, not only expensive-model tokens.",
+  "reproducibility": {
+    "pricing": "Provider-reported cost wins; else GARUDA_TOKEN_PRICES override; else the garuda/eval/pricing.py snapshot with SNAPSHOT_VERSION pinned per report; bundled litellm table only for unlisted models.",
+    "unknown_cost": "Unknown cost is recorded as null with a reason and excluded from savings, never compared as zero.",
+    "versions": "Fix model versions, prompts, prices, and seeds where supported before comparing. Single-trial scores stay single-trial."
+  },
+  "categories": [
+    {
+      "id": "read-heavy",
+      "delegation_expected": true,
+      "description": "Read-heavy exploration: locate files, extract snippets, enumerate symbols across the repository.",
+      "examples": [
+        "locate every retry handler and extract the backoff snippets",
+        "enumerate the symbols exported by the workspace module"
+      ]
+    },
+    {
+      "id": "debugging",
+      "delegation_expected": true,
+      "description": "Debugging against a failing check: reproduce, isolate, fix with verification.",
+      "examples": [
+        "reproduce the failing lease-takeover test and fix the heartbeat race"
+      ]
+    },
+    {
+      "id": "implementation",
+      "delegation_expected": true,
+      "description": "Small implementation with verification: a bounded change plus passing checks.",
+      "examples": [
+        "add the missing fallback counter and cover it with a focused test"
+      ]
+    },
+    {
+      "id": "doc-analysis",
+      "delegation_expected": true,
+      "description": "Document analysis: PDF, spreadsheet, or image evidence extraction.",
+      "examples": [
+        "extract the pricing table from the benchmark PDF",
+        "summarize the spreadsheet bench workbook"
+      ]
+    },
+    {
+      "id": "do-not-delegate",
+      "delegation_expected": false,
+      "description": "Tasks where delegation must not be used: pure edits or single-file reasoning. Pins over-delegation: a candidate that spends collection jobs here regresses even if it succeeds.",
+      "examples": [
+        "rename one local variable in a single file",
+        "answer from one short file already in context"
+      ]
+    }
+  ]
+}
