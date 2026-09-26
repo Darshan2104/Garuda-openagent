@@ -627,6 +627,12 @@ async def run_task(args) -> int:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
 
+    # Resolve policy before constructing a model, toolkit, workspace, or
+    # provider adapter. The selected id is then handed to the matching
+    # executor below; the native default is not an implicit bypass.
+    from garuda.agents.setup import select_runtime
+
+    args.runtime = select_runtime(args.workspace, args.runtime)
     if getattr(args, "runtime", "native") != "native":
         # Resolved before constructing any model, tools, or workspace state,
         # preserving the fail-closed disabled/alias policy on `garuda run`.

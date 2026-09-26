@@ -619,6 +619,14 @@ async def run_acp_task(
             ),
         )
         began = True
+        from garuda.agents.setup import resolve_and_record_routing
+
+        resolve_and_record_routing(
+            workspace=workspace,
+            store=store,
+            session_id=session_id,
+            pin=runtime_id,
+        )
         begin_session_evidence(store, session_id, workspace, "local")
         lease.start_heartbeat()
         handler, _broker = broker_approval_handler(
