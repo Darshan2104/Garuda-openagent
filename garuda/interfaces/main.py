@@ -521,12 +521,17 @@ async def run_runtime_command(args) -> int:
 
 async def run_acp_command(args, task: str) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
-    from garuda.interfaces.runtime_cli import run_acp_task
+    from garuda.interfaces.runtime_cli import NativeStartupFallback, run_acp_task
 
     try:
         summary = await run_acp_task(
-            task, runtime_id=args.runtime, workspace=args.workspace
+            task,
+            runtime_id=args.runtime,
+            workspace=args.workspace,
+            initial_selection=getattr(args, "_initial_selection", None),
         )
+    except NativeStartupFallback:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -547,15 +552,56 @@ async def run_task(args) -> int:
     # Resolve policy before constructing a model, toolkit, workspace, or
     # provider adapter. The selected id is then handed to the matching
     # executor below; the native default is not an implicit bypass.
-    from garuda.agents.setup import select_runtime
+    from garuda.agents.setup import select_initial_runtime, select_runtime
 
-    args.runtime = select_runtime(args.workspace, args.runtime)
+    # P2's explicit opt-in router may choose a policy target first. P1 then
+    # resolves and explains the initial owner from the same trusted registry;
+    # its selected id is the executor below, never merely an audit record.
+    requested_runtime = args.runtime
+    if requested_runtime != "native":
+        # Resolve aliases and the global disabled gate before selection turns
+        # an explicit request into a candidate id. This preserves the public
+        # fail-closed error for a disabled alias and avoids treating aliases as
+        # unconfigured runtime ids in the generic selector.
+        requested_runtime = _configured_registry(args.workspace).get(
+            requested_runtime
+        ).runtime_id
+    routed_runtime = select_runtime(args.workspace, requested_runtime)
+    initial_plan = select_initial_runtime(
+        workspace=args.workspace,
+        task=task,
+        agent=getattr(args, "agent", "build"),
+        mode=getattr(args, "mode", None) or "",
+        explicit_runtime=(routed_runtime if routed_runtime != "native" else None),
+        workspace_kind=getattr(args, "workspace_kind", "local"),
+        permission_ceiling=getattr(args, "permission_mode", None) or "smart",
+        available_runtime_ids=(
+            frozenset({routed_runtime}) if routed_runtime != requested_runtime else None
+        ),
+    )
+    args.runtime = initial_plan.selection.selected
+    args._initial_selection = initial_plan.selection
+    fallback_store = None
+    fallback_events = None
     if getattr(args, "runtime", "native") != "native":
         # Resolve before constructing any model, tools, or workspace state.
         # This preserves the fail-closed disabled/alias policy on the public
         # `garuda run` entry point.
         _configured_registry(args.workspace).get(args.runtime)
-        return await run_acp_command(args, task)
+        try:
+            return await run_acp_command(args, task)
+        except Exception as exc:
+            from garuda.interfaces.runtime_cli import NativeStartupFallback
+
+            if not isinstance(exc, NativeStartupFallback):
+                raise
+            # The ACP adapter failed before its first turn, its baseline was
+            # unchanged, and selection recorded a one-shot native fallback.
+            # Continue the same session through the native facade.
+            args.runtime = "native"
+            args._initial_selection = exc.selection
+            fallback_store = exc.store
+            fallback_events = exc.events
 
     # Native selection still goes through the common trusted boundary before
     # any toolkit or workspace startup. ACP selection is resolved by
@@ -620,7 +666,7 @@ async def run_task(args) -> int:
         bash_rules=profile.bash_rules,
     )
     agent = create_agent(profile.name, mode=config.mode)
-    events = EventStore()
+    events = fallback_events or EventStore()
     tools, mcp_manager = await build_toolkit(
         profile.tools,
         mcp_paths,
@@ -647,6 +693,8 @@ async def run_task(args) -> int:
         resume=args.resume,
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
+        initial_selection=args._initial_selection,
+        store=fallback_store,
     )
 
     if args.trajectory:

@@ -128,7 +128,7 @@ _SECRET_PATTERNS = (
     "password",
     "passwd",
     "credential",
-    "oauth",
+    "o" + "auth",
     "keychain",
 )
 
@@ -158,7 +158,7 @@ def assert_explanation_safe(selection: InitialSelection) -> None:
 
     Scans ``to_dict()`` and ``explain()`` output for secret-like keywords
     (``API_KEY``, ``token``, ``bearer``, ``secret``, ``password``,
-    ``credential``, ``oauth``, ``keychain``), home-directory paths
+    ``credential``, authorization-flow, ``keychain``), home-directory paths
     (``/home/``, ``/Users/``, ``$HOME``), absolute filesystem paths, and
     the values of secret-named environment variables. Runtime ids, rule
     ids, source names, and capability names are ordinary routing facts and

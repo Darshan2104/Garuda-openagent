@@ -215,7 +215,17 @@ def parse_project_selection(
         return ProjectSelectionConfig()
     if not isinstance(data, dict):
         raise SelectionError(f"{source}: must be a mapping")
-    block: Any = data.get("routing", data)
+    # Project settings share their top-level mapping with runtime references,
+    # disablement suggestions, and other unrelated configuration. Only an
+    # explicit routing block (or the historical rules-only shape) belongs to
+    # this parser; treating unrelated keys as routing fields masks the real
+    # launch gate with a misleading selection parse failure.
+    if "routing" in data:
+        block: Any = data["routing"]
+    elif set(data) <= {"rules"}:
+        block = data
+    else:
+        return ProjectSelectionConfig()
     if not isinstance(block, dict):
         raise SelectionError(f"{source}.routing: must be a mapping")
     forbidden = set(block) & _FORBIDDEN_RULE_FIELDS

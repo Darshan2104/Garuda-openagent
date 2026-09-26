@@ -9,6 +9,7 @@ separate layer and is not exercised here.
 import json
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -496,3 +497,56 @@ def test_explanations_contain_no_secrets_or_workspace_paths(monkeypatch):
     leaked = _bad(rationale=("failed with zz-top-999-qwerty-value in output",))
     with pytest.raises(SelectionError):
         selection.assert_explanation_safe(leaked)
+
+
+@pytest.mark.asyncio
+async def test_cli_initial_selection_drives_the_executor(monkeypatch):
+    """A P1 decision must select the launch path, not merely session metadata."""
+    import garuda.interfaces.main as main
+    from garuda.agents.setup import InitialRuntimeSelection
+
+    decision = selection.InitialSelection(
+        selected="codex",
+        source="rule",
+        rule_id="prefer-codex",
+        candidates=("codex", "native"),
+    )
+    plan = InitialRuntimeSelection(
+        selection=decision,
+        request=InitialRequest(task="t"),
+        candidates=(InitialCandidate("codex"), InitialCandidate("native", kind="native")),
+    )
+    seen = []
+
+    monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
+    monkeypatch.setattr("garuda.agents.setup.select_initial_runtime", lambda **_: plan)
+    monkeypatch.setattr(main, "_configured_registry", lambda *_: SimpleNamespace(get=lambda _: None))
+
+    async def _run_acp(args, task):
+        seen.append((args.runtime, args._initial_selection.selected, task))
+        return 0
+
+    monkeypatch.setattr(main, "run_acp_command", _run_acp)
+    args = SimpleNamespace(task="t", file=None, runtime="native", workspace=".")
+    assert await main.run_task(args) == 0
+    assert seen == [("codex", "codex", "t")]
+
+
+@pytest.mark.asyncio
+async def test_cli_refused_initial_selection_starts_no_executor(monkeypatch):
+    """A pre-start selection refusal must stop before either executor is built."""
+    import garuda.interfaces.main as main
+
+    monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
+    monkeypatch.setattr(
+        "garuda.agents.setup.select_initial_runtime",
+        lambda **_: (_ for _ in ()).throw(SelectionError("selection refused")),
+    )
+
+    async def _unexpected(*_args, **_kwargs):
+        raise AssertionError("executor was invoked after selection refusal")
+
+    monkeypatch.setattr(main, "run_acp_command", _unexpected)
+    args = SimpleNamespace(task="t", file=None, runtime="native", workspace=".")
+    with pytest.raises(SelectionError, match="selection refused"):
+        await main.run_task(args)
