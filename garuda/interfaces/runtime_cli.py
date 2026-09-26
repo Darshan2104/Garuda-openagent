@@ -33,6 +33,16 @@ from garuda.runtime.registry import RuntimeRegistry
 RUNTIME_API_VERSION = "1"
 
 
+class NativeStartupFallback(RuntimeError):
+    """Signal that an ACP pre-start failure can safely continue natively."""
+
+    def __init__(self, *, store, events, selection):
+        super().__init__("ACP startup fallback selected the native executor")
+        self.store = store
+        self.events = events
+        self.selection = selection
+
+
 def load_configured_manifest_dicts(global_settings: dict | None = None) -> list[dict]:
     """Builtin manifests plus the trusted global `runtimes:` list.
 
@@ -400,6 +410,7 @@ async def run_acp_task(
     argv_override: list[str] | None = None,
     disabled=None,
     store=None,
+    initial_selection=None,
 ) -> dict[str, Any]:
     """Run one ACP task through the same trusted registry as every CLI path."""
     from garuda.core.events import EventStore
@@ -414,16 +425,66 @@ async def run_acp_task(
         agent=runtime_id,
         workspace=workspace,
     )
-    from garuda.agents.setup import resolve_and_record_routing
+    from garuda.agents.setup import (
+        resolve_and_record_routing,
+        select_initial_runtime,
+    )
+    from garuda.runtime.selection import (
+        ClassifierSlot,
+        InitialSelection,
+        SelectionError,
+        record_initial_selection,
+    )
+
+    try:
+        launch_plan = select_initial_runtime(
+            workspace=workspace,
+            task=task,
+            explicit_runtime=runtime_id,
+            disabled=disabled,
+            available_runtime_ids=(
+                frozenset({runtime_id}) if argv_override is not None else None
+            ),
+        )
+    except SelectionError as exc:
+        if "is not configured" not in str(exc):
+            raise
+        # A real adapter factory rejects an unknown id before start. Retain the
+        # long-standing injectable factory seam for protocol tests, where no
+        # configured registry exists and the fake adapter is the authority.
+        launch_plan = None
+        if initial_selection is None:
+            initial_selection = InitialSelection(
+                selected=runtime_id,
+                source="explicit",
+                candidates=(runtime_id,),
+                rationale=("explicit: test adapter selection",),
+                classifier=ClassifierSlot(candidates=(runtime_id,)),
+            )
+    if initial_selection is None:
+        assert launch_plan is not None
+        initial_selection = launch_plan.selection
+    elif initial_selection.selected != runtime_id:
+        raise ValueError(
+            "initial selection and ACP launch disagree: "
+            f"{initial_selection.selected!r} != {runtime_id!r}"
+        )
+    record_initial_selection(store, events.session_id, initial_selection)
 
     # Pin the explicit ACP runtime through budget/mutation gates when routing
     # is enabled; the decision is on the session before the adapter starts.
     resolve_and_record_routing(
         workspace=workspace,
         store=store,
-        session_id=session_id,
+        session_id=events.session_id,
         pin=runtime_id,
+        disabled=disabled,
     )
+    baseline = None
+    if workspace:
+        from garuda.workspace.diff import capture_baseline
+
+        baseline = capture_baseline(workspace)
     _registry, runtime = acp_adapter_for_workspace(
         workspace,
         runtime_id,
@@ -432,7 +493,38 @@ async def run_acp_task(
         store=store,
         persist_dir=str(store.session_dir(events.session_id)),
     )
-    info = await runtime.start(task=task, session_id=events.session_id)
+    try:
+        info = await runtime.start(task=task, session_id=events.session_id)
+    except Exception as start_error:
+        await runtime.close()
+        from garuda.runtime.selection import SelectionError, record_initial_selection, select_startup_fallback
+
+        try:
+            if launch_plan is None:
+                raise SelectionError("startup fallback has no trusted launch plan")
+            fallback = select_startup_fallback(
+                initial_selection,
+                launch_plan.request,
+                launch_plan.candidates,
+                baseline_before=baseline or {},
+                workspace=workspace,
+            )
+        except SelectionError:
+            raise start_error from None
+        if fallback.selected == "native":
+            record_initial_selection(store, events.session_id, fallback)
+            raise NativeStartupFallback(
+                store=store, events=events, selection=fallback
+            ) from start_error
+        record_initial_selection(store, events.session_id, fallback)
+        _registry, runtime = acp_adapter_for_workspace(
+            workspace,
+            fallback.selected,
+            disabled=disabled,
+            store=store,
+            persist_dir=str(store.session_dir(events.session_id)),
+        )
+        info = await runtime.start(task=task, session_id=events.session_id)
     try:
         turn = await runtime.prompt(task)
         trail, _ = await runtime.poll_events(0)
@@ -450,6 +542,7 @@ async def run_acp_task(
 
 __all__ = [
     "RUNTIME_API_VERSION",
+    "NativeStartupFallback",
     "acp_adapter_for_workspace",
     "attach_acp_segment",
     "cmd_handoff_confirm",

@@ -58,6 +58,19 @@ class RuntimeCatalog:
         return selected
 
 
+@dataclass(frozen=True)
+class InitialRuntimeSelection:
+    """Provider-bound launch facts for one initial-runtime decision.
+
+    The generic selection package remains pure; this setup-layer value carries
+    the trusted registry/discovery facts that both selection and launch use.
+    """
+
+    selection: object
+    request: object
+    candidates: tuple[object, ...]
+
+
 def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     """Build the shared trusted runtime boundary for CLI and SDK launches.
 
@@ -103,6 +116,117 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
                 project_disabled=frozenset(project_disabled),
             )
         ),
+    )
+
+
+def select_initial_runtime(
+    *,
+    workspace: str,
+    task: str,
+    agent: str = "",
+    mode: str = "",
+    explicit_runtime: str | None = None,
+    profile_pin: str | None = None,
+    workspace_kind: str = "local",
+    permission_ceiling: str = "smart",
+    required_capabilities: tuple[str, ...] = (),
+    disabled=None,
+    available_runtime_ids: frozenset[str] | None = None,
+) -> InitialRuntimeSelection:
+    """Choose an initial executor from the same trusted facts used to launch.
+
+    This is deliberately in shared setup, not ``runtime.selection``: registry
+    loading, binary discovery, and executable overrides are provider wiring.
+    Callers persist ``selection`` after creating their session and before the
+    chosen runtime starts.
+    """
+    from garuda.acp.catalog import discover, load_trusted_runtime_settings
+    from garuda.config.agent_home import resolve_agent_home
+    from garuda.interfaces.runtime_cli import configured_registry
+    from garuda.runtime.selection import (
+        InitialCandidate,
+        InitialRequest,
+        detect_repo_traits,
+        parse_global_selection,
+        parse_project_selection,
+        select_initial,
+    )
+
+    home = resolve_agent_home(workspace)
+    global_settings = load_trusted_runtime_settings()
+    project_settings = getattr(home, "settings", None) or {}
+    global_selection = parse_global_selection(global_settings)
+    project_selection = parse_project_selection(project_settings)
+    registry = configured_registry(
+        workspace,
+        disabled=disabled,
+        global_settings=global_settings,
+        project_settings=project_settings,
+    )
+    project_disabled = project_settings.get("disabled_runtimes", []) or []
+    discovered = {
+        entry.runtime_id: entry
+        for entry in discover(
+            registry.manifests,
+            disabled=registry.disabled_ids,
+            project_disabled=frozenset(project_disabled),
+        )
+    }
+    candidates: list[InitialCandidate] = []
+    for manifest in registry.manifests:
+        entry = discovered.get(manifest.runtime_id)
+        auth = getattr(entry, "auth", "unknown") if entry is not None else "unknown"
+        health = getattr(entry, "health", "ok") if entry is not None else "ok"
+        forced_available = (
+            available_runtime_ids is not None
+            and manifest.runtime_id in available_runtime_ids
+        )
+        available = forced_available or bool(getattr(entry, "available", True))
+        if forced_available:
+            # An upstream policy decision may carry a freshly-probed runtime
+            # (or an explicit test adapter) whose cached discovery row is
+            # stale. Selection must consume that same effective launch fact.
+            health = "ok"
+        candidates.append(
+            InitialCandidate(
+                runtime_id=manifest.runtime_id,
+                kind=getattr(manifest.kind, "value", str(manifest.kind)),
+                available=available,
+                health=health,
+                auth=auth,
+                capabilities=tuple(manifest.capabilities.names),
+                unavailable_reason=(
+                    "; ".join(getattr(entry, "warnings", ()) or ())
+                    if entry is not None and not available
+                    else ""
+                ),
+            )
+        )
+    request = InitialRequest(
+        task=task,
+        agent=agent,
+        mode=mode,
+        workspace_kind=workspace_kind,
+        permission_ceiling=permission_ceiling,
+        explicit_runtime=explicit_runtime,
+        profile_pin=profile_pin,
+        default_runtime=global_selection.default_runtime,
+        fallback_runtime=global_selection.fallback_runtime,
+        required_capabilities=required_capabilities,
+        workspace=workspace,
+    )
+    selection = select_initial(
+        request,
+        candidates,
+        rules=global_selection.rules,
+        project_rules=project_selection.rules,
+        traits=detect_repo_traits(workspace),
+        trust_project_routes=global_selection.trust_project_routes,
+    )
+    return InitialRuntimeSelection(
+        selection=selection,
+        request=request,
+        candidates=tuple(candidates),
     )
 
 
@@ -240,6 +364,7 @@ def resolve_and_record_routing(
     costs: Mapping[str, float | None] | None = None,
     history: Mapping[str, tuple[int, int]] | None = None,
     mutating_allowed: Mapping[str, bool] | None = None,
+    disabled=None,
 ) -> RoutingDecision | None:
     """Discover, route, and persist through the shared product wiring boundary.
 
@@ -279,6 +404,7 @@ def resolve_and_record_routing(
         costs=costs,
         history=history,
         mutating_allowed=mutating_allowed,
+        disabled=disabled,
         global_settings=global_settings,
         project_settings=project_settings,
     )

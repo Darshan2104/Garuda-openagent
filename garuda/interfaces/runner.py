@@ -156,6 +156,7 @@ async def run_agent_task(
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
+    initial_selection=None,
 ) -> AgentResult:
     # Selection happens before sessions, leases, environments, hooks, tools, or
     # prompts. A disabled runtime must therefore be unable to cause even a
@@ -168,6 +169,21 @@ async def run_agent_task(
     # launched would persist to the default location and be invisible in the list that
     # launched it — a silent divergence, not an error.
     store = store or SessionStore()
+    if initial_selection is not None:
+        # NativeGarudaRuntime.start() merges this initial session record rather
+        # than replacing it. Persisting here keeps selection visible even when
+        # a later runtime start refuses, while selection itself has already
+        # happened before this facade was constructed by the CLI entry point.
+        store.begin(
+            events.session_id,
+            task=task,
+            model=getattr(model, "model_name", str(model)),
+            agent=getattr(agent, "profile_name", "agent"),
+            workspace=workspace,
+        )
+        from garuda.runtime.selection import record_initial_selection
+
+        record_initial_selection(store, events.session_id, initial_selection)
 
     # Every native run — CLI, SDK, server, web — executes through the
     # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
