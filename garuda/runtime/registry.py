@@ -376,6 +376,17 @@ class RuntimeRegistry:
             raise RegistryError(f"unknown runtime {ref!r}")
         return project_ref.runtime_id
 
+    def manifest_for(self, ref: str):
+        """The parsed manifest behind an id or alias. Same disabled
+        enforcement as `get`: unresolvable or disabled refs never reach a
+        launcher."""
+        runtime_id = self._resolve_id(ref)
+        if runtime_id in self._disabled:
+            raise RegistryError(
+                f"runtime {runtime_id!r} is disabled by user configuration"
+            )
+        return self._manifests[runtime_id]
+
     def get(self, ref: str) -> ResolvedRuntime:
         """Resolve a runtime id or project alias.
 

@@ -99,7 +99,13 @@ async def test_handshake_session_prompt_and_notifications():
         session_id = await process.session_new()
         assert session_id == "s1"
         await process.session_prompt(session_id, "hello")
-        seen = {n["params"]["seen"] for n in process.drain_notifications()}
+        notifications = [await process.next_notification(timeout=1.0) for _ in range(3)]
+        assert all(notification is not None for notification in notifications)
+        seen = {
+            notification["params"]["seen"]
+            for notification in notifications
+            if notification is not None
+        }
         assert {"initialize", "session/new", "session/prompt"} <= seen
     finally:
         await process.close()
@@ -186,6 +192,24 @@ async def test_exit_becomes_typed_error_with_stderr():
             await asyncio.wait_for(process.initialize(), 10)
         assert exc.value.exit_code == 3
         assert "boom detail" in exc.value.stderr_tail
+    finally:
+        await process.close()
+
+
+async def test_preexited_agent_keeps_stderr_in_typed_error():
+    argv = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stderr.write('pre-exit detail\\n'); sys.exit(4)",
+    ]
+    process = await _launched(argv)
+    try:
+        assert process._process is not None
+        await process._process.wait()
+        with pytest.raises(AcpExitError) as exc:
+            await process.initialize()
+        assert exc.value.exit_code == 4
+        assert "pre-exit detail" in exc.value.stderr_tail
     finally:
         await process.close()
 
