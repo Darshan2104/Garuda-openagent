@@ -214,7 +214,6 @@ class AcpRuntime:
         process = AcpProcess(
             self._argv,
             extra_env=self._extra_env,
-            cwd=self._cwd,
         )
         try:
             await process.launch()
