@@ -628,7 +628,7 @@ async def _run_runtime_command(args) -> int:
 async def run_acp_command(args, task: str, catalog) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
     from garuda.interfaces.run_guard import interactive_approval
-    from garuda.interfaces.runtime_cli import run_acp_task
+    from garuda.interfaces.runtime_cli import NativeStartupFallback, run_acp_task
 
     try:
         summary = await run_acp_task(
@@ -637,7 +637,11 @@ async def run_acp_command(args, task: str, catalog) -> int:
             workspace=args.workspace,
             catalog=catalog,
             approval=interactive_approval(),
+            initial_selection=getattr(args, "_initial_selection", None),
+            initial_plan=getattr(args, "_initial_plan", None),
         )
+    except NativeStartupFallback:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -662,9 +666,52 @@ async def run_task(args) -> int:
     # Resolve policy before constructing a model, toolkit, workspace, or
     # provider adapter. The selected id is then handed to the matching
     # executor below; the native default is not an implicit bypass.
-    from garuda.agents.setup import select_runtime
+    from garuda.agents.setup import (
+        prepare_runtime_catalog,
+        select_initial_runtime,
+        select_runtime,
+    )
+    from garuda.interfaces.runtime_cli import NativeStartupFallback
 
-    args.runtime = select_runtime(args.workspace, args.runtime)
+    # P2's explicit opt-in router may choose a policy target first. P1 then
+    # resolves and explains the initial owner from the same trusted registry;
+    # its selected id is the executor below, never merely an audit record.
+    runtime_catalog = prepare_runtime_catalog(args.workspace)
+    requested_runtime = args.runtime
+    if requested_runtime != "native":
+        # Resolve aliases and the global disabled gate before selection turns
+        # an explicit request into a candidate id. This preserves the public
+        # fail-closed error for a disabled alias and avoids treating aliases as
+        # unconfigured runtime ids in the generic selector.
+        requested_runtime = runtime_catalog.registry.get(
+            requested_runtime
+        ).runtime_id
+    routed_runtime = select_runtime(args.workspace, requested_runtime)
+    # This catalog is passed through selection and launch. That prevents a
+    # selection probe from observing different trusted registry facts than the
+    # executor it chooses.
+    initial_plan = select_initial_runtime(
+        workspace=args.workspace,
+        task=task,
+        catalog=runtime_catalog,
+        agent=getattr(args, "agent", "build"),
+        mode=getattr(args, "mode", None) or "",
+        explicit_runtime=(routed_runtime if routed_runtime != "native" else None),
+        workspace_kind=getattr(args, "workspace_kind", "local"),
+        permission_ceiling=getattr(args, "permission_mode", None) or "smart",
+        available_runtime_ids=(
+            # An explicit, registry-authorized runtime must select its ACP
+            # executor even when discovery has already reported a missing
+            # binary. The ACP launch path then emits its established loud
+            # installation error; it must never silently become native.
+            frozenset({routed_runtime}) if routed_runtime != "native" else None
+        ),
+    )
+    args.runtime = initial_plan.selection.selected
+    args._initial_selection = initial_plan.selection
+    args._initial_plan = initial_plan
+    fallback_store = None
+    fallback_events = None
     if getattr(args, "runtime", "native") != "native":
         # Resolved before constructing any model, tools, or workspace state,
         # preserving the fail-closed disabled/alias policy on `garuda run`.
@@ -674,17 +721,25 @@ async def run_task(args) -> int:
         # message with exit status 2 (`_run_with_runtime_gate`).
         from garuda.runtime.protocol import RuntimeKind
 
-        catalog = _configured_catalog(args.workspace)
-        selected = catalog.registry.get(args.runtime)
+        selected = runtime_catalog.registry.get(args.runtime)
         if selected.kind is RuntimeKind.ACP:
-            return await run_acp_command(args, task, catalog)
+            try:
+                return await run_acp_command(args, task, runtime_catalog)
+            except NativeStartupFallback as fallback:
+                # A failed ACP start may transfer exactly once to native only
+                # after `run_acp_task` verified the workspace is unchanged.
+                # Reuse its session trail so the explanation and both runtime
+                # tenures remain one recoverable session.
+                args.runtime = fallback.selection.selected
+                args._initial_selection = fallback.selection
+                fallback_store = fallback.store
+                fallback_events = fallback.events
 
     # Native selection still goes through the common trusted boundary before
     # any toolkit or workspace startup. ACP selection is resolved by
     # ``run_acp_command`` through the same trusted registry service.
-    from garuda.agents.setup import prepare_agent_run, prepare_runtime_catalog
+    from garuda.agents.setup import prepare_agent_run
 
-    runtime_catalog = prepare_runtime_catalog(args.workspace)
     runtime_catalog.select_for_native_facade(args.runtime)
     from garuda.config.agent_home import resolve_agents_dirs
     from garuda.model.config import ConfigError
@@ -753,7 +808,7 @@ async def run_task(args) -> int:
                 f"[garuda] collection={safe_model_identity(prepared.collection)} "
                 f"({prepared.provenance['collection'].provenance.value})",
             )
-    events = EventStore()
+    events = fallback_events or EventStore()
 
     result = await run_agent_task(
         task=task,
@@ -773,6 +828,8 @@ async def run_task(args) -> int:
         resume=args.resume,
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
+        initial_selection=args._initial_selection,
+        store=fallback_store,
     )
 
     if args.trajectory:

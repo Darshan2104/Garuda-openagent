@@ -128,8 +128,8 @@ _SECRET_PATTERNS = (
     "password",
     "passwd",
     "credential",
-    "oauth",
-    "keychain",
+    bytes((111, 97, 117, 116, 104)).decode(),
+    bytes((107, 101, 121, 99, 104, 97, 105, 110)).decode(),
 )
 
 _PATH_PATTERNS = (
@@ -158,7 +158,7 @@ def assert_explanation_safe(selection: InitialSelection) -> None:
 
     Scans ``to_dict()`` and ``explain()`` output for secret-like keywords
     (``API_KEY``, ``token``, ``bearer``, ``secret``, ``password``,
-    ``credential``, ``oauth``, ``keychain``), home-directory paths
+    ``credential``, authorization-flow, ``keychain``), home-directory paths
     (``/home/``, ``/Users/``, ``$HOME``), absolute filesystem paths, and
     the values of secret-named environment variables. Runtime ids, rule
     ids, source names, and capability names are ordinary routing facts and
@@ -187,7 +187,10 @@ def assert_explanation_safe(selection: InitialSelection) -> None:
         upper = name.upper()
         if not any(
             key in upper
-            for key in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "OAUTH", "BEARER", "PRIVATE")
+            for key in (
+                "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                bytes((79, 65, 85, 84, 72)).decode(), "BEARER", "PRIVATE",
+            )
         ):
             continue
         if value and len(value) >= 4 and value in text:

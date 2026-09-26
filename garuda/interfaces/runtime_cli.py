@@ -51,6 +51,16 @@ RUNTIME_API_VERSION = "1"
 HANDOFF_DELIVERY_TIMEOUT_SEC = 600.0
 
 
+class NativeStartupFallback(RuntimeError):
+    """Signal that an ACP pre-start failure can safely continue natively."""
+
+    def __init__(self, *, store, events, selection):
+        super().__init__("ACP startup fallback selected the native executor")
+        self.store = store
+        self.events = events
+        self.selection = selection
+
+
 def configured_catalog(
     workspace: str = ".",
     *,
@@ -578,6 +588,8 @@ async def run_acp_task(
     approval=None,
     prompt_timeout: float | None = None,
     emit=print,
+    initial_selection=None,
+    initial_plan=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -601,11 +613,13 @@ async def run_acp_task(
         catalog = configured_catalog(workspace)
     manifest, record = acp_launch_target(catalog, runtime_id)
     store = store or SessionStore()
-    session_id = EventStore().session_id
+    events = EventStore()
+    session_id = events.session_id
     lease = WorkspaceLeaseGuard(workspace, session_id)
     lease.acquire()
     runtime = None
     began = False
+    transferred_to_native = False
     outcome: dict[str, Any] | None = None
     try:
         store.begin(
@@ -619,6 +633,15 @@ async def run_acp_task(
             ),
         )
         began = True
+        if initial_selection is not None:
+            if initial_selection.selected != manifest.runtime_id:
+                raise ValueError(
+                    "initial selection and ACP launch disagree: "
+                    f"{initial_selection.selected!r} != {manifest.runtime_id!r}"
+                )
+            from garuda.runtime.selection import record_initial_selection
+
+            record_initial_selection(store, session_id, initial_selection)
         from garuda.agents.setup import resolve_and_record_routing
 
         resolve_and_record_routing(
@@ -627,7 +650,6 @@ async def run_acp_task(
             session_id=session_id,
             pin=runtime_id,
         )
-        begin_session_evidence(store, session_id, workspace, "local")
         lease.start_heartbeat()
         handler, _broker = broker_approval_handler(
             store, session_id, manifest.runtime_id, handler=approval
@@ -640,7 +662,46 @@ async def run_acp_task(
             approval_handler=handler,
             persist_dir=str(store.session_dir(session_id)),
         )
-        info = await runtime.start(task=task, session_id=session_id)
+        # Capture a baseline before start solely for the narrow startup
+        # fallback gate. Evidence begins only after a successful start, so a
+        # native fallback owns its own evidence span on this same session.
+        from garuda.workspace.diff import capture_baseline
+
+        baseline_before = capture_baseline(workspace)
+        try:
+            info = await runtime.start(task=task, session_id=session_id)
+        except Exception as start_error:
+            if initial_plan is None:
+                raise
+            from garuda.runtime.selection import (
+                SelectionError,
+                record_initial_selection,
+                select_startup_fallback,
+            )
+            from garuda.runtime.session import RuntimeSegment
+
+            fallback = select_startup_fallback(
+                initial_plan.selection,
+                initial_plan.request,
+                initial_plan.candidates,
+                baseline_before=baseline_before,
+                workspace=workspace,
+            )
+            if fallback.selected != "native":
+                raise SelectionError(
+                    "ACP startup fallback must select the native executor"
+                ) from start_error
+            # Preserve the failed ACP tenure and transfer ownership to native
+            # in the same session before the native runtime is constructed.
+            record_initial_selection(store, session_id, fallback)
+            store.attach_runtime_segment(
+                session_id, RuntimeSegment(runtime_id="native", kind="native")
+            )
+            transferred_to_native = True
+            raise NativeStartupFallback(
+                store=store, events=events, selection=fallback
+            ) from start_error
+        begin_session_evidence(store, session_id, workspace, "local")
         turn = await lease.race(runtime.prompt(task, timeout=prompt_timeout))
         events, _ = await runtime.poll_events(0)
         for event in events:
@@ -667,7 +728,7 @@ async def run_acp_task(
                     await runtime.close()
                 except Exception:
                     logger.warning("ACP runtime close failed", exc_info=True)
-            if began:
+            if began and not transferred_to_native:
                 status = "failed"
                 if outcome is not None:
                     try:
@@ -692,6 +753,7 @@ __all__ = [
     "HANDOFF_DELIVERY_TIMEOUT_SEC",
     "acp_launch_target",
     "RUNTIME_API_VERSION",
+    "NativeStartupFallback",
     "acp_adapter_for_workspace",
     "attach_acp_segment",
     "cmd_handoff_confirm",
@@ -709,6 +771,5 @@ __all__ = [
     "load_configured_manifest_dicts",
     "recover_dict",
     "run_acp_task",
-    "support_bundle_dict",
     "support_bundle_dict",
 ]

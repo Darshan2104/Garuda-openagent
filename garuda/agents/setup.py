@@ -148,8 +148,8 @@ class RuntimeCatalog:
     settings may only name aliases and offer disablement suggestions; neither
     can authorize a command or override the global disabled set.
 
-    Building a catalog executes nothing: selection resolves configuration
-    only. Probes run solely when a list/inspect caller asks for `discover()`.
+    Building a catalog executes nothing. Probes run only when a list/inspect
+    caller or initial-runtime selection explicitly asks for `discover()`.
     """
 
     registry: object
@@ -158,7 +158,7 @@ class RuntimeCatalog:
     warnings: tuple[str, ...] = ()
 
     def discover(self) -> tuple[object, ...]:
-        """Run the declared version/auth probes. For list/inspect, not launch."""
+        """Run the declared version/auth probes for inspection or selection."""
         from garuda.acp.catalog import discover
 
         return tuple(
@@ -317,6 +317,19 @@ def build_runtime_catalog(
     )
 
 
+@dataclass(frozen=True)
+class InitialRuntimeSelection:
+    """Provider-bound launch facts for one initial-runtime decision.
+
+    The generic selection package remains pure; this setup-layer value carries
+    the trusted registry/discovery facts that both selection and launch use.
+    """
+
+    selection: object
+    request: object
+    candidates: tuple[object, ...]
+
+
 def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     """Build the shared trusted runtime boundary for a workspace.
 
@@ -336,6 +349,89 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
         project_settings=home.settings,
         source=f"project runtime refs ({home.workspace})",
     )
+
+
+def select_initial_runtime(
+    *,
+    workspace: str,
+    task: str,
+    catalog: RuntimeCatalog | None = None,
+    agent: str = "",
+    mode: str = "",
+    explicit_runtime: str | None = None,
+    profile_pin: str | None = None,
+    workspace_kind: str = "local",
+    permission_ceiling: str = "smart",
+    required_capabilities: tuple[str, ...] = (),
+    available_runtime_ids: frozenset[str] | None = None,
+) -> InitialRuntimeSelection:
+    """Plan initial selection from the exact catalog the caller will launch.
+
+    Selection stays pure in :mod:`garuda.runtime.selection`; this boundary owns
+    trusted configuration and discovery. Passing a catalog is the normal
+    product path and prevents selection and launch from observing different
+    disablement or executable availability facts.
+    """
+    from garuda.acp.catalog import load_trusted_runtime_settings
+    from garuda.config.agent_home import resolve_agent_home
+    from garuda.runtime.selection import (
+        InitialCandidate,
+        InitialRequest,
+        detect_repo_traits,
+        parse_global_selection,
+        parse_project_selection,
+        select_initial,
+    )
+
+    home = resolve_agent_home(workspace)
+    global_settings = load_trusted_runtime_settings()
+    project_settings = getattr(home, "settings", None) or {}
+    catalog = catalog or prepare_runtime_catalog(workspace)
+    discovered = {entry.runtime_id: entry for entry in catalog.discover()}
+    candidates: list[InitialCandidate] = []
+    for manifest in catalog.registry.manifests:
+        entry = discovered.get(manifest.runtime_id)
+        forced = available_runtime_ids is not None and manifest.runtime_id in available_runtime_ids
+        available = forced or bool(getattr(entry, "available", True))
+        candidates.append(
+            InitialCandidate(
+                runtime_id=manifest.runtime_id,
+                kind=getattr(manifest.kind, "value", str(manifest.kind)),
+                available=available,
+                health="ok" if forced else getattr(entry, "health", "ok"),
+                auth=getattr(entry, "auth", "unknown"),
+                capabilities=tuple(manifest.capabilities.names),
+                unavailable_reason=(
+                    "; ".join(getattr(entry, "warnings", ()) or ())
+                    if entry is not None and not available
+                    else ""
+                ),
+            )
+        )
+    global_selection = parse_global_selection(global_settings)
+    project_selection = parse_project_selection(project_settings)
+    request = InitialRequest(
+        task=task,
+        agent=agent,
+        mode=mode,
+        workspace_kind=workspace_kind,
+        permission_ceiling=permission_ceiling,
+        explicit_runtime=explicit_runtime,
+        profile_pin=profile_pin,
+        default_runtime=global_selection.default_runtime,
+        fallback_runtime=global_selection.fallback_runtime,
+        required_capabilities=required_capabilities,
+        workspace=workspace,
+    )
+    selection = select_initial(
+        request,
+        candidates,
+        rules=global_selection.rules,
+        project_rules=project_selection.rules,
+        traits=detect_repo_traits(workspace),
+        trust_project_routes=global_selection.trust_project_routes,
+    )
+    return InitialRuntimeSelection(selection, request, tuple(candidates))
 
 
 def build_routing_candidates(

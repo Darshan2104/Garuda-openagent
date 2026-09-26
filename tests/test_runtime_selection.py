@@ -9,11 +9,13 @@ separate layer and is not exercised here.
 import json
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 import garuda.runtime.selection as selection
 from garuda.core.sessions import SessionStore
+from garuda.runtime.protocol import RuntimeKind
 from garuda.runtime.selection import (
     InitialCandidate,
     InitialRequest,
@@ -496,3 +498,121 @@ def test_explanations_contain_no_secrets_or_workspace_paths(monkeypatch):
     leaked = _bad(rationale=("failed with zz-top-999-qwerty-value in output",))
     with pytest.raises(SelectionError):
         selection.assert_explanation_safe(leaked)
+
+
+@pytest.mark.asyncio
+async def test_cli_initial_selection_drives_the_executor(monkeypatch):
+    """A P1 decision must select the launch path, not merely session metadata."""
+    import garuda.interfaces.main as main
+    from garuda.agents.setup import InitialRuntimeSelection
+
+    decision = selection.InitialSelection(
+        selected="codex",
+        source="rule",
+        rule_id="prefer-codex",
+        candidates=("codex", "native"),
+    )
+    plan = InitialRuntimeSelection(
+        selection=decision,
+        request=InitialRequest(task="t"),
+        candidates=(InitialCandidate("codex"), InitialCandidate("native", kind="native")),
+    )
+    seen = []
+
+    monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
+    monkeypatch.setattr("garuda.agents.setup.select_initial_runtime", lambda **_: plan)
+    monkeypatch.setattr(
+        "garuda.agents.setup.prepare_runtime_catalog",
+        lambda *_: SimpleNamespace(
+            registry=SimpleNamespace(
+                get=lambda _: SimpleNamespace(kind=RuntimeKind.ACP)
+            )
+        ),
+    )
+
+    async def _run_acp(args, task, catalog):
+        seen.append((args.runtime, args._initial_selection.selected, task))
+        return 0
+
+    monkeypatch.setattr(main, "run_acp_command", _run_acp)
+    args = SimpleNamespace(task="t", file=None, runtime="native", workspace=".")
+    assert await main.run_task(args) == 0
+    assert seen == [("codex", "codex", "t")]
+
+
+@pytest.mark.asyncio
+async def test_cli_refused_initial_selection_starts_no_executor(monkeypatch):
+    """A pre-start selection refusal must stop before either executor is built."""
+    import garuda.interfaces.main as main
+
+    monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
+    monkeypatch.setattr(
+        "garuda.agents.setup.select_initial_runtime",
+        lambda **_: (_ for _ in ()).throw(SelectionError("selection refused")),
+    )
+    monkeypatch.setattr(
+        "garuda.agents.setup.prepare_runtime_catalog", lambda *_: SimpleNamespace()
+    )
+
+    async def _unexpected(*_args, **_kwargs):
+        raise AssertionError("executor was invoked after selection refusal")
+
+    monkeypatch.setattr(main, "run_acp_command", _unexpected)
+    args = SimpleNamespace(task="t", file=None, runtime="native", workspace=".")
+    with pytest.raises(SelectionError, match="selection refused"):
+        await main.run_task(args)
+
+
+@pytest.mark.asyncio
+async def test_acp_startup_failure_transfers_clean_workspace_to_native(tmp_path, monkeypatch):
+    """A startup fallback stays in one session and only selects native once."""
+    import garuda.interfaces.runtime_cli as runtime_cli
+    from garuda.agents.setup import InitialRuntimeSelection
+
+    _git_repo(tmp_path)
+    started = selection.InitialSelection(
+        selected="codex",
+        source="rule",
+        rule_id="prefer-codex",
+        candidates=("codex", "native"),
+    )
+    plan = InitialRuntimeSelection(
+        selection=started,
+        request=InitialRequest(task="t", fallback_runtime="native"),
+        candidates=(
+            InitialCandidate("codex", available=True, health="ok"),
+            InitialCandidate("native", kind="native", available=True, health="ok"),
+        ),
+    )
+
+    class FailingRuntime:
+        async def start(self, **_kwargs):
+            raise RuntimeError("adapter did not start")
+
+        async def close(self):
+            return None
+
+    manifest = SimpleNamespace(runtime_id="codex", version="1")
+    monkeypatch.setattr(runtime_cli, "acp_launch_target", lambda *_: (manifest, object()))
+    monkeypatch.setattr(runtime_cli, "adapter_for_discovered", lambda *_args, **_kwargs: FailingRuntime())
+    monkeypatch.setattr("garuda.agents.setup.resolve_and_record_routing", lambda **_: None)
+
+    store = SessionStore(tmp_path / "sessions")
+    with pytest.raises(runtime_cli.NativeStartupFallback) as raised:
+        await runtime_cli.run_acp_task(
+            "t",
+            runtime_id="codex",
+            workspace=str(tmp_path),
+            store=store,
+            catalog=object(),
+            initial_selection=started,
+            initial_plan=plan,
+        )
+
+    fallback = raised.value
+    meta = store.load_meta(fallback.events.session_id)
+    assert meta["initial_selection"]["selected"] == "native"
+    assert [segment["runtime_id"] for segment in meta["runtime_segments"]] == [
+        "codex",
+        "native",
+    ]

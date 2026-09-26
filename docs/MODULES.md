@@ -214,12 +214,15 @@ callers. Without a store the adapter logs a warning and records nothing.
  `router.py` ranks runtimes deterministically from capability, budget,
  availability, and quality history with logged rationale; unknown costs never
  read free, pins win or fail loudly, and switching needs confirmation at a
- boundary. `selection.py`
+ boundary. `selection/`
 is the P1 initial-only selector (issue #77): explicit → profile pin → first
 trusted deterministic rule → reserved classifier slot (#80) → configured
 default → built-in native, with bounded side-effect-free trait detection,
 trusted-only task regexes, pre-start validation, persisted rationale, and
-startup fallback only on an unchanged baseline. It shares no type names
+startup fallback only on an unchanged baseline. The CLI passes one trusted
+catalog through selection and launch, so the selected id chooses the executor
+rather than being audit-only; an ACP start fallback retains the same session
+and can transfer only to native. It shares no type names
 with `router.py` (P2 #49) and exposes no handoff API.
 
 ## `interfaces/` — entry points
