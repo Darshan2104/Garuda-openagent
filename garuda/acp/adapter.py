@@ -58,6 +58,7 @@ class AcpRuntime:
         setup_hint: str = "",
         store=None,
         persist_dir: str | None = None,
+        cwd: str | None = None,
     ):
         self._argv = list(argv)
         self._runtime_id = runtime_id
@@ -67,6 +68,7 @@ class AcpRuntime:
         self._setup_hint = setup_hint
         self._store = store
         self._persist_dir = persist_dir
+        self._cwd = cwd
         self._process: AcpProcess | None = None
         self._normalizer: AcpNormalizer | None = None
         self._authority: AuthorityMap | None = None
@@ -188,6 +190,7 @@ class AcpRuntime:
             self._argv,
             extra_env=self._extra_env,
             client_request_handler=self._client_request_handler,
+            cwd=self._cwd,
         )
         try:
             await process.launch()
@@ -198,7 +201,7 @@ class AcpRuntime:
             )
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
-            self._agent_session_id = await process.session_new()
+            self._agent_session_id = await process.session_new(cwd=self._cwd)
             if self._store is not None:
                 from garuda.runtime.recovery import record_child
                 from garuda.runtime.session import RuntimeSegment
