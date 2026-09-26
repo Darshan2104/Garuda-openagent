@@ -130,5 +130,6 @@ Set `GARUDA_LIVE_HARNESS` to one installed harness id to run its handshake-only
 smoke check locally. The corresponding vendor CLI must already be installed and
 logged in with the user's own account; Garuda never accepts or reads a secret
 for this check. Without that opt-in environment variable the check is skipped.
-With it, a missing, unauthenticated, or incompatible CLI fails the check and is
+With it, an unavailable CLI is reported as an explicit per-harness skip, while
+an unauthenticated or incompatible installed CLI fails the check and is
 reported as an environment or compatibility failure—not a green CI result.
