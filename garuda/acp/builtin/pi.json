@@ -1,0 +1,15 @@
+{
+  "runtime_id": "pi",
+  "kind": "acp",
+  "command": ["pi-acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "Pi agent via its registry ACP adapter (package pi-acp). Subscription access stays in your Pi login; Garuda never reads it.",
+  "warnings": [
+    "Vendor capability mediation is negotiated at handshake; strict garuda-only policies may be refused — review before mutating runs."
+  ],
+  "version_args": ["pi-acp", "--version"],
+  "version_pattern": "",
+  "auth_probe": null,
+  "setup": "1. Install the Pi ACP adapter: npm install -g pi-acp. 2. Log in to Pi itself. 3. Verify: pi-acp --version. Garuda never reads your Pi credentials."
+}

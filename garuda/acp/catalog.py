@@ -30,11 +30,29 @@ from typing import Any
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import AuthorityPolicy
 from garuda.runtime.protocol import AuthStatus, HealthStatus, RuntimeKind
+from garuda.runtime.registry import RuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
-BUILTIN_MANIFEST_FILES = ("claude.json", "codex.json", "cursor.json", "opencode.json")
+BUILTIN_MANIFEST_FILES = (
+    "claude.json", "codex.json", "cursor.json", "opencode.json", "pi.json", "goose.json"
+)
+
+#: Tested vendor command pairs. Other trusted ACP manifests use the generic
+#: path, which supplies protocol and launch protections but no vendor promise.
+BUILTIN_COMMANDS = {
+    "claude": ("claude-agent-acp",),
+    "codex": ("codex-acp",),
+    "cursor": ("agent", "acp"),
+    "opencode": ("opencode", "acp"),
+    "pi": ("pi-acp",),
+    "goose": ("goose", "acp"),
+}
+GENERIC_WARNING = (
+    "generic adapter: standard capability set only; "
+    "vendor-specific behavior is not guaranteed"
+)
 
 #: Harnesses with no configured manifest yet. Each resolves to an unavailable
 #: entry explaining exactly how to enable it; tested launch commands arrive
@@ -271,6 +289,11 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
 
 def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> DiscoveredRuntime:
     warnings: list[str] = list(manifest.warnings)
+    if (
+        manifest.kind is not RuntimeKind.NATIVE
+        and tuple(manifest.command or ()) != BUILTIN_COMMANDS.get(manifest.runtime_id, ())
+    ):
+        warnings.append(GENERIC_WARNING)
     if manifest.kind is RuntimeKind.NATIVE:
         return DiscoveredRuntime(
             runtime_id=manifest.runtime_id,
@@ -445,3 +468,58 @@ def adapter_for_discovered(
     return adapter_for_manifest(
         manifest, executable=discovered.executable, policy=policy, cwd=cwd
     )
+
+
+def shared_registry(
+    *,
+    extra_manifests: list[dict[str, Any]] | None = None,
+    project_refs: list[dict[str, Any]] | None = None,
+    disabled: frozenset[str] | set[str] | None = None,
+    include_builtins: bool = True,
+) -> RuntimeRegistry:
+    """Registry for explicit manifest/ref lists, via the one shared builder.
+
+    A thin adapter over `garuda.agents.setup.build_runtime_catalog`, so
+    shipped manifests, global overrides, advisory project refs, and
+    disablement behave exactly as on the launch path. `disabled=None` reads
+    the trusted global set.
+    """
+    from garuda.agents.setup import build_runtime_catalog
+
+    if disabled is None:
+        disabled = load_trusted_disabled()
+    return build_runtime_catalog(
+        global_settings={"runtimes": list(extra_manifests or [])},
+        project_settings={"runtime_refs": list(project_refs or [])},
+        disabled=disabled,
+        include_builtins=include_builtins,
+        source="shared registry project refs",
+    ).registry
+
+
+def adapter_for_registry(
+    registry: RuntimeRegistry,
+    ref: str,
+    *,
+    argv_override: list[str] | None = None,
+    policy: dict[str, AuthorityPolicy] | None = None,
+    cwd: str | None = None,
+) -> AcpRuntime:
+    """Resolve through the registry, discover that one manifest, then bind
+    the executable discovery accepted (`adapter_for_discovered`).
+
+    Resolution applies the disabled/alias gates; discovery runs only this
+    runtime's declared probes, because a launch is about to execute it.
+    """
+    resolved = registry.get(ref)
+    if argv_override is not None:
+        return adapter_for_manifest(
+            resolved, argv_override=argv_override, policy=policy, cwd=cwd
+        )
+    manifest = next(m for m in registry.manifests if m.runtime_id == resolved.runtime_id)
+    (record,) = [
+        entry
+        for entry in discover([manifest], disabled=registry.disabled_ids)
+        if entry.runtime_id == manifest.runtime_id
+    ]
+    return adapter_for_discovered(manifest, record, policy=policy, cwd=cwd)
