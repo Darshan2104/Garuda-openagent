@@ -421,6 +421,7 @@ def adapter_for_manifest(
     cwd: str | None = None,
     store=None,
     approval_handler=None,
+    persist_dir: str | None = None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -446,6 +447,7 @@ def adapter_for_manifest(
         setup_hint=manifest.setup,
         store=store,
         approval_handler=approval_handler,
+        persist_dir=persist_dir,
     )
 
 
@@ -487,6 +489,7 @@ def adapter_for_discovered(
     cwd: str | None = None,
     store=None,
     approval_handler=None,
+    persist_dir: str | None = None,
 ) -> AcpRuntime:
     """Launch exactly what a discovery record accepted — the production factory.
 
@@ -509,6 +512,7 @@ def adapter_for_discovered(
         cwd=cwd,
         store=store,
         approval_handler=approval_handler,
+        persist_dir=persist_dir,
     )
 
 
@@ -574,6 +578,7 @@ def adapter_for_registry(
     cwd: str | None = None,
     store=None,
     approval_handler=None,
+    persist_dir: str | None = None,
 ) -> AcpRuntime:
     """Resolve through the registry, discover that one manifest, then bind
     the executable discovery accepted (`discover_for_launch` +
@@ -588,6 +593,7 @@ def adapter_for_registry(
             cwd=cwd,
             store=store,
             approval_handler=approval_handler,
+            persist_dir=persist_dir,
         )
     manifest, record = discover_for_launch(registry, ref)
     return adapter_for_discovered(
@@ -597,4 +603,5 @@ def adapter_for_registry(
         cwd=cwd,
         store=store,
         approval_handler=approval_handler,
+        persist_dir=persist_dir,
     )

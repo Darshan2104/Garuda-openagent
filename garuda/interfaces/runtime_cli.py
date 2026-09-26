@@ -128,6 +128,8 @@ def acp_adapter_for_workspace(
     policy=None,
     global_settings: dict | None = None,
     project_settings: dict | None = None,
+    store=None,
+    persist_dir: str | None = None,
 ):
     """Resolve one configured ACP target before constructing its adapter."""
     from garuda.acp.catalog import AcpUnavailableError
@@ -145,7 +147,12 @@ def acp_adapter_for_workspace(
         if argv_override is None:
             manifest, discovered = acp_launch_target(catalog, runtime_name)
             adapter = adapter_for_discovered(
-                manifest, discovered, policy=policy, cwd=workspace
+                manifest,
+                discovered,
+                policy=policy,
+                cwd=workspace,
+                store=store,
+                persist_dir=persist_dir,
             )
         else:
             resolved = catalog.registry.get(runtime_name)
@@ -153,7 +160,12 @@ def acp_adapter_for_workspace(
                 raise ValueError(f"Cannot use runtime {runtime_name!r}: not an ACP runtime")
             manifest = catalog.registry.manifest_for(runtime_name)
             adapter = adapter_for_manifest(
-                manifest, argv_override=list(argv_override), policy=policy, cwd=workspace
+                manifest,
+                argv_override=list(argv_override),
+                policy=policy,
+                cwd=workspace,
+                store=store,
+                persist_dir=persist_dir,
             )
     except RegistryError as exc:
         if "disabled by user configuration" in str(exc):
@@ -167,6 +179,14 @@ def acp_adapter_for_workspace(
 def attach_acp_segment(store, session_id: str, adapter) -> None:
     """Persist one ACP tenure in the session's unified runtime history."""
     from garuda.runtime.session import RuntimeSegment
+
+    unified = store.load_unified(session_id)
+    if (
+        unified.active.kind == "acp"
+        and unified.active.runtime_id == adapter.runtime_id
+        and unified.active.native_session_id == adapter.native_session_id
+    ):
+        return
 
     authority = adapter.authority
     capabilities = (
@@ -392,10 +412,15 @@ async def cmd_handoff_confirm(
                     argv_override=target_argv_override,
                     cwd=workspace,
                     approval_handler=handler,
+                    persist_dir=str(store.session_dir(session_id)),
                 )
             manifest, record = launch
             return adapter_for_discovered(
-                manifest, record, cwd=workspace, approval_handler=handler
+                manifest,
+                record,
+                cwd=workspace,
+                approval_handler=handler,
+                persist_dir=str(store.session_dir(session_id)),
             )
 
         delivered: dict[str, Any] = {}
@@ -582,7 +607,12 @@ async def run_acp_task(
             store, session_id, manifest.runtime_id, handler=approval
         )
         runtime = adapter_for_discovered(
-            manifest, record, cwd=workspace, store=store, approval_handler=handler
+            manifest,
+            record,
+            cwd=workspace,
+            store=store,
+            approval_handler=handler,
+            persist_dir=str(store.session_dir(session_id)),
         )
         info = await runtime.start(task=task, session_id=session_id)
         turn = await lease.race(runtime.prompt(task, timeout=prompt_timeout))
