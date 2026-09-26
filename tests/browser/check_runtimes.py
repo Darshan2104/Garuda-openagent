@@ -25,6 +25,7 @@ SHOTS = Path(os.environ.get("GARUDA_CHECK_SHOTS", tempfile.mkdtemp(prefix="garud
 SID = "rt-demo"
 
 problems: list[str] = []
+expected_not_found_errors = 0
 
 
 def check(label, cond, detail=""):
@@ -37,8 +38,19 @@ with sync_playwright() as p:
     channel = os.environ.get("GARUDA_CHECK_CHANNEL")
     browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
-    page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
-            if m.type in ("error", "warning") else None)
+    def on_console(message):
+        global expected_not_found_errors
+        if (
+            message.type == "error"
+            and expected_not_found_errors
+            and "404" in message.text
+        ):
+            expected_not_found_errors -= 1
+            return
+        if message.type in ("error", "warning"):
+            problems.append(f"console.{message.type}: {message.text}")
+
+    page.on("console", on_console)
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
@@ -47,9 +59,11 @@ with sync_playwright() as p:
 
     # --- list renders real rows -------------------------------------------
     rows = page.query_selector_all("#rt-table tbody tr")
-    check("runtimes table has rows", len(rows) >= 7, f"({len(rows)} rows)")
+    check("runtimes table has rows", len(rows) >= 9, f"({len(rows)} rows)")
     body_text = page.text_content("#view") or ""
     check("native runtime listed", "native" in body_text)
+    check("configured offline runtime listed", "offline" in body_text)
+    check("disabled runtime listed", "disabled" in body_text)
 
     # --- select swaps the detail pane --------------------------------------
     page.click('#rt-table a[data-rt="native"]')
@@ -59,7 +73,7 @@ with sync_playwright() as p:
 
     # --- handoff preview then prepare ---------------------------------------
     page.fill("#rt-handoff-session", SID)
-    page.fill("#rt-handoff-target", "codex")
+    page.fill("#rt-handoff-target", "native")
     page.click("#rt-handoff-preview")
     page.wait_for_timeout(800)
     preview = page.text_content("#rt-handoff-result") or ""
@@ -69,6 +83,15 @@ with sync_playwright() as p:
     page.wait_for_timeout(800)
     prepared = page.text_content("#rt-handoff-result") or ""
     check("prepare reports prepared state", "prepared" in prepared, prepared[:100])
+
+    # Invalid targets must be rejected before any handoff package is written.
+    for target in ("offline", "missing-runtime"):
+        expected_not_found_errors += 1
+        page.fill("#rt-handoff-target", target)
+        page.click("#rt-handoff-preview")
+        page.wait_for_timeout(800)
+        refused = page.text_content("#rt-handoff-result") or ""
+        check(f"preview rejects {target}", "request failed" in refused.lower(), refused[:120])
 
     # --- diff separates session work from pre-existing dirt ------------------
     page.fill("#rt-diff-session", SID)

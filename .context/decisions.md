@@ -115,3 +115,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   target before acknowledgement. Delivery failure closes the target and rolls
   the source back; successful CLI delivery is supervised through its target
   turn and then explicitly closed/reaped when the command exits.
+
+## 2026-09-26 — Dashboard runtime controls use the shared registry
+
+- The web dashboard resolves runtimes through the same trusted global settings,
+  project aliases, built-ins, and disablement rules as the CLI and SDK.
+- Handoff preview and prepare resolve and availability-check the target before
+  reading or writing handoff state. Unknown, disabled, and unavailable ACP
+  targets fail closed; native remains the explicit in-process target.
+- Browser coverage exercises configured, disabled, unavailable, and unknown
+  targets so the visible controls cannot drift from the route policy.
