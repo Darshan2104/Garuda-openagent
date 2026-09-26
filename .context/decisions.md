@@ -141,9 +141,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `recover()` classifies an ACP-active session `external` (children still
   reaped) and every native resume path refuses it. The way back is explicit:
   `reclaim_native` (`garuda runtime reclaim`) re-appends the native segment in
-  one locked write, only when the target is recorded `closed`/`failed`, no lease
-  names the session, recovery leaves no live recorded child, and a native
-  checkpoint exists. A double fault on return-to-source raises naming reclaim.
+  one locked write (the checks repeat inside it), only on process evidence that
+  the target stopped: no lease names the session, recovery leaves no live
+  recorded child, the target left a retired child or a `closed`/`failed` state,
+  and a native checkpoint exists. A double fault on return-to-source raises
+  naming reclaim, which that recorded state satisfies.
 - `garuda run --runtime <acp>` and the CLI handoff share the native run's
   invariants through `interfaces/run_guard.py` (workspace lease with heartbeat
   race and release on every path, P0.17 broker approvals: headless deny-all

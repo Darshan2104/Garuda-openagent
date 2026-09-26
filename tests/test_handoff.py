@@ -457,3 +457,38 @@ async def test_double_fault_on_return_to_source_names_the_manual_fix(tmp_path, m
             target_factory=lambda: target,
             store=store,
         )
+
+
+def test_reclaim_recovers_the_record_a_double_fault_leaves(tmp_path):
+    """The state the double-fault error points at: an ACP owner with no
+    recorded target state but a retired child. Reclaim (through the real
+    recovery pass) returns it to native, as the error message promises."""
+    from garuda.acp.authority import AuthorityMap
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.recovery import RestartState, classify, reclaim_native
+    from garuda.runtime.session import RuntimeSegment
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("df", task="t", model="m", agent="a", workspace=str(tmp_path))
+    store.checkpoint_messages("df", [])
+    store.ensure_unified("df")
+    owners = {family: "agent" for family in ("edit", "terminal", "mcp", "approval")}
+    store.record_handoff(
+        "df",
+        state="acknowledged",
+        attempts=1,
+        active_segment=RuntimeSegment(
+            runtime_id="ext",
+            kind="acp",
+            native_session_id="agent-1",
+            capabilities=AuthorityMap(owners=owners).to_snapshot(),
+        ),
+    )
+    store.update_meta(
+        "df",
+        {"runtime_children": [{"runtime_id": "ext", "session_id": "df", "state": "exited"}]},
+    )
+    assert classify(store, "df").state is RestartState.EXTERNAL
+    report = reclaim_native(store, "df")
+    assert report.state is RestartState.RESUMABLE
+    assert store.load_unified("df").handoff["reclaimed_from"] == "ext"

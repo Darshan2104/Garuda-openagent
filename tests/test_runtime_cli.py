@@ -439,11 +439,23 @@ def test_handoff_confirm_then_recover_end_to_end(tmp_path, monkeypatch, capsys):
 
     # `external` is not a dead end: with the target recorded stopped and its
     # child reaped, an explicit reclaim returns ownership to the native tenure.
-    handoff = store.load_unified("src-1").handoff
-    store.update_meta("src-1", {"handoff": {**handoff, "target_state": "delivered"}})
+    meta = store.load_meta("src-1")
+    handoff, children = meta["handoff"], meta["runtime_children"]
+    # No process evidence the target stopped (no retired child, no terminal
+    # target state): refused.
+    store.update_meta(
+        "src-1",
+        {"handoff": {**handoff, "target_state": "delivered"}, "runtime_children": []},
+    )
     code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
-    assert code == 1 and "reclaim needs it closed or failed" in out
-    store.update_meta("src-1", {"handoff": handoff})
+    assert code == 1 and "cannot prove it stopped" in out
+    store.update_meta("src-1", {"handoff": handoff, "runtime_children": children})
+    # A live lease naming the session: refused by the recovery pass.
+    LeaseStore().acquire(ws, "src-1", mode="mutating")
+    code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
+    assert code == 1 and "reclaim refused" in out
+    LeaseStore().release(ws, "src-1")
+    assert store.load_unified("src-1").active.runtime_id == "fakeacp"
     code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
     assert code == 0 and "ownership reclaimed by native" in out, out
     unified = store.load_unified("src-1")
@@ -656,3 +668,33 @@ async def test_recover_command_reports():
     assert "resumable" in text
     report = json.loads(cmd_recover(store, "s1", as_json=True))
     assert report["state"] == "resumable"
+
+
+def test_reclaim_rechecks_live_children_inside_the_write(tmp_path, monkeypatch):
+    """A child recorded after the recovery pass (e.g. a concurrent launch) is
+    still seen: the live-child check runs inside the locked ownership write."""
+    from garuda.runtime import recovery
+    from garuda.runtime.session import RuntimeSegment
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("r1", task="t", model="m", agent="a", workspace=str(tmp_path))
+    store.checkpoint_messages("r1", [])
+    store.ensure_unified("r1")
+    store.record_handoff(
+        "r1",
+        state="acknowledged",
+        attempts=1,
+        target_state="closed",
+        active_segment=RuntimeSegment(runtime_id="ext", kind="acp", native_session_id="x"),
+    )
+    store.update_meta("r1", {"runtime_children": [{"runtime_id": "ext", "state": "live"}]})
+    monkeypatch.setattr(
+        recovery,
+        "recover",
+        lambda *_a, **_k: recovery.RecoveryReport(
+            session_id="r1", state=recovery.RestartState.EXTERNAL, resume_session_id="r1"
+        ),
+    )
+    with pytest.raises(recovery.RecoveryError, match="still has a live recorded child"):
+        recovery.reclaim_native(store, "r1")
+    assert store.load_unified("r1").active.runtime_id == "ext"

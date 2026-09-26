@@ -14,7 +14,7 @@
 | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime (see below). |
 | `garuda runtime resume --session S -t TASK` | Resume a persisted native session through the real run lifecycle (classifies first; refuses a session an external runtime owns). |
 | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. |
-| `garuda runtime reclaim --session S` | Return an `external` session to native once its target is recorded `closed`/`failed`, no lease names it, and no recorded child is alive. |
+| `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped: no lease names it, no recorded child is alive, and the target left a retired child or a `closed`/`failed` state. |
 
 ## ACP runs and handoffs
 
