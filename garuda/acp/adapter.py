@@ -201,31 +201,7 @@ class AcpRuntime:
                     self._runtime_id,
                 )
             else:
-                from garuda.runtime.recovery import record_child
-                from garuda.runtime.session import RuntimeSegment
-
-                # ACP launches with start_new_session, so its PID is also the
-                # isolated process-group leader recovery may safely signal.
-                if process.pid is None:
-                    raise RuntimeStartError("ACP process launched without a pid")
-                self._store.update_active_runtime_segment(
-                    self._garuda_session_id,
-                    RuntimeSegment(
-                        runtime_id=self._runtime_id,
-                        kind=self.kind.value,
-                        native_session_id=self._agent_session_id,
-                        version=self.version,
-                        capabilities=self._authority.to_snapshot(),
-                    ),
-                )
-                record_child(
-                    self._store,
-                    self._garuda_session_id,
-                    runtime_id=self._runtime_id,
-                    pid=process.pid,
-                    process_group=process.pid,
-                )
-                self._recorded_child_pid = process.pid
+                self._persist_identity(process)
         except AcpProtocolError as exc:
             await process.close()
             self._move(LifecycleState.FAILED)
@@ -241,6 +217,63 @@ class AcpRuntime:
         self._move(LifecycleState.IDLE)
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "started", "task": task})
         return self._info()
+
+    def _persist_identity(self, process: AcpProcess) -> None:
+        """Persist the active segment and the child record together.
+
+        The segment (runtime id, agent session id, authority snapshot) and the
+        child identity are only meaningful as a pair; `recover()` refuses a
+        child whose runtime is not bound to the session.
+        """
+        from garuda.runtime.recovery import record_child
+        from garuda.runtime.session import RuntimeSegment
+
+        assert self._store is not None and self._authority is not None
+        # ACP launches with start_new_session, so its PID is also the
+        # isolated process-group leader recovery may safely signal.
+        if process.pid is None:
+            raise RuntimeStartError("ACP process launched without a pid")
+        self._store.update_active_runtime_segment(
+            self._garuda_session_id,
+            RuntimeSegment(
+                runtime_id=self._runtime_id,
+                kind=self.kind.value,
+                native_session_id=self._agent_session_id,
+                version=self.version,
+                capabilities=self._authority.to_snapshot(),
+            ),
+        )
+        record_child(
+            self._store,
+            self._garuda_session_id,
+            runtime_id=self._runtime_id,
+            pid=process.pid,
+            process_group=process.pid,
+        )
+        self._recorded_child_pid = process.pid
+
+    def bind_session(self, store) -> None:
+        """Bind a started, store-less runtime to its session once it owns it.
+
+        A handoff target starts before ownership moves, while the session's
+        active segment is still the source, so it cannot record itself at
+        `start`. After the acknowledgement makes it the active segment this
+        persists its authority snapshot and child record exactly as a
+        store-backed `start` would, and a later close retires the record.
+        """
+        if self._store is not None:
+            raise RuntimeStartError("runtime is already bound to a session store")
+        if self._process is None or self._state in (
+            LifecycleState.CLOSED,
+            LifecycleState.FAILED,
+        ):
+            raise RuntimeStartError("only a started, live runtime can be bound")
+        self._store = store
+        try:
+            self._persist_identity(self._process)
+        except Exception:
+            self._store = None
+            raise
 
     async def resume(self, *, native_session_id: str) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:

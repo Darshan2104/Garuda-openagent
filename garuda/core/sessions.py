@@ -220,9 +220,17 @@ class SessionStore:
         model: str,
         agent: str,
         workspace: str,
+        *,
+        runtime_segment: RuntimeSegment | None = None,
     ) -> Path:
         """Create the session directory and initial meta; returns the events path
-        for EventStore.attach_persistence()."""
+        for EventStore.attach_persistence().
+
+        ``runtime_segment`` starts the session as a unified document whose
+        only tenure is that runtime (an external-runtime run has no native
+        tenure to migrate); without it the meta stays legacy-shaped and
+        `ensure_unified` later records the native segment.
+        """
         directory = self.session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
@@ -238,7 +246,17 @@ class SessionStore:
         )
         # Locked + atomic like every other meta write: a plain write_text here let a
         # concurrent list_sessions read a half-created document.
-        merge_meta(directory / "meta.json", meta.to_dict())
+        document = meta.to_dict()
+        if runtime_segment is not None:
+            document.update(
+                {
+                    "schema_version": SESSION_SCHEMA_VERSION,
+                    "runtime_segments": [runtime_segment.to_dict()],
+                    "baseline": {},
+                    "handoff": {"state": "none", "attempts": 0},
+                }
+            )
+        merge_meta(directory / "meta.json", document)
         return self.events_path(session_id)
 
     def checkpoint_messages(self, session_id: str, messages: list[Message]) -> None:
@@ -382,13 +400,43 @@ class SessionStore:
         segments[-1] = segment.to_dict()
         self.update_meta(session_id, {"runtime_segments": segments})
 
-    def record_handoff(self, session_id: str, *, state: str, attempts: int = 0, **extra) -> None:
-        """Record handoff transaction state. Unknown states fail closed."""
+    def record_handoff(
+        self,
+        session_id: str,
+        *,
+        state: str,
+        attempts: int = 0,
+        active_segment: RuntimeSegment | None = None,
+        **extra,
+    ) -> None:
+        """Record handoff transaction state. Unknown states fail closed.
+
+        With ``active_segment`` the same locked meta write appends that
+        segment as the session's new active runtime, so an ownership move and
+        the handoff state it records can never be observed apart.
+        """
         if state not in HANDOFF_STATES:
             raise ValueError(f"Unknown handoff state {state!r}")
         if not isinstance(attempts, int) or attempts < 0:
             raise ValueError("Handoff attempts must be >= 0")
-        self.update_meta(session_id, {"handoff": {"state": state, "attempts": attempts, **extra}})
+        handoff = {"state": state, "attempts": attempts, **extra}
+        if active_segment is None:
+            self.update_meta(session_id, {"handoff": handoff})
+            return
+
+        def _move(meta: dict) -> dict:
+            if meta.get("schema_version") is None:
+                meta = migrate_legacy_meta(meta)
+            segments = list(meta.get("runtime_segments", []))
+            segments.append(active_segment.to_dict())
+            return {
+                "schema_version": meta["schema_version"],
+                "runtime_segments": segments,
+                "baseline": meta.get("baseline", {}),
+                "handoff": handoff,
+            }
+
+        self.mutate_meta(session_id, _move)
 
     def record_baseline(self, session_id: str, baseline: dict) -> None:
         """Record the workspace baseline (commit, dirty fingerprint)."""

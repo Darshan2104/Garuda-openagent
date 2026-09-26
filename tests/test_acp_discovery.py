@@ -318,8 +318,9 @@ def _forbid_startup(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_enabled_acp_runtime_is_refused_not_silently_native(tmp_path, monkeypatch):
-    """A configured, enabled ACP runtime is not launchable by the native facade:
-    every launch surface refuses instead of running the native loop."""
+    """A configured, enabled ACP runtime never silently runs the native loop.
+    The SDK facade refuses it; `garuda run` routes it to the ACP path, which
+    fails loudly here because `fake-acp` is not installed."""
     monkeypatch.setenv(
         "GARUDA_GLOBAL_SETTINGS", str(_write_runtime_settings(tmp_path, disabled=False))
     )
@@ -328,8 +329,7 @@ async def test_enabled_acp_runtime_is_refused_not_silently_native(tmp_path, monk
         args = build_parser().parse_args(
             ["run", "--task", "must not run", "--workspace", str(tmp_path), "--runtime", ref]
         )
-        with pytest.raises(RegistryError, match="not launchable"):
-            await run_task(args)
+        assert await run_task(args) != 0
 
         from garuda.sdk import SoftwareAgent
 

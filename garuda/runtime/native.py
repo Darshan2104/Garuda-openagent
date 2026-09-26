@@ -211,16 +211,25 @@ class NativeGarudaRuntime:
         # Classify first: a prepared-but-unacknowledged switch rolls back, and
         # a malformed or ambiguous trail refuses the resume outright.
         try:
-            from garuda.runtime.recovery import RecoveryError, recover
+            from garuda.runtime.recovery import (
+                RecoveryError,
+                recover,
+                require_native_resumable,
+            )
 
-            await asyncio.to_thread(recover, self._store, resolved)
+            report = await asyncio.to_thread(recover, self._store, resolved)
+            # A session another runtime owns never silently comes back.
+            require_native_resumable(report)
         except RecoveryError as exc:
             raise RuntimeStartError(f"cannot resume session {resolved}: {exc}") from exc
         self._move(LifecycleState.STARTING)
         self._session_id = resolved
         unified = self._store.ensure_unified(resolved)
-        if not any(s.runtime_id == "native" for s in unified.segments):
-            raise RuntimeStartError(f"session {resolved} has no native segment")
+        if unified.active.runtime_id != "native":
+            raise RuntimeStartError(
+                f"session {resolved} is owned by runtime {unified.active.runtime_id!r}; "
+                "native resume refused"
+            )
         # Rebind the prior trail so polling replays history, not just new turns.
         self._trail = EventStore(session_id=resolved)
         events_file = self._store.events_path(resolved)

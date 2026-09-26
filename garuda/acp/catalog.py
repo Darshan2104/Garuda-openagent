@@ -419,6 +419,8 @@ def adapter_for_manifest(
     executable: str | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
     cwd: str | None = None,
+    store=None,
+    approval_handler=None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -429,7 +431,9 @@ def adapter_for_manifest(
     re-resolving. ``argv_override`` is only the deterministic test seam for the
     protocol fixture. `cwd` is the absolute session root sent in `session/new`;
     launch paths pass the workspace so the harness never defaults to Garuda's
-    own directory.
+    own directory. `store` binds the child and active segment to the session
+    at start; `approval_handler` answers `session/request_permission` (launch
+    paths pass a broker-backed one so asks are parked and audited).
     """
     argv = list(argv_override) if argv_override is not None else require_acp_argv(
         manifest, executable=executable
@@ -440,6 +444,8 @@ def adapter_for_manifest(
         policy=policy,
         cwd=cwd,
         setup_hint=manifest.setup,
+        store=store,
+        approval_handler=approval_handler,
     )
 
 
@@ -479,6 +485,8 @@ def adapter_for_discovered(
     *,
     policy: dict[str, AuthorityPolicy] | None = None,
     cwd: str | None = None,
+    store=None,
+    approval_handler=None,
 ) -> AcpRuntime:
     """Launch exactly what a discovery record accepted — the production factory.
 
@@ -495,7 +503,12 @@ def adapter_for_discovered(
         detail = "; ".join(discovered.warnings) or manifest.setup or "executable not found"
         raise AcpUnavailableError(manifest.runtime_id, detail)
     return adapter_for_manifest(
-        manifest, executable=discovered.executable, policy=policy, cwd=cwd
+        manifest,
+        executable=discovered.executable,
+        policy=policy,
+        cwd=cwd,
+        store=store,
+        approval_handler=approval_handler,
     )
 
 
@@ -526,6 +539,32 @@ def shared_registry(
     ).registry
 
 
+def discover_for_launch(registry: RuntimeRegistry, ref: str):
+    """Resolve `ref` and discover exactly that manifest for a launch.
+
+    Returns `(manifest, record)`. Resolution applies the disabled/alias gates;
+    discovery runs only this runtime's declared probes, because a launch is
+    about to execute it. An unavailable record refuses here with setup
+    guidance, so callers can check before anything moves and later launch the
+    very path this record accepted (`adapter_for_discovered`) — never a second
+    PATH lookup.
+    """
+    resolved = registry.get(ref)
+    manifest = next(m for m in registry.manifests if m.runtime_id == resolved.runtime_id)
+    (record,) = [
+        entry
+        for entry in discover([manifest], disabled=registry.disabled_ids)
+        if entry.runtime_id == manifest.runtime_id
+    ]
+    if not record.available or not record.executable:
+        detail = "; ".join(record.warnings) or manifest.setup or "executable not found"
+        raise AcpUnavailableError(manifest.runtime_id, detail)
+    # Re-check the accepted path is still an executable file before anyone
+    # relies on it; `require_acp_argv` is the shared start gate.
+    require_acp_argv(manifest, executable=record.executable)
+    return manifest, record
+
+
 def adapter_for_registry(
     registry: RuntimeRegistry,
     ref: str,
@@ -533,22 +572,29 @@ def adapter_for_registry(
     argv_override: list[str] | None = None,
     policy: dict[str, AuthorityPolicy] | None = None,
     cwd: str | None = None,
+    store=None,
+    approval_handler=None,
 ) -> AcpRuntime:
     """Resolve through the registry, discover that one manifest, then bind
-    the executable discovery accepted (`adapter_for_discovered`).
-
-    Resolution applies the disabled/alias gates; discovery runs only this
-    runtime's declared probes, because a launch is about to execute it.
+    the executable discovery accepted (`discover_for_launch` +
+    `adapter_for_discovered`).
     """
-    resolved = registry.get(ref)
     if argv_override is not None:
+        resolved = registry.get(ref)
         return adapter_for_manifest(
-            resolved, argv_override=argv_override, policy=policy, cwd=cwd
+            resolved,
+            argv_override=argv_override,
+            policy=policy,
+            cwd=cwd,
+            store=store,
+            approval_handler=approval_handler,
         )
-    manifest = next(m for m in registry.manifests if m.runtime_id == resolved.runtime_id)
-    (record,) = [
-        entry
-        for entry in discover([manifest], disabled=registry.disabled_ids)
-        if entry.runtime_id == manifest.runtime_id
-    ]
-    return adapter_for_discovered(manifest, record, policy=policy, cwd=cwd)
+    manifest, record = discover_for_launch(registry, ref)
+    return adapter_for_discovered(
+        manifest,
+        record,
+        policy=policy,
+        cwd=cwd,
+        store=store,
+        approval_handler=approval_handler,
+    )

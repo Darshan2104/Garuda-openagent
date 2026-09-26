@@ -62,8 +62,9 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Pi, Goose, and user-configured servers ride the generic path: same wire contract and conformance, but non-builtin commands carry an explicit no-vendor-guarantees warning.
 - One runtime-registry builder: `agents/setup.py::build_runtime_catalog()` owns shipped manifests, global overrides, advisory project refs, and disablement; `prepare_runtime_catalog()` and `acp.catalog.shared_registry()` only feed it inputs. `adapter_for_registry` discovers the one resolved manifest and binds its accepted executable.
 - Auth UX presents, never performs: login flows are manifest-declared user actions, missing credentials yield guidance, quota is pass-through-or-unknown, vendor policy governs use, and Python code may not name credential stores. The gate is a token-level AST scan of the whole `garuda/` package (string constants and folded `+` chains outside docstrings, secret-store imports such as `keyring`, token-helper identifiers) with a self-test of known bypass shapes; it is a regression tripwire, not proof that no code path can reach a credential.
+- CLI runtime controls preview by default and mutate only on explicit flags: handoff needs --confirm, --runtime defaults to native, and every command renders text and JSON diagnostics.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
-- Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation`, `recipe run`, and product handoffs (no caller passes `workspace=`) carry no baseline yet.
+- Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation` and `recipe run` carry no baseline yet; the CLI handoff passes `workspace=` and carries the recorded delta.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
 
 ## 2026-09-25 — trusted runtime selection is a shared launch gate
@@ -83,10 +84,10 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Building the catalog and selecting a runtime execute nothing. Version and
   auth probes run only when a list/inspect caller asks for discovery, with
   stdin closed.
-- Until the ACP launch facade is wired, selecting a configured ACP runtime
-  refuses before any toolkit, workspace, prompt, or harness process is
-  started; it never silently falls back to the native runtime. `garuda run`
-  reports the refusal as a message with exit status 2.
+- Before the ACP launch facade was wired, selecting a configured ACP runtime
+  refused before any toolkit, workspace, prompt, or process was started; it
+  never silently fell back to the native runtime. `garuda run` reports a
+  refused selection as a message with exit status 2.
 - `chat`, `serve`, the web dashboard, and `recipe run` accept no runtime
   selection and always run the native loop, which cannot be disabled, so they
   do not consult runtime settings.
@@ -118,3 +119,36 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `~/.local/bin/agent` installation location). As with every vendor adapter,
   setup guidance may name the user's CLI but never reads or proxies its
   credentials.
+
+## 2026-09-25 — CLI execution shares the runtime authority boundary
+
+- `garuda runtime list`, `inspect`, handoff confirmation, and `garuda run
+  --runtime` resolve through one configured registry: native and built-ins plus
+  trusted global manifests, with project aliases constrained to references.
+  Duplicate IDs, untrusted command-bearing project data, and globally disabled
+  targets refuse before discovery can present them as launchable or a process
+  can start.
+- A confirmed handoff acknowledges before it delivers: the handoff state and
+  the target's active segment (native session id, authority snapshot) are one
+  locked write, the target's child is then recorded, the source closes, and
+  only then is the package sent as the target's first prompt (bounded). A
+  failure before acknowledgement rolls back to the source; a failure after it
+  is a target failure (target closed, `target_state: failed`), never a rollback
+  over changes the target may have made. The launch binds the exact executable
+  the pre-transaction discovery accepted.
+- The CLI handoff is one-shot and ends consistent: the target is closed and
+  reaped and `target_state: closed` recorded. Ownership stays with the target:
+  `recover()` classifies an ACP-active session `external` (children still
+  reaped) and every native resume path refuses it. The way back is explicit:
+  `reclaim_native` (`garuda runtime reclaim`) re-appends the native segment in
+  one locked write (the checks repeat inside it), only on process evidence that
+  the target stopped: no lease names the session, recovery leaves no live
+  recorded child, the target left a retired child or a `closed`/`failed` state,
+  and a native checkpoint exists. A double fault on return-to-source raises
+  naming reclaim, which that recorded state satisfies.
+- `garuda run --runtime <acp>` and the CLI handoff share the native run's
+  invariants through `interfaces/run_guard.py` (workspace lease with heartbeat
+  race and release on every path, P0.17 broker approvals: headless deny-all
+  audited, TTY prompt) plus a persisted session with the ACP segment, child
+  record, and baseline/delta. An ACP run is recorded `completed`, not
+  `success`: Garuda does not verify its result.
