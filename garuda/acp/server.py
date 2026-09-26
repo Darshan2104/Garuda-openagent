@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 #: Ceiling on concurrent prompt tasks. Past it the reader waits for one to
 #: finish instead of growing the set without bound.
 MAX_INFLIGHT_TASKS = 64
+CLEANUP_TIMEOUT = 5.0
 
 MakeRuntime = Callable[[str], Awaitable[Any]]
 
@@ -58,6 +59,8 @@ class AcpServer:
         self._send = send
         self._sessions: dict[str, Any] = {}
         self._initialized = False
+        self._next_client_request_id = 0
+        self._client_requests: dict[int, asyncio.Future] = {}
 
     async def _reply(self, call_id: Any, result: Any) -> None:
         await self._send(encode_frame({"jsonrpc": "2.0", "id": call_id, "result": result}))
@@ -78,10 +81,33 @@ class AcpServer:
             encode_frame({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
         )
 
+    async def _request_client(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._next_client_request_id += 1
+        request_id = self._next_client_request_id
+        future = asyncio.get_running_loop().create_future()
+        self._client_requests[request_id] = future
+        await self._send(encode_frame({
+            "jsonrpc": "2.0", "id": request_id, "method": method, "params": params,
+        }))
+        try:
+            result = await future
+            return result if isinstance(result, dict) else {}
+        finally:
+            self._client_requests.pop(request_id, None)
+
     async def handle(self, message: dict[str, Any]) -> None:
         """Dispatch one decoded frame. Unknown methods fail closed, never hang."""
         if not isinstance(message, dict):
             raise AcpProtocolError("message must be an object")
+        if "method" not in message and "id" in message:
+            future = self._client_requests.get(message["id"])
+            if future is None:
+                raise AcpProtocolError("response does not match a pending request")
+            if "error" in message:
+                future.set_exception(AcpProtocolError("client request was refused"))
+            else:
+                future.set_result(message.get("result", {}))
+            return
         method = message.get("method", "")
         call_id = message.get("id")
         params = message.get("params", {})
@@ -109,8 +135,8 @@ class AcpServer:
                 await self._fail(call_id, "internal error")
 
     async def _on_initialize(self, call_id: Any, params: dict) -> None:
-        client_version = (params.get("protocolVersion") or "")
-        if client_version and client_version != ACP_VERSION:
+        client_version = params.get("protocolVersion")
+        if client_version != ACP_VERSION:
             raise AcpProtocolError(
                 f"client speaks ACP {client_version!r}, server requires {ACP_VERSION!r}"
             )
@@ -132,7 +158,7 @@ class AcpServer:
             raise AcpProtocolError("initialize first: no handshake completed")
         session_id = f"garuda-{uuid.uuid4().hex[:12]}"
         runtime = await self._make_runtime(session_id)
-        await runtime.start(task=params.get("task", "acp session"), session_id=session_id)
+        await runtime.start(task="acp session", session_id=session_id)
         self._sessions[session_id] = runtime
         await self._reply(call_id, {"sessionId": session_id})
 
@@ -147,23 +173,50 @@ class AcpServer:
 
     async def _on_prompt(self, call_id: Any, params: dict) -> None:
         runtime = self._session(params)
-        text = params.get("prompt", "")
+        prompt = params.get("prompt")
+        if not isinstance(prompt, list) or not prompt:
+            raise AcpProtocolError("session/prompt needs content blocks")
+        first = prompt[0]
+        text = first.get("text") if isinstance(first, dict) and first.get("type") == "text" else None
         if not isinstance(text, str) or not text:
-            raise AcpProtocolError("session/prompt needs a non-empty prompt")
+            raise AcpProtocolError("session/prompt needs a non-empty text block")
         before, _ = await runtime.poll_events(0)
         seen = len(before)
+        prompt_task = asyncio.ensure_future(runtime.prompt(text))
         try:
-            await runtime.prompt(text)
+            while not prompt_task.done():
+                events, seen = await runtime.poll_events(seen)
+                for event in events:
+                    await self._deliver_event(runtime, event)
+                await asyncio.sleep(0.01)
+            await prompt_task
+            events, seen = await runtime.poll_events(seen)
+            for event in events:
+                await self._deliver_event(runtime, event)
         except AcpCancelledError:
-            await self._notify({"updateType": "error", "message": "cancelled by client"})
+            await self._notify({"sessionUpdate": "error", "message": "cancelled by client"})
             await self._reply(call_id, {"stopReason": "cancelled"})
             return
-        events, _ = await runtime.poll_events(seen)
-        for event in events:
-            update = _to_update(event)
-            if update is not None:
-                await self._notify(update)
         await self._reply(call_id, {"stopReason": "end_turn"})
+
+    async def _deliver_event(self, runtime: Any, event: Any) -> None:
+        if event.kind.value == "approval_request":
+            result = await self._request_client(
+                "session/request_permission",
+                {
+                    "sessionId": event.session_id,
+                    "approvalId": event.payload.get("approval_id", ""),
+                    "action": event.payload.get("action", ""),
+                },
+            )
+            await runtime.permission_response(
+                approval_id=event.payload.get("approval_id", ""),
+                allow=bool(result.get("approved", False)),
+            )
+            return
+        update = _to_update(event)
+        if update is not None:
+            await self._notify(update)
 
     async def _on_cancel(self, call_id: Any, params: dict) -> None:
         runtime = self._session(params)
@@ -193,34 +246,37 @@ def _to_update(event: Any) -> dict[str, Any] | None:
     payload = event.payload
     if kind == "message":
         text = payload.get("chunk", payload.get("text", ""))
-        return {"updateType": "agent_message_chunk", "text": text} if text else None
+        return {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": text},
+        } if text else None
     if kind == "tool_call":
         return {
-            "updateType": "tool_call",
+            "sessionUpdate": "tool_call",
             "toolCallId": payload.get("tool_call_id", ""),
             "title": payload.get("title", payload.get("tool", "")),
         }
     if kind == "tool_result":
         if payload.get("status") == "diff":
             return {
-                "updateType": "diff",
+                "sessionUpdate": "diff",
                 "path": payload.get("path", ""),
                 "oldText": payload.get("old_text", ""),
                 "newText": payload.get("new_text", ""),
             }
         return {
-            "updateType": "tool_call_update",
+            "sessionUpdate": "tool_call_update",
             "toolCallId": payload.get("tool_call_id", ""),
             "status": payload.get("status", ""),
         }
     if kind == "approval_request":
         return {
-            "updateType": "approval_request",
+            "sessionUpdate": "approval_request",
             "approvalId": payload.get("approval_id", ""),
             "action": payload.get("action", ""),
         }
     if kind == "error":
-        return {"updateType": "error", "message": payload.get("message", "")}
+        return {"sessionUpdate": "error", "message": payload.get("message", "")}
     return None
 
 
@@ -278,6 +334,8 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
                 except ValueError:
                     break
                 await _dispatch(message)
+            if buffer.strip():
+                raise AcpProtocolError("incomplete NDJSON record")
     except AcpProtocolError:
         print("error: malformed input frame", file=sys.stderr)
         exit_code = 2
@@ -285,11 +343,15 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
         exit_code = 1
     finally:
         if pending:
-            await asyncio.wait(pending)
+            _done, waiting = await asyncio.wait(pending, timeout=CLEANUP_TIMEOUT)
+            for task in waiting:
+                task.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
         writer.cancel()
+        await asyncio.gather(writer, return_exceptions=True)
         for session in list(server._sessions.values()):
             try:
-                await session.close()
+                await asyncio.wait_for(session.close(), CLEANUP_TIMEOUT)
             except Exception:
                 pass
     return exit_code
@@ -324,7 +386,7 @@ async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
     model = LitellmModel(model_name=os.environ.get(MODEL_ENV_VAR, DEFAULT_MODEL))
     runtime = NativeGarudaRuntime(
         agent=agent, model=model, tools=tools, config=config,
-        permissions=permissions,
+        permissions=permissions, resource_manager=mcp_manager,
     )
 
     async def _driver(*, task: str, turn: int, trail: EventStore) -> Any:

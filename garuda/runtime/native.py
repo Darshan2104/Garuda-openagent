@@ -67,6 +67,7 @@ class NativeGarudaRuntime:
         store: SessionStore | None = None,
         events: EventStore | None = None,
         run: Callable[..., Awaitable[Any]] | None = None,
+        resource_manager: Any | None = None,
     ):
         self._agent = agent
         self._model = model
@@ -77,6 +78,7 @@ class NativeGarudaRuntime:
         self._provided_trail = events
         self._trail: EventStore | None = None
         self._run = run
+        self._resource_manager = resource_manager
         self._state = LifecycleState.DISCOVERED
         self._session_id = ""
         self._turn = 0
@@ -323,9 +325,20 @@ class NativeGarudaRuntime:
 
     async def close(self) -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
+            await self._close_resources()
             return
         if self._state is LifecycleState.RUNNING:
             await self.cancel(reason="close")
+            await self._close_resources()
             return
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "closed"})
         self._move(LifecycleState.CLOSED)
+        await self._close_resources()
+
+    async def _close_resources(self) -> None:
+        manager, self._resource_manager = self._resource_manager, None
+        if manager is not None and hasattr(manager, "close"):
+            try:
+                await manager.close()
+            except Exception:
+                pass

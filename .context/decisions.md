@@ -205,3 +205,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   key is recursively scrubbed.
 - Runtime metrics use the statistical median for even samples, while native
   turn accounting remains on its existing schema and path.
+
+## 2026-09-26 — Inbound ACP uses the public v1 transport
+
+- Garuda's inbound stdio ACP server uses the same newline-delimited JSON-RPC
+  framing and content-block prompt shape as the outbound adapter; it refuses
+  missing or mismatched initialize versions before session methods.
+- Prompt turns stream normalized events while the runtime is active. Permission
+  requests are bidirectional JSON-RPC requests, so a client can answer an
+  approval before the turn completes; cancellation remains concurrently
+  dispatchable.
+- EOF cleanup cancels pending turns and closes sessions/writers under a bound.
+  Native server sessions retain and close the MCP manager returned by setup so
+  editor disconnects do not leak subprocess resources.
