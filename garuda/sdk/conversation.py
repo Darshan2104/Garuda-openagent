@@ -238,7 +238,7 @@ class Conversation:
         in-process session is retained, never closed. Unknown and disabled
         targets are refused before anything moves.
         """
-        from garuda.interfaces.runtime_cli import acp_adapter_for_workspace, attach_acp_segment
+        from garuda.interfaces.runtime_cli import acp_adapter_for_workspace
         from garuda.runtime.handoff import execute_handoff
 
         _, new_adapter = acp_adapter_for_workspace(self._workspace, target)
@@ -287,7 +287,6 @@ class Conversation:
             deliver=deliver,
             workspace=self._workspace,
         )
-        attach_acp_segment(store, self._sdk_session_id, started)
         _, cursor = await started.poll_events(0)
         store.advance_event_cursor(self._sdk_session_id, cursor)
         await self._replace_adapter(started, target)

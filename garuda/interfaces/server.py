@@ -209,23 +209,28 @@ class JsonRpcServer:
 
         return {"status": "ok", "version": __version__}
 
-    def _runtime_registry(self, params: dict[str, Any]):
-        """Build the trusted registry; request data may only select an ID."""
+    def _runtime_catalog(self, params: dict[str, Any]):
+        """Build the trusted catalog; request data may only select an ID."""
         if "runtimes" in params:
             raise ValueError("request-defined runtime manifests are not permitted")
         from garuda.config.agent_home import resolve_agent_home
-        from garuda.interfaces.runtime_cli import configured_registry
+        from garuda.interfaces.runtime_cli import configured_catalog
 
         home = resolve_agent_home(self._config.workspace)
-        return configured_registry(
+        return configured_catalog(
             self._config.workspace,
             global_settings=getattr(home, "global_settings", None),
+            project_settings=getattr(home, "settings", None),
         )
+
+    def _runtime_registry(self, params: dict[str, Any]):
+        return self._runtime_catalog(params).registry
 
     async def _runtime_list(self, params: dict[str, Any]) -> dict[str, Any]:
         from garuda.acp.catalog import discover, health_of
         from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
-        registry = self._runtime_registry(params)
+        catalog = self._runtime_catalog(params)
+        registry = catalog.registry
         return {
             "api": f"runtime/v{RUNTIME_API_VERSION}",
             "runtimes": [
@@ -265,7 +270,8 @@ class JsonRpcServer:
         target = params.get("target")
         if not session_id or not target:
             raise ValueError("params.session and params.target are required")
-        registry = self._runtime_registry(params)
+        catalog = self._runtime_catalog(params)
+        registry = catalog.registry
         resolved = registry.get(target)
         if resolved.kind.value != "native":
             from garuda.acp.catalog import discover
@@ -284,7 +290,7 @@ class JsonRpcServer:
             text = await cmd_handoff_confirm(
                 store, session_id, target,
                 workspace=self._config.workspace,
-                disabled=registry.disabled_ids,
+                catalog=catalog,
                 pack_manager=manager,
             )
             return {"api": f"runtime/v{RUNTIME_API_VERSION}", "acknowledged": True, "detail": text}

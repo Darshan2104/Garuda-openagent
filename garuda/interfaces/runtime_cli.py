@@ -133,6 +133,7 @@ def acp_adapter_for_workspace(
     from garuda.runtime import RegistryError
     from garuda.runtime.protocol import RuntimeKind
 
+    workspace = os.path.abspath(workspace)
     catalog = configured_catalog(
         workspace,
         disabled=disabled,

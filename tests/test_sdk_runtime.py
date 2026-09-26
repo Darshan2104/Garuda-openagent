@@ -6,6 +6,7 @@ server exposes versioned runtime methods with per-request manifests.
 """
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,19 @@ from garuda.sdk.conversation import Conversation
 from garuda.sdk.software_agent import SoftwareAgent
 
 FAKE_ARGV = [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"]
+
+
+@pytest.fixture(autouse=True)
+def trusted_runtime_settings(monkeypatch):
+    """Make fake homes emulate the strict global runtime settings loader."""
+    from garuda.acp import catalog
+    from garuda.config import agent_home
+
+    monkeypatch.setattr(
+        catalog,
+        "load_trusted_runtime_settings",
+        lambda: dict(getattr(agent_home.resolve_agent_home("."), "global_settings", {})),
+    )
 
 
 def _fake_extra() -> list[dict]:
@@ -85,6 +99,8 @@ async def test_conversation_holds_acp_session(monkeypatch):
 class _FakeHome:
     def __init__(self, runtimes):
         self.global_settings = {"runtimes": runtimes}
+        self.settings = {}
+        self.workspace = Path(".")
 
 
 async def test_server_runtime_methods_are_versioned_and_isolated(monkeypatch):
@@ -299,3 +315,5 @@ async def test_conversation_relays_approvals_to_handler(tmp_path, monkeypatch):
 class _FakeHomeSettings:
     def __init__(self, settings):
         self.global_settings = settings
+        self.settings = {}
+        self.workspace = Path(".")
