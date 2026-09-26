@@ -154,7 +154,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   audited, TTY prompt) plus a persisted session with the ACP segment, child
   record, and baseline/delta. An ACP run is recorded `completed`, not
   `success`: Garuda does not verify its result.
- ## 2026-09-26 — Dashboard runtime controls use the shared registry
+## 2026-09-26 — SDK and JSON-RPC runtime authority stays trusted and transactional
+
+- JSON-RPC runtime methods resolve only the server's trusted configured registry;
+  request parameters select an existing runtime id and cannot define commands.
+- SDK ACP approval requests enter the persisted `ApprovalBroker`, including the
+  permission ceiling and fail-closed audit path, before an adapter receives a
+  response.
+- ACP-to-ACP SDK switches deliver the compiled handoff package inside the one
+  pause/checkpoint/start/ack transaction. Native-to-ACP switching through a
+  conversation refuses until it can use that same transaction, preventing two
+  mutating owners.
+
+## 2026-09-26 — Dashboard runtime controls use the shared registry
 
 - The web dashboard resolves runtimes through the same trusted global settings,
   project aliases, built-ins, and disablement rules as the CLI and SDK.

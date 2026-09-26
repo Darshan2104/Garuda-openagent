@@ -148,8 +148,14 @@ class SoftwareAgent:
             acp_adapter_for_workspace,
             attach_acp_segment,
         )
+        from garuda.runtime import RegistryError
 
-        _, adapter = acp_adapter_for_workspace(self.workspace, self.runtime_name)
+        try:
+            _, adapter = acp_adapter_for_workspace(self.workspace, self.runtime_name)
+        except ValueError as exc:
+            if "disabled by user configuration" in str(exc):
+                raise RegistryError(str(exc)) from exc
+            raise
         store = self._store or SessionStore()
         events = EventStore()
         store.begin(

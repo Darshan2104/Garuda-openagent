@@ -87,11 +87,16 @@ class _FakeHome:
         self.global_settings = {"runtimes": runtimes}
 
 
-async def test_server_runtime_methods_are_versioned_and_isolated():
+async def test_server_runtime_methods_are_versioned_and_isolated(monkeypatch):
+    from garuda.config import agent_home
+
+    monkeypatch.setattr(
+        agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra())
+    )
     server = JsonRpcServer(ServerConfig(token=None))
     listed = await server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "runtime_list",
-         "params": {"runtimes": _fake_extra()}}, {}
+         "params": {}}, {}
     )
     assert listed["result"]["api"] == "runtime/v1"
     ids = {r["runtime_id"] for r in listed["result"]["runtimes"]}
@@ -99,30 +104,39 @@ async def test_server_runtime_methods_are_versioned_and_isolated():
 
     inspected = await server.handle(
         {"jsonrpc": "2.0", "id": 2, "method": "runtime_inspect",
-         "params": {"runtime": "faketest", "runtimes": _fake_extra()}}, {}
+         "params": {"runtime": "faketest"}}, {}
     )
     assert inspected["result"]["api"] == "runtime/v1"
     assert inspected["result"]["runtime_id"] == "faketest"
 
     unknown = await server.handle(
         {"jsonrpc": "2.0", "id": 3, "method": "runtime_inspect",
-         "params": {"runtime": "nope", "runtimes": _fake_extra()}}, {}
+         "params": {"runtime": "nope"}}, {}
     )
     assert "error" in unknown
 
-    second = await server.handle(
-        {"jsonrpc": "2.0", "id": 4, "method": "runtime_list", "params": {}}, {}
+    injected = await server.handle(
+        {"jsonrpc": "2.0", "id": 4, "method": "runtime_list",
+         "params": {"runtimes": _fake_extra()}}, {}
     )
-    assert "faketest" not in {r["runtime_id"] for r in second["result"]["runtimes"]}
+    assert "error" in injected
 
 
 async def test_server_handoff_preview_and_recover(tmp_path, monkeypatch):
+    from garuda.config import agent_home
     from garuda.core.sessions import SessionStore
 
     monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra())
+    )
     store = SessionStore()
-    store.begin("s1", task="t", model="m", agent="a", workspace="w")
+    store.begin("s1", task="t", model="m", agent="a", workspace=str(tmp_path))
+    store.checkpoint_messages("s1", [])
     store.ensure_unified("s1")
+    from garuda.workspace.diff import capture_baseline
+
+    store.record_baseline("s1", capture_baseline(str(tmp_path)).to_dict())
     server = JsonRpcServer(ServerConfig(token=None))
 
     preview = await server.handle(
@@ -134,8 +148,7 @@ async def test_server_handoff_preview_and_recover(tmp_path, monkeypatch):
 
     prepared = await server.handle(
         {"jsonrpc": "2.0", "id": 2, "method": "runtime_handoff",
-         "params": {"session": "s1", "target": "faketest", "confirm": True,
-                    "runtimes": _fake_extra()}}, {}
+         "params": {"session": "s1", "target": "faketest", "confirm": True}}, {}
     )
     assert prepared["result"]["acknowledged"] is True
     assert "acknowledged" in prepared["result"]["detail"]
@@ -183,7 +196,7 @@ async def test_sdk_and_server_select_the_same_runtime(monkeypatch):
     server = JsonRpcServer(ServerConfig(token=None))
     listed = await server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "runtime_list",
-         "params": {"runtimes": _fake_extra()}}, {}
+         "params": {}}, {}
     )
     ids = {r["runtime_id"] for r in listed["result"]["runtimes"]}
     assert {"native", "faketest"} <= ids
@@ -218,7 +231,9 @@ async def test_sdk_disabled_runtime_is_refused_before_launch(tmp_path, monkeypat
     )
     store = SessionStore(tmp_path / "sessions")
     agent = SoftwareAgent(workspace=".", runtime="faketest", store=store)
-    with pytest.raises(ValueError, match="disabled"):
+    from garuda.runtime import RegistryError
+
+    with pytest.raises(RegistryError, match="disabled"):
         await agent.run("x")
 
 
