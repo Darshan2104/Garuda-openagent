@@ -102,12 +102,27 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
         kinds[kind] = kinds.get(kind, 0) + 1
 
     lanes: list[RuntimeLane] = []
+    acp_segments = [
+        segment for segment in segments
+        if isinstance(segment, dict) and segment.get("kind") == "acp"
+    ]
     cursor = 0
     for segment in segments:
         if not isinstance(segment, dict):
             continue
         end = segment.get("event_cursor", native_count)
         end = end if isinstance(end, int) and end >= 0 else native_count
+        is_acp = segment.get("kind") == "acp"
+        segment_id = segment.get("native_session_id")
+        matching_external = [
+            record for record in external
+            if record.get("segment_id") == segment_id
+        ]
+        # Older persisted trails predate segment ids. They remain readable
+        # when there is only one ACP tenure; ambiguous multi-tenure data is
+        # intentionally not attributed to every lane.
+        if is_acp and not matching_external and len(acp_segments) == 1:
+            matching_external = external
         lanes.append(
             RuntimeLane(
                 runtime_id=str(segment.get("runtime_id", "?")),
@@ -115,12 +130,13 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
                 native_session_id=segment.get("native_session_id"),
                 version=str(segment.get("version", "unknown")),
                 authority=tuple(sorted(segment.get("capabilities", []))),
-                native_event_start=cursor,
-                native_event_end=min(end, native_count),
-                external_events=len(external) if segment.get("kind") == "acp" else 0,
+                native_event_start=None if is_acp else cursor,
+                native_event_end=None if is_acp else min(end, native_count),
+                external_events=len(matching_external) if is_acp else 0,
             )
         )
-        cursor = min(end, native_count)
+        if not is_acp:
+            cursor = min(end, native_count)
 
     hint = ""
     state = handoff.get("state", "none") if isinstance(handoff, dict) else "none"

@@ -109,7 +109,7 @@ async def test_export_excludes_secrets_and_transcripts(tmp_path):
 
 async def test_adapter_run_populates_lanes_without_manual_attach(tmp_path):
     """Production wiring: a store-bound adapter attaches its tenure on start
-    and advances the cursor per prompt, so the lane view is populated by
+    and persists its external event stream, so the lane view is populated by
     execution rather than test fixtures."""
     store = SessionStore(tmp_path / "sessions")
     session_dir = _seed_native(store)
@@ -130,6 +130,41 @@ async def test_adapter_run_populates_lanes_without_manual_attach(tmp_path):
     assert external.native_session_id == runtime.native_session_id
     assert external.external_events >= 2
     assert (session_dir / "acp-events.jsonl").is_file()
+
+
+async def test_two_acp_tenures_are_attributed_to_their_own_lanes(tmp_path):
+    """Each ACP session id is an immutable external-event partition."""
+    store = SessionStore(tmp_path / "sessions")
+    session_dir = _seed_native(store)
+    first = AcpRuntime(
+        FAKE, runtime_id="acp-one", store=store, persist_dir=str(session_dir)
+    )
+    await first.start(task="first", session_id="s1")
+    await first.prompt("first message")
+    first_id = first.native_session_id
+    await first.close()
+
+    second = AcpRuntime(
+        FAKE, runtime_id="acp-two", store=store, persist_dir=str(session_dir)
+    )
+    await second.start(task="second", session_id="s1")
+    await second.prompt("second message")
+    second_id = second.native_session_id
+    await second.close()
+
+    trace = read_cross_runtime(session_dir)
+    one = trace.lane_for("acp-one")
+    two = trace.lane_for("acp-two")
+    assert one is not None and two is not None
+    assert one.native_session_id == first_id
+    assert two.native_session_id == second_id
+    records = [
+        json.loads(line)
+        for line in (session_dir / "acp-events.jsonl").read_text().splitlines()
+    ]
+    assert one.external_events == sum(r.get("segment_id") == first_id for r in records)
+    assert two.external_events == sum(r.get("segment_id") == second_id for r in records)
+    assert one.external_events > 0 and two.external_events > 0
 
 
 def test_export_is_versioned_whitelisted_and_scrubbed():
