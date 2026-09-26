@@ -211,7 +211,11 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        process = AcpProcess(
+            self._argv,
+            extra_env=self._extra_env,
+            cwd=self._cwd,
+        )
         try:
             await process.launch()
             handshake = await process.initialize()

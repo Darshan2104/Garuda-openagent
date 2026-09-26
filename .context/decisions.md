@@ -205,3 +205,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   simulated and are reported separately from non-simulated support totals.
 - The executable gate treats any failed or all-SKIP adapter identity as
   unsupported, including a mutation that forces an all-SKIP report.
+
+## 2026-09-26 — Live smoke reports discovery truth and bounded roundtrips
+
+- The live harness runner uses the discovered executable, version, and auth
+  fields in its report; it does not infer authentication from prompt return.
+- Discovery, ACP launch/handshake, one prompt, response-event validation, and
+  cleanup share one timeout. A successful smoke requires an observable message
+  event, not merely a returned turn number.
+- Missing binaries produce explicit per-harness skipped reports so an `all`
+  sweep remains attributable without turning local installation gaps into
+  product failures. The opt-in gate remains absent from CI.

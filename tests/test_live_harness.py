@@ -45,6 +45,10 @@ async def test_live_smoke_per_harness(tmp_path, harness):
     workspace.mkdir()
     report = await run_smoke(harness, workspace=workspace, timeout=180.0)
     print(json.dumps(report.to_dict(), indent=2))
+    if report.skipped:
+        assert report.ok is False
+        assert "not installed" in report.detail
+        return
     assert report.ok is True
     assert report.turn >= 1
     assert report.events >= 1
@@ -82,6 +86,25 @@ async def test_smoke_runs_in_fixture_workspace_against_fake(tmp_path):
     assert report.ok is True
     assert report.harness == "claude"
     assert report.turn == 1
+
+
+async def test_missing_harness_is_an_explicit_skip(tmp_path, monkeypatch):
+    class Missing:
+        runtime_id = "claude"
+        available = False
+        executable = None
+        version = "unknown"
+
+        class _Auth:
+            value = "unknown"
+
+        auth = _Auth()
+
+    monkeypatch.setattr("garuda.acp.catalog.discover", lambda manifests: [Missing()])
+    report = await run_smoke("claude", workspace=tmp_path)
+    assert report.skipped is True
+    assert report.ok is False
+    assert report.detail == "not installed or unavailable"
 
 
 def test_fake_agent_script_has_no_package_imports():

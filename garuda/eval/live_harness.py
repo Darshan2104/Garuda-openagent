@@ -42,6 +42,7 @@ class LiveReport:
     events: int
     ok: bool
     detail: str = ""
+    skipped: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class LiveReport:
             "events": self.events,
             "ok": self.ok,
             "detail": self.detail,
+            "skipped": self.skipped,
         }
 
 
@@ -70,47 +72,90 @@ async def run_smoke(
     argv: list[str] | None = None,
     workspace: str | Path | None = None,
 ) -> LiveReport:
-    """Handshake plus one trivial prompt against a real harness."""
+    """Run one bounded, attributed transport roundtrip.
+
+    Discovery, launch, handshake, prompt, and cleanup share one deadline.
+    Missing binaries are an explicit skip so ``all`` can report every
+    requested harness without turning an uninstalled local CLI into a failure.
+    """
     from garuda.acp.adapter import AcpRuntime
     from garuda.acp.catalog import builtin_manifest_dicts, discover
     from garuda.runtime.registry import parse_global_manifests
 
-    started = time.time()
-    manifests = {
-        m.runtime_id: m
-        for m in parse_global_manifests(
-            builtin_manifest_dicts(), source="live harness"
-        )
-    }
-    if runtime_id not in manifests:
-        raise ValueError(f"Unknown harness {runtime_id!r}")
-    manifest = manifests[runtime_id]
-    if argv is None:
+    started = time.monotonic()
+
+    async def _run() -> LiveReport:
+        manifests = {
+            m.runtime_id: m
+            for m in parse_global_manifests(
+                builtin_manifest_dicts(), source="live harness"
+            )
+        }
+        if runtime_id not in manifests:
+            raise ValueError(f"Unknown harness {runtime_id!r}")
+        manifest = manifests[runtime_id]
         found = {d.runtime_id: d for d in discover([manifest])}
         entry = found[runtime_id]
-        if entry.executable is None:
-            raise FileNotFoundError(f"adapter binary missing for {runtime_id}")
-        argv = list(manifest.command or ())
-    binary = argv[0] if argv else "?"
-    resolved = shutil.which(binary) or binary
-    runtime = AcpRuntime(list(argv), runtime_id=runtime_id,
-                         cwd=str(workspace) if workspace else None)
-    await runtime.start(task="live smoke probe")
+        selected_argv = list(argv or manifest.command or ())
+        if argv is None and not entry.available:
+            return LiveReport(
+                harness=runtime_id,
+                binary=entry.executable or (selected_argv[0] if selected_argv else "?"),
+                version=entry.version,
+                auth=entry.auth.value,
+                elapsed_sec=time.monotonic() - started,
+                turn=0,
+                events=0,
+                ok=False,
+                detail="not installed or unavailable",
+                skipped=True,
+            )
+        if not selected_argv:
+            raise ValueError(f"Harness {runtime_id!r} has no launch command")
+        resolved = entry.executable or shutil.which(selected_argv[0]) or selected_argv[0]
+        runtime = AcpRuntime(
+            selected_argv,
+            runtime_id=runtime_id,
+            cwd=str(workspace) if workspace else None,
+        )
+        await runtime.start(task="live smoke probe")
+        try:
+            turn = await runtime.prompt(PROMPT_TEXT)
+            events, _ = await runtime.poll_events(0)
+            response = [
+                str(event.payload.get("text", "") or event.payload.get("chunk", ""))
+                for event in events
+                if event.kind.value == "message"
+            ]
+            ok = any(text.strip() for text in response)
+            return LiveReport(
+                harness=runtime_id,
+                binary=resolved,
+                version=entry.version,
+                auth=entry.auth.value,
+                elapsed_sec=time.monotonic() - started,
+                turn=turn,
+                events=len(events),
+                ok=ok,
+                detail="response observed" if ok else "no response event observed",
+            )
+        finally:
+            await runtime.close()
+
     try:
-        turn = await asyncio.wait_for(runtime.prompt(PROMPT_TEXT), timeout)
-        events, _ = await runtime.poll_events(0)
+        return await asyncio.wait_for(_run(), timeout=timeout)
+    except asyncio.TimeoutError:
         return LiveReport(
             harness=runtime_id,
-            binary=resolved,
-            version=manifest.version,
-            auth="authenticated (prompt answered)",
-            elapsed_sec=time.time() - started,
-            turn=turn,
-            events=len(events),
-            ok=True,
+            binary="?",
+            version="unknown",
+            auth="unknown",
+            elapsed_sec=time.monotonic() - started,
+            turn=0,
+            events=0,
+            ok=False,
+            detail=f"timed out after {timeout:.1f}s",
         )
-    finally:
-        await runtime.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = asyncio.run(_run())
     print(json.dumps(report.to_dict(), indent=2))
-    return 0 if report.ok else 1
+    return 0 if report.ok or report.skipped else 1
 
 
 if __name__ == "__main__":
