@@ -4,6 +4,8 @@ Deterministic ranking, pinning, unknown-cost semantics, and confirmed
 boundary-only switching.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from garuda.runtime.router import (
@@ -171,3 +173,30 @@ def test_pin_over_budget_refuses_on_product_path(tmp_path, monkeypatch):
             budget_usd=0.0,
             costs={"native": 0.01},
         )
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_uses_policy_selected_runtime(monkeypatch):
+    """The automatic selection must choose the executor, not just log a rank."""
+    import garuda.interfaces.main as main
+
+    seen = []
+
+    def select_runtime(workspace, requested):
+        assert requested == "native"
+        return "codex"
+
+    async def run_acp_command(args, task):
+        seen.append((args.runtime, task))
+        return 0
+
+    monkeypatch.setattr("garuda.agents.setup.select_runtime", select_runtime)
+    monkeypatch.setattr(main, "run_acp_command", run_acp_command)
+    args = SimpleNamespace(
+        task="use the selected runtime",
+        file=None,
+        runtime="native",
+        workspace=".",
+    )
+    assert await main.run_task(args) == 0
+    assert seen == [("codex", "use the selected runtime")]
