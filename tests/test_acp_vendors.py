@@ -13,6 +13,7 @@ import pytest
 
 from garuda.acp.catalog import (
     AcpUnavailableError,
+    DiscoveredRuntime,
     adapter_for_manifest,
     adapter_for_registry,
     builtin_manifest_dicts,
@@ -72,6 +73,9 @@ def test_setup_names_untouchable_credential_paths():
     setups = " ".join(m.setup for m in _manifests())
     assert "~/.claude/.credentials.json" in setups
     assert "~/.codex/auth.json" in setups
+    # The child env is PATH/HOME/LANG only: advising users to export an API
+    # key for the adapter would be false guidance.
+    assert "set CODEX_API_KEY yourself" not in setups
     by_id = {m.runtime_id: m for m in _manifests()}
     assert "~/.local/bin/agent" in by_id["cursor"].setup
     assert "~/" not in by_id["opencode"].setup, "OpenCode must not invent credential paths"
@@ -93,17 +97,69 @@ async def test_non_acp_fallback_is_never_silent_and_binds_the_checked_binary():
     ]
 
 
-def test_factory_launches_the_exact_discovered_path_after_path_changes(monkeypatch):
-    """The executable accepted at construction replaces the bare command, so
-    a later PATH substitution cannot change what AcpRuntime starts."""
-    import garuda.acp.catalog as catalog
+def _shim(directory, name, label, marker):
+    """An executable named `name` that records `label` and then speaks ACP."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(
+        "#!/bin/sh\n"
+        f"echo {label} >> {marker}\n"
+        f'exec "{sys.executable}" -m garuda.acp.fake_agent --profile success\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+async def test_factory_launches_the_exact_discovered_path_after_path_changes(
+    tmp_path, monkeypatch
+):
+    """Two same-named binaries on different PATHs: discovery under PATH=A, then
+    PATH switches to B before launch. The product factory must start A."""
+    from garuda.acp.catalog import adapter_for_discovered
+
+    marker = tmp_path / "ran"
+    shim_a = _shim(tmp_path / "a", "fake-shim-acp", "A", marker)
+    _shim(tmp_path / "b", "fake-shim-acp", "B", marker)
+    (manifest,) = parse_global_manifests(
+        [{"runtime_id": "shim", "kind": "acp", "command": ["fake-shim-acp"], "version": "1"}]
+    )
+    base_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", str(tmp_path / "a") + os.pathsep + base_path)
+    (record,) = [d for d in discover([manifest]) if d.runtime_id == "shim"]
+    assert record.executable == str(shim_a)
+
+    monkeypatch.setenv("PATH", str(tmp_path / "b") + os.pathsep + base_path)
+    adapter = adapter_for_discovered(manifest, record, cwd=str(tmp_path))
+    await adapter.start(task="which binary", session_id="path-swap")
+    try:
+        assert marker.read_text(encoding="utf-8").split() == ["A"]
+    finally:
+        await adapter.close()
+
+
+def test_factory_refuses_without_a_discovered_executable(tmp_path, monkeypatch):
+    """No silent second PATH lookup: without the discovered path the factory
+    refuses, and a directory is never accepted as an executable."""
+    from garuda.acp.catalog import adapter_for_discovered
 
     cursor = next(manifest for manifest in _manifests() if manifest.runtime_id == "cursor")
-    monkeypatch.setattr(catalog.shutil, "which", lambda _: sys.executable)
-    adapter = adapter_for_manifest(cursor)
-    assert adapter._argv == [sys.executable, "acp"]
-    monkeypatch.setattr(catalog.shutil, "which", lambda _: "/tmp/attacker-agent")
-    assert adapter._argv == [sys.executable, "acp"]
+    with pytest.raises(AcpUnavailableError):
+        adapter_for_manifest(cursor)
+    with pytest.raises(AcpUnavailableError):
+        require_acp_argv(cursor, executable=str(tmp_path))
+    (missing,) = parse_global_manifests(
+        [{"runtime_id": "gone", "kind": "acp", "command": ["definitely-not-installed-xyz"],
+          "version": "1", "setup": "Install gone-acp."}]
+    )
+    (unavailable,) = [d for d in discover([missing]) if d.runtime_id == "gone"]
+    with pytest.raises(AcpUnavailableError, match="Install gone-acp"):
+        adapter_for_discovered(missing, unavailable)
+    impostor = DiscoveredRuntime(
+        runtime_id="gone", kind="acp", available=True, executable=sys.executable
+    )
+    with pytest.raises(AcpUnavailableError, match="discovery record"):
+        adapter_for_discovered(cursor, impostor)
 
 
 async def test_version_incompatibility_is_actionable():
@@ -160,22 +216,98 @@ async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
         await run_conformance_suite(lambda adapter=adapter: adapter)
 
 
-async def test_discovery_lists_vendors_without_probes():
-    found = {d.runtime_id: d for d in discover(_manifests())}
+def test_discovery_runs_only_declared_version_probes_and_never_guesses_login():
+    calls: list[tuple[str, ...]] = []
+
+    def _record(argv, timeout):
+        calls.append(tuple(argv))
+        return None
+
+    manifests = _manifests()
+    found = {d.runtime_id: d for d in discover(manifests, run_probe=_record)}
+    declared = {tuple(m.version_args) for m in manifests}
+    # Only the manifest's own `--version` argv may run — and only where the
+    # executable exists. No login/auth probe is shipped, so none runs.
+    assert set(calls) <= declared
     for vendor in ("claude", "codex"):
-        assert found[vendor].available is (found[vendor].executable is not None)
-        assert found[vendor].auth is AuthStatus.UNKNOWN
+        entry = found[vendor]
+        assert entry.auth is AuthStatus.UNKNOWN
+        if entry.executable is None:
+            assert entry.available is False
+            assert any("npm install -g" in warning for warning in entry.warnings)
+
+
+def test_shipped_manifests_are_in_the_product_catalog(tmp_path, monkeypatch):
+    """`--runtime claude` resolves through the one trusted catalog: it is an ACP
+    selection that refuses loudly, not an unknown runtime or a native run."""
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.registry import RegistryError
+
+    settings = tmp_path / "settings.yaml"
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
+    catalog = prepare_runtime_catalog(tmp_path)
+    for vendor, binary in (("claude", "claude-agent-acp"), ("codex", "codex-acp")):
+        selected = catalog.select(vendor)
+        assert selected.kind.value == "acp"
+        assert selected.command == (binary,)
+        with pytest.raises(RegistryError, match="not launchable"):
+            catalog.select_for_native_facade(vendor)
+
+    settings.write_text(
+        "disabled_runtimes: [claude]\n"
+        "runtimes:\n  - runtime_id: codex\n    kind: acp\n"
+        "    command: [/opt/custom/codex-acp]\n    version: '2'\n",
+        encoding="utf-8",
+    )
+    catalog = prepare_runtime_catalog(tmp_path)
+    with pytest.raises(RegistryError, match="disabled"):
+        catalog.select("claude")
+    # The user's global entry replaces the shipped manifest of the same id.
+    assert catalog.select("codex").command == ("/opt/custom/codex-acp",)
+
+
+async def test_adapter_sends_the_given_session_root(tmp_path, monkeypatch):
+    from garuda.acp.adapter import AcpRuntime
+    from garuda.acp.client import AcpProcess
+    from garuda.runtime.protocol import RuntimeStartError
+
+    with pytest.raises(RuntimeStartError, match="absolute"):
+        AcpRuntime(["x"], cwd="relative/dir")
+
+    seen: list = []
+    real_session_new = AcpProcess.session_new
+
+    async def _recording(self, cwd=None, *args, **kwargs):
+        seen.append(cwd)
+        return await real_session_new(self, cwd, *args, **kwargs)
+
+    monkeypatch.setattr(AcpProcess, "session_new", _recording)
+    (manifest,) = [m for m in _manifests() if m.runtime_id == "claude"]
+    adapter = adapter_for_manifest(
+        manifest,
+        argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "strict-v1"],
+        cwd=str(tmp_path),
+    )
+    await adapter.start(task="cwd probe", session_id="cwd-probe")
+    try:
+        assert seen == [str(tmp_path)]
+    finally:
+        await adapter.close()
 
 
 @pytest.mark.skipif(
     not os.environ.get("GARUDA_LIVE_HARNESS"), reason="opt-in live harness smoke test"
 )
-async def test_live_harness_handshake_only():
-    """Handshake against a real installed harness. No prompt, no spend."""
+async def test_live_harness_handshake_only(tmp_path):
+    """Handshake against a real installed harness. No prompt, no spend. The
+    session root is an empty temp dir, never this repository."""
     wanted = os.environ["GARUDA_LIVE_HARNESS"]
     manifests = {m.runtime_id: m for m in _manifests()}
     assert wanted in manifests, f"unknown harness {wanted}"
-    adapter = adapter_for_manifest(manifests[wanted])
+    from garuda.acp.catalog import adapter_for_discovered
+
+    (record,) = [d for d in discover([manifests[wanted]]) if d.runtime_id == wanted]
+    adapter = adapter_for_discovered(manifests[wanted], record, cwd=str(tmp_path))
     await adapter.start(task="handshake probe", session_id="live-probe")
     try:
         assert adapter.native_session_id

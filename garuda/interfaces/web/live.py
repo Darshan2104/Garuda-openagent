@@ -41,6 +41,7 @@ from garuda.interfaces.jobs import Job, JobManager
 from garuda.interfaces.web import grounding
 from garuda.interfaces.web.approvals import ApprovalBroker
 from garuda.model.protocol import DEFAULT_MODEL
+from garuda.workspace import evidence
 
 logger = logging.getLogger(__name__)
 
@@ -249,26 +250,18 @@ class LiveRuns:
             workspace=str(workspace),
         )
         try:
-            from garuda.workspace.diff import record_session_baseline
-
             # The dashboard does not use `run_agent_task` for held multi-turn
-            # chats, so it must enter the same authoritative session-evidence
-            # boundary itself before allocating an environment or accepting a
-            # prompt.  No capture means no runnable chat.
-            record_session_baseline(
+            # chats, so it enters the same shared session-evidence boundary
+            # itself before allocating an environment or accepting a prompt.
+            # No capture means no runnable chat.
+            workspace_delta_loader = evidence.begin_session_evidence(
                 self.store,
                 session.events.session_id,
                 workspace,
                 session.config.workspace_kind,
             )
         except Exception:
-            try:
-                self.store.update_meta(
-                    session.events.session_id,
-                    {"status": "failed", "startup_refused": True},
-                )
-            except Exception:
-                logger.warning("Failed to record dashboard startup refusal", exc_info=True)
+            evidence.record_startup_refusal(self.store, session.events.session_id)
             await session.close()
             raise
         env, env_handle = await resolve_environment(
@@ -281,6 +274,7 @@ class LiveRuns:
             chat_id=chat_id, session=session, env=env, env_handle=env_handle,
             workspace=workspace, permission_mode=permission_mode, model=model,
             agent=session.profile.name, last_seen_at=time.monotonic(),
+            workspace_delta_loader=workspace_delta_loader,
         )
         self.chats[chat_id] = chat
         logger.info("Dashboard opened chat %s in %s as %s", chat_id, workspace, permission_mode)
@@ -321,12 +315,6 @@ class LiveRuns:
             chat.session_task = task[:200]
             self.store.update_meta(chat.session_id, {"task": chat.session_task})
         context = chat.session.prepare_context(prompt)
-        workspace_delta_loader = None
-        if chat.session.config.workspace_kind == "local":
-            from garuda.workspace.diff import load_session_delta
-
-            def workspace_delta_loader():
-                return load_session_delta(self.store, chat.session_id, chat.workspace)
         job = self.jobs.submit(
             lambda job: chat.session.agent.run(
                 task=prompt,
@@ -338,7 +326,7 @@ class LiveRuns:
                 permissions=chat.session.permissions,
                 agents_dir=chat.session.agents_dir,
                 context=context,
-                workspace_delta_loader=workspace_delta_loader,
+                workspace_delta_loader=chat.workspace_delta_loader,
             ),
             task=prompt,
             events=chat.session.events,
@@ -435,28 +423,23 @@ class LiveRuns:
             await cleanup_workspace(chat.env_handle)
         except Exception:
             logger.warning("Tearing down chat %s workspace failed", chat_id, exc_info=True)
-        if chat.session.config.workspace_kind == "local":
+        try:
+            await asyncio.to_thread(
+                evidence.finish_session_evidence,
+                self.store,
+                chat.session_id,
+                chat.workspace,
+                extra_meta={"status": "finished"},
+            )
+        except Exception as exc:
+            # Closing cannot turn missing evidence into a successful chat.
             try:
-                from garuda.workspace.diff import load_session_delta
-
-                delta = load_session_delta(self.store, chat.session_id, chat.workspace)
-                self.store.update_meta(
-                    chat.session_id,
-                    {
-                        "status": "finished",
-                        "baseline_commit": delta.baseline_commit,
-                        "delta_changed": list(delta.changed[:200]),
-                        "delta_preexisting": list(delta.preexisting[:200]),
-                    },
-                )
-            except Exception as exc:
-                # Closing cannot turn missing evidence into a successful chat.
                 self.store.update_meta(
                     chat.session_id,
                     {"status": "failed", "workspace_delta_error": type(exc).__name__},
                 )
-        else:
-            self.store.update_meta(chat.session_id, {"status": "finished"})
+            except Exception:
+                logger.warning("Recording chat %s evidence failure failed", chat_id, exc_info=True)
         return {**summary, "closed": True, "denied_approvals": denied}
 
     async def reap(self) -> dict[str, int]:
@@ -538,6 +521,9 @@ class LiveChat:
     job_id: str | None = None
     #: What the run list calls this conversation: the first message, set on the first turn.
     session_task: str | None = None
+    #: Reads the delta from the baseline recorded when the chat opened; handed to every
+    #: turn's verifier so no turn can complete against a missing record.
+    workspace_delta_loader: Any = None
     #: Everything grounded into this conversation, and the subset not yet announced to the
     #: agent. Two lists rather than a flag per source: the announcement is per turn, and
     #: "which files does this turn need to mention" is exactly a queue.

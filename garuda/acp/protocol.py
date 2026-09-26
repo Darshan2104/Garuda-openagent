@@ -1,7 +1,8 @@
-"""ACP v1 NDJSON wire codec and typed failures (P0.12, issue #21).
+"""ACP v1 wire codec and typed failures (P0.12, issue #21).
 
-Stable ACP v1 uses one newline-delimited JSON-RPC object per stdio record.
-The framing helpers are pure so malformed shapes are tested without a process.
+ACP stdio uses one JSON-RPC value per newline-delimited line. Keeping the
+codec pure makes malformed, partial, oversized, and non-object messages
+testable without spawning a process.
 """
 
 from __future__ import annotations
@@ -11,15 +12,14 @@ from typing import Any
 
 from garuda.runtime.protocol import AgentRuntimeError
 
-#: The ACP wire subset this client speaks. Negotiated at initialize; a fake or
-#: adapter speaking anything else fails closed at handshake, not mid-session.
+#: ACP v1 is negotiated at initialize; mismatches fail before sessions start.
 ACP_VERSION = 1
 
+#: One NDJSON line — a complete JSON-RPC message — may be at most this long.
+#: The same bound applies to an unterminated line still being read, so a peer
+#: that never sends `\n` cannot grow the reader buffer forever, while a large
+#: but legitimate message (a big diff, long tool output) still fits.
 MAX_FRAME_BYTES = 16 * 1024 * 1024
-
-#: Compatibility name for the unfinished-record allowance in aggregate reader
-#: bounds. ACP v1 NDJSON has no headers.
-MAX_HEADER_BYTES = 16 * 1024
 
 
 class AcpError(AgentRuntimeError):
@@ -48,36 +48,40 @@ class AcpCancelledError(AcpError):
 
 
 def encode_frame(payload: dict[str, Any]) -> bytes:
-    """Serialize one ACP v1 JSON-RPC record as newline-delimited JSON."""
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    if len(body) > MAX_FRAME_BYTES:
-        raise AcpProtocolError(f"NDJSON message exceeds bound of {MAX_FRAME_BYTES} bytes")
-    return body + b"\n"
+    """Serialize one JSON-RPC message as a single NDJSON line."""
+    if not isinstance(payload, dict):
+        raise AcpProtocolError("JSON-RPC message must be an object")
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    ) + b"\n"
 
 
 def decode_frame(buffer: bytes) -> tuple[dict[str, Any], bytes]:
-    """Split one ACP v1 NDJSON record off ``buffer``.
+    """Split one frame off `buffer`. Returns (message, rest).
 
-    ``ValueError`` means more bytes are needed. Malformed, blank, and oversized
-    records are protocol failures rather than data the client can skip.
+    Raises `AcpProtocolError` on malformed, oversize, or invalid JSON lines.
+    Raises `ValueError` when the buffer holds no complete line yet — the
+    reader's signal to read more, not a failure.
     """
-    body, sep, rest = buffer.partition(b"\n")
-    if not sep:
+    newline = buffer.find(b"\n")
+    if newline < 0:
         if len(buffer) > MAX_FRAME_BYTES:
             raise AcpProtocolError(
-                f"NDJSON record exceeds bound of {MAX_FRAME_BYTES} bytes without newline"
+                f"frame exceeds bound of {MAX_FRAME_BYTES} bytes without newline"
             )
-        raise ValueError("incomplete NDJSON record")
-    if len(body) > MAX_FRAME_BYTES:
-        raise AcpProtocolError(f"NDJSON record exceeds bound of {MAX_FRAME_BYTES} bytes")
-    if body.endswith(b"\r"):
-        body = body[:-1]
-    if not body:
-        raise AcpProtocolError("blank NDJSON record")
+        raise ValueError("incomplete frame")
+    line = buffer[:newline].rstrip(b"\r")
+    rest = buffer[newline + 1 :]
+    if not line:
+        raise AcpProtocolError("empty ACP frame")
+    if len(line) > MAX_FRAME_BYTES:
+        raise AcpProtocolError(f"frame length out of bounds: {len(line)}")
     try:
-        message = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise AcpProtocolError(f"frame body is not JSON: {exc}") from exc
+        message = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AcpProtocolError(f"frame is not valid JSON: {exc}") from exc
     if not isinstance(message, dict):
         raise AcpProtocolError("JSON-RPC message must be an object")
+    if message.get("jsonrpc") != "2.0":
+        raise AcpProtocolError("JSON-RPC message must declare jsonrpc='2.0'")
     return message, rest
