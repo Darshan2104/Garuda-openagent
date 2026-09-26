@@ -122,18 +122,33 @@ def build_routing_candidates(
     disabled ids surface as unavailable and duplicates refuse at registry
     construction — never a hand-rolled manifest list.
     """
-    from garuda.acp.catalog import discover
-    from garuda.interfaces.runtime_cli import configured_registry
+    from garuda.acp.catalog import (
+        discover,
+        load_trusted_disabled,
+        load_trusted_runtime_settings,
+        shared_registry,
+    )
+    from garuda.config.agent_home import resolve_agent_home
 
-    registry = configured_registry(
-        workspace,
+    home = resolve_agent_home(workspace)
+    if global_settings is None:
+        global_settings = load_trusted_runtime_settings()
+    if project_settings is None:
+        project_settings = getattr(home, "settings", None) or {}
+    if disabled is None:
+        disabled = load_trusted_disabled(global_settings)
+    extra_manifests = global_settings.get("runtimes", [])
+    project_refs = project_settings.get("runtime_refs", [])
+    project_disabled = project_settings.get("disabled_runtimes", []) or []
+    registry = shared_registry(
+        extra_manifests=extra_manifests,
+        project_refs=project_refs,
         disabled=disabled,
-        global_settings=global_settings,
-        project_settings=project_settings,
     )
     discovered = discover(
         registry.manifests,
         disabled=registry.disabled_ids,
+        project_disabled=frozenset(project_disabled),
     )
     return candidates_from_discovered(
         discovered,
@@ -176,6 +191,40 @@ def route_session(
     if persist:
         record_routing_decision(store, session_id, decision)
     return decision
+
+
+def select_runtime(
+    workspace: str,
+    requested: str,
+    *,
+    required_capabilities: tuple[str, ...] = (),
+    budget_usd: float | None = None,
+    mutating: bool = True,
+) -> str:
+    """Select the executor before provider/model construction.
+
+    An explicit non-native runtime remains pinned. The native default is an
+    automatic policy request when trusted routing is enabled, so the selected
+    id—not the default—drives the actual entry point.
+    """
+    from garuda.config.agent_home import resolve_agent_home
+
+    home = resolve_agent_home(workspace)
+    global_settings = getattr(home, "global_settings", None) or {}
+    routing_cfg = global_settings.get("routing") or {}
+    if not isinstance(routing_cfg, dict) or not routing_cfg.get("enabled", False):
+        return requested
+    if budget_usd is None and routing_cfg.get("budget_usd") is not None:
+        budget_usd = float(routing_cfg["budget_usd"])
+    request = RoutingRequest(
+        required_capabilities=required_capabilities,
+        pin=None if requested == "native" else requested,
+        budget_usd=budget_usd,
+        mutating=mutating,
+    )
+    return route(
+        build_routing_candidates(workspace, global_settings=global_settings), request
+    ).selected
 
 
 def resolve_and_record_routing(
