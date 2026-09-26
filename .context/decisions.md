@@ -68,6 +68,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Traces gain lanes, not rewrites: unified segments overlay identity/authority/recovery on the untouched native rebuild, normalized ACP trails persist per session, and exports carry counts only.
 - Runtime metrics record per-adapter phases with triage buckets while native accounting stays pinned; support bundles redact every string and tally kinds instead of copying payloads.
 - Inbound ACP serving reuses the runtime boundary with per-instance sessions: stdio only, version-checked both directions, unknown methods fail closed, and no listener exists to misconfigure.
+- Direct transports need six admission artifacts (https citation, capabilities, double, opt-in test, cost semantics, migration notes); anything private is inadmissible and subscription access stays behind ACP.
 - The contract matrix generates scenarios from declared capabilities with skips named, not hidden; interactive and never-answering profiles prove their lifecycle under driven checks instead of the unattended suite; any failure blocks support.
 - Live harness checks are gated, capped, and reported: env-selected harnesses only, one trivial prompt in a fixture workspace, exact harness/version/auth/elapsed in the report, and CI spends nothing by never opting in.
 - Eval comparisons keep model and harness as separate dimensions with unknown costs never zero-filled, prompts hashed instead of stored, per-cell trial counts, and no vendor claim from thin cells.
@@ -242,6 +243,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   key is recursively scrubbed.
 - Runtime metrics use the statistical median for even samples, while native
   turn accounting remains on its existing schema and path.
+
+## 2026-09-26 — Direct model transports require admission at construction
+
+- Direct transports are registered only with a canonical, fully-admitted
+  `TransportRecord`; factory builds re-check that record so test-only catalog
+  coverage cannot be bypassed by a new builder.
+- Admission requires structural auth kind, primary HTTPS citations, capability,
+  cost, migration, test-double, and collectable integration-test artifacts.
+- ACP CLI execution relies on the adapter's post-handshake store attachment;
+  callers do not manually append a pre-start segment, preventing duplicate or
+  authority-free runtime lanes.
 
 ## 2026-09-26 — Inbound ACP uses the public v1 transport
 
