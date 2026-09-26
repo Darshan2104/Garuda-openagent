@@ -186,7 +186,7 @@ async def test_cli_executor_uses_policy_selected_runtime(monkeypatch):
         assert requested == "native"
         return "codex"
 
-    async def run_acp_command(args, task):
+    async def run_acp_command(args, task, catalog):
         seen.append((args.runtime, task))
         return 0
 
