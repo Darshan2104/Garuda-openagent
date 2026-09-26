@@ -12,6 +12,12 @@ For docker-free harness experiments:
 python -m garuda.eval.ablation --model gemini/gemini-2.5-flash
 ```
 
+To persist measured native trials as a model × harness artifact, add
+`--matrix-out matrix.json`. Validated external-harness trial feeds can be
+combined with `--external-trials external.json`; each feed must contain a
+`trials` list with discovered harness version/capabilities and measured
+completion, cost, approvals, and handoff fields.
+
 Cost accounting prefers provider-reported cost, then explicit user overrides, then the versioned in-repository price snapshot, and only then LiteLLM's table.
 
 ## Live harness smoke tests

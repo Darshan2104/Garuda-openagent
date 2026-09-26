@@ -180,3 +180,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Missing binaries produce explicit per-harness skipped reports so an `all`
   sweep remains attributable without turning local installation gaps into
   product failures. The opt-in gate remains absent from CI.
+
+## 2026-09-26 — Harness matrix is a persisted eval artifact
+
+- The ablation command can persist native measured trials and merge validated
+  external-harness trial feeds into one JSON/Markdown matrix artifact. External
+  rows retain their discovered version, capability, cost, approval, and handoff
+  fields; no vendor result is synthesized from a native run.
+- `HarnessTrial` validates at construction and ingestion, including prompt
+  hashes, non-negative measures, completion unknowns, and handoff states.
+  Ablation conversion rejects any result whose task id is absent from the task
+  set rather than hashing the id as a substitute prompt.
