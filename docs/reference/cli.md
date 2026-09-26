@@ -15,6 +15,7 @@
 | `garuda runtime resume --session S -t TASK` | Resume a persisted session through the real run lifecycle (classifies first). |
 | `garuda runtime recover --session S [--json]` | Classify and recover a session. |
 | `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
+| `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
 
 ## Common `run` flags
 

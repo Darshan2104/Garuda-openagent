@@ -408,6 +408,7 @@ def adapter_for_manifest(
     policy: dict[str, AuthorityPolicy] | None = None,
     store=None,
     persist_dir: str | None = None,
+    metrics=None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -427,6 +428,7 @@ def adapter_for_manifest(
         setup_hint=manifest.setup,
         store=store,
         persist_dir=persist_dir,
+        metrics=metrics,
     )
 
 
@@ -494,6 +496,7 @@ def adapter_for_registry(
     policy: dict[str, AuthorityPolicy] | None = None,
     store=None,
     persist_dir: str | None = None,
+    metrics=None,
 ) -> AcpRuntime:
     """Resolve through the registry, then apply the exact-path launch gate."""
     resolved = registry.get(ref)
@@ -503,4 +506,5 @@ def adapter_for_registry(
         policy=policy,
         store=store,
         persist_dir=persist_dir,
+        metrics=metrics,
     )

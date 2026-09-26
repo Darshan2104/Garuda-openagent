@@ -369,6 +369,24 @@ def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def support_bundle_dict(store, session_id: str) -> dict[str, Any]:
+    """Build the redacted support bundle for one persisted session."""
+    from garuda import __version__ as _version
+    from garuda.observability.support import build_support_bundle
+
+    try:
+        session_dir = store.session_dir(session_id)
+    except Exception as exc:
+        raise ValueError(f"unknown session {session_id!r}: {exc}") from exc
+    if not session_dir.is_dir():
+        raise ValueError(f"unknown session {session_id!r}")
+    return build_support_bundle(session_dir, garuda_version=_version)
+
+
+def cmd_support_bundle(store, session_id: str) -> str:
+    return json.dumps(support_bundle_dict(store, session_id), indent=2)
+
+
 def recover_dict(store, session_id: str) -> dict[str, Any]:
     return report_to_dict(recover(store, session_id))
 
@@ -433,8 +451,10 @@ __all__ = [
     "cmd_list_registry",
     "cmd_recover",
     "cmd_resume",
+    "cmd_support_bundle",
     "configured_registry",
     "load_configured_manifest_dicts",
     "recover_dict",
     "run_acp_task",
+    "support_bundle_dict",
 ]
