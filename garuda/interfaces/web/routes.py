@@ -625,11 +625,12 @@ def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response
 def _run_diff(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import diff_timeline
+    from garuda.workspace.diff import DiffError
 
     session_id = validate_session_ref(match["sid"])
     try:
         return ok(diff_timeline(ctx.store, session_id))
-    except (OSError, ValueError) as exc:
+    except (DiffError, OSError, ValueError) as exc:
         return not_found(f"No readable session {session_id!r}: {exc}")
 
 

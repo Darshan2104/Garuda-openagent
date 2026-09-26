@@ -54,8 +54,8 @@ def payload(response):
     return json.loads(response.body)
 
 
-def _seed(store, session_id="s1"):
-    store.begin(session_id, task="move it", model="m", agent="a", workspace="w")
+def _seed(store, session_id="s1", workspace="."):
+    store.begin(session_id, task="move it", model="m", agent="a", workspace=workspace)
     store.checkpoint_messages(session_id, [])
     store.ensure_unified(session_id)
     return session_id
@@ -166,6 +166,11 @@ def test_diff_timeline_and_recover(ctx, ro_ctx, store):
     timeline = payload(call(ctx, "/api/runs/s1/diff"))
     assert timeline["baseline_recorded"] is True
     assert isinstance(timeline["files"], list)
+
+    _seed(store, "missing-workspace", workspace="does-not-exist")
+    store.record_baseline("missing-workspace", capture_baseline(".").to_dict())
+    unavailable = call(ctx, "/api/runs/missing-workspace/diff")
+    assert unavailable.status == 404
 
     classification = payload(call(ro_ctx, "/api/runs/s1/recover"))
     assert classification["state"] == "resumable"
