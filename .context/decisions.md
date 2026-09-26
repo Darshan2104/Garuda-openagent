@@ -68,6 +68,7 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Traces gain lanes, not rewrites: unified segments overlay identity/authority/recovery on the untouched native rebuild, normalized ACP trails persist per session, and exports carry counts only.
 - The contract matrix generates scenarios from declared capabilities with skips named, not hidden; interactive and never-answering profiles prove their lifecycle under driven checks instead of the unattended suite; any failure blocks support.
 - Live harness checks are gated, capped, and reported: env-selected harnesses only, one trivial prompt in a fixture workspace, exact harness/version/auth/elapsed in the report, and CI spends nothing by never opting in.
+- Eval comparisons keep model and harness as separate dimensions with unknown costs never zero-filled, prompts hashed instead of stored, per-cell trial counts, and no vendor claim from thin cells.
 - Workspace leases live outside the workspace with heartbeat-TTL liveness: one mutating owner, read-only sharing, audited stale takeover that replaces only the lease file, corrupt leases fail closed, and parallel worktrees isolate by real path.
 - Git and the filesystem are the delta truth: baselines fingerprint preexisting dirt separately, diffs clip inline but persist fully, ACP hints are reconciled (never applied), and only read-only git verbs run. Attribution is possible only where the host path is the mutated tree (local, sandbox, tmux, bind-mounted docker); remote is recorded `unsupported_nonlocal`, a non-repo workspace `unsupported_nonrepo`, and unknown kinds fail closed. Every entry point that persists a session goes through `workspace/evidence.py`: it persists the baseline before any prompt or refuses, and its verifier, finish, and close consume that exact record or fail closed; a git failure is an error, never an empty delta. The verifier gates on the record being readable and attaches the delta as evidence; it does not judge delta contents. Resume starts a fresh baseline; SDK `Conversation` and `recipe run` carry no baseline yet; the CLI handoff passes `workspace=` and carries the recorded delta.
 - Recovery signals only a persisted Garuda-launched process-group leader bound to the session runtime whose recorded start-time/command identity still matches; a recycled PID is retired without a signal. It refuses while a live lease names the session or the recorded owning Garuda process is alive, and audits checkpoint, trail, runtime identity, and ACP authority before any signal. Descendants outside the child's group are out of reach (guardrail, not sandbox). Cancellation audits are append-only evidence, written best-effort without ever blocking the cancel; a failed write surfaces afterwards as a typed error.
@@ -216,3 +217,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Missing binaries produce explicit per-harness skipped reports so an `all`
   sweep remains attributable without turning local installation gaps into
   product failures. The opt-in gate remains absent from CI.
+
+## 2026-09-26 — Harness matrix is a persisted eval artifact
+
+- The ablation command can persist native measured trials and merge validated
+  external-harness trial feeds into one JSON/Markdown matrix artifact. External
+  rows retain their discovered version, capability, cost, approval, and handoff
+  fields; no vendor result is synthesized from a native run.
+- `HarnessTrial` validates at construction and ingestion, including prompt
+  hashes, non-negative measures, completion unknowns, and handoff states.
+  Ablation conversion rejects any result whose task id is absent from the task
+  set rather than hashing the id as a substitute prompt.

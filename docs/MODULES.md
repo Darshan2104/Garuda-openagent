@@ -231,6 +231,9 @@ reports; the shared lifecycle itself lives in `garuda/runtime/conformance.py`).
 `live_harness.py` (P1.11: opt-in single-prompt smoke runs against installed
 harnesses with exact reporting, fixture workspaces, fake-agent script path
 so linked checkouts work; CI never sets the gate variable).
+`harness_matrix.py` (P1.12: model × harness comparison fed by real eval runs,
+unknown costs/completions kept unknown, true medians, validated ingestion,
+hashed prompts, per-cell trial counts, and handoff rates).
 
 ## Everything else
 
