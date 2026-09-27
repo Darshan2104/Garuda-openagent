@@ -269,7 +269,7 @@ class DefaultAgent:
             return state.abort_environment_dead(exc, turn)
         if not decision.accepted:
             # The gate answered `call` with its rejection feedback; a second
-            # task_complete in the same response would still be open.
+            # terminal call in the same response would still be open.
             state.answer_open_calls(
                 response.tool_calls, None, reason="Not executed: the run ended here."
             )
@@ -677,9 +677,10 @@ class DefaultAgent:
                         call,
                         terminal_name=state.terminal.tool_name,
                     )
-                    # Only now may the gate's own USER-role notes land — before
+                    # Only now may the strategy's USER-role notes land — before
                     # this they would sit between the assistant's tool_calls and
-                    # the results answering them. See CompletionGate._defer.
+                    # the results answering them. See CompletionGate._defer for
+                    # the default strategy's implementation.
                     state.terminal.flush_notes()
                     if state.emit_session_events:
                         state.events.append(

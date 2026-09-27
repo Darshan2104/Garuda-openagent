@@ -39,6 +39,15 @@ class NeverRunTool:
         raise AssertionError("an accepted terminal call must close later siblings")
 
 
+class CollectionSupportTool:
+    name = "collection_support"
+    description = "A sibling call that runs after a rejected submission."
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, arguments: dict, env, ctx: ToolContext) -> ToolResult:
+        return ToolResult(tool_call_id="", content="support executed")
+
+
 @dataclass
 class CollectionStrategy:
     context: ContextManager
@@ -46,7 +55,6 @@ class CollectionStrategy:
     supports_forced_submission: bool = False
     tool_name: str = "submit_collection"
     calls: list[ToolCall] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
 
     async def attempt(
         self, call: ToolCall, *, turn: int | None = None
@@ -62,13 +70,20 @@ class CollectionStrategy:
                     tool_call_id=call.id,
                 )
             )
-            self.notes.append("Revise the collection and submit it again.")
+            # Rejection feedback is strategy-owned. Put the USER note after the
+            # terminal result, matching CompletionGate's exact prior-bug shape;
+            # a later sibling result must still be repaired into the adjacent
+            # assistant/tool block before the next model request or final result.
+            self.context.append(
+                Message(
+                    role=Role.USER,
+                    content="Revise the collection and submit it again.",
+                )
+            )
         return decision
 
     def flush_notes(self) -> None:
-        for note in self.notes:
-            self.context.append(Message(role=Role.USER, content=note))
-        self.notes.clear()
+        pass
 
 
 class RecordingScriptModel(ScriptModel):
@@ -176,7 +191,8 @@ async def test_alternate_rejection_keeps_tool_results_adjacent(tmp_path: Path):
                         id="first",
                         name="submit_collection",
                         arguments={"report": "incomplete"},
-                    )
+                    ),
+                    ToolCall(id="support", name="collection_support", arguments={}),
                 ],
             ),
             ModelResponse(
@@ -204,7 +220,7 @@ async def test_alternate_rejection_keeps_tool_results_adjacent(tmp_path: Path):
         task="collect",
         model=model,
         env=LocalEnvironment(workspace_root=tmp_path),
-        tools=[SubmitCollectionTool()],
+        tools=[SubmitCollectionTool(), CollectionSupportTool()],
         config=AgentConfig(max_turns=2),
         context=context,
         terminal_strategy=strategy,
@@ -218,8 +234,10 @@ async def test_alternate_rejection_keeps_tool_results_adjacent(tmp_path: Path):
         and message.tool_calls
         and message.tool_calls[0].id == "first"
     )
-    assert result.messages[first_assistant + 1].tool_call_id == "first"
-    assert result.messages[first_assistant + 2].role == Role.USER
+    assert [
+        result.messages[first_assistant + offset].tool_call_id for offset in (1, 2)
+    ] == ["first", "support"]
+    assert result.messages[first_assistant + 3].role == Role.USER
 
 
 @pytest.mark.asyncio
