@@ -2,7 +2,7 @@
 
 **Issue:** [#75](https://github.com/Darshan2104/Garuda-openagent/issues/75)
 
-**Status:** Design approved; written-spec review pending
+**Status:** Approved for implementation
 
 **Date:** 2026-09-28
 

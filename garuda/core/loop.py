@@ -6,7 +6,8 @@ in four collaborators, assembled by ``prepare_run``:
 - ``core/run_state.py`` — setup and the state a run carries (``RunState``)
 - ``core/steering.py`` — the messages the harness injects between turns
 - ``core/tool_runner.py`` — executing a tool call, or a concurrent read batch
-- ``core/completion.py`` — the ``task_complete`` gate
+- ``core/termination.py`` — the run-scoped terminal-tool strategy
+- ``core/completion.py`` — the default ``task_complete`` gate
 
 Read this file to learn the control flow; read those to change a behaviour. The
 split exists because every fix to any one of those areas used to carry the blast
@@ -41,6 +42,7 @@ from garuda.core.steering import (
     budget_fraction,
     call_signature,
 )
+from garuda.core.termination import TerminalStrategy
 from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import ContextOverflowError, Model
@@ -105,6 +107,7 @@ class DefaultAgent:
         pack_git_evidence: str = "",
         initial_state=None,
         workspace_delta_loader=None,
+        terminal_strategy: TerminalStrategy | None = None,
     ) -> AgentResult:
         state = await prepare_run(
             task=task,
@@ -128,6 +131,7 @@ class DefaultAgent:
             pack_git_evidence=pack_git_evidence,
             initial_state=initial_state,
             workspace_delta_loader=workspace_delta_loader,
+            terminal_strategy=terminal_strategy,
         )
 
         turn = 0
@@ -161,7 +165,7 @@ class DefaultAgent:
     async def _final_submission(
         self, state: RunState, model: Model, turn: int
     ) -> AgentResult:
-        """Spend one exchange whose only available tool is ``task_complete``.
+        """Spend one exchange whose only available tool is the run's terminal tool.
 
         The budget is gone and nothing has been accepted. ``FINAL_TURN_NUDGE`` has
         already asked for a commit and been ignored — it is a message, and a message
@@ -175,14 +179,16 @@ class DefaultAgent:
         a gate that accepts an empty one is worse than the missing commit.
 
         Skipped when there is no gate to satisfy (``enable_verifier`` off — those runs
-        end on the first tool-free response anyway) or no ``task_complete`` tool. Run
+        end on the first tool-free response anyway), the strategy opts out, or its
+        terminal tool is unavailable. Run
         even past the wall-clock deadline: the deadline margin exists for exactly this
         wind-down, and being inside it is the case this was built for.
         """
         if not (
             state.config.force_final_submission
             and state.config.enable_verifier
-            and "task_complete" in state.tool_map
+            and state.terminal.supports_forced_submission
+            and state.terminal.tool_name in state.tool_map
         ):
             return self._exhausted(state, turn)
 
@@ -190,7 +196,7 @@ class DefaultAgent:
         schema = [
             entry
             for entry in state.tools_schema
-            if (entry.get("function") or {}).get("name") == "task_complete"
+            if (entry.get("function") or {}).get("name") == state.terminal.tool_name
         ]
         if not schema:
             return self._exhausted(state, turn)
@@ -235,7 +241,9 @@ class DefaultAgent:
         state.context.note_usage(response.usage)
         self._record_response(state, response, turn, model_ms[0])
 
-        call = next((c for c in response.tool_calls if c.name == "task_complete"), None)
+        call = next(
+            (c for c in response.tool_calls if c.name == state.terminal.tool_name), None
+        )
         if call is None:
             # Nothing submitted. Any calls the response did make (a hallucinated
             # tool name reaches here) are answered first: `_record_response` has
@@ -250,7 +258,7 @@ class DefaultAgent:
             return self._exhausted(state, turn)
 
         try:
-            approved, summary = await state.completion.attempt(call, turn=turn)
+            decision = await state.terminal.attempt(call, turn=turn)
         except EnvironmentUnavailableError as exc:
             # Nearly moot — the workspace is gone and this transcript will not be
             # replayed — but this is a change set about not leaving open calls, and
@@ -259,7 +267,7 @@ class DefaultAgent:
                 response.tool_calls, None, reason="Not executed: the workspace became unavailable."
             )
             return state.abort_environment_dead(exc, turn)
-        if not approved:
+        if not decision.accepted:
             # The gate answered `call` with its rejection feedback; a second
             # task_complete in the same response would still be open.
             state.answer_open_calls(
@@ -268,14 +276,16 @@ class DefaultAgent:
             state.flush_turn_metrics()
             return self._exhausted(state, turn)
 
-        state.answer_open_calls(response.tool_calls, call)
-        state.completion.flush_notes()
+        state.answer_open_calls(
+            response.tool_calls, call, terminal_name=state.terminal.tool_name
+        )
+        state.terminal.flush_notes()
         if state.emit_session_events:
             state.events.append(
                 EventType.SESSION_END,
                 {"success": True, "turns": turns, "via": "final_submission"},
             )
-        return state.result(True, summary, turns)
+        return state.result(True, decision.summary, turns)
 
     async def _timed_complete(
         self, state: RunState, model: Model, model_ms: list[float], tools: list[dict] | None = None
@@ -655,23 +665,27 @@ class DefaultAgent:
         accepted. Defaults to this segment's calls for callers with no wider context.
         """
         for call in calls:
-            if call.name == "task_complete":
-                approved, summary = await state.completion.attempt(call, turn=turn)
-                if approved:
+            if call.name == state.terminal.tool_name:
+                decision = await state.terminal.attempt(call, turn=turn)
+                if decision.accepted:
                     # Close the response's tool_calls block before returning: the
                     # accepted call and any siblings this run will now never reach
                     # would otherwise sit unanswered in the transcript this result
                     # carries. See RunState.answer_open_calls.
-                    state.answer_open_calls(response_calls or calls, call)
+                    state.answer_open_calls(
+                        response_calls or calls,
+                        call,
+                        terminal_name=state.terminal.tool_name,
+                    )
                     # Only now may the gate's own USER-role notes land — before
                     # this they would sit between the assistant's tool_calls and
                     # the results answering them. See CompletionGate._defer.
-                    state.completion.flush_notes()
+                    state.terminal.flush_notes()
                     if state.emit_session_events:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}
                         )
-                    return state.result(True, summary, turn)
+                    return state.result(True, decision.summary, turn)
                 state.steering.note_completion_rejection()
                 continue
 

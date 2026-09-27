@@ -9,6 +9,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.modes import apply_mode_preset, describe_config, is_rigorous
 from garuda.core.permissions import PermissionEngine
+from garuda.core.termination import TerminalStrategy
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model.protocol import Model
 from garuda.plugins.hooks import HookRegistry
@@ -91,6 +92,7 @@ class RigorousAgent:
         pack_git_evidence: str = "",
         initial_state=None,
         workspace_delta_loader=None,
+        terminal_strategy: TerminalStrategy | None = None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -179,6 +181,7 @@ class RigorousAgent:
                 pack_git_evidence=pack_git_evidence,
                 initial_state=initial_state,
                 workspace_delta_loader=workspace_delta_loader,
+                terminal_strategy=terminal_strategy,
             )
 
             approved, feedback = await self._critic_review(

@@ -24,6 +24,7 @@ from garuda.core.modes import describe_config
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.core.steering import Steering
+from garuda.core.termination import TaskCompletionStrategy, TerminalStrategy
 from garuda.core.tool_runner import ToolRunner
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolContext
@@ -51,7 +52,7 @@ class RunState:
     tools: list[Tool]
     tool_map: dict[str, Tool]
     runner: ToolRunner
-    completion: CompletionGate
+    terminal: TerminalStrategy
     steering: Steering
     memo: ActionMemo
     ledger: SideEffectLedger
@@ -110,8 +111,14 @@ class RunState:
         record.emitted = True
         self.events.append(EventType.TURN_METRICS, record.to_dict())
 
-    def answer_open_calls(self, calls: list, accepted, reason: str | None = None) -> None:
-        """Close out a response's tool calls when an accepted completion ends the run.
+    def answer_open_calls(
+        self,
+        calls: list,
+        accepted,
+        reason: str | None = None,
+        terminal_name: str = "task_complete",
+    ) -> None:
+        """Close out a response's calls when an accepted terminal call ends the run.
 
         Providers require every ``tool_calls`` entry to have a matching tool result,
         and an accepted ``task_complete`` used to return straight out of the tool walk
@@ -131,12 +138,14 @@ class RunState:
             for message in self.context.get_messages()
             if message.role == Role.TOOL and message.tool_call_id
         }
-        default_reason = reason or "Not executed: the run ended when task_complete was accepted."
+        default_reason = reason or (
+            f"Not executed: the run ended when {terminal_name} was accepted."
+        )
         for call in calls:
             if call.id in answered:
                 continue
             content = (
-                "task_complete accepted — the run ended here."
+                f"{terminal_name} accepted — the run ended here."
                 if accepted is not None
                 and (call is accepted or call.id == getattr(accepted, "id", None))
                 else default_reason
@@ -167,7 +176,7 @@ class RunState:
             "action_memo": self.memo.stats(),
             "side_effects": self.ledger.summary(),
         }
-        contract = self.completion.contract
+        contract = self.completion_contract
         if contract is not None:
             metadata["acceptance"] = {
                 **contract.stats(),
@@ -200,6 +209,12 @@ class RunState:
                 "metrics": self.metrics.summary(),
             },
         )
+
+    @property
+    def completion_contract(self):
+        """The default gate's contract, absent for specialized strategies."""
+        gate = getattr(self.terminal, "completion_gate", None)
+        return getattr(gate, "contract", None)
 
     def abort_environment_dead(
         self, exc: EnvironmentUnavailableError, turn: int
@@ -357,7 +372,7 @@ class RunState:
         """
         state = self.state
         state.task = self.task
-        contract = self.completion.contract
+        contract = self.completion_contract
         if contract is not None and contract.criteria:
             state.acceptance = contract.render()
         # Else keep the restored acceptance: no contract yet means "no new
@@ -388,7 +403,7 @@ class RunState:
             self.context,
             self.tool_map,
             self.events.session_id,
-            contract=self.completion.contract,
+            contract=self.completion_contract,
             state=self.refresh_state() if self.config.enable_working_state_card else None,
         )
 
@@ -573,6 +588,7 @@ async def prepare_run(
     pack_git_evidence: str = "",
     initial_state: dict | WorkingState | None = None,
     workspace_delta_loader=None,
+    terminal_strategy: TerminalStrategy | None = None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -722,6 +738,22 @@ async def prepare_run(
     else:
         state = WorkingState(task=task)
 
+    if terminal_strategy is None:
+        terminal_strategy = TaskCompletionStrategy(
+            CompletionGate(
+                task=task,
+                config=config,
+                context=context,
+                env=env,
+                events=events,
+                tool_map=tool_map,
+                model=model,
+                permissions=permissions,
+                ledger=ledger,
+                workspace_delta_loader=workspace_delta_loader,
+            )
+        )
+
     run_state = RunState(
         task=task,
         config=config,
@@ -743,18 +775,7 @@ async def prepare_run(
             max_parallel_reads=config.max_parallel_reads,
             state=state if config.enable_working_state_card else None,
         ),
-        completion=CompletionGate(
-            task=task,
-            config=config,
-            context=context,
-            env=env,
-            events=events,
-            tool_map=tool_map,
-            model=model,
-            permissions=permissions,
-            ledger=ledger,
-            workspace_delta_loader=workspace_delta_loader,
-        ),
+        terminal=terminal_strategy,
         steering=Steering(
             max_turns=config.max_turns,
             started_at=started_at,
