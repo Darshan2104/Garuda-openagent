@@ -28,6 +28,7 @@ a behaviour.
 | `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
 | `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
+| `termination.py` | The run-scoped terminal-tool strategy boundary, plus the adapter that preserves the default `task_complete` gate. |
 | `modes.py` | Run postures. The presets that map one `mode` onto a coherent gate set. |
 | `rigorous.py` | `RigorousAgent`: plan → execute → critic, with repair rounds. `create_agent()` picks between this and `DefaultAgent`. |
 | `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
