@@ -272,3 +272,10 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 
 - `prepare_agent_run` is the single binding-resolution point returning `PreparedNativeRun`; `--model` is the explicit reasoning alias and parser defaults are `None` so omission never masks profile/project/global bindings.
 - SDK `Model` objects are kept by identity per run; no API keys in specs; project/profile collection overlays narrow key-wise against the global ceiling; the server builds fresh clients per request.
+
+## 2026-09-26 — P1 initial runtime selection (issue #77, part of #74)
+
+- Initial selection is its own layer (`garuda/runtime/selection/`, `Initial*`/`Selection*` names) beside the P2 policy router (`router.py`, `Routing*` names); neither imports the other.
+- Task regexes are global-trust-only; project routes auto-select only when global config sets `trust_project_routes`, otherwise recorded as recommendations.
+- Trait detection is bounded direct-filesystem inspection (no shell, no project import, no symlink following); startup fallback requires an unchanged baseline and fails closed outside a repository.
+- The CLI constructs one trusted catalog for initial selection and execution; the selected id controls the native/ACP executor, and its rationale is persisted after lease/session creation but before runtime start. An ACP start failure can transfer only once to native, only with an unchanged baseline, and retains the same session trail.
