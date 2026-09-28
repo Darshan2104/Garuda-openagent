@@ -7,7 +7,7 @@ and the model doesn't burn tokens re-deriving what it was doing. Granular step
 tracking still belongs in the `todo` tool; the goal is the north star above it.
 """
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -22,6 +22,7 @@ def render_goal(goal: str, plan: list[str] | None) -> str:
 
 
 class UpdateGoalTool:
+    effect = ToolEffect.MUTATING
     name = "update_goal"
     description = (
         "Set or update your current high-level goal for this task (with an optional short "

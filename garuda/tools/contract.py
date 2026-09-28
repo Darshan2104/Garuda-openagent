@@ -14,12 +14,13 @@ from garuda.core.contract import (
     VERIFIED,
     AcceptanceContract,
 )
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 
 class ContractTool:
+    effect = ToolEffect.MUTATING
     name = "contract"
     description = (
         "View and resolve the acceptance criteria derived from the task statement. "

@@ -1,4 +1,4 @@
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -20,6 +20,7 @@ def render_todos(todos: list[dict]) -> str:
 
 
 class TodoTool:
+    effect = ToolEffect.MUTATING
     name = "todo"
     description = (
         "Maintain your task list for multi-step work. Each call replaces the entire list, "

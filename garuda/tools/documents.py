@@ -4,7 +4,7 @@ import base64
 import shlex
 from pathlib import Path
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -71,6 +71,7 @@ def _read_xlsx_bytes(data: bytes, max_rows: int = 200) -> str:
 
 
 class ReadPdfTool:
+    effect = ToolEffect.READ_ONLY
     name = "read_pdf"
     description = "Extract text content from a PDF file in the workspace."
     parameters = {
@@ -99,6 +100,7 @@ class ReadPdfTool:
 
 
 class ReadSpreadsheetTool:
+    effect = ToolEffect.READ_ONLY
     name = "read_spreadsheet"
     description = "Read an Excel (.xlsx) or CSV spreadsheet from the workspace as tab-separated text."
     parameters = {

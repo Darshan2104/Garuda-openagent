@@ -29,6 +29,7 @@ a behaviour.
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
 | `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
 | `termination.py` | The run-scoped terminal-tool strategy boundary, plus the adapter that preserves the default `task_complete` gate. |
+| `collection.py` | The collection-worker tool ceiling: trusted effect provenance, profile/request/network/permission intersection, and the optional fail-closed read-only shell wrapper. These are guardrails, not confinement. |
 | `modes.py` | Run postures. The presets that map one `mode` onto a coherent gate set. |
 | `rigorous.py` | `RigorousAgent`: plan → execute → critic, with repair rounds. `create_agent()` picks between this and `DefaultAgent`. |
 | `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
@@ -45,7 +46,10 @@ a behaviour.
 
 ## `tools/` — what the agent can do
 
-`protocol.py` defines the contract (`ToolContext` in, `ToolResult` out);
+`protocol.py` defines the contract (`ToolContext` in, `ToolResult` out) and the
+conservative `ToolEffect` vocabulary. Missing declarations resolve to `UNKNOWN`;
+collection policy trusts declarations only from actual built-ins or an exact MCP
+tool authorized by the user-owned global config. Project tools cannot self-bless.
 `registry.py` + `__init__.py::build_toolkit` assemble the set a profile asks for.
 
 Execution: `bash.py` (a command that backgrounds something also records the

@@ -32,6 +32,28 @@ admissible — subscription-backed agents stay behind ACP runtimes instead.
 
 Garuda resolves `.agent/mcp.json`/YAML, `.garuda/` compatibility files, `.cursor/mcp.json`, and global `~/.agent/mcp.json`. Project and global servers merge by default, with project entries winning name collisions. Above the direct tool threshold, Garuda exposes lazy `search_tool` and `use_tool` meta-tools.
 
+Collection workers treat MCP tools as effect-unknown by default. A user may
+authorize one exact remote tool for collection in the global
+`~/.agent/mcp.json` entry. The same `tool_effects` key in project configuration
+is ignored; a repository cannot grant its own tools collection authority.
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "command": "docs-mcp",
+      "tool_effects": {
+        "fetch_document": "read_only"
+      }
+    }
+  }
+}
+```
+
+This declaration is a trusted guardrail assertion, not confinement or proof
+about the remote implementation. Side-effecting and unknown tools remain absent
+from collection workers, and lazy `use_tool` calls re-check the selected tool.
+
 ```bash
 garuda mcp list
 garuda run -t "Use the issue tracker" --mcp-config custom-mcp.json

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from garuda.model.protocol import Model
@@ -9,6 +10,30 @@ if TYPE_CHECKING:
     from garuda.core.buffer import ToolOutputBuffer
     from garuda.core.permissions import PermissionEngine
     from garuda.core.subagent import SubagentRunner
+
+
+class ToolEffect(str, Enum):
+    """Conservative effect categories used by restricted tool policies.
+
+    A declaration describes the broadest effect a tool invocation may have.  It
+    is metadata, not proof: authority-sensitive policies must also establish who
+    supplied the declaration before trusting it.
+    """
+
+    READ_ONLY = "read_only"
+    EXTERNAL_READ = "external_read"
+    MUTATING = "mutating"
+    EXTERNAL_SIDE_EFFECT = "external_side_effect"
+    UNKNOWN = "unknown"
+
+
+def tool_effect(tool: object) -> ToolEffect:
+    """Return a tool's declared effect, failing closed to ``UNKNOWN``."""
+    raw = getattr(tool, "effect", ToolEffect.UNKNOWN)
+    try:
+        return raw if isinstance(raw, ToolEffect) else ToolEffect(raw)
+    except (TypeError, ValueError):
+        return ToolEffect.UNKNOWN
 
 
 @dataclass
@@ -35,6 +60,10 @@ class ToolContext:
     side_effects: Any = None
     # Acceptance criteria derived from the task statement.
     contract: Any = None
+    # A dynamic dispatch ceiling for meta-tools such as ``use_tool``. None means
+    # the ordinary run has no effect restriction; a collection child supplies a
+    # fail-closed set and the meta-tool re-checks its selected underlying tool.
+    allowed_tool_effects: frozenset[ToolEffect] | None = None
 
 
 # Attribute name marking a tool the caller supplied explicitly — via

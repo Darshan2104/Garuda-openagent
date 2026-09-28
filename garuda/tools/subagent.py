@@ -1,9 +1,10 @@
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 
 class InvokeSubagentTool:
+    effect = ToolEffect.EXTERNAL_SIDE_EFFECT
     name = "invoke_subagent"
     description = (
         "Delegate a subtask to a specialized subagent (e.g. explore, plan). "

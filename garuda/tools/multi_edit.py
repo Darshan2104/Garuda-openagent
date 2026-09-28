@@ -10,12 +10,13 @@ too.
 """
 
 from garuda.tools.edit import _first_diff, _snippet_around, resolve_edit
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 
 class MultiEditTool:
+    effect = ToolEffect.MUTATING
     name = "multi_edit"
     description = (
         "Apply several exact string replacements to a SINGLE file in one call. "

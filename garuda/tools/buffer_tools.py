@@ -4,7 +4,7 @@ When a tool's output is large it is stored in a `ToolOutputBuffer` and only a st
 enters the context. These tools let the model pull back exactly the lines it needs.
 """
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import Message, Role, ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -60,6 +60,7 @@ def _no_buffer() -> ToolResult:
 
 
 class BufferGrepTool:
+    effect = ToolEffect.READ_ONLY
     name = "buffer_grep"
     description = (
         "Search a stored tool-output buffer for a regular expression. Returns matching "
@@ -103,6 +104,7 @@ class BufferGrepTool:
 
 
 class BufferSliceTool:
+    effect = ToolEffect.READ_ONLY
     name = "buffer_slice"
     description = (
         "Read a line range from a stored tool-output buffer. Returns lines as line:content. "
@@ -132,6 +134,7 @@ class BufferSliceTool:
 
 
 class BufferQueryTool:
+    effect = ToolEffect.READ_ONLY
     name = "buffer_query"
     description = (
         "Ask a natural-language question about a large stored tool-output buffer. A helper model "
@@ -231,6 +234,7 @@ class BufferQueryTool:
 
 
 class BufferListTool:
+    effect = ToolEffect.READ_ONLY
     name = "buffer_list"
     description = "List the stored tool-output buffers for this session (id, size, lines, source tool)."
     parameters = {"type": "object", "properties": {}, "required": []}

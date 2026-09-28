@@ -13,7 +13,7 @@ small meta-tools:
 threshold, so the prompt stays lean without losing any capability.
 """
 
-from garuda.tools.protocol import Tool, ToolContext
+from garuda.tools.protocol import Tool, ToolContext, ToolEffect, tool_effect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -43,6 +43,7 @@ def _describe(tool: Tool) -> str:
 
 
 class SearchToolTool:
+    effect = ToolEffect.READ_ONLY
     name = "search_tool"
     description = (
         "Search for available tools by keyword (matches tool names and descriptions). "
@@ -108,6 +109,9 @@ class SearchToolTool:
 
 
 class UseToolTool:
+    # Target-dependent. Restricted runs may expose this dispatcher only when
+    # ToolContext carries an effect ceiling, which is re-checked below.
+    effect = ToolEffect.UNKNOWN
     name = "use_tool"
     description = (
         "Invoke a tool by name (typically one found via search_tool), passing its arguments "
@@ -150,6 +154,18 @@ class UseToolTool:
             return ToolResult(
                 tool_call_id="",
                 content="'arguments' must be an object (a JSON dict of the tool's parameters).",
+                is_error=True,
+            )
+        if (
+            ctx.allowed_tool_effects is not None
+            and tool_effect(tool) not in ctx.allowed_tool_effects
+        ):
+            return ToolResult(
+                tool_call_id="",
+                content=(
+                    f"Tool effect denied for {name}: "
+                    f"{tool_effect(tool).value} is outside this run's ceiling."
+                ),
                 is_error=True,
             )
         # Re-screen the *target* tool through the permission engine. The agent loop

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.core.side_effects import apply_kill_tree, kill_tree_command
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -149,6 +149,7 @@ def _task_state(ctx: ToolContext) -> dict:
 
 
 class BashBackgroundTool:
+    effect = ToolEffect.MUTATING
     name = "bash_background"
     description = (
         "Start a long-running command in the background (servers, watchers, slow builds). "
@@ -227,6 +228,7 @@ class BashBackgroundTool:
 
 
 class TaskOutputTool:
+    effect = ToolEffect.READ_ONLY
     name = "task_output"
     description = (
         "Read the captured output of a background task started with bash_background, "
@@ -283,6 +285,7 @@ class TaskOutputTool:
 
 
 class KillTaskTool:
+    effect = ToolEffect.MUTATING
     name = "kill_task"
     description = "Stop a background task started with bash_background."
     parameters = {

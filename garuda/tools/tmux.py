@@ -1,4 +1,4 @@
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 from garuda.workspace.tmux import TmuxEnvironment
@@ -11,6 +11,7 @@ def _as_tmux(env: Environment) -> TmuxEnvironment:
 
 
 class TmuxExecTool:
+    effect = ToolEffect.MUTATING
     name = "tmux_exec"
     description = (
         "Run a command in the persistent tmux session. Uses marker-based polling "
@@ -54,6 +55,7 @@ class TmuxExecTool:
 
 
 class TmuxCaptureTool:
+    effect = ToolEffect.READ_ONLY
     name = "tmux_capture"
     description = "Capture the current tmux pane output."
     parameters = {"type": "object", "properties": {}, "required": []}
