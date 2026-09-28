@@ -180,7 +180,7 @@ runtimes with the session store recording prepared/acknowledged/failed, so
 success transfers single ownership and target failure keeps the source
 promptable. Acknowledgement is one locked write (handoff `acknowledged` plus the
 target appended as the active segment); a target with `bind_session` then
-records its child, the source closes, and only then does an optional `deliver`
+binds its child record, the source closes, and only then does an optional `deliver`
 send the package as the target's first prompt. A delivery failure is a target
 failure (`HandoffDeliveryError`, `target_state: failed`), never a rollback over
 the target's changes; `record_target_outcome` records how the owner ended. `recovery.py` classifies restarts from persisted records
@@ -193,7 +193,8 @@ never invents success — a bare exit proves nothing. It runs on resume only
 (`run_agent_task --resume`, after this run's workspace lease is taken, and
 `NativeGarudaRuntime.resume`); a fresh run has nothing to recover. A child is
 a signal candidate only when `record_child` persisted it against a known
-runtime/session as its own process-group leader together with two process
+runtime/session (or `record_prepared_child` persisted it `prepared` for the
+prepared handoff's `target_runtime`, kept in the append-only `prepared_targets`) as its own process-group leader together with two process
 identities (boot id plus start time from `/proc/<pid>/stat` on Linux; `ps -o
 lstart= -o ucomm=` elsewhere — never a name the process can rewrite, such as
 Node's `process.title`): the child's and its owning Garuda process's.
@@ -211,11 +212,17 @@ identity check keeps from misfiring. Cancellation audits are best-effort
 before the cancel and surfaced afterwards as `CancellationAuditError` (a
 handoff cancel cleans up first and ends FAILED when its audit write fails), so
 a store outage never keeps work running. The `cancellations` list is audit
-evidence that classification does not consume yet. Only `AcpRuntime(store=…)`
-(or `bind_session` after a handoff acknowledgement) and
+evidence that classification does not consume yet. A handoff target is
+recorded from launch: `execute_handoff` names it on the `prepared` record and
+hands it a `PreparedChildRecorder` (`AcpRuntime.record_launch_with`), which
+writes a `prepared` child right after `launch()`, refreshes its identity after
+the ACP handshake (a launcher's exec changes the command half), retires it on a
+failed start, and is promoted in place to `live` by `bind_session`; a crash
+before the refresh leaves a mismatched identity that recovery never signals.
+Only `AcpRuntime(store=…)` (or a launch recorder, then `bind_session`) and
 `HandoffTransaction(store=…)` record children and switch cancels; `garuda run
 --runtime <acp>` and `garuda runtime handoff --confirm` are the production
-callers. Without a store the adapter logs a warning and records nothing.
+callers. Without a store or a launch recorder the adapter logs a warning and records nothing.
  `router.py` ranks runtimes deterministically from capability, budget,
  availability, and quality history with logged rationale; unknown costs never
  read free, pins win or fail loudly, and switching needs confirmation at a

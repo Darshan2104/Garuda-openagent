@@ -411,13 +411,53 @@ async def execute_handoff(
                 logger.warning("Handoff failure audit failed", exc_info=True)
         detail = f"; {cancel_error}" if cancel_error is not None else ""
         raise HandoffError(f"target construction failed: {exc}{detail}") from exc
+    target_runtime = getattr(target, "runtime_id", "")
+    if store is not None:
+        # Name the target on the prepared record before it starts, and let a
+        # target that supports it record its child at launch. Without that
+        # record a crash before the acknowledgement leaves an ACP child that
+        # no session record names, so recovery could never reap it.
+        try:
+            store.record_handoff(
+                session_id, state="prepared", attempts=1, target_runtime=target_runtime
+            )
+            record_launch = getattr(target, "record_launch_with", None)
+            if callable(record_launch):
+                from garuda.runtime.recovery import PreparedChildRecorder
+
+                record_launch(PreparedChildRecorder(store, session_id, target_runtime))
+        except Exception as exc:
+            logger.warning("Handoff target audit failed", exc_info=True)
+            cancel_error = None
+            try:
+                await tx.cancel(source, reason="target audit failed")
+            except HandoffError as cancel_exc:
+                cancel_error = cancel_exc
+            try:
+                store.record_handoff(
+                    session_id,
+                    state="failed",
+                    attempts=1,
+                    reason="target_audit",
+                    target_runtime=target_runtime,
+                )
+            except Exception:
+                logger.warning("Handoff failure audit failed", exc_info=True)
+            detail = f"; {cancel_error}" if cancel_error is not None else ""
+            raise HandoffError(f"handoff target audit failed: {exc}{detail}") from exc
     try:
         await tx.start_target(source, target)
     except HandoffError:
         if store is not None:
             try:
+                # The target id stays on the record: a prepared child whose
+                # retirement was interrupted must still bind for recovery.
                 store.record_handoff(
-                    session_id, state="failed", attempts=1, reason="target_startup"
+                    session_id,
+                    state="failed",
+                    attempts=1,
+                    reason="target_startup",
+                    target_runtime=target_runtime,
                 )
             except Exception:
                 logger.warning("Handoff failure audit failed", exc_info=True)
@@ -431,7 +471,7 @@ async def execute_handoff(
     prior_active = None
     if store is not None:
         extra: dict[str, Any] = {
-            "target_runtime": getattr(target, "runtime_id", ""),
+            "target_runtime": target_runtime,
         }
         if "baseline_commit" in tx.captured:
             extra["baseline_commit"] = tx.captured["baseline_commit"]

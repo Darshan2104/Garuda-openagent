@@ -46,6 +46,12 @@ REAP_TIMEOUT_SEC = 3.0
 REAP_POLL_SEC = 0.02
 #: Cancellation audit entries kept per session (append-only, oldest dropped).
 MAX_CANCELLATIONS = 50
+
+#: A handoff target's child recorded at launch, before ownership moves.
+PREPARED_CHILD_STATE = "prepared"
+#: Child record states `recover()` may signal after its identity gates.
+_SIGNAL_CANDIDATE_STATES = frozenset({"live", PREPARED_CHILD_STATE})
+
 _PS_CANDIDATES = ("/bin/ps", "/usr/bin/ps")
 
 
@@ -275,20 +281,185 @@ def record_child(
         "owner": {"pid": owner_pid, "identity": _read_identity(identify, owner_pid)},
         "state": "live",
     }
-    store.mutate_meta(
-        session_id, lambda meta: {"runtime_children": [*_children(meta), entry]}
-    )
+
+    def _append_or_promote(meta: dict) -> dict:
+        children = _children(meta)
+        for index, child in enumerate(children):
+            if (
+                isinstance(child, dict)
+                and child.get("state") == PREPARED_CHILD_STATE
+                and child.get("pid") == pid
+                and child.get("runtime_id") == runtime_id
+            ):
+                # A handoff target recorded at launch is now bound: promote
+                # the same record so one child never has two entries. The
+                # identity must still be the one captured at launch.
+                if child.get("identity") != entry["identity"]:
+                    raise RecoveryError(
+                        f"prepared child {pid} changed identity before binding; refusing"
+                    )
+                children[index] = entry
+                return {"runtime_children": children}
+        return {"runtime_children": [*children, entry]}
+
+    store.mutate_meta(session_id, _append_or_promote)
+
+
+def record_prepared_child(
+    store,
+    session_id: str,
+    *,
+    runtime_id: str,
+    pid: int,
+    process_group: int | None = None,
+    identify: Callable[[int], str | None] = _process_identity,
+) -> None:
+    """Record a handoff target's child the moment it is launched.
+
+    A handoff target starts before ownership moves, so it has no segment in
+    the session yet and cannot be recorded `live`. Without a record, a Garuda
+    crash before the acknowledgement leaves an ACP child that no record
+    names. This `prepared` record is bound to the handoff attempt instead:
+    it is accepted only while the handoff is `prepared` for exactly this
+    target runtime, which is appended to the session's `prepared_targets`.
+    `record_child` promotes it to `live` once the target is bound;
+    `recover()` reaps it under the same owner, lease, and identity gates as
+    a live child.
+    """
+    pid = _validate_pid(pid)
+    process_group = _validate_pid(process_group if process_group is not None else pid)
+    if process_group != pid:
+        raise RecoveryError("recorded child must lead its own isolated process group")
+    owner_pid = os.getpid()
+    entry = {
+        "session_id": session_id,
+        "runtime_id": runtime_id,
+        "pid": pid,
+        "process_group": process_group,
+        "identity": _read_identity(identify, pid),
+        "owner": {"pid": owner_pid, "identity": _read_identity(identify, owner_pid)},
+        "state": PREPARED_CHILD_STATE,
+    }
+
+    def _append(meta: dict) -> dict:
+        # Checked inside the locked write so a concurrent handoff write
+        # cannot land between the check and the record.
+        handoff = meta.get("handoff") or {}
+        if handoff.get("state") != "prepared" or handoff.get("target_runtime") != runtime_id:
+            raise RecoveryError(
+                f"child runtime {runtime_id!r} is not the prepared handoff target of "
+                f"session {session_id}"
+            )
+        targets = _prepared_targets(meta)
+        if runtime_id not in targets:
+            targets.append(runtime_id)
+        # `prepared_targets` is append-only: a later handoff attempt that
+        # names another target must not unbind a record still `prepared`.
+        return {
+            "runtime_children": [*_children(meta), entry],
+            "prepared_targets": targets,
+        }
+
+    store.mutate_meta(session_id, _append)
+
+
+def _prepared_targets(meta: dict) -> list:
+    targets = meta.get("prepared_targets", [])
+    if not isinstance(targets, list) or any(not isinstance(t, str) for t in targets):
+        raise RecoveryError("persisted prepared targets must be a list of runtime ids")
+    return list(targets)
+
+
+def refresh_prepared_child(
+    store,
+    session_id: str,
+    *,
+    runtime_id: str,
+    pid: int,
+    identify: Callable[[int], str | None] = _process_identity,
+) -> None:
+    """Re-capture a prepared child's identity once its agent is running.
+
+    The launch-time identity can be a launcher's: a shebang script or `env`
+    wrapper execs the real agent, and the command half of the identity then
+    changes. After the ACP handshake the agent itself answered, so its
+    identity is the one recovery must match. A crash before this refresh
+    leaves a mismatched identity, which recovery treats as a reused PID and
+    never signals — safe, though the orphan is not reaped.
+    """
+    pid = _validate_pid(pid)
+    identity = _read_identity(identify, pid)
+
+    def _refresh(meta: dict) -> dict:
+        children = _children(meta)
+        for index, child in enumerate(children):
+            if (
+                isinstance(child, dict)
+                and child.get("state") == PREPARED_CHILD_STATE
+                and child.get("pid") == pid
+                and child.get("runtime_id") == runtime_id
+            ):
+                children[index] = {**child, "identity": identity}
+                return {"runtime_children": children}
+        raise RecoveryError(f"no prepared child {pid} to refresh")
+
+    store.mutate_meta(session_id, _refresh)
+
+
+class PreparedChildRecorder:
+    """The narrow hook a handoff hands its target before starting it.
+
+    The target calls `launched(pid)` right after its process exists,
+    `running(pid)` once the agent has answered its handshake, and
+    `exited(pid)` once it has reaped a child that was never bound. It gets
+    no store and no other session access.
+    """
+
+    def __init__(
+        self,
+        store,
+        session_id: str,
+        runtime_id: str,
+        *,
+        identify: Callable[[int], str | None] = _process_identity,
+    ) -> None:
+        self._store = store
+        self._session_id = session_id
+        self._runtime_id = runtime_id
+        self._identify = identify
+
+    def launched(self, pid: int) -> None:
+        record_prepared_child(
+            self._store,
+            self._session_id,
+            runtime_id=self._runtime_id,
+            pid=pid,
+            process_group=pid,
+            identify=self._identify,
+        )
+
+    def running(self, pid: int) -> None:
+        refresh_prepared_child(
+            self._store,
+            self._session_id,
+            runtime_id=self._runtime_id,
+            pid=pid,
+            identify=self._identify,
+        )
+
+    def exited(self, pid: int) -> None:
+        _retire(self._store, self._session_id, {pid: "exited"})
 
 
 def _retire(store, session_id: str, outcomes: dict[int, str]) -> None:
-    """Flip `live` records for the given pids to their observed end state."""
+    """Flip `live`/`prepared` records for the given pids to their end state."""
 
     def _flip(meta: dict) -> dict:
         updated = []
         for child in _children(meta):
             if (
                 isinstance(child, dict)
-                and child.get("state", "live") == "live"
+                and child.get("state", "live") in _SIGNAL_CANDIDATE_STATES
                 and child.get("pid") in outcomes
             ):
                 child = {**child, "state": outcomes[child["pid"]]}
@@ -309,21 +480,33 @@ def record_child_exit(store, session_id: str, *, pid: int) -> None:
 
 
 def _live_children(store, session_id: str) -> list[dict]:
-    """Load only well-formed, live identities recorded by Garuda itself."""
+    """Load only well-formed signal candidates recorded by Garuda itself.
+
+    Candidates are `live` children and `prepared` handoff-target children. A
+    live child must be bound to a session segment; a prepared child may
+    instead be bound to a runtime in the append-only `prepared_targets` list,
+    because its segment is appended only when the handoff is acknowledged.
+    """
     meta = store.load_meta(session_id)
     children = _children(meta)
     unified = store.load_unified(session_id)
     runtime_ids = {segment.runtime_id for segment in unified.segments}
+    prepared_targets = set(_prepared_targets(meta))
     live: list[dict] = []
     for child in children:
         if not isinstance(child, dict):
             raise RecoveryError("persisted runtime child must be a mapping")
-        if child.get("state", "live") != "live":
+        state = child.get("state", "live")
+        if state not in _SIGNAL_CANDIDATE_STATES:
             continue
         if child.get("session_id") != session_id:
             raise RecoveryError("persisted runtime child has a mismatched session identity")
         runtime_id = child.get("runtime_id")
-        if not isinstance(runtime_id, str) or runtime_id not in runtime_ids:
+        bound = isinstance(runtime_id, str) and (
+            runtime_id in runtime_ids
+            or (state == PREPARED_CHILD_STATE and runtime_id in prepared_targets)
+        )
+        if not bound:
             raise RecoveryError("persisted runtime child is not bound to a session runtime")
         pid = _validate_pid(child.get("pid"))
         process_group = _validate_pid(child.get("process_group"))
@@ -691,7 +874,11 @@ def recover(
                 f"retired: {exc}"
             ) from exc
     if report.state is RestartState.ROLLED_BACK:
-        store.record_handoff(session_id, state="failed", attempts=1)
+        # Keep the target id so a prepared child left by a crash in a later
+        # recovery attempt still binds to this handoff attempt.
+        target = store.load_unified(session_id).handoff.get("target_runtime")
+        extra = {"target_runtime": target} if isinstance(target, str) and target else {}
+        store.record_handoff(session_id, state="failed", attempts=1, **extra)
     return RecoveryReport(
         session_id=report.session_id,
         state=report.state,
@@ -766,7 +953,9 @@ def reclaim_native(store, session_id: str, *, leases=None, **recover_kwargs) -> 
             for child in _children(meta)
             if isinstance(child, dict) and child.get("runtime_id") == external_id
         ]
-        if any(child.get("state", "live") == "live" for child in children):
+        if any(
+            child.get("state", "live") in _SIGNAL_CANDIDATE_STATES for child in children
+        ):
             raise RecoveryError(
                 f"external runtime {external_id!r} still has a live recorded child; "
                 "refusing to reclaim"

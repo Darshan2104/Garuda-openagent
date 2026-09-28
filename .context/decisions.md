@@ -162,6 +162,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   audited, TTY prompt) plus a persisted session with the ACP segment, child
   record, and baseline/delta. An ACP run is recorded `completed`, not
   `success`: Garuda does not verify its result.
+## 2026-09-28 — Handoff targets are recorded from launch
+
+- A handoff target's child is recorded `prepared` right after its process is launched, bound to the handoff attempt because its segment exists only after the acknowledgement: it is written only while the handoff is `prepared` for that `target_runtime` (checked inside the locked write), and the runtime is appended to an append-only `prepared_targets` list so a later attempt naming another target cannot unbind it. `bind_session` promotes that record in place to `live`; a changed identity refuses the bind, which returns ownership to the source.
+- Recovery treats `prepared` children as signal candidates behind the same lease, live-owner, and identity gates as `live` ones, so a crash before the acknowledgement (or between it and the bind) leaves a reapable orphan instead of an unnamed one. `reclaim_native` counts them as live. A `prepared` child whose runtime is neither a segment nor in `prepared_targets` fails closed. A cancelled start reaps and retires its child.
+- The identity is re-captured after the ACP handshake: a launcher (`env`, shebang shim) execs the agent and changes the command half of the identity. Before that refresh a mismatch reads as a reused PID and is never signalled — the orphan is missed, not a stranger killed. A target that cannot be recorded does not run.
+
 ## 2026-09-26 — SDK and JSON-RPC runtime authority stays trusted and transactional
 
 - JSON-RPC runtime methods resolve only the server's trusted configured registry;
