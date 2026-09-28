@@ -240,14 +240,10 @@ advertising `fs`/`terminal` client capabilities, serving those methods through
 the broker, and deriving ownership from what was advertised rather than
 declared.
 
-**Recovery does not consume the cancellation audit, and a handoff target's
-pre-acknowledgement window is unrecorded.** `recover()` classifies from handoff
-state, checkpoints, and the trail; the `cancellations` list is evidence only. A
-CLI handoff target starts before ownership moves, so its child record is
-written only after the acknowledgement (`AcpRuntime.bind_session`); a Garuda
-crash between target start and that write leaves an ACP child no record names.
-Closing it needs a recordable "prepared target" child state that `recover()`
-may reap while the handoff is still `prepared`.
+**Recovery does not consume the cancellation audit.** `recover()` classifies
+from handoff state, checkpoints, and the trail; the `cancellations` list is
+append-only evidence that no classification reads, so a cancel recorded just
+before a crash does not change how the session restarts.
 
 **A session handed to an external runtime cannot come back.** After an
 acknowledged handoff the session's active segment is the ACP target, `recover()`

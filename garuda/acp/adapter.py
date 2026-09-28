@@ -99,6 +99,10 @@ class AcpRuntime:
         self._setup_hint = setup_hint
         self._store = store
         self._recorded_child_pid: int | None = None
+        # Handoff targets start store-less; a `PreparedChildRecorder` lets
+        # them record their child at launch, before ownership moves.
+        self._prepared_recorder = None
+        self._prepared_child_pid: int | None = None
         self._persist_dir = persist_dir
         # Always-on: every adapter run records its own timings and triage,
         # so metrics are observable in real runs without opt-in plumbing.
@@ -242,7 +246,9 @@ class AcpRuntime:
         try:
             with self._timed("startup"):
                 await process.launch()
+                self._record_prepared_launch(process)
                 handshake = await process.initialize()
+                self._refresh_prepared_identity()
             with self._timed("negotiation"):
                 self._authority = negotiate(
                     self._policy,
@@ -251,7 +257,7 @@ class AcpRuntime:
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
             self._agent_session_id = await process.session_new(cwd=self._cwd)
-            if self._store is None:
+            if self._store is None and self._prepared_recorder is None:
                 # No store means no persisted child record: a Garuda crash
                 # would leave this child unrecoverable by `recover()`.
                 logger.warning(
@@ -259,11 +265,12 @@ class AcpRuntime:
                     "process is not recorded for restart recovery",
                     self._runtime_id,
                 )
-            else:
+            elif self._store is not None:
                 self._persist_identity(process)
         except AcpProtocolError as exc:
             self._note_error(exc)
             await process.close()
+            self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             if "version mismatch" in str(exc) and self._setup_hint:
                 raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
@@ -271,6 +278,14 @@ class AcpRuntime:
         except Exception as exc:
             self._note_error(exc)
             await process.close()
+            self._retire_prepared_child()
+            self._move(LifecycleState.FAILED)
+            raise
+        except asyncio.CancelledError:
+            # A cancelled start must not leave a launched child running with
+            # no runtime that owns it: reap it, retire it, then propagate.
+            await process.close()
+            self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             raise
         self._process = process
@@ -309,6 +324,7 @@ class AcpRuntime:
             # transactional handoff binds only after ownership already moved,
             # so it continues through the replacement branch above.
             self._store.attach_runtime_segment(self._garuda_session_id, segment)
+        # Promotes the `prepared` record written at launch, when there is one.
         record_child(
             self._store,
             self._garuda_session_id,
@@ -317,6 +333,51 @@ class AcpRuntime:
             process_group=process.pid,
         )
         self._recorded_child_pid = process.pid
+        if self._prepared_child_pid == process.pid:
+            self._prepared_child_pid = None
+
+    def record_launch_with(self, recorder) -> None:
+        """Record this handoff target's child as soon as it is launched.
+
+        `recorder` is a `garuda.runtime.recovery.PreparedChildRecorder`: it
+        writes a `prepared` child record the moment the process exists, so a
+        Garuda crash before `bind_session` still leaves a record `recover()`
+        can reap. Only a store-less runtime that has not started accepts one.
+        """
+        if self._state is not LifecycleState.DISCOVERED:
+            raise RuntimeStartError("a launch recorder must be set before start")
+        if self._store is not None:
+            raise RuntimeStartError("a store-backed runtime records its child itself")
+        self._prepared_recorder = recorder
+
+    def _record_prepared_launch(self, process: AcpProcess) -> None:
+        if self._prepared_recorder is None or self._store is not None:
+            return
+        if process.pid is None:
+            raise RuntimeStartError("ACP process launched without a pid")
+        # A failure raises into `start`, which closes the process: a target
+        # that cannot be recorded does not run unrecorded.
+        self._prepared_recorder.launched(process.pid)
+        self._prepared_child_pid = process.pid
+
+    def _refresh_prepared_identity(self) -> None:
+        if self._prepared_child_pid is None or self._prepared_recorder is None:
+            return
+        # The handshake proved the agent itself is running; a launcher's
+        # exec may have changed the identity captured at launch.
+        self._prepared_recorder.running(self._prepared_child_pid)
+
+    def _retire_prepared_child(self) -> None:
+        """Retire a launch-recorded child that was reaped before binding."""
+        pid, self._prepared_child_pid = self._prepared_child_pid, None
+        if pid is None or self._prepared_recorder is None:
+            return
+        try:
+            self._prepared_recorder.exited(pid)
+        except Exception:
+            # Left `prepared`, the record is still safe: recovery re-checks
+            # the persisted identity before any signal.
+            logger.warning("Could not retire prepared ACP child %s", pid, exc_info=True)
 
     def bind_session(self, store) -> None:
         """Bind a started, store-less runtime to its session once it owns it.
@@ -552,6 +613,7 @@ class AcpRuntime:
         write still leaves it `live`; recovery's persisted start-time/command
         identity check is what keeps that record from signalling a stranger.
         """
+        self._retire_prepared_child()
         pid, self._recorded_child_pid = self._recorded_child_pid, None
         if pid is None or self._store is None:
             return
