@@ -277,11 +277,12 @@ preexisting dirt. Fix by giving them a persisted session (or an explicit
 in-memory evidence store) and routing them through the same boundary, with a
 refusal test per entry point.
 
-**Resume does not carry the session delta forward.** `--resume` starts a new
-session with a fresh baseline, so the prior session's work is attributed as
-preexisting dirt. (The CLI handoff passes `workspace=` and carries the delta;
-native sessions still record `workspace: "."`, so `garuda runtime handoff`
-requires `--workspace` for them.)
+**Native sessions record `workspace: "."`.** `NativeGarudaRuntime.start`
+records `config.workspace`, which `AgentConfig` does not have, so every native
+session's `workspace` is `"."` and `garuda runtime handoff` requires
+`--workspace` for it; the dashboard's diff timeline resolves that `"."` against
+its own cwd. (Resume attribution no longer depends on it: the baseline records
+its own resolved `baseline_workspace`.)
 
 **The dashboard still parks approvals outside the P0.17 broker.**
 `garuda.acp.broker.ApprovalBroker` is installed by `run_agent_task`

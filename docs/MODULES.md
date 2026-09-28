@@ -112,8 +112,20 @@ against, so the delta is attached as `workspace_delta` evidence on the
 verification event. Unsupported attribution is reported as such, never as an
 empty "nothing changed" delta. SDK `Conversation` and `garuda recipe run`
 persist no session and run without a baseline (see `BACKLOG.md`). A resumed run
-is a new session with a fresh baseline, so the prior session's work reads as
-preexisting. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
+is a new session that inherits the resumed session's recorded baseline
+(`inherit_from=`, recorded as `baseline_inherited_from`) only when the workspace
+is exactly as that session left it: `finish_session_evidence` records the end
+state (`final_workspace_state`: HEAD, status, dirty-file fingerprints), and the
+resume's fresh capture must equal it at the same resolved path
+(`baseline_workspace`). A pull, a teammate's commit, or a human edit between
+sessions, a session Garuda never saw end (SIGKILL), or a dirty submodule/nested
+repository (fingerprinted by kind only) falls back to a fresh capture with
+`baseline_inherit_refused`, so work nobody can attribute to the session is never
+credited to it. A cancelled or failed run records its end state after teardown
+(`record_end_state`), since it is the run most often resumed. Known limits,
+both toward refusing or narrow: fingerprints hash content, not mode, so a
+`chmod` between sessions on an already-dirty file goes unnoticed; a
+session-end hook that writes into the workspace makes every resume refuse. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
 into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
 `.context/` pack files the harness syncs into the workspace appear in the delta
 as session changes.
