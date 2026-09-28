@@ -245,10 +245,17 @@ callers. Without a store or a launch recorder the adapter logs a warning and rec
  read free, pins win or fail loudly, and switching needs confirmation at a
  boundary. `selection/`
 is the P1 initial-only selector (issue #77): explicit → profile pin → first
-trusted deterministic rule → reserved classifier slot (#80) → configured
+trusted deterministic rule → optional classifier (#80) → configured
 default → built-in native, with bounded side-effect-free trait detection,
 trusted-only task regexes, pre-start validation, persisted rationale, and
-startup fallback only on an unchanged baseline. The CLI passes one trusted
+startup fallback only on an unchanged baseline. `selection/classifier.py`
+makes at most one tool-free, single-attempt call on the collection binding
+(the reasoning binding only when trusted global config allows it) over an
+approved candidate table fixed before the call, then revalidates the strict
+JSON answer; malformed, unknown, low-confidence, incapable, timed-out, or
+failed answers use the configured default. The record keeps binding role,
+model, input digest, sanitized output, latency, usage, and cost (unknown
+stays `null`). The CLI passes one trusted
 catalog through selection and launch, so the selected id chooses the executor
 rather than being audit-only; an ACP start fallback retains the same session
 and can transfer only to native. It shares no type names

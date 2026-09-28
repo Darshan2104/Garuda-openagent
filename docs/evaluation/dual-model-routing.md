@@ -11,6 +11,12 @@ verification outcome, total tokens and cost, per-role tokens and cost
 (reasoning, collection, classifier), wall/model/tool time, investigation
 counts, and collection job/fallback/stale-report counts.
 
+`classifier_accounting` converts a session's persisted initial-selection
+record into `classifier_tokens`/`classifier_cost_usd` values for a trial. A run
+with no classifier call counts as a known zero. An unpriced call keeps the
+trial total unknown. No paired-trial producer calls it yet; live results
+remain pending under #81.
+
 Unknown cost is recorded as `null` with a reason and excluded from savings —
 never compared as zero. This is what keeps an external subscription harness
 from reading as free.

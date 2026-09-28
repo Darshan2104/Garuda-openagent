@@ -99,6 +99,38 @@ garuda mcp list
 garuda run -t "Use the issue tracker" --mcp-config custom-mcp.json
 ```
 
+## Initial runtime selection
+
+`garuda run` picks the runtime a session starts on: an explicit `--runtime`,
+then a profile pin, a trusted rule, the optional classifier, the configured
+default, and finally built-in native. Rules, defaults, and the classifier
+live only in the global `~/.agent/settings.yaml`.
+
+```yaml
+# ~/.agent/settings.yaml
+routing:
+  default_runtime: native
+  classifier:
+    enabled: true
+    model_role: collection        # or reasoning
+    allow_reasoning_fallback: false
+    minimum_confidence: 0.75
+    candidates: [native, codex]   # omit to offer every configured runtime
+    max_output_tokens: 256
+    timeout_sec: 20
+    on_failure: default
+```
+
+The classifier is called only when no explicit choice, profile pin, or rule
+selects a runtime. It gets the task text, agent, mode, language and marker-file
+names, and the approved candidates with their capabilities. It gets no tools
+and no file contents. Its answer is revalidated. An invalid, low-confidence,
+incapable, or timed-out answer uses `default_runtime`. Without a `collection`
+model in the global default binding (or the alias named by `model_binding`),
+classification is skipped unless `allow_reasoning_fallback` is true. It is also skipped when no model binding is configured at all. The call makes one attempt and drops thinking and reasoning settings so `max_output_tokens` holds. A
+project `.agent/settings.yaml` may only opt out with
+`routing: {classifier: false}`.
+
 ## Permissions and hooks
 
 Use profile permission rules for guardrails and a Docker workspace when a real confinement boundary is needed. Project hooks and project Python tools remain opt-in because cloned repository code must not self-authorize execution.

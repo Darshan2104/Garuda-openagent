@@ -17,6 +17,7 @@ from .models import (
     MAX_PATTERNS_PER_RULE,
     MAX_RULES,
     MAX_TASK_CHARS,
+    ClassifierPolicy,
     GlobalSelectionConfig,
     InitialRequest,
     ProjectSelectionConfig,
@@ -57,6 +58,23 @@ _WHEN_ALIASES = {
 
 _RULE_TOP_FIELDS = frozenset({"id", "priority", "runtime", "when"})
 _FORBIDDEN_RULE_FIELDS = frozenset({"command", "executables", "api_base", "credentials"})
+
+_CLASSIFIER_FIELDS = frozenset(
+    {
+        "enabled",
+        "model_role",
+        "allow_reasoning_fallback",
+        "model_binding",
+        "minimum_confidence",
+        "candidates",
+        "max_output_tokens",
+        "timeout_sec",
+        "on_failure",
+    }
+)
+_FORBIDDEN_CLASSIFIER_FIELDS = frozenset(
+    {"model", "models", "provider", "api_base", "credentials", "command", "executables", "tools"}
+)
 
 
 def _canonical_when_key(key: str) -> str | None:
@@ -167,13 +185,66 @@ def parse_selection_rules(
     return rules
 
 
+def parse_classifier_policy(data: object, *, source: str) -> ClassifierPolicy:
+    """Parse the trusted global ``routing.classifier`` block.
+
+    The block chooses among the two approved model bindings and narrows the
+    candidate set; it cannot name a model, provider, endpoint, executable,
+    or tool, so classification never authorizes anything new.
+    """
+    if data is None:
+        return ClassifierPolicy()
+    if isinstance(data, bool):
+        return ClassifierPolicy(enabled=data)
+    if not isinstance(data, dict):
+        raise SelectionError(f"{source}: must be a mapping or a bool")
+    forbidden = set(data) & _FORBIDDEN_CLASSIFIER_FIELDS
+    if forbidden:
+        raise SelectionError(
+            f"{source}: may only reference an approved model binding; "
+            f"forbidden fields {sorted(forbidden)}"
+        )
+    unknown = set(data) - _CLASSIFIER_FIELDS
+    if unknown:
+        raise SelectionError(f"{source}: unknown fields {sorted(unknown)}")
+    candidates = data.get("candidates")
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    try:
+        return ClassifierPolicy(
+            **{key: value for key, value in data.items() if key != "candidates"},
+            candidates=None if candidates is None else candidates,
+        )
+    except SelectionError as exc:
+        raise SelectionError(f"{source}: {exc}") from exc
+
+
+def _parse_project_classifier(data: object, *, source: str) -> bool:
+    """Return True when an untrusted project opts out of classification.
+
+    A project may disable the classifier (``false`` or ``{enabled: false}``)
+    but never enable it, pick its model, or change its candidates: those are
+    trust decisions owned by global configuration.
+    """
+    if data is None:
+        return False
+    if data is False:
+        return True
+    if isinstance(data, dict) and set(data) == {"enabled"} and data["enabled"] is False:
+        return True
+    raise SelectionError(
+        f"{source}: project settings may only disable the classifier "
+        "(classifier: false); enabling or configuring it is global-trust-only"
+    )
+
+
 def parse_global_selection(data: object, *, source: str = "global selection") -> GlobalSelectionConfig:
     """Parse trusted global selection config (already-loaded mapping)."""
     if data is None:
         return GlobalSelectionConfig()
     if not isinstance(data, dict):
         raise SelectionError(f"{source}: must be a mapping")
-    known = {"default_runtime", "fallback_runtime", "trust_project_routes", "rules"}
+    known = {"default_runtime", "fallback_runtime", "trust_project_routes", "rules", "classifier"}
     if isinstance(data.get("routing"), dict):
         block = data["routing"]
     elif any(key in data for key in known):
@@ -204,6 +275,9 @@ def parse_global_selection(data: object, *, source: str = "global selection") ->
         fallback_runtime=block.get("fallback_runtime"),
         trust_project_routes=trust,
         rules=tuple(sort_selection_rules(rules)),
+        classifier=parse_classifier_policy(
+            block.get("classifier"), source=f"{source}.routing.classifier"
+        ),
     )
 
 
@@ -234,13 +308,18 @@ def parse_project_selection(
             f"{source}.routing: executable-carrying keys are forbidden: "
             f"{sorted(forbidden)}"
         )
-    unknown = set(block) - {"rules"}
+    unknown = set(block) - {"rules", "classifier"}
     if unknown:
         raise SelectionError(f"{source}.routing: unknown fields {sorted(unknown)}")
     rules = parse_selection_rules(
         block.get("rules"), trusted=False, source=f"{source}.routing.rules"
     )
-    return ProjectSelectionConfig(rules=tuple(sort_selection_rules(rules)))
+    return ProjectSelectionConfig(
+        rules=tuple(sort_selection_rules(rules)),
+        classifier_disabled=_parse_project_classifier(
+            block.get("classifier"), source=f"{source}.routing.classifier"
+        ),
+    )
 
 
 def sort_selection_rules(rules: list[SelectionRule] | tuple[SelectionRule, ...]) -> list[SelectionRule]:

@@ -1,4 +1,4 @@
-"""Deterministic initial runtime selection (P1, issue #77).
+"""Initial runtime selection (P1, issues #77 and #80).
 
 This package picks the runtime a session *starts* on and explains why. It
 is deliberately distinct from :mod:`garuda.runtime.router` (the P2
@@ -10,11 +10,24 @@ rules.
 Split into focused modules: :mod:`models` (types and constants),
 :mod:`scoring` (rule parsing and matching), :mod:`constraints` (trait
 detection, candidate validation, workspace baseline),
+:mod:`classifier` (the optional tool-free classifier fallback, #80),
 :mod:`explain` (explanation serialization, persistence, safety), and
-:mod:`facade` (the thin ``select_initial``/``select_startup_fallback``
-orchestration). This file only re-exports the stable public API.
+:mod:`facade` (the thin ``select_initial``/``select_initial_async``/
+``select_startup_fallback`` orchestration). This file only re-exports the
+stable public API.
 """
 
+from .classifier import (
+    CALL_PURPOSE,
+    ClassifierOutputError,
+    ClassifierProposal,
+    RuntimeClassifier,
+    approved_candidates,
+    build_classifier_messages,
+    classifier_input_digest,
+    parse_classifier_output,
+    validate_proposal,
+)
 from .constraints import (
     detect_repo_traits,
     validate_candidate,
@@ -26,9 +39,11 @@ from .explain import (
     assert_explanation_safe,
     load_initial_selection,
     record_initial_selection,
+    unsafe_text_reason,
 )
 from .facade import (
     select_initial,
+    select_initial_async,
     select_startup_fallback,
 )
 from .models import (
@@ -50,6 +65,7 @@ from .models import (
     SOURCE_NATIVE,
     SOURCE_PROFILE,
     SOURCE_RULE,
+    ClassifierPolicy,
     GlobalSelectionConfig,
     InitialCandidate,
     InitialRequest,
@@ -59,6 +75,7 @@ from .models import (
     SelectionRule,
 )
 from .scoring import (
+    parse_classifier_policy,
     parse_global_selection,
     parse_project_selection,
     parse_selection_rules,
@@ -68,6 +85,10 @@ from .scoring import (
 
 __all__ = [
     "BUILTIN_NATIVE_ID",
+    "CALL_PURPOSE",
+    "ClassifierOutputError",
+    "ClassifierPolicy",
+    "ClassifierProposal",
     "ClassifierSlot",
     "GlobalSelectionConfig",
     "InitialCandidate",
@@ -86,6 +107,7 @@ __all__ = [
     "RepoTraits",
     "SELECTION_SCHEMA_VERSION",
     "SelectionError",
+    "RuntimeClassifier",
     "SelectionRule",
     "SOURCE_CLASSIFIER",
     "SOURCE_DEFAULT",
@@ -94,17 +116,25 @@ __all__ = [
     "SOURCE_NATIVE",
     "SOURCE_PROFILE",
     "SOURCE_RULE",
+    "approved_candidates",
     "assert_explanation_safe",
+    "build_classifier_messages",
+    "classifier_input_digest",
     "detect_repo_traits",
     "load_initial_selection",
+    "parse_classifier_output",
+    "parse_classifier_policy",
     "parse_global_selection",
     "parse_project_selection",
     "parse_selection_rules",
     "record_initial_selection",
     "rule_matches_request",
     "select_initial",
+    "select_initial_async",
     "select_startup_fallback",
     "sort_selection_rules",
+    "unsafe_text_reason",
     "validate_candidate",
+    "validate_proposal",
     "workspace_unchanged",
 ]

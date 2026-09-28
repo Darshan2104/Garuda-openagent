@@ -670,9 +670,10 @@ async def run_task(args) -> int:
     # executor below; the native default is not an implicit bypass.
     from garuda.agents.setup import (
         prepare_runtime_catalog,
-        select_initial_runtime,
+        select_initial_runtime_async,
         select_runtime,
     )
+    from garuda.eval.costs import estimate_cost
     from garuda.interfaces.runtime_cli import NativeStartupFallback
 
     # P2's explicit opt-in router may choose a policy target first. P1 then
@@ -691,8 +692,10 @@ async def run_task(args) -> int:
     routed_runtime = select_runtime(args.workspace, requested_runtime)
     # This catalog is passed through selection and launch. That prevents a
     # selection probe from observing different trusted registry facts than the
-    # executor it chooses.
-    initial_plan = select_initial_runtime(
+    # executor it chooses. When no explicit, profile, or rule source selects,
+    # an enabled trusted classifier may recommend one revalidated candidate
+    # (#80); it runs before any executor exists and cannot start a runtime.
+    initial_plan = await select_initial_runtime_async(
         workspace=args.workspace,
         task=task,
         catalog=runtime_catalog,
@@ -708,6 +711,7 @@ async def run_task(args) -> int:
             # installation error; it must never silently become native.
             frozenset({routed_runtime}) if routed_runtime != "native" else None
         ),
+        cost_estimator=estimate_cost,
     )
     args.runtime = initial_plan.selection.selected
     args._initial_selection = initial_plan.selection

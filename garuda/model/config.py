@@ -53,6 +53,10 @@ class ModelSpec:
     thinking_budget_tokens: int | None = None
     max_tokens: int | None = None
     timeout_sec: float | None = None
+    # Call-site override of the transport's total attempt count, not a config
+    # key: a single-shot call purpose (the runtime classifier, #80) must not
+    # be retried inside the transport. ``None`` keeps the transport default.
+    max_attempts: int | None = None
 
     def validate(self, *, source: str = "") -> None:
         prefix = f"{source}: " if source else ""
@@ -64,6 +68,7 @@ class ModelSpec:
             ("thinking_budget_tokens", self.thinking_budget_tokens),
             ("max_tokens", self.max_tokens),
             ("timeout_sec", self.timeout_sec),
+            ("max_attempts", self.max_attempts),
         ):
             if value is not None and (not isinstance(value, (int, float)) or value <= 0):
                 raise ConfigError(f"{prefix}{label} must be a positive number")

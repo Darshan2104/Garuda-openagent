@@ -346,7 +346,7 @@ def test_decision_record_is_complete_and_json_safe():
                     "when": {"agents": ["build"]}})
     decision = select_initial(_request(default_runtime="codex"), _candidates(), rules=rules)
     record = decision.to_dict()
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == 2
     assert record["selected"] == "codex" and record["source"] == "rule"
     assert record["rule_id"] == "r"
     assert set(record) >= {"candidates", "matches", "rejections", "rationale",
@@ -519,8 +519,11 @@ async def test_cli_initial_selection_drives_the_executor(monkeypatch):
     )
     seen = []
 
+    async def _plan(**_):
+        return plan
+
     monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
-    monkeypatch.setattr("garuda.agents.setup.select_initial_runtime", lambda **_: plan)
+    monkeypatch.setattr("garuda.agents.setup.select_initial_runtime_async", _plan)
     monkeypatch.setattr(
         "garuda.agents.setup.prepare_runtime_catalog",
         lambda *_: SimpleNamespace(
@@ -545,11 +548,11 @@ async def test_cli_refused_initial_selection_starts_no_executor(monkeypatch):
     """A pre-start selection refusal must stop before either executor is built."""
     import garuda.interfaces.main as main
 
+    async def _refuse(**_):
+        raise SelectionError("selection refused")
+
     monkeypatch.setattr("garuda.agents.setup.select_runtime", lambda *_: "native")
-    monkeypatch.setattr(
-        "garuda.agents.setup.select_initial_runtime",
-        lambda **_: (_ for _ in ()).throw(SelectionError("selection refused")),
-    )
+    monkeypatch.setattr("garuda.agents.setup.select_initial_runtime_async", _refuse)
     monkeypatch.setattr(
         "garuda.agents.setup.prepare_runtime_catalog", lambda *_: SimpleNamespace()
     )
