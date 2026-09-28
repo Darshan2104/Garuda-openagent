@@ -54,7 +54,8 @@ fastest way to learn the system.
 2. **Profile + posture** — `agents/setup.py::prepare_agent_run` is the shared
    chokepoint: it loads the profile (`agents/loader.py`), turns it into an
    `AgentConfig`, applies the mode preset, builds the toolkit and the permission
-   engine. New wiring belongs here, not in each entry point.
+   engine, and resolves the reasoning and optional collection clients. New wiring
+   belongs here, not in each entry point.
 3. **Environment** — `workspace/factory.py` picks local, Docker, remote, or tmux.
    Everything the agent runs goes through the `Environment` protocol
    (`workspace/protocol.py`), which is what makes the same loop work in a
@@ -66,6 +67,13 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
+   An enabled collection client does not own this loop: the reasoning model must
+   call `delegate_collection`. `prepare_run` then constructs a bounded
+   `CollectionCoordinator` from the live environment, parent context, buffer,
+   permissions, events, and deadline. Its child reuses `DefaultAgent` with a
+   separate model context, read-only toolkit, sibling trace, and
+   `submit_collection` terminal strategy; that terminal can never complete the
+   parent run.
 5. **Tools** — `tools/` registered through `tools/registry.py` and assembled by
    `build_toolkit`. Every tool takes a `ToolContext` and returns a `ToolResult`.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps

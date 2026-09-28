@@ -390,6 +390,8 @@ class JsonRpcServer:
             mcp_manager=mcp_manager,
             agents_dir=agents_path,
             resume=params.get("resume"),
+            collection_model=prepared.collection,
+            collection_policy=prepared.collection_policy,
         )
 
     async def _run(self, params: dict[str, Any]) -> dict[str, Any]:

@@ -591,6 +591,14 @@ class ContextManager:
                     seen.append(bid)
         return seen[:MAX_HANDOFF_BUFFERS]
 
+    def referenced_buffer_ids(self) -> tuple[str, ...]:
+        """Buffer ids safe to expose in a bounded brief handoff.
+
+        This is intentionally the same capped, transcript-derived set used by
+        :meth:`fork`; it does not reveal every buffer in the session directory.
+        """
+        return tuple(self._buffer_ids())
+
     def _used_tokens(self) -> int:
         """Tokens the next request will carry, as well as we can know it.
 

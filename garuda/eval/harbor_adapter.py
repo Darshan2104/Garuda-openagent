@@ -311,11 +311,15 @@ class GarudaHarborAgent(BaseAgent):
 
         if isinstance(prepared, PreparedNativeRun):
             reasoning = prepared.reasoning
+            collection = prepared.collection
+            collection_policy = prepared.collection_policy
         else:
             # Test doubles stand in for shared setup with the historical 6-tuple;
             # they supply their own agent behavior, so build the named model
             # directly rather than reaching for fields the tuple never had.
             reasoning = LitellmModel(model_name=self.model_name)
+            collection = None
+            collection_policy = None
         model = _UsageTrackingModel(reasoning)
         events = EventStore()
 
@@ -340,6 +344,8 @@ class GarudaHarborAgent(BaseAgent):
                 config=config,
                 events=events,
                 permissions=permissions,
+                collection_model=collection,
+                collection_policy=collection_policy,
             )
         finally:
             # Teardown and trajectory persistence must survive a failed run: a

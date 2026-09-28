@@ -22,7 +22,7 @@ from garuda.workspace.protocol import Environment
 
 logger = logging.getLogger(__name__)
 
-def _persist_beside_parent(parent: EventStore, child: EventStore) -> None:
+def persist_child_events(parent: EventStore, child: EventStore) -> None:
     """Give a subagent's event store a log file next to its parent's.
 
     A subagent runs on its **own** ``EventStore`` on purpose: its turns must not interleave
@@ -49,6 +49,12 @@ def _persist_beside_parent(parent: EventStore, child: EventStore) -> None:
         # `attach_persistence` makes the directory, and a read-only or full disk must not
         # stop the subagent from running. Losing its trace is a strictly smaller failure.
         logger.warning("Could not persist subagent events beside %s", parent_path, exc_info=True)
+
+
+# Historical private name retained for callers and tests. Collection workers use
+# the public helper because their traces share the same sibling-log contract but
+# are deliberately not general-purpose subagents.
+_persist_beside_parent = persist_child_events
 
 
 def _drop_incomplete_tail(messages: list[Message]) -> list[Message]:
@@ -170,7 +176,7 @@ class SubagentRunner:
             profile.mcp_config_path,
         )
         sub_events = EventStore()
-        _persist_beside_parent(self.events, sub_events)
+        persist_child_events(self.events, sub_events)
         agent = DefaultAgent(profile_name=profile.name)
 
         mode = normalize_handoff(

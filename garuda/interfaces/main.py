@@ -580,6 +580,8 @@ async def _run_runtime_command(args) -> int:
                     permissions=permissions,
                     workspace=args.workspace,
                     mcp_manager=mcp_manager,
+                    collection_model=prepared.collection,
+                    collection_policy=prepared.collection_policy,
                 ),
                 end="",
             )
@@ -830,6 +832,8 @@ async def run_task(args) -> int:
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
         store=fallback_store,
+        collection_model=prepared.collection,
+        collection_policy=prepared.collection_policy,
     )
 
     if args.trajectory:

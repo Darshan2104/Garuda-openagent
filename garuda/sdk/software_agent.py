@@ -127,6 +127,8 @@ class SoftwareAgent:
             mcp_manager=mcp_manager,
             agents_dir=agents_dir,
             resume=resume,
+            collection_model=prepared.collection,
+            collection_policy=prepared.collection_policy,
         )
 
     async def _run_acp(self, task: str) -> AgentResult:

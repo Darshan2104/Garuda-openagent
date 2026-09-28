@@ -327,6 +327,8 @@ class LiveRuns:
                 agents_dir=chat.session.agents_dir,
                 context=context,
                 workspace_delta_loader=chat.workspace_delta_loader,
+                collection_model=getattr(chat.session, "collection", None),
+                collection_policy=getattr(chat.session, "collection_policy", None),
             ),
             task=prompt,
             events=chat.session.events,

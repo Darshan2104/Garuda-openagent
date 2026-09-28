@@ -19,6 +19,46 @@ Garuda discovers project configuration from `.agent/`; `.garuda/` remains a back
 
 Set `GARUDA_MODEL` or pass `--model provider/model`. The provider credential must match the selected model. LiteLLM handles normal inference routing, retries, prompt caching, streaming, and reasoning settings.
 
+### Bounded collection model
+
+An independently bound collection model is inert unless trusted configuration
+also enables collection. The reasoning model remains the controller and must
+explicitly call `delegate_collection`; the worker cannot edit the workspace or
+complete the parent task. `--no-collection` removes the role and tool entirely.
+
+```yaml
+# ~/.agent/settings.yaml
+models:
+  strong:
+    model: openrouter/example/reasoning
+  fast-reader:
+    model: openrouter/example/fast-reader
+model_bindings:
+  default:
+    reasoning: strong
+    collection: fast-reader
+model_bindings_default: default
+collection:
+  enabled: true
+  profile: explore
+  handoff: brief            # brief or none; full is rejected
+  budget:
+    max_jobs_per_run: 8
+    max_parallel_jobs: 3
+    max_turns_per_job: 12
+    max_tokens_per_job: 30000
+```
+
+Each job uses a separate collection-model context and event log. A brief
+handoff contains the bounded working-state card and referenced buffer pointers,
+not the parent transcript. Requests may narrow workspace paths and web-source
+URL prefixes; evidence outside those scopes or referencing a missing buffer is
+rejected. The returned parent tool result is a bounded JSON report, while the
+full child trace is stored under the parent session's `subagents/` directory.
+
+The non-mutating toolkit and path checks are guardrails. Use a read-only mount
+or isolated snapshot when strict write confinement is required.
+
 ## Model transports
 
 Direct transports join `garuda/model/transports.py` only with all six

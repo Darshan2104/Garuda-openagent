@@ -8,6 +8,7 @@ from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
     from garuda.core.buffer import ToolOutputBuffer
+    from garuda.core.collection import CollectionCoordinator
     from garuda.core.permissions import PermissionEngine
     from garuda.core.subagent import SubagentRunner
 
@@ -42,6 +43,9 @@ class ToolContext:
     agent_profile: str = "build"
     model: Model | None = None
     subagent_runner: "SubagentRunner | None" = None
+    # Present only on an enabled dual-model native run. The public delegation
+    # tool refuses when this trusted, run-scoped coordinator is absent.
+    collection_coordinator: "CollectionCoordinator | None" = None
     buffer: "ToolOutputBuffer | None" = None
     post_edit_diagnostics: bool = True
     post_edit_lint: bool = True

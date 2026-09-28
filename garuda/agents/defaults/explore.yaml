@@ -13,6 +13,12 @@ tools:
   - grep
   - glob
   - ls
+  - buffer_grep
+  - buffer_slice
+  - buffer_query
+  - read_pdf
+  - read_spreadsheet
+  - image_read
   - task_complete
 tool_rules:
   write_file: deny
