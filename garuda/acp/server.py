@@ -390,6 +390,8 @@ async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
             return await agent.run(
                 task=task, model=model, env=env, tools=tools, config=config,
                 events=trail, permissions=permissions,
+                collection_model=prepared.collection,
+                collection_policy=prepared.collection_policy,
             )
         finally:
             try:

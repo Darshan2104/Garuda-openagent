@@ -113,6 +113,8 @@ class Conversation:
             permissions=session.permissions,
             agents_dir=session.agents_dir,
             context=context,
+            collection_model=getattr(session, "collection", None),
+            collection_policy=getattr(session, "collection_policy", None),
         )
 
     def _record_baseline(self, store, session_id: str) -> None:

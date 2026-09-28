@@ -793,8 +793,17 @@ async def prepare_agent_run(
         bash_rules=profile.bash_rules,
         approval_handler=approval_handler,
     )
+    toolkit_names = profile.tools
+    if resolved.collection is not None and collection_policy.enabled and toolkit_names is not None:
+        # Resolve enough tools for both roles once. prepare_run applies the
+        # parent's profile filter before inserting delegate_collection, while
+        # CollectionCoordinator independently intersects the collector profile
+        # with the trusted non-mutating ceiling.
+        collection_profile = load_profile(collection_policy.profile, extra_dir=agents_dirs)
+        if collection_profile.tools is not None:
+            toolkit_names = list(dict.fromkeys([*toolkit_names, *collection_profile.tools]))
     tools, mcp_manager = await build_toolkit(
-        profile.tools,
+        toolkit_names,
         mcp_paths,
         extra_tools=extra_tools,
         workspace=workspace,

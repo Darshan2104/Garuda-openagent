@@ -27,7 +27,7 @@ from garuda.core.steering import Steering
 from garuda.core.termination import TaskCompletionStrategy, TerminalStrategy
 from garuda.core.tool_runner import ToolRunner
 from garuda.plugins.hooks import HookRegistry
-from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolContext
+from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolContext, ToolEffect
 from garuda.types import (
     DEFAULT_SYSTEM_PROMPT,
     AgentConfig,
@@ -589,6 +589,9 @@ async def prepare_run(
     initial_state: dict | WorkingState | None = None,
     workspace_delta_loader=None,
     terminal_strategy: TerminalStrategy | None = None,
+    collection_model=None,
+    collection_policy=None,
+    allowed_tool_effects: frozenset[ToolEffect] | None = None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -620,10 +623,16 @@ async def prepare_run(
             },
         )
 
+    # Reserved collection names are supplied only by the trusted run assembler.
+    # A caller/project tool cannot smuggle either boundary into a single-model
+    # run or replace the internal implementation in a dual-model run.
+    reserved_names = {"delegate_collection"}
+    if terminal_strategy is None or terminal_strategy.tool_name != "submit_collection":
+        reserved_names.add("submit_collection")
+    available_tools = [tool for tool in tools if tool.name not in reserved_names]
+    tools = available_tools
     if config.allowed_tools:
         tools = _filter_tools(tools, config.allowed_tools)
-    tool_map = {tool.name: tool for tool in tools}
-    tools_schema = build_tools_schema(tools)
 
     # A caller (e.g. a forked subagent) may pass its parent's buffer so inherited
     # [buffer:...] stubs resolve; otherwise create one for this session. Created
@@ -671,9 +680,43 @@ async def prepare_run(
         )
     else:
         context.attach_buffer(buffer)
-    # Told to the context in both branches: a reused context (resume, subagent) has
-    # the caller's toolkit, not the one it was built with, and a budget that counts
-    # the wrong schemas is worse than one that counts none.
+    # Wall-clock budget. Turn count alone cannot express "80% of my time is
+    # gone", which is the condition that actually matters when a single
+    # command can block for minutes.
+    started_at = time.monotonic()
+    deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
+
+    collection_coordinator = None
+    if (
+        collection_model is not None
+        and collection_policy is not None
+        and collection_policy.enabled
+    ):
+        from garuda.core.collection import CollectionCoordinator
+        from garuda.tools.collection import DelegateCollectionTool
+
+        collection_coordinator = CollectionCoordinator(
+            model=collection_model,
+            policy=collection_policy,
+            env=env,
+            events=events,
+            parent_context=context,
+            parent_buffer=buffer,
+            base_tools=available_tools,
+            parent_permissions=permissions,
+            parent_task=task,
+            agents_dir=agents_dir,
+            network_enabled=config.sandbox_allow_network,
+            deadline_monotonic=deadline_at,
+        )
+        # Insert only after ordinary profile filtering. Existing profiles do not
+        # need to list a dynamic tool that single-model runs never expose.
+        tools = [*tools, DelegateCollectionTool()]
+
+    tool_map = {tool.name: tool for tool in tools}
+    tools_schema = build_tools_schema(tools)
+    # Told to the context after dynamic tool insertion: a reused context has the
+    # caller's current toolkit, and budgeting the wrong schemas is unsafe.
     context.set_tools(tools_schema)
     events.append(EventType.USER_MESSAGE, {"content": task})
 
@@ -693,22 +736,18 @@ async def prepare_run(
             hooks=hooks,
         )
 
-    # Wall-clock budget. Turn count alone cannot express "80% of my time is
-    # gone", which is the condition that actually matters when a single
-    # command can block for minutes.
-    started_at = time.monotonic()
-    deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
-
     ctx = ToolContext(
         session_id=events.session_id,
         agent_profile=profile_name,
         model=model,
         subagent_runner=subagent_runner,
+        collection_coordinator=collection_coordinator,
         buffer=buffer,
         post_edit_diagnostics=config.post_edit_diagnostics,
         post_edit_lint=config.post_edit_lint,
         persistent_shell=config.persistent_shell,
         permissions=permissions,
+        allowed_tool_effects=allowed_tool_effects,
     )
     ctx.deadline_monotonic = deadline_at
     ledger = SideEffectLedger()

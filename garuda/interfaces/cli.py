@@ -183,6 +183,8 @@ async def chat_loop(args) -> int:
                     agents_dir=session.agents_dir,
                     context=context,
                     workspace_delta_loader=workspace_delta_loader,
+                    collection_model=getattr(session, "collection", None),
+                    collection_policy=getattr(session, "collection_policy", None),
                 )
             )
             # Run the turn in the background and drain events as they arrive so

@@ -293,3 +293,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   network, permission, and trusted-effect selectors. Optional shell inspection
   uses a wrapper around the real built-in `bash` and the existing fail-closed
   side-effect classifier. This policy is a guardrail, not workspace confinement.
+
+## 2026-09-28 — P1 structured collection execution (issue #76, part of #74)
+
+- Collection is an explicit parent tool call, never an automatic per-turn model
+  swap. The public tool exists only when both a collection model and enabled
+  trusted policy resolve; single-model tool schemas remain unchanged.
+- Every job owns a separate collection-model `ContextManager`, terminal
+  `submit_collection` contract, attempt/session identity, and sibling JSONL
+  trace. Parent and child logs join by job, attempt, and child session IDs.
+- Handoffs are only `none` or bounded `brief`; full parent transcripts are
+  rejected. Reports must be structured and evidence-backed, and file, URL, and
+  buffer evidence is validated against request scope before reaching the parent.
+- `submit_collection` can end only the child run. All mutation and normal
+  `task_complete` authority stays with the reasoning controller, and ordinary
+  `invoke_subagent` continues to use the reasoning binding.

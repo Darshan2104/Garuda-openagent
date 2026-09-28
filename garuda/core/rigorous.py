@@ -93,6 +93,9 @@ class RigorousAgent:
         initial_state=None,
         workspace_delta_loader=None,
         terminal_strategy: TerminalStrategy | None = None,
+        collection_model=None,
+        collection_policy=None,
+        allowed_tool_effects=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -182,6 +185,9 @@ class RigorousAgent:
                 initial_state=initial_state,
                 workspace_delta_loader=workspace_delta_loader,
                 terminal_strategy=terminal_strategy,
+                collection_model=collection_model,
+                collection_policy=collection_policy,
+                allowed_tool_effects=allowed_tool_effects,
             )
 
             approved, feedback = await self._critic_review(

@@ -157,6 +157,8 @@ async def run_recipe(
             permissions=permissions,
             hooks=hooks,
             agents_dir=agents_dir,
+            collection_model=prepared.collection,
+            collection_policy=prepared.collection_policy,
         )
         if mcp_manager is not None:
             await mcp_manager.close()

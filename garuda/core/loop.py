@@ -108,6 +108,9 @@ class DefaultAgent:
         initial_state=None,
         workspace_delta_loader=None,
         terminal_strategy: TerminalStrategy | None = None,
+        collection_model=None,
+        collection_policy=None,
+        allowed_tool_effects=None,
     ) -> AgentResult:
         state = await prepare_run(
             task=task,
@@ -132,6 +135,9 @@ class DefaultAgent:
             initial_state=initial_state,
             workspace_delta_loader=workspace_delta_loader,
             terminal_strategy=terminal_strategy,
+            collection_model=collection_model,
+            collection_policy=collection_policy,
+            allowed_tool_effects=allowed_tool_effects,
         )
 
         turn = 0

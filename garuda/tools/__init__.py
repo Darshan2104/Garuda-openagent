@@ -15,6 +15,7 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.collection import DelegateCollectionTool, SubmitCollectionTool
 from garuda.tools.contract import ContractTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
@@ -75,7 +76,9 @@ __all__ = [
     "ReadPdfTool",
     "ReadSpreadsheetTool",
     "ContractTool",
+    "DelegateCollectionTool",
     "TaskCompleteTool",
+    "SubmitCollectionTool",
     "TmuxCaptureTool",
     "TmuxExecTool",
     "TodoTool",

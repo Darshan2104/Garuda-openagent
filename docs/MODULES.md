@@ -23,13 +23,13 @@ a behaviour.
 | File | Owns |
 |---|---|
 | `loop.py` | `DefaultAgent`: the turn loop, and nothing else. Model call → tool step → repeat. Re-exports the constants callers import from here. |
-| `run_state.py` | `prepare_run` (assembly: tool filtering, buffer, context bootstrap, subagent wiring, deadline) and `RunState` (what the loop reads and writes, plus result building). |
+| `run_state.py` | `prepare_run` (assembly: tool filtering, buffer, context bootstrap, subagent/collection wiring, deadline) and `RunState` (what the loop reads and writes, plus result building). |
 | `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
 | `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
 | `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
 | `termination.py` | The run-scoped terminal-tool strategy boundary, plus the adapter that preserves the default `task_complete` gate. |
-| `collection.py` | The collection-worker tool ceiling: trusted effect provenance, profile/request/network/permission intersection, and the optional fail-closed read-only shell wrapper. These are guardrails, not confinement. |
+| `collection.py` | Structured collection requests/reports, the child coordinator and completion gate, sibling trace linkage, and the collection-worker tool ceiling: trusted effect provenance plus profile/request/network/permission intersection. These are guardrails, not confinement. |
 | `modes.py` | Run postures. The presets that map one `mode` onto a coherent gate set. |
 | `rigorous.py` | `RigorousAgent`: plan → execute → critic, with repair rounds. `create_agent()` picks between this and `DefaultAgent`. |
 | `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
@@ -60,6 +60,8 @@ Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.
+Collection: `collection.py` — trusted parent `delegate_collection` and internal
+child-only `submit_collection`; neither is registered as an ordinary built-in.
 Large output: `buffer_tools.py`. Discovery: `discovery.py` (token-lean MCP),
 `project_loader.py` (opt-in `.agent/tools/*.py`). Delegation: `subagent.py`.
 
@@ -153,7 +155,10 @@ test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost
 semantics, and migration notes required; private endpoints never admissible.
 `config.py` owns role specs/bindings, provenance, compat translation, and
-collection-narrowing; `factory.py` builds one client per role per run.
+collection-narrowing; `factory.py` builds one client per role per run. The
+reasoning client owns the parent loop. An enabled collection client runs only
+after `delegate_collection`, with its own `ContextManager`, limits, terminal
+contract, and sibling event log; ordinary `invoke_subagent` stays on reasoning.
 `agents/setup.py::prepare_agent_run` returns `PreparedNativeRun` and is the
 single resolution point for every entry point.
 

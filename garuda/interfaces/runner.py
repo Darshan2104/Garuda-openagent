@@ -162,6 +162,8 @@ async def run_agent_task(
     runtime_catalog=None,
     runtime_ref: str = "native",
     initial_selection=None,
+    collection_model=None,
+    collection_policy=None,
 ) -> AgentResult:
     # Selection happens before sessions, leases, environments, hooks, tools, or
     # prompts. A disabled runtime must therefore be unable to cause even a
@@ -352,6 +354,8 @@ async def run_agent_task(
                 pack_git_evidence=pack_git_evidence,
                 initial_state=initial_state,
                 workspace_delta_loader=workspace_delta_loader,
+                collection_model=collection_model,
+                collection_policy=collection_policy,
             )
 
         runtime.install_driver(_driver)
