@@ -15,6 +15,7 @@ from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.evidence import (
     begin_session_evidence,
     finish_session_evidence,
+    record_end_state,
     record_startup_refusal,
 )
 from garuda.workspace.factory import create_workspace
@@ -283,10 +284,11 @@ async def run_agent_task(
         # host-backed run which cannot persist its immutable start state must
         # not mutate and later pretend its delta is attributable.  The shared
         # boundary also records explicit unsupported (non-repo / non-local)
-        # state instead of silently skipping it.  On resume this is the *new*
-        # session's baseline: prior-session work reads as preexisting.
+        # state instead of silently skipping it.  On resume the prior
+        # session's baseline carries forward when it provably still applies,
+        # so prior-session work is not misread as preexisting dirt.
         workspace_delta_loader = begin_session_evidence(
-            store, events.session_id, workspace, workspace_kind
+            store, events.session_id, workspace, workspace_kind, inherit_from=resumed_from
         )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
@@ -439,6 +441,11 @@ async def run_agent_task(
                     "final_message": result.final_message[:2000],
                 }
             else:
+                # Interrupted runs are the ones most often resumed: record the
+                # tree they left (after teardown) so a resume can prove it.
+                await asyncio.to_thread(
+                    record_end_state, store, events.session_id, workspace
+                )
                 update_session_meta(store, events.session_id, {"status": "failed"})
                 summary = {"session_id": events.session_id, "success": False, "turns": 0}
             try:
