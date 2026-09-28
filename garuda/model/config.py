@@ -13,6 +13,7 @@ endpoints, executables, or credential sources.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -357,6 +358,11 @@ def parse_collection_policy(data: object, *, source: str) -> CollectionPolicy:
     budget_data = data.get("budget", {}) or {}
     if not isinstance(budget_data, dict):
         raise ConfigError(f"{source}: collection.budget must be a mapping")
+    unknown_budget = set(budget_data) - set(CollectionBudget.__dataclass_fields__)
+    if unknown_budget:
+        raise ConfigError(
+            f"{source}: unknown collection.budget fields: {sorted(unknown_budget)}"
+        )
     try:
         budget = CollectionBudget(**{k: v for k, v in budget_data.items() if k in CollectionBudget.__dataclass_fields__})
     except TypeError as exc:
@@ -364,8 +370,41 @@ def parse_collection_policy(data: object, *, source: str) -> CollectionPolicy:
     for fname in (
         "max_jobs_per_run", "max_parallel_jobs", "max_turns_per_job", "max_tokens_per_job",
     ):
-        if getattr(budget, fname) is not None and getattr(budget, fname) <= 0:
+        value = getattr(budget, fname)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ConfigError(f"{source}: collection.budget.{fname} must be positive")
+    if (
+        budget.max_total_tokens_per_run is not None
+        and (
+            isinstance(budget.max_total_tokens_per_run, bool)
+            or not isinstance(budget.max_total_tokens_per_run, int)
+            or budget.max_total_tokens_per_run <= 0
+        )
+    ):
+        raise ConfigError(
+            f"{source}: collection.budget.max_total_tokens_per_run must be positive"
+        )
+    if (
+        budget.max_cost_usd_per_run is not None
+        and (
+            isinstance(budget.max_cost_usd_per_run, bool)
+            or not isinstance(budget.max_cost_usd_per_run, (int, float))
+            or not math.isfinite(budget.max_cost_usd_per_run)
+            or budget.max_cost_usd_per_run <= 0
+        )
+    ):
+        raise ConfigError(
+            f"{source}: collection.budget.max_cost_usd_per_run must be a positive finite number"
+        )
+    if (
+        isinstance(budget.deadline_fraction, bool)
+        or not isinstance(budget.deadline_fraction, (int, float))
+        or not math.isfinite(budget.deadline_fraction)
+        or not 0 < budget.deadline_fraction <= 1
+    ):
+        raise ConfigError(
+            f"{source}: collection.budget.deadline_fraction must be in (0, 1]"
+        )
     fallback_data = data.get("fallback", {}) or {}
     if not isinstance(fallback_data, dict):
         raise ConfigError(f"{source}: collection.fallback must be a mapping")

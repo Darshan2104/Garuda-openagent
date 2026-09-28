@@ -53,6 +53,80 @@ def stopwatch() -> Iterator[list[float]]:
         holder[0] = _ms(time.perf_counter() - started)
 
 
+def aggregate_model_metrics(events: list[dict]) -> dict:
+    """Roll model calls up by configured binding and semantic purpose.
+
+    ``model_binding_role`` answers which configurable model paid for a call;
+    ``call_purpose`` answers why it was made. Keeping both dimensions avoids the
+    misleading implication that collector/classifier/verifier are extra bindings.
+    Unknown cost is counted, never silently converted to zero.
+    """
+
+    by_role: dict[str, dict] = {}
+    by_purpose: dict[str, dict] = {}
+
+    def known_cost(usage: dict) -> float | None:
+        # Keep the core agent independent of benchmark pricing. A provider's
+        # returned invoice is the only runtime cost fact; unpriced calls are
+        # represented explicitly below and evaluation may price them later.
+        value = usage.get("cost_usd")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            return float(value)
+        return None
+
+    def note(bucket: dict[str, dict], key: str, payload: dict) -> None:
+        record = bucket.setdefault(
+            key,
+            {
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "duration_ms": 0.0,
+                "cost_usd": 0.0,
+                "cost_unknown_calls": 0,
+            },
+        )
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        record["calls"] += max(1, int(payload.get("model_calls", 1) or 1))
+        record["prompt_tokens"] += prompt
+        record["completion_tokens"] += completion
+        record["total_tokens"] += int(usage.get("total_tokens", prompt + completion) or 0)
+        record["duration_ms"] = round(
+            record["duration_ms"] + float(payload.get("duration_ms", 0) or 0), 3
+        )
+        cost = known_cost(usage)
+        if cost is None and usage:
+            record["cost_unknown_calls"] += 1
+        elif cost is not None:
+            record["cost_usd"] = round(record["cost_usd"] + cost, 8)
+
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event.get("type") == "model_response":
+            note(by_role, str(payload.get("model_binding_role") or "unknown"), payload)
+            note(by_purpose, str(payload.get("call_purpose") or "unknown"), payload)
+        elif event.get("type") == "collection" and isinstance(
+            payload.get("attempt_metrics"), list
+        ):
+            for attempt in payload["attempt_metrics"]:
+                if not isinstance(attempt, dict):
+                    continue
+                call = {
+                    "usage": attempt.get("usage") or {},
+                    "duration_ms": attempt.get("elapsed_ms"),
+                    "model": attempt.get("model"),
+                    "model_binding_role": attempt.get("model_binding_role"),
+                    "call_purpose": attempt.get("call_purpose"),
+                    "model_calls": attempt.get("model_calls", 1),
+                }
+                note(by_role, str(call["model_binding_role"] or "unknown"), call)
+                note(by_purpose, str(call["call_purpose"] or "unknown"), call)
+    return {"by_model_binding_role": by_role, "by_call_purpose": by_purpose}
+
+
 @dataclass
 class TurnMetrics:
     """One turn's timing and token record."""

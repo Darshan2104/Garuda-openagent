@@ -8,10 +8,12 @@ read-only mount or an isolated workspace snapshot.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import shlex
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -134,6 +136,164 @@ class CollectionAttempt:
     turns: int
     usage: dict
     elapsed_ms: int
+    model_calls: int = 0
+    cost_usd: float | None = None
+    cost_known: bool = False
+    model_binding_role: str = "collection"
+    call_purpose: str = "collector"
+
+
+@dataclass(frozen=True)
+class CollectionReservation:
+    """An atomic claim against the per-run collection budget."""
+
+    job_id: str
+    tokens: int
+    cost_usd: float | None
+    wall_time_sec: float | None
+
+
+@dataclass
+class CollectionBudgetLedger:
+    """Lock-protected reservations and actual collection spend for one run.
+
+    Token and known-cost reservations are released when an attempt terminates;
+    actual usage remains charged.  This makes admission atomic without treating
+    failed or cancelled provider calls as free.
+    """
+
+    budget: object
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    jobs_started: int = 0
+    active_jobs: int = 0
+    reserved_tokens: int = 0
+    actual_tokens: int = 0
+    reserved_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
+    cost_unknown_attempts: int = 0
+    wall_time_ms: int = 0
+    fallback_attempts: int = 0
+
+    async def reserve(
+        self,
+        job_id: str,
+        *,
+        tokens: int,
+        cost_usd: float | None,
+        wall_time_sec: float | None,
+    ) -> CollectionReservation:
+        async with self._lock:
+            if self.jobs_started >= self.budget.max_jobs_per_run:
+                raise ValueError("collection job budget exhausted")
+            total_ceiling = self.budget.max_total_tokens_per_run
+            if (
+                total_ceiling is not None
+                and self.actual_tokens + self.reserved_tokens + tokens > total_ceiling
+            ):
+                raise ValueError("collection token budget exhausted")
+            cost_ceiling = self.budget.max_cost_usd_per_run
+            if cost_ceiling is not None:
+                if cost_usd is None and total_ceiling is None:
+                    raise ValueError(
+                        "collection dollar budget cannot admit an unpriceable model; "
+                        "configure a total-token ceiling or model pricing"
+                    )
+                if (
+                    cost_usd is not None
+                    and self.actual_cost_usd + self.reserved_cost_usd + cost_usd > cost_ceiling
+                ):
+                    raise ValueError("collection dollar budget exhausted")
+            self.jobs_started += 1
+            self.active_jobs += 1
+            self.reserved_tokens += tokens
+            self.reserved_cost_usd += cost_usd or 0.0
+            return CollectionReservation(job_id, tokens, cost_usd, wall_time_sec)
+
+    async def settle(
+        self,
+        reservation: CollectionReservation,
+        *,
+        usage: dict | None,
+        cost_usd: float | None,
+        elapsed_ms: int,
+    ) -> None:
+        tokens = _usage_tokens(usage)
+        async with self._lock:
+            self.active_jobs = max(0, self.active_jobs - 1)
+            self.reserved_tokens = max(0, self.reserved_tokens - reservation.tokens)
+            self.reserved_cost_usd = max(
+                0.0, self.reserved_cost_usd - (reservation.cost_usd or 0.0)
+            )
+            self.actual_tokens += tokens
+            self.wall_time_ms += max(0, elapsed_ms)
+            if cost_usd is None and tokens:
+                self.cost_unknown_attempts += 1
+            elif cost_usd is not None:
+                self.actual_cost_usd = round(self.actual_cost_usd + cost_usd, 8)
+
+    async def note_fallback(self) -> None:
+        async with self._lock:
+            self.fallback_attempts += 1
+
+    def snapshot(self) -> dict:
+        return {
+            "jobs_started": self.jobs_started,
+            "active_jobs": self.active_jobs,
+            "reserved_tokens": self.reserved_tokens,
+            "actual_tokens": self.actual_tokens,
+            "reserved_cost_usd": round(self.reserved_cost_usd, 8),
+            "actual_cost_usd": round(self.actual_cost_usd, 8),
+            "cost_unknown_attempts": self.cost_unknown_attempts,
+            "wall_time_ms": self.wall_time_ms,
+            "fallback_attempts": self.fallback_attempts,
+        }
+
+
+@dataclass(frozen=True)
+class WorkspaceSnapshot:
+    head: str
+    dirty_fingerprint: str
+    scoped_fingerprint: str
+    background_writer: bool
+
+
+def _usage_tokens(usage: dict | None) -> int:
+    if not usage:
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, (int, float)) and not isinstance(total, bool):
+        return max(0, int(total))
+    return max(0, int(usage.get("prompt_tokens", 0) or 0)) + max(
+        0, int(usage.get("completion_tokens", 0) or 0)
+    )
+
+
+def estimate_cost(_model_name: str | None, usage: dict | None) -> float | None:
+    """Return only provider-reported spend in the runtime layer.
+
+    The agent must not import the evaluation package: benchmark pricing tables
+    are an evaluation concern, while a provider invoice is safe runtime evidence.
+    Absent an invoice, cost remains unknown rather than becoming a guessed zero.
+    """
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get("cost_usd")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
+def _merge_usage(target: dict[str, int], usage: dict | None) -> None:
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    ):
+        value = (usage or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value:
+            target[key] = target.get(key, 0) + int(value)
 
 
 MAX_OBJECTIVE_CHARS = 4_000
@@ -672,10 +832,21 @@ class CollectionCoordinator:
     parent_buffer: object | None
     base_tools: list[Tool]
     parent_permissions: PermissionEngine
+    reasoning_model: object | None = None
     parent_task: str = ""
     agents_dir: object | None = None
     network_enabled: bool = False
     deadline_monotonic: float | None = None
+    parent_mode: str = "interactive"
+    background_writer: object | None = None
+    isolated_snapshot: bool = False
+    ledger: CollectionBudgetLedger = field(init=False)
+    _parallel: asyncio.Semaphore = field(init=False, repr=False)
+    _tasks: set[asyncio.Task] = field(default_factory=set, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.ledger = CollectionBudgetLedger(self.policy.budget)
+        self._parallel = asyncio.Semaphore(self.policy.budget.max_parallel_jobs)
 
     def _event(self, state: CollectionJobState, **payload: object) -> None:
         self.events.append(EventType.COLLECTION, {"state": state.value, **payload})
@@ -698,17 +869,76 @@ class CollectionCoordinator:
             return result.stdout.strip().splitlines()[0]
         return "unavailable"
 
+    def _has_background_writer(self) -> bool:
+        value = self.background_writer
+        if callable(value):
+            try:
+                return bool(value())
+            except Exception:
+                return True
+        return bool(value)
+
+    async def _workspace_snapshot(self, request: CollectionRequest) -> WorkspaceSnapshot:
+        head = await self._workspace_revision()
+        dirty = await self.env.execute(
+            "git status --porcelain=v1 -z --untracked-files=all", timeout=10
+        )
+        dirty_text = dirty.stdout if dirty.exit_code == 0 else "unavailable"
+        scopes = request.allowed_paths or (".",)
+        quoted = " ".join(shlex.quote(path) for path in scopes)
+        scoped = await self.env.execute(
+            "git status --porcelain=v1 -z --untracked-files=all -- " + quoted,
+            timeout=10,
+        )
+        scoped_text = scoped.stdout if scoped.exit_code == 0 else "unavailable"
+        # Local workspaces get content fingerprints as well as Git state. This
+        # catches an untracked file changing in place (its porcelain line stays
+        # identical) and keeps staleness useful outside a Git checkout.
+        root = Path(self.env.workspace_root)
+        if root.is_dir():
+            digest = hashlib.sha256()
+            for raw in scopes:
+                relative = _relative_workspace_path(raw, self.env.workspace_root)
+                target = (root / relative).resolve()
+                try:
+                    target.relative_to(root)
+                except ValueError:
+                    digest.update(f"{relative}:outside-workspace".encode())
+                    continue
+                candidates = (
+                    sorted(path for path in target.rglob("*") if path.is_file())
+                    if target.is_dir()
+                    else [target]
+                )
+                for path in candidates:
+                    if ".git" in path.relative_to(root).parts or not path.is_file():
+                        continue
+                    try:
+                        digest.update(str(path.relative_to(root)).encode())
+                        digest.update(path.read_bytes())
+                    except OSError:
+                        digest.update(b"<unreadable>")
+            scoped_text += ":" + digest.hexdigest()
+        return WorkspaceSnapshot(
+            head=head,
+            dirty_fingerprint=hashlib.sha256(dirty_text.encode()).hexdigest(),
+            scoped_fingerprint=hashlib.sha256(scoped_text.encode()).hexdigest(),
+            background_writer=self._has_background_writer(),
+        )
+
     def _context(
         self,
         request: CollectionRequest,
         config: AgentConfig,
         buffer_ids: set[str],
         buffer_view: CollectionBufferView | None,
+        *,
+        model: object | None = None,
     ) -> ContextManager:
         from garuda.core.run_state import reserved_output_tokens
 
         context = ContextManager(
-            model=self.model,
+            model=model or self.model,
             max_output_bytes=config.max_output_bytes,
             proactive_threshold=config.proactive_summarize_threshold,
             max_context_tokens=config.max_context_tokens,
@@ -800,144 +1030,357 @@ class CollectionCoordinator:
         scoped.append(SubmitCollectionTool())
         return scoped, CollectionPermissionCeiling(self.parent_permissions, child_permissions)
 
-    async def delegate(self, arguments: object) -> str:
-        """Validate a request, run one child attempt, and return only its report."""
-        from garuda.agents.loader import load_profile
+    def _config(self, request: CollectionRequest, profile: object) -> AgentConfig:
+        config = profile.to_agent_config()
+        config.mode = "readonly"
+        config.permission_mode = "readonly"
+        config.max_turns = min(
+            request.max_turns or self.policy.budget.max_turns_per_job,
+            self.policy.budget.max_turns_per_job,
+        )
+        config.max_tokens = min(
+            request.max_tokens or self.policy.budget.max_tokens_per_job,
+            self.policy.budget.max_tokens_per_job,
+        )
+        config.enable_acceptance_contract = False
+        config.enable_three_step_summary = False
+        config.enable_verifier = True
+        config.force_final_submission = False
+        config.bootstrap_environment = False
+        config.allowed_tools = None
+        return config
+
+    async def _run_attempt(
+        self,
+        *,
+        job_id: str,
+        request: CollectionRequest,
+        profile: object,
+        model: object,
+        role: str,
+        revision: str,
+        initial_buffer_ids: set[str],
+    ) -> tuple[CollectionAttempt, CollectionReport | None, str | None]:
         from garuda.core.loop import DefaultAgent
 
-        job_id = str(uuid.uuid4())
         attempt_id = str(uuid.uuid4())
+        config = self._config(request, profile)
+        buffer_ids = set(initial_buffer_ids)
+        buffer_view = (
+            CollectionBufferView(self.parent_buffer, buffer_ids)
+            if self.parent_buffer is not None
+            else None
+        )
+        context = self._context(
+            request, config, buffer_ids, buffer_view, model=model
+        )
+        tools, permissions = self._tools(
+            request,
+            profile.tools,
+            buffer_ids,
+            profile_tool_rules=profile.tool_rules,
+            profile_path_rules=profile.path_rules,
+            profile_bash_rules=profile.bash_rules,
+        )
+        model_name = safe_model_identity(model)
+        child_events = EventStore(
+            model_binding_role=role,
+            call_purpose="collector",
+            model_name=model_name,
+        )
+        persist_child_events(self.events, child_events)
+        child_events.append(
+            EventType.COLLECTION,
+            {
+                "state": CollectionJobState.RUNNING.value,
+                "job_id": job_id,
+                "attempt_id": attempt_id,
+                "parent_session_id": self.events.session_id,
+                "model_binding_role": role,
+                "call_purpose": "collector",
+            },
+        )
+        gate = CollectionCompletionGate(
+            context=context,
+            request=request,
+            env=self.env,
+            buffer=buffer_view,
+            workspace_root=self.env.workspace_root,
+            workspace_revision=revision,
+            allowed_buffer_ids=buffer_ids,
+            permissions=permissions,
+        )
+        self._event(
+            CollectionJobState.RUNNING,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            child_session_id=child_events.session_id,
+            model=model_name,
+            model_binding_role=role,
+            call_purpose="collector",
+        )
+        started = time.monotonic()
+        result = await DefaultAgent(profile_name="collection").run(
+            task=request.objective,
+            model=model,
+            env=self.env,
+            tools=tools,
+            config=config,
+            events=child_events,
+            permissions=permissions,
+            context=context,
+            buffer=buffer_view,
+            terminal_strategy=gate,
+            allowed_tool_effects=frozenset(
+                {ToolEffect.READ_ONLY, ToolEffect.EXTERNAL_READ}
+            ),
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        usage = dict(result.metadata.get("usage") or {})
+        cost = estimate_cost(model_name, usage)
+        attempt = CollectionAttempt(
+            attempt_id=attempt_id,
+            session_id=child_events.session_id,
+            model=model_name,
+            turns=result.turns,
+            usage=usage,
+            elapsed_ms=elapsed_ms,
+            model_calls=sum(
+                1
+                for event in child_events.get_all()
+                if event.get("type") == EventType.MODEL_RESPONSE.value
+                and not event.get("payload", {}).get("truncated")
+            ),
+            cost_usd=cost,
+            cost_known=cost is not None or not usage,
+            model_binding_role=role,
+        )
+        error = None
+        if not result.success or gate.report is None:
+            error = "worker did not submit an accepted structured report"
+            if result.final_message:
+                error += f": {result.final_message}"
+        return attempt, gate.report, error
+
+    def _fallback_model(self) -> object | None:
+        if self.policy.fallback.for_mode(self.parent_mode) != "reasoning":
+            return None
+        return self.reasoning_model
+
+    def _reservation_cost(self, model: object, tokens: int) -> float | None:
+        # A conservative price probe. Provider-reported cost is unavailable before
+        # the call, so admission uses configured/snapshotted rates when known.
+        return estimate_cost(
+            safe_model_identity(model),
+            {"prompt_tokens": max(1, tokens // 2), "completion_tokens": max(1, tokens // 2)},
+        )
+
+    async def delegate(self, arguments: object) -> str:
+        """Validate, atomically admit, run, and account for one collection job."""
+        from garuda.agents.loader import load_profile
+
+        job_id = str(uuid.uuid4())
+        last_attempt_id: str | None = None
         child_session_id: str | None = None
+        reservation: CollectionReservation | None = None
+        attempts: list[CollectionAttempt] = []
+        combined_usage: dict[str, int] = {}
+        current = asyncio.current_task()
+        if current is not None:
+            self._tasks.add(current)
+        started = time.monotonic()
         self._event(CollectionJobState.REQUESTED, job_id=job_id)
         try:
             request = parse_collection_request(arguments, self.policy)
-            # Validate path scopes before allocating a child model call.
             for path in request.allowed_paths:
                 _relative_workspace_path(path, self.env.workspace_root)
-            self._event(CollectionJobState.VALIDATED, job_id=job_id)
-            profile = load_profile(self.policy.profile, extra_dir=self.agents_dir)
-            config = profile.to_agent_config()
-            config.mode = "readonly"
-            config.permission_mode = "readonly"
-            config.max_turns = min(
-                request.max_turns or self.policy.budget.max_turns_per_job,
-                self.policy.budget.max_turns_per_job,
+            before = await self._workspace_snapshot(request)
+            if (
+                before.background_writer
+                and self.parent_mode in {"eval", "rigorous"}
+                and not self.isolated_snapshot
+            ):
+                raise ValueError(
+                    "strict collection denied while a background workspace writer is active"
+                )
+            self._event(
+                CollectionJobState.VALIDATED,
+                job_id=job_id,
+                workspace_revision=before.head,
+                dirty_fingerprint=before.dirty_fingerprint,
+                scoped_fingerprint=before.scoped_fingerprint,
+                background_writer=before.background_writer,
             )
-            config.max_tokens = min(
+            profile = load_profile(self.policy.profile, extra_dir=self.agents_dir)
+            per_attempt_tokens = min(
                 request.max_tokens or self.policy.budget.max_tokens_per_job,
                 self.policy.budget.max_tokens_per_job,
             )
-            config.enable_acceptance_contract = False
-            config.enable_three_step_summary = False
-            config.enable_verifier = True
-            config.force_final_submission = False
-            config.bootstrap_environment = False
-            config.allowed_tools = None
-
-            buffer_ids = self._buffer_ids(request)
-            buffer_view = (
-                CollectionBufferView(self.parent_buffer, buffer_ids)
-                if self.parent_buffer is not None
+            fallback_model = self._fallback_model()
+            attempt_models = [self.model] + ([fallback_model] if fallback_model else [])
+            reserved_tokens = per_attempt_tokens * len(attempt_models)
+            known_costs = [
+                self._reservation_cost(model, per_attempt_tokens)
+                for model in attempt_models
+            ]
+            reservation_cost = (
+                round(sum(cost for cost in known_costs if cost is not None), 8)
+                if all(cost is not None for cost in known_costs)
                 else None
             )
-            context = self._context(request, config, buffer_ids, buffer_view)
-            tools, permissions = self._tools(
-                request,
-                profile.tools,
-                buffer_ids,
-                profile_tool_rules=profile.tool_rules,
-                profile_path_rules=profile.path_rules,
-                profile_bash_rules=profile.bash_rules,
-            )
-            revision = await self._workspace_revision()
-            child_events = EventStore()
-            persist_child_events(self.events, child_events)
-            child_session_id = child_events.session_id
-            child_events.append(
-                EventType.COLLECTION,
-                {
-                    "state": CollectionJobState.RUNNING.value,
-                    "job_id": job_id,
-                    "attempt_id": attempt_id,
-                    "parent_session_id": self.events.session_id,
-                },
-            )
-            gate = CollectionCompletionGate(
-                context=context,
-                request=request,
-                env=self.env,
-                buffer=buffer_view,
-                workspace_root=self.env.workspace_root,
-                workspace_revision=revision,
-                allowed_buffer_ids=buffer_ids,
-                permissions=permissions,
+            wall_time_sec = None
+            if self.deadline_monotonic is not None:
+                remaining = max(0.0, self.deadline_monotonic - time.monotonic())
+                wall_time_sec = remaining * self.policy.budget.deadline_fraction
+                if wall_time_sec <= 0:
+                    raise ValueError("collection deadline budget exhausted")
+            reservation = await self.ledger.reserve(
+                job_id,
+                tokens=reserved_tokens,
+                cost_usd=reservation_cost,
+                wall_time_sec=wall_time_sec,
             )
             self._event(
-                CollectionJobState.RUNNING,
+                CollectionJobState.BUDGET_RESERVED,
                 job_id=job_id,
-                attempt_id=attempt_id,
-                child_session_id=child_events.session_id,
-                model=safe_model_identity(self.model),
+                tokens=reserved_tokens,
+                cost_usd=reservation_cost,
+                wall_time_sec=wall_time_sec,
+                ledger=self.ledger.snapshot(),
             )
-            started = time.monotonic()
-            result = await DefaultAgent(profile_name="collection").run(
-                task=request.objective,
-                model=self.model,
-                env=self.env,
-                tools=tools,
-                config=config,
-                events=child_events,
-                permissions=permissions,
-                context=context,
-                buffer=buffer_view,
-                terminal_strategy=gate,
-                allowed_tool_effects=frozenset(
-                    {ToolEffect.READ_ONLY, ToolEffect.EXTERNAL_READ}
-                ),
-            )
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            attempt = CollectionAttempt(
-                attempt_id=attempt_id,
-                session_id=child_events.session_id,
-                model=safe_model_identity(self.model),
-                turns=result.turns,
-                usage=dict(result.metadata.get("usage") or {}),
-                elapsed_ms=elapsed_ms,
-            )
-            if not result.success or gate.report is None:
-                raise ValueError(
-                    "worker did not submit an accepted structured report"
-                    + (f": {result.final_message}" if result.final_message else "")
+
+            async def run_job() -> tuple[CollectionReport, CollectionAttempt]:
+                initial_buffer_ids = self._buffer_ids(request)
+                attempt, report, error = await self._run_attempt(
+                    job_id=job_id,
+                    request=request,
+                    profile=profile,
+                    model=self.model,
+                    role="collection",
+                    revision=before.head,
+                    initial_buffer_ids=initial_buffer_ids,
                 )
+                attempts.append(attempt)
+                _merge_usage(combined_usage, attempt.usage)
+                if error is None and report is not None:
+                    return report, attempt
+                if fallback_model is None:
+                    raise ValueError(error or "collection worker failed")
+                await self.ledger.note_fallback()
+                self.events.append(
+                    EventType.MODEL_FALLBACK,
+                    {
+                        "job_id": job_id,
+                        "from_model": attempt.model,
+                        "to_model": safe_model_identity(fallback_model),
+                        "reason": error,
+                        "model_binding_role": "reasoning",
+                        "call_purpose": "collector",
+                    },
+                )
+                retry, report, retry_error = await self._run_attempt(
+                    job_id=job_id,
+                    request=request,
+                    profile=profile,
+                    model=fallback_model,
+                    role="reasoning",
+                    revision=before.head,
+                    initial_buffer_ids=initial_buffer_ids,
+                )
+                attempts.append(retry)
+                _merge_usage(combined_usage, retry.usage)
+                if retry_error is not None or report is None:
+                    raise ValueError(retry_error or "collection fallback failed")
+                return report, retry
+
+            async with self._parallel:
+                if wall_time_sec is None:
+                    report, final_attempt = await run_job()
+                else:
+                    async with asyncio.timeout(wall_time_sec):
+                        report, final_attempt = await run_job()
+
+            after = await self._workspace_snapshot(request)
+            stale_reasons: list[str] = []
+            if before.head != after.head:
+                stale_reasons.append("git_head_changed")
+            if before.dirty_fingerprint != after.dirty_fingerprint:
+                stale_reasons.append("workspace_changed")
+            if before.scoped_fingerprint != after.scoped_fingerprint:
+                stale_reasons.append("scoped_paths_changed")
+            if before.background_writer or after.background_writer:
+                stale_reasons.append("background_writer_active")
+            if stale_reasons:
+                report = replace(report, stale=True)
+            state = (
+                CollectionJobState.COMPLETED_STALE
+                if stale_reasons
+                else CollectionJobState.COMPLETED
+            )
             payload = {
                 "job_id": job_id,
-                "state": CollectionJobState.COMPLETED.value,
-                "report": gate.report.to_dict(),
-                "attempt": asdict(attempt),
+                "state": state.value,
+                "report": report.to_dict(),
+                # Compatibility for existing consumers, plus the lossless list.
+                "attempt": asdict(final_attempt),
+                "attempts": [asdict(attempt) for attempt in attempts],
+                "stale_reasons": stale_reasons,
             }
             rendered = json.dumps(payload, sort_keys=True)
             if len(rendered) > MAX_REPORT_CHARS:
                 raise ValueError("bounded collection result exceeded its output ceiling")
             self._event(
-                CollectionJobState.COMPLETED,
+                state,
                 job_id=job_id,
-                attempt_id=attempt_id,
-                child_session_id=child_events.session_id,
-                turns=result.turns,
-                usage=attempt.usage,
-                elapsed_ms=elapsed_ms,
+                attempt_id=final_attempt.attempt_id,
+                child_session_id=final_attempt.session_id,
+                attempts=len(attempts),
+                usage=combined_usage,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                stale_reasons=stale_reasons,
+                attempt_metrics=[asdict(attempt) for attempt in attempts],
             )
             return rendered
         except BaseException as exc:
             state = CollectionJobState.CANCELLED if isinstance(
                 exc, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
             ) else CollectionJobState.FAILED
+            if attempts:
+                last_attempt_id = attempts[-1].attempt_id
+                child_session_id = attempts[-1].session_id
             payload = {
                 "job_id": job_id,
-                "attempt_id": attempt_id,
+                "attempt_id": last_attempt_id,
                 "error": f"{type(exc).__name__}: {exc}",
+                "attempts": [asdict(attempt) for attempt in attempts],
             }
             if child_session_id is not None:
                 payload["child_session_id"] = child_session_id
             self._event(state, **payload)
             raise
+        finally:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if reservation is not None:
+                attempt_costs = [a.cost_usd for a in attempts if a.usage]
+                total_cost = (
+                    round(sum(attempt_costs), 8)
+                    if attempt_costs and all(cost is not None for cost in attempt_costs)
+                    else None
+                )
+                await self.ledger.settle(
+                    reservation,
+                    usage=combined_usage,
+                    cost_usd=total_cost,
+                    elapsed_ms=elapsed_ms,
+                )
+            if current is not None:
+                self._tasks.discard(current)
+
+    async def aclose(self) -> None:
+        """Cancel and await every live collection job owned by this run."""
+        current = asyncio.current_task()
+        tasks = [task for task in self._tasks if task is not current and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

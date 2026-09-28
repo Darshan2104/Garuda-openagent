@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda import __version__ as _GARUDA_VERSION
+from garuda.core.metrics import aggregate_model_metrics
 from garuda.eval.costs import duration_ms, estimate_cost, merge_usage
 
 
@@ -212,6 +213,9 @@ def events_to_atif(
     session_duration = duration_ms(session_start_ts, session_end_ts)
     if session_duration is not None:
         extra["duration_ms"] = session_duration
+    role_metrics = aggregate_model_metrics(events)
+    if role_metrics["by_model_binding_role"]:
+        extra.update(role_metrics)
     if extra:
         final_metrics["extra"] = extra
 
