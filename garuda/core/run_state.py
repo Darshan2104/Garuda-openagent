@@ -19,7 +19,7 @@ from garuda.context.state_card import WorkingState
 from garuda.core.action_memo import ActionMemo
 from garuda.core.completion import CompletionGate
 from garuda.core.events import EventStore, EventType
-from garuda.core.metrics import RunMetrics, stopwatch
+from garuda.core.metrics import RunMetrics, aggregate_model_metrics, stopwatch
 from garuda.core.modes import describe_config
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
@@ -167,12 +167,14 @@ class RunState:
         the event log.
         """
         self.flush_turn_metrics()
+        metric_summary = self.metrics.summary()
+        metric_summary.update(aggregate_model_metrics(self.events.get_all()))
         metadata: dict = {
             "session_id": self.events.session_id,
             "events": self.events.get_all(),
             "usage": dict(self.usage_totals),
             "mode": self.config.mode,
-            "metrics": self.metrics.summary(),
+            "metrics": metric_summary,
             "action_memo": self.memo.stats(),
             "side_effects": self.ledger.summary(),
         }
@@ -194,6 +196,8 @@ class RunState:
         """Result without run-behaviour metadata, for failures that happened before
         the run produced any: a model error or a dead workspace."""
         self.flush_turn_metrics()
+        metric_summary = self.metrics.summary()
+        metric_summary.update(aggregate_model_metrics(self.events.get_all()))
         return AgentResult(
             success=success,
             final_message=final_message,
@@ -206,7 +210,7 @@ class RunState:
                 "mode": self.config.mode,
                 # Included even here: how long a run spent before dying on a model
                 # error or a dead workspace is exactly what you want to see.
-                "metrics": self.metrics.summary(),
+                "metrics": metric_summary,
             },
         )
 
@@ -596,6 +600,16 @@ async def prepare_run(
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
     events = events or EventStore()
+    # Every native controller response is attributable even when the caller
+    # supplied its own EventStore. Collection children override this on their
+    # separate stores, and fallback collector calls deliberately use the
+    # reasoning binding with collector purpose.
+    if events.model_binding_role is None:
+        events.model_binding_role = "reasoning"
+    if events.call_purpose is None:
+        events.call_purpose = "controller"
+    if events.model_name is None:
+        events.model_name = model.model_name
     permissions = permissions or PermissionEngine(mode=config.permission_mode)
     hooks = hooks or HookRegistry()
     # Every environment touch from here on is screened for transport-level
@@ -686,6 +700,10 @@ async def prepare_run(
     started_at = time.monotonic()
     deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
 
+    # Session-wide record of what has already been asked and whether a writer is
+    # loose. The collection coordinator samples the same object before/after a
+    # child so strict modes can fail closed and interactive reports can be stale.
+    memo = ActionMemo()
     collection_coordinator = None
     if (
         collection_model is not None
@@ -697,6 +715,7 @@ async def prepare_run(
 
         collection_coordinator = CollectionCoordinator(
             model=collection_model,
+            reasoning_model=model,
             policy=collection_policy,
             env=env,
             events=events,
@@ -708,6 +727,8 @@ async def prepare_run(
             agents_dir=agents_dir,
             network_enabled=config.sandbox_allow_network,
             deadline_monotonic=deadline_at,
+            parent_mode=config.mode,
+            background_writer=lambda: memo.filesystem_is_volatile,
         )
         # Insert only after ordinary profile filtering. Existing profiles do not
         # need to list a dynamic tool that single-model runs never expose.
@@ -752,9 +773,8 @@ async def prepare_run(
     ctx.deadline_monotonic = deadline_at
     ledger = SideEffectLedger()
     ctx.side_effects = ledger
-    # Session-wide record of what has already been asked, so a read repeated
-    # 30 turns later is answered from memory rather than re-executed.
-    memo = ActionMemo()
+    # ``memo`` was created before collection assembly so both paths observe the
+    # same background-writer state.
     # Shared by the loop (turn boundaries, model and compaction time) and the tool
     # runner (per-call and per-segment time), so neither has to thread numbers back
     # through return values to reach the other.

@@ -333,6 +333,9 @@ class ModelCall:
     tool_steps: list[ToolStep] = field(default_factory=list)
     timestamp: str | None = None
     event_index: int = -1
+    model: str | None = None
+    model_binding_role: str | None = None
+    call_purpose: str | None = None
 
 
 @dataclass
@@ -971,6 +974,9 @@ def build_run(
                         duration_ms=_as_float(payload.get("duration_ms")),
                         timestamp=timestamp,
                         event_index=index,
+                        model=payload.get("model"),
+                        model_binding_role=payload.get("model_binding_role"),
+                        call_purpose=payload.get("call_purpose"),
                     )
                 )
                 band.has_real_response = True

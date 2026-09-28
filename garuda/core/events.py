@@ -33,6 +33,7 @@ class EventType(str, Enum):
     CONTRACT = "contract"
     TURN_METRICS = "turn_metrics"
     COLLECTION = "collection"
+    MODEL_FALLBACK = "model_fallback"
 
 
 class EventStore:
@@ -41,6 +42,9 @@ class EventStore:
         session_id: str | None = None,
         persist_path: str | Path | None = None,
         on_append: Callable[[dict[str, Any]], None] | None = None,
+        model_binding_role: str | None = None,
+        call_purpose: str | None = None,
+        model_name: str | None = None,
     ):
         self.session_id = session_id or str(uuid.uuid4())
         self._events: list[dict[str, Any]] = []
@@ -49,6 +53,9 @@ class EventStore:
         # any observer) react to events without the agent loop knowing. It is
         # always wrapped in try/except and can never break appends.
         self._on_append = on_append
+        self.model_binding_role = model_binding_role
+        self.call_purpose = call_purpose
+        self.model_name = model_name
         if persist_path:
             self.attach_persistence(persist_path)
 
@@ -69,6 +76,14 @@ class EventStore:
         return self._persist_path
 
     def append(self, event_type: EventType, payload: dict[str, Any]) -> None:
+        if event_type is EventType.MODEL_RESPONSE:
+            payload = dict(payload)
+            if self.model_binding_role is not None:
+                payload.setdefault("model_binding_role", self.model_binding_role)
+            if self.call_purpose is not None:
+                payload.setdefault("call_purpose", self.call_purpose)
+            if self.model_name is not None:
+                payload.setdefault("model", self.model_name)
         event = {
             "type": event_type.value,
             "timestamp": datetime.now(timezone.utc).isoformat(),

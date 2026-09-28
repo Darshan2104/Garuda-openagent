@@ -298,11 +298,13 @@ def _emit_spans_from_events(events: list[dict], service_name: str = "garuda") ->
                 child,
                 {
                     SPAN_KIND: KIND_LLM,
-                    LLM_MODEL_NAME: model,
+                    LLM_MODEL_NAME: payload.get("model") or model,
                     LLM_TOKEN_PROMPT: usage.get("prompt_tokens"),
                     LLM_TOKEN_COMPLETION: usage.get("completion_tokens"),
                     LLM_TOKEN_TOTAL: usage.get("total_tokens"),
                     "llm.finish_reason": payload.get("finish_reason"),
+                    "model.binding_role": payload.get("model_binding_role"),
+                    "model.call_purpose": payload.get("call_purpose"),
                 },
             )
             child.end(end_time=ts_ns)
