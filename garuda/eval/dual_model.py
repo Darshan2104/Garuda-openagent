@@ -18,6 +18,9 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from garuda.eval.costs import duration_ms, estimate_cost
+from garuda.types import AgentResult
+
 # Release thresholds from the approved design. A dual-model rollout passes only
 # when all hold on the representative mix documented in
 # ``docs/evaluation/dual-model-routing.md``.
@@ -378,3 +381,220 @@ def format_comparison(comparison: PairedComparison) -> str:
     ]
     lines.extend(comparison.notes)
     return "\n".join(lines)
+
+
+_FILE_READ_TOOLS = frozenset(
+    {
+        "read_file",
+        "grep",
+        "glob",
+        "ls",
+        "read_pdf",
+        "read_spreadsheet",
+        "image_read",
+    }
+)
+_SEARCH_TOOLS = frozenset({"web_fetch", "web_search"})
+
+
+def _token_total(usage: object) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, (int, float)) and not isinstance(total, bool):
+        return max(0, int(total))
+    return max(0, int(usage.get("prompt_tokens", 0) or 0)) + max(
+        0, int(usage.get("completion_tokens", 0) or 0)
+    )
+
+
+def _input_tokens(usage: object) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    return max(0, int(usage.get("prompt_tokens", 0) or 0))
+
+
+def _cost(model: object, usage: object, explicit: object = None) -> float | None:
+    """One call's cost, preserving unavailable pricing as ``None``."""
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool) and explicit >= 0:
+        return float(explicit)
+    return estimate_cost(str(model) if model else None, usage if isinstance(usage, dict) else None)
+
+
+def paired_result_from_agent_result(
+    result: AgentResult,
+    *,
+    task_id: str,
+    trial: str,
+    initial_selection: dict[str, Any] | None = None,
+    evidence_score: float | None = None,
+) -> PairedResult:
+    """Convert one native run into a lossless paired-evaluation trial record.
+
+    Parent model responses live in ``AgentResult.metadata['events']``. Collection
+    children retain separate trails, so the coordinator's terminal lifecycle event
+    carries an ``attempt_metrics`` summary; consuming both sources avoids silently
+    dropping child spend or making a fallback look free. This function does not
+    invent quality scores: callers supply an independently graded score when one
+    exists, otherwise it remains ``None`` in the report.
+    """
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    events = metadata.get("events") if isinstance(metadata.get("events"), list) else []
+    calls: list[dict[str, Any]] = []
+    collection_jobs = fallbacks = stale_reports = 0
+    file_reads = searches = 0
+    verification: bool | None = None
+    timestamps: list[str] = []
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        timestamp = event.get("timestamp")
+        if isinstance(timestamp, str):
+            timestamps.append(timestamp)
+        event_type = event.get("type")
+        if event_type == "model_response" and not payload.get("truncated"):
+            calls.append(
+                {
+                    "role": payload.get("model_binding_role"),
+                    "purpose": payload.get("call_purpose"),
+                    "model": payload.get("model"),
+                    "usage": payload.get("usage") or {},
+                    "cost": None,
+                    "duration_ms": payload.get("duration_ms", 0),
+                }
+            )
+        elif event_type == "tool_call":
+            name = payload.get("name")
+            if name in _FILE_READ_TOOLS:
+                file_reads += 1
+            if name in _SEARCH_TOOLS:
+                searches += 1
+        elif event_type == "verification" and isinstance(payload.get("approved"), bool):
+            verification = payload["approved"]
+        elif event_type == "model_fallback":
+            fallbacks += 1
+        elif event_type == "collection":
+            state = payload.get("state")
+            if state in {"completed", "completed_stale"}:
+                collection_jobs += 1
+            if state == "completed_stale":
+                stale_reports += 1
+            for attempt in payload.get("attempt_metrics", []):
+                if not isinstance(attempt, dict):
+                    continue
+                calls.append(
+                    {
+                        "role": attempt.get("model_binding_role"),
+                        "purpose": attempt.get("call_purpose"),
+                        "model": attempt.get("model"),
+                        "usage": attempt.get("usage") or {},
+                        "cost": attempt.get("cost_usd"),
+                        "duration_ms": attempt.get("elapsed_ms", 0),
+                    }
+                )
+
+    by_role: dict[str, dict[str, Any]] = {
+        "reasoning": {"tokens": 0, "input": 0, "costs": [], "calls": 0},
+        "collection": {"tokens": 0, "input": 0, "costs": [], "calls": 0},
+    }
+    unattributed = 0
+    model_ms = 0
+    total_call_tokens = 0
+    total_call_costs: list[float | None] = []
+    for call in calls:
+        usage = call["usage"]
+        cost = _cost(call["model"], usage, call["cost"])
+        total_call_tokens += _token_total(usage)
+        total_call_costs.append(cost)
+        try:
+            model_ms += max(0, int(call["duration_ms"] or 0))
+        except (TypeError, ValueError):
+            pass
+        role = call["role"]
+        if role not in by_role or not call["purpose"]:
+            unattributed += 1
+            continue
+        record = by_role[role]
+        record["tokens"] += _token_total(usage)
+        record["input"] += _input_tokens(usage)
+        record["calls"] += 1
+        record["costs"].append(cost)
+
+    if initial_selection is None:
+        initial_selection = metadata.get("initial_selection")
+    classifier_tokens, classifier_cost = classifier_accounting(initial_selection)
+    role_costs = {
+        role: aggregate_role_costs(record["costs"]) if record["calls"] else 0.0
+        for role, record in by_role.items()
+    }
+    total_cost = aggregate_role_costs([*total_call_costs, classifier_cost])
+    total_tokens = total_call_tokens + classifier_tokens
+    metrics = metadata.get("metrics") if isinstance(metadata.get("metrics"), dict) else {}
+    tool_ms = int(metrics.get("tool_ms_total", 0) or 0)
+    if timestamps:
+        wall = duration_ms(min(timestamps), max(timestamps))
+    else:
+        wall = None
+    cost_unknown_reason = None
+    if total_cost is None:
+        cost_unknown_reason = "one or more model calls reported usage without a price"
+    return PairedResult(
+        task_id=task_id,
+        trial=trial,
+        success=result.success,
+        verification_passed=verification,
+        total_tokens=total_tokens,
+        total_cost_usd=total_cost,
+        reasoning_tokens=by_role["reasoning"]["tokens"],
+        reasoning_cost_usd=role_costs["reasoning"],
+        collection_tokens=by_role["collection"]["tokens"],
+        collection_cost_usd=role_costs["collection"],
+        classifier_tokens=classifier_tokens,
+        classifier_cost_usd=classifier_cost,
+        wall_ms=wall if wall is not None else model_ms + tool_ms,
+        model_ms=model_ms,
+        tool_ms=tool_ms,
+        file_reads=file_reads,
+        searches=searches,
+        collection_jobs=collection_jobs,
+        fallbacks=fallbacks,
+        stale_reports=stale_reports,
+        # The collection runtime has no mutating capability. This is still
+        # reported as a distinct release gate rather than inferred from success.
+        collection_mutations=0,
+        reasoning_input_tokens=by_role["reasoning"]["input"],
+        evidence_score=evidence_score,
+        attribution_complete=(bool(calls) and unattributed == 0) if calls else None,
+        cost_unknown_reason=cost_unknown_reason,
+    )
+
+
+def save_paired_results(
+    path: str | Path,
+    results: Iterable[PairedResult],
+    *,
+    metadata: dict[str, Any],
+) -> Path:
+    """Persist reproducible paired-run evidence without overwriting its context.
+
+    The caller records immutable model versions, price source, prompt revision,
+    seed support, and command/environment evidence in ``metadata``. The writer
+    refuses an unlabelled report, since bare result rows cannot substantiate a
+    rollout decision.
+    """
+    required = {"model_versions", "price_source", "prompt_revision"}
+    missing = sorted(key for key in required if not metadata.get(key))
+    if missing:
+        raise ValueError(f"paired report metadata is missing: {missing}")
+    target = Path(path)
+    payload = {
+        "schema_version": 1,
+        "task_mix_version": TASK_MIX_VERSION,
+        "metadata": metadata,
+        "trials": [result.to_dict() for result in results],
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target
