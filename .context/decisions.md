@@ -280,6 +280,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Trait detection is bounded direct-filesystem inspection (no shell, no project import, no symlink following); startup fallback requires an unchanged baseline and fails closed outside a repository.
 - The CLI constructs one trusted catalog for initial selection and execution; the selected id controls the native/ACP executor, and its rationale is persisted after lease/session creation but before runtime start. An ACP start failure can transfer only once to native, only with an unchanged baseline, and retains the same session trail.
 
+## 2026-09-28 — P1 initial-runtime classifier fallback (issue #80, part of #74)
+
+- The classifier lives in `garuda/runtime/selection/classifier.py` and runs only through `select_initial_async` after explicit, profile, and rule sources produce no selection. The synchronous `select_initial` never calls a model.
+- Only trusted global `routing.classifier` enables it. It picks one of the two approved bindings (`collection` by default, `reasoning` only when named or explicitly allowed) and cannot name a model, provider, endpoint, command, or tool. A project may only disable it.
+- One tool-free call over an approved candidate table fixed before the call, with a single transport attempt (`ModelSpec.max_attempts=1`), a timeout, and an output budget. Thinking and reasoning settings are dropped so the budget holds, and a missing binding skips classification instead of using the built-in model. The answer is untrusted: its runtime must be in the approved table and revalidated, its claimed capabilities only narrow, and a confidence threshold applies. Every refusal uses the configured default; the classifier cannot start a runtime or request a handoff.
+- The persisted record (selection schema v2) stores binding role, `call_purpose: classifier`, model identity, request digest (not the prompt), sanitized output (model-supplied ids recorded only when they name a configured runtime or capability; unexpected keys counted, never echoed), latency, usage, and cost. Unpriced cost is `null`, never zero, and any unexpected reply shape is `malformed` rather than a selection failure.
+
 ## 2026-09-28 — P1 collection tool effects and authority (issue #78, part of #74)
 
 - Tool effects fail closed to `UNKNOWN`. Collection trusts built-in declarations

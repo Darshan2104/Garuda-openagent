@@ -62,12 +62,16 @@ def register_transport(
 def _litellm_builder(spec: ModelSpec) -> Any:
     from garuda.model.litellm_model import LitellmModel
 
+    extra: dict[str, Any] = {}
+    if spec.max_attempts is not None:
+        extra["max_retries"] = spec.max_attempts
     return LitellmModel(
         model_name=spec.model,
         api_base=spec.api_base,
         reasoning_effort=spec.reasoning_effort,
         thinking_budget_tokens=spec.thinking_budget_tokens,
         request_timeout=spec.timeout_sec or 600.0,
+        **extra,
     )
 
 

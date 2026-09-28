@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 #: Version of the persisted selection record. Bump when ``to_dict`` changes.
-SELECTION_SCHEMA_VERSION = 1
+#: v2 (#80): the ``classifier`` block records the optional classifier call.
+SELECTION_SCHEMA_VERSION = 2
 
 #: Built-in final fallback. Always present; needs no command.
 BUILTIN_NATIVE_ID = "native"
@@ -36,6 +37,14 @@ MAX_TRAIT_FILES = 2_000
 MAX_TRAIT_ENTRIES = 5_000
 MAX_TRAIT_DEPTH = 6
 MAX_MARKER_CHECKS = 64
+
+#: Classifier bounds (#80). One tool-free call with a small output budget:
+#: the classifier recommends an id from a fixed table, it does not reason
+#: at length, so a large budget only buys room for injected instructions.
+CLASSIFIER_MODEL_ROLES = frozenset({"collection", "reasoning"})
+CLASSIFIER_FAILURE_POLICIES = frozenset({"default"})
+MAX_CLASSIFIER_OUTPUT_BUDGET = 1_024
+MAX_CLASSIFIER_TIMEOUT_SEC = 120.0
 
 #: Permission ceilings, strictest first. Mirrors the dashboard ceiling rank so
 #: a rule author and the run policy mean the same thing by ``smart``.
@@ -263,6 +272,93 @@ class InitialCandidate:
 
 
 @dataclass(frozen=True)
+class ClassifierPolicy:
+    """Trusted global policy for the optional classifier fallback (#80).
+
+    Disabled unless global configuration enables it. ``model_role`` names
+    one of the two approved bindings; ``collection`` is the default and a
+    missing collection model skips classification unless
+    ``allow_reasoning_fallback`` explicitly permits the reasoning model.
+    ``model_binding`` names a global ``model_bindings`` alias (``None`` uses
+    the global default binding). ``candidates`` narrows the runtimes the
+    classifier may recommend; ``None`` means every configured runtime.
+    ``on_failure`` is ``default``: any failed or refused classification
+    continues to the configured default runtime, then built-in native.
+    """
+
+    enabled: bool = False
+    model_role: str = "collection"
+    allow_reasoning_fallback: bool = False
+    model_binding: str | None = None
+    minimum_confidence: float = 0.75
+    candidates: tuple[str, ...] | None = None
+    max_output_tokens: int = 256
+    timeout_sec: float = 20.0
+    on_failure: str = "default"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise SelectionError("classifier.enabled: must be a bool")
+        if not isinstance(self.model_role, str) or self.model_role not in CLASSIFIER_MODEL_ROLES:
+            raise SelectionError(
+                f"classifier.model_role: must be one of {sorted(CLASSIFIER_MODEL_ROLES)}"
+            )
+        if not isinstance(self.allow_reasoning_fallback, bool):
+            raise SelectionError("classifier.allow_reasoning_fallback: must be a bool")
+        if self.model_binding is not None and (
+            not isinstance(self.model_binding, str) or not self.model_binding
+        ):
+            raise SelectionError("classifier.model_binding: must be a binding alias string")
+        confidence = self.minimum_confidence
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0.0 <= float(confidence) <= 1.0
+        ):
+            raise SelectionError("classifier.minimum_confidence: must be within 0..1")
+        object.__setattr__(self, "minimum_confidence", float(confidence))
+        if self.candidates is not None:
+            # Runtime ids are case-sensitive registry keys, so unlike rule
+            # matchers they are not lowercased.
+            raw = self.candidates
+            if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+                raise SelectionError("classifier.candidates: must be a list of runtime ids")
+            ids: list[str] = []
+            for entry in raw:
+                if not isinstance(entry, str) or not entry:
+                    raise SelectionError("classifier.candidates: entries must be non-empty strings")
+                if entry not in ids:
+                    ids.append(entry)
+            if not ids:
+                raise SelectionError("classifier.candidates: must name at least one runtime")
+            object.__setattr__(self, "candidates", tuple(ids))
+        budget = self.max_output_tokens
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or not 0 < budget <= MAX_CLASSIFIER_OUTPUT_BUDGET
+        ):
+            raise SelectionError(
+                "classifier.max_output_tokens: must be an int within "
+                f"1..{MAX_CLASSIFIER_OUTPUT_BUDGET}"
+            )
+        timeout = self.timeout_sec
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0.0 < float(timeout) <= MAX_CLASSIFIER_TIMEOUT_SEC
+        ):
+            raise SelectionError(
+                f"classifier.timeout_sec: must be within 0..{MAX_CLASSIFIER_TIMEOUT_SEC:g}"
+            )
+        object.__setattr__(self, "timeout_sec", float(timeout))
+        if not isinstance(self.on_failure, str) or self.on_failure not in CLASSIFIER_FAILURE_POLICIES:
+            raise SelectionError(
+                f"classifier.on_failure: must be one of {sorted(CLASSIFIER_FAILURE_POLICIES)}"
+            )
+
+
+@dataclass(frozen=True)
 class GlobalSelectionConfig:
     """Parsed trusted global selection config: defaults plus ordered rules."""
 
@@ -270,13 +366,19 @@ class GlobalSelectionConfig:
     fallback_runtime: str | None = None
     trust_project_routes: bool = False
     rules: tuple[SelectionRule, ...] = ()
+    classifier: ClassifierPolicy = field(default_factory=ClassifierPolicy)
 
 
 @dataclass(frozen=True)
 class ProjectSelectionConfig:
-    """Parsed untrusted project selection config: recommendations only."""
+    """Parsed untrusted project selection config: recommendations only.
+
+    ``classifier_disabled`` is the one classifier setting a project may
+    carry: it can opt out of classification, never enable or widen it.
+    """
 
     rules: tuple[SelectionRule, ...] = ()
+    classifier_disabled: bool = False
 
 
 _EMPTY_TRAITS = RepoTraits()

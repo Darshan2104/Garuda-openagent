@@ -23,25 +23,62 @@ from .models import (
 
 @dataclass(frozen=True)
 class ClassifierSlot:
-    """Reserved seam for the issue #80 classifier track.
+    """The classifier's part of an initial-selection record (issue #80).
 
-    This layer never invokes a classifier: the slot records that the
-    deterministic chain produced no selection and which candidates the
-    classifier may consider. Issue #80 replaces the ``evaluated=False``
-    outcome with a real validated recommendation; the field names here are
-    the composition point.
+    ``outcome`` says what happened: ``not_invoked`` (a deterministic
+    source already selected), ``not_configured``, ``skipped`` (enabled but
+    no approved model or candidate), ``accepted``, or a refusal —
+    ``timeout``, ``error``, ``malformed``, ``unknown_runtime``,
+    ``low_confidence``, ``capability_mismatch``, or ``invalid_candidate``.
+    ``evaluated`` is true only when a model call was made, and then the
+    record carries the binding role, model identity, input digest, parsed
+    output, latency, usage, and cost. ``cost_usd`` is ``None`` when the
+    call could not be priced: unknown cost is never recorded as zero.
+    ``candidates`` is the approved table fixed before the call.
     """
 
     evaluated: bool = False
-    reason: str = "classifier not implemented (reserved for #80)"
+    reason: str = "classifier not configured"
     candidates: tuple[str, ...] = ()
+    outcome: str = "not_configured"
+    binding_role: str | None = None
+    call_purpose: str = "classifier"
+    model: str | None = None
+    input_digest: str | None = None
+    output: dict[str, Any] | None = None
+    latency_ms: int | None = None
+    usage: dict[str, int] | None = None
+    cost_usd: float | None = None
+
+    @property
+    def cost_known(self) -> bool:
+        return self.cost_usd is not None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "evaluated": self.evaluated,
+            "outcome": self.outcome,
             "reason": self.reason,
             "candidates": list(self.candidates),
+            "binding_role": self.binding_role,
+            "call_purpose": self.call_purpose,
+            "model": self.model,
+            "input_digest": self.input_digest,
+            "output": dict(self.output) if self.output is not None else None,
+            "latency_ms": self.latency_ms,
+            "usage": dict(self.usage) if self.usage is not None else None,
+            "cost_usd": self.cost_usd,
+            "cost_known": self.cost_known,
         }
+
+    def explain(self) -> list[str]:
+        if not self.evaluated:
+            return [f"classifier: {self.outcome} ({self.reason})"]
+        cost = f"${self.cost_usd:.6f}" if self.cost_usd is not None else "unknown"
+        return [
+            f"classifier: {self.outcome} via {self.binding_role} model {self.model} "
+            f"({self.reason}); latency {self.latency_ms}ms, cost {cost}"
+        ]
 
 
 @dataclass(frozen=True)
@@ -94,6 +131,7 @@ class InitialSelection:
         lines.extend(f"recommendation: {line}" for line in self.recommendations)
         if self.fallback_from:
             lines.append(f"fallback from: {self.fallback_from}")
+        lines.extend(self.classifier.explain())
         lines.extend(f"why: {line}" for line in self.rationale)
         return lines
 
@@ -153,6 +191,37 @@ def _explanation_text(selection: InitialSelection) -> str:
     return f"{record}\n{lines}"
 
 
+def unsafe_text_reason(text: str) -> str | None:
+    """Why ``text`` must not enter an explanation, or ``None`` when safe.
+
+    The scan behind :func:`assert_explanation_safe`, exposed so untrusted
+    text (a classifier's rationale) can be screened before it is recorded.
+    """
+    lowered = text.lower()
+    for pattern in _SECRET_PATTERNS:
+        if pattern in lowered:
+            return f"contains secret-like pattern {pattern!r}"
+    for pattern in _PATH_PATTERNS:
+        if pattern in lowered:
+            return f"contains workspace path pattern {pattern!r}"
+    match = _ABSOLUTE_PATH_RE.search(text)
+    if match:
+        return f"contains absolute path {match.group(0).strip()!r}"
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if not any(
+            key in upper
+            for key in (
+                "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                bytes((79, 65, 85, 84, 72)).decode(), "BEARER", "PRIVATE",
+            )
+        ):
+            continue
+        if value and len(value) >= 4 and value in text:
+            return f"contains value of secret env var {name!r}"
+    return None
+
+
 def assert_explanation_safe(selection: InitialSelection) -> None:
     """Fail when an explanation leaks secrets, env values, or full paths.
 
@@ -166,34 +235,6 @@ def assert_explanation_safe(selection: InitialSelection) -> None:
 
     Raises :class:`SelectionError` on the first offending pattern.
     """
-    text = _explanation_text(selection)
-    lowered = text.lower()
-    for pattern in _SECRET_PATTERNS:
-        if pattern in lowered:
-            raise SelectionError(
-                f"explanation is unsafe: contains secret-like pattern {pattern!r}"
-            )
-    for pattern in _PATH_PATTERNS:
-        if pattern in lowered:
-            raise SelectionError(
-                f"explanation is unsafe: contains workspace path pattern {pattern!r}"
-            )
-    match = _ABSOLUTE_PATH_RE.search(text)
-    if match:
-        raise SelectionError(
-            f"explanation is unsafe: contains absolute path {match.group(0).strip()!r}"
-        )
-    for name, value in os.environ.items():
-        upper = name.upper()
-        if not any(
-            key in upper
-            for key in (
-                "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                bytes((79, 65, 85, 84, 72)).decode(), "BEARER", "PRIVATE",
-            )
-        ):
-            continue
-        if value and len(value) >= 4 and value in text:
-            raise SelectionError(
-                f"explanation is unsafe: contains value of secret env var {name!r}"
-            )
+    reason = unsafe_text_reason(_explanation_text(selection))
+    if reason is not None:
+        raise SelectionError(f"explanation is unsafe: {reason}")

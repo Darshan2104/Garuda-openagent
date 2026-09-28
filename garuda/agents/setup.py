@@ -351,26 +351,25 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     )
 
 
-def select_initial_runtime(
+def _initial_selection_inputs(
     *,
     workspace: str,
     task: str,
-    catalog: RuntimeCatalog | None = None,
-    agent: str = "",
-    mode: str = "",
-    explicit_runtime: str | None = None,
-    profile_pin: str | None = None,
-    workspace_kind: str = "local",
-    permission_ceiling: str = "smart",
-    required_capabilities: tuple[str, ...] = (),
-    available_runtime_ids: frozenset[str] | None = None,
-) -> InitialRuntimeSelection:
-    """Plan initial selection from the exact catalog the caller will launch.
+    catalog: RuntimeCatalog | None,
+    agent: str,
+    mode: str,
+    explicit_runtime: str | None,
+    profile_pin: str | None,
+    workspace_kind: str,
+    permission_ceiling: str,
+    required_capabilities: tuple[str, ...],
+    available_runtime_ids: frozenset[str] | None,
+) -> tuple[Any, list[Any], Any, Any, Any]:
+    """Trusted facts shared by the synchronous and classifier selection paths.
 
-    Selection stays pure in :mod:`garuda.runtime.selection`; this boundary owns
-    trusted configuration and discovery. Passing a catalog is the normal
-    product path and prevents selection and launch from observing different
-    disablement or executable availability facts.
+    Returns ``(request, candidates, global_selection, project_selection,
+    traits)`` built from one catalog so every path sees the same registry,
+    disabled set, and executable availability as launch.
     """
     from garuda.acp.catalog import load_trusted_runtime_settings
     from garuda.config.agent_home import resolve_agent_home
@@ -380,7 +379,6 @@ def select_initial_runtime(
         detect_repo_traits,
         parse_global_selection,
         parse_project_selection,
-        select_initial,
     )
 
     home = resolve_agent_home(workspace)
@@ -423,13 +421,210 @@ def select_initial_runtime(
         required_capabilities=required_capabilities,
         workspace=workspace,
     )
+    return request, candidates, global_selection, project_selection, detect_repo_traits(workspace)
+
+
+def select_initial_runtime(
+    *,
+    workspace: str,
+    task: str,
+    catalog: RuntimeCatalog | None = None,
+    agent: str = "",
+    mode: str = "",
+    explicit_runtime: str | None = None,
+    profile_pin: str | None = None,
+    workspace_kind: str = "local",
+    permission_ceiling: str = "smart",
+    required_capabilities: tuple[str, ...] = (),
+    available_runtime_ids: frozenset[str] | None = None,
+) -> InitialRuntimeSelection:
+    """Plan initial selection from the exact catalog the caller will launch.
+
+    Selection stays pure in :mod:`garuda.runtime.selection`; this boundary owns
+    trusted configuration and discovery. Passing a catalog is the normal
+    product path and prevents selection and launch from observing different
+    disablement or executable availability facts. This synchronous path is
+    deterministic only; :func:`select_initial_runtime_async` adds the optional
+    classifier fallback.
+    """
+    from garuda.runtime.selection import select_initial
+
+    request, candidates, global_selection, project_selection, traits = _initial_selection_inputs(
+        workspace=workspace,
+        task=task,
+        catalog=catalog,
+        agent=agent,
+        mode=mode,
+        explicit_runtime=explicit_runtime,
+        profile_pin=profile_pin,
+        workspace_kind=workspace_kind,
+        permission_ceiling=permission_ceiling,
+        required_capabilities=required_capabilities,
+        available_runtime_ids=available_runtime_ids,
+    )
     selection = select_initial(
         request,
         candidates,
         rules=global_selection.rules,
         project_rules=project_selection.rules,
-        traits=detect_repo_traits(workspace),
+        traits=traits,
         trust_project_routes=global_selection.trust_project_routes,
+    )
+    return InitialRuntimeSelection(selection, request, tuple(candidates))
+
+
+def resolve_runtime_classifier(
+    policy: Any,
+    *,
+    project_disabled: bool = False,
+    classifier_model: Any | None = None,
+    global_orchestration: Any | None = None,
+    factory: ModelFactory | None = None,
+    cost_estimator: Any | None = None,
+) -> tuple[Any | None, str | None]:
+    """Bind the optional initial-runtime classifier to an approved model role.
+
+    Returns ``(classifier, skip_reason)``. The model comes only from trusted
+    global configuration: the policy's binding alias (or the global default
+    binding) supplies its ``collection`` model, or its ``reasoning`` model when
+    the policy names that role or explicitly allows the reasoning fallback.
+    Anything that cannot be bound skips classification with a reason; it
+    never raises, because a missing classifier only means the configured
+    default runtime is used. The built client is limited to one transport
+    attempt. ``classifier_model`` lets an SDK caller supply a ``Model`` for
+    the policy's role. ``cost_estimator(model_name, usage)`` is injected by the
+    entry point (agent packages stay independent of the eval package); without one
+    only a provider-reported cost counts and anything else stays unknown.
+    """
+    from dataclasses import replace
+
+    from garuda.runtime.selection import RuntimeClassifier
+
+    if policy is None or not getattr(policy, "enabled", False):
+        return None, None
+    if project_disabled:
+        return None, "disabled by project settings"
+    if classifier_model is not None:
+        name = getattr(classifier_model, "model_name", None)
+        if not isinstance(name, str) or not callable(getattr(classifier_model, "complete", None)):
+            return None, "supplied classifier model does not satisfy the Model protocol"
+        return (
+            RuntimeClassifier(
+                model=classifier_model,
+                binding_role=policy.model_role,
+                policy=policy,
+                cost_estimator=cost_estimator,
+            ),
+            None,
+        )
+    if global_orchestration is None:
+        from garuda.config.routing import load_global_orchestration
+
+        try:
+            global_orchestration = load_global_orchestration()
+        except ConfigError as exc:
+            return None, f"model bindings unavailable ({type(exc).__name__})"
+    bindings_by_alias = global_orchestration.model_bindings
+    alias = policy.model_binding
+    if alias is not None:
+        binding = bindings_by_alias.get(alias)
+        if binding is None:
+            return None, f"unknown model binding alias {alias!r}"
+    else:
+        binding = bindings_by_alias.get(global_orchestration.default_binding)
+        if binding is None and len(bindings_by_alias) == 1:
+            binding = next(iter(bindings_by_alias.values()))
+        if binding is None:
+            # Never fall back to the built-in model: trusted configuration
+            # must name the binding the classifier spends on.
+            return None, "no model binding is configured for the classifier"
+    role = policy.model_role
+    spec = binding.collection if role == "collection" else binding.reasoning
+    if spec is None:
+        if not policy.allow_reasoning_fallback:
+            return None, "no collection model is bound and the reasoning fallback is not allowed"
+        role, spec = "reasoning", binding.reasoning
+    timeout = policy.timeout_sec if spec.timeout_sec is None else min(spec.timeout_sec, policy.timeout_sec)
+    # One attempt and the policy's output budget: thinking/reasoning knobs
+    # would raise the effective output ceiling (or spend it on reasoning), so
+    # the classifier call drops them.
+    spec = replace(
+        spec,
+        max_attempts=1,
+        timeout_sec=timeout,
+        thinking_budget_tokens=None,
+        reasoning_effort=None,
+    )
+    try:
+        model = (factory or ModelFactory()).build_spec(spec, role=f"classifier ({role})")
+    except Exception as exc:
+        return None, f"classifier model could not be built ({type(exc).__name__})"
+    return (
+        RuntimeClassifier(
+            model=model, binding_role=role, policy=policy, cost_estimator=cost_estimator
+        ),
+        None,
+    )
+
+
+async def select_initial_runtime_async(
+    *,
+    workspace: str,
+    task: str,
+    catalog: RuntimeCatalog | None = None,
+    agent: str = "",
+    mode: str = "",
+    explicit_runtime: str | None = None,
+    profile_pin: str | None = None,
+    workspace_kind: str = "local",
+    permission_ceiling: str = "smart",
+    required_capabilities: tuple[str, ...] = (),
+    available_runtime_ids: frozenset[str] | None = None,
+    classifier_model: Any | None = None,
+    cost_estimator: Any | None = None,
+) -> InitialRuntimeSelection:
+    """:func:`select_initial_runtime` plus the optional classifier fallback (#80).
+
+    The classifier is bound only when trusted global ``routing.classifier``
+    enables it and the project has not disabled it, and it is called only when
+    no explicit, profile, or rule source selected. Its answer is revalidated
+    against the same candidate facts launch uses.
+    """
+    from garuda.runtime.selection import select_initial_async
+
+    request, candidates, global_selection, project_selection, traits = _initial_selection_inputs(
+        workspace=workspace,
+        task=task,
+        catalog=catalog,
+        agent=agent,
+        mode=mode,
+        explicit_runtime=explicit_runtime,
+        profile_pin=profile_pin,
+        workspace_kind=workspace_kind,
+        permission_ceiling=permission_ceiling,
+        required_capabilities=required_capabilities,
+        available_runtime_ids=available_runtime_ids,
+    )
+    classifier = None
+    skip_reason = None
+    if explicit_runtime is None and profile_pin is None:
+        # Deterministic explicit/profile sources never need a model client;
+        # rules are checked inside the selector before the call is made.
+        classifier, skip_reason = resolve_runtime_classifier(
+            global_selection.classifier,
+            project_disabled=project_selection.classifier_disabled,
+            classifier_model=classifier_model,
+            cost_estimator=cost_estimator,
+        )
+    selection = await select_initial_async(
+        request,
+        candidates,
+        rules=global_selection.rules,
+        project_rules=project_selection.rules,
+        traits=traits,
+        trust_project_routes=global_selection.trust_project_routes,
+        classifier=classifier,
+        classifier_skip_reason=skip_reason,
     )
     return InitialRuntimeSelection(selection, request, tuple(candidates))
 

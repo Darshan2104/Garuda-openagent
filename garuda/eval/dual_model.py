@@ -167,6 +167,32 @@ def role_cost_total(result: PairedResult) -> float | None:
     )
 
 
+def classifier_accounting(record: dict[str, Any] | None) -> tuple[int, float | None]:
+    """``(classifier_tokens, classifier_cost_usd)`` from a persisted selection.
+
+    Accepts session meta or its ``initial_selection`` record (issue #80).
+    A session whose classifier made no call contributes a known zero; a call
+    whose cost could not be priced contributes ``None`` so the trial total
+    stays unknown instead of silently dropping the classifier's spend.
+    """
+    if not isinstance(record, dict):
+        return 0, 0.0
+    selection = record.get("initial_selection", record)
+    slot = selection.get("classifier") if isinstance(selection, dict) else None
+    if not isinstance(slot, dict) or not slot.get("evaluated"):
+        return 0, 0.0
+    usage = slot.get("usage") or {}
+    tokens = 0
+    for key in ("prompt", "completion"):
+        value = usage.get(key) if isinstance(usage, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            tokens += value
+    cost = slot.get("cost_usd")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
+        return tokens, None
+    return tokens, float(cost)
+
+
 @dataclass
 class PairedComparison:
     """Baseline vs candidate aggregates over a task mix."""
