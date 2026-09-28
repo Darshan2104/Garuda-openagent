@@ -16,7 +16,7 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -342,6 +342,7 @@ def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
 
 
 class WebFetchTool:
+    effect = ToolEffect.EXTERNAL_READ
     name = "web_fetch"
     description = (
         "Fetch a web page over HTTP(S) and return its readable text content. "
@@ -550,6 +551,7 @@ def _fetch_raw(url: str) -> tuple[str | None, str]:
 
 
 class WebSearchTool:
+    effect = ToolEffect.EXTERNAL_READ
     name = "web_search"
     description = (
         "Search the web and return the top results (title, URL, snippet). "

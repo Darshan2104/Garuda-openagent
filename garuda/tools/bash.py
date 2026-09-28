@@ -2,7 +2,7 @@ import time
 import uuid
 
 from garuda.core.side_effects import LAUNCH_DIR, is_backgrounding, read_launch, wrap_launch
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -47,6 +47,7 @@ def resolve_timeout(
 
 
 class BashTool:
+    effect = ToolEffect.MUTATING
     name = "bash"
     description = (
         "Execute a shell command in the workspace and return stdout, stderr, and exit code. "

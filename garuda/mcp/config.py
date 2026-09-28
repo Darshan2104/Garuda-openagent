@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from garuda.tools.protocol import ToolEffect
+
 logger = logging.getLogger(__name__)
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -36,6 +38,9 @@ class McpServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    # Only populated from the user-owned global MCP config. Project config may
+    # request this key, but the parser deliberately ignores it there.
+    trusted_tool_effects: dict[str, ToolEffect] = field(default_factory=dict)
 
 
 # Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
@@ -156,7 +161,37 @@ def _string_map(entry: dict, key: str, name: str) -> dict[str, str]:
     return {str(k): _interpolate(str(v)) for k, v in value.items()}
 
 
-def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
+def _trusted_tool_effects(
+    entry: dict, server_name: str, *, trusted_source: bool
+) -> dict[str, ToolEffect]:
+    raw = entry.get("tool_effects")
+    if raw is None:
+        return {}
+    if not trusted_source:
+        logger.warning(
+            "Ignoring tool_effects for MCP server %r: effect authority is global-only",
+            server_name,
+        )
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError("tool_effects must be a mapping of remote tool name to effect")
+    effects: dict[str, ToolEffect] = {}
+    for tool_name, value in raw.items():
+        try:
+            effects[str(tool_name)] = ToolEffect(str(value))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid effect %r for MCP tool %s.%s",
+                value,
+                server_name,
+                tool_name,
+            )
+    return effects
+
+
+def _dict_to_server_configs(
+    entries: list[dict], *, trusted_source: bool = False
+) -> list[McpServerConfig]:
     """Normalize raw server dicts into :class:`McpServerConfig` objects.
 
     Each entry is parsed under its own try/except so one malformed definition
@@ -184,6 +219,9 @@ def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
             transport = normalize_transport(
                 entry.get("transport") or entry.get("type"), has_url=bool(url)
             )
+            trusted_tool_effects = _trusted_tool_effects(
+                entry, str(name), trusted_source=trusted_source
+            )
             configs.append(
                 McpServerConfig(
                     name=name,
@@ -193,6 +231,7 @@ def _dict_to_server_configs(entries: list[dict]) -> list[McpServerConfig]:
                     env=env,
                     url=url,
                     headers=headers,
+                    trusted_tool_effects=trusted_tool_effects,
                 )
             )
         except Exception as exc:
@@ -229,7 +268,9 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
             exc,
         )
         return []
-    return _dict_to_server_configs(_parse_mcp_servers(data))
+    return _dict_to_server_configs(
+        _parse_mcp_servers(data), trusted_source=_is_global_mcp_config(p)
+    )
 
 
 def _global_mcp_dir() -> Path:
@@ -246,6 +287,15 @@ def _global_mcp_dir() -> Path:
     from garuda.config.agent_home import global_home_dir
 
     return global_home_dir()
+
+
+def _is_global_mcp_config(path: str | Path) -> bool:
+    """Whether ``path`` is the user-owned global MCP authority file."""
+    try:
+        candidate = Path(path).expanduser().resolve()
+        return candidate == (_global_mcp_dir() / "mcp.json").expanduser().resolve()
+    except OSError:
+        return False
 
 
 def _mcp_merge_enabled(workspace: str | Path | None = None) -> bool:

@@ -1,7 +1,7 @@
 import re
 import shlex
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -149,6 +149,7 @@ def _build_search_command(
 
 
 class GrepTool:
+    effect = ToolEffect.READ_ONLY
     name = "grep"
     description = (
         "Search file contents for a regular expression (uses ripgrep when available, "
@@ -250,6 +251,7 @@ class GrepTool:
 
 
 class GlobTool:
+    effect = ToolEffect.READ_ONLY
     name = "glob"
     description = (
         "Find files by name pattern. Supports simple globs like '*.py' "
@@ -324,6 +326,7 @@ class GlobTool:
 
 
 class LsTool:
+    effect = ToolEffect.READ_ONLY
     name = "ls"
     description = "List directory contents (like `ls -la`)."
     parameters = {

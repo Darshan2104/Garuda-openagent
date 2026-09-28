@@ -1,7 +1,7 @@
 import mimetypes
 import shlex
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -10,6 +10,7 @@ MAX_IMAGE_B64_CHARS = 8_000_000  # ~6 MB raw
 
 
 class ImageReadTool:
+    effect = ToolEffect.READ_ONLY
     name = "image_read"
     description = (
         "Load an image file from the workspace and attach it for you to view directly. "

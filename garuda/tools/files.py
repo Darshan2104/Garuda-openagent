@@ -1,4 +1,4 @@
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -7,6 +7,7 @@ MAX_LINE_CHARS = 2000
 
 
 class ReadFileTool:
+    effect = ToolEffect.READ_ONLY
     name = "read_file"
     description = (
         "Read a text file from the workspace. Output is numbered like `cat -n`. "
@@ -86,6 +87,7 @@ class ReadFileTool:
 
 
 class WriteFileTool:
+    effect = ToolEffect.MUTATING
     name = "write_file"
     description = (
         "Write content to a file in the workspace, replacing it entirely. "

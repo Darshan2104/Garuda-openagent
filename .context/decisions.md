@@ -279,3 +279,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Task regexes are global-trust-only; project routes auto-select only when global config sets `trust_project_routes`, otherwise recorded as recommendations.
 - Trait detection is bounded direct-filesystem inspection (no shell, no project import, no symlink following); startup fallback requires an unchanged baseline and fails closed outside a repository.
 - The CLI constructs one trusted catalog for initial selection and execution; the selected id controls the native/ACP executor, and its rationale is persisted after lease/session creation but before runtime start. An ACP start failure can transfer only once to native, only with an unchanged baseline, and retains the same session trail.
+
+## 2026-09-28 — P1 collection tool effects and authority (issue #78, part of #74)
+
+- Tool effects fail closed to `UNKNOWN`. Collection trusts built-in declarations
+  by registry object identity, not by name or a project tool's self-declared
+  metadata.
+- MCP effects are authoritative only when declared for an exact remote tool in
+  the user-owned global `mcp.json`; project MCP configuration cannot grant an
+  effect. Lazy `use_tool` dispatch re-checks the selected tool's effect and the
+  ordinary permission engine.
+- Collection tools are the ordered intersection of profile, global, request,
+  network, permission, and trusted-effect selectors. Optional shell inspection
+  uses a wrapper around the real built-in `bash` and the existing fail-closed
+  side-effect classifier. This policy is a guardrail, not workspace confinement.

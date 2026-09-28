@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import weakref
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
@@ -17,7 +18,7 @@ from garuda.mcp.config import (
     load_mcp_config,
     normalize_transport,
 )
-from garuda.tools.protocol import Tool, ToolContext
+from garuda.tools.protocol import Tool, ToolContext, ToolEffect
 from garuda.types import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def sanitize_tool_name(raw: str) -> str:
     return _TOOL_NAME_SAFE.sub("_", raw)[:MCP_TOOL_NAME_MAX_LEN]
 
 
-@dataclass
+@dataclass(eq=False)
 class McpRemoteTool:
     server_name: str
     tool_name: str
@@ -50,6 +51,12 @@ class McpRemoteTool:
     parameters: dict[str, Any]
     _session: ClientSession
     name_override: str | None = None
+    effect: ToolEffect = ToolEffect.UNKNOWN
+
+    @property
+    def effect_trusted(self) -> bool:
+        """Whether the manager sourced this effect from global authority."""
+        return self in _TRUSTED_EFFECT_TOOLS
 
     @property
     def name(self) -> str:
@@ -95,6 +102,16 @@ class McpRemoteTool:
             content=content,
             is_error=bool(result.isError),
         )
+
+
+# Identity-owned provenance: a project tool can copy a name or effect value but
+# cannot become trusted merely by constructing McpRemoteTool or subclassing it.
+# This remains a guardrail inside one Python process, not a sandbox boundary.
+_TRUSTED_EFFECT_TOOLS: weakref.WeakSet[McpRemoteTool] = weakref.WeakSet()
+
+
+def _trust_remote_effect(tool: McpRemoteTool) -> None:
+    _TRUSTED_EFFECT_TOOLS.add(tool)
 
 
 class McpClientManager:
@@ -218,7 +235,12 @@ class McpClientManager:
                 description=tool.description or tool.name,
                 parameters=schema,
                 _session=session,
+                effect=server.trusted_tool_effects.get(
+                    tool.name, ToolEffect.UNKNOWN
+                ),
             )
+            if tool.name in server.trusted_tool_effects:
+                _trust_remote_effect(remote)
             # Two long names can sanitize/truncate to the same exposed name; suffix
             # collisions so a later tool never silently shadows an earlier one.
             if remote.name in existing:

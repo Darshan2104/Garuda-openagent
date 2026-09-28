@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -290,6 +290,7 @@ def resolve_edit(
 
 
 class EditTool:
+    effect = ToolEffect.MUTATING
     name = "edit"
     description = (
         "Perform an exact string replacement in an existing file. "

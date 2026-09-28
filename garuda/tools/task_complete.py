@@ -1,9 +1,10 @@
-from garuda.tools.protocol import ToolContext
+from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 
 class TaskCompleteTool:
+    effect = ToolEffect.MUTATING
     name = "task_complete"
     description = (
         "Signal that the task is finished. Provide a summary and shell commands that would "
