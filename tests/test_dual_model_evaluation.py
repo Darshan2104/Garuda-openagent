@@ -15,8 +15,11 @@ from garuda.eval.dual_model import (
     fixtures_dir,
     format_comparison,
     load_task_mix,
+    paired_result_from_agent_result,
     role_cost_total,
+    save_paired_results,
 )
+from garuda.types import AgentResult
 
 
 def _result(task, trial, **kw):
@@ -255,3 +258,148 @@ def test_offline_fixture_report_is_reproducible():
     assert any("external subscription" in note for note in first.notes)
     assert first.passes_release_gates()
     assert "release gates=PASS" in format_comparison(first)
+
+
+def test_native_result_becomes_complete_paired_trial_with_child_spend():
+    result = AgentResult(
+        success=True,
+        final_message="done",
+        messages=[],
+        turns=2,
+        metadata={
+            "metrics": {"tool_ms_total": 15},
+            "initial_selection": {
+                "classifier": {
+                    "evaluated": True,
+                    "usage": {"prompt": 5, "completion": 2},
+                    "cost_usd": 0.005,
+                }
+            },
+            "events": [
+                {
+                    "type": "model_response",
+                    "timestamp": "2026-09-28T10:00:00+00:00",
+                    "payload": {
+                        "model_binding_role": "reasoning",
+                        "call_purpose": "controller",
+                        "model": "reasoner",
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "cost_usd": 0.1,
+                        },
+                        "duration_ms": 90,
+                    },
+                },
+                {
+                    "type": "tool_call",
+                    "timestamp": "2026-09-28T10:00:01+00:00",
+                    "payload": {"name": "read_file"},
+                },
+                {
+                    "type": "tool_call",
+                    "timestamp": "2026-09-28T10:00:02+00:00",
+                    "payload": {"name": "web_search"},
+                },
+                {
+                    "type": "model_fallback",
+                    "timestamp": "2026-09-28T10:00:03+00:00",
+                    "payload": {},
+                },
+                {
+                    "type": "collection",
+                    "timestamp": "2026-09-28T10:00:04+00:00",
+                    "payload": {
+                        "state": "completed_stale",
+                        "attempt_metrics": [
+                            {
+                                "model_binding_role": "collection",
+                                "call_purpose": "collector",
+                                "model": "collector",
+                                "usage": {
+                                    "prompt_tokens": 30,
+                                    "completion_tokens": 10,
+                                },
+                                "cost_usd": 0.02,
+                                "elapsed_ms": 40,
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "verification",
+                    "timestamp": "2026-09-28T10:00:05+00:00",
+                    "payload": {"approved": True},
+                },
+            ],
+        },
+    )
+
+    trial = paired_result_from_agent_result(result, task_id="read-1", trial="candidate")
+
+    assert trial.success and trial.verification_passed is True
+    assert trial.total_tokens == 167
+    assert trial.reasoning_tokens == 120
+    assert trial.collection_tokens == 40
+    assert trial.classifier_tokens == 7
+    assert trial.reasoning_cost_usd == pytest.approx(0.1)
+    assert trial.collection_cost_usd == pytest.approx(0.02)
+    assert trial.classifier_cost_usd == pytest.approx(0.005)
+    assert trial.total_cost_usd == pytest.approx(0.125)
+    assert trial.model_ms == 130
+    assert trial.wall_ms == 5000
+    assert (trial.file_reads, trial.searches) == (1, 1)
+    assert (trial.collection_jobs, trial.fallbacks, trial.stale_reports) == (1, 1, 1)
+    assert trial.collection_mutations == 0
+    assert trial.attribution_complete is True
+
+
+def test_native_result_fails_closed_for_unattributed_or_unpriced_calls():
+    result = AgentResult(
+        success=False,
+        final_message="",
+        messages=[],
+        turns=1,
+        metadata={
+            "events": [
+                {
+                    "type": "model_response",
+                    "timestamp": "2026-09-28T10:00:00+00:00",
+                    "payload": {"usage": {"prompt_tokens": 3}},
+                }
+            ]
+        },
+    )
+
+    trial = paired_result_from_agent_result(result, task_id="bad-1", trial="candidate")
+
+    assert trial.attribution_complete is False
+    assert trial.total_tokens == 3
+    assert trial.total_cost_usd is None
+    assert trial.cost_unknown_reason is not None
+
+
+def test_paired_report_requires_reproducibility_metadata(tmp_path):
+    result = _result("read-1", "baseline")
+    destination = tmp_path / "reports" / "paired.json"
+
+    complete_metadata = {
+        "model_versions": {"reasoning": "provider/model@2026-09-28"},
+        "price_source": "provider invoice",
+        "prompt_revision": "sha256:example",
+    }
+    for required in complete_metadata:
+        metadata = dict(complete_metadata)
+        metadata.pop(required)
+        with pytest.raises(ValueError, match=required):
+            save_paired_results(destination, [result], metadata=metadata)
+
+    saved = save_paired_results(
+        destination,
+        [result],
+        metadata=complete_metadata,
+    )
+    payload = json.loads(saved.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["task_mix_version"] == TASK_MIX_VERSION
+    assert payload["trials"] == [result.to_dict()]

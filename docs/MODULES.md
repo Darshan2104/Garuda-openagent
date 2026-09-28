@@ -291,8 +291,9 @@ unknown costs/completions kept unknown, true medians, validated ingestion,
 hashed prompts, per-cell trial counts, and handoff rates).
 `dual_model.py` (P1 #81: paired model schema and release gates; committed
 fixtures are synthetic contract examples, never evidence that a live release
-gate has passed—only paired trajectories collected after #82 may support that
-claim).
+gate has passed. `paired_result_from_agent_result` and `save_paired_results`
+turn native event trails into reproducible, metadata-bound paired-trial reports;
+only collected paired trajectories may support a rollout claim).
 
 ## Everything else
 
