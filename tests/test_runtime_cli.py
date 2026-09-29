@@ -378,6 +378,51 @@ async def test_handoff_preview_mutates_nothing(tmp_path, monkeypatch):
     assert store.load_unified("s1").handoff["state"] == "none"
 
 
+def test_handoff_preview_resolves_a_unique_displayed_session_prefix(monkeypatch, capsys):
+    store = SessionStore()
+    session_id = "preview-session-unique"
+    store.begin(session_id, task="move it", model="m", agent="a", workspace="w")
+    store.ensure_unified(session_id)
+
+    code, output = _main(
+        monkeypatch,
+        capsys,
+        "runtime",
+        "handoff",
+        "--session",
+        "preview-",
+        "--to",
+        "codex",
+    )
+
+    assert code == 0
+    assert f"handoff preview: {session_id} -> codex" in output
+    assert store.load_unified(session_id).handoff["state"] == "none"
+
+
+def test_runtime_handoff_preview_refuses_ambiguous_prefix_without_mutating(monkeypatch, capsys):
+    store = SessionStore()
+    session_ids = ("ambiguous-first", "ambiguous-second")
+    for session_id in session_ids:
+        store.begin(session_id, task="move it", model="m", agent="a", workspace="w")
+        store.ensure_unified(session_id)
+
+    code, output = _main(
+        monkeypatch,
+        capsys,
+        "runtime",
+        "handoff",
+        "--session",
+        "ambiguous-",
+        "--to",
+        "codex",
+    )
+
+    assert code == 2
+    assert "Ambiguous session prefix" in output
+    assert all(store.load_unified(session_id).handoff["state"] == "none" for session_id in session_ids)
+
+
 def test_handoff_confirm_then_recover_end_to_end(tmp_path, monkeypatch, capsys):
     """`garuda runtime handoff --confirm` moves ownership, delivers the package
     as the target's first prompt, closes and reaps the target, and leaves a

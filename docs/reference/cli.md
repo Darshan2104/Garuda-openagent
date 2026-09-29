@@ -47,6 +47,10 @@ second handoff refuses until `garuda runtime reclaim` returns it to native
 record its return to the source, the error names this command. Native sessions
 record a relative workspace, so pass `--workspace`.
 
+Every runtime command that takes `--session` accepts a full session ID, the
+unique prefix shown by `garuda sessions`, or `latest`. Ambiguous and missing
+references refuse before a preview, lease, handoff, or recovery action starts.
+
 ## Common `run` flags
 
 ```text

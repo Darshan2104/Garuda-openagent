@@ -563,6 +563,8 @@ async def run_runtime_command(args) -> int:
 
 
 async def _run_runtime_command(args) -> int:
+    import sys
+
     from garuda.context.pack import ContextPackManager
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.runtime_cli import (
@@ -602,18 +604,24 @@ async def _run_runtime_command(args) -> int:
             return 2
         return 0
     store = SessionStore()
+    if command in {"handoff", "resume", "reclaim", "recover", "support"}:
+        try:
+            session_id = store.resolve(args.session)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     if command == "handoff":
         if not args.confirm:
-            print(cmd_handoff_preview(store, args.session, args.to), end="")
+            print(cmd_handoff_preview(store, session_id, args.to), end="")
             return 0
         from garuda.interfaces.run_guard import interactive_approval
 
-        manager = ContextPackManager(store.session_dir(args.session))
+        manager = ContextPackManager(store.session_dir(session_id))
         try:
             print(
                 await cmd_handoff_confirm(
                     store,
-                    args.session,
+                    session_id,
                     args.to,
                     workspace=args.workspace,
                     pack_manager=manager,
@@ -650,7 +658,7 @@ async def _run_runtime_command(args) -> int:
             print(
                 await cmd_resume(
                     store=store,
-                    session_id=args.session,
+                    session_id=session_id,
                     task=args.task,
                     model=model,
                     agent=agent,
@@ -679,7 +687,7 @@ async def _run_runtime_command(args) -> int:
         from garuda.workspace.lease import LeaseStore
 
         try:
-            print(cmd_reclaim(store, args.session, leases=LeaseStore()), end="")
+            print(cmd_reclaim(store, session_id, leases=LeaseStore()), end="")
         except RecoveryError as exc:
             print(f"Error: reclaim refused: {exc}")
             return 1
@@ -688,7 +696,7 @@ async def _run_runtime_command(args) -> int:
         from garuda.runtime.recovery import RecoveryError
 
         try:
-            print(cmd_recover(store, args.session, as_json=args.json), end="")
+            print(cmd_recover(store, session_id, as_json=args.json), end="")
         except RecoveryError as exc:
             print(f"Error: recovery refused: {exc}")
             return 1
@@ -697,7 +705,7 @@ async def _run_runtime_command(args) -> int:
         from garuda.interfaces.runtime_cli import cmd_support_bundle
 
         try:
-            print(cmd_support_bundle(store, args.session), end="")
+            print(cmd_support_bundle(store, session_id), end="")
         except ValueError as exc:
             print(f"Error: {exc}")
             return 2
