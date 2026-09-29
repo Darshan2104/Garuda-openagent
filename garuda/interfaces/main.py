@@ -333,6 +333,45 @@ def build_parser():
         help="Recipe parameter (repeatable)",
     )
 
+    eval_parser = subparsers.add_parser("eval", help="Build and inspect evaluation evidence")
+    eval_sub = eval_parser.add_subparsers(dest="eval_command")
+    dual_model = eval_sub.add_parser(
+        "dual-model", help="Build paired evidence from completed native sessions"
+    )
+    dual_sub = dual_model.add_subparsers(dest="dual_model_command")
+    dual_report = dual_sub.add_parser(
+        "report", help="Write a reproducible paired-trial report without running providers"
+    )
+    dual_report.add_argument(
+        "--baseline", action="append", default=[], metavar="TASK=SESSION", help="Baseline trial"
+    )
+    dual_report.add_argument(
+        "--candidate", action="append", default=[], metavar="TASK=SESSION", help="Candidate trial"
+    )
+    dual_report.add_argument(
+        "--sessions-dir", help="Root containing persisted Garuda session directories"
+    )
+    dual_report.add_argument(
+        "--task-mix", required=True, help="JSON manifest assigning every task to a mix category"
+    )
+    dual_report.add_argument(
+        "--model-version",
+        action="append",
+        default=[],
+        metavar="ROLE=VERSION",
+        help="Pinned model version provenance (repeatable; reasoning required)",
+    )
+    dual_report.add_argument("--price-source", required=True, help="Provider invoice or pinned price source")
+    dual_report.add_argument("--prompt-revision", required=True, help="Pinned prompt revision identifier")
+    dual_report.add_argument("--evidence-scores", help="Optional JSON independent quality scores")
+    dual_report.add_argument("--output", required=True, help="Destination JSON report")
+    dual_report.add_argument("--overwrite", action="store_true", help="Replace an existing report")
+    dual_report.add_argument(
+        "--require-passing-gates",
+        action="store_true",
+        help="Exit nonzero after writing if release gates do not pass",
+    )
+
     runtime_parser = subparsers.add_parser("runtime", help="Select and inspect runtimes")
     runtime_sub = runtime_parser.add_subparsers(dest="runtime_command")
     runtime_list = runtime_sub.add_parser("list", help="List configured runtimes")
@@ -407,6 +446,46 @@ def run_sessions(args) -> int:
             f"{meta.get('updated_at', ''):<32} "
             f"{task}"
         )
+    return 0
+
+
+def run_dual_model_report(args) -> int:
+    """Build evidence from persisted sessions; this path never creates a model."""
+    import sys
+
+    from garuda.core.sessions import SessionStore
+    from garuda.eval.dual_model import format_comparison
+    from garuda.eval.paired_report import (
+        PairedReportError,
+        build_paired_report,
+        load_evidence_scores,
+        load_task_manifest,
+        parse_model_versions,
+        parse_trial_reference,
+        write_paired_report,
+    )
+
+    try:
+        baselines = [parse_trial_reference(value, trial="baseline") for value in args.baseline]
+        candidates = [parse_trial_reference(value, trial="candidate") for value in args.candidate]
+        report = build_paired_report(
+            store=SessionStore(args.sessions_dir),
+            baselines=baselines,
+            candidates=candidates,
+            task_manifest=load_task_manifest(args.task_mix),
+            model_versions=parse_model_versions(args.model_version),
+            price_source=args.price_source,
+            prompt_revision=args.prompt_revision,
+            evidence_scores=load_evidence_scores(args.evidence_scores),
+        )
+        target = write_paired_report(args.output, report, overwrite=args.overwrite)
+    except PairedReportError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(f"wrote paired report: {target}")
+    print(format_comparison(report.comparison))
+    if args.require_passing_gates and not report.release_gates_passed:
+        return 3
     return 0
 
 
@@ -978,6 +1057,11 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_runtime_command(args)))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
+    if args.command == "eval":
+        if args.eval_command == "dual-model" and args.dual_model_command == "report":
+            raise SystemExit(run_dual_model_report(args))
+        parser.parse_args(["eval", "--help"])
+        raise SystemExit(1)
     if args.command == "mcp":
         if args.mcp_command == "list":
             raise SystemExit(asyncio.run(run_mcp_list(args)))

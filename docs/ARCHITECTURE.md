@@ -49,8 +49,10 @@ A task flows through these in order. Following this list top to bottom is the
 fastest way to learn the system.
 
 1. **Entry** — `interfaces/main.py` (CLI), `interfaces/server.py` + `jobs.py`
-   (job-queue server), `sdk/software_agent.py` (library). Each resolves a task,
-   a model, and a workspace.
+   (job-queue server), `sdk/software_agent.py` (library). Task-running entries
+   resolve a task, a model, and a workspace. The `eval dual-model report` CLI
+   is deliberately different: it is a read-only consumer of completed native
+   session evidence and never constructs a model or provider client.
 2. **Profile + posture** — `agents/setup.py::prepare_agent_run` is the shared
    chokepoint: it loads the profile (`agents/loader.py`), turns it into an
    `AgentConfig`, applies the mode preset, builds the toolkit and the permission

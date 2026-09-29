@@ -24,6 +24,56 @@ Unknown cost is recorded as `null` with a reason and excluded from savings —
 never compared as zero. This is what keeps an external subscription harness
 from reading as free.
 
+## Build a paired report from sessions
+
+After running one terminal native session per baseline/candidate task, create
+a task-mix manifest. It contains the existing mix definition and an exact task
+assignment, for example:
+
+```json
+{
+  "categories": [
+    {"id": "read-heavy", "delegation_expected": true},
+    {"id": "debugging", "delegation_expected": true},
+    {"id": "implementation", "delegation_expected": true},
+    {"id": "doc-analysis", "delegation_expected": true},
+    {"id": "do-not-delegate", "delegation_expected": false}
+  ],
+  "tasks": [
+    {"id": "read-files", "category": "read-heavy"},
+    {"id": "debug-test", "category": "debugging"},
+    {"id": "small-change", "category": "implementation"},
+    {"id": "read-doc", "category": "doc-analysis"},
+    {"id": "pure-edit", "category": "do-not-delegate"}
+  ]
+}
+```
+
+The full manifest must assign at least one task to every representative
+category. Build the report with session IDs rather than copying transcripts:
+
+```bash
+garuda eval dual-model report \
+  --sessions-dir .agent/sessions \
+  --task-mix task-mix.json \
+  --baseline read-files=baseline-session-id \
+  --candidate read-files=candidate-session-id \
+  --model-version reasoning=provider/model@pinned-version \
+  --price-source 'provider invoice export 2026-09' \
+  --prompt-revision git:abc123 \
+  --output paired-report.json
+```
+
+Repeat the two trial flags for every task. The command reads only terminal
+persisted sessions; it never starts a model or loads provider credentials. It
+requires one baseline and one candidate for every manifest task, writes no raw
+event payloads (but records the referenced session IDs), and refuses to replace
+an existing report unless `--overwrite` is explicit. Use
+`--require-passing-gates` in automation to return nonzero
+after emitting a valid report whose release gates fail. A report built from
+fixtures or local sessions is evidence for its recorded trials only, not proof
+that a live rollout should proceed.
+
 ## Representative mix
 
 * Read-heavy exploration (locate files, extract snippets, enumerate symbols).
@@ -43,7 +93,8 @@ delta as measured.
 * At least 30% lower reasoning-model input tokens on read-heavy tasks.
 * No more than a two-percentage-point completion-rate regression.
 * No material decline in evidence quality or repository investigation.
-* Complete attribution of native model calls to a model role.
+* Complete attribution of native model calls to a model role; unknown
+  attribution fails the gate.
 * Zero collection-authorized workspace mutations.
 * Visible fallback and stale-report rates.
 

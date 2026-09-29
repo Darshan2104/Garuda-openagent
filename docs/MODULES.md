@@ -294,6 +294,12 @@ fixtures are synthetic contract examples, never evidence that a live release
 gate has passed. `paired_result_from_agent_result` and `save_paired_results`
 turn native event trails into reproducible, metadata-bound paired-trial reports;
 only collected paired trajectories may support a rollout claim).
+`paired_report.py` (the read-only `garuda eval dual-model report` service:
+loads terminal native sessions only, requires the pinned task mix and
+provenance, emits aggregate trial records without raw events, and refuses
+incomplete pairs or an accidental report overwrite. Its input validation and
+session-to-record projection deliberately share this one 338-line trust
+boundary, rather than allowing a second entry point to bypass the refusals).
 
 ## Everything else
 
