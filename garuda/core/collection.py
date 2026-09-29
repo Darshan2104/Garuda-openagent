@@ -581,7 +581,7 @@ class CollectionCompletionGate:
     allowed_buffer_ids: set[str]
     permissions: CollectionPermissionCeiling | None = None
     tool_name: str = "submit_collection"
-    supports_forced_submission: bool = False
+    supports_forced_submission: bool = True
     report: CollectionReport | None = None
 
     async def attempt(
@@ -1045,7 +1045,7 @@ class CollectionCoordinator:
         config.enable_acceptance_contract = False
         config.enable_three_step_summary = False
         config.enable_verifier = True
-        config.force_final_submission = False
+        config.force_final_submission = True
         config.bootstrap_environment = False
         config.allowed_tools = None
         return config

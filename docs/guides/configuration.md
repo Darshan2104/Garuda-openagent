@@ -55,6 +55,9 @@ not the parent transcript. Requests may narrow workspace paths and web-source
 URL prefixes; evidence outside those scopes or referencing a missing buffer is
 rejected. The returned parent tool result is a bounded JSON report, while the
 full child trace is stored under the parent session's `subagents/` directory.
+If an ordinary collection-worker attempt ends after evidence gathering, Garuda
+makes one terminal-only submission attempt with only `submit_collection`
+available; the same report and evidence validation still applies.
 
 The non-mutating toolkit and path checks are guardrails. Use a read-only mount
 or isolated snapshot when strict write confinement is required.

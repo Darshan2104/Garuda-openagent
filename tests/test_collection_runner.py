@@ -8,7 +8,7 @@ from garuda.core.buffer import ToolOutputBuffer
 from garuda.core.collection import CollectionCoordinator
 from garuda.core.events import SUBAGENT_LOG_DIR, EventStore
 from garuda.core.permissions import PermissionEngine
-from garuda.model.config import CollectionPolicy
+from garuda.model.config import CollectionBudget, CollectionPolicy
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
@@ -143,6 +143,63 @@ async def test_prose_only_worker_cannot_complete_collection(tmp_path):
         await coordinator.delegate(
             {"objective": "inspect", "questions": ["what?"], "max_turns": 1}
         )
+
+
+@pytest.mark.asyncio
+async def test_collection_forces_terminal_submission_after_evidence_turn(tmp_path):
+    """A bounded worker gets one submit-only turn after collecting evidence."""
+    (tmp_path / "source.txt").write_text("value=42\n")
+    model = RecordingModel(
+        [
+            ModelResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="read", name="read_file", arguments={"path": "source.txt"})
+                ],
+            ),
+            ModelResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="submit",
+                        name="submit_collection",
+                        arguments={
+                            "summary": "The value is 42.",
+                            "findings": ["source.txt defines value=42"],
+                            "evidence": [
+                                {"kind": "file", "location": "source.txt", "detail": "line 1"}
+                            ],
+                            "unknowns": [],
+                            "buffer_ids": [],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+    coordinator = CollectionCoordinator(
+        model=model,
+        policy=CollectionPolicy(
+            enabled=True,
+            budget=CollectionBudget(max_turns_per_job=1),
+        ),
+        env=LocalEnvironment(tmp_path),
+        events=EventStore(),
+        parent_context=_parent_context(),
+        parent_buffer=None,
+        base_tools=default_tools(),
+        parent_permissions=PermissionEngine(),
+    )
+
+    payload = json.loads(
+        await coordinator.delegate(
+            {"objective": "read source", "questions": ["what is the value?"]}
+        )
+    )
+
+    assert payload["report"]["findings"] == ["source.txt defines value=42"]
+    forced_tools = {entry["function"]["name"] for entry in model.requests[-1][1]}
+    assert forced_tools == {"submit_collection"}
 
 
 @pytest.mark.asyncio
