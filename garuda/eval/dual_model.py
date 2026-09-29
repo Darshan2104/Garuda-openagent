@@ -235,10 +235,10 @@ class PairedComparison:
     def passes_release_gates(self) -> bool:
         """All design thresholds hold; unpriced tasks never count as savings.
 
-        Signals that were never recorded (no evidence scores, no attribution
-        attestation, no baseline investigation) do not fail the gate on their
-        own — they are reported in the aggregates and notes instead. Explicit
-        violations do fail: unattributed candidate calls, any
+        Missing evidence scores and a missing baseline investigation count are
+        reported but do not fail on their own. Complete candidate model-call
+        attribution is a release requirement, so both missing and explicitly
+        failed attribution do fail. Other violations that fail are a
         collection-authorized mutation, a steep investigation drop, or an
         evidence-score drop beyond tolerance.
         """
@@ -259,6 +259,8 @@ class PairedComparison:
         if self.collection_mutations > 0:
             return False
         if self.attribution_gaps > 0:
+            return False
+        if self.attribution_unknown > 0:
             return False
         ratio = self.investigation_ratio()
         if ratio is not None and ratio < 1.0 - MAX_INVESTIGATION_DECLINE:
@@ -343,7 +345,7 @@ def compare_trials(baselines: list[PairedResult], candidates: list[PairedResult]
     if comparison.attribution_unknown:
         comparison.notes.append(
             f"{comparison.attribution_unknown} candidate trial(s) lack role×purpose "
-            "attestation; counted here, not treated as savings or as gaps"
+            "attestation; release gates fail closed until attribution is complete"
         )
     return comparison
 

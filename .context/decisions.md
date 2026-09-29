@@ -20,6 +20,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Project configuration cannot authorize providers, endpoints, executables, credential sources, or looser ceilings.
 - Unknown cost is recorded as unknown, never zero; release claims use total-trajectory paired comparisons.
 
+## 2026-09-29 — paired-trial reports are offline session evidence
+
+- `garuda eval dual-model report` reads only completed native session records;
+  it never launches a model, reads provider credentials, or copies raw event
+  payloads into its report.
+- A report requires an exact representative task assignment, one baseline and
+  candidate session per task, and pinned model/price/prompt provenance. Missing
+  candidate-call attribution fails release gates rather than being inferred as
+  acceptable.
+- Existing reports are preserved unless overwrite is explicit. Gate failure is
+  recorded in the report; automation opts into a failing exit with
+  `--require-passing-gates`.
+
 ## 2026-09-22 — stack base scope (#83) and Ubuntu reaping
 
 - PR #83 is accepted explicitly as a kitchen-sink stack base, not as a

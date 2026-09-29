@@ -145,6 +145,7 @@ def test_unattested_trials_are_counted_not_silent():
     assert comp.attribution_unknown == 1
     assert comp.attribution_gaps == 0
     assert any("attestation" in note for note in comp.notes)
+    assert not comp.passes_release_gates()
 
 
 def test_collection_mutations_fail_release_gates():

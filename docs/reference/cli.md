@@ -7,6 +7,7 @@
 | `garuda serve` | Run the authenticated JSON-RPC job queue. |
 | `garuda web` | Serve the local dashboard. |
 | `garuda sessions` | List resumable persisted sessions. |
+| `garuda eval dual-model report ...` | Build a paired rollout report from completed native sessions. |
 | `garuda mcp list` | Resolve and inspect MCP configuration. |
 | `garuda recipe run file.yaml` | Execute a YAML workflow. |
 | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable). |
@@ -67,3 +68,15 @@ record a relative workspace, so pass `--workspace`.
 ```
 
 Use `garuda <command> --help` as the source of truth for version-specific flags.
+
+## Paired dual-model reports
+
+`garuda eval dual-model report` is an offline, read-only command. Supply an
+exact task-mix manifest, one `--baseline TASK=SESSION` and one
+`--candidate TASK=SESSION` for every task, pinned `--model-version` values,
+`--price-source`, `--prompt-revision`, and `--output`. It refuses incomplete or
+non-terminal input sessions and existing output unless `--overwrite` is set.
+It does not launch a model or read provider credentials. Add
+`--require-passing-gates` when a valid report with failed rollout gates must
+produce a nonzero exit status. See [dual-model evaluation](../evaluation/dual-model-routing.md)
+for the manifest and full example.
