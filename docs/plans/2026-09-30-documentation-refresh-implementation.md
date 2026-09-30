@@ -39,7 +39,9 @@ requests based on the merged `origin/main` branch.
    reference concise.
 3. Add a dedicated lower-case safety/workspaces guide and connect configuration,
    dashboard, evaluation, and index navigation without duplicating content.
-4. Resolve the `docs/superpowers/` and `docs/DECISIONS.md` naming confusion,
-   preserving history and moving command-check exclusions with design records.
+4. Move design and implementation records to indexed `docs/design/` and
+   `docs/plans/` directories, rename the retrospective ledger to
+   `docs/major-changes.md`, preserve history, and move command-check exclusions
+   with the records.
 5. Run both checker modes and relevant tests, review links from a clean
    checkout, then open and merge the final PR through `Darshan2104`.

@@ -5,7 +5,7 @@
 **Date:** 2026-09-14
 
 **Design:**
-[Dual-model delegation and cross-runtime routing](../specs/2026-09-14-dual-model-delegation-and-runtime-routing-design.md)
+[Dual-model delegation and cross-runtime routing](../design/2026-09-14-dual-model-delegation-and-runtime-routing-design.md)
 
 ## Objective
 

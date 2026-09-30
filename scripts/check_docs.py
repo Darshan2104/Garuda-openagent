@@ -63,14 +63,15 @@ USER_DOC_EXCLUDED_FILES = frozenset(
     {
         "docs/ARCHITECTURE.md",
         "docs/BACKLOG.md",
-        "docs/DECISIONS.md",
         "docs/MODULES.md",
+        "docs/major-changes.md",
     }
 )
 USER_DOC_EXCLUDED_PREFIXES = (
     "docs/archive/",
+    "docs/design/",
+    "docs/plans/",
     "docs/roadmap/",
-    "docs/superpowers/",
 )
 COMMAND_FENCE_LANGUAGES = frozenset({"bash", "console", "sh", "shell", "text", "zsh"})
 COMMAND_IGNORE_MARKER = "docs-command-ignore"

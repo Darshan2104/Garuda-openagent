@@ -2,6 +2,10 @@
 
 What was broken, what we did, what it bought us. 2026-06-30 → 2026-08-01.
 
+This is a retrospective change ledger, not the repository's decision authority.
+Current durable architecture and security decisions live in
+[`.context/decisions.md`](../.context/decisions.md).
+
 Numbers come from the commit that made the change. Anything marked *1 trial* is a
 direction, not a result — this task suite is noisy and nothing has been run twice.
 

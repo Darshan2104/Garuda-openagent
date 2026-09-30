@@ -105,9 +105,38 @@ garuda run -t "Use the issue tracker" --mcp-config custom-mcp.json
 ## Initial runtime selection
 
 `garuda run` picks the runtime a session starts on: an explicit `--runtime`,
-then a profile pin, a trusted rule, the optional classifier, the configured
-default, and finally built-in native. Rules, defaults, and the classifier
-live only in the global `~/.agent/settings.yaml`.
+then a trusted global rule, a globally authorized project rule, the optional
+classifier, the configured default, and finally built-in native. Global rules,
+defaults, project-route trust, and the classifier live in
+`~/.agent/settings.yaml`.
+
+```yaml
+# ~/.agent/settings.yaml
+routing:
+  default_runtime: native
+  fallback_runtime: native
+  trust_project_routes: false
+  rules:
+    - id: readonly-review
+      priority: 100
+      runtime: codex
+      when:
+        agents: [reviewer]
+        modes: [readonly]
+        marker_files: [pyproject.toml]
+```
+
+Every non-empty condition in a rule must match. Higher priority wins, then
+declaration order. Rules can match agent, mode, tags, required capabilities,
+workspace kind, permission ceiling, language, marker files, bounded task text,
+and paths. Unknown or executable-shaped fields fail closed.
+
+A project may propose declarative rules under `.agent/settings.yaml`, but they
+are recommendations unless trusted global configuration sets
+`trust_project_routes: true`. Project rules cannot contain task regular
+expressions or runtime commands.
+
+The classifier is consulted only after deterministic rules do not select:
 
 ```yaml
 # ~/.agent/settings.yaml
@@ -124,8 +153,8 @@ routing:
     on_failure: default
 ```
 
-The classifier is called only when no explicit choice, profile pin, or rule
-selects a runtime. It gets the task text, agent, mode, language and marker-file
+The classifier is called only when no explicit choice or rule selects a
+runtime. It gets the task text, agent, mode, language and marker-file
 names, and the approved candidates with their capabilities. It gets no tools
 and no file contents. Its answer is revalidated. An invalid, low-confidence,
 incapable, or timed-out answer uses `default_runtime`. Without a `collection`
@@ -133,6 +162,9 @@ model in the global default binding (or the alias named by `model_binding`),
 classification is skipped unless `allow_reasoning_fallback` is true. It is also skipped when no model binding is configured at all. The call makes one attempt and drops thinking and reasoning settings so `max_output_tokens` holds. A
 project `.agent/settings.yaml` may only opt out with
 `routing: {classifier: false}`.
+
+See [External harnesses](external-harnesses.md#route-the-initial-runtime) for
+runtime discovery and execution behavior.
 
 ## Permissions and hooks
 
@@ -143,6 +175,9 @@ Use profile permission rules for guardrails and a Docker workspace when a real c
 trust_project_hooks: true
 load_project_tools: true
 ```
+
+See [Safety and workspaces](safety-and-workspaces.md) before enabling project
+code, permissive modes, network access, or host-backed execution.
 
 ## Environment variables
 

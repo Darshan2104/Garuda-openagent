@@ -1,114 +1,244 @@
 # External harnesses
 
-Garuda ships ACP adapter manifests for subscription-backed coding harnesses
-while its native runtime stays the default. You authenticate in your own CLI;
-Garuda never sees, reads, or stores subscription credentials. Subscription use
-is governed by each vendor's policy, not by Garuda: quota appears only when the
-harness itself reports it, and Garuda never estimates, infers, or zero-fills
-usage.
+Garuda can launch subscription-backed coding harnesses through the Agent Client
+Protocol (ACP) while keeping its native model-and-tool loop as the default. The
+shipped trusted catalog includes `claude`, `codex`, `cursor`, `opencode`, `pi`,
+and `goose`.
 
-**Status:** the shipped manifests (`claude`, `codex`, `cursor`, `opencode`,
-`pi`, `goose`) are part of the trusted runtime catalog, so they resolve, show
-up in `garuda runtime list`, and honor `disabled_runtimes`. `garuda run
---runtime <id>` launches an installed ACP harness under the native run's
-invariants (workspace lease, persisted session and child record, baseline and
-delta, broker approvals), and `garuda runtime handoff --confirm` hands a native
-session to one — see [ACP runs and handoffs](../reference/cli.md#acp-runs-and-handoffs).
-A handed-off session stays with the harness: Garuda does not resume it
-natively. The SDK and the dashboard still run only the native loop and refuse
-an ACP selection instead of silently running native. Garuda does not verify an
-ACP result, and ACP authority is recorded, not enforced (the harness runs its
-own edits and commands). The adapters are exercised only against Garuda's
-strict ACP v1 test fixture through an installed shim; no vendor CLI has been
-verified end to end by this repository's tests.
+You install and authenticate each vendor's official CLI or ACP adapter yourself.
+Garuda launches that command but never reads, copies, persists, or proxies the
+vendor's OAuth credentials. Subscription use and quota remain governed by the
+vendor.
 
-## Claude Code
+## Native and ACP behavior differ
 
-- Launch command: `claude-agent-acp` (registry package
-  `@agentclientprotocol/claude-agent-acp`).
-- Setup: install Node.js 20+, install and log in Claude Code with your Claude
-  Pro/Max login, then `npm install -g @agentclientprotocol/claude-agent-acp`
-  and verify `claude-agent-acp --version`.
-- Auth stays in your Claude Code login (macOS Keychain or
-  `~/.claude/.credentials.json` on Linux). Garuda never reads either. Do not
-  set `ANTHROPIC_API_KEY` if you want subscription billing.
+| Behavior | Native runtime | ACP runtime |
+|---|---|---|
+| Controller | Garuda model loop | External harness |
+| Tool permissions | Enforced by Garuda's native permission engine | Harness requests can flow through the approval broker; harness authority is not confined by native tool rules |
+| Completion | Garuda completion gates apply according to mode | A completed turn means the harness ended; Garuda does not verify the result |
+| Session evidence | Messages, events, baseline, delta, metrics | Normalized events, runtime segment, child record, baseline, and delta where available |
+| Credentials | Provider API key for the selected model | User-owned vendor CLI login |
 
-## Codex
+ACP execution is not a way to place the vendor harness inside a Garuda Docker or
+OS-sandbox workspace. The harness is launched as its own subprocess and performs
+edits and commands with its own authority. Use the vendor's controls and an
+independently isolated workspace when running untrusted code. See
+[Safety and workspaces](safety-and-workspaces.md).
 
-- Launch command: `codex-acp` (registry package
-  `@agentclientprotocol/codex-acp`, successor of `@zed-industries/codex-acp`).
-- Setup: install Node.js 20+ and the Codex CLI, authenticate with ChatGPT
-  login (`codex login`), then `npm install -g @agentclientprotocol/codex-acp`
+## Discover installed runtimes
+
+List the trusted catalog and discovery health:
+
+```bash
+garuda runtime list
+garuda runtime inspect opencode
+```
+
+Add `--json` for machine-readable health records. Discovery reports whether the
+configured executable resolves, plus declared capabilities, version, setup
+guidance, and vendor-reported login or quota information when available. Missing
+login or quota data remains `unknown`; Garuda does not infer it from credential
+files or assume that unknown cost is zero.
+
+A runtime can be present in the catalog but unavailable because its executable
+is missing, it is disabled in trusted global configuration, or its version probe
+fails. `garuda runtime inspect <id>` is the first troubleshooting step.
+
+## Run a task directly on ACP
+
+Select the runtime explicitly:
+
+```bash
+garuda run --workspace . --runtime opencode -t "Inspect the failing tests"
+```
+
+Garuda resolves the trusted manifest before starting, acquires the workspace
+lease, records a session and baseline, launches the exact executable found by
+discovery, relays supported approval requests, records normalized events and the
+ending delta, then retires the child process. Unknown, disabled, or unavailable
+runtimes refuse instead of silently falling back to native.
+
+In a headless run, an approval request that needs a user answer is denied and
+audited. On an interactive terminal, Garuda can ask for a `y/N` decision. A
+reported `completed` status means the ACP agent ended its turn; it is not a
+native verification verdict.
+
+## Route the initial runtime
+
+Initial selection uses the first applicable source in this order:
+
+1. explicit `--runtime`;
+2. a trusted global deterministic routing rule;
+3. a project rule only when global settings authorize project routing;
+4. the optional trusted classifier;
+5. the configured default runtime; and
+6. built-in `native`.
+
+Global `~/.agent/settings.yaml` owns runtime manifests, rules, defaults, and the
+classifier. A project may define aliases to trusted runtime IDs or opt out of the
+classifier, but cannot provide an executable command or broaden global
+authority. See [Initial runtime selection](configuration.md#initial-runtime-selection).
+
+The classifier receives bounded task metadata and approved candidates, not file
+contents or tools. Its choice is revalidated against runtime capabilities. A
+timeout, malformed answer, low confidence, unavailable candidate, or capability
+mismatch uses the configured default according to policy.
+
+## Hand off a native session
+
+Preview first. Without `--confirm`, the command does not switch ownership:
+
+```bash
+garuda runtime handoff --session latest --to opencode
+```
+
+Execute the reviewed handoff explicitly:
+
+```bash
+garuda runtime handoff --session latest --to opencode --confirm
+```
+
+Use `--workspace` when an older native session recorded a relative workspace and
+the command is not being run from that directory.
+
+The confirmed transaction is one-shot:
+
+1. pause the native source;
+2. checkpoint its state and capture the workspace delta;
+3. start the exact target executable found during the pre-check;
+4. persist the target segment and acknowledgement, then record its child;
+5. close the native source;
+6. send the bounded handoff package as the target's first prompt; and
+7. close and retire the target after its turn.
+
+A failure before acknowledgement rolls back to the native source. A failure
+after acknowledgement is a target failure: Garuda closes the target and records
+the failure, but does not overwrite changes the target may already have made.
+The session belongs to the target after acknowledgement in either case.
+
+Handoff packages contain bounded task state, evidence references, workspace
+delta context, and redacted metadata—not vendor credentials, raw secrets, or an
+unbounded copy of the transcript.
+
+## Resume, recover, reclaim, and support
+
+Every runtime command that accepts `--session` supports a full ID, the unique
+prefix printed by `garuda sessions`, or `latest`. Ambiguous and missing
+references fail before preview, lease acquisition, or mutation.
+
+Classify and recover interrupted state:
+
+```bash
+garuda runtime recover --session latest --json
+```
+
+Recovery reports `resumable`, `rolled_back`, or `external`. A session owned by
+an external runtime refuses native resume and another handoff while that target
+may still be acting.
+
+After proving the target is stopped, return ownership to native:
+
+```bash
+garuda runtime reclaim --session latest
+garuda runtime resume --session latest -t "Continue after the external run"
+```
+
+Reclaim refuses while a workspace lease, live recorded child, or active target
+state indicates the harness may still be running. It is an ownership repair,
+not a rollback of external changes.
+
+Generate a redacted diagnostic bundle without copying raw event payloads:
+
+```bash
+garuda runtime support --session latest
+```
+
+The bundle contains runtime lanes, kind tallies, timing metrics, and scrubbed
+session metadata suitable for troubleshooting.
+
+## Dashboard, SDK, and service surfaces
+
+The dashboard's Runtimes board lists and inspects catalog entries, previews and
+prepares handoffs, shows workspace deltas, and runs recovery. Dashboard chat
+still starts the native loop; the runtime board operates on persisted sessions.
+
+`SoftwareAgent(runtime="opencode")` executes one ACP turn and returns an
+`AgentResult`. `Conversation` can start on ACP and switch ACP-to-ACP through the
+transactional handoff path. It deliberately refuses an in-process native-to-ACP
+switch; use the persisted CLI handoff for that transition.
+
+The JSON-RPC service exposes runtime list, inspect, handoff, recover, and support
+methods through the same trusted catalog. Request payloads cannot provide
+runtime launch manifests.
+
+## Vendor setup
+
+### Claude Code
+
+- Launch command: `claude-agent-acp` from
+  `@agentclientprotocol/claude-agent-acp`.
+- Install Node.js 20+, install and log in to Claude Code, then install the ACP
+  package globally and verify `claude-agent-acp --version`.
+- Authentication remains in the Claude Code login. Do not set
+  `ANTHROPIC_API_KEY` when you intend to use subscription billing.
+
+### Codex
+
+- Launch command: `codex-acp` from `@agentclientprotocol/codex-acp`.
+- Install Node.js 20+ and Codex CLI, run `codex login`, install the ACP package,
   and verify `codex-acp --version`.
-- Auth stays in your Codex login (`~/.codex/auth.json`). Garuda never reads it.
+- Authentication remains in the Codex CLI login.
 
-## Cursor Agent
+### Cursor Agent
 
-- Launch command: `agent acp` (native subcommand of the Cursor Agent CLI).
-- Setup: install the Cursor Agent CLI (whose documented default binary is
-  `~/.local/bin/agent`) and authenticate with your Cursor account, then verify
-  `agent --version`.
-- Auth stays in your Cursor login. Garuda never reads your Cursor credentials.
-- Limit: Garuda answers only `session/request_permission` from the agent.
-  Cursor's blocking extension requests such as `cursor/ask_question` and
-  `cursor/create_plan` get a JSON-RPC "method not found" error (fail closed),
-  so turns that depend on them end with the agent's error handling rather
-  than a question or plan in Garuda.
+- Launch command: `agent acp`, a Cursor Agent CLI subcommand.
+- Install and authenticate Cursor Agent, then verify `agent --version`.
+- Garuda answers `session/request_permission`. Unsupported blocking extensions
+  such as `cursor/ask_question` and `cursor/create_plan` fail closed with a
+  method-not-found response.
 
-## OpenCode
+### OpenCode
 
-- Launch command: `opencode acp` (native subcommand; registry package
-  `opencode-ai`).
-- Setup: install the OpenCode CLI and authenticate it, then verify
-  `opencode --version`.
-- Auth stays in your OpenCode login. Garuda never reads your OpenCode auth
-  configuration.
+- Launch command: `opencode acp` from the `opencode-ai` package.
+- Install and authenticate OpenCode, then verify `opencode --version`.
+- Authentication remains in OpenCode's own configuration.
 
-## Pi
+### Pi
 
-- Launch command: `pi-acp` (registry package `pi-acp`).
-- Setup: `npm install -g pi-acp`, authenticate Pi itself, then verify
-  `pi-acp --version`.
-- Auth stays in your Pi login. Garuda never reads your Pi credentials.
+- Launch command: `pi-acp` from the `pi-acp` package.
+- Install the package, authenticate Pi, then verify `pi-acp --version`.
 
-## Goose
+### Goose
 
-- Launch command: `goose acp` (native Goose CLI subcommand).
-- Setup: install Goose, log in, then verify `goose --version`.
-- Auth stays in your Goose login. Garuda never reads your Goose credentials.
+- Launch command: `goose acp`, a Goose CLI subcommand.
+- Install and authenticate Goose, then verify `goose --version`.
 
-## Version and capability limits
+## Environment and protocol limits
 
-- Login state shows `unknown`: the shipped manifests declare no login probe,
-  and Garuda will not read your credential stores to find out.
-- The adapter process gets only `PATH`, `HOME`, and `LANG` from Garuda's
-  environment. API-key variables (`ANTHROPIC_API_KEY`, `CODEX_API_KEY`) and
-  custom config directories (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) do not reach
-  it, and manifests cannot add environment variables. Use each vendor CLI's
-  own login in its default location under your home directory.
-- The adapters speak Garuda's owned ACP wire subset: initialize, session/new,
-  session/prompt, session/cancel, and bidirectional permission requests.
-  Vendor extras outside that subset (modes, sessions lists, images) are not
-  driven.
-- No private HTTP endpoint is used anywhere: both adapters are stdio
-  subprocesses of commands from the shipped manifests or your global
-  configuration.
-- Discovery resolves the executable once and the launch factory
-  (`adapter_for_discovered`) uses that exact absolute path; without a
-  discovered path the factory refuses instead of looking `PATH` up again.
-  Changing `PATH` after discovery cannot substitute a different adapter
-  binary, but replacing the file at that path can: this is a binding, not a
+- Shipped manifests declare no credential-file login probe, so login commonly
+  appears as `unknown`.
+- Adapter subprocesses receive a minimal environment containing `PATH`, `HOME`,
+  and `LANG`. Provider API-key variables and custom vendor config-directory
+  variables are not forwarded.
+- Garuda drives its owned ACP subset: initialize, session creation, prompt,
+  cancel, normalized updates, and permission requests. Vendor-specific model
+  lists, modes, images, and blocking extensions outside that subset are not
+  automatically supported.
+- Discovery binds launch to the resolved absolute executable. Replacing the
+  file at that path can still replace what runs; executable binding is not a
   sandbox.
+- Deterministic repository tests use strict fake ACP servers. Real vendor
+  compatibility checks are opt-in because they require an installed,
+  authenticated CLI and may consume subscription quota.
 
 ## Custom ACP servers
 
-Any stdio ACP server works through a global harness manifest with its launch
-command — no code changes are needed for a standard capability set — in the
-`runtimes:` list of your global settings file (`~/.agent/settings.yaml`, or the
-path in `GARUDA_GLOBAL_SETTINGS`). An entry with a shipped id such as `claude`
-replaces the shipped manifest:
+Register any compatible stdio ACP server in trusted global settings. An entry
+with a shipped ID replaces that shipped manifest:
 
 ```yaml
+# ~/.agent/settings.yaml
 runtimes:
   - runtime_id: my-agent
     kind: acp
@@ -116,30 +246,32 @@ runtimes:
     version: "1"
     capabilities: [prompt, cancel]
     version_args: [my-agent-acp, --version]
-    setup: Install my-agent-acp and log in with its own CLI.
+    setup: Install my-agent-acp and authenticate with its own CLI.
 disabled_runtimes: [codex]
 ```
 
-Project `.agent/settings.yaml` may only add `runtime_refs` aliases to these
-ids; it cannot declare commands. Generic adapters have no vendor-specific
-guarantees: modes, model lists, and extras beyond the wire subset are not
-driven. See the [ACP orchestration roadmap](../roadmap/2026-08-acp-orchestration.md).
+Project `.agent/settings.yaml` may add `runtime_refs` aliases to these IDs but
+cannot declare commands. Generic adapters receive no vendor-specific guarantees
+beyond Garuda's supported ACP wire subset.
 
-Garuda can also be launched as the agent side of an ACP editor session:
+Garuda can also serve its native runtime as the agent side of a stdio ACP editor
+session:
 
 ```bash
 python -m garuda.acp.server --workspace /path/to/workspace
 ```
 
-The server is stdio-only and uses the native Garuda runtime by default;
 `--driver echo` is reserved for protocol tests.
 
-## Optional live compatibility checks
+## Optional live compatibility check
 
-Set `GARUDA_LIVE_HARNESS` to one installed harness id to run its handshake-only
-smoke check locally. The corresponding vendor CLI must already be installed and
-logged in with the user's own account; Garuda never accepts or reads a secret
-for this check. Without that opt-in environment variable the check is skipped.
-With it, an unavailable CLI is reported as an explicit per-harness skip, while
-an unauthenticated or incompatible installed CLI fails the check and is
-reported as an environment or compatibility failure—not a green CI result.
+Run one handshake-only smoke check for an installed harness:
+
+```bash
+GARUDA_LIVE_HARNESS=opencode pytest tests/test_live_harness.py -q
+```
+
+The vendor CLI must already be installed and logged in. An unavailable CLI is
+reported as an explicit skip; an installed but unauthenticated or incompatible
+CLI fails the opted-in check. CI does not enable this variable or consume a
+subscription.

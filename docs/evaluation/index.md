@@ -1,6 +1,22 @@
 # Evaluation
 
-Garuda integrates with Harbor and exports ATIF-v1.7 trajectories. Evaluation is outside the core product loop and pins `--mode eval` so completion evidence is measured under the strict gate stack.
+Evaluation stays outside the core product loop. Harbor runs pin `--mode eval`
+so completion evidence is measured under the strict gate stack, and Garuda can
+export those recorded events as ATIF-v1.7 trajectories.
+
+## Records and trajectories
+
+Every session keeps its append-only event log. The CLI can also write the raw
+event stream to a chosen JSONL path:
+
+```bash
+garuda run -t "Inspect this project" --mode eval --trajectory run-events.jsonl
+```
+
+Raw event JSONL is not the same file shape as an ATIF export. Harbor integration
+converts events into ATIF-v1.7 with agent, step, usage, cost, and result fields.
+
+## Benchmarks
 
 - [Terminal-Bench 2.0](terminal-bench.md)
 - [SpreadsheetBench](spreadsheet-bench.md)
@@ -19,6 +35,15 @@ combined with `--external-trials external.json`; each feed must contain a
 completion, cost, approvals, and handoff fields.
 
 Cost accounting prefers provider-reported cost, then explicit user overrides, then the versioned in-repository price snapshot, and only then LiteLLM's table.
+
+## Dual-model evaluation
+
+The optional collection role can gather bounded read-only evidence while the
+reasoning model remains the controller. Rollout decisions should use paired
+native sessions rather than anecdotal runs. See
+[Dual-model routing and paired reports](dual-model-routing.md) for task-mix
+manifests, provenance requirements, offline report generation, and rollout
+gates.
 
 ## Live harness smoke tests
 

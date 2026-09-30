@@ -3,7 +3,7 @@
 **Status:** Ready for implementation
 
 **Design:**
-[Paired-trial report CLI](../specs/2026-09-29-paired-trial-report-cli-design.md)
+[Paired-trial report CLI](../design/2026-09-29-paired-trial-report-cli-design.md)
 
 ## Objective
 

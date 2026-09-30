@@ -134,5 +134,5 @@ model calls for completion gates.
 Garuda fails closed when a requested workspace backend is unavailable or a
 workspace already has a live mutating lease. Do not bypass that refusal for
 untrusted work. See the [CLI reference](../reference/cli.md#common-run-flags)
-for backend flags and [Using Garuda](using-garuda.md#workspaces) for the safety
-model.
+for backend flags and [Safety and workspaces](safety-and-workspaces.md) for the
+full safety model.
