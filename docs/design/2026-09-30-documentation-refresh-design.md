@@ -161,9 +161,9 @@ Start from `origin/main`.
 The command checker scans current documentation, not historical or planning
 records. At minimum it covers the root README, `docs/index.md`, plus active
 pages under `docs/guides/`, `docs/reference/`, `docs/evaluation/`, and
-`docs/development/`; it excludes `docs/archive/`, `docs/roadmap/`, and
-`docs/superpowers/`. Shell continuations are joined before parsing. Prompts and
-placeholders are normalized only where the parser needs a value; unknown
+`docs/development/`; it excludes `docs/archive/`, `docs/roadmap/`,
+`docs/design/`, and `docs/plans/`. Shell continuations are joined before
+parsing. Prompts and placeholders are normalized only where the parser needs a value; unknown
 commands and flags still fail. Explicitly non-executing examples must use a
 documented opt-out marker on the fence or command line, with the exception kept
 rare and reviewable.
@@ -212,22 +212,18 @@ Branch from the updated `origin/main` after PR (b) merges.
 - Update `docs/guides/configuration.md`, the web dashboard guide, CLI reference,
   evaluation navigation, and `docs/index.md` only as needed to connect those
   specialist guides without duplicating them.
-- Resolve confusing documentation storage:
-  - decide whether `docs/superpowers/` records should move to neutral
-    `docs/design/` and `docs/plans/` locations, with link updates in the same
-    PR, or be retained but clearly indexed and explained;
-  - rename or retitle `docs/DECISIONS.md` so it is clearly a major-changes
-    ledger, distinct from the durable decisions in `.context/decisions.md`.
+- Resolve confusing documentation storage by moving the former
+  `docs/superpowers/` records to indexed `docs/design/` and `docs/plans/`
+  locations, and rename `docs/DECISIONS.md` to `docs/major-changes.md` so it is
+  clearly distinct from the durable decisions in `.context/decisions.md`.
 
 The organization decision will be based on repository references and git
 history. Existing provenance must be preserved; files are moved with history
 where practical rather than copied into duplicate locations.
 
-If design and plan records move, the command checker's exclusion list moves
-with them in the same PR. Plans and specs describe proposed, unshipped commands,
-so a move to `docs/design/` or `docs/plans/` that leaves the exclusion keyed on
-`docs/superpowers/` would pull those records into the command check and fail
-it. This spec is itself one of the records that may move.
+The command checker's exclusion list moves with the design and plan records in
+the same PR. These records can describe proposed, unshipped commands and are not
+current command reference. This spec moves with the other design records.
 
 ## Verification
 

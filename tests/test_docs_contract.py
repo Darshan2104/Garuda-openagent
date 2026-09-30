@@ -179,9 +179,9 @@ def test_command_extraction_honors_explicit_opt_out(tmp_path):
     assert checker.find_documented_commands(tmp_path) == []
 
 
-def test_command_extraction_includes_index_and_excludes_plans(tmp_path):
+def test_command_extraction_includes_new_user_docs_and_excludes_plans(tmp_path):
     docs = tmp_path / "docs"
-    plans = docs / "superpowers" / "plans"
+    plans = docs / "plans"
     tutorials = docs / "tutorials"
     plans.mkdir(parents=True)
     tutorials.mkdir()

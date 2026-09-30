@@ -54,7 +54,9 @@ confine host file reads.
 
 - [Getting started](docs/guides/getting-started.md)
 - [Using Garuda](docs/guides/using-garuda.md)
+- [Safety and workspaces](docs/guides/safety-and-workspaces.md)
 - [Configuration](docs/guides/configuration.md)
+- [External harnesses](docs/guides/external-harnesses.md)
 - [Web dashboard](docs/guides/web-dashboard.md)
 - [CLI reference](docs/reference/cli.md)
 - [Architecture](docs/ARCHITECTURE.md)

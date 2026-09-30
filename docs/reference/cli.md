@@ -20,35 +20,14 @@
 
 ## ACP runs and handoffs
 
-`garuda run --runtime <id>` with an ACP runtime resolves and discovers it
-through the trusted catalog (unknown, disabled, or missing executables refuse
-before anything starts), then holds the same invariants as a native run: the
-workspace's mutating lease (a live foreign holder refuses), a persisted session
-whose only segment is that runtime, the workspace baseline before the prompt and
-the delta after, approvals through the session broker (headless: every ask is
-denied and audited; on a TTY: a y/N prompt), and a recorded child that is
-reaped and retired on close. The harness session is rooted at the absolute
-workspace. The session status is `completed` when the agent ended its turn —
-Garuda does not verify an ACP result — or `failed`.
+`garuda run --runtime <id>` starts a trusted ACP catalog entry. A handoff without
+`--confirm` is a preview; confirmed handoff transfers session ownership. Runtime
+session arguments accept a full ID, unique prefix, or `latest`.
 
-`garuda runtime handoff --confirm` is one-shot: pause the native source →
-checkpoint → capture the workspace delta → start the target (the exact
-executable the pre-check discovered) → acknowledge (handoff state and the
-target's active segment are persisted together, then its child is recorded) →
-close the source → send the handoff package as the target's first prompt
-(bounded, 600 s) → close the target and record `target_state: closed`. A
-failure before acknowledgement rolls back to the source; a failure after it is
-a target failure — the target is closed and `target_state: failed` recorded,
-with no rollback over changes it may have made. Either way the session then
-belongs to the target: `recover` reports `external`, and native resume or a
-second handoff refuses until `garuda runtime reclaim` returns it to native
-(refused while the target may still be acting). If a failed handoff cannot even
-record its return to the source, the error names this command. Native sessions
-record a relative workspace, so pass `--workspace`.
-
-Every runtime command that takes `--session` accepts a full session ID, the
-unique prefix shown by `garuda sessions`, or `latest`. Ambiguous and missing
-references refuse before a preview, lease, handoff, or recovery action starts.
+ACP completion means the harness ended its turn, not that Garuda verified the
+result. See [External harnesses](../guides/external-harnesses.md) for discovery,
+authentication, approvals, transaction ordering, failure behavior, recovery,
+reclaim, and support bundles.
 
 ## Common `run` flags
 

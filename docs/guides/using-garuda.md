@@ -46,7 +46,8 @@ garuda run --mode rigorous -t "Fix the failing tests and prove the result"
 Permission rules screen requested operations; they are not a filesystem or
 network sandbox. Project hooks and Python tools execute code and remain opt-in.
 `yolo` is deliberately permissive and belongs only in an isolated, trusted
-workspace. See [Configuration](configuration.md#permissions-and-hooks).
+workspace. See [Configuration](configuration.md#permissions-and-hooks) and
+[Safety and workspaces](safety-and-workspaces.md).
 
 ## Workspaces
 
@@ -71,7 +72,8 @@ Docker defaults to bridged networking unless `--no-network` is set. The
 default; `--allow-unsandboxed` explicitly permits an unconfined fallback and
 must not be used as a safety boundary. See the
 [CLI reference](../reference/cli.md#common-run-flags) for container resource
-and remote-host flags.
+and remote-host flags. The complete boundary and threat model is in
+[Safety and workspaces](safety-and-workspaces.md).
 
 ## Sessions and continuation
 
