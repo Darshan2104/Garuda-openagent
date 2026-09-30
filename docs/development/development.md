@@ -14,13 +14,29 @@ Run narrow tests before broad tests. Live integrations are intentionally opt-in:
 ## Documentation contract (P0.3)
 
 CI fails on broken local Markdown links, unexpected nested `README.md` files,
-and hand-maintained test-count claims in release docs. The check is stdlib-only
-and never fetches remote URLs:
+hand-maintained test-count claims, and duplicate table rows in maintained user
+docs. These checks are stdlib-only and never fetch remote URLs:
 
 ```bash
 python scripts/check_docs.py
 pytest tests/test_docs_contract.py -q
 ```
+
+After installing Garuda, validate fenced and inline CLI examples against the
+real argparse command tree:
+
+```bash
+python scripts/check_docs.py --commands
+pytest tests/test_docs_commands.py -q
+```
+
+Command validation covers `README.md` and user-facing documentation under
+`docs/`, including any new documentation directory. It excludes the
+contributor architecture/module/backlog/changes pages plus archive, roadmap,
+design, and plan records because those may intentionally describe historical
+or proposed commands. A deliberately non-executing example can use
+`docs-command-ignore` on its fence or line, but exceptions should remain rare
+and reviewable.
 
 Only the root `README.md` may exist; historical counts under `docs/archive/`
 are exempt. Any other exception must be added explicitly to

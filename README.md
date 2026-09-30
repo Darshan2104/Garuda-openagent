@@ -19,9 +19,10 @@ MCP, and observability.
   completion evidence rather than accepting a bare claim of success.
 - Runs locally, in a sandbox, tmux, Docker, or a remote Docker environment.
 - Provides a CLI, SDK, JSON-RPC job service, and local web dashboard.
-- Is planned to supervise subscription-backed coding harnesses through ACP while
-  preserving Garuda's native runtime. See the
-  [ACP orchestration roadmap](docs/roadmap/2026-08-acp-orchestration.md).
+- Launches subscription-backed coding harnesses through ACP and supports
+  native-to-ACP handoff while preserving Garuda's native runtime. Garuda records
+  ACP lifecycle and workspace changes, but does not apply its native completion
+  verifier to ACP results. See [External harnesses](docs/guides/external-harnesses.md).
 
 ## Quick start
 
@@ -31,18 +32,23 @@ cd Garuda-openagent
 pip install -e ".[dev]"
 
 export OPENROUTER_API_KEY=sk-or-...
-garuda run -t "List all Python files in the current directory"
+garuda run -t "List all Python files in the current directory" --mode readonly
 ```
+
+Model-backed runs can incur provider charges. The built-in default is DeepSeek
+through OpenRouter; choose another supported model and matching credential with
+`--model` or `GARUDA_MODEL`.
 
 ```bash
 garuda chat --agent build
 garuda run -t "Fix the failing test" --mode rigorous
 garuda run -t "Map the authentication flow" --mode readonly
-garuda web --workspace .
+garuda web --allow-workspace .
 ```
 
-Use Docker for untrusted work. macOS Seatbelt reduces write/network blast radius
-but does not confine host file reads.
+Use Docker for untrusted work. Permission rules and the `sandbox` workspace kind
+are guardrails; macOS Seatbelt reduces write/network blast radius but does not
+confine host file reads.
 
 ## Documentation
 

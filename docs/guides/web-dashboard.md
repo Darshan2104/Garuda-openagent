@@ -3,7 +3,7 @@
 `garuda web` serves a local dashboard for inspecting sessions and talking to a live agent. It is deliberately local-only: it binds loopback, uses a capability token, validates `Host` and `Origin`, and emits no CORS headers.
 
 ```bash
-garuda web --workspace .
+garuda web --allow-workspace .
 ```
 
 The dashboard shows live turns, model thinking where available, tool calls, approvals, completion gates, diffs, metrics, and nested subagent traces. It can resume a conversation without discarding its workspace or event history.

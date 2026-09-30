@@ -17,7 +17,6 @@
 | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. |
 | `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped: no lease names it, no recorded child is alive, and the target left a retired child or a `closed`/`failed` state. |
 | `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
-| `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics). |
 
 ## ACP runs and handoffs
 
@@ -62,6 +61,11 @@ references refuse before a preview, lease, handoff, or recovery action starts.
 --permission-mode          smart, auto, readonly, yolo
 --workspace                workspace root
 --workspace-kind           local, sandbox, tmux, docker, remote
+--docker-image             container image for docker/remote workspaces
+--docker-host              remote Docker daemon host
+--allow-network            allow egress for the sandbox workspace kind
+--no-network               disable egress for docker/remote containers
+--allow-unsandboxed        allow an unconfined fallback if OS sandboxing is unavailable
 --resume                   prior session ID, prefix, or latest
 --runtime                  executor runtime id (default: native)
 --reasoning-effort         portable reasoning setting
@@ -71,7 +75,12 @@ references refuse before a preview, lease, handoff, or recovery action starts.
 --trajectory               write a trajectory file
 ```
 
-Use `garuda <command> --help` as the source of truth for version-specific flags.
+The three network and unsandboxed flags above are accepted only by `garuda run`.
+`--docker-image` and `--docker-host` are also accepted by `garuda chat`,
+`garuda serve`, and `garuda recipe run`. `--allow-unsandboxed` permits execution
+without an OS sandbox when the requested backend is unavailable; it does not
+create an isolation boundary. Use `garuda run --help` as the source of truth for
+version-specific run flags.
 
 ## Paired dual-model reports
 

@@ -7,6 +7,8 @@ fetch remote URLs. Fixture tests below prove each check can fail; the
 also exercised by ``python scripts/check_docs.py`` in CI.
 """
 
+import argparse
+import builtins
 import importlib.util
 import pathlib
 
@@ -78,6 +80,131 @@ def test_archive_test_counts_are_excluded(tmp_path):
     assert checker.find_test_count_claims(tmp_path) == []
 
 
+def test_duplicate_table_row_fixture_fails(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "| Command | Use |\n"
+        "|---|---|\n"
+        "| `garuda run` | Run a task. |\n"
+        "| `garuda run` | Run a task. |\n"
+    )
+    duplicates = [
+        error for error in checker.check(tmp_path) if error.startswith("duplicate table row:")
+    ]
+    assert len(duplicates) == 1
+    assert "README.md:4" in duplicates[0]
+    assert "first at line 3" in duplicates[0]
+
+
+def test_duplicate_rows_are_scoped_to_one_table(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "| Name | Value |\n"
+        "|---|---|\n"
+        "| same | row |\n"
+        "\n"
+        "| Name | Value |\n"
+        "|---|---|\n"
+        "| same | row |\n"
+    )
+    assert checker.find_duplicate_table_rows(tmp_path) == []
+
+
+def _fixture_parser():
+    parser = argparse.ArgumentParser(prog="garuda")
+    commands = parser.add_subparsers(dest="command")
+    run = commands.add_parser("run")
+    run.add_argument("--mode", choices=["readonly", "rigorous"])
+    runtime = commands.add_parser("runtime")
+    runtime_commands = runtime.add_subparsers(dest="runtime_command")
+    handoff = runtime_commands.add_parser("handoff")
+    handoff.add_argument("--session", required=True)
+    handoff.add_argument("--to", required=True)
+    handoff.add_argument("--confirm", action="store_true")
+    return parser
+
+
+def test_documented_command_validation_accepts_abbreviated_reference():
+    errors = checker.validate_documented_command(
+        "garuda runtime handoff [--session S] [--to R] [--confirm]",
+        _fixture_parser(),
+    )
+    assert errors == []
+
+
+def test_documented_command_validation_rejects_unknown_command_flag_and_choice():
+    parser = _fixture_parser()
+    assert "unknown subcommand" in checker.validate_documented_command(
+        "garuda missing", parser
+    )[0]
+    assert "unknown option" in checker.validate_documented_command(
+        "garuda run --missing", parser
+    )[0]
+    assert "invalid choice" in checker.validate_documented_command(
+        "garuda run --mode unsafe", parser
+    )[0]
+
+
+def test_command_extraction_covers_fences_inline_spans_and_wrapping(tmp_path):
+    guide = tmp_path / "docs" / "guides" / "guide.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text(
+        "```bash\n"
+        "$ garuda run \\\n"
+        "  --mode readonly\n"
+        "```\n\n"
+        "Use `garuda runtime\n"
+        "handoff --confirm` after previewing it.\n"
+        "Use ``garuda run --mode readonly`` for inspection.\n"
+        "~~~console\n"
+        "garuda sessions\n"
+        "~~~\n"
+    )
+    commands = checker.find_documented_commands(tmp_path)
+    assert [item.command for item in commands] == [
+        "garuda run --mode readonly",
+        "garuda runtime handoff --confirm",
+        "garuda run --mode readonly",
+        "garuda sessions",
+    ]
+
+
+def test_command_extraction_honors_explicit_opt_out(tmp_path):
+    guide = tmp_path / "docs" / "guides" / "guide.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text(
+        "```bash docs-command-ignore\n"
+        "garuda proposed --future\n"
+        "```\n"
+        "Use `garuda <command> --help`. <!-- docs-command-ignore -->\n"
+    )
+    assert checker.find_documented_commands(tmp_path) == []
+
+
+def test_command_extraction_includes_index_and_excludes_plans(tmp_path):
+    docs = tmp_path / "docs"
+    plans = docs / "superpowers" / "plans"
+    tutorials = docs / "tutorials"
+    plans.mkdir(parents=True)
+    tutorials.mkdir()
+    (docs / "index.md").write_text("Use `garuda run`.\n")
+    (tutorials / "new.md").write_text("Use `garuda chat`.\n")
+    (plans / "future.md").write_text("Use `garuda future`.\n")
+    commands = checker.find_documented_commands(tmp_path)
+    assert [item.command for item in commands] == ["garuda run", "garuda chat"]
+
+
+def test_command_mode_fails_loudly_without_installed_parser(tmp_path, monkeypatch, capsys):
+    original_import = builtins.__import__
+
+    def reject_garuda(name, *args, **kwargs):
+        if name == "garuda.interfaces.main":
+            raise ImportError("package unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_garuda)
+    assert checker.main(["--root", str(tmp_path), "--commands"]) == 2
+    assert "cannot import Garuda parser" in capsys.readouterr().err
+
+
 def test_repo_has_no_broken_local_links():
     assert checker.find_broken_local_links(REPO_ROOT) == []
 
@@ -88,3 +215,7 @@ def test_repo_has_no_nested_readmes():
 
 def test_release_docs_have_no_test_count_claims():
     assert checker.find_test_count_claims(REPO_ROOT) == []
+
+
+def test_release_docs_have_no_duplicate_table_rows():
+    assert checker.find_duplicate_table_rows(REPO_ROOT) == []
