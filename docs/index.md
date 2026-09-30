@@ -1,28 +1,68 @@
 # Garuda documentation
 
-Garuda is a universal, provider-agnostic agent harness for terminal and software engineering tasks. It provides a native LLM loop today and is evolving into a control plane that can also supervise subscription-backed coding harnesses.
+Garuda is the runtime around a coding model or external coding harness: it owns
+workspace selection, permission guardrails, context, evidence, sessions, and
+observability. Start with a read-only native run, then follow the task-specific
+guides below.
 
-## Use Garuda
+## Start here
 
-- [Getting started](guides/getting-started.md) — install, authenticate, and run a first task.
-- [Using Garuda](guides/using-garuda.md) — run modes, sessions, workspaces, skills, subagents, and the SDK.
-- [Configuration](guides/configuration.md) — profiles, `.agent/`, MCP, hooks, permissions, and environment variables.
-- [Web dashboard](guides/web-dashboard.md) — local browser interface, grounding, approvals, and trajectory inspection.
-- [External harnesses](guides/external-harnesses.md) — Claude Code and Codex via ACP on your own subscription login.
-- [CLI reference](reference/cli.md) — command map and common flags.
+1. [Getting started](guides/getting-started.md) — install Garuda, configure a
+   model, run a safe first task, and inspect its session.
+2. [Using Garuda](guides/using-garuda.md) — choose an interface, mode,
+   workspace, profile, and runtime for everyday work.
+3. [Configuration](guides/configuration.md) — configure models, collection,
+   MCP, runtime selection, permissions, hooks, and environment variables.
+
+## Feature map
+
+| Feature | Command | Guide |
+|---|---|---|
+| Safe first inspection | `garuda run -t TASK --mode readonly` | [Getting started](guides/getting-started.md) |
+| Headless task | `garuda run -t TASK` | [Using Garuda](guides/using-garuda.md#choose-an-interface) |
+| Interactive conversation | `garuda chat` | [Using Garuda](guides/using-garuda.md#choose-an-interface) |
+| Run modes and completion gates | `garuda run -t TASK --mode eval` | [Run modes](guides/using-garuda.md#choose-a-run-mode) |
+| Sessions and continuation | `garuda sessions` | [Sessions](guides/using-garuda.md#sessions-and-continuation) |
+| Workspace backends and network posture | `garuda run -t TASK --workspace-kind docker --no-network` | [Workspaces](guides/using-garuda.md#workspaces) |
+| Profiles, project instructions, and skills | `garuda run -t TASK --agent reviewer` | [Profiles and skills](guides/using-garuda.md#profiles-project-instructions-and-skills) |
+| MCP servers | `garuda mcp list --no-connect` | [Configuration](guides/configuration.md#mcp) |
+| YAML recipes | `garuda recipe run workflow.yaml` | [MCP, recipes, hooks, and tools](guides/using-garuda.md#mcp-recipes-hooks-and-project-tools) |
+| Local web dashboard | `garuda web --read-only` | [Web dashboard](guides/web-dashboard.md) |
+| External ACP runtimes | `garuda runtime list` | [External harnesses](guides/external-harnesses.md) |
+| Native-to-ACP handoff and recovery | `garuda runtime handoff --session S --to R [--confirm]` | [External harnesses](guides/external-harnesses.md) |
+| JSON-RPC job service | `garuda serve` | [SDK and service](guides/using-garuda.md#sdk-and-service) |
+| Trajectories and benchmarks | `garuda run -t TASK --trajectory run.jsonl` | [Evaluation](evaluation/index.md) |
+| Paired dual-model reports | `garuda eval dual-model report ...` | [Dual-model evaluation](evaluation/dual-model-routing.md) |
+
+Native and ACP runs do not have identical behavior. Native runs use Garuda's
+model loop, tools, permissions, and completion gates. ACP runs use an external
+harness: Garuda records lifecycle and workspace evidence but does not verify the
+harness result with the native completion gate. Runtime-specific details belong
+in the [external harness guide](guides/external-harnesses.md).
+
+## Reference and advanced operation
+
+- [CLI reference](reference/cli.md) — command inventory and flags.
+- [External harnesses](guides/external-harnesses.md) — vendor setup, runtime
+  discovery, ACP limitations, and custom servers.
+- [Web dashboard](guides/web-dashboard.md) — local browser UI, grounding,
+  approvals, and runtime controls.
+- [Evaluation](evaluation/index.md) — trajectories, benchmarks, live harness
+  checks, collection experiments, and paired reports.
+- [Browser checks](development/browser-checks.md) — opt-in real-browser
+  validation for dashboard changes.
 
 ## Understand and extend Garuda
 
-- [Architecture](ARCHITECTURE.md) — runtime path, trust boundaries, and change points.
-- [Module map](MODULES.md) — package ownership and files to open first.
-- [Development](development/development.md) — tests, lint, dependencies, and release checks.
-- [Browser checks](development/browser-checks.md) — live dashboard validation.
-- [Evaluation](evaluation/index.md) — Harbor, benchmark adapters, and ablations.
+- [Architecture](ARCHITECTURE.md)
+- [Module map](MODULES.md)
+- [Development](development/development.md)
+- [Major changes](DECISIONS.md)
+- [Contributor guide](../AGENTS.md)
 
-## Plan and history
+## Open work and history
 
-- [Open backlog](BACKLOG.md) — accepted limitations and unfinished work.
-- [Durable decisions](../.context/decisions.md) — current cross-harness and
-  repository decisions.
-- [ACP orchestration roadmap](roadmap/2026-08-acp-orchestration.md) — the dependency-ordered plan for cross-harness sessions and subscriptions.
-- [Archive](archive/index.md) — historical RFCs and closed review records; not current behavior.
+- [Open backlog](BACKLOG.md) — unfinished work only.
+- [Roadmaps and issue catalog](roadmap/index.md) — planned work, not current
+  behavior.
+- [Archive](archive/index.md) — historical records retained for provenance.
