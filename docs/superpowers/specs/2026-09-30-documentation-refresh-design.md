@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-30
 
-**Status:** Approved direction, awaiting written-spec review
+**Status:** Approved
 
 **Scope:** User-facing documentation only, delivered as three pull requests
 
@@ -110,16 +110,57 @@ Start from `origin/main`.
 - Remove the duplicated `garuda runtime support` reference row.
 - Add `--allow-unsandboxed`, `--allow-network`, `--no-network`, and
   `--docker-image` to the maintained CLI reference with their safety semantics.
-- Extend `scripts/check_docs.py` and `tests/test_docs_contract.py` with:
+  State which subcommands accept each flag: the three network/unsandboxed flags
+  exist only on `garuda run`, while `--docker-image` (and `--docker-host`) are
+  also accepted by `chat`, `serve`, and `recipe run`. Do not imply that `chat`
+  or `serve` can relax sandbox network egress.
+- Extend `scripts/check_docs.py` and the documentation-contract tests with:
   - extraction of `garuda ...` invocations from shell-like fenced code blocks
-    in maintained documentation;
-  - validation against `garuda.interfaces.main.build_parser()` without
-    dispatching commands or reading credentials;
+    **and from inline code spans** in maintained documentation, so the
+    command-dense tables in `docs/reference/cli.md` are covered, not just
+    fenced examples;
+  - structural validation against `garuda.interfaces.main.build_parser()`
+    without dispatching commands or reading credentials (see "Command checker
+    mechanics" below);
   - duplicate Markdown table-row detection.
 
+#### Command checker mechanics
+
+- **Walk the parser; do not call `parse_args`.** `parse_args` raises
+  `SystemExit` on `--help`, missing required arguments, and unknown flags, and
+  `required=True` options (for example `runtime handoff --session/--to` and the
+  six required `eval dual-model report` options) would make every abbreviated
+  example fail. The checker instead resolves the subcommand chain through the
+  parser's subparser actions, then checks each `-x`/`--flag` token against that
+  subparser's option strings and, where the action declares `choices`, the
+  supplied value. Unknown subcommands, unknown flags, and invalid choice values
+  fail; missing required options are not a failure.
+- **Reference-syntax normalization.** Inline reference forms are normalized
+  before checking: `[...]` optional groups are unwrapped and checked,
+  `<placeholder>` and single-letter placeholders (`S`, `R`, `W`) stand for
+  values, and a trailing `...` or `…` means "arguments elided". Unknown flags
+  inside optional groups still fail. Whitespace inside an inline code span is
+  collapsed so wrapped commands remain one invocation. Generic metasyntax such
+  as `garuda <command> --help` must be replaced by a concrete command or carry
+  the same explicit opt-out marker as a non-executing example.
+- **CI placement.** The `docs-contract` CI job is deliberately stdlib-only: it
+  runs `python scripts/check_docs.py` on a bare Python 3.12 install, and
+  `garuda.interfaces.main` imports LiteLLM, the web interface, and the tool
+  registry at module load. The command check must therefore either (1) install
+  the package in that job with `pip install -e . -c constraints.txt`, updating
+  the job's "stdlib only" comment, or (2) import `build_parser` lazily and run
+  only where the package is installed (the main test job), while link, README,
+  test-count, and duplicate-row checks stay stdlib-only. Choose (2) so the
+  existing contract stays cheap and dependency-free; the checker must then fail
+  loudly, not skip silently, when invoked with `--commands` and the package
+  cannot be imported. Parser-backed repository checks live in a separate
+  `tests/test_docs_commands.py`, not in the stdlib-only
+  `tests/test_docs_contract.py`. The installed-package CI job runs that test and
+  an explicit `python scripts/check_docs.py --commands` step.
+
 The command checker scans current documentation, not historical or planning
-records. At minimum it covers the root README plus active pages under
-`docs/guides/`, `docs/reference/`, `docs/evaluation/`, and
+records. At minimum it covers the root README, `docs/index.md`, plus active
+pages under `docs/guides/`, `docs/reference/`, `docs/evaluation/`, and
 `docs/development/`; it excludes `docs/archive/`, `docs/roadmap/`, and
 `docs/superpowers/`. Shell continuations are joined before parsing. Prompts and
 placeholders are normalized only where the parser needs a value; unknown
@@ -132,9 +173,14 @@ table, reports both locations, and ignores separator rows. It applies to the
 same maintained documentation set.
 
 Tests are fixture-first: prove valid nested subcommands and representative
-flags pass; prove unknown commands, unknown flags, and duplicate rows fail;
-then run repository-level assertions through both pytest and
-`python scripts/check_docs.py`.
+flags pass; prove unknown commands, unknown flags, invalid choice values, and
+duplicate rows fail; prove an abbreviated example that omits a required option
+passes; prove inline-span and optional-group forms are checked; then run
+repository-level assertions through both pytest and
+`python scripts/check_docs.py`. Fixture parsers should be small, locally built
+`argparse` trees so the fixture tests stay stdlib-only. Parser-independent
+fixtures remain in `tests/test_docs_contract.py`; the repository assertion
+using the real `build_parser()` lives in `tests/test_docs_commands.py`.
 
 ### PR (b): first-time and everyday workflows
 
@@ -143,7 +189,10 @@ Branch from the updated `origin/main` after PR (a) merges.
 - Rewrite `docs/guides/getting-started.md` as a safe first-session tutorial.
 - Rewrite `docs/guides/using-garuda.md` as task-oriented everyday workflows.
 - Update `docs/index.md` with the single three-column feature matrix and
-  runtime-difference notes needed by those two guides.
+  runtime-difference notes needed by those two guides. Matrix rows link only to
+  pages that exist when PR (b) merges; rows for the safety/workspaces guide
+  point at the current sections of `configuration.md` and `using-garuda.md`,
+  and PR (c) retargets them. The link checker would otherwise fail PR (b).
 - Keep provider, runtime, and workspace setup links shallow and explicit.
 
 The tutorial stops short of claiming a particular model response. It explains
@@ -174,6 +223,12 @@ The organization decision will be based on repository references and git
 history. Existing provenance must be preserved; files are moved with history
 where practical rather than copied into duplicate locations.
 
+If design and plan records move, the command checker's exclusion list moves
+with them in the same PR. Plans and specs describe proposed, unshipped commands,
+so a move to `docs/design/` or `docs/plans/` that leaves the exclusion keyed on
+`docs/superpowers/` would pull those records into the command check and fail
+it. This spec is itself one of the records that may move.
+
 ## Verification
 
 Each PR runs the narrowest relevant checks first. PR (a) must run:
@@ -182,12 +237,18 @@ Each PR runs the narrowest relevant checks first. PR (a) must run:
 pytest tests/test_docs_contract.py -q
 python scripts/check_docs.py
 ruff check scripts/check_docs.py tests/test_docs_contract.py
+python scripts/check_docs.py --commands   # needs the installed package
 ```
 
+PR (a) also confirms, from the CI run on the PR, that the stdlib-only
+`docs-contract` job still passes without the package installed, and that the
+command check runs (not skips) in the job that installs it.
+
 PRs (b) and (c) run the docs contract after every content change. Command
-examples are validated by the contract, not manually assumed valid. Link and
-navigation changes are additionally reviewed from a clean checkout of the PR
-branch. No live provider call is required for acceptance.
+examples are validated with both `python scripts/check_docs.py` and
+`python scripts/check_docs.py --commands`, not manually assumed valid. Link
+and navigation changes are additionally reviewed from a clean checkout of the
+PR branch. No live provider call is required for acceptance.
 
 ## Delivery order
 
