@@ -16,6 +16,7 @@ from garuda.model.transports import (
     SUPPORTED_AUTH_KINDS,
     TransportRecord,
     assert_admissible,
+    assert_repository_admission,
     registry,
 )
 
@@ -28,7 +29,7 @@ def test_registered_transports_are_fully_admitted():
         "they must share one source of truth"
     )
     for record in transports.values():
-        assert_admissible(record)
+        assert_repository_admission(record)
         assert record.admission_gaps() == []
         assert record.auth_kind in SUPPORTED_AUTH_KINDS
         assert record.migration_notes, record.id
@@ -95,12 +96,12 @@ def test_incomplete_records_are_refused():
             )
         )
     with pytest.raises(ValueError, match="does not exist|not found"):
-        assert_admissible(
+        assert_repository_admission(
             TransportRecord(
                 id="w", vendor="w", support_citation=("https://example.com",),
                 auth="api keys via env; never subscription",
                 auth_kind="api_key_env",
-                capabilities=("c",), test_double="d",
+                capabilities=("c",), test_double="garuda.model.script_model.ScriptModel",
                 integration_test="tests/test_no_such_file.py::test_missing",
                 cost_semantics="s", migration_notes="m",
             )
@@ -117,8 +118,10 @@ def test_integration_test_must_define_a_real_function(tmp_path):
         "def test_something_else():\n    pass\n",
         encoding="utf-8",
     )
+    from garuda.model.transports import _assert_integration_test_exists
+
     with pytest.raises(ValueError, match="not a defined function"):
-        assert_admissible(
+        _assert_integration_test_exists(
             dataclasses.replace(
                 valid, id="planted",
                 integration_test=f"{planted}::test_live_transport_opt_in",
@@ -179,3 +182,28 @@ async def test_live_transport_opt_in():
         max_tokens=16,
     )
     assert response is not None
+
+
+@pytest.mark.parametrize(
+    "nodeid",
+    ["/abs/tests/test_x.py::test_y", "tests/../../etc/x.py::t", "tests/test_x.txt", "tests/test_x.py::1bad"],
+)
+def test_runtime_admission_still_refuses_a_malformed_integration_test(nodeid):
+    import dataclasses
+
+    (valid,) = [r for r in registry().values() if r.id == "litellm"]
+    with pytest.raises(ValueError, match="relative"):
+        assert_admissible(dataclasses.replace(valid, id="bad", integration_test=nodeid))
+
+
+def test_runtime_admission_does_not_read_the_source_checkout(tmp_path, monkeypatch):
+    """Import-time admission must work where there is no ``tests/`` directory (#145)."""
+    import dataclasses
+
+    from garuda.model import transports
+
+    (valid,) = [r for r in registry().values() if r.id == "litellm"]
+    monkeypatch.setattr(transports, "_repo_root", lambda: tmp_path)
+    assert_admissible(valid)
+    with pytest.raises(ValueError, match="does not exist"):
+        assert_repository_admission(dataclasses.replace(valid, id="moved"))

@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import importlib
 import pathlib
+import re
 from dataclasses import dataclass
 
 #: Structural auth kinds a direct transport may declare. Free-text `auth`
@@ -74,6 +75,25 @@ class TransportRecord:
 def _repo_root() -> pathlib.Path:
     # garuda/model/transports.py -> repo root (garuda/model -> garuda -> root).
     return pathlib.Path(__file__).resolve().parents[2]
+
+
+_NODEID_RE = re.compile(r"^(?!/)[\w./-]+\.py(?:::[A-Za-z_]\w*)?$")
+
+
+def _assert_integration_test_well_formed(record: TransportRecord) -> None:
+    """The record names its integration test as a repository-relative nodeid.
+
+    This is the runtime half of admission: it reads nothing outside the
+    package, so an installed wheel (which ships no ``tests/``) still imports.
+    Whether the test exists is a repository contract checked in CI by
+    :func:`assert_repository_admission`.
+    """
+    nodeid = record.integration_test
+    if ".." in nodeid.split("/") or not _NODEID_RE.match(nodeid):
+        raise ValueError(
+            f"transport {record.id!r} integration test must be a relative "
+            f"`path/to/test_x.py::test_name` nodeid: {nodeid!r}"
+        )
 
 
 def _assert_integration_test_exists(record: TransportRecord) -> None:
@@ -197,5 +217,17 @@ def assert_admissible(record: TransportRecord) -> None:
         raise ValueError(
             f"transport {record.id!r} auth must never claim subscription use: {record.auth!r}"
         )
-    _assert_integration_test_exists(record)
+    _assert_integration_test_well_formed(record)
     _assert_test_double_resolves(record)
+
+
+def assert_repository_admission(record: TransportRecord) -> None:
+    """Admission plus the checks only a source checkout can answer.
+
+    The integration test a record names must exist and define that function.
+    CI runs this for every registered transport; the import-time path
+    (:func:`assert_admissible`) cannot, because an installed package has no
+    ``tests/`` directory.
+    """
+    assert_admissible(record)
+    _assert_integration_test_exists(record)
