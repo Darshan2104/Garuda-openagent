@@ -65,7 +65,8 @@ hooks:
 
 
 @pytest.mark.asyncio
-async def test_before_tool_other_nonzero_allows(tmp_path):
+async def test_before_tool_other_nonzero_blocks(tmp_path):
+    """A guard that fails (any nonzero exit but the deliberate 2) fails closed (#144)."""
     config = _write_config(
         tmp_path / "settings.yaml",
         """
@@ -77,7 +78,7 @@ hooks:
     )
     registry = HookRegistry.from_config(config)
     call = ToolCall(id="1", name="bash", arguments={"command": "echo hi"})
-    assert await registry.run_before_tool(call, {"session_id": "s1"}) is call
+    assert await registry.run_before_tool(call, {"session_id": "s1"}) is None
 
 
 @pytest.mark.asyncio
@@ -124,8 +125,9 @@ hooks:
     )
     registry = HookRegistry.from_config(config)
     call = ToolCall(id="1", name="bash", arguments={"command": "echo hi"})
-    # Timeout is logged and the call is allowed rather than raising.
-    assert await registry.run_before_tool(call, {"session_id": "s1"}) is call
+    # A timed-out guard blocks the call rather than raising; a timed-out session
+    # hook is logged and the run continues.
+    assert await registry.run_before_tool(call, {"session_id": "s1"}) is None
     await registry.on_session_start(task="t", session_id="s1")
 
 
@@ -148,7 +150,8 @@ async def test_programmatic_hook_exception_does_not_crash():
     registry.register_session_end(broken_session)
 
     call = ToolCall(id="1", name="bash", arguments={})
-    assert await registry.run_before_tool(call, {}) is call
+    # A crashing guard blocks; hooks that cannot block are only logged.
+    assert await registry.run_before_tool(call, {}) is None
     result = ToolResult(tool_call_id="1", content="ok")
     assert (await registry.run_after_tool(call, result, {})) is result
     await registry.on_session_start(task="t", session_id="s")

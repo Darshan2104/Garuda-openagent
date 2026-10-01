@@ -269,6 +269,28 @@ trust_project_hooks: true
 load_project_tools: true
 ```
 
+Hooks are shell commands that receive a JSON event on stdin. A `before_tool`
+hook is a guard and **fails closed**: exit 0 allows the call, exit 2 blocks it,
+and anything else (another exit code, a command that can't start, a timeout)
+blocks it too, logged as `hook.failed_blocked`. Each hook runs in its own process
+group, which is killed on timeout:
+
+```yaml
+# ~/.agent/settings.yaml
+hooks:
+  before_tool:
+    - match: "bash"
+      command: "./guard.sh"
+      timeout: 10            # seconds, at most 300 (default 30)
+  after_tool:
+    - match: "*"
+      command: "./log-call.sh"
+```
+
+Set `on_failure: allow` on a hook in your global file to make it advisory; a
+project's hooks always fail closed. If a guard rewrites a call, the rewritten
+call is permission-checked again before it runs.
+
 Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in
 [Create your own agent profile](../use-cases/customize.md#create-your-own-agent-profile).
 Read [Safety and workspaces](safety-and-workspaces.md) before enabling project

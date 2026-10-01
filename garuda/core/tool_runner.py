@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 
 from garuda.context.manager import ContextManager
@@ -117,31 +118,12 @@ class ToolRunner:
         sequentially (deterministic ordering of denials) and only gather the
         side-effect-free executions.
         """
-        allowed, denial_reason = await self.permissions.evaluate_tool_call(
-            call.name, call.arguments
-        )
-        if not allowed:
-            # `name`/`id` make a denial attributable. Without them the payload was
-            # `{approved, reason}` alone, so a blocked call could not be tied to the
-            # call it blocked, and a reader had to collapse four distinct outcomes —
-            # denied, hook-blocked, argument-parse failure, never reached — into one
-            # "this tool call has no result" state that suggests different fixes.
-            self.events.append(
-                EventType.PERMISSION_ASK,
-                {
-                    "approved": False,
-                    "reason": denial_reason,
-                    "name": call.name,
-                    "id": call.id,
-                    "turn": turn,
-                },
-            )
-            return None, Message(
-                role=Role.TOOL,
-                content=denial_reason or "Permission denied",
-                name=call.name,
-                tool_call_id=call.id,
-            )
+        denied = await self._authorize(call, turn)
+        if denied is not None:
+            return None, denied
+        # A hook may mutate the call in place or return a new one; keep what was
+        # approved so a rewrite can be recognised and decided on its own.
+        approved = (call.name, deepcopy(call.arguments))
         hooked_call = await self.hooks.run_before_tool(call, self.hook_context(turn))
         if hooked_call is None:
             return None, Message(
@@ -151,10 +133,56 @@ class ToolRunner:
                 tool_call_id=call.id,
             )
         hooked_call.id = call.id
+        if (hooked_call.name, hooked_call.arguments) != approved:
+            # Approval of the original arguments never covers rewritten ones: the
+            # final call needs its own decision, and must name a tool this run has.
+            if hooked_call.name not in self.tool_map:
+                return None, Message(
+                    role=Role.TOOL,
+                    content=f"Tool call blocked: a hook rewrote it to unknown tool {hooked_call.name!r}",
+                    name=call.name,
+                    tool_call_id=call.id,
+                )
+            denied = await self._authorize(hooked_call, turn)
+            if denied is not None:
+                return None, denied
         return hooked_call, None
 
+    async def _authorize(self, call: ToolCall, turn: int) -> Message | None:
+        """Permission-check one call; the transcript message when it is refused."""
+        allowed, denial_reason = await self.permissions.evaluate_tool_call(
+            call.name, call.arguments
+        )
+        if allowed:
+            return None
+        # `name`/`id` make a denial attributable. Without them the payload was
+        # `{approved, reason}` alone, so a blocked call could not be tied to the
+        # call it blocked, and a reader had to collapse four distinct outcomes —
+        # denied, hook-blocked, argument-parse failure, never reached — into one
+        # "this tool call has no result" state that suggests different fixes.
+        self.events.append(
+            EventType.PERMISSION_ASK,
+            {
+                "approved": False,
+                "reason": denial_reason,
+                "name": call.name,
+                "id": call.id,
+                "turn": turn,
+            },
+        )
+        return Message(
+            role=Role.TOOL,
+            content=denial_reason or "Permission denied",
+            name=call.name,
+            tool_call_id=call.id,
+        )
+
     def hook_context(self, turn: int) -> dict:
-        return {"turn": turn, "session_id": self.events.session_id}
+        return {
+            "turn": turn,
+            "session_id": self.events.session_id,
+            "deadline_monotonic": getattr(self.ctx, "deadline_monotonic", None),
+        }
 
     # -- single call ----------------------------------------------------------
 
