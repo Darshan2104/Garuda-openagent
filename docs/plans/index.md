@@ -10,3 +10,5 @@ not command reference or open work; use the current guides and
 - [Runtime session-reference resolution](2026-09-29-runtime-session-ref-resolution-implementation.md)
 - [Documentation refresh](2026-09-30-documentation-refresh-implementation.md)
 - [GitHub Pages documentation](2026-10-01-github-pages-implementation.md)
+- [Teams and sessions](2026-10-01-teams-and-sessions-implementation.md)
+- [Agent definitions](2026-10-01-agent-definitions-implementation.md)
