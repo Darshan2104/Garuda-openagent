@@ -215,6 +215,39 @@ garuda runtime support --session latest
     - Launch command: `goose acp`, a Goose CLI subcommand.
     - Install and authenticate Goose, then verify `goose --version`.
 
+## Usage and limit sources
+
+Garuda can only show a usage or limit value that a vendor documents and that
+was read without a prompt or a credential file. This table records what the
+installed CLIs offered when checked. **Supported** means read successfully;
+**declared** means documented or present but not exercised; **unknown** means
+there is no documented source, or proving one needs a prompt.
+
+| Source | Claude Code 2.1.285 | Codex CLI 0.159.3 |
+|---|---|---|
+| Login status | Supported: `claude auth status --json` (`loggedIn`, `authMethod`, `subscriptionType`) | Supported: `codex login status` (text) |
+| Opaque account id for binding a limit | Supported: `orgId` from `claude auth status --json` (organization-level) | Supported: `accountId` from `codex app-server` `account/rateLimits/read` |
+| Plan usage windows (used fraction, window, reset) | Unknown: no documented non-interactive interface (`/usage` is interactive) | Supported: `codex app-server` `account/rateLimits/read`, a 300-minute and a 10,080-minute window, each with `usedPercent` and `resetsAt` |
+| Limit-reached signal | Unknown | Declared: `rateLimitReachedType` field (not observed at a limit) |
+| Limit data from the ACP adapter | Unknown: none advertised | Unknown: none advertised |
+| Per-turn or cumulative token usage | Unknown: needs a prompt | Unknown: needs a prompt |
+
+For native API providers, LiteLLM 1.87 forwards provider rate-limit headers
+(`x-ratelimit-*`, and every header as `llm_provider-*`) in a response's
+`_hidden_params["additional_headers"]`. That is declared, not exercised, since
+proving it needs a paid call.
+
+Codex's `getAuthStatus` app-server method can return an auth token when asked.
+Garuda never calls it. A limit or usage value without a supported source stays
+`unknown`, and an `unknown` or account-unbound limit never triggers a
+fallback.
+
+To record another version (no prompt is sent):
+
+```bash
+python scripts/capture_usage_sources.py --out tests/fixtures/usage
+```
+
 ## Environment and protocol limits
 
 - Shipped manifests declare no credential-file login probe, so login often

@@ -1,0 +1,89 @@
+{
+  "captured_at": "2026-10-01T22:02:33+00:00",
+  "credentials_read": false,
+  "harnesses": {
+    "claude": {
+      "auth_status": {
+        "account_binding": "sha256:f8bb33408b7b8954",
+        "api_provider": "firstParty",
+        "auth_method": "claude.ai",
+        "command": "claude auth status --json",
+        "fields_present": [
+          "analyticsDisabled",
+          "apiProvider",
+          "authMethod",
+          "configDirectory",
+          "email",
+          "loggedIn",
+          "orgId",
+          "orgName",
+          "projectsDirectory",
+          "subscriptionType"
+        ],
+        "logged_in": true,
+        "status": "supported",
+        "subscription_type": "team"
+      },
+      "usage_windows": {
+        "status": "unknown"
+      },
+      "version": "2.1.285 (Claude Code)"
+    },
+    "codex": {
+      "account": {
+        "account_binding": "sha256:0bc8edf1ab0c30d5",
+        "fields_present": [
+          "account",
+          "requiresOpenaiAuth",
+          "workspaceRouting"
+        ],
+        "method": "account/read",
+        "plan_type": "plus",
+        "status": "supported",
+        "type": "chatgpt"
+      },
+      "initialize_ok": true,
+      "login_status": {
+        "command": "codex login status",
+        "logged_in": true,
+        "method": "ChatGPT",
+        "status": "supported"
+      },
+      "rate_limits": {
+        "account_binding": "sha256:0bc8edf1ab0c30d5",
+        "fields_present": [
+          "accountId",
+          "ordinaryUsageAllowed",
+          "rateLimitResetCredits",
+          "rateLimitUpsell",
+          "rateLimits",
+          "rateLimitsByLimitId"
+        ],
+        "limit_id": "codex",
+        "limit_reached_type": null,
+        "method": "account/rateLimits/read",
+        "ordinary_usage_allowed": true,
+        "plan_type": "plus",
+        "spend_control_reached": false,
+        "status": "supported",
+        "windows": [
+          {
+            "name": "primary",
+            "resets_at_epoch_s": 1790892634,
+            "used_fraction": 0.22,
+            "window_minutes": 300
+          },
+          {
+            "name": "secondary",
+            "resets_at_epoch_s": 1791459115,
+            "used_fraction": 0.09,
+            "window_minutes": 10080
+          }
+        ]
+      },
+      "version": "codex-cli 0.159.3"
+    }
+  },
+  "prompt_sent": false,
+  "schema": 1
+}
