@@ -17,7 +17,7 @@
 # upstream release has broken something, and is expected to be the noisier of
 # the two. Both print `pip freeze`; the diff against this file is the finding.
 #
-# Regenerate with: pip freeze | grep -iE '^(litellm|pyyaml|mcp|pytest|pytest-asyncio|harbor|pypdf|openpyxl|rich)=='
+# Regenerate with: pip freeze | grep -iE '^(litellm|pyyaml|mcp|pytest|pytest-asyncio|harbor|pypdf|openpyxl|mkdocs|mkdocs-material|rich)=='
 # Last verified: 2026-07-31, Python 3.12.
 
 litellm==1.87.0
@@ -34,6 +34,10 @@ harbor==0.17.0
 # docs
 pypdf==6.12.2
 openpyxl==3.1.5
+
+# site
+mkdocs==1.6.1
+mkdocs-material==9.7.7
 
 # tui
 rich==14.2.0

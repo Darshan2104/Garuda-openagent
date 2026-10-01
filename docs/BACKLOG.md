@@ -2,7 +2,7 @@
 
 **Living document. Residuals only.** An item leaves this file when it is fixed or
 when the decision to accept it is recorded here as permanent. Closed work is not
-kept — it is in [archive/](archive/), dated.
+kept — it is in the [archive](archive/index.md), dated.
 
 The rule that makes this useful: nothing here is marked done. If you fix it,
 delete it. A ledger that mixes open and closed items cannot tell you what is left

@@ -5,6 +5,9 @@ workspace selection, permission guardrails, context, evidence, sessions, and
 observability. Start with a read-only native run, then follow the task-specific
 guides below.
 
+This documentation is published at
+[darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/).
+
 ## Start here
 
 1. [Getting started](guides/getting-started.md) — install Garuda, configure a
@@ -62,7 +65,7 @@ in the [external harness guide](guides/external-harnesses.md).
 - [Module map](MODULES.md)
 - [Development](development/development.md)
 - [Major changes](major-changes.md)
-- [Contributor guide](../AGENTS.md)
+- [Contributor guide](https://github.com/Darshan2104/Garuda-openagent/blob/main/AGENTS.md)
 
 ## Open work and history
 

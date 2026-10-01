@@ -4,4 +4,4 @@ This directory holds dated RFCs, plans, and closed review ledgers retained for p
 
 Current documentation starts at [docs/index.md](../index.md). Open work belongs
 in [BACKLOG.md](../BACKLOG.md); durable engineering decisions belong in
-[.context/decisions.md](../../.context/decisions.md).
+[.context/decisions.md](https://github.com/Darshan2104/Garuda-openagent/blob/main/.context/decisions.md).

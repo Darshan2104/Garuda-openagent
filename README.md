@@ -52,6 +52,10 @@ confine host file reads.
 
 ## Documentation
 
+Read the searchable documentation at
+[darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/),
+or browse the source pages below.
+
 - [Getting started](docs/guides/getting-started.md)
 - [Using Garuda](docs/guides/using-garuda.md)
 - [Safety and workspaces](docs/guides/safety-and-workspaces.md)
@@ -71,6 +75,7 @@ and coding agents should start with [AGENTS.md](AGENTS.md).
 
 ```bash
 pip install -e ".[docs]"            # PDF and spreadsheet readers
+pip install -e ".[site]"            # MkDocs documentation site
 pip install -e ".[eval]"            # Harbor integration
 pip install -e ".[observability]"   # OpenTelemetry export
 ```

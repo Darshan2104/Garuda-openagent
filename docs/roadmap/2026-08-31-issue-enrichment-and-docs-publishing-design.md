@@ -1,10 +1,14 @@
 # Issue enrichment and documentation publishing design
 
-**Status:** approved design; implementation pending review
+**Status:** approved design; documentation publishing implemented, issue enrichment pending
 
 **Date:** 2026-08-31
 
 **Repository:** `Darshan2104/Garuda-openagent`
+
+The documentation-publishing implementation is recorded in the
+[GitHub Pages documentation plan](../plans/2026-10-01-github-pages-implementation.md).
+The roadmap issue-enrichment portion remains separate work.
 
 ## Outcome
 
