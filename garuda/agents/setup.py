@@ -1028,6 +1028,21 @@ async def prepare_agent_run(
         mcp_servers=profile.mcp_servers,
         mcp_user_paths=mcp_user_paths,
     )
+    if profile.tools is not None:
+        # A misspelled tool name used to vanish without a trace.
+        available = {tool.name for tool in tools}
+        missing = [
+            name
+            for name in dict.fromkeys(profile.tools)
+            if name not in available and not str(name).startswith("mcp__")
+        ]
+        if missing:
+            logger.warning(
+                "Profile %r (%s): unknown tool(s) ignored: %s",
+                profile.name,
+                profile.source_path or "built-in",
+                ", ".join(map(str, missing)),
+            )
     agent = create_agent(profile.name, mode=config.mode)
     return PreparedNativeRun(
         profile=profile,

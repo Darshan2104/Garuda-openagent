@@ -393,3 +393,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   repository contract (`assert_repository_admission`), enforced by the
   transport tests in CI. A `wheel install` CI job builds the wheel, installs it
   outside the checkout and runs `garuda --help`.
+
+## 2026-10-02 — One profile parser; ambiguous security values refuse (issue #146)
+
+- YAML and `agent.md` profiles go through one parser driven by the
+  `AgentProfile` fields, so no field can be readable in one format and dropped
+  in the other. The `agent.md` body remains the system prompt.
+- Unknown keys warn (with a suggestion) and unknown tool names warn after the
+  toolkit resolves, each naming the profile file. Duplicate keys, an unknown
+  `permission_mode`, and malformed `tool_rules`/`path_rules`/`bash_rules`
+  refuse the profile instead of being normalized.

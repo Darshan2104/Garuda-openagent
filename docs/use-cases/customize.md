@@ -90,6 +90,9 @@ garuda run --agent docs-writer -t "Update the install section of README.md for P
   its own command allowlist instead of `bash_rules`.
 - `system_prompt` is guidance, not enforcement. Use rules for anything that
   must not happen.
+- A misspelled key or tool name is reported as a warning naming the file. A
+  duplicate key or an invalid `permission_mode` or rule refuses the profile,
+  so a permission policy is never guessed.
 
 ??? note "Prefer Markdown? Use `agent.md` format"
 
