@@ -157,15 +157,28 @@ class RuntimeCatalog:
     #: Malformed *advisory* project settings that were ignored, never applied.
     warnings: tuple[str, ...] = ()
 
-    def discover(self) -> tuple[object, ...]:
-        """Run the declared version/auth probes for inspection or selection."""
+    def discover(
+        self, *, only: frozenset[str] | None = None, cache_ttl: float | None = None
+    ) -> tuple[object, ...]:
+        """Run the declared version/auth probes for inspection or selection.
+
+        ``only`` limits probing to those runtime ids (selection probes just the
+        runtimes that could be chosen); ``cache_ttl`` reuses a recent result.
+        Listing and inspection call this with neither, so they always probe.
+        """
         from garuda.acp.catalog import discover
 
+        manifests = self.registry.manifests
+        if only is not None:
+            manifests = tuple(m for m in manifests if m.runtime_id in only)
+            if not manifests:
+                return ()
         return tuple(
             discover(
-                self.registry.manifests,
+                manifests,
                 disabled=self.registry.disabled_ids,
                 project_disabled=self.project_disabled,
+                cache_ttl=cache_ttl,
             )
         )
 
@@ -351,6 +364,56 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     )
 
 
+#: How long initial selection may reuse a runtime's probe result (seconds).
+SELECTION_PROBE_CACHE_SECONDS = 60.0
+
+
+def _selectable_runtime_ids(
+    catalog,
+    *,
+    explicit_runtime: str | None,
+    profile_pin: str | None,
+    global_selection,
+    project_selection,
+) -> frozenset[str]:
+    """The runtimes whose availability can change this selection.
+
+    An explicit or profile choice needs only that runtime. Otherwise only
+    runtimes some source could choose are probed: rule targets (project rules
+    only when trusted), the classifier's candidates when it may run, and the
+    default and fallback runtimes. A plain run with none of these probes
+    nothing and stays native.
+    """
+    known = {m.runtime_id for m in catalog.registry.manifests}
+
+    def resolve(ref: str | None) -> set[str]:
+        if not ref:
+            return set()
+        try:
+            return {catalog.registry.get(ref).runtime_id}
+        except Exception:
+            return {ref} & known
+
+    if explicit_runtime or profile_pin:
+        return frozenset(resolve(explicit_runtime or profile_pin))
+    wanted: set[str] = set()
+    for rule in global_selection.rules:
+        wanted |= resolve(rule.runtime)
+    if global_selection.trust_project_routes:
+        for rule in project_selection.rules:
+            wanted |= resolve(rule.runtime)
+    classifier = global_selection.classifier
+    if classifier.enabled and not project_selection.classifier_disabled:
+        if classifier.candidates is None:
+            wanted |= known
+        else:
+            for ref in classifier.candidates:
+                wanted |= resolve(ref)
+    wanted |= resolve(global_selection.default_runtime)
+    wanted |= resolve(global_selection.fallback_runtime)
+    return frozenset(wanted)
+
+
 def _initial_selection_inputs(
     *,
     workspace: str,
@@ -385,7 +448,19 @@ def _initial_selection_inputs(
     global_settings = load_trusted_runtime_settings()
     project_settings = getattr(home, "settings", None) or {}
     catalog = catalog or prepare_runtime_catalog(workspace)
-    discovered = {entry.runtime_id: entry for entry in catalog.discover()}
+    global_selection = parse_global_selection(global_settings)
+    project_selection = parse_project_selection(project_settings)
+    wanted = _selectable_runtime_ids(
+        catalog,
+        explicit_runtime=explicit_runtime,
+        profile_pin=profile_pin,
+        global_selection=global_selection,
+        project_selection=project_selection,
+    )
+    discovered = {
+        entry.runtime_id: entry
+        for entry in catalog.discover(only=wanted, cache_ttl=SELECTION_PROBE_CACHE_SECONDS)
+    }
     candidates: list[InitialCandidate] = []
     for manifest in catalog.registry.manifests:
         entry = discovered.get(manifest.runtime_id)
@@ -406,8 +481,6 @@ def _initial_selection_inputs(
                 ),
             )
         )
-    global_selection = parse_global_selection(global_settings)
-    project_selection = parse_project_selection(project_settings)
     request = InitialRequest(
         task=task,
         agent=agent,

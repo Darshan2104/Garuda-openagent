@@ -93,6 +93,13 @@ authority. The classifier receives bounded task metadata and approved
 candidates, not file contents or tools, and its choice is revalidated. Details:
 [Initial runtime selection](configuration.md#initial-runtime-selection).
 
+Selection only runs the version and login probes of runtimes it could choose:
+the one you named, or the targets of your rules, classifier candidates, and
+default and fallback runtimes. A plain native run with none of these starts no
+vendor CLI. Results are reused for 60 seconds from an owner-only cache beside
+your global settings that keeps conclusions, never probe output.
+`garuda runtime list` always probes every runtime.
+
 ## Hand off a native session
 
 Preview first. Without `--confirm`, nothing changes:

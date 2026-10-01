@@ -411,3 +411,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   project rules and the classifier are not consulted. Omitting the flag keeps
   the previous precedence (router, rules, classifier, `default_runtime`,
   native). This supersedes the earlier "`--runtime native` counts as no choice".
+
+## 2026-10-02 — Initial selection probes only selectable runtimes (issue #148)
+
+- `garuda run` no longer runs every ACP manifest's version/auth probes. An
+  explicit runtime or profile pin probes only that runtime; otherwise only
+  rule targets (project rules when trusted), classifier candidates when the
+  classifier may run, and the default/fallback runtimes are probed. A plain
+  native run probes nothing.
+- Selection reuses a probe result for 60 seconds, keyed by runtime id,
+  executable path/identity and probe argv, from an owner-only cache that stores
+  the derived record (availability, extracted version, auth/health, warnings),
+  never raw output. Listing and inspection bypass the cache.

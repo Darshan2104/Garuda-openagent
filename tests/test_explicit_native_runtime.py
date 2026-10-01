@@ -42,7 +42,7 @@ def launches(tmp_path, monkeypatch):
 
     # No vendor CLI is installed in CI: report every configured runtime as
     # available so the rule, not a missing binary, decides.
-    monkeypatch.setattr("garuda.agents.setup.RuntimeCatalog.discover", lambda self: ())
+    monkeypatch.setattr("garuda.agents.setup.RuntimeCatalog.discover", lambda self, **_: ())
     monkeypatch.setattr(main, "run_acp_command", acp)
     monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", native)
     return seen
