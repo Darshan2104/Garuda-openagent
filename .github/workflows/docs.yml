@@ -10,6 +10,7 @@ on:
       - "mkdocs.yml"
       - "pyproject.toml"
       - "README.md"
+      - "scripts/check_diagram_links.py"
       - "scripts/check_docs.py"
       - "tests/test_docs_contract.py"
   workflow_dispatch:
@@ -37,3 +38,6 @@ jobs:
 
       - name: Build site strictly
         run: mkdocs build --strict
+
+      - name: Check diagram links
+        run: python scripts/check_diagram_links.py site

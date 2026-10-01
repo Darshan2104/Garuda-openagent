@@ -47,6 +47,9 @@ jobs:
       - name: Build site strictly
         run: mkdocs build --strict
 
+      - name: Check diagram links
+        run: python scripts/check_diagram_links.py site
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

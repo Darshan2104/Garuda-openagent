@@ -14,17 +14,19 @@ import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "scripts" / "check_docs.py"
+DIAGRAM_CHECKER_PATH = REPO_ROOT / "scripts" / "check_diagram_links.py"
 
 
-def _load_checker():
-    spec = importlib.util.spec_from_file_location("check_docs", CHECKER_PATH)
+def _load_script(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-checker = _load_checker()
+checker = _load_script("check_docs", CHECKER_PATH)
+diagram_checker = _load_script("check_diagram_links", DIAGRAM_CHECKER_PATH)
 
 
 def test_broken_link_fixture_fails():
@@ -192,6 +194,35 @@ def test_command_extraction_includes_new_user_docs_and_excludes_plans(tmp_path):
     assert [item.command for item in commands] == ["garuda run", "garuda chat"]
 
 
+def test_command_extraction_includes_every_builder_choice(tmp_path):
+    guide = tmp_path / "docs" / "guides" / "builder.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text(
+        '<div class="gb" data-garuda-builder data-command="garuda run" markdown>\n'
+        '<button data-args="--mode readonly">Read</button>\n'
+        '<button data-args="">Default</button>\n'
+        "</div>\n"
+    )
+    commands = checker.find_documented_commands(tmp_path)
+    assert [item.command for item in commands] == [
+        "garuda run --mode readonly",
+        "garuda run",
+    ]
+
+
+def test_invalid_builder_choice_is_reported(tmp_path):
+    guide = tmp_path / "docs" / "guides" / "builder.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text(
+        '<div data-garuda-builder data-command="garuda run">\n'
+        '<button data-args="--mode unsafe">Unsafe</button>\n'
+        "</div>\n"
+    )
+    errors = checker.find_invalid_documented_commands(tmp_path, _fixture_parser())
+    assert len(errors) == 1
+    assert "builder.md:2: invalid choice 'unsafe'" in errors[0]
+
+
 def test_command_mode_fails_loudly_without_installed_parser(tmp_path, monkeypatch, capsys):
     original_import = builtins.__import__
 
@@ -219,3 +250,35 @@ def test_release_docs_have_no_test_count_claims():
 
 def test_release_docs_have_no_duplicate_table_rows():
     assert checker.find_duplicate_table_rows(REPO_ROOT) == []
+
+
+def _write_site_page(site, rel, body):
+    page = site / rel
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(body)
+
+
+def _mermaid(*clicks):
+    lines = "\n".join(f'  click n{i} &quot;{target}&quot;' for i, target in enumerate(clicks))
+    return f'<pre class="mermaid"><code>flowchart LR\n{lines}\n</code></pre>'
+
+
+def test_diagram_links_resolve_like_a_browser(tmp_path):
+    _write_site_page(tmp_path, "index.html", _mermaid("guide/#setup", "#local", "https://example.com/x"))
+    _write_site_page(tmp_path, "guide/index.html", '<h2 id="setup">Setup</h2>')
+    _write_site_page(
+        tmp_path,
+        "use-cases/index.html",
+        '<h2 id="local">Local</h2>' + _mermaid("explore/#ask", "../guide/#setup"),
+    )
+    _write_site_page(tmp_path, "use-cases/explore/index.html", '<h2 id="ask">Ask</h2>')
+    assert diagram_checker.find_broken_diagram_links(tmp_path) == [
+        "index.html: diagram link '#local' has no anchor #local"
+    ]
+
+
+def test_diagram_link_to_missing_page_fails(tmp_path):
+    _write_site_page(tmp_path, "index.html", _mermaid("missing/"))
+    assert diagram_checker.find_broken_diagram_links(tmp_path) == [
+        "index.html: diagram link 'missing/' has no page"
+    ]

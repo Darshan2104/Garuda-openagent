@@ -14,8 +14,10 @@ Four dependency-free checks, local only — no remote fetching:
 4. Duplicate Markdown table rows in maintained user documentation.
 
 With ``--commands``, a fifth check imports Garuda's argparse parser and verifies
-every ``garuda ...`` command in maintained fenced and inline code. This mode
-requires the package to be installed; the default remains stdlib-only.
+every ``garuda ...`` command in maintained fenced and inline code, plus every
+choice offered by an interactive command builder (``data-garuda-builder``
+blocks). This mode requires the package to be installed; the default remains
+stdlib-only.
 
 Exceptions must be explicit: add the path to ``ALLOWED_NESTED_READMES`` below
 and get it reviewed — there is currently no exception.
@@ -27,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import pathlib
 import re
 import shlex
@@ -87,6 +90,8 @@ INLINE_CODE_RE = re.compile(
     r"(?<!`)(?P<ticks>`+)(?!`)(?P<code>.*?)(?P=ticks)(?!`)", re.DOTALL
 )
 OPTIONAL_GROUP_RE = re.compile(r"\[([^\[\]]+)\]")
+BUILDER_COMMAND_RE = re.compile(r'data-garuda-builder\b[^>]*?\bdata-command="(?P<command>[^"]+)"')
+BUILDER_ARGS_RE = re.compile(r'\bdata-args="(?P<args>[^"]*)"')
 TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 
 
@@ -293,6 +298,26 @@ def _commands_from_shell_block(
     return commands
 
 
+def _builder_commands(text: str, rel: str) -> list[DocumentedCommand]:
+    """Each builder choice appended to its builder's base command.
+
+    A builder composes its base command with one fragment per choice, so every
+    fragment must be valid for that command on its own.
+    """
+    commands = []
+    starts = list(BUILDER_COMMAND_RE.finditer(text))
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        base = html.unescape(start.group("command")).strip()
+        if not re.match(r"^garuda(?:\s|$)", base):
+            continue
+        for match in BUILDER_ARGS_RE.finditer(text, start.end(), end):
+            args = html.unescape(match.group("args")).strip()
+            line_number = text.count("\n", 0, match.start()) + 1
+            commands.append(DocumentedCommand(rel, line_number, f"{base} {args}".strip()))
+    return commands
+
+
 def _extract_commands(path: pathlib.Path, root: pathlib.Path) -> list[DocumentedCommand]:
     try:
         text = path.read_text(encoding="utf-8", errors="strict")
@@ -359,6 +384,7 @@ def _extract_commands(path: pathlib.Path, root: pathlib.Path) -> list[Documented
         if COMMAND_IGNORE_MARKER in outside_text[match.end() : line_end]:
             continue
         commands.append(DocumentedCommand(rel, line_number, command))
+    commands.extend(_builder_commands(text, rel))
     return commands
 
 

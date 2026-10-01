@@ -57,7 +57,14 @@ CI and GitHub Pages:
 
 ```bash
 mkdocs build --strict
+python scripts/check_diagram_links.py site
 ```
+
+The strict build fails on a page missing from the `nav` in `mkdocs.yml`, a
+broken link, or a link to a missing anchor. `check_diagram_links.py` does the
+same for Mermaid `click` targets, which MkDocs cannot see. Interactive command
+builders (`data-garuda-builder` blocks) have each choice validated by
+`check_docs.py --commands`.
 
 Pull requests validate the site but never deploy it. A successful merge to
 `main` builds and publishes the `site/` artifact through GitHub's official Pages
