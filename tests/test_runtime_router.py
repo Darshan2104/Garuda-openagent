@@ -195,7 +195,7 @@ async def test_cli_executor_uses_policy_selected_runtime(monkeypatch):
     args = SimpleNamespace(
         task="use the selected runtime",
         file=None,
-        runtime="native",
+        runtime=None,  # flag omitted: the policy router chooses
         workspace=".",
     )
     assert await main.run_task(args) == 0

@@ -88,7 +88,10 @@ def build_parser():
     run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument(
-        "--runtime", default="native", help="Trusted global runtime id or project alias"
+        "--runtime",
+        default=None,
+        help="Trusted global runtime id or project alias. Naming one (including "
+        "`native`) pins it; omitted, routing rules may choose and native is the default",
     )
     run_parser.add_argument("--agents-dir", help="Directory with custom agent YAML profiles")
     run_parser.add_argument(
@@ -620,7 +623,7 @@ def _print_runtime_refusal(exc: Exception) -> int:
     print(f"Error: runtime selection refused: {exc}", file=sys.stderr)
     print(
         "Check `runtimes`/`disabled_runtimes` in your global settings and the "
-        "project's `runtime_refs`, or pass `--runtime native`.",
+        "project's `runtime_refs`, or pass `--runtime native` to pin the native runtime.",
         file=sys.stderr,
     )
     return 2
@@ -842,7 +845,10 @@ async def run_task(args) -> int:
     # resolves and explains the initial owner from the same trusted registry;
     # its selected id is the executor below, never merely an audit record.
     runtime_catalog = prepare_runtime_catalog(args.workspace)
-    requested_runtime = args.runtime
+    # `None` means the flag was omitted. Naming a runtime, including `native`,
+    # is an explicit choice that routing rules and the classifier never override.
+    runtime_named = args.runtime is not None
+    requested_runtime = args.runtime if runtime_named else "native"
     if requested_runtime != "native":
         # Resolve aliases and the global disabled gate before selection turns
         # an explicit request into a candidate id. This preserves the public
@@ -851,7 +857,11 @@ async def run_task(args) -> int:
         requested_runtime = runtime_catalog.registry.get(
             requested_runtime
         ).runtime_id
-    routed_runtime = select_runtime(args.workspace, requested_runtime)
+    if runtime_named and requested_runtime == "native":
+        routed_runtime = "native"
+    else:
+        routed_runtime = select_runtime(args.workspace, requested_runtime)
+    explicit_native = runtime_named and routed_runtime == "native"
     # This catalog is passed through selection and launch. That prevents a
     # selection probe from observing different trusted registry facts than the
     # executor it chooses. When no explicit, profile, or rule source selects,
@@ -863,7 +873,9 @@ async def run_task(args) -> int:
         catalog=runtime_catalog,
         agent=getattr(args, "agent", "build"),
         mode=getattr(args, "mode", None) or "",
-        explicit_runtime=(routed_runtime if routed_runtime != "native" else None),
+        explicit_runtime=(
+            routed_runtime if routed_runtime != "native" or explicit_native else None
+        ),
         workspace_kind=getattr(args, "workspace_kind", "local"),
         permission_ceiling=getattr(args, "permission_mode", None) or "smart",
         available_runtime_ids=(

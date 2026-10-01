@@ -198,7 +198,7 @@ def _native_session(ws: Path, session_id: str) -> None:
 
 def test_parser_has_runtime_group_with_defaults():
     args = build_parser().parse_args(["run", "-t", "x"])
-    assert args.runtime == "native"
+    assert args.runtime is None  # omitted: routing may choose; native is the default
     assert build_parser().parse_args(["run", "-t", "x", "--runtime", "codex"]).runtime == "codex"
     sub = build_parser().parse_args(["runtime", "list"])
     assert sub.runtime_command == "list"

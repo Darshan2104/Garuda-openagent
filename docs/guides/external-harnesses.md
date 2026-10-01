@@ -78,8 +78,8 @@ session.
 
 Initial selection uses the first applicable source:
 
-1. explicit `--runtime` naming a non-native runtime (`--runtime native` counts
-   as no choice);
+1. an explicit `--runtime` (including `--runtime native`, which pins the
+   native runtime);
 2. a trusted global deterministic routing rule;
 3. a project rule, only when global settings authorize project routing;
 4. the optional trusted classifier;

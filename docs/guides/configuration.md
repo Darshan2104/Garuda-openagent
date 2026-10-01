@@ -190,7 +190,8 @@ flowchart LR
   a["--runtime ID"] --> b["Trusted global rule"] --> c["Project rule<br/>if trust_project_routes"] --> d["Classifier<br/>if enabled"] --> e["default_runtime"] --> f["native"]
 ```
 
-`--runtime native` counts as no choice, so the later sources still apply.
+Naming a runtime with `--runtime`, including `--runtime native`, pins it. Omit
+the flag to let the later sources choose.
 Global rules, defaults, project-route trust, and the classifier live in
 `~/.agent/settings.yaml`:
 
