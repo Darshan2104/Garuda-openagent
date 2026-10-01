@@ -289,18 +289,56 @@ PROJECT_MEMORY_MAX_CHARS = 8000
 PROJECT_MEMORY_FILENAMES = ("AGENTS.md", "GARUDA.md")
 
 
-def _project_memory_block(workspace_root: str | Path) -> str:
-    """Return a prompt block from AGENTS.md/GARUDA.md in the workspace root, or ""."""
+MEMORY_TRUNCATED = "memory.truncated"
+
+
+def _read_bounded(path: Path, max_chars: int) -> tuple[str, bool]:
+    """Read at most ``max_chars`` characters, and whether more remained.
+
+    Reads one character past the cap rather than the whole file, so a huge
+    file is never loaded just to be cut.
+    """
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        content = handle.read(max_chars + 1)
+    return content[:max_chars], len(content) > max_chars
+
+
+def _project_memory_block(
+    workspace_root: str | Path, diagnostics: list[dict] | None = None
+) -> str:
+    """Return a prompt block from AGENTS.md/GARUDA.md in the workspace root, or "".
+
+    A file over :data:`PROJECT_MEMORY_MAX_CHARS` is cut, never silently: the
+    block ends with a marker saying so, a ``memory.truncated`` warning is
+    logged, and the diagnostic is appended to ``diagnostics`` when given.
+    """
     root = Path(workspace_root)
     for name in PROJECT_MEMORY_FILENAMES:
         candidate = root / name
         try:
             if not candidate.is_file():
                 continue
-            content = candidate.read_text(encoding="utf-8", errors="replace")
+            content, truncated = _read_bounded(candidate, PROJECT_MEMORY_MAX_CHARS)
         except OSError:
             continue
-        content = content[:PROJECT_MEMORY_MAX_CHARS]
+        if truncated:
+            content += (
+                f"\n\n[project instructions truncated at {PROJECT_MEMORY_MAX_CHARS} "
+                "characters]"
+            )
+            diagnostic = {
+                "code": MEMORY_TRUNCATED,
+                "file": str(candidate),
+                "cap_chars": PROJECT_MEMORY_MAX_CHARS,
+                "message": (
+                    f"{name} is longer than {PROJECT_MEMORY_MAX_CHARS} characters; "
+                    "only the first part reaches the model"
+                ),
+                "fix": f"Shorten {name}, or move detail into files the agent can read",
+            }
+            logger.warning("%s: %s (%s)", MEMORY_TRUNCATED, diagnostic["message"], candidate)
+            if diagnostics is not None:
+                diagnostics.append(diagnostic)
         return f"\n\n## Project instructions (from {name})\n{content}"
     return ""
 
@@ -326,8 +364,17 @@ def _warn_unsatisfiable_skill_tools(skills, granted_tools: list[str] | None) -> 
                 )
 
 
-def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | None = None) -> str:
-    """Build system prompt with optional skill injection and project memory."""
+def resolve_system_prompt(
+    profile: AgentProfile,
+    workspace_root: str | Path | None = None,
+    *,
+    diagnostics: list[dict] | None = None,
+) -> str:
+    """Build system prompt with optional skill injection and project memory.
+
+    ``diagnostics`` collects anything the user should know about what was
+    left out (for example a truncated ``AGENTS.md``).
+    """
     from garuda.skills.loader import discover_skills, format_skills_prompt
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -358,5 +405,5 @@ def resolve_system_prompt(profile: AgentProfile, workspace_root: str | Path | No
     skills_block = format_skills_prompt(discovered)
     prompt = f"{base}\n\n{skills_block}" if skills_block else base
     if workspace_root:
-        prompt += _project_memory_block(workspace_root)
+        prompt += _project_memory_block(workspace_root, diagnostics)
     return prompt

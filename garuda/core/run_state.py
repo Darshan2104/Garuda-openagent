@@ -634,6 +634,11 @@ async def prepare_run(
                 # divergence between the two is visible rather than averaged away.
                 "permission_mode": permissions.mode,
                 "config": describe_config(config),
+                **(
+                    {"diagnostics": list(config.prompt_diagnostics)}
+                    if getattr(config, "prompt_diagnostics", None)
+                    else {}
+                ),
             },
         )
 

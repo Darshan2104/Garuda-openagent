@@ -39,7 +39,10 @@ Create `AGENTS.md` (or `GARUDA.md`) at the project root:
 ```
 
 **What happens:** Garuda adds the first 8,000 characters of the file to the
-agent's instructions on every run in that workspace.
+agent's instructions on every run in that workspace. A longer file is cut at
+that point, and Garuda says so: the prompt ends the section with a note, a
+`memory.truncated` warning is printed, and the `session_start` event lists the
+diagnostic.
 
 ## Create your own agent profile
 
