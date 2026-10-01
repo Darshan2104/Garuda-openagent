@@ -1,0 +1,57 @@
+name: Deploy documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs-pages.yml"
+      - "constraints.txt"
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: build and deploy
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install site dependencies
+        run: pip install mkdocs mkdocs-material -c constraints.txt
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Check documentation contracts
+        run: python scripts/check_docs.py
+
+      - name: Build site strictly
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

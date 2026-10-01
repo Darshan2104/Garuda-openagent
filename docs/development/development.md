@@ -43,6 +43,26 @@ are exempt. Any other exception must be added explicitly to
 `scripts/check_docs.py` with reviewer approval. Do not hand-maintain test
 counts in `README.md`, `AGENTS.md`, or `docs/` — cite the CI run instead.
 
+## Documentation site
+
+Install the dedicated site dependencies and run a local preview:
+
+```bash
+pip install -e ".[site]" -c constraints.txt
+mkdocs serve
+```
+
+Before opening a documentation pull request, build the same strict site used by
+CI and GitHub Pages:
+
+```bash
+mkdocs build --strict
+```
+
+Pull requests validate the site but never deploy it. A successful merge to
+`main` builds and publishes the `site/` artifact through GitHub's official Pages
+actions.
+
 ## Reproducible dependency checks
 
 ```bash

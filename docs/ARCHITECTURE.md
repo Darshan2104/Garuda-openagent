@@ -7,7 +7,7 @@ orientation for someone about to change the code. For the file-by-file map see
 [BACKLOG.md](BACKLOG.md).
 
 Historical design documents and closed review ledgers live in
-[archive/](archive/). They are kept for provenance and are **not** maintained —
+[archive](archive/index.md). They are kept for provenance and are **not** maintained —
 do not read them as current behavior.
 
 ## The two things to understand first

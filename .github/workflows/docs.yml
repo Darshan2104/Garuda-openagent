@@ -1,0 +1,39 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/docs-pages.yml"
+      - ".github/workflows/docs.yml"
+      - "constraints.txt"
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "README.md"
+      - "scripts/check_docs.py"
+      - "tests/test_docs_contract.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: strict site build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install site dependencies
+        run: pip install mkdocs mkdocs-material -c constraints.txt
+
+      - name: Check documentation contracts
+        run: python scripts/check_docs.py
+
+      - name: Build site strictly
+        run: mkdocs build --strict

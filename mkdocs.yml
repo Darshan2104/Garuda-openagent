@@ -1,0 +1,100 @@
+site_name: Garuda Open Agent
+site_description: Provider-agnostic coding-agent harness documentation
+site_url: https://darshan2104.github.io/Garuda-openagent/
+repo_url: https://github.com/Darshan2104/Garuda-openagent
+repo_name: Darshan2104/Garuda-openagent
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Overview: index.md
+  - Getting started: guides/getting-started.md
+  - User guides:
+      - Using Garuda: guides/using-garuda.md
+      - Safety and workspaces: guides/safety-and-workspaces.md
+      - Configuration: guides/configuration.md
+      - External harnesses: guides/external-harnesses.md
+      - Web dashboard: guides/web-dashboard.md
+  - Reference:
+      - CLI: reference/cli.md
+  - Architecture:
+      - Architecture: ARCHITECTURE.md
+      - Module map: MODULES.md
+      - Major changes: major-changes.md
+  - Development:
+      - Development guide: development/development.md
+      - Browser checks: development/browser-checks.md
+  - Evaluation:
+      - Overview: evaluation/index.md
+      - Dual-model routing: evaluation/dual-model-routing.md
+      - Terminal-Bench: evaluation/terminal-bench.md
+      - SpreadsheetBench: evaluation/spreadsheet-bench.md
+      - PDF and OfficeQA: evaluation/pdf-officeqa.md
+  - Planning and history:
+      - Open backlog: BACKLOG.md
+      - Roadmaps:
+          - Overview: roadmap/index.md
+          - ACP orchestration: roadmap/2026-08-acp-orchestration.md
+          - Issue catalog: roadmap/issue-catalog.md
+          - Issue enrichment and publishing: roadmap/2026-08-31-issue-enrichment-and-docs-publishing-design.md
+      - Design records:
+          - Overview: design/index.md
+          - Dual-model delegation and routing: design/2026-09-14-dual-model-delegation-and-runtime-routing-design.md
+          - Pluggable terminal strategy: design/2026-09-28-pluggable-terminal-strategy-design.md
+          - Collection forced terminal submission: design/2026-09-29-collection-forced-terminal-submission-design.md
+          - Paired-trial report CLI: design/2026-09-29-paired-trial-report-cli-design.md
+          - Runtime session references: design/2026-09-29-runtime-session-ref-resolution-design.md
+          - Documentation refresh: design/2026-09-30-documentation-refresh-design.md
+      - Implementation plans:
+          - Overview: plans/index.md
+          - Dual-model delegation and routing: plans/2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md
+          - Collection forced terminal submission: plans/2026-09-29-collection-forced-terminal-submission-implementation.md
+          - Paired-trial report CLI: plans/2026-09-29-paired-trial-report-cli-implementation.md
+          - Runtime session references: plans/2026-09-29-runtime-session-ref-resolution-implementation.md
+          - Documentation refresh: plans/2026-09-30-documentation-refresh-implementation.md
+          - GitHub Pages publishing: plans/2026-10-01-github-pages-implementation.md
+      - Archive:
+          - Overview: archive/index.md
+          - Harness RFC: archive/2026-07-02-GARUDA_OPEN_AGENT_RFC.md
+          - Configuration and scalability: archive/2026-07-08-CONFIG_SCALABILITY_PLAN.md
+          - Engineering plan: archive/2026-07-17-ENGINEERING_PLAN.md
+          - Module build phases: archive/2026-07-17-MODULES-build-phases.md
+          - Review findings: archive/2026-07-28-REVIEW_FINDINGS.md
+          - Security and correctness record: archive/2026-07-28-SECURITY_CORRECTNESS_TODO.md

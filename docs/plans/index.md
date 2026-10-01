@@ -9,3 +9,4 @@ not command reference or open work; use the current guides and
 - [Paired-trial report CLI](2026-09-29-paired-trial-report-cli-implementation.md)
 - [Runtime session-reference resolution](2026-09-29-runtime-session-ref-resolution-implementation.md)
 - [Documentation refresh](2026-09-30-documentation-refresh-implementation.md)
+- [GitHub Pages documentation](2026-10-01-github-pages-implementation.md)
