@@ -434,3 +434,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   has no global form. Sessions without an absolute workspace are never a
   project's `latest`. Teams task B.1 later replaces the path with an opaque id.
 - Native sessions now record the absolute workspace instead of `"."`.
+
+## 2026-10-02 — Queue and lock contract proved by the A.4 spike (issue #153)
+
+- Cross-process mutual exclusion uses an exclusive `fcntl.flock` on a
+  no-follow, owner-only lock file; any failure to lock refuses the mutation.
+  State is one versioned JSON document replaced atomically (temp file, fsync,
+  rename, directory fsync); corrupt, symlinked or future-version state refuses.
+- Ownership = pid + process start identity + process group. Reclaiming an
+  expired claim needs confirmed death (a reused pid counts as dead; a live
+  group member keeps it alive); a live owner past its TTL keeps the claim and
+  indeterminate liveness quarantines it.
+- Waiting is polling with bounded exponential backoff — portable and immune to
+  lost wake-ups. Capacity is claimed before the workspace and released if the
+  workspace is not immediately available, so no process holds a slot while
+  waiting on a workspace.
+- POSIX only for now (macOS, Linux); the spike refuses other hosts.
