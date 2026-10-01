@@ -105,13 +105,17 @@ garuda run --runtime claude -t "Add type hints to src/utils.py"
 **What happens**
 
 1. Garuda resolves the trusted catalog entry. An unknown, disabled, or
-   unavailable runtime is refused; Garuda never silently falls back to native.
+   missing runtime is refused.
 2. It locks the workspace, records a session and the starting state, and
    launches the exact executable it found.
 3. Approval requests from the harness reach you as a `y/N` prompt on an
    interactive terminal. In a headless run they are denied and recorded.
 4. When the harness ends its turn, Garuda records the workspace changes and
    stops the process.
+
+If an installed harness fails to **start** and the workspace is unchanged,
+Garuda moves the session once to `fallback_runtime` (native by default) and
+records why in the session. The native run then uses your model API key.
 
 ## Hand off a Garuda session to an external harness
 
@@ -205,10 +209,11 @@ Garuda picks the starting runtime from the first source that applies:
 
 ```mermaid
 flowchart LR
-  a["--runtime flag"] --> b["Trusted global rule"] --> c["Project rule<br/>(only if globally trusted)"] --> d["Optional classifier"] --> e["default_runtime"] --> f["native"]
+  a["--runtime ID"] --> b["Trusted global rule"] --> c["Project rule<br/>(only if globally trusted)"] --> d["Optional classifier"] --> e["default_runtime"] --> f["native"]
 ```
 
-Every condition in a rule must match; higher `priority` wins. An optional
+`--runtime native` counts as no choice, so rules can still pick another
+runtime. Every condition in a rule must match; higher `priority` wins. An optional
 classifier model can pick between approved candidates when no rule matches.
 Its answer is re-checked, and on any doubt the default is used. See
 [Configuration → initial runtime selection](../guides/configuration.md#initial-runtime-selection).
@@ -240,6 +245,8 @@ collection:
 
 **What happens**
 
+- Settings in a profile or project can also turn collection on, and a
+  collection model must be bound.
 - The main model stays in control and must explicitly call
   `delegate_collection`. Collection jobs are bounded and read-only; they can't
   edit files or finish the task.

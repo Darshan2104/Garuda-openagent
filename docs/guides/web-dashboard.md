@@ -93,7 +93,7 @@ handoff failure semantics.
 | Capability token | Who can call dashboard routes |
 | Loopback bind | Network exposure |
 | Workspace allowlist | Which directories can be selected |
-| `--max-permission` | What a browser request can ask for |
+| `--max-permission` | What a browser request can ask for (subagents keep their own profile's permissions) |
 
 A browser's approval poll also acts as a heartbeat. If the browser abandons an
 approval, Garuda denies it instead of leaving the run blocked. See

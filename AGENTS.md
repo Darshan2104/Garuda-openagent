@@ -32,7 +32,7 @@ Run the narrowest relevant tests first. Browser-dashboard checks require a live 
 
 - Keep root `README.md` short: value proposition, safe quick start, and navigation.
 - Put product and contributor detail under `docs/`; do not add nested README files.
-- Use lower-case, hyphenated names for new documentation pages.
+- Use lower-case, hyphenated names for new documentation pages, and add each new page to the `nav` in `mkdocs.yml`.
 - Update relevant architecture, reference, and roadmap pages with behavior changes. Record a durable decision in `.context/decisions.md` when it affects a public boundary or security posture.
 
 ## Context pack

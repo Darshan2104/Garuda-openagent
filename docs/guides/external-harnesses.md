@@ -69,14 +69,17 @@ sequenceDiagram
   Garuda->>H: retire the process
 ```
 
-Unknown, disabled, or unavailable runtimes are refused instead of silently
-falling back to native.
+Unknown, disabled, or missing runtimes are refused. If an installed harness
+fails to start and the workspace is unchanged, Garuda moves the session once
+to `fallback_runtime` (native by default) and records the reason in the
+session.
 
 ## Route the initial runtime
 
 Initial selection uses the first applicable source:
 
-1. explicit `--runtime`;
+1. explicit `--runtime` naming a non-native runtime (`--runtime native` counts
+   as no choice);
 2. a trusted global deterministic routing rule;
 3. a project rule, only when global settings authorize project routing;
 4. the optional trusted classifier;

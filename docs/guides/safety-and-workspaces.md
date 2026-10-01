@@ -5,10 +5,13 @@ workspace boundary first, then the run and permission modes for behavior inside
 it.
 
 !!! abstract "At a glance"
-    - **Docker is the isolation boundary** Garuda documents for untrusted code.
-      Every other control is a guardrail.
+    - **Docker is the isolation boundary** Garuda documents for untrusted
+      workspace commands. Every other control is a guardrail.
+    - Garuda itself, model calls, MCP servers, `web_fetch`/`web_search`, and any
+      project tools or hooks run on the host, even with a Docker workspace.
     - Permission rules and read-only mode screen what the agent **asks** to do.
-      They don't confine the process.
+      They don't confine the process, and read-only has
+      [known gaps](#read-only-mode-limits).
     - The OS sandbox limits writes and network. It does **not** stop host reads.
     - Model traffic always leaves from the host, whatever the workspace.
     - External (ACP) harnesses act with their own authority.
@@ -51,12 +54,12 @@ disabled.
 
 | Control | What it does | What it does not do |
 |---|---|---|
-| Docker workspace | Runs workspace commands in a resource-limited container | Remove provider traffic from the host |
+| Docker workspace | Runs workspace commands in a resource-limited container | Contain Garuda itself, model traffic, MCP servers, or web tools, which run on the host |
 | Remote workspace | Runs commands in a container through another Docker daemon | Establish trust in that daemon, or provision its mount path |
 | `sandbox` workspace | Uses Bubblewrap or macOS Seatbelt to reduce write and network reach | Confine general host reads |
 | Permission rules | Screen tool names and literal path and command arguments | See shell expansion, or everything a broad read returns |
-| `readonly` mode | Denies write tools and shell commands not classified as side-effect-free | Act as a sandbox |
-| Workspace lease | Refuses overlapping sessions that could mix up their changes | Isolate the process from the host |
+| `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold subagents and MCP tools to read-only |
+| Workspace lease | Refuses overlapping `garuda run`, `serve`, SDK, and runtime sessions | Isolate the process, or cover `garuda chat`, dashboard chats, and recipes, which don't take one yet |
 
 Permission rules and OS sandbox policies are useful defense in depth. Don't
 describe or treat them as equivalent to containment.
@@ -113,8 +116,17 @@ garuda run --workspace . --workspace-kind docker --docker-image python:3.12 --no
 | Network | Bridged | `--no-network` switches to Docker's `none` network |
 
 These network flags govern commands inside the workspace. They don't stop
-Garuda itself from calling the model provider, so don't use them to claim the
-whole host process is offline.
+Garuda itself from calling the model provider, or `web_fetch` and `web_search`
+from fetching pages, so don't use them to claim the agent is offline.
+
+MCP servers start on the host, and Garuda discovers a repository's own
+`.agent/mcp.json` or `.cursor/mcp.json` automatically. For an untrusted
+repository, point `--mcp-config` at an empty config outside it:
+
+```bash
+echo '{}' > ~/empty-mcp.json
+garuda run --workspace . --workspace-kind docker --no-network --mcp-config ~/empty-mcp.json -t "Run the test suite"
+```
 
 ## Remote Docker workspace
 
@@ -141,9 +153,9 @@ explicit `--permission-mode` still wins.
 | Permission mode | Behavior |
 |---|---|
 | `smart` | Applies tool, path, and command rules; refuses dangerous commands and asks for risky ones |
-| `readonly` | Allows inspection tools and side-effect-free shell commands; denies writes |
-| `auto` | Broadly allows requests without asking |
-| `yolo` | Deliberately permissive. Use only inside a boundary you trust independently |
+| `readonly` | Allows inspection tools and side-effect-free shell commands; denies Garuda's write tools. Ignores `bash_rules` |
+| `auto` | Allows every request. Only per-tool `tool_rules` apply; path rules, bash rules, and built-in refusals are skipped (currently the same as `yolo`) |
+| `yolo` | Same as `auto`. Use only inside a boundary you trust independently |
 
 !!! warning
     Don't combine `--mode readonly` with a more permissive `--permission-mode`
@@ -152,6 +164,24 @@ explicit `--permission-mode` still wins.
 Path checks inspect literal arguments. Shell wildcards, indirection, and broad
 commands can return content from paths that weren't named. Use a read-only
 mount, a minimal copy of the workspace, or a container when that matters.
+
+### Read-only mode limits
+
+`--mode readonly` and the `readonly` permission mode are guardrails with known
+gaps today:
+
+- **Subagents.** `invoke_subagent` starts the child with its **own**
+  profile's permission mode. A read-only `build` run can start a `build`
+  subagent that edits files. The dashboard's `--max-permission` ceiling and
+  smart mode's refusals don't carry over either. The `explore`, `plan`, and
+  `reviewer` profiles don't include `invoke_subagent`.
+- **MCP tools.** MCP tools are added to every profile and aren't treated as
+  writes, so a write-capable MCP tool still runs.
+- **Environment variables.** `env` and `printenv` count as inspection
+  commands, so environment variables, including API keys, can reach the model.
+
+When nothing may change, use `--agent explore` with an empty `--mcp-config`,
+work on a disposable copy of the project, and check `git status` afterwards.
 
 ## Trusted configuration and executable extensions
 
@@ -183,7 +213,9 @@ garuda web --read-only
 
 For live conversations, repeat `--allow-workspace` for each allowed directory
 and set `--max-permission` as the browser's ceiling. A browser request can ask
-for that posture or a stricter one, never a looser one.
+for that posture or a stricter one, never a looser one. Subagents still run
+with their own profile's permissions; see
+[read-only mode limits](#read-only-mode-limits).
 
 ACP runtimes are different from native workspace execution. Garuda launches the
 user-authenticated harness and records approvals, session state, leases, and
@@ -199,6 +231,7 @@ one with untrusted code.
 - [ ] Decide whether host execution is acceptable; otherwise choose Docker.
 - [ ] Decide whether workspace commands need network access.
 - [ ] Start with `readonly` or `smart`, not a permissive override.
-- [ ] Review project hooks, Python tools, MCP commands, and instructions.
+- [ ] Review project hooks, Python tools, MCP commands, and instructions. For an
+      untrusted repository, pass an empty `--mcp-config`.
 - [ ] Confirm the native or ACP runtime and its credential boundary.
 - [ ] Afterwards, inspect the session, workspace changes, and verification status.

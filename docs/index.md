@@ -8,10 +8,10 @@ hide:
 
 # Garuda
 
-A safe, inspectable runtime for AI coding agents. Give it a task and it runs
-a model, or an external agent such as Claude Code or Codex, in a workspace you
-choose. It screens what the agent may do, checks the result, and records
-everything so you can inspect or continue it.
+A safe, inspectable runtime for AI coding agents. Give it a task and it runs a
+model in a workspace you choose, screens every action, and checks the result
+before accepting it. It can also drive external agents such as Claude Code or
+Codex. Every run is recorded so you can inspect or continue it.
 
 [Get started in 5 minutes](guides/getting-started.md){ .md-button .md-button--primary }
 [Browse use cases](use-cases/index.md){ .md-button }
@@ -27,7 +27,8 @@ export OPENROUTER_API_KEY=sk-or-...   # placeholder: use your own key
 garuda run --mode readonly -t "Summarize this repository"
 ```
 
-The last command only reads: it can't edit files. Model calls can cost money.
+The last command runs in read-only mode, which blocks Garuda's file-writing
+tools. Model calls can cost money.
 
 ## How a run works
 
@@ -41,7 +42,7 @@ flowchart LR
   checks -- "not yet" --> work
   checks -- accepted --> session[("5 · Session<br/>record")]
   click runtime "guides/how-garuda-works/#1-runtime-who-does-the-work"
-  click work "guides/how-garuda-works/#2-workspace-where-commands-run"
+  click work "guides/how-garuda-works/#3-workspace-where-commands-run"
   click checks "guides/how-garuda-works/#4-run-mode-when-work-counts-as-done"
   click session "guides/how-garuda-works/#5-session-what-gets-recorded"
 ```

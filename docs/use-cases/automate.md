@@ -48,10 +48,13 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
 - Steps run in order. Each step's output is appended to the next step's prompt
   under "Prior step output".
 - `{{name}}` placeholders are filled from `--param KEY=VALUE`, then from
-  defaults. A missing required parameter stops the recipe before any step runs.
+  defaults. A missing required parameter stops the recipe with an error before
+  any step runs.
+- Recipe steps aren't saved as sessions, and recipes don't take a workspace
+  lease.
 - Each step can set `agent` (a profile) and `mode`.
-- The recipe stops at the first failed step and tells you which steps did not
-  run.
+- The recipe stops at the first failed step and tells you how many later
+  steps did not run.
 
 ## Use Garuda in scripts and CI
 
@@ -91,22 +94,28 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
       review:
         runs-on: ubuntu-latest
         steps:
+          # Check out the trusted base branch, so the pull request's own
+          # .agent/ files and instructions never run. Its diff is only data.
           - uses: actions/checkout@v4
             with:
+              ref: ${{ github.event.pull_request.base.sha }}
               fetch-depth: 0
           - uses: actions/setup-python@v5
             with:
               python-version: "3.12"
           - run: pip install git+https://github.com/Darshan2104/Garuda-openagent.git
-          - run: git diff "origin/${{ github.base_ref }}...HEAD" > review.diff
+          - run: |
+              git fetch origin "pull/${{ github.event.pull_request.number }}/head"
+              git diff HEAD...FETCH_HEAD > review.diff
           - run: garuda run --agent reviewer --mode readonly -t "Review the changes in review.diff and list concrete problems"
             env:
               OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     ```
 
-    Read-only mode is a guardrail, and the pull request's content reaches the
-    model. Run this only for branches whose content you are willing to send to
-    your provider.
+    The diff reaches the model, and read-only mode is a guardrail with
+    [known gaps](../guides/safety-and-workspaces.md#read-only-mode-limits).
+    GitHub masks the secret in logs, and pull requests from forks don't receive
+    it. Run this only on changes you are willing to send to your provider.
 
 Add `--trajectory run.jsonl` to also save the events to a file after the run.
 

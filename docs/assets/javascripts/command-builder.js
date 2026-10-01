@@ -40,6 +40,8 @@
     root.querySelectorAll(".gb-options[data-group]").forEach(function (group) {
       groups[group.dataset.group] = group;
       group.setAttribute("role", "group");
+      var label = group.parentElement && group.parentElement.querySelector(".gb-label");
+      if (label) group.setAttribute("aria-label", label.textContent.replace(/^\d+\s*·\s*/, ""));
       group.querySelectorAll("button").forEach(function (button, index) {
         button.type = "button";
         if (!group.hasAttribute("data-multi") && index === 0) {

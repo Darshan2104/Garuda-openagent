@@ -1,18 +1,21 @@
 # Level 1 · Explore safely
 
-<span class="gd-level">Level 1</span> Nothing in your project changes. These
-recipes use read-only runs, which deny file writes and only allow inspection
+<span class="gd-level">Level 1</span> These recipes ask Garuda only to read.
+Read-only runs block Garuda's file-writing tools and allow only inspection
 commands such as `ls`, `cat`, `grep`, `rg`, `head`, and `tree`.
 
 !!! info "Read-only is a guardrail, not a sandbox"
     Read-only runs still execute on your machine and can read files your user
     can read. They can't run interpreters, build tools, test runners, `find`,
-    or `git`. Use a [Docker workspace](change-code.md#run-untrusted-code-in-docker)
-    for code you don't trust.
+    or `git`. They also have [known gaps](../guides/safety-and-workspaces.md#read-only-mode-limits):
+    subagents and MCP tools aren't held to read-only, and environment variables
+    can be printed. Check `git status` afterwards, and use a
+    [Docker workspace](change-code.md#run-untrusted-code-in-docker) for code you
+    don't trust.
 
 ## Ask questions about a codebase
 
-<p class="gd-facts">Changes files: no · Runs on: your machine · Needs: a model key</p>
+<p class="gd-facts">Read-only · Runs on: your machine · Needs: a model key</p>
 
 **Use it when** you open an unfamiliar repository and want a map before reading
 code yourself.
@@ -41,7 +44,7 @@ garuda run --mode readonly -t "Explain how this project is organized and where t
 
 ## Review your uncommitted changes
 
-<p class="gd-facts">Changes files: no · Runs on: your machine · Needs: Git</p>
+<p class="gd-facts">Read-only · Runs on: your machine · Needs: Git</p>
 
 **Use it when** you want a second pair of eyes before committing.
 
@@ -56,7 +59,7 @@ rm review.diff
 **What happens**
 
 - The built-in `reviewer` profile reads the diff and the files it touches.
-- You get a list of findings. Nothing is edited.
+- You get a list of findings. Its built-in tools can't edit files.
 
 !!! tip
     Ask for a format you can act on, such as "group findings by severity" or
@@ -64,7 +67,7 @@ rm review.diff
 
 ## Plan a change before making it
 
-<p class="gd-facts">Changes files: no · Runs on: your machine · Needs: a model key</p>
+<p class="gd-facts">Read-only · Runs on: your machine · Needs: a model key</p>
 
 **Use it when** the change is big enough that you want to agree on an approach
 first.
@@ -84,7 +87,7 @@ garuda run --agent plan -t "Plan how to add rate limiting to the public API. Lis
 
 ## Ask a follow-up question
 
-<p class="gd-facts">Changes files: no · Needs: an earlier session</p>
+<p class="gd-facts">Read-only · Needs: an earlier session</p>
 
 **Use it when** you want to keep going without repeating the context.
 
@@ -102,7 +105,7 @@ garuda run --mode readonly --resume latest -t "Now explain how errors are report
 
 ## Read PDFs and spreadsheets
 
-<p class="gd-facts">Changes files: no · Needs: <code>pip install -e ".[docs]"</code></p>
+<p class="gd-facts">Read-only · Needs: <code>pip install -e ".[docs]"</code></p>
 
 **Use it when** the answer lives in a document rather than in code.
 
@@ -118,7 +121,7 @@ garuda run --mode readonly -t "In data/sales.xlsx, which region had the biggest 
 
 ## Browse past runs in the dashboard
 
-<p class="gd-facts">Changes files: no · Opens: a local web page</p>
+<p class="gd-facts">History only · Opens: a local web page</p>
 
 **Use it when** you want to see a run's turns, tool calls, diffs, and metrics
 visually.

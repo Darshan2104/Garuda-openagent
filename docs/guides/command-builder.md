@@ -8,7 +8,7 @@ click, and the copy button copies it as shown.
 <div class="gb-step">
 <p class="gb-label">1 · What do you want to do?</p>
 <div class="gb-options" data-group="goal">
-<button data-args="--mode readonly" data-task="Explain how this project is organized and where the entry points are" data-explain="--mode readonly denies file writes and screens shell commands for inspection-only use. It is a guardrail, not a sandbox.">Understand code</button>
+<button data-args="--mode readonly" data-task="Explain how this project is organized and where the entry points are" data-explain="--mode readonly blocks Garuda's file-writing tools and any shell command that isn't a plain inspection command. It is a guardrail with known gaps, not a sandbox.">Understand code</button>
 <button data-args="--agent reviewer --mode readonly" data-task="Review the changes in review.diff and list concrete problems" data-explain="--agent reviewer uses the built-in read-only reviewer profile." data-note="Read-only runs can't call git. Save the diff first: git diff HEAD &gt; review.diff">Review changes</button>
 <button data-args="--agent plan" data-task="Plan how to add input validation to the signup form" data-explain="--agent plan can read and inspect, but its profile denies file edits.">Plan a change</button>
 <button data-args="" data-task="Find and fix the failing test" data-explain="The default build profile can edit files and run commands. Dangerous commands are refused, and actions that need approval are denied in a headless run (use garuda chat to approve them).">Fix a bug</button>

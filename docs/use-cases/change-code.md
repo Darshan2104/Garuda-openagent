@@ -58,6 +58,8 @@ garuda chat --workspace .
   one, keeping the conversation.
 - When it wants a risky action, you see
   `[garuda] Approve <action>? [y/N]`. Anything but `y` or `yes` denies it.
+  The prompt appears when the profile's own permission mode is `smart`, as
+  with the default `build` profile; other profiles deny asks.
 - Press ++enter++ on an empty line, or ++ctrl+d++, to finish.
 
 Add `--mode readonly` for a read-only chat, or `--agent plan` to discuss a
@@ -125,9 +127,12 @@ garuda run --workspace-kind docker --docker-image python:3.12 --no-network -t "R
   `--docker-memory 4g --docker-cpus 4`.
 - The default image is `ubuntu:22.04`. Pick one that already has your toolchain.
 
-!!! warning "Two things Docker does not cover"
-    - **Model traffic.** Garuda calls the model provider from the host, and the
-      agent's reads reach that provider.
+!!! warning "What Docker does not cover"
+    - **The host side.** Garuda itself, model calls, `web_fetch` and
+      `web_search`, and any project tools or hooks you enabled run on the host.
+    - **MCP servers.** They start on the host, including ones the repository
+      defines in `.agent/mcp.json` or `.cursor/mcp.json`. For an untrusted
+      repository, add `--mcp-config` pointing at an empty `{}` file outside it.
     - **Offline installs.** With `--no-network` the container can't download
       dependencies. Use an image that has them, or drop `--no-network`.
 
@@ -188,12 +193,13 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 
 ```bash
 export ANTHROPIC_API_KEY=...   # placeholder
-garuda run --model anthropic/<model-id> -t "Refactor utils.py into smaller functions"
+garuda run --model anthropic/MODEL_ID -t "Refactor utils.py into smaller functions"
 garuda run --reasoning-effort high -t "Find the race condition in the job queue"
 ```
 
-- `--model` accepts any LiteLLM `provider/model` name and beats `GARUDA_MODEL`
-  and configured bindings.
+- Replace `MODEL_ID` with the provider's model name. `--model` accepts any
+  LiteLLM `provider/model` name and beats model environment variables and
+  configured bindings.
 - `--reasoning-effort minimal|low|medium|high` turns on extended thinking
   across providers. `--thinking-budget TOKENS` sets an Anthropic thinking
   budget.

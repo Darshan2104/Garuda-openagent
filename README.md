@@ -86,6 +86,7 @@ pip install -e ".[observability]"   # OpenTelemetry export
 
 ```bash
 pytest -q
+pip install ruff   # not part of the dev extra
 ruff check garuda tests
 ```
 

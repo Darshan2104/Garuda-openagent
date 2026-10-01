@@ -5,7 +5,7 @@ install Garuda, add a model key, run a read-only task, and open the saved
 session.
 
 <p class="gd-facts">Needs: Python 3.12+, Git, and an API key for a model provider ·
-Your project is not changed</p>
+Runs read-only</p>
 
 ```mermaid
 flowchart LR
@@ -79,9 +79,11 @@ You can also choose a model for a single run with `--model provider/model`.
 
 ## 3. Run a read-only task
 
-Go to any project you want to understand, then run:
+With the virtual environment still active, go to any project you want to
+understand and run:
 
 ```bash
+cd /path/to/your/project
 garuda run --mode readonly -t "Summarize this repository and identify its main entry points"
 ```
 
@@ -92,13 +94,15 @@ You will see:
 3. an exit status of `0` on success, or non-zero if the run failed.
 
 !!! info "What read-only means"
-    `--mode readonly` denies file writes and screens shell commands for
-    inspection-only use. It is a guardrail, not a sandbox. To run untrusted
-    code, use a [Docker workspace](../use-cases/change-code.md#run-untrusted-code-in-docker).
+    `--mode readonly` blocks Garuda's file-writing tools and any shell command
+    that isn't a plain inspection command. It is a guardrail with
+    [known gaps](safety-and-workspaces.md#read-only-mode-limits), not a sandbox.
+    To run untrusted code, use a
+    [Docker workspace](../use-cases/change-code.md#run-untrusted-code-in-docker).
 
 ## 4. Find the saved session
 
-Every run is saved as a session. List the recent ones:
+Every `garuda run` is saved as a session. List the recent ones:
 
 ```bash
 garuda sessions

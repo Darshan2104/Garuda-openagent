@@ -49,7 +49,8 @@ Click a problem to see the fix.
     `rm`, or a profile's `ask` path). `garuda run` has nobody to ask, so it
     denies the action and records it. Either:
 
-    - run the task in `garuda chat` and answer the `y/N` prompt; or
+    - run the task in `garuda chat` with a `smart` profile (such as the default
+      `build`) and answer the `y/N` prompt; or
     - change the profile's `path_rules` or `bash_rules` if the action should be
       allowed. See [custom profiles](../use-cases/customize.md#create-your-own-agent-profile).
 

@@ -16,9 +16,10 @@ your-project/
 
 !!! warning "Cloned repositories can ship these files too"
     Before running Garuda in someone else's repository, read its `AGENTS.md`,
-    `.agent/agents/`, and `.agent/mcp.json`. A project profile can replace a
-    built-in one, and MCP server commands run on your machine when Garuda
-    connects. Python tools and hooks never run unless **you** opt in.
+    `.agent/agents/`, `.agent/mcp.json`, and `.agent/settings.yaml`. A project
+    profile can replace a built-in one, MCP server commands run on your
+    machine when Garuda connects, and project settings can turn on the
+    collection model. Python tools and hooks never run unless **you** opt in.
 
 ## Give Garuda project instructions
 
@@ -58,7 +59,7 @@ path_rules:
   deny: [".env", "**/*.pem", "secrets/**"]   # never read or write these
   ask: ["src/**"]                            # needs approval
 bash_rules:
-  allow_prefixes: ["git diff", "git status"] # always allowed
+  allow_prefixes: ["git diff", "git status"] # skip the ask step
   deny: ['\bgit\s+push\b']                   # regex; deny always wins
 system_prompt: |
   You are the technical writer for this project.
@@ -77,9 +78,12 @@ garuda run --agent docs-writer -t "Update the install section of README.md for P
 - Garuda looks for the profile in `.agent/agents/`, then `.garuda/agents/`, then
   the built-ins. A project file named after a built-in (for example
   `build.yaml`) replaces it in that project.
-- `tools` limits what the agent can call. `path_rules` and `bash_rules` are
-  enforced on every call: deny beats allow, and in `garuda run` an "ask" is
-  denied because nobody is there to approve it.
+- `tools` limits Garuda's built-in tools. MCP tools, `task_complete`, and
+  tools you register are always added.
+- In `smart` mode, `path_rules` and `bash_rules` are checked on every call:
+  deny beats allow, and in `garuda run` an "ask" is denied because nobody is
+  there to approve it. `auto` and `yolo` skip these rules, and `readonly` uses
+  its own command allowlist instead of `bash_rules`.
 - `system_prompt` is guidance, not enforcement. Use rules for anything that
   must not happen.
 

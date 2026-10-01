@@ -61,12 +61,12 @@ from `garuda sessions`, or `latest`.
     | Flag | Use |
     |---|---|
     | `--agent NAME` | Profile: `build` (default), `plan`, `explore`, `reviewer`, `harbor`, or your own |
-    | `--agents-dir DIR` | Extra directory of profiles |
+    | `--agents-dir DIR` | Profiles directory to use instead of `.agent/agents` and `.garuda/agents` (built-ins still apply) |
     | `--mode MODE` | `interactive` (default), `readonly`, `eval`, or `rigorous` (`standard` = `interactive`) |
     | `--permission-mode MODE` | `smart`, `readonly`, `auto`, or `yolo`; overrides the mode and profile |
     | `--mcp-config PATH` | Explicit MCP config (skips discovery and merge) |
     | `--load-project-tools` | Import `.agent/tools/*.py` (runs repository code) |
-    | `--runtime ID` | Runtime: `native` (default) or a trusted ACP runtime ID or alias |
+    | `--runtime ID` | A trusted ACP runtime ID or alias. `native` (the default) counts as no choice, so routing rules still apply |
 
 === "Limits and output"
 

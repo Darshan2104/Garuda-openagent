@@ -3,8 +3,10 @@
 !!! abstract "At a glance"
     - **Global** settings in `~/.agent/settings.yaml` are trusted: models,
       collection, routing, runtimes, and the switches that allow project code.
-    - **Project** settings under `.agent/` shape a run but can't grant
-      themselves authority.
+    - **Project** settings under `.agent/` can't enable Python tools or hooks,
+      trust their own routing rules, or define runtime commands. They can
+      still pick permissive profiles, start MCP server commands, and turn on
+      collection.
     - Command-line flags beat profiles, which beat run-mode presets, which beat
       configuration defaults.
 
@@ -63,8 +65,8 @@ The reasoning model is resolved in this order, first match wins:
 
 1. `--model` or `--reasoning-model` on the command line;
 2. `GARUDA_REASONING_MODEL`, then the older `GARUDA_MODEL`;
-3. model bindings from a routing rule, the profile, the project, then global
-   settings;
+3. model bindings: one chosen explicitly through the SDK's `model_binding`,
+   then the profile's, the project's, and global settings';
 4. the built-in default, `openrouter/deepseek/deepseek-v4-flash-0731`.
 
 The optional collection model follows the same order with
@@ -73,8 +75,10 @@ line at startup names the model and where it came from.
 
 ### Bounded collection model
 
-A separately bound collection model does nothing unless trusted configuration
-also enables collection.
+A bound collection model does nothing unless collection is enabled. Global
+settings set the default; a profile or project `collection:` block can
+restate `enabled`, `profile`, and `handoff`, but numeric budgets may only
+narrow the global ceiling.
 
 - The reasoning model stays the controller and must explicitly call
   `delegate_collection`.
@@ -178,9 +182,10 @@ applies:
 
 ```mermaid
 flowchart LR
-  a["--runtime"] --> b["Trusted global rule"] --> c["Project rule<br/>if trust_project_routes"] --> d["Classifier<br/>if enabled"] --> e["default_runtime"] --> f["native"]
+  a["--runtime ID"] --> b["Trusted global rule"] --> c["Project rule<br/>if trust_project_routes"] --> d["Classifier<br/>if enabled"] --> e["default_runtime"] --> f["native"]
 ```
 
+`--runtime native` counts as no choice, so the later sources still apply.
 Global rules, defaults, project-route trust, and the classifier live in
 `~/.agent/settings.yaml`:
 

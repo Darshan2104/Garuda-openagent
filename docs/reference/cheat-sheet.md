@@ -9,11 +9,11 @@ CLI in CI.
 ```bash
 python -m pip install -e .                 # from a clone of the repository
 export OPENROUTER_API_KEY=sk-or-...        # default model's key (placeholder)
-export GARUDA_MODEL=anthropic/<model-id>   # optional: another LiteLLM model
+export GARUDA_MODEL=anthropic/MODEL_ID     # optional: another LiteLLM model
 garuda --help
 ```
 
-## Read and understand (no changes)
+## Read and understand (read-only)
 
 ```bash
 garuda run --mode readonly -t "Explain how this project is organized"
@@ -46,7 +46,7 @@ garuda run --workspace /srv/app --workspace-kind remote --docker-host ssh://buil
 ```bash
 garuda run --deadline-sec 900 -t "Fix the flaky test"
 garuda run --max-turns 30 -t "Fix the flaky test"
-garuda run --model openrouter/<vendor>/<model> -t "Fix the flaky test"
+garuda run --model openrouter/VENDOR/MODEL -t "Fix the flaky test"
 garuda run --reasoning-effort high -t "Find the race condition"
 garuda run --no-collection -t "Fix the flaky test"
 ```

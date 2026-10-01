@@ -23,7 +23,7 @@ flowchart LR
 
 ## Level 1 · Explore safely
 
-Nothing in your project changes. [Open Level 1 →](explore.md)
+Read-only recipes. [Open Level 1 →](explore.md)
 
 | I want to… | Run |
 |---|---|
