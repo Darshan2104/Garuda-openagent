@@ -282,10 +282,16 @@ class PermissionEngine:
                     return True
         return False
 
-    async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
+    def decide(self, tool_name: str, arguments: dict) -> tuple[PermissionDecision, str | None]:
+        """Pure policy decision for one call, before any approval prompt.
+
+        Returns the decision and, for a DENY, the reason. Kept separate from
+        :meth:`evaluate_tool_call` so a delegated engine can combine several
+        policies into one decision and ask at most once.
+        """
         tool_decision = self.check_tool(tool_name)
         if tool_decision == PermissionDecision.DENY:
-            return False, f"Permission denied for tool: {tool_name}"
+            return PermissionDecision.DENY, f"Permission denied for tool: {tool_name}"
 
         # A tool-level rule (e.g. tool_rules={"bash": "ask"}) and the command/path
         # screen are combined with the STRICTER winning — the command screen must
@@ -308,14 +314,110 @@ class PermissionEngine:
             operation = "write" if tool_name in WRITE_TOOLS else "read"
             detail_decision = self.check_path(arguments.get("path", ""), operation)
         decision = _strictest(tool_decision, detail_decision)
-
         if decision == PermissionDecision.DENY:
-            return False, f"Permission denied for {tool_name}"
-        if decision == PermissionDecision.ASK:
-            action = f"{tool_name}({arguments})"
-            if self._approval_handler is None:
-                return False, f"Approval required but no handler configured: {action}"
-            approved = await self._approval_handler(action)
-            if not approved:
-                return False, f"User denied: {action}"
-        return True, None
+            return decision, f"Permission denied for {tool_name}"
+        return decision, None
+
+    async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
+        decision, reason = self.decide(tool_name, arguments)
+        return await _resolve_decision(
+            decision, reason, tool_name, arguments, self._approval_handler
+        )
+
+
+async def _resolve_decision(
+    decision: PermissionDecision,
+    reason: str | None,
+    tool_name: str,
+    arguments: dict,
+    handler: ApprovalHandler | None,
+) -> tuple[bool, str | None]:
+    """Turn a policy decision into allowed/denied, asking ``handler`` for an ASK."""
+    if decision == PermissionDecision.DENY:
+        return False, reason or f"Permission denied for {tool_name}"
+    if decision == PermissionDecision.ASK:
+        action = f"{tool_name}({arguments})"
+        if handler is None:
+            return False, f"Approval required but no handler configured: {action}"
+        approved = await handler(action)
+        if not approved:
+            return False, f"User denied: {action}"
+    return True, None
+
+
+# Nominal order of the modes, used only to *report* a delegated run's posture.
+# Authorization never relies on it: rules can ask or deny independently of mode.
+_MODE_ORDER = ("readonly", "smart", "auto", "yolo")
+
+
+def _strictest_mode(*modes: str) -> str:
+    ranked = [m for m in modes if m in _MODE_ORDER]
+    if not ranked:
+        return modes[0] if modes else "smart"
+    return min(ranked, key=_MODE_ORDER.index)
+
+
+class DelegatedPermissionEngine:
+    """A delegated run's policy: its own profile, capped by every ancestor.
+
+    Each call is decided by the child's engine and by the parent's effective
+    engine (which may itself be delegated, so the root ceiling holds at any
+    depth). The strictest decision wins — DENY > ASK > ALLOW — and an ASK is put
+    to the *parent's* installed approval handler exactly once. Allow-prefix rules
+    are never merged: a parent ASK still asks even when the child's own rules
+    would fast-path the command.
+    """
+
+    def __init__(self, child: PermissionEngine, parent):
+        self._child = child
+        self._parent = parent
+        self._handler_override: ApprovalHandler | None = None
+
+    @property
+    def child(self) -> PermissionEngine:
+        return self._child
+
+    @property
+    def parent(self):
+        return self._parent
+
+    @property
+    def mode(self) -> str:
+        return _strictest_mode(self._child.mode, self._parent.mode)
+
+    @property
+    def approval_handler(self) -> ApprovalHandler | None:
+        # Read live, so an ancestor's broker installed after construction is used.
+        return self._handler_override or self._parent.approval_handler
+
+    def install_approval_handler(self, handler: ApprovalHandler | None) -> None:
+        self._handler_override = handler
+
+    def check_tool(self, tool_name: str) -> PermissionDecision:
+        return _strictest(self._parent.check_tool(tool_name), self._child.check_tool(tool_name))
+
+    def check_path(self, path: str, operation: str) -> PermissionDecision:
+        return _strictest(
+            self._parent.check_path(path, operation), self._child.check_path(path, operation)
+        )
+
+    def check_command(self, command: str) -> PermissionDecision:
+        return _strictest(
+            self._parent.check_command(command), self._child.check_command(command)
+        )
+
+    def decide(self, tool_name: str, arguments: dict) -> tuple[PermissionDecision, str | None]:
+        parent_decision, parent_reason = self._parent.decide(tool_name, arguments)
+        child_decision, child_reason = self._child.decide(tool_name, arguments)
+        decision = _strictest(parent_decision, child_decision)
+        if decision != PermissionDecision.DENY:
+            return decision, None
+        if parent_decision == PermissionDecision.DENY:
+            return decision, f"{parent_reason} (parent run ceiling)"
+        return decision, child_reason
+
+    async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
+        decision, reason = self.decide(tool_name, arguments)
+        return await _resolve_decision(
+            decision, reason, tool_name, arguments, self.approval_handler
+        )

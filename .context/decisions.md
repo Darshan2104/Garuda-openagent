@@ -334,3 +334,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `submit_collection` can end only the child run. All mutation and normal
   `task_complete` authority stays with the reasoning controller, and ordinary
   `invoke_subagent` continues to use the reasoning binding.
+
+## 2026-10-02 — Subagent delegation ceiling (issue #142)
+
+- A subagent's permission engine is a `DelegatedPermissionEngine`: each call is
+  decided by the child profile and by the parent's *effective* engine, and the
+  strictest of DENY > ASK > ALLOW wins. Allow-prefix rules are never merged, and
+  an ASK goes once to the parent's installed handler. Nesting composes, so the
+  root ceiling (CLI `--permission-mode`, dashboard `--max-permission`, profile
+  rules) holds at every depth.
+- A child selects its tools from the parent's admitted toolkit and never opens
+  its own MCP connections; a requested tool the parent lacks is dropped with a
+  warning. A subagent profile's `mcp_config_path`/`mcp_servers` are ignored.
+- The nominal mode order is used only to report the delegated posture, never to
+  authorize a call.
