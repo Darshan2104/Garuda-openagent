@@ -1,5 +1,5 @@
 site_name: Garuda Open Agent
-site_description: Provider-agnostic coding-agent harness documentation
+site_description: A safe, inspectable runtime for AI coding agents
 site_url: https://darshan2104.github.io/Garuda-openagent/
 repo_url: https://github.com/Darshan2104/Garuda-openagent
 repo_name: Darshan2104/Garuda-openagent
@@ -8,25 +8,54 @@ docs_dir: docs
 site_dir: site
 strict: true
 
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
 theme:
   name: material
+  icon:
+    logo: material/bird
+    repo: fontawesome/brands/github
   features:
+    - content.action.edit
+    - content.code.annotate
     - content.code.copy
+    - content.tabs.link
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
     - navigation.sections
+    - navigation.tabs
     - navigation.top
+    - navigation.tracking
     - search.highlight
+    - search.share
     - search.suggest
+    - toc.follow
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
+      primary: indigo
+      accent: amber
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
+      primary: indigo
+      accent: amber
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+
+extra_css:
+  - assets/stylesheets/garuda.css
+
+extra_javascript:
+  - assets/javascripts/command-builder.js
 
 plugins:
   - search
@@ -34,48 +63,73 @@ plugins:
 markdown_extensions:
   - admonition
   - attr_list
+  - def_list
   - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  - pymdownx.keys
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - toc:
       permalink: true
 
 nav:
-  - Overview: index.md
-  - Getting started: guides/getting-started.md
-  - User guides:
-      - Using Garuda: guides/using-garuda.md
+  - Home: index.md
+  - Get started:
+      - Quickstart: guides/getting-started.md
+      - How Garuda works: guides/how-garuda-works.md
+      - Command builder: guides/command-builder.md
+  - Use cases:
+      - use-cases/index.md
+      - "Level 1 · Explore safely": use-cases/explore.md
+      - "Level 2 · Change code": use-cases/change-code.md
+      - "Level 3 · Teach it your project": use-cases/customize.md
+      - "Level 4 · Automate": use-cases/automate.md
+      - "Level 5 · Advanced": use-cases/advanced.md
+  - Guides:
       - Safety and workspaces: guides/safety-and-workspaces.md
       - Configuration: guides/configuration.md
       - External harnesses: guides/external-harnesses.md
       - Web dashboard: guides/web-dashboard.md
   - Reference:
-      - CLI: reference/cli.md
-  - Architecture:
-      - Architecture: ARCHITECTURE.md
-      - Module map: MODULES.md
-      - Major changes: major-changes.md
-  - Development:
-      - Development guide: development/development.md
-      - Browser checks: development/browser-checks.md
+      - CLI reference: reference/cli.md
+      - Cheat sheet: reference/cheat-sheet.md
+      - Troubleshooting: reference/troubleshooting.md
   - Evaluation:
-      - Overview: evaluation/index.md
+      - evaluation/index.md
       - Dual-model routing: evaluation/dual-model-routing.md
       - Terminal-Bench: evaluation/terminal-bench.md
       - SpreadsheetBench: evaluation/spreadsheet-bench.md
       - PDF and OfficeQA: evaluation/pdf-officeqa.md
-  - Planning and history:
+  - Contributing:
+      - Architecture: ARCHITECTURE.md
+      - Module map: MODULES.md
+      - Development guide: development/development.md
+      - Browser checks: development/browser-checks.md
+      - Major changes: major-changes.md
+  - Project history:
       - Open backlog: BACKLOG.md
       - Roadmaps:
-          - Overview: roadmap/index.md
+          - roadmap/index.md
           - ACP orchestration: roadmap/2026-08-acp-orchestration.md
           - Issue catalog: roadmap/issue-catalog.md
           - Issue enrichment and publishing: roadmap/2026-08-31-issue-enrichment-and-docs-publishing-design.md
       - Design records:
-          - Overview: design/index.md
+          - design/index.md
           - Dual-model delegation and routing: design/2026-09-14-dual-model-delegation-and-runtime-routing-design.md
           - Pluggable terminal strategy: design/2026-09-28-pluggable-terminal-strategy-design.md
           - Collection forced terminal submission: design/2026-09-29-collection-forced-terminal-submission-design.md
@@ -83,7 +137,7 @@ nav:
           - Runtime session references: design/2026-09-29-runtime-session-ref-resolution-design.md
           - Documentation refresh: design/2026-09-30-documentation-refresh-design.md
       - Implementation plans:
-          - Overview: plans/index.md
+          - plans/index.md
           - Dual-model delegation and routing: plans/2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md
           - Collection forced terminal submission: plans/2026-09-29-collection-forced-terminal-submission-implementation.md
           - Paired-trial report CLI: plans/2026-09-29-paired-trial-report-cli-implementation.md
@@ -91,7 +145,7 @@ nav:
           - Documentation refresh: plans/2026-09-30-documentation-refresh-implementation.md
           - GitHub Pages publishing: plans/2026-10-01-github-pages-implementation.md
       - Archive:
-          - Overview: archive/index.md
+          - archive/index.md
           - Harness RFC: archive/2026-07-02-GARUDA_OPEN_AGENT_RFC.md
           - Configuration and scalability: archive/2026-07-08-CONFIG_SCALABILITY_PLAN.md
           - Engineering plan: archive/2026-07-17-ENGINEERING_PLAN.md

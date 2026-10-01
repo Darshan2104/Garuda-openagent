@@ -1,138 +1,166 @@
-# Getting started
+# Quickstart
 
-This guide takes you from a clean checkout to a safe, read-only Garuda session.
-It uses the native Garuda runtime and the built-in OpenRouter model default.
+Go from nothing to your first Garuda run in about five minutes. You will
+install Garuda, add a model key, run a read-only task, and open the saved
+session.
 
-## Before you install
+<p class="gd-facts">Needs: Python 3.12+, Git, and an API key for a model provider ·
+Your project is not changed</p>
 
-You need:
-
-- Python 3.12 or newer and Git;
-- a workspace you are comfortable letting a model inspect; and
-- an API key for the provider behind your selected model.
-
-Model-backed runs can cost money. Garuda's built-in default is
-`openrouter/deepseek/deepseek-v4-flash-0731`, so the example below uses an
-OpenRouter key. Provider prompts can include task text and tool results from the
-workspace. Do not start in a directory containing secrets you do not intend to
-share with that provider.
-
-## Install Garuda
-
-Clone the repository and install it in a virtual environment:
-
-```bash
-git clone https://github.com/Darshan2104/Garuda-openagent.git
-cd Garuda-openagent
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-garuda --help
+```mermaid
+flowchart LR
+  A["1 · Install"] --> B["2 · Add a model key"] --> C["3 · Run a read-only task"] --> D["4 · Find the session"] --> E["5 · Continue it"]
 ```
 
-On Windows, activate the environment with the appropriate script under
-`.venv\Scripts` instead of `source`.
+## 1. Install
 
-Optional extras are `.[dev]` for contributors, `.[docs]` for PDF and
-spreadsheet tools, `.[eval]` for Harbor, and `.[observability]` for
-OpenTelemetry export.
+=== "macOS / Linux"
 
-## Configure the model
+    ```bash
+    git clone https://github.com/Darshan2104/Garuda-openagent.git
+    cd Garuda-openagent
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    python -m pip install -e .
+    garuda --help
+    ```
 
-Export the credential for the default model:
+=== "Windows (PowerShell)"
+
+    ```powershell
+    git clone https://github.com/Darshan2104/Garuda-openagent.git
+    cd Garuda-openagent
+    py -3.12 -m venv .venv
+    .venv\Scripts\Activate.ps1
+    python -m pip install -e .
+    garuda --help
+    ```
+
+If `garuda --help` lists the commands, you are ready.
+
+??? note "Optional extras"
+
+    | Install | Adds |
+    |---|---|
+    | `pip install -e ".[docs]"` | PDF and spreadsheet readers |
+    | `pip install -e ".[tui]"` | Rich terminal output |
+    | `pip install -e ".[eval]"` | Harbor benchmark integration |
+    | `pip install -e ".[observability]"` | OpenTelemetry export |
+    | `pip install -e ".[site]"` | MkDocs, to build these docs |
+    | `pip install -e ".[dev]"` | pytest, for contributors |
+
+## 2. Add a model key
+
+The built-in default model is `openrouter/deepseek/deepseek-v4-flash-0731`, so
+the simplest start is an [OpenRouter](https://openrouter.ai/) key:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+export OPENROUTER_API_KEY=sk-or-...   # placeholder: use your own key
 ```
 
-The value shown is a placeholder, not a real key. To use another
-LiteLLM-compatible model, set `GARUDA_MODEL` to its `provider/model` identifier
-and export the matching provider credential. See
-[Configuration](configuration.md#models) for model bindings and the optional
-collection role.
+To use another provider, set `GARUDA_MODEL` to a
+[LiteLLM model name](https://docs.litellm.ai/docs/providers) and export that
+provider's key:
 
-## Run a safe first task
+| Provider | `GARUDA_MODEL` | Key variable |
+|---|---|---|
+| OpenRouter (default) | leave unset, or `openrouter/<vendor>/<model>` | `OPENROUTER_API_KEY` |
+| Anthropic | `anthropic/<model-id>` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai/<model-id>` | `OPENAI_API_KEY` |
+| Any other LiteLLM provider | `<provider>/<model-id>` | The variable that provider documents |
 
-From the workspace you want to inspect, run:
+You can also choose a model for a single run with `--model provider/model`.
+
+!!! warning "Cost and data"
+    Model calls can cost money. The task text, and whatever the agent reads
+    (file contents, command output), is sent to the model provider. Don't
+    start in a directory that holds secrets you don't want to share with that
+    provider.
+
+## 3. Run a read-only task
+
+Go to any project you want to understand, then run:
 
 ```bash
-garuda run --workspace . --mode readonly -t "Summarize this repository and identify its main entry points"
+garuda run --mode readonly -t "Summarize this repository and identify its main entry points"
 ```
 
-`--mode readonly` forces read-only permissions over the selected profile and
-screens shell commands for inspection-only use. It is a guardrail, not a
-confinement boundary. Use a Docker workspace for untrusted code; the
-`sandbox` workspace kind and macOS Seatbelt do not provide general host-read
-confinement.
+You will see:
 
-The normal command output identifies the selected reasoning model and ends with
-the agent's final response. Exact wording depends on the model and repository,
-so this guide does not prescribe a sample answer. The command exits nonzero if
-the run fails.
+1. a line such as `[garuda] reasoning=<model> (...)`, naming the model in use;
+2. the agent's final answer;
+3. an exit status of `0` on success, or non-zero if the run failed.
 
-## Find the saved session
+!!! info "What read-only means"
+    `--mode readonly` denies file writes and screens shell commands for
+    inspection-only use. It is a guardrail, not a sandbox. To run untrusted
+    code, use a [Docker workspace](../use-cases/change-code.md#run-untrusted-code-in-docker).
 
-Once execution starts, Garuda creates a durable session. List recent sessions
-after the first run:
+## 4. Find the saved session
+
+Every run is saved as a session. List the recent ones:
 
 ```bash
 garuda sessions
 ```
 
-The table shows an ID prefix, status, turn count, update time, and task. By
-default, complete session directories live under `~/.agent/sessions/<id>/` and
-contain metadata, messages, and an append-only event log. Set
-`GARUDA_SESSIONS_DIR` to choose another root.
+The table shows each session's ID prefix, status, turn count, update time, and
+task. The files live under `~/.agent/sessions/<id>/`; set `GARUDA_SESSIONS_DIR`
+to store them somewhere else.
 
-Resume the newest native session with a follow-up task:
-
-```bash
-garuda run --workspace . --mode readonly --resume latest -t "Explain the test layout"
+```text
+~/.agent/sessions/<id>/
+├── meta.json      # task, model, agent, workspace, status, timestamps
+├── messages.json  # the conversation, used to resume
+└── events.jsonl   # append-only log of everything that happened
 ```
 
-Session-taking commands also accept a full ID or an unambiguous prefix from
-`garuda sessions`.
+## 5. Continue the conversation
 
-## Choose the next interface
+Ask a follow-up that builds on the last run:
 
-- Continue with one-shot tasks using `garuda run`.
-- Start a conversation with permission prompts using
-  `garuda chat --workspace . --mode readonly`.
-- Browse saved runs locally with `garuda web --read-only`.
-- Read [Using Garuda](using-garuda.md) before enabling mutations, changing
-  workspaces, loading project tools, or selecting an external runtime.
+```bash
+garuda run --mode readonly --resume latest -t "Now explain how the tests are organized"
+```
 
-An ACP runtime is not equivalent to the native loop. Garuda records the ACP
-session lifecycle and workspace delta, but it does not apply the native
-completion verifier to the ACP result. See
-[External harnesses](external-harnesses.md) before using `--runtime` or
-handoff commands.
+`--resume` takes `latest`, a full session ID, or a unique prefix from
+`garuda sessions`. Garuda starts a new session linked to the old one, so the
+original record is never overwritten.
 
-## Common setup problems
+## You're set up. What next?
 
-**`garuda: command not found`**
+<div class="grid cards" markdown>
 
-Activate the virtual environment again, or confirm the environment's `bin`
-directory is on `PATH`. Run `python -m pip show garuda-openagent` from the same
-environment to confirm installation.
+-   :material-stairs: **Try the use cases**
 
-**Missing credential or provider authentication error**
+    ---
 
-Confirm the selected model and its provider credential. The default needs
-`OPENROUTER_API_KEY`; another provider needs its own variable. Garuda does not
-turn a vendor CLI login into an API key for the native runtime.
+    Short, copy-paste recipes ordered from easy to hard.
 
-**Rate limit, quota, or unexpected cost**
+    [:octicons-arrow-right-24: Use cases](../use-cases/index.md)
 
-Check the provider account named by the selected model. Start with a small task,
-leave collection disabled unless needed, and use `--max-turns` or
-`--deadline-sec` to bound a run. `eval` and `rigorous` modes use additional
-model calls for completion gates.
+-   :material-console: **Build a command**
 
-**Workspace or sandbox refusal**
+    ---
 
-Garuda fails closed when a requested workspace backend is unavailable or a
-workspace already has a live mutating lease. Do not bypass that refusal for
-untrusted work. See the [CLI reference](../reference/cli.md#common-run-flags)
-for backend flags and [Safety and workspaces](safety-and-workspaces.md) for the
-full safety model.
+    Click through choices and copy a ready-to-run command.
+
+    [:octicons-arrow-right-24: Command builder](command-builder.md)
+
+-   :material-lightbulb-on-outline: **Understand the model**
+
+    ---
+
+    Runtimes, workspaces, modes, and sessions in one page.
+
+    [:octicons-arrow-right-24: How Garuda works](how-garuda-works.md)
+
+-   :material-lifebuoy: **Something went wrong?**
+
+    ---
+
+    Common install, key, and workspace problems.
+
+    [:octicons-arrow-right-24: Troubleshooting](../reference/troubleshooting.md)
+
+</div>

@@ -1,77 +1,130 @@
-# Garuda documentation
+---
+hide:
+  - navigation
+  - toc
+---
 
-Garuda is the runtime around a coding model or external coding harness: it owns
-workspace selection, permission guardrails, context, evidence, sessions, and
-observability. Start with a read-only native run, then follow the task-specific
-guides below.
+<div class="gd-hero" markdown>
 
-This documentation is published at
-[darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/).
+# Garuda
 
-## Start here
+A safe, inspectable runtime for AI coding agents. Give it a task and it runs
+a model, or an external agent such as Claude Code or Codex, in a workspace you
+choose. It screens what the agent may do, checks the result, and records
+everything so you can inspect or continue it.
 
-1. [Getting started](guides/getting-started.md) — install Garuda, configure a
-   model, run a safe first task, and inspect its session.
-2. [Using Garuda](guides/using-garuda.md) — choose an interface, mode,
-   workspace, profile, and runtime for everyday work.
-3. [Configuration](guides/configuration.md) — configure models, collection,
-   MCP, runtime selection, permissions, hooks, and environment variables.
-4. [Safety and workspaces](guides/safety-and-workspaces.md) — choose between
-   guardrails, host execution, OS sandboxing, Docker, and remote Docker.
+[Get started in 5 minutes](guides/getting-started.md){ .md-button .md-button--primary }
+[Browse use cases](use-cases/index.md){ .md-button }
 
-## Feature map
+</div>
 
-| Feature | Command | Guide |
-|---|---|---|
-| Safe first inspection | `garuda run -t TASK --mode readonly` | [Getting started](guides/getting-started.md) |
-| Headless task | `garuda run -t TASK` | [Using Garuda](guides/using-garuda.md#choose-an-interface) |
-| Interactive conversation | `garuda chat` | [Using Garuda](guides/using-garuda.md#choose-an-interface) |
-| Run modes and completion gates | `garuda run -t TASK --mode eval` | [Run modes](guides/using-garuda.md#choose-a-run-mode) |
-| Sessions and continuation | `garuda sessions` | [Sessions](guides/using-garuda.md#sessions-and-continuation) |
-| Workspace backends and network posture | `garuda run -t TASK --workspace-kind docker --no-network` | [Safety and workspaces](guides/safety-and-workspaces.md) |
-| Profiles, project instructions, and skills | `garuda run -t TASK --agent reviewer` | [Profiles and skills](guides/using-garuda.md#profiles-project-instructions-and-skills) |
-| MCP servers | `garuda mcp list --no-connect` | [Configuration](guides/configuration.md#mcp) |
-| YAML recipes | `garuda recipe run workflow.yaml` | [MCP, recipes, hooks, and tools](guides/using-garuda.md#mcp-recipes-hooks-and-project-tools) |
-| Local web dashboard | `garuda web --read-only` | [Web dashboard](guides/web-dashboard.md) |
-| External ACP runtimes | `garuda runtime list` | [External harnesses](guides/external-harnesses.md) |
-| Native-to-ACP handoff and recovery | `garuda runtime handoff --session S --to R [--confirm]` | [External harnesses](guides/external-harnesses.md) |
-| JSON-RPC job service | `garuda serve` | [SDK and service](guides/using-garuda.md#sdk-and-service) |
-| Trajectories and benchmarks | `garuda run -t TASK --trajectory run.jsonl` | [Evaluation](evaluation/index.md) |
-| Paired dual-model reports | `garuda eval dual-model report ...` | [Dual-model evaluation](evaluation/dual-model-routing.md) |
+## Try it
 
-Native and ACP runs do not have identical behavior. Native runs use Garuda's
-model loop, tools, permissions, and completion gates. ACP runs use an external
-harness: Garuda records lifecycle and workspace evidence but does not verify the
-harness result with the native completion gate. Runtime-specific details belong
-in the [external harness guide](guides/external-harnesses.md).
+```bash
+git clone https://github.com/Darshan2104/Garuda-openagent.git && cd Garuda-openagent
+python3.12 -m venv .venv && source .venv/bin/activate && pip install -e .
+export OPENROUTER_API_KEY=sk-or-...   # placeholder: use your own key
+garuda run --mode readonly -t "Summarize this repository"
+```
 
-## Reference and advanced operation
+The last command only reads: it can't edit files. Model calls can cost money.
 
-- [CLI reference](reference/cli.md) — command inventory and flags.
-- [Safety and workspaces](guides/safety-and-workspaces.md) — permissions,
-  confinement, network posture, trusted extensions, and pre-run checks.
-- [External harnesses](guides/external-harnesses.md) — vendor setup, runtime
-  discovery, ACP limitations, and custom servers.
-- [Web dashboard](guides/web-dashboard.md) — local browser UI, grounding,
-  approvals, and runtime controls.
-- [Evaluation](evaluation/index.md) — trajectories, benchmarks, live harness
-  checks, collection experiments, and paired reports.
-- [Browser checks](development/browser-checks.md) — opt-in real-browser
-  validation for dashboard changes.
+## How a run works
 
-## Understand and extend Garuda
+Click a step to learn more.
 
-- [Architecture](ARCHITECTURE.md)
-- [Module map](MODULES.md)
-- [Development](development/development.md)
-- [Major changes](major-changes.md)
-- [Contributor guide](https://github.com/Darshan2104/Garuda-openagent/blob/main/AGENTS.md)
+```mermaid
+flowchart LR
+  task(["1 · Your task"]) --> runtime{"2 · Runtime"}
+  runtime --> work["3 · Agent works<br/>in your workspace"]
+  work --> checks{"4 · Completion<br/>checks"}
+  checks -- "not yet" --> work
+  checks -- accepted --> session[("5 · Session<br/>record")]
+  click runtime "guides/how-garuda-works/#1-runtime-who-does-the-work"
+  click work "guides/how-garuda-works/#2-workspace-where-commands-run"
+  click checks "guides/how-garuda-works/#4-run-mode-when-work-counts-as-done"
+  click session "guides/how-garuda-works/#5-session-what-gets-recorded"
+```
 
-## Open work and history
+With Garuda's native agent, every tool call in step 3 is screened by
+permission rules. With an external harness such as Claude Code, the harness
+does step 3 with its own authority and step 4 is skipped: Garuda records the
+result but does not verify it.
 
-- [Open backlog](BACKLOG.md) — unfinished work only.
-- [Roadmaps and issue catalog](roadmap/index.md) — planned work, not current
-  behavior.
-- [Design records](design/index.md) and [implementation plans](plans/index.md) —
-  dated rationale and delivery records, not current command reference.
-- [Archive](archive/index.md) — historical records retained for provenance.
+## Find your way
+
+<div class="grid cards" markdown>
+
+-   :material-rocket-launch: **Quickstart**
+
+    ---
+
+    Install, add a key, run a read-only task, and find the session.
+
+    [:octicons-arrow-right-24: Start here](guides/getting-started.md)
+
+-   :material-stairs: **Use cases, easy to hard**
+
+    ---
+
+    "I want to… → run this" recipes in five levels, from reading code to
+    handing sessions to Claude Code.
+
+    [:octicons-arrow-right-24: Use cases](use-cases/index.md)
+
+-   :material-console: **Command builder**
+
+    ---
+
+    Click through your goal, workspace, and agent to get a ready-to-run
+    command.
+
+    [:octicons-arrow-right-24: Build a command](guides/command-builder.md)
+
+-   :material-lightbulb-on-outline: **How Garuda works**
+
+    ---
+
+    Runtimes, workspaces, profiles, modes, and sessions on one page.
+
+    [:octicons-arrow-right-24: Concepts](guides/how-garuda-works.md)
+
+-   :material-shield-check: **Safety and workspaces**
+
+    ---
+
+    What each control does and does not protect, and when to use Docker.
+
+    [:octicons-arrow-right-24: Safety](guides/safety-and-workspaces.md)
+
+-   :material-file-document-outline: **Cheat sheet**
+
+    ---
+
+    Every everyday command on one page, ready to copy.
+
+    [:octicons-arrow-right-24: Cheat sheet](reference/cheat-sheet.md)
+
+</div>
+
+## What you get
+
+| Capability | Details |
+|---|---|
+| **Any model** | Any LiteLLM provider, with retries, streaming, reasoning settings, prompt caching, and cost accounting |
+| **Real tools** | Shell, files, edits, search, PDFs and spreadsheets, web fetch, MCP servers, skills, subagents, and your own Python tools |
+| **Guardrails** | Profiles, permission rules, read-only mode, and approvals for risky actions |
+| **Isolation** | Docker or remote Docker workspaces for untrusted code, or an OS sandbox that limits writes and network |
+| **Evidence, not claims** | Completion checks that require proof before a native result counts as done |
+| **Sessions** | Every run saved, resumable, and viewable in a local dashboard |
+| **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, and Goose through ACP, with handoff and recovery |
+| **Many interfaces** | CLI, interactive chat, web dashboard, YAML recipes, Python SDK, and a JSON-RPC service |
+
+## Contributing
+
+Read the [Architecture](ARCHITECTURE.md), the [Module map](MODULES.md), and the
+[Development guide](development/development.md). Coding agents should start
+with the
+[contributor guide](https://github.com/Darshan2104/Garuda-openagent/blob/main/AGENTS.md).
+Open work is in the [backlog](BACKLOG.md); dated designs and plans are under
+**Project history**.

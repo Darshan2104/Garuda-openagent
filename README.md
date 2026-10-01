@@ -53,23 +53,25 @@ confine host file reads.
 ## Documentation
 
 Read the searchable documentation at
-[darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/),
-or browse the source pages below.
+[darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/).
 
-- [Getting started](docs/guides/getting-started.md)
-- [Using Garuda](docs/guides/using-garuda.md)
-- [Safety and workspaces](docs/guides/safety-and-workspaces.md)
-- [Configuration](docs/guides/configuration.md)
-- [External harnesses](docs/guides/external-harnesses.md)
-- [Web dashboard](docs/guides/web-dashboard.md)
-- [CLI reference](docs/reference/cli.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Development](docs/development/development.md)
-- [Evaluation](docs/evaluation/index.md)
-- [Open backlog](docs/BACKLOG.md)
+| Start here | Then |
+|---|---|
+| [Quickstart](docs/guides/getting-started.md): install and run a safe first task | [Use cases](docs/use-cases/index.md): recipes from easy to hard |
+| [How Garuda works](docs/guides/how-garuda-works.md): runtimes, workspaces, modes, sessions | [Command builder](docs/guides/command-builder.md): click to build a command |
+| [Cheat sheet](docs/reference/cheat-sheet.md): everyday commands | [Troubleshooting](docs/reference/troubleshooting.md): common problems |
 
-The complete documentation map is at [docs/index.md](docs/index.md). Contributors
-and coding agents should start with [AGENTS.md](AGENTS.md).
+Guides: [Safety and workspaces](docs/guides/safety-and-workspaces.md) ·
+[Configuration](docs/guides/configuration.md) ·
+[External harnesses](docs/guides/external-harnesses.md) ·
+[Web dashboard](docs/guides/web-dashboard.md) ·
+[CLI reference](docs/reference/cli.md) ·
+[Evaluation](docs/evaluation/index.md)
+
+Contributors and coding agents should start with [AGENTS.md](AGENTS.md), then
+[Architecture](docs/ARCHITECTURE.md) and
+[Development](docs/development/development.md). Open work is in the
+[backlog](docs/BACKLOG.md).
 
 ## Installation extras
 

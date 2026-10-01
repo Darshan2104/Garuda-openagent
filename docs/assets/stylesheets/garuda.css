@@ -1,0 +1,153 @@
+/* Garuda documentation styles: landing hero, level badges, command builder.
+   Colors come from Material's theme variables so light and dark modes both work. */
+
+.gd-hero {
+  clear: both;
+  margin: 0 0 1.5rem;
+  padding: 1.6rem 1.4rem;
+  border-radius: 0.6rem;
+  background: linear-gradient(
+    135deg,
+    var(--md-primary-fg-color) 0%,
+    var(--md-primary-fg-color--dark) 100%
+  );
+  color: var(--md-primary-bg-color);
+}
+
+.gd-hero h1 {
+  margin: 0 0 0.4rem;
+  color: inherit;
+  font-weight: 700;
+}
+
+.gd-hero p {
+  margin: 0 0 1rem;
+  max-width: 42rem;
+  font-size: 0.85rem;
+}
+
+.md-typeset .gd-hero .md-button {
+  margin: 0.2rem 0.4rem 0.2rem 0;
+  border-color: var(--md-primary-bg-color);
+  color: var(--md-primary-bg-color);
+}
+
+.md-typeset .gd-hero .md-button--primary {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: #1a1a1a;
+}
+
+/* Difficulty badge shown at the top of each use-case level. */
+.md-typeset .gd-level {
+  display: inline-block;
+  margin-right: 0.3rem;
+  padding: 0.05rem 0.55rem;
+  border-radius: 1rem;
+  background: var(--md-accent-fg-color--transparent);
+  border: 1px solid var(--md-accent-fg-color);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Recipe header facts: "Time", "Risk", "Needs". */
+.md-typeset .gd-facts {
+  margin: -0.4rem 0 0.8rem;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.72rem;
+}
+
+/* Command builder */
+.gb {
+  margin: 1rem 0 1.5rem;
+  padding: 1rem 1rem 0.4rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  background: var(--md-default-bg-color);
+}
+
+.gb-step {
+  margin-bottom: 1rem;
+}
+
+.md-typeset .gb-label {
+  margin: 0 0 0.4rem;
+  font-weight: 700;
+}
+
+.gb-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.gb-options button {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 1rem;
+  background: transparent;
+  color: var(--md-default-fg-color);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.gb-options button:hover:not(:disabled) {
+  border-color: var(--md-accent-fg-color);
+}
+
+.gb-options button[aria-pressed="true"] {
+  border-color: var(--md-primary-fg-color);
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+}
+
+.gb-options button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gb-options button:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+}
+
+.gb-task {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.3rem;
+  background: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
+  font-family: var(--md-code-font-family);
+  font-size: 0.75rem;
+}
+
+/* Long commands wrap instead of hiding behind a scrollbar; copying is unaffected. */
+.md-typeset .gb-output pre > code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-typeset .gb-explain {
+  margin: 0.2rem 0 0.8rem;
+  font-size: 0.75rem;
+}
+
+.md-typeset .gb-explain li {
+  margin-bottom: 0.15rem;
+}
+
+.md-typeset .gb-note {
+  margin: 0 0 1rem;
+  padding: 0.5rem 0.7rem;
+  border-left: 0.2rem solid var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+  font-size: 0.75rem;
+}
+
+.md-typeset .gb-note:empty {
+  display: none;
+}
