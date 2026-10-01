@@ -201,6 +201,38 @@ class SessionMeta:
         }
 
 
+
+def project_root(path: str | Path) -> str:
+    """The canonical root of the project ``path`` belongs to.
+
+    Symlinks are resolved, and a linked Git worktree maps to its main
+    repository's root (through ``.git`` -> ``gitdir`` -> ``commondir``), so every
+    checkout of one repository is one project. A non-Git path is its own root.
+    Never runs ``git``.
+    """
+    current = Path(path).expanduser().resolve()
+    for candidate in (current, *current.parents):
+        dot_git = candidate / ".git"
+        if dot_git.is_dir():
+            return str(candidate)
+        if dot_git.is_file():
+            try:
+                line = dot_git.read_text(encoding="utf-8").strip()
+            except OSError:
+                return str(candidate)
+            if not line.startswith("gitdir:"):
+                return str(candidate)
+            gitdir = Path(line.split(":", 1)[1].strip())
+            if not gitdir.is_absolute():
+                gitdir = candidate / gitdir
+            commondir_file = gitdir / "commondir"
+            try:
+                common = (gitdir / commondir_file.read_text(encoding="utf-8").strip()).resolve()
+            except OSError:
+                return str(candidate)
+            return str(common.parent if common.name == ".git" else common)
+    return str(current)
+
 class SessionStore:
     def __init__(self, root: str | Path | None = None):
         self.root = Path(root) if root else default_sessions_root()
@@ -469,7 +501,24 @@ class SessionStore:
         path = self.session_dir(session_id) / "meta.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def list_sessions(self, limit: int = 20) -> list[dict]:
+    def _latest_in_project(self, workspace: str | Path) -> str:
+        project = project_root(workspace)
+        everything = self.list_sessions(limit=None)
+        for meta in everything:
+            recorded = meta.get("workspace")
+            if not isinstance(recorded, str) or not os.path.isabs(recorded):
+                continue
+            if project_root(recorded) == project:
+                return meta["session_id"]
+        if everything:
+            raise FileNotFoundError(
+                f"No saved session for this project ({project}); {len(everything)} "
+                "session(s) belong to other projects or recorded no workspace. "
+                "Pass --all-projects to resume the newest one anywhere."
+            )
+        raise FileNotFoundError("No saved sessions to resume.")
+
+    def list_sessions(self, limit: int | None = 20) -> list[dict]:
         if not self.root.exists():
             return []
         metas: list[dict] = []
@@ -481,19 +530,32 @@ class SessionStore:
                 except (OSError, json.JSONDecodeError):
                     continue
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
-        return metas[:limit]
+        return metas if limit is None else metas[:limit]
 
-    def resolve(self, session_ref: str) -> str:
+    def resolve(
+        self,
+        session_ref: str,
+        *,
+        workspace: str | Path | None = None,
+        all_projects: bool = False,
+    ) -> str:
         """Resolve 'latest' or a unique session-id prefix to a full session id.
+
+        With ``workspace``, ``latest`` means the newest session *of that
+        project* (linked worktrees and symlinked paths count as the same
+        project); ``all_projects`` asks for the newest anywhere. Sessions that
+        recorded no absolute workspace are never a project's ``latest``.
 
         Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
         from remote clients via the server's ``resume`` param.
         """
         if session_ref == "latest":
-            sessions = self.list_sessions(limit=1)
-            if not sessions:
-                raise FileNotFoundError("No saved sessions to resume.")
-            return sessions[0]["session_id"]
+            if workspace is None or all_projects:
+                sessions = self.list_sessions(limit=1)
+                if not sessions:
+                    raise FileNotFoundError("No saved sessions to resume.")
+                return sessions[0]["session_id"]
+            return self._latest_in_project(workspace)
         validate_session_ref(session_ref)
         if self.session_dir(session_ref).is_dir():
             return session_ref

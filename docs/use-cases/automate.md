@@ -187,7 +187,8 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
-`agent.run(task, resume="latest")` continues a saved session.
+`agent.run(task, resume="latest")` continues this workspace's newest saved
+session; pass `resume_all_projects=True` for the newest one anywhere.
 
 ## Call Garuda over HTTP
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
@@ -382,6 +383,7 @@ async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
     runtime = NativeGarudaRuntime(
         agent=agent, model=model, tools=tools, config=config,
         permissions=permissions, resource_manager=mcp_manager,
+        workspace=os.path.realpath(workspace),
     )
 
     async def _driver(*, task: str, turn: int, trail: EventStore) -> Any:

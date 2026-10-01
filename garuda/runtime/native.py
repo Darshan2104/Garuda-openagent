@@ -72,6 +72,7 @@ class NativeGarudaRuntime:
         events: EventStore | None = None,
         run: Callable[..., Awaitable[Any]] | None = None,
         resource_manager: Any | None = None,
+        workspace: str | None = None,
     ):
         self._agent = agent
         self._model = model
@@ -83,6 +84,9 @@ class NativeGarudaRuntime:
         self._trail: EventStore | None = None
         self._run = run
         self._resource_manager = resource_manager
+        # The absolute workspace the session records. `AgentConfig` has no
+        # workspace field, so without this every native session recorded ".".
+        self._workspace = workspace
         self._state = LifecycleState.DISCOVERED
         self._session_id = ""
         self._turn = 0
@@ -199,7 +203,7 @@ class NativeGarudaRuntime:
             task=task,
             model=getattr(self._model, "model_name", str(self._model)),
             agent=getattr(self._agent, "profile_name", "agent"),
-            workspace=str(getattr(self._config, "workspace", ".")),
+            workspace=self._workspace or str(getattr(self._config, "workspace", ".")),
         )
         self._store.ensure_unified(self._session_id)
         self._move(LifecycleState.IDLE)
