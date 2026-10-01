@@ -14,7 +14,7 @@
 
 | File | Scope | Holds |
 |---|---|---|
-| `~/.agent/settings.yaml` | All projects, trusted | Models and bindings, collection, routing, runtime manifests, `trust_project_hooks`, `load_project_tools` |
+| `~/.agent/settings.yaml` | All projects, trusted | Models and bindings, collection, routing, runtime manifests, `trust_project_hooks`, `load_project_tools`, `agents.project_ceiling` |
 | `~/.agent/mcp.json` | All projects, trusted | MCP servers, including per-tool `tool_effects` |
 | `.agent/settings.yaml` | One project | Project defaults, proposed routing rules, `runtime_refs` aliases, classifier opt-out |
 | `.agent/mcp.json` | One project | Project MCP servers (`tool_effects` here is ignored) |
@@ -140,7 +140,12 @@ or an isolated snapshot when strict write confinement is required.
 Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
 `.cursor/mcp.json`, and global `~/.agent/mcp.json`.
 
-- Project and global servers merge by default; project entries win name
+- A server from a project file (including `.cursor/mcp.json`) starts only after
+  you trust it with `garuda mcp trust`. The grant covers that exact entry and
+  any repository script it runs, in that repository; untrusted servers are
+  skipped with `agent.untrusted_project_code`, and a profile that requires one
+  refuses. `--mcp-config FILE` and the global file are yours and need no grant.
+- Project and global servers merge by default; trusted project entries win name
   collisions. `GARUDA_MCP_MERGE=0` turns merging off.
 - Above the direct-tool threshold (`GARUDA_MCP_MAX_DIRECT_TOOLS`), Garuda
   exposes lazy `search_tool` and `use_tool` meta-tools.

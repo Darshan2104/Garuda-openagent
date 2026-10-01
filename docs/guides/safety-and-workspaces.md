@@ -196,6 +196,23 @@ trust_project_hooks: true
 load_project_tools: true
 ```
 
+Two more limits apply without any setting:
+
+- **Profile permissions.** A profile inside the project may not set a
+  `permission_mode` above the user's ceiling (`smart` unless you raise it):
+
+  ```yaml
+  # ~/.agent/settings.yaml
+  agents:
+    project_ceiling: smart   # readonly | smart | auto | yolo
+  ```
+
+  An explicit `--permission-mode` is your choice and is used as given.
+- **Project MCP servers.** A server defined by the project's own config starts
+  only after `garuda mcp trust` records your trust in that exact entry for that
+  repository. Changing the entry, a script it runs, or a symlink it uses asks
+  again. The grant selects configuration; it doesn't prove what the server does.
+
 Before enabling a cloned project, review `.agent/tools/`, hook commands, profile
 permissions, project MCP server commands, and root `AGENTS.md` or `GARUDA.md`.
 

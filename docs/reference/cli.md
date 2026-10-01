@@ -15,6 +15,7 @@ for your installed version. For ready-made examples, see the
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Configuration | `garuda mcp list` | Resolve and inspect MCP configuration |
+| | `garuda mcp trust` | Review and trust MCP servers the project's own config defines |
 | Runtimes | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable) |
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |
 | | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime |
@@ -130,7 +131,14 @@ isolation boundary.
 
     `garuda mcp list [--workspace DIR] [--mcp-config PATH] [--no-connect]`
     shows the resolved config files and each server's tools. `--no-connect`
-    lists servers without starting them.
+    lists servers without starting them. Untrusted project servers are listed
+    but never started.
+
+=== "mcp trust"
+
+    `garuda mcp trust [NAME]... [--workspace DIR] [--mcp-config PATH] [--yes]` shows each untrusted
+    project MCP server, what it would run or contact, and asks before trusting
+    it. Without a terminal it refuses unless you pass `--yes`.
 
 === "recipe run"
 

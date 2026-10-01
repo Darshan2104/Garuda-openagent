@@ -850,6 +850,19 @@ async def prepare_agent_run(
     # when the caller didn't pass any. Idempotent: an explicit dir/list is kept as-is.
     agents_dirs = resolve_agents_dirs(workspace, agents_dir)
     profile = load_profile(agent_name, extra_dir=agents_dirs)
+    # Before anything starts: a repository's own profile cannot raise its
+    # permission mode above the user's project ceiling.
+    from garuda.agents.authority import PROJECT, enforce_project_ceiling, profile_authority
+
+    profile_home = resolve_agent_home(workspace)
+    enforce_project_ceiling(
+        profile_name=profile.name,
+        declared_mode=profile.permission_mode,
+        source_path=profile.source_path,
+        workspace=workspace,
+        explicit_permission_mode=permission_mode,
+        global_settings=profile_home.global_settings,
+    )
     config = profile.to_agent_config()
     # Only override the profile's own mode when a caller explicitly asked for one,
     # so a `mode: rigorous` profile isn't silently downgraded.
@@ -981,6 +994,15 @@ async def prepare_agent_run(
 
     # --- Toolkit ------------------------------------------------------------
     mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
+    # Config files the user chose are theirs; a project profile's own
+    # `mcp_config_path` is repository content like the rest of the project.
+    mcp_user_paths = [mcp_config_path] if mcp_config_path else []
+    if (
+        not mcp_config_path
+        and config.mcp_config_path
+        and profile_authority(profile.source_path, workspace) != PROJECT
+    ):
+        mcp_user_paths.append(config.mcp_config_path)
     permissions = PermissionEngine(
         mode=config.permission_mode,
         tool_rules=profile.tool_rules,
@@ -1004,6 +1026,7 @@ async def prepare_agent_run(
         workspace=workspace,
         load_project_tools=load_project_tools,
         mcp_servers=profile.mcp_servers,
+        mcp_user_paths=mcp_user_paths,
     )
     agent = create_agent(profile.name, mode=config.mode)
     return PreparedNativeRun(
