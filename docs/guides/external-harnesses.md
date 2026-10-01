@@ -233,6 +233,40 @@ garuda runtime support --session latest
   are opt-in because they need an installed, authenticated CLI and may consume
   subscription quota.
 
+## Exercised adapter capabilities
+
+Advertising a method is not proof that it works. This table records what the
+adapters did when exercised, captured without sending a prompt (so no model
+turn and no subscription quota was used). **Supported** means it was exercised
+and worked; **declared** means it is advertised but not proven here;
+**unknown** means it is not advertised or needs a prompt to prove.
+
+| Capability | Claude adapter `@agentclientprotocol/claude-agent-acp` 0.85.0 | Codex adapter `@agentclientprotocol/codex-acp` 2.1.1 | When not supported |
+|---|---|---|---|
+| Model selection | Supported: `session/set_config_option` id `model`; values are aliases such as `opus`, `sonnet`, `haiku`, `default` | Supported: id `model`; values are exact model ids | Refuse before the prompt |
+| Effort selection | Supported: id `effort` (category `thought_level`): `default`, `low` … `max` | Supported: id `reasoning_effort`: `low` … `ultra` | Refuse before the prompt |
+| `session/close` | Supported | Supported | Close the process |
+| `session/load` | Declared; an unprompted session isn't persisted, so load is unproven | Declared; load of an unprompted session returned an internal error | Start a linked session from a brief |
+| `session/resume` | Declared | Declared | Start a linked session from a brief |
+| Stdio MCP servers in `session/new` | Supported (an `mcpServers` list is accepted) | Supported | No MCP tools for that session |
+| HTTP MCP servers | Declared | Declared | Not used |
+| `usage_update` accounting | Unknown: needs a prompt | Unknown: needs a prompt | Usage shows as `unknown` |
+
+Both adapters also advertise permission modes that bypass approval (Claude
+`bypassPermissions`, Codex `agent-full-access`). Garuda never selects these
+on its own.
+
+The captures are kept as redacted fixtures under `tests/fixtures/acp/`. To
+record another version, run the opt-in capture. It sends no prompt:
+
+```bash
+python scripts/capture_acp_capabilities.py --name claude --out tests/fixtures/acp/claude -- npx -y -p @agentclientprotocol/claude-agent-acp claude-agent-acp
+python scripts/capture_acp_capabilities.py --name codex --out tests/fixtures/acp/codex -- npx -y -p @agentclientprotocol/codex-acp codex-acp
+```
+
+Proving `session/load`, `session/resume` and usage reporting needs one small,
+separately approved prompted session per adapter version.
+
 ## Custom ACP servers
 
 Register any compatible stdio ACP server in trusted global settings. An entry
