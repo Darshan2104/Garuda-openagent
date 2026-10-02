@@ -69,12 +69,13 @@ FIELDS: dict[str, Field] = {
     "instructions.mode": _f("choice", choices=("append", "replace")),
     "instructions.text": _f("str", nullable=True),
     "instructions.files": _f("strs"),
-    # memory (H.4)
-    "memory.user": _later("bool", "H.4"),
-    "memory.project": _later("strs", "H.4"),
-    "memory.project_mode": _later("choice", "H.4", choices=("first", "all")),
-    "memory.max_chars": _later("int", "H.4"),
-    "memory.context_pack": _later("bool", "H.4"),
+    # memory
+    "memory.user": _f("bool", "memory_user"),
+    "memory.project": _f("strs", "memory_project"),
+    "memory.project_mode": _f("choice", "memory_project_mode", choices=("first", "all")),
+    "memory.max_chars": _f("int", "memory_max_chars"),
+    "memory.max_total_chars": _f("int", "memory_max_total_chars"),
+    "memory.context_pack": _f("bool", "memory_context_pack"),
     "memory.notes": _later("choice", "H.9", choices=("off", "propose")),
     # skills
     "skills.include": _f("strs", "skills", nullable=True),

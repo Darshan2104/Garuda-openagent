@@ -57,6 +57,9 @@ def plan(path: str | Path) -> Migration:
     doc, warnings, _declared, is_v1 = resolve.parse_source(source, data)
     if is_v1:
         return Migration(target, None, digest)
+    # A legacy profile never loaded user memory; its version 1 form says so
+    # rather than opting in to the new default (H.4).
+    doc.setdefault("memory", {}).setdefault("user", False)
     body = None
     if target.suffix == ".md":
         instructions = dict(doc.get("instructions") or {})

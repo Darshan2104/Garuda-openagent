@@ -359,6 +359,17 @@ instructions:
   records the digest of the system message it actually sent; it differs from
   the static one once runtime blocks such as the environment snapshot are
   added.
+- `memory:` chooses what else goes into the system prompt, after the agent's
+  own instructions and in this order: your `~/.agent/AGENTS.md` (`user`, on
+  by default for version 1 definitions), the skills index, the project's
+  memory files (`project: [AGENTS.md, GARUDA.md]`, `project_mode: first` or
+  `all`), and with `context_pack: true` the `.context/` architecture,
+  decisions, discoveries and conventions files. Each file is cut at
+  `max_chars` (8000) with a `memory.truncated` notice; the whole prompt is
+  capped at `max_total_chars` (32000) and must fit the model's token budget,
+  trimming the context pack first and then project memory. The agent's own
+  instructions are never cut — a definition whose instructions do not fit
+  refuses. Project memory must stay inside the repository.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

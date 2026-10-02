@@ -101,6 +101,8 @@ class ResolvedAgent:
             values.pop("system_prompt")
         if values.get("tools") is None:
             values.pop("tools")
+        if self.versioned and "memory.user" not in self.leaves:
+            values["memory_user"] = True  # version 1 default: your AGENTS.md when it exists
         return AgentProfile(declared_fields=set(self.declared), source_path=self.source.path,
                             **values)
 
@@ -316,6 +318,8 @@ def translate_legacy(data: dict, body: str | None, *, source: Source | None = No
 def _declared(leaves: dict[str, Any]) -> set[str]:
     out = set()
     for path in leaves:
+        if path.startswith("memory."):
+            continue  # memory sources do not steer mode presets
         target = spec.FIELDS.get(path)
         if target is not None and target.profile:
             out.add(target.profile)

@@ -107,6 +107,12 @@ NON_DEFAULTS = {
     "docker_network": False,
     "docker_memory": "1g",
     "docker_cpus": 1.0,
+    "memory_user": True,
+    "memory_project": ["CONTRIBUTING.md"],
+    "memory_project_mode": "all",
+    "memory_max_chars": 100,
+    "memory_max_total_chars": 9000,
+    "memory_context_pack": True,
 }
 
 

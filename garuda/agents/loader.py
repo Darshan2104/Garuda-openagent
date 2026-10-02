@@ -54,6 +54,14 @@ class AgentProfile:
     docker_network: bool | None = None
     docker_memory: str | None = None
     docker_cpus: float | None = None
+    # Memory sources (H.4). The defaults are what a legacy profile always had:
+    # the first of AGENTS.md / GARUDA.md, no user memory, no context pack.
+    memory_user: bool = False
+    memory_project: list[str] | None = None
+    memory_project_mode: str = "first"
+    memory_max_chars: int = 8000
+    memory_max_total_chars: int = 32_000
+    memory_context_pack: bool = False
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -278,55 +286,19 @@ PROJECT_MEMORY_FILENAMES = ("AGENTS.md", "GARUDA.md")
 MEMORY_TRUNCATED = "memory.truncated"
 
 
-def _read_bounded(path: Path, max_chars: int) -> tuple[str, bool]:
-    """Read at most ``max_chars`` characters, and whether more remained.
-
-    Reads one character past the cap rather than the whole file, so a huge
-    file is never loaded just to be cut.
-    """
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        content = handle.read(max_chars + 1)
-    return content[:max_chars], len(content) > max_chars
-
-
 def _project_memory_block(
     workspace_root: str | Path, diagnostics: list[dict] | None = None
 ) -> str:
-    """Return a prompt block from AGENTS.md/GARUDA.md in the workspace root, or "".
+    """The legacy project-memory block: the first of AGENTS.md / GARUDA.md in the
+    workspace root, cut at :data:`PROJECT_MEMORY_MAX_CHARS` with a
+    ``memory.truncated`` diagnostic. Assembled by :mod:`garuda.agents.prompt`."""
+    from garuda.agents.prompt import _project_memory
 
-    A file over :data:`PROJECT_MEMORY_MAX_CHARS` is cut, never silently: the
-    block ends with a marker saying so, a ``memory.truncated`` warning is
-    logged, and the diagnostic is appended to ``diagnostics`` when given.
-    """
-    root = Path(workspace_root)
-    for name in PROJECT_MEMORY_FILENAMES:
-        candidate = root / name
-        try:
-            if not candidate.is_file():
-                continue
-            content, truncated = _read_bounded(candidate, PROJECT_MEMORY_MAX_CHARS)
-        except OSError:
-            continue
-        if truncated:
-            content += (
-                f"\n\n[project instructions truncated at {PROJECT_MEMORY_MAX_CHARS} "
-                "characters]"
-            )
-            diagnostic = {
-                "code": MEMORY_TRUNCATED,
-                "file": str(candidate),
-                "cap_chars": PROJECT_MEMORY_MAX_CHARS,
-                "message": (
-                    f"{name} is longer than {PROJECT_MEMORY_MAX_CHARS} characters; "
-                    "only the first part reaches the model"
-                ),
-                "fix": f"Shorten {name}, or move detail into files the agent can read",
-            }
-            logger.warning("%s: %s (%s)", MEMORY_TRUNCATED, diagnostic["message"], candidate)
-            if diagnostics is not None:
-                diagnostics.append(diagnostic)
-        return f"\n\n## Project instructions (from {name})\n{content}"
-    return ""
+    found: list[dict] = []
+    sections = _project_memory(AgentProfile(name="memory"), Path(workspace_root), found)
+    if diagnostics is not None:
+        diagnostics.extend(found)
+    return "".join(section.text for section in sections)
 
 
 def _warn_unsatisfiable_skill_tools(skills, granted_tools: list[str] | None) -> None:
@@ -364,8 +336,6 @@ def system_prompt_sections(
     from garuda.skills.loader import discover_skills, format_skills_prompt
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
-    source = str(profile.source_path) if profile.system_prompt else "default"
-    sections = [("instructions", source, base)]
     skill_dirs: list[Path] = []
     if workspace_root:
         # Standard discovery: the `.agent/skills` (and back-compat `.garuda/skills`)
@@ -390,15 +360,13 @@ def system_prompt_sections(
         allowed = set(profile.skills)
         discovered = [s for s in discovered if s.name in allowed]
     _warn_unsatisfiable_skill_tools(discovered, profile.tools)
-    skills_block = format_skills_prompt(discovered)
-    if skills_block:
-        sections.append(("skills", ", ".join(str(d) for d in skill_dirs) or "-",
-                         f"\n\n{skills_block}"))
-    if workspace_root:
-        memory = _project_memory_block(workspace_root, diagnostics)
-        if memory:
-            sections.append(("project memory", str(workspace_root), memory))
-    return sections
+    from garuda.agents.prompt import build_plan
+
+    plan = build_plan(profile, workspace_root, base=base,
+                      skills_block=format_skills_prompt(discovered),
+                      skills_source=", ".join(str(d) for d in skill_dirs) or "-",
+                      diagnostics=diagnostics)
+    return [(s.kind, s.source, s.text) for s in plan.sections]
 
 
 def resolve_system_prompt(
