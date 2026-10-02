@@ -47,6 +47,8 @@ REGISTRY: dict[str, str] = {
     "agent.too_large": "Keep the definition under 256 KiB.",
     "agent.project_widening": "Lower the permissions in the project file, or pass "
                               "--permission-mode for one run.",
+    "skill.tool_not_granted": "Grant {tools} to the agent, or expect skill {skill} to work "
+                              "without them (allowed-tools is advisory).",
     # harnesses
     "harness.ok": "Nothing to do.",
     "harness.cli_missing": "Install it: {setup}",

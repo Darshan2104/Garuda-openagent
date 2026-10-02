@@ -80,9 +80,9 @@ FIELDS: dict[str, Field] = {
     # skills
     "skills.include": _f("strs", "skills", nullable=True),
     "skills.dirs": _f("strs", "skills_dirs", nullable=True),
-    "skills.from": _later("strs", "H.5"),
-    "skills.exclude": _later("strs", "H.5"),
-    "skills.load": _later("choice", "H.5", choices=("index", "full")),
+    "skills.from": _f("strs", "skills_from", nullable=True),
+    "skills.exclude": _f("strs", "skills_exclude"),
+    "skills.load": _f("choice", "skills_load", choices=("index", "full")),
     # tools
     "tools.preset": _f("choice", choices=("inherit", "none", "all", "read-only")),
     "tools.add": _f("strs"),
@@ -152,8 +152,8 @@ def flatten(doc: dict, prefix: str = "") -> dict[str, Any]:
             nested = flatten(value, path)
             if nested:
                 out.update(nested)
-            else:
-                out[path] = value
+            elif not any(f.startswith(path + ".") for f in FIELDS):
+                out[path] = value  # an empty map that is not a section: still unknown
         else:
             out[path] = value
     return out

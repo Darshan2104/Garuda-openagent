@@ -62,6 +62,10 @@ class AgentProfile:
     memory_max_chars: int = 8000
     memory_max_total_chars: int = 32_000
     memory_context_pack: bool = False
+    # Skill sources and selection (H.5). None: a legacy profile's project dirs.
+    skills_from: list[str] | None = None
+    skills_exclude: list[str] | None = None
+    skills_load: str = "index"
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -333,37 +337,21 @@ def system_prompt_sections(
     Joined, the texts are exactly :func:`resolve_system_prompt`'s result, so
     ``garuda agent prompt`` shows what a run sends before any runtime block.
     """
-    from garuda.skills.loader import discover_skills, format_skills_prompt
+    from garuda.skills.loader import format_skills_prompt
+    from garuda.skills.sources import select, source_dirs
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
-    skill_dirs: list[Path] = []
-    if workspace_root:
-        # Standard discovery: the `.agent/skills` (and back-compat `.garuda/skills`)
-        # dirs resolved from the same agent-home used for profiles/tools/MCP.
-        from garuda.config.agent_home import resolve_agent_home
-
-        skill_dirs.extend(resolve_agent_home(workspace_root).skills_dirs)
-    if profile.skills_dirs:
-        # A relative skills dir means "relative to the workspace", not to whatever
-        # cwd the process happens to have. Under `serve` or the SDK those differ, so
-        # the configured skills were looked for in the wrong place and silently not
-        # found. Falls back to the plain path when no workspace is known.
-        workspace_dir = Path(workspace_root) if workspace_root else None
-        for raw in profile.skills_dirs:
-            candidate = Path(raw)
-            if not candidate.is_absolute() and workspace_dir is not None:
-                candidate = workspace_dir / candidate
-            skill_dirs.append(candidate)
-
-    discovered = discover_skills(*skill_dirs)
-    if profile.skills:
-        allowed = set(profile.skills)
-        discovered = [s for s in discovered if s.name in allowed]
+    selection = select(profile, workspace_root)
+    discovered = selection.skills
+    for name in selection.unknown:
+        logger.warning("Profile %s: skill %r is not available", profile.source_path, name)
+    skill_dirs = [d for _source, d in source_dirs(profile, workspace_root)]
     _warn_unsatisfiable_skill_tools(discovered, profile.tools)
     from garuda.agents.prompt import build_plan
 
     plan = build_plan(profile, workspace_root, base=base,
-                      skills_block=format_skills_prompt(discovered),
+                      skills_block=format_skills_prompt(discovered,
+                                                        full_body=profile.skills_load == "full"),
                       skills_source=", ".join(str(d) for d in skill_dirs) or "-",
                       diagnostics=diagnostics)
     return [(s.kind, s.source, s.text) for s in plan.sections]

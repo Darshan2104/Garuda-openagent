@@ -470,19 +470,13 @@ def check_references(profile, workspace, *, mcp_config_path: str | None = None) 
     if getattr(profile, "spec_version", None) != spec.VERSION:
         return
     if profile.skills:
-        from garuda.config.agent_home import resolve_agent_home
-        from garuda.skills.loader import discover_skills
+        from garuda.skills.sources import select
 
-        dirs = list(resolve_agent_home(workspace).skills_dirs)
-        for raw in profile.skills_dirs or []:
-            candidate = Path(raw)
-            dirs.append(candidate if candidate.is_absolute() else Path(workspace) / candidate)
-        known = {s.name for s in discover_skills(*dirs)}
-        for name in profile.skills:
-            if name not in known:
-                raise spec.AgentSpecError("agent.unknown_skill", "skills.include",
-                                          f"no skill named {name!r}",
-                                          source=str(profile.source_path))
+        unknown = select(profile, workspace).unknown
+        if unknown:
+            raise spec.AgentSpecError("agent.unknown_skill", "skills.include",
+                                      f"no skill named {unknown[0]!r} in the selected sources",
+                                      source=str(profile.source_path))
     if profile.mcp_servers:
         from garuda.mcp.config import load_mcp_config, resolve_mcp_config_paths
 

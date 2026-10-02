@@ -105,13 +105,20 @@ def show(name: str, workspace, *, raw: bool = False) -> dict:
     fields["instructions"] = {"value": _redact(agent.instructions, raw),
                               "source": _label(agent, agent.provenance.get("instructions"))}
     fields["tools"] = {"value": agent.tools, "source": _label(agent, agent.provenance.get("tools"))}
+    from garuda.skills.sources import select
+
+    selection = select(profile, workspace)
+    skills = {"selected": [{"name": sk.name, "source": selection.sources[sk.name],
+                            "path": str(sk.path)} for sk in selection.skills],
+              "shadowed": selection.shadowed, "load": profile.skills_load}
     config = dataclasses.asdict(static_agent_config(profile, workspace))
     prompt_text = config.pop("system_prompt") or ""
     config["system_prompt_digest"] = hashlib.sha256(prompt_text.encode()).hexdigest()
     return {
         "name": agent.name, "source": agent.source.authority,
         "path": str(agent.source.path), "chain": [s.qualified for s in agent.chain],
-        "fields": fields, "config": _redact(config, raw), "warnings": agent.warnings,
+        "fields": fields, "skills": skills, "config": _redact(config, raw),
+        "warnings": agent.warnings,
     }
 
 
@@ -172,6 +179,14 @@ def check(target: str, workspace) -> list[Diagnostic]:
         return [_from_error(exc)]
     for warning in agent.warnings:
         out.append(diagnostic("agent.legacy_warning", warning, level="warning"))
+    from garuda.skills.sources import select, tool_gaps
+
+    selection = select(profile, workspace)
+    for name, missing in tool_gaps(selection.skills, profile.tools):
+        out.append(diagnostic("skill.tool_not_granted",
+                              f"skill {name} names {', '.join(missing)}, which this agent lacks "
+                              "(allowed-tools is advisory)", level="warning", skill=name,
+                              tools=", ".join(missing)))
     if profile.mcp_servers:
         out.append(diagnostic("agent.mcp_tools_unknown",
                               f"tools of {', '.join(profile.mcp_servers)} are known only to a "
