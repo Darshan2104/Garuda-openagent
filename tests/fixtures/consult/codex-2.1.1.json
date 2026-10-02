@@ -1,0 +1,21 @@
+{
+  "agent": {
+    "name": "@agentclientprotocol/codex-acp",
+    "title": "Codex",
+    "version": "2.1.1"
+  },
+  "captured_at": "2026-10-01T22:05:54+00:00",
+  "gate": {
+    "forwarding": "supported",
+    "permission_provenance": "unknown",
+    "quiescence": "unknown"
+  },
+  "probe_methods": [
+    "initialize",
+    "notifications/initialized",
+    "tools/list"
+  ],
+  "prompt_sent": false,
+  "schema": 1,
+  "session_new_accepted": true
+}

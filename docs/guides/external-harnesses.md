@@ -173,6 +173,27 @@ garuda runtime support --session latest
   recover, and support methods through the same trusted catalog. Request
   payloads can't provide launch manifests.
 
+## Consult transport (planned)
+
+Consults between roles are planned, not shipped. For an external harness to
+*start* a consult, Garuda would give it one MCP tool through
+`session/new.mcpServers`. That is enabled only when all three of these are
+proven for the exact adapter version:
+
+| Requirement | Claude adapter 0.85.0 | Codex adapter 2.1.1 |
+|---|---|---|
+| Forwarding: the adapter starts the server and lists its tools | Supported (the probe server received `initialize` and `tools/list`) | Supported |
+| Permission provenance: a tool-permission request names the server and tool in structured fields | Unknown: proving it needs a prompted call | Unknown |
+| Quiescence: a documented way to pause the caller's workspace operations while a snapshot is taken | Unknown: not documented | Unknown: not documented |
+
+Because two requirements are unknown, external harnesses can't start
+consults yet. They can still be consulted, and Garuda's native roles can
+consult any role. The opt-in check sends no prompt:
+
+```bash
+python scripts/capture_consult_transport.py --name claude --out tests/fixtures/consult -- npx -y -p @agentclientprotocol/claude-agent-acp claude-agent-acp
+```
+
 ## Vendor setup
 
 === "Claude Code"

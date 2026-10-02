@@ -1,0 +1,22 @@
+{
+  "agent": {
+    "name": "@agentclientprotocol/claude-agent-acp",
+    "title": "Claude Agent",
+    "version": "0.85.0"
+  },
+  "captured_at": "2026-10-01T22:05:50+00:00",
+  "gate": {
+    "forwarding": "supported",
+    "permission_provenance": "unknown",
+    "quiescence": "unknown"
+  },
+  "probe_methods": [
+    "server/discover",
+    "initialize",
+    "notifications/initialized",
+    "tools/list"
+  ],
+  "prompt_sent": false,
+  "schema": 1,
+  "session_new_accepted": true
+}
