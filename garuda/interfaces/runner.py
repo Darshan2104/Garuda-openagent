@@ -161,6 +161,7 @@ async def run_agent_task(
     close_mcp: bool = True,
     resume: str | None = None,
     resume_all_projects: bool = False,
+    session_name: str | None = None,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -191,6 +192,7 @@ async def run_agent_task(
         store=store,
         events=events,
         workspace=os.path.realpath(workspace),
+        session_name=session_name,
     )
 
     # One mutating session owns a workspace (P0.16). Acquired before any
@@ -220,6 +222,7 @@ async def run_agent_task(
                 model=getattr(model, "model_name", str(model)),
                 agent=getattr(agent, "profile_name", "agent"),
                 workspace=os.path.realpath(workspace),
+                name=session_name,
             )
             from garuda.runtime.selection import record_initial_selection
 

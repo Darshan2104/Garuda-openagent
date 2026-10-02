@@ -73,6 +73,7 @@ class NativeGarudaRuntime:
         run: Callable[..., Awaitable[Any]] | None = None,
         resource_manager: Any | None = None,
         workspace: str | None = None,
+        session_name: str | None = None,
     ):
         self._agent = agent
         self._model = model
@@ -87,6 +88,7 @@ class NativeGarudaRuntime:
         # The absolute workspace the session records. `AgentConfig` has no
         # workspace field, so without this every native session recorded ".".
         self._workspace = workspace
+        self._session_name = session_name
         self._state = LifecycleState.DISCOVERED
         self._session_id = ""
         self._turn = 0
@@ -204,6 +206,7 @@ class NativeGarudaRuntime:
             model=getattr(self._model, "model_name", str(self._model)),
             agent=getattr(self._agent, "profile_name", "agent"),
             workspace=self._workspace or str(getattr(self._config, "workspace", ".")),
+            name=self._session_name,
         )
         self._store.ensure_unified(self._session_id)
         self._move(LifecycleState.IDLE)

@@ -490,3 +490,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   limited until teams C.1 supplies packaged defaults.
 - Journaled launch intents and supervised process-group identity before
   dispatch remain B.6 work.
+
+## 2026-10-02 — Opaque project ids and per-project session names (issue #157, B.1)
+
+- A session records `project_id`: `p1_` + a domain-separated HMAC-SHA256 of
+  the project's canonical root (worktrees and symlinks resolve to the
+  repository root; non-Git work to its real path), keyed by a random
+  user-local key created atomically at `<sessions root>/.identity/key`
+  (`0600`) and never exported. The path and filesystem identity are stored
+  only as local metadata. Losing the key while sessions carry ids refuses
+  with `session.project_key_missing` instead of generating a replacement.
+- Session names are unique per project, reserved by an exclusive `mkdir`
+  under `<sessions root>/.names/<project_id>/`; an explicit `--name` must be
+  free, an automatic one is the task's slug with the first free suffix.
+- Names, prefixes and `latest` resolve within the current project (legacy
+  sessions by recorded path); `--all-projects` searches everywhere; a full id
+  always resolves.

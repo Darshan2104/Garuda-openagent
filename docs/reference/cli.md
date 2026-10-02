@@ -26,8 +26,9 @@ for your installed version. For ready-made examples, see the
 | Evaluation | `garuda eval dual-model report ...` | Build a paired rollout report from completed native sessions |
 
 Session arguments (`--resume`, `--session`) accept a full ID, a unique prefix
-from `garuda sessions`, or `latest`. For `--resume`, `latest` means this
-project's newest session; add `--all-projects` for the newest one anywhere.
+from `garuda sessions`, a session name, or `latest`. Names, prefixes and
+`latest` are looked up in the current project; add `--all-projects` to search
+every project. A full ID always resolves.
 
 ## Common `run` flags
 
@@ -39,6 +40,7 @@ project's newest session; add `--all-projects` for the newest one anywhere.
     | `-f, --file PATH` | Read the task from a file |
     | `--resume ID` | Continue a saved session (ID, prefix, or `latest`: this project's newest) |
     | `--all-projects` | With `--resume latest`, take the newest session from any project |
+    | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
     | `--model MODEL` | Reasoning model, `provider/model` (alias of `--reasoning-model`) |
     | `--collection-model MODEL` | Optional collection model (needs collection enabled in trusted settings) |
     | `--no-collection` | Turn the collection role off for this run |
