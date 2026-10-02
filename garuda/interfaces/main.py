@@ -278,6 +278,12 @@ def build_parser():
     )
     _add_tag_flags(run_parser)
     run_parser.add_argument(
+        "--no-edits",
+        action="store_true",
+        help="Ask the run not to change the workspace: edits and commands are refused and any "
+        "change found afterwards withholds its output (a guardrail, not confinement)",
+    )
+    run_parser.add_argument(
         "--check",
         dest="checks",
         action="append",
@@ -911,6 +917,38 @@ def check_garuda_config(args):
     return resolved
 
 
+def _require_in_place(args) -> None:
+    from garuda.config.garuda_yaml import GarudaConfigError
+
+    if getattr(args, "isolation", "shared") != "shared":
+        raise GarudaConfigError("config.conflict", "--isolation",
+                                "a no-edits run is checked in place; drop --isolation")
+
+
+def _no_edits_requested(args) -> bool:
+    plan = getattr(args, "_role_plan", None)
+    return bool(getattr(args, "no_edits", False) or (plan and plan.write_policy == "no-edits"))
+
+
+def _finish_no_edits(args, guard, session_id: str | None):
+    """Compare the workspace after a no-edits run and record what was found (C.10)."""
+    import sys
+
+    from garuda.core.sessions import SessionStore
+
+    result = guard.check()
+    if session_id:
+        try:
+            SessionStore().update_meta(session_id, {"no_edits": result.record(),
+                                                    "outputs_withheld": not result.unchanged})
+        except Exception:
+            pass
+    print(f"[garuda] {result.summary()}", file=sys.stderr)
+    for path in result.changed[:20]:
+        print(f"  changed: {path}", file=sys.stderr)
+    return result
+
+
 def _accept_session(args, session_id: str | None) -> None:
     """Run the acceptance checks for a finished session and say what they found (C.5)."""
     import sys
@@ -953,6 +991,9 @@ def _apply_role(args, resolved, catalog):
             args.reasoning_effort = plan.effort
         if plan.profile:
             args.agent = plan.profile
+    if plan.write_policy == "no-edits":
+        _require_in_place(args)
+        args.permission_mode = "readonly"
     if plan.permissions:
         given = getattr(args, "permission_mode", None)
         args.permission_mode = plan.permissions if given is None else min(
@@ -1364,14 +1405,21 @@ async def run_acp_command(args, task: str, catalog) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
     from garuda.interfaces.run_guard import interactive_approval
     from garuda.interfaces.runtime_cli import NativeStartupFallback, run_acp_task
+    from garuda.workspace.no_edits import NoEditsGuard, deny_all
 
+    no_edits = _no_edits_requested(args)
+    guard = NoEditsGuard(args.workspace) if no_edits else None
+    held: list[str] = []
     try:
         summary = await run_acp_task(
             task,
             runtime_id=args.runtime,
             workspace=args.workspace,
             catalog=catalog,
-            approval=interactive_approval(),
+            # A no-edits role's requests to edit or run commands are refused
+            # (and recorded); its output is held until the workspace is checked.
+            approval=deny_all if no_edits else interactive_approval(),
+            emit=held.append if no_edits else print,
             initial_selection=getattr(args, "_initial_selection", None),
             initial_plan=getattr(args, "_initial_plan", None),
             attached=getattr(args, "_attached", None),
@@ -1384,6 +1432,11 @@ async def run_acp_command(args, task: str, catalog) -> int:
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
+    if guard is not None:
+        if not _finish_no_edits(args, guard, summary.get("session_id")).unchanged:
+            return 3
+        for line in held:
+            print(line)
     print(
         f"session {summary['session_id']}: {summary['status']} "
         f"(turn {summary['turn']}, {summary['events']} normalized events; "
@@ -1406,6 +1459,9 @@ async def run_task(args) -> int:
     # tags, runtimes, models or the workspace are touched (C.1).
     resolved_config = check_garuda_config(args)
     args._config = resolved_config
+    if getattr(args, "no_edits", False):
+        _require_in_place(args)
+        args.permission_mode = "readonly"
     # Session tags are resolved — or refused — before any runtime, model,
     # workspace or prompt exists (B.7).
     attached = _session_tags(args, task)
@@ -1588,6 +1644,9 @@ async def run_task(args) -> int:
                 f"({prepared.provenance['collection'].provenance.value})",
             )
     events = fallback_events or EventStore()
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
 
     result = await run_agent_task(
         task=task,
@@ -1620,6 +1679,8 @@ async def run_task(args) -> int:
 
     if args.trajectory:
         events.save(args.trajectory)
+    if guard is not None and not _finish_no_edits(args, guard, events.session_id).unchanged:
+        return 3  # outputs withheld; the changes stay for you to inspect
     _accept_session(args, events.session_id)
     if not args.json:
         print(result.final_message)

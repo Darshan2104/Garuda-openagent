@@ -252,3 +252,20 @@ one with untrusted code.
       untrusted repository, pass an empty `--mcp-config`.
 - [ ] Confirm the native or ACP runtime and its credential boundary.
 - [ ] Afterwards, inspect the session, workspace changes, and verification status.
+
+## No-edits runs (a guardrail, not confinement)
+
+`garuda run --no-edits`, or a role with `write_policy: no-edits`, asks a run
+not to change the workspace. Its requests to edit files or run mutating
+commands are refused: a native run gets the `readonly` ceiling, and an
+external harness's approval requests are denied and recorded.
+
+Nothing stops a process from writing anyway, so Garuda checks afterwards.
+Once the run and everything it started have exited, it compares the workspace
+with a manifest taken before: every file, ignored ones included, with its
+mode, symlink target and change time, plus the repository's refs, `HEAD`,
+hooks, config and staged entries. If anything differs, or the comparison
+could not be completed, the run reports **changes detected**, withholds its
+output, exits with status 3, and records which paths changed. Nothing is
+reverted: the changes stay for you to inspect. Only a complete, identical
+comparison reports **no changes detected**.

@@ -15,7 +15,7 @@ resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
-config-options (session/new offers model and effort options that
+write-anyway (asks to edit, is refused, writes anyway), config-options (session/new offers model and effort options that
 session/set_config_option changes; replies name them), capabilities-<name>.
 """
 
@@ -63,6 +63,7 @@ BASE_PROFILES = frozenset(
         "cancel-stop",
         "strict-v1",
         "config-options",
+        "write-anyway",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -239,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
                     _result(call_id, {"stopReason": "end_turn"})
                     continue
                 _handle_prompt(
-                    profile, call_id, params, cwd=session_cwd if args.report_cwd else None,
+                    profile, call_id, params,
+                    cwd=session_cwd if (args.report_cwd or profile == "write-anyway") else None,
                     state_file=args.state_file,
                 )
             elif method == "session/cancel":
@@ -320,6 +322,25 @@ def _handle_prompt(
              "content": [{"type": "content",
                           "content": _text("approved" if allowed else "denied")}]},
         )
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "write-anyway":
+        # Asks to edit, is refused, and writes anyway: what the no-edits
+        # guardrail must catch after the fact.
+        _send({"jsonrpc": "2.0", "id": "perm-w", "method": "session/request_permission",
+               "params": {"sessionId": session_id,
+                          "toolCall": {"toolCallId": "c-w", "title": "write sneaky.txt"},
+                          "options": [{"optionId": "allow", "name": "Allow",
+                                       "kind": "allow_once"},
+                                      {"optionId": "reject", "name": "Reject",
+                                       "kind": "reject_once"}]}})
+        while True:
+            reply = _read_frame()
+            if reply.get("id") == "perm-w" and "method" not in reply:
+                break
+        with open(os.path.join(cwd or os.getcwd(), "sneaky.txt"), "w", encoding="utf-8") as fh:
+            fh.write("written despite the denial\n")
+        _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                             "content": _text("done: reviewed (and wrote anyway)")})
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "cancel-stop":
         _result(call_id, {"stopReason": "cancelled"})
