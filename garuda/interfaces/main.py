@@ -305,6 +305,13 @@ def build_parser():
         "--no-browser", action="store_true", help="Do not open a browser automatically"
     )
 
+    doctor_parser = subparsers.add_parser("doctor", help="Diagnose and repair local Garuda state")
+    doctor_parser.add_argument(
+        "--recover-project-ids",
+        action="store_true",
+        help="Rebuild session project ids after the project key was lost",
+    )
+
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
 
@@ -454,6 +461,33 @@ def _parse_params(pairs: list[str]) -> dict[str, str]:
         key, value = item.split("=", 1)
         params[key.strip()] = value.strip()
     return params
+
+
+def run_doctor(args) -> int:
+    """`garuda doctor`. Today it only recovers project ids; checks come with C.4."""
+    import sys
+
+    if not args.recover_project_ids:
+        print("Nothing to do. Use --recover-project-ids after the project key was lost.")
+        return 0
+    from garuda.core.project_recovery import RecoveryRefused, recover_project_ids
+    from garuda.core.sessions import SessionStore
+
+    try:
+        report = recover_project_ids(SessionStore().root)
+    except RecoveryRefused as exc:
+        print(f"Error: recovery refused: {exc}", file=sys.stderr)
+        return 2
+    if report.noop:
+        print("The project key is present; there is nothing to recover.")
+        return 0
+    print(f"Recovered {len(report.mapped)} project(s); updated {report.sessions_updated} session(s).")
+    if report.unmapped:
+        print(
+            f"{len(report.unmapped)} project(s) could not be verified (moved, replaced or "
+            "missing) and keep their old ids; their sessions still resolve by full id."
+        )
+    return 0
 
 
 def run_sessions(args) -> int:
@@ -1172,6 +1206,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_web(args)))
     if args.command == "runtime":
         raise SystemExit(asyncio.run(run_runtime_command(args)))
+    if args.command == "doctor":
+        raise SystemExit(run_doctor(args))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
     if args.command == "eval":

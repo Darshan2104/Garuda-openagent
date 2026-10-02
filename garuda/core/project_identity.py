@@ -125,12 +125,40 @@ def project_identity(store_root: Path, workspace: str | Path) -> ProjectIdentity
     from garuda.core.sessions import project_root
 
     canonical = project_root(os.path.abspath(os.path.expanduser(str(workspace))))
+    return ProjectIdentity(
+        compute_project_id(load_key(store_root), canonical), canonical, filesystem_identity(canonical)
+    )
+
+
+def filesystem_identity(path: str) -> str:
+    """What recovery checks a recorded project path against: device and inode,
+    plus the repository's root commit when it has one.
+
+    An inode alone is not enough: a filesystem may hand a deleted directory's
+    inode to the next one made at the same path, so a replaced repository
+    would pass. The root commit tells two histories apart. A repository with
+    no commits yet is identified by device and inode only. ``""`` when the
+    path is gone.
+    """
     try:
-        info = os.stat(canonical)
-        fs_id = f"{info.st_dev}:{info.st_ino}"
+        info = os.stat(path)
     except OSError:
-        fs_id = ""
-    return ProjectIdentity(compute_project_id(load_key(store_root), canonical), canonical, fs_id)
+        return ""
+    identity = f"{info.st_dev}:{info.st_ino}"
+    try:
+        import subprocess
+
+        roots = subprocess.run(
+            ["git", "-C", path, "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull, "HOME": os.environ.get("HOME", "/")},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return identity
+    if roots.returncode == 0 and roots.stdout.split():
+        identity += ":" + sorted(roots.stdout.split())[0][:16]
+    return identity
 
 
 def slugify(text: str, default: str = "session") -> str:

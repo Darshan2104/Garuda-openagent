@@ -139,6 +139,16 @@ Click a problem to see the fix.
     review it and run `garuda mcp trust`. Project and global configs merge by
     default; set `GARUDA_MCP_MERGE=0` to use only one, or pass `--mcp-config FILE`.
 
+??? question "`session.project_key_missing`: every run refuses"
+
+    The key that names your projects (`.identity/key` in the session store) is
+    gone, but saved sessions already use it. Garuda won't make a new one on its
+    own, because that would split every project in two. Stop any running
+    sessions, then run `garuda doctor --recover-project-ids`. Sessions whose
+    repository is still where it was (same path and filesystem identity) move
+    to the new key with their names; any others keep their old id and still
+    resolve by full ID.
+
 ## Still stuck?
 
 Generate a redacted support bundle and attach it to an
