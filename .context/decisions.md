@@ -736,3 +736,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Artifacts come only from the bounded `<garuda-artifact type=…>` envelope;
   Garuda chooses where they live, and every input is checked for digest,
   file type, containment and workspace version before a step runs.
+
+## 2026-10-02 — Reviews retry only the reviewed step and are never verification (issue #158, C.7)
+
+- `review: {by: R, max_rounds: N}` names the flow's terminal reviewer. The
+  review block is bounded and strict; invalid output stops the flow; a
+  blocker or major finding requests changes whatever the verdict.
+- Only the reviewed step reruns, with the findings as data; `max_rounds: 2`
+  is at most three pairs. Workspace-bound artifacts (`patch`, `review`,
+  `findings`) are regenerated; task-bound ones (`plan`, `notes`, `summary`)
+  carry over.
+- Independence (default on) compares actual runtime and model identities,
+  including fallbacks and consults. The flow ends `review_approved` or
+  `review_changes_requested`; verification is untouched.

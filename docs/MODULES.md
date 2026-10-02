@@ -350,7 +350,7 @@ declared outputs only from the structured-output envelope, and writes an
 immutable receipt. An intent without a receipt is quarantined by `recover`,
 never replayed; `resume` continues past receipted steps only. `artifacts.py`
 stores bounded artifacts once (owner-only, no symlinks) and refuses forged,
-escaping, symlinked or stale inputs. `launch.py` starts native steps through
+escaping, symlinked or stale inputs. `review.py` (C.7) parses the bounded review block (`verdict:` plus `- [severity]` findings; invalid output stops the flow, a blocker or major finding requests changes), drives the retry loop — only the reviewed step reruns with the findings, `max_rounds: N` meaning at most N+1 pairs — and enforces independence: the reviewer's actual runtime and model may not match the reviewed role's, its fallbacks' or its consults'. Results read `review_approved` / `review_changes_requested`, never verification. `launch.py` starts native steps through
 `run_agent_task` and ACP steps through `run_acp_task`, each borrowing the flow's
 lease.
 

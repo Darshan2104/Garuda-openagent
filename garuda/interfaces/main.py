@@ -1066,6 +1066,10 @@ def run_flow(args) -> int:
         return 2
     for receipt in result.receipts:
         print(f"[garuda] {receipt['step']}: {receipt['status']}")
+    review = store.load_meta(result.flow_session).get("review")
+    if review:
+        print(f"[garuda] {review['status']} after {review['rounds']} round(s) "
+              "(a review, not verification)")
     if result.stopped:
         print(f"[garuda] flow stopped: {result.stopped}", file=sys.stderr)
         return 3

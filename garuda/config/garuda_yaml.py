@@ -217,11 +217,15 @@ def _step(value, path) -> dict:
     if "retries" in data:
         out["retries"] = _int(data["retries"], f"{path}.retries", 0, MAX_RETRIES)
     if "review" in data:
-        review = _mapping(data["review"], f"{path}.review", ("by", "max_rounds"))
+        review = _mapping(data["review"], f"{path}.review", ("by", "max_rounds", "independent"))
         out["review"] = {"by": _name(review.get("by"), f"{path}.review.by")}
         if "max_rounds" in review:
             out["review"]["max_rounds"] = _int(review["max_rounds"], f"{path}.review.max_rounds",
-                                               1, MAX_RETRIES)
+                                               0, MAX_RETRIES)
+        if "independent" in review:
+            if not isinstance(review["independent"], bool):
+                _fail(f"{path}.review.independent", "must be true or false")
+            out["review"]["independent"] = review["independent"]
     return out
 
 
@@ -328,10 +332,22 @@ def parse(data: Any, *, source: str = "") -> dict:
 def _check_references(doc: dict) -> None:
     roles = doc.get("roles", {})
     for name, flow in doc.get("flows", {}).items():
-        for i, step in enumerate(flow["steps"]):
+        steps = flow["steps"]
+        for i, step in enumerate(steps):
             review = step.get("review")
-            if review and "parallel" not in step and review["by"] == step.get("role"):
+            if not review:
+                continue
+            if "parallel" in step:
+                _fail(f"flows.{name}.steps[{i}].review", "a parallel group cannot be reviewed")
+            if review["by"] == step.get("role"):
                 _fail(f"flows.{name}.steps[{i}].review.by", "a step cannot review itself")
+            terminal = steps[-1]
+            if i == len(steps) - 1 or terminal.get("role") != review["by"]:
+                _fail(f"flows.{name}.steps[{i}].review.by",
+                      "must name the flow's terminal reviewer (the role of its last step)")
+            if "review" not in terminal.get("outputs", []):
+                _fail(f"flows.{name}.steps[{len(steps) - 1}].outputs",
+                      "the terminal reviewer must output a review")
     for name, role in roles.items():
         for consulted in role.get("consult", []):
             if consulted == name:
