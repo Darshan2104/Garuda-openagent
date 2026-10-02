@@ -691,3 +691,20 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `--yes`); `init --project` needs a terminal because it creates trust, and
   writes the project file and its trust record together. Proposals open no
   file and run nothing.
+
+## 2026-10-02 — Verification comes only from acceptance checks (issue #158, C.5)
+
+- Acceptance checks carry the authority of their source: `user-config`,
+  `trusted-project` (exact bytes trusted) or `user-request` (`--check`). Only
+  they set verification `passed`/`failed`; native gate and ACP commands are
+  `agent-suggested` and only ever set the self-check. No acceptance check
+  means `unavailable` with `verification.no_trusted_check`; an authoritative
+  grader's verdict stands when there are none.
+- Every check leaves a receipt with its authority and the code fingerprint it
+  ran against. A check that changes the tree is void
+  (`verification.check_changed_tree`). Test-infrastructure edits are judged
+  per check: a pass is withheld only when the session changed the
+  infrastructure that check's tool depends on
+  (`verification.test_infra_changed`), never repository-wide.
+- Outcome, verification and self-check stay independent; the legacy `status`
+  is unchanged.
