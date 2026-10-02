@@ -80,8 +80,19 @@ an expired lease taken over only when its owner — pid, start identity and
 process group, `runtime/ownership.py` — is confirmed dead, audited takeover,
 epoch-checked heartbeat/release, corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
-owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation keys
-and creation hooks. `runtime/capacity.py` holds one finite slot pool per
+owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
+keys. `worktrees.py` (B.5) decides where a session edits — `shared`, its own
+linked worktree on `garuda/<session>` (create-only branch, sanitized Git,
+source HEAD and dirty fingerprint recorded, uncommitted source edits not
+carried over) or `auto` — and `run_agent_task` calls it before the lease so the
+lease, baseline and delta bind to that directory; a refused launch discards
+the new worktree and a resumed session returns to its own. `merge_session`
+(`garuda sessions merge`) locks integration per repository, snapshots the
+worktree, previews with `merge-tree`, writes the merged tree to a scratch
+directory, runs each required check in Docker against it read-only (no check
+or no Docker refuses; a tree change voids the evidence), revalidates the
+destination and publishes only `refs/garuda/integration/<id>` by
+compare-and-swap. A worktree is a separate place to edit, not confinement. `runtime/capacity.py` holds one finite slot pool per
 runtime (`native`, `claude`, `codex`, …) shared by every launch through
 `WorkspaceLeaseGuard`; ceilings come from `capacity:` in the global settings,
 and a key without one is not limited. `run_agent_task` acquires the mutating lease for the workspace
@@ -136,7 +147,7 @@ into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
 Generated pack files live in the session store, so they never appear in the
 workspace delta.
 
-`snapshot_proto.py` is the A.5 spike (#154), not yet wired to sessions. It
+`snapshot_proto.py` is the A.5 spike (#154); `worktrees.py` builds on it. It
 snapshots a work tree (tracked edits, deletions, untracked non-ignored files)
 with sanitized Git: no inherited `GIT_*`, no system/global config, fsmonitor
 and hooks off, files read without following symlinks and hashed with
@@ -147,7 +158,7 @@ snapshot into a fresh repository with its own metadata (for consults);
 `allocate_branch` has one winner; `preview_integration` uses `merge-tree
 --write-tree`; `publish_integration` moves only `refs/garuda/integration/<id>`
 by compare-and-swap; `run_confined_check` runs a check in Docker against the
-read-only detached copy. Teams task B.5 promotes it.
+read-only detached copy.
 
 ## `context/` — fitting the conversation in the window
 

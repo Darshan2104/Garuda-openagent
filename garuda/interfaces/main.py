@@ -183,6 +183,14 @@ def build_parser():
         "--name",
         help="Name this session (unique in the project); resume or tag it by name later",
     )
+    run_parser.add_argument(
+        "--isolation",
+        choices=["shared", "worktree", "auto"],
+        default="shared",
+        help="Where the session edits: the workspace itself (shared), its own Git "
+        "worktree and garuda/<session> branch (worktree), or a worktree only when "
+        "another session is editing (auto). A worktree is not confinement.",
+    )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
     _add_model_flags(chat_parser)
@@ -314,6 +322,34 @@ def build_parser():
 
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
+    sessions_sub = sessions_parser.add_subparsers(dest="sessions_command")
+    sessions_merge = sessions_sub.add_parser(
+        "merge",
+        help="Check a worktree session's work merged into a branch and publish it "
+        "as refs/garuda/integration/<session>; never changes your checkout",
+    )
+    sessions_merge.add_argument("session", help="Session id, unique prefix, or name")
+    sessions_merge.add_argument("--into", help="Destination branch (default: current branch)")
+    sessions_merge.add_argument(
+        "--check",
+        action="append",
+        default=[],
+        metavar="COMMAND",
+        help="Check to run in Docker against the merged tree (repeatable; required)",
+    )
+    sessions_merge.add_argument(
+        "--image", default="python:3.12-slim", help="Docker image for the checks"
+    )
+    sessions_merge.add_argument("--timeout", type=float, default=600)
+    sessions_merge.add_argument("--workspace", default=".")
+    sessions_remove = sessions_sub.add_parser(
+        "remove-worktree", help="Remove a worktree session's worktree once its work is published"
+    )
+    sessions_remove.add_argument("session", help="Session id, unique prefix, or name")
+    sessions_remove.add_argument(
+        "--force", action="store_true", help="Remove even if the work was never published"
+    )
+    sessions_remove.add_argument("--workspace", default=".")
 
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
@@ -493,6 +529,8 @@ def run_doctor(args) -> int:
 def run_sessions(args) -> int:
     from garuda.core.sessions import SessionStore
 
+    if getattr(args, "sessions_command", None) in ("merge", "remove-worktree"):
+        return run_sessions_merge(args)
     sessions = SessionStore().list_sessions(limit=args.limit)
     if not sessions:
         print("No saved sessions.")
@@ -512,6 +550,42 @@ def run_sessions(args) -> int:
             f"{meta.get('updated_at', ''):<32} "
             f"{task}"
         )
+    return 0
+
+
+def run_sessions_merge(args) -> int:
+    """`garuda sessions merge` and `remove-worktree`."""
+    import os
+    import sys
+
+    from garuda.core.project_identity import ProjectIdentityError
+    from garuda.core.sessions import SessionStore
+    from garuda.workspace.worktrees import WorktreeError, merge_session, remove_worktree
+
+    store = SessionStore()
+    try:
+        session_id = store.resolve(args.session, workspace=os.path.realpath(args.workspace))
+        if args.sessions_command == "remove-worktree":
+            meta = store.load_meta(session_id)
+            remove_worktree(meta, force=args.force)
+            print(f"[garuda] removed {meta.get('worktree') or 'nothing (shared session)'}")
+            return 0
+        result = merge_session(
+            store.load_meta(session_id),
+            checks=args.check,
+            image=args.image,
+            destination=args.into,
+            timeout=args.timeout,
+        )
+    except (WorktreeError, ProjectIdentityError, OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    for check in result.checks:
+        print(f"[garuda] check passed in Docker: {check['command']}")
+    print(f"[garuda] integration commit {result.commit} published as "
+          f"refs/garuda/integration/{session_id}")
+    print(f"[garuda] to apply it, with {result.destination} checked out:")
+    print(f"  {result.apply_command}")
     return 0
 
 
@@ -1055,6 +1129,7 @@ async def run_task(args) -> int:
         resume=args.resume,
         resume_all_projects=getattr(args, "all_projects", False),
         session_name=getattr(args, "name", None),
+        isolation=getattr(args, "isolation", "shared"),
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
@@ -1067,7 +1142,25 @@ async def run_task(args) -> int:
         events.save(args.trajectory)
     if not args.json:
         print(result.final_message)
+        if getattr(args, "isolation", "shared") != "shared" or args.resume:
+            _print_worktree_note(fallback_store, events.session_id)
     return 0 if result.success else 1
+
+
+def _print_worktree_note(store, session_id: str) -> None:
+    from garuda.core.sessions import SessionStore
+
+    try:
+        meta = (store or SessionStore()).load_meta(session_id)
+    except Exception:
+        return
+    if meta.get("isolation") != "worktree":
+        return
+    print(f"[garuda] worked in worktree {meta['worktree']} on branch {meta['branch']} "
+          "(a separate checkout, not a sandbox)")
+    if meta.get("dirty_source"):
+        print("[garuda] uncommitted changes in the source checkout were not carried over")
+    print(f"[garuda] to integrate: garuda sessions merge {session_id[:8]} --check 'COMMAND'")
 
 
 async def run_recipe_command(args) -> int:
@@ -1179,14 +1272,15 @@ def _run_with_runtime_gate(args) -> int:
     from garuda.runtime.capacity import CapacityError
     from garuda.runtime.registry import RegistryError
     from garuda.workspace.lease import LeaseError
+    from garuda.workspace.worktrees import WorktreeError
 
     try:
         return asyncio.run(run_task(args))
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
-    except (LeaseError, CapacityError) as exc:
-        # The workspace is held by another run, or the runtime is at its
-        # capacity: a refusal to report, not a crash.
+    except (LeaseError, CapacityError, WorktreeError) as exc:
+        # The workspace is held by another run, the runtime is at its
+        # capacity, or no worktree could be made: a refusal, not a crash.
         import sys
 
         print(f"Error: {exc}", file=sys.stderr)

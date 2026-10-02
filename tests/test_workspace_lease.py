@@ -13,7 +13,6 @@ from garuda.workspace.lease import (
     LeaseConflictError,
     LeaseError,
     LeaseStore,
-    create_worktree,
     is_worktree,
     workspace_key,
 )
@@ -242,8 +241,6 @@ def test_worktree_helpers_against_real_git(tmp_path):
     helix = tmp_path / "plain"
     helix.mkdir()
     assert is_worktree(helix) is False
-    with pytest.raises(LeaseError):
-        create_worktree(repo, tmp_path / "wt")
     assert workspace_key(helix) == str(helix.resolve())
 
 

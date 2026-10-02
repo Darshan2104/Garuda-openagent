@@ -12,6 +12,8 @@ for your installed version. For ready-made examples, see the
 | | `garuda chat` | Interactive session with `y/N` permission prompts |
 | | `garuda recipe run file.yaml` | Execute a YAML workflow |
 | Sessions | `garuda sessions` | List recent saved sessions |
+| | `garuda sessions merge S --check CMD [--into BRANCH]` | Check a worktree session merged into a branch (in Docker) and publish `refs/garuda/integration/<S>`; never changes your checkout |
+| | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
@@ -53,6 +55,7 @@ every project. A full ID always resolves.
     | Flag | Use |
     |---|---|
     | `--workspace DIR` | Workspace root (default: current directory) |
+    | `--isolation MODE` | `shared` (default): edit the workspace; `worktree`: a linked worktree on branch `garuda/<session>`; `auto`: a worktree only while another session edits. Uncommitted source changes are not carried over. Not confinement |
     | `--workspace-kind KIND` | `local` (default), `sandbox`, `tmux`, `docker`, or `remote` |
     | `--docker-image IMAGE` | Container image for docker/remote (default `ubuntu:22.04`) |
     | `--docker-host HOST` | Remote Docker daemon host |
