@@ -653,3 +653,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - In C.1 roles are validated but not yet applied to a run: a project-chosen
   model string must wait for hash-bound project trust (C.2) and exact
   resolution (C.3).
+
+## 2026-10-02 — Project garuda.yaml trust is hash-bound and interactive (issue #158, C.2)
+
+- A project file's commands (`checks`) and native model strings run only
+  when its exact bytes are trusted for that repository and schema version,
+  in the #143 content-bound trust store (same store, same semantics). Any
+  byte change, another repository or a symlinked file means no trust.
+- Untrusted values are withheld, not fatal; everything that can only narrow
+  still applies, and the run reports `config.project_untrusted`.
+- The parsed values that run come from the same bytes that were hashed, so a
+  file swapped after the check cannot run as trusted. Headless runs cannot
+  create trust. A project-added role is capped at `agents.project_ceiling`.

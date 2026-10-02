@@ -365,6 +365,7 @@ def user_path() -> Path:
 
 
 def project_path(workspace) -> Path:
+    """Where the project file lives; read it through ``project_trust``."""
     from garuda.core.sessions import project_root
 
     return Path(project_root(str(Path(workspace).resolve()))) / "garuda.yaml"
@@ -394,6 +395,8 @@ class Resolved:
     config: dict
     provenance: dict[str, str] = field(default_factory=dict)
     role: str | None = None
+    #: Project values left out because the project file is not trusted (C.2).
+    withheld: list[str] = field(default_factory=list)
 
     def selected_role(self) -> dict | None:
         return self.config.get("roles", {}).get(self.role) if self.role else None
@@ -416,13 +419,17 @@ def _check_key(check: dict) -> tuple:
             tuple(sorted((check.get("env") or {}).items())), check.get("mode", "host"))
 
 
-def _narrow_role(name: str, user: dict | None, project: dict) -> dict:
+def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> dict:
     path = f"roles.{name}"
     if user is None:
         for key in ("fallback", "consult"):
             if project.get(key):
                 _fail(f"{path}.{key}", f"{key} grants are user-only; a project cannot add them",
                       code="config.project_widening")
+        wanted = project.get("permissions")
+        if wanted and PERMISSIONS.index(wanted) > PERMISSIONS.index(ceiling):
+            _fail(f"{path}.permissions", f"{wanted} is above the project ceiling {ceiling} "
+                  "(agents.project_ceiling in settings.yaml)", code="config.project_widening")
         return project
     role = dict(project)
     role["permissions"] = _stricter(user.get("permissions"), project.get("permissions"))
@@ -472,6 +479,7 @@ def resolve(
     cli_checks: list[str] = (),
     package: dict | None = None,
     legacy_capacity: dict | None = None,
+    project_ceiling: str = "smart",
 ) -> Resolved:
     """Layer package < user < project < CLI. See the module docstring."""
     layers = [(PACKAGE, package or {}), (USER, user or {}), (PROJECT, project or {})]
@@ -483,7 +491,7 @@ def resolve(
     for source, doc in layers:
         for name, role in doc.get("roles", {}).items():
             if source == PROJECT:
-                role = _narrow_role(name, roles.get(name), role)
+                role = _narrow_role(name, roles.get(name), role, project_ceiling)
             roles[name] = role
             prov[f"roles.{name}"] = source
     flows: dict[str, dict] = {}
@@ -593,17 +601,33 @@ def _check_resolved(config: dict) -> None:
 
 def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None,
                    cli_checks=()) -> Resolved | None:
-    """Both files layered with the CLI request; ``None`` when neither file exists."""
+    """Both files layered with the CLI request; ``None`` when neither file exists.
+
+    The project file is read once, without following symlinks; values that
+    need trust are withheld unless those exact bytes are trusted (C.2).
+    """
+    from garuda.config.project_trust import load_project
+
     user = load_file(user_path())
-    project = load_file(project_path(workspace))
+    loaded = load_project(workspace)
+    project = loaded.doc
     if user is None and project is None and not cli_role:
         return None
+    from garuda.agents.authority import project_ceiling
     from garuda.config.agent_home import _load_global_settings
 
-    capacity = _load_global_settings().get("capacity")
-    return resolve(user, project, cli_role=cli_role, cli_runtime=cli_runtime,
-                   cli_model=cli_model, cli_checks=list(cli_checks),
-                   legacy_capacity=capacity if isinstance(capacity, dict) else None)
+    settings = _load_global_settings()
+    try:
+        ceiling = project_ceiling(settings)
+    except ConfigError as exc:
+        raise GarudaConfigError("config.invalid", "agents.project_ceiling", str(exc)) from exc
+    capacity = settings.get("capacity")
+    resolved = resolve(user, project, cli_role=cli_role, cli_runtime=cli_runtime,
+                       cli_model=cli_model, cli_checks=list(cli_checks),
+                       legacy_capacity=capacity if isinstance(capacity, dict) else None,
+                       project_ceiling=ceiling)
+    resolved.withheld = loaded.withheld
+    return resolved
 
 
 # --- migration ---------------------------------------------------------------------
