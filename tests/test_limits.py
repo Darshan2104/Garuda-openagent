@@ -239,3 +239,40 @@ def test_with_no_proved_account_id_the_quota_reason_stays_disabled(store, fake):
                             now=NOW + 5)
     assert decision.eligible_exhausted is False  # the provider remains eligible
     assert list(store.ledger.records(kind="limit_event"))[0]["account_digest"] is None
+
+
+def test_the_fallback_chain_skips_an_exhausted_codex_end_to_end(store, fake, tmp_path, monkeypatch):
+    """The real check (a refresh through the fake app-server) feeds C.9's chain."""
+    from garuda.agents.fallbacks import choose
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.config import garuda_yaml as gy
+    from garuda.runtime.roles import plan_role
+
+    other = tmp_path / "other-acp"
+    other.write_text("#!/bin/sh\nexit 0\n")
+    other.chmod(other.stat().st_mode | stat.S_IEXEC)
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("runtimes:\n" + "".join(
+        f"  - runtime_id: {rid}\n    kind: acp\n    command: [{exe}]\n    version: '1'\n"
+        f"    auth_probe: {{argv: [{exe}, status], authenticated_pattern: 'Logged in',"
+        " unauthenticated_pattern: 'Not logged in'}\n"
+        for rid, exe in (("codex", fake.exe), ("backup", str(other)))))
+    monkeypatch.setattr("garuda.observability.limits.default_root", lambda: tmp_path / "limits")
+    monkeypatch.setattr("garuda.observability.limits.Ledger", lambda: Ledger(tmp_path / "usage"))
+    resolved = gy.resolve(gy.parse({"version": 1, "roles": {"coder": {
+        "harness": "codex", "fallback": [{"harness": "backup"}]}}}), None, cli_role="coder")
+    catalog = prepare_runtime_catalog(str(tmp_path))
+    plan = plan_role(resolved, catalog)
+
+    def login(argv, timeout):
+        return 0, "Logged in"
+
+    fake.configure(used=0.2)  # plenty left: the primary starts
+    assert choose(plan, resolved, catalog, login_run=login).runtime_id == "codex"
+    fake.configure(used=1.0, reached=True, reset=NOW + 10**9)  # exhausted, reset far ahead
+    chosen = choose(plan, resolved, catalog, login_run=login)
+    assert chosen.runtime_id == "backup"
+    assert [s["reason"] for s in chosen.fallback["skipped"]] == ["harness.limit_reached"]
+    methods = fake.log.read_text().split()
+    assert "getAuthStatus" not in methods and "turn/start" not in methods

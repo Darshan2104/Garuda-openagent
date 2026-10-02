@@ -975,3 +975,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   an explicit future reset; every other case leaves the harness eligible.
   Enabling `harness.limit_reached` in C.9 is a separate change.
 
+## 2026-10-02 — `harness.limit_reached` is enabled behind the proved-source check (issue #168, E.2)
+
+- A role's fallback chain skips a candidate as `harness.limit_reached` only
+  when a refresh made at selection time (`LimitStore.assess`) shows a fresh,
+  same-account exhaustion with a future reset, for a harness whose limit source
+  is proved for that exact version. Failure to refresh, or any doubt, keeps the
+  candidate. Still decided once, before start; never after a prompt.
+

@@ -62,6 +62,7 @@ REGISTRY: dict[str, str] = {
     "harness.cli_missing": "Install it: {setup}",
     "harness.disabled": "Remove {runtime} from disabled_runtimes in settings.yaml to use it.",
     "harness.logged_out": "Log in with the harness's own CLI: {login}",
+    "harness.limit_reached": "Wait for the reset time, or use another harness in the role's fallback chain.",
     "harness.login_unknown": "Garuda cannot check this harness's login; run it once to see.",
     "harness.login_probe_failed": "Run `{argv}` yourself to see why it failed.",
     "harness.login_timeout": "Run `{argv}` yourself; it did not answer within {timeout}s.",
