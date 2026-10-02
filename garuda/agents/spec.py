@@ -100,11 +100,11 @@ FIELDS: dict[str, Field] = {
     "permissions.rules.bash": _f("rules", "bash_rules", nullable=True),
     "write_policy": _later("choice", "H.10", nullable=True, choices=("no-edits",)),
     # hooks
-    "hooks.replace": _later("bool", "H.12a"),
-    "hooks.before_tool": _later("any", "H.12a"),
-    "hooks.after_tool": _later("any", "H.12a"),
-    "hooks.session_start": _later("any", "H.12a"),
-    "hooks.session_end": _later("any", "H.12a"),
+    "hooks.replace": _later("bool", "agent hooks"),
+    "hooks.before_tool": _later("any", "agent hooks"),
+    "hooks.after_tool": _later("any", "agent hooks"),
+    "hooks.session_start": _later("any", "agent hooks"),
+    "hooks.session_end": _later("any", "agent hooks"),
     # context
     "context.max_tokens": _f("int", "max_context_tokens"),
     "context.summarize_after_tokens": _f("int", "proactive_summarize_threshold"),
@@ -116,21 +116,22 @@ FIELDS: dict[str, Field] = {
     "context.adaptive_output": _f("bool", "enable_adaptive_output"),
     "context.working_state_card": _f("bool", "enable_working_state_card"),
     "context.three_step_summary": _f("bool", "enable_three_step_summary"),
-    "context.condenser": _later("choice", "H.12a", choices=("microcompact", "summarize")),
+    "context.condenser": _f("choice", "condenser",
+                            choices=("microcompact", "recent_window", "summarizing")),
     # limits
     "limits.max_turns": _f("int", "max_turns"),
-    "limits.deadline_sec": _later("int", "H.12a", nullable=True),
+    "limits.deadline_sec": _f("number", "deadline_sec", nullable=True),
     # completion
     "completion.mode": _f("str", "mode"),
     "completion.acceptance_contract": _f("bool", "enable_acceptance_contract", nullable=True),
-    "completion.verifier": _later("bool", "H.12a"),
+    "completion.verifier": _f("bool", "enable_verifier"),
     # workspace
     "workspace.kind": _f("choice", "workspace_kind",
                          choices=("local", "sandbox", "tmux", "docker", "remote")),
     "workspace.docker.image": _f("str", "docker_image"),
-    "workspace.docker.network": _later("bool", "H.12a"),
-    "workspace.docker.memory": _later("str", "H.12a"),
-    "workspace.docker.cpus": _later("any", "H.12a"),
+    "workspace.docker.network": _f("bool", "docker_network"),
+    "workspace.docker.memory": _f("str", "docker_memory"),
+    "workspace.docker.cpus": _f("number", "docker_cpus"),
     # output
     "output.schema": _later("str", "H.12b", nullable=True),
 }
@@ -181,6 +182,10 @@ def _check_value(path: str, field: Field, value: Any, source: str) -> None:
         bad("must be a string")
     if kind == "int" and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
         bad("must be a non-negative integer")
+    if kind == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))
+                             or value != value or value in (float("inf"), float("-inf"))
+                             or value <= 0):
+        bad("must be a positive, finite number")
     if kind == "bool" and not isinstance(value, bool):
         bad("must be true or false")
     if kind == "choice" and value not in field.choices:

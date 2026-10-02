@@ -46,6 +46,14 @@ class AgentProfile:
     # context reserve is derived from — the two must not drift apart.
     max_tokens: int | None = AgentConfig.max_tokens
     enable_working_state_card: bool = AgentConfig.enable_working_state_card
+    # Compilation owners (H.12a): the condenser, a wall-clock deadline, the
+    # completion verifier, and Docker limits that may only narrow the grant.
+    condenser: str = AgentConfig.condenser
+    deadline_sec: float | None = AgentConfig.deadline_sec
+    enable_verifier: bool = True
+    docker_network: bool | None = None
+    docker_memory: str | None = None
+    docker_cpus: float | None = None
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -79,7 +87,9 @@ class AgentProfile:
             permission_mode=self.permission_mode,
             system_prompt=self.system_prompt or DEFAULT_SYSTEM_PROMPT,
             allowed_tools=self.tools,
-            enable_verifier=True,
+            enable_verifier=self.enable_verifier,
+            condenser=self.condenser,
+            deadline_sec=self.deadline_sec,
             enable_tmux=self.enable_tmux,
             marker_polling=self.marker_polling,
             enable_three_step_summary=self.enable_three_step_summary,

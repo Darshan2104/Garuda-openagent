@@ -345,6 +345,13 @@ instructions:
   `agent.unknown_field`. A field Garuda recognizes but does not support yet
   (for example `memory:` or `hooks:`) refuses with `agent.unsupported_field`
   rather than being ignored.
+- Numbers are checked before the agent starts: the output reserve plus the
+  safety margin must fit inside `context.max_tokens`, `summarize_after_tokens`
+  must be below it, and a deadline must be positive (`agent.invalid_budget`).
+  A project definition cannot turn off `completion.verifier`, nor the
+  acceptance contract in the `eval` or `rigorous` modes that require it
+  (`agent.required_gate`), and its
+  `workspace.docker` limits can only narrow what you granted.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

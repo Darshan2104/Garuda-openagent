@@ -1781,6 +1781,9 @@ async def run_task(args) -> int:
     config.docker_network = "none" if getattr(args, "no_network", False) else "bridge"
     config.docker_memory = getattr(args, "docker_memory", "2g")
     config.docker_cpus = getattr(args, "docker_cpus", "2")
+    from garuda.agents.compile import narrow_docker
+
+    narrow_docker(config, prepared.profile)  # a definition can only narrow these (H.12a)
 
     model = prepared.reasoning
     permissions = prepared.permissions

@@ -101,6 +101,12 @@ NON_DEFAULTS = {
     "thinking_budget_tokens": 4096,
     "model_binding": "cheap",
     "collection": {"enabled": False},
+    "condenser": "recent_window",
+    "deadline_sec": 90.0,
+    "enable_verifier": False,
+    "docker_network": False,
+    "docker_memory": "1g",
+    "docker_cpus": 1.0,
 }
 
 

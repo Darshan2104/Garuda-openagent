@@ -504,6 +504,10 @@ def activate(agent: ResolvedAgent):
             "agent.unsupported_field", pending[0].split(" ")[0],
             f"recognized but not supported yet: {', '.join(pending)}",
             source=str(agent.source.path))
+    if agent.versioned:
+        from garuda.agents.compile import check
+
+        check(agent)
     profile = agent.to_profile()
     profile.spec_version = spec.VERSION if agent.versioned else None
     return profile
