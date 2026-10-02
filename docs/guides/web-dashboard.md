@@ -91,6 +91,19 @@ and counts, no text, paths or accounts). These statistics are a report and are n
 choose a harness or a model. `GET /api/usage?range=` and `GET /api/usage/export?range=&format=`
 serve them.
 
+## Setup
+
+`#/setup` is a read-only view of what is configured and what is wrong. **Diagnostics**
+(configuration, each harness your roles use, leases and unpublished worktrees) each come
+with a code and a fix you can copy; a harness's login is the last recorded check (or *not
+checked*), because this page starts no vendor command and edits nothing. The **role table**
+shows each role's harness, exact model id, effort, permissions and fallback chain; the
+**flow list** marks the packaged examples and names any role a flow needs that you have not
+defined; and **where each value came from** lists the layer behind every effective value
+(package, your file, the project's trusted file, the command line), plus anything a project
+file asked for that is withheld until you trust it. To change anything, edit your
+`garuda.yaml` or run `garuda init`. `GET /api/setup` serves it.
+
 ## Background sessions
 
 `garuda run --bg` queues a session and returns; the Sessions page shows it

@@ -19,6 +19,7 @@ var ROUTES = [
   [/^#\/sessions$/, function () { return sessionsView(); }],
   [/^#\/inbox$/, function () { return inboxView(); }],
   [/^#\/providers$/, function () { return providersView(); }],
+  [/^#\/setup$/, function () { return setupView(); }],
   [/^#\/usage(?:\?range=([0-9a-z]+))?$/, function (m) { return usageView(m[1]); }],
   [/^#\/runtimes$/, function () { return runtimesView(); }],
   [/^#\/chat$/, function () { return chatView(); }]

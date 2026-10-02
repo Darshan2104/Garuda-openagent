@@ -354,3 +354,57 @@ function loadConversationPanel(sessionId) {
     if (el("conversation-host") === host) host.innerHTML = conversationPanelHtml(c);
   }).catch(function () { host.innerHTML = ""; });
 }
+
+/* --- setup (F.4): read-only ---------------------------------------------------------------
+ * What is configured and what is wrong. Fix commands are shown as text with a Copy button;
+ * nothing here edits a file or starts anything. */
+
+function copyButtonHtml(text) {
+  return '<button type="button" class="btn copy-fix" data-copy="' + esc(text) + '">Copy</button>';
+}
+
+function setupView() {
+  render('<div class="loading">Loading setup…</div>');
+  return api("/api/setup").then(function (s) {
+    var diagnostics = s.diagnostics.map(function (d) {
+      return '<li class="diag" data-code="' + esc(d.code) + '" data-level="' + esc(d.level) + '">' +
+        '<span class="pill ' + (d.level === "error" ? "failed" : (d.level === "warning" ? "running" : "unknown")) + '">' + esc(d.level) + "</span> " +
+        "<strong>" + esc(d.code) + "</strong> " + esc(d.message) +
+        (d.fix ? '<div class="stat-sub">Fix: <code>' + esc(d.fix) + "</code> " + copyButtonHtml(d.fix) + "</div>" : "") + "</li>";
+    }).join("");
+    var roles = s.roles.map(function (r) {
+      return '<tr class="role-row" data-role="' + esc(r.role) + '"><td>' + esc(r.role) + "</td><td>" + esc(r.harness) + "</td><td>" +
+        esc(r.model_id || "—") + "</td><td>" + esc(r.effort || "—") + "</td><td>" +
+        (r.fallback.length ? r.fallback.map(function (f) { return esc(f.harness + (f.model_id ? "/" + f.model_id : "")); }).join(" → ") : "—") +
+        "</td><td>" + esc(r.source || "") + "</td></tr>";
+    }).join("");
+    var flows = s.flows.map(function (f) {
+      return '<tr class="flow-row-setup" data-flow="' + esc(f.name) + '"><td>' + esc(f.name) + "</td><td>" +
+        (f.example ? '<span class="pill unknown">example</span> ' : "") + esc(f.source) + "</td><td>" + esc(f.steps) + "</td><td>" +
+        esc(f.roles.join(", ")) + "</td><td>" +
+        (f.missing_roles.length ? '<span class="pill failed">missing: ' + esc(f.missing_roles.join(", ")) + "</span>" : "—") + "</td></tr>";
+    }).join("");
+    render(
+      '<div id="setup-root"><div class="page-head"><h1>Setup</h1><span class="meta">read-only</span></div>' +
+      '<p class="stat-sub">Files: ' + esc(s.files.user) + " (yours), " + esc(s.files.project) + " (this project).</p>" +
+      '<div class="card"><h2>Diagnostics</h2><ul class="diagnostics" id="setup-diagnostics">' + diagnostics + "</ul></div>" +
+      '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
+        : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
+      '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +
+      '<div class="card"><h2>Where each value came from</h2>' + (s.withheld.length ? '<p class="stat-sub" id="withheld">Withheld until trusted: ' + esc(s.withheld.join(", ")) + "</p>" : "") +
+      '<table class="table" id="provenance-table"><tbody>' + s.provenance.map(function (p) {
+        return "<tr><td>" + esc(p.key) + "</td><td>" + esc(p.source) + "</td></tr>";
+      }).join("") + "</tbody></table></div></div>"
+    );
+    el("setup-root").addEventListener("click", function (event) {
+      var button = event.target.closest("button.copy-fix");
+      if (!button) return;
+      var text = button.getAttribute("data-copy");
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { toast("Copied"); },
+        function () { toast("Copy is not available here; select the text"); });
+    });
+  }).catch(function (err) {
+    if (err.status === 401) { render(tokenRequiredPanel()); return; }
+    render('<div class="notice err"><div class="notice-title">Could not load setup</div><div class="notice-body">' + esc(err.message) + "</div></div>");
+  });
+}

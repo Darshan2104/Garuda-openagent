@@ -124,6 +124,21 @@ with sync_playwright() as p:
     page.wait_for_selector('a[data-range="30d"].btn-primary')
     page.screenshot(path=str(SHOTS / "usage.png"))
 
+    # --- setup (F.4) ---------------------------------------------------------------------------
+    page.goto(f"{BASE}#/setup", wait_until="load")
+    page.wait_for_selector("#roles-table")
+    roles = page.locator("#roles-table").inner_text()
+    check("the role table shows harness, exact model, effort and fallback chain",
+          "big/model" in roles and "claude-x" in roles and "codex/codex-y" in roles and "high" in roles, roles)
+    flows = page.locator("#flows-table").inner_text()
+    check("packaged flows are marked as examples and missing roles named",
+          "example" in flows and "missing: planner" in flows, flows)
+    check("diagnostics come with a fix and a copy button",
+          page.locator("#setup-diagnostics .copy-fix").count() >= 1)
+    check("provenance is listed", "roles.coder" in page.locator("#provenance-table").inner_text())
+    check("setup is read-only", "read-only" in page.locator(".page-head").inner_text())
+    page.screenshot(path=str(SHOTS / "setup.png"))
+
     page.goto(f"{BASE}#/inbox", wait_until="load")
     page.wait_for_selector("#inbox-list")
     inbox = page.locator("#inbox-list").inner_text()
