@@ -1134,6 +1134,11 @@ def _apply_role(args, resolved, catalog):
     from garuda.agents.fallbacks import choose
 
     plan = choose(plan, resolved, catalog)  # once, before anything starts (C.9)
+    from garuda.agents import role_agent
+
+    # The role's agent, resolved for the harness that will actually run (H.10): its digest joins
+    # the plan's identity; an external harness gets only what it can honour, or a refusal.
+    plan = role_agent.bind(plan, args.workspace, getattr(args, "agents_dir", None))
     args.runtime = args.runtime or plan.runtime_id
     if plan.kind == "native":
         if plan.model_id and not getattr(args, "model", None):

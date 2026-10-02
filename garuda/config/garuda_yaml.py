@@ -172,7 +172,7 @@ def _candidate(value, path) -> dict:
 
 def _role(value, path) -> dict:
     data = _mapping(value, path, ("harness", "model_id", "effort", "permissions", "write_policy",
-                                  "profile", "fallback", "consult", "description"))
+                                  "profile", "agent", "fallback", "consult", "description"))
     out: dict[str, Any] = {"harness": _name(data.get("harness"), f"{path}.harness")}
     if "model_id" in data:
         out["model_id"] = _str(data["model_id"], f"{path}.model_id")
@@ -185,6 +185,12 @@ def _role(value, path) -> dict:
                                       WRITE_POLICIES)
     if "profile" in data:
         out["profile"] = _name(data["profile"], f"{path}.profile")
+    if "agent" in data:  # the agent definition the role runs under (H.10); same field as `profile`
+        agent = _name(data["agent"], f"{path}.agent")
+        if "profile" in out and out["profile"] != agent:
+            _fail(f"{path}.agent", f"conflicts with {path}.profile; name one agent",
+                  code="config.conflict")
+        out["profile"] = agent
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     if "fallback" in data:
