@@ -771,6 +771,49 @@ def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
     return ok(list_runtimes(workspace=str(ctx.workspace), extra=ctx.extra))
 
 
+def _usage_range(request: Request):
+    name = request.first("range", "7d")
+    if name not in ("24h", "7d", "30d"):
+        return None
+    return name
+
+
+@route("GET", r"/api/usage")
+def _usage(request: Request, ctx: DashboardContext, _match) -> Response:
+    """Ledger statistics for a rolling UTC window; a report, never a routing input (F.3)."""
+    import time as _time
+
+    from garuda.core import usage_stats
+    from garuda.observability.ledger import Ledger
+
+    name = _usage_range(request)
+    if name is None:
+        return invalid("`range` must be 24h, 7d or 30d.")
+    now = _time.time()
+    return ok(usage_stats.stats(list(Ledger().records(since=now - 31 * 86400)), name, now))
+
+
+@route("GET", r"/api/usage/export")
+def _usage_export(request: Request, ctx: DashboardContext, _match) -> Response:
+    import time as _time
+
+    from garuda.core import usage_stats
+    from garuda.observability.ledger import Ledger
+
+    name = _usage_range(request)
+    fmt = request.first("format", "json")
+    if name is None or fmt not in ("csv", "json"):
+        return invalid("`range` must be 24h, 7d or 30d and `format` csv or json.")
+    now = _time.time()
+    rows = usage_stats.export_rows(list(Ledger().records(since=now - 31 * 86400)), name, now)
+    body = usage_stats.export_csv(rows) if fmt == "csv" else usage_stats.export_json(rows)
+    return Response(
+        body=body.encode("utf-8"),
+        content_type="text/csv; charset=utf-8" if fmt == "csv"
+        else "application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="garuda-usage-{name}.{fmt}"'})
+
+
 @route("GET", r"/api/providers")
 def _providers(request: Request, ctx: DashboardContext, _match) -> Response:
     """One card per harness and per API provider: limits with their source and time,

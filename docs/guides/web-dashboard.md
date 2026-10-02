@@ -75,6 +75,22 @@ Garuda draws on the same quota. **Refresh** (write mode) re-runs the documented 
 reads and never sends a prompt. `GET /api/providers` and `POST /api/providers/refresh` serve
 this.
 
+## Usage statistics
+
+`#/usage` summarizes the usage ledger over the last 24 hours, 7 days or 30 days (rolling UTC
+windows; your time zone only changes how a client displays them): totals, the share of work
+by type, a harness × model table, tokens per day, and tables by role and by opaque project
+id, with the median tokens and duration per native call. **Units stay apart**: native calls,
+ACP turns and snapshots are different measures. A percentage compares native calls only with
+native calls, and the page lists what it left out (ACP turns, and snapshots, which are
+occupancy or running totals and are never summed). **Unknown cost is never zero**: a range of
+unpriced calls reads *unknown*, and a mixed one shows the known sum beside the number of
+unpriced records. Replayed or duplicate reports cannot change a total, because the ledger
+writes each record once. **Export CSV / JSON** downloads the fixed schema fields (identities
+and counts, no text, paths or accounts). These statistics are a report and are never used to
+choose a harness or a model. `GET /api/usage?range=` and `GET /api/usage/export?range=&format=`
+serve them.
+
 ## Background sessions
 
 `garuda run --bg` queues a session and returns; the Sessions page shows it

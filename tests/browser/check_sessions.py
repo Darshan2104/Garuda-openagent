@@ -102,6 +102,28 @@ with sync_playwright() as p:
     check("a read-only dashboard cannot refresh", page.locator("#providers-refresh").is_disabled())
     page.screenshot(path=str(SHOTS / "providers.png"))
 
+    # --- usage statistics (F.3) ---------------------------------------------------------------
+    page.goto(f"{BASE}#/usage?range=24h", wait_until="load")
+    page.wait_for_selector("#share-table")
+    check("native calls counted once", page.locator("#tile-native").inner_text() == "4",
+          page.locator("#tile-native").inner_text())
+    share = page.locator("#share-table").inner_text()
+    check("work type shares are of native calls", "controller" in share and "50%" in share, share)
+    check("unpriced calls read unknown, not $0", "unknown" in page.locator("#tile-cost").inner_text()
+          and "$0" not in page.locator("#tile-cost").inner_text(), page.locator("#tile-cost").inner_text())
+    check("the units are labelled apart", "ACP turn" in page.locator("#usage-note").evaluate("e => e.parentElement.innerText"))
+    check("a statement that stats are never a routing input", "never used to choose" in page.locator("#usage-note").inner_text())
+    check("the active range is highlighted", page.locator('a[data-range="24h"].btn-primary').count() == 1)
+    with page.expect_download() as download:
+        page.click("#export-csv")
+    exported = Path(download.value.path()).read_text()
+    check("the CSV export downloads with the schema header", exported.startswith("time,kind,session_id,"),
+          exported[:60])
+    check("the export holds the four calls", len(exported.strip().splitlines()) - 1 >= 4)
+    page.click('a[data-range="30d"]')
+    page.wait_for_selector('a[data-range="30d"].btn-primary')
+    page.screenshot(path=str(SHOTS / "usage.png"))
+
     page.goto(f"{BASE}#/inbox", wait_until="load")
     page.wait_for_selector("#inbox-list")
     inbox = page.locator("#inbox-list").inner_text()
