@@ -339,7 +339,7 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
     """Cancel a background session; returns what was done."""
     from garuda.runtime import session_state
     from garuda.runtime.queue import QueueStore
-    from garuda.runtime.recovery import ProcessIdentityUnavailable, _process_identity
+    from garuda.runtime.recovery import ProcessIdentityUnavailable, _process_identity, same_process
 
     queue = queue or QueueStore()
     meta = store.load_meta(session_id)
@@ -371,7 +371,7 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
     if live is None:
         store.update_meta(session_id, {"status": "failed", "state": session_state.interrupted()})
         return "the worker is not running"
-    if live != recorded:
+    if not same_process(recorded, live):
         # The pid now belongs to another process. Never signal it.
         store.update_meta(session_id, {"status": "failed", "state": session_state.interrupted()})
         return "the worker's pid was reused by another process; nothing was signalled"
