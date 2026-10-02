@@ -46,7 +46,7 @@ native Garuda agent.
 
 ## Conversations
 
-A run's page (`#/runs/<id>`) opens with a **Models used** table from the usage ledger,
+(The conversation links also show a cross-project **sharing receipt**, never the shared content, and a fallback's story.) A run's page (`#/runs/<id>`) opens with a **Models used** table from the usage ledger,
 grouped by work type × harness × model: a native session's controller, collector,
 classifier and summarizer calls each get a row, and the sessions of a flow use their step
 roles as work types. A session from before the ledger falls back to its own metrics and says

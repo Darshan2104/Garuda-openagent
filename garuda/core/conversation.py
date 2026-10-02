@@ -52,11 +52,26 @@ def _story(store, session_id: str, meta: dict) -> dict:
         if other.get("resumed_from") == session_id:
             resumed_into.append(_ref(other["session_id"], other))
     tagged = [{**_ref(link["session_id"], {"name": link.get("name")}),
-               "provenance": link.get("provenance"), "cross_project": bool(link.get("cross_project"))}
+               "provenance": link.get("provenance"), "cross_project": bool(link.get("cross_project")),
+               "receipt": _receipt(store, session_id, link) if link.get("cross_project") else None}
               for link in meta.get("context_from") or []]
     tagged_by = [_ref(link["session_id"], {}) for link in meta.get("context_to") or []]
     return {"resumed_from": chain, "resumed_into": resumed_into, "tagged": tagged,
             "tagged_by": tagged_by}
+
+
+def _receipt(store, session_id: str, link: dict) -> dict | None:
+    """The cross-project sharing receipt written when a grant let this session read another
+    project's session: its fingerprint and time, never the shared content."""
+    import json
+
+    path = store.session_dir(session_id) / "receipts" / f"{link['session_id']}.json"
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"present": False}
+    return {"present": True, "fingerprint": receipt.get("fingerprint"),
+            "created_at": receipt.get("created_at"), "fields": receipt.get("fields")}
 
 
 def _ref(session_id: str, meta: dict) -> dict:
@@ -131,7 +146,9 @@ def models_used(store, session_id: str, meta: dict, ledger) -> dict:
             continue
         row["input_tokens"] += record.get("input_tokens") or 0
         row["output_tokens"] += record.get("output_tokens") or 0
-        row["total_tokens"] += record.get("total_tokens") or 0
+        row["total_tokens"] += (record["total_tokens"] if record.get("total_tokens") is not None
+                                else (record.get("input_tokens") or 0)
+                                + (record.get("output_tokens") or 0))
         if record.get("cost_usd") is None:
             row["cost_unknown"] += 1
         else:

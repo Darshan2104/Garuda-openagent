@@ -162,5 +162,126 @@ def seed(root: Path, workspace: str) -> dict:
     return IDS
 
 
+OBS = {
+    "native": "00000000-0000-0000-0000-0000000000b1",
+    "acp": "00000000-0000-0000-0000-0000000000b2",
+    "acp_turns": "00000000-0000-0000-0000-0000000000b3",
+    "fallback": "00000000-0000-0000-0000-0000000000b4",
+    "flow": "00000000-0000-0000-0000-0000000000b5",
+    "tagger": "00000000-0000-0000-0000-0000000000b6",
+    "other_project": "00000000-0000-0000-0000-0000000000b7",
+    "step_code_1": "00000000-0000-0000-0000-0000000000c1",
+    "step_review_1": "00000000-0000-0000-0000-0000000000c2",
+    "step_code_2": "00000000-0000-0000-0000-0000000000c3",
+    "step_review_2": "00000000-0000-0000-0000-0000000000c4",
+}
+
+
+def seed_observability(root: Path, workspace: str) -> dict:
+    """Native, ACP, fallback and flow conversations, tags (across harnesses and projects, with
+    a receipt), duplicate and unattributed ACP reports, and usage at three ages - all through
+    the production writers."""
+    from garuda.context import brief as briefs
+    from garuda.context import tags
+    from garuda.core.events import EventStore, EventType
+    from garuda.observability import usage as usage_ledger
+    from garuda.observability.acp_usage import AcpUsageNormalizer, UsageReport
+    from garuda.observability.ledger import Ledger
+    from garuda.runtime.session import RuntimeSegment
+
+    store = SessionStore(root)
+    ledger = Ledger()
+    other = Path(workspace) / "other-project"
+    other.mkdir(exist_ok=True)
+    acp_segment = RuntimeSegment(runtime_id="claude", kind="acp", native_session_id="n-1",
+                                 version="0.85.0")
+    for name, sid in OBS.items():
+        kwargs = {"runtime_segment": acp_segment} if name in ("acp", "acp_turns") else {}
+        store.begin(sid, task=f"observability {name}", model="m/x", agent="build",
+                    workspace=str(other if name == "other_project" else workspace), **kwargs)
+    # a native conversation: controller, collector, classifier and summarizer calls
+    events = EventStore(OBS["native"], persist_path=store.events_path(OBS["native"]))
+    usage_ledger.attach(events, store)
+    events.append(EventType.SESSION_START, {"task": "native", "model": "m/x"})
+    for purpose, tokens, cost in (("controller", 100, 0.01), ("controller", 80, 0.01),
+                                  ("collector", 30, None), ("classifier", 12, None),
+                                  ("summarizer", 55, 0.002)):
+        usage = {"prompt_tokens": tokens, "completion_tokens": 5, "total_tokens": tokens + 5}
+        if cost is not None:
+            usage["cost_usd"] = cost
+        events.append(EventType.MODEL_RESPONSE, {"turn": 1, "content": "ok", "tool_calls": [],
+                                                  "call_purpose": purpose, "model": "m/x",
+                                                  "usage": usage})
+    events.append(EventType.SESSION_END, {"success": True, "turns": 1})
+    store.finish(OBS["native"], AgentResult(success=True, final_message="ok", messages=[], turns=1,
+                                            metadata={}))
+    # ACP: cumulative reports with a replay, and a per-turn source with a duplicate; the
+    # adapters name no internal model, so none is reported
+    for sid in (OBS["acp"], OBS["acp_turns"], OBS["fallback"], OBS["flow"], OBS["tagger"]):
+        EventStore(sid, persist_path=store.events_path(sid)).append(
+            EventType.SESSION_START, {"task": sid})
+    cumulative = AcpUsageNormalizer(ledger, policy=lambda adapter, version: "cumulative")
+    now = time.time()
+    for seq, inp, out in [(1, 100, 10), (2, 250, 30), (2, 250, 30), (3, 400, 50)]:
+        cumulative.ingest(UsageReport(
+            source="claude:0.85.0:b2", adapter="claude", adapter_version="0.85.0", kind="cumulative",
+            seq=seq, counters={"input_tokens": inp, "output_tokens": out}, observed_at=now - 120,
+            session_id=OBS["acp"], harness="claude", context_used=900, context_size=4000))
+    per_turn = AcpUsageNormalizer(ledger, policy=lambda adapter, version: "per_turn")
+    for turn, (inp, out) in (("t1", (80, 8)), ("t2", (120, 12)), ("t1", (80, 8))):
+        per_turn.ingest(UsageReport(
+            source="claude:0.85.0:b3", adapter="claude", adapter_version="0.85.0", kind="per_turn",
+            report_id=f"r-{turn}", turn_id=turn, counters={"input_tokens": inp, "output_tokens": out},
+            observed_at=now - 90, session_id=OBS["acp_turns"], harness="claude"))
+    # a fallback session continued from the native one
+    store.update_meta(OBS["fallback"], {
+        "resumed_from": OBS["native"],
+        "role": {"role": "reviewer", "runtime_id": "codex", "model_id": "codex-y", "fallback": {
+            "primary": {"harness": "claude"}, "taken": {"harness": "codex", "index": 1},
+            "skipped": [{"harness": "claude", "reason": "harness.logged_out"}]}}})
+    # a multi-round flow: the second round answers the first review
+    store.update_meta(OBS["flow"], {"kind": "flow", "flow_state": "running", "flow": {
+        "name": "pair", "steps": ["code", "review"]}, "state": session_state.started()})
+    directory = engine.flow_dir(store, OBS["flow"])
+    (directory / "receipts").mkdir(parents=True, exist_ok=True)
+    for index, (step, attempt, role, sid, status) in enumerate([
+            ("code", 1, "coder", OBS["step_code_1"], "done"),
+            ("review", 1, "reviewer", OBS["step_review_1"], "done"),
+            ("code", 2, "coder", OBS["step_code_2"], "done"),
+            ("review", 2, "reviewer", OBS["step_review_2"], "done")]):
+        engine._write_once(directory / "receipts" / f"{step}-{attempt}.json", {
+            "index": 0 if step == "code" else 1, "step": step, "role": role, "attempt": attempt,
+            "session_id": sid, "success": True, "inputs": [], "outputs": [], "status": status,
+            "workspace_version_before": f"v{index}", "workspace_version_after": f"v{index + 1}"})
+        ledger.append({"kind": "native_model_call", "key": f"flowcall:{step}:{attempt}",
+                       "time": now - 60, "session_id": sid, "call_purpose": "controller",
+                       "model": f"{role}/model", "input_tokens": 10, "output_tokens": 1,
+                       "total_tokens": 11})
+    # tags: a native session tags the ACP one (across harnesses) and another project's session
+    # under an authorized cross-project grant, which writes its receipt
+    def brief_for(sid, project, runtime):
+        return briefs.Brief(session_id=sid, name=sid[-2:], project_id=project, runtime=runtime,
+                            model="m/x", task="shared task", state="completed")
+
+    acp_meta, other_meta = store.load_meta(OBS["acp"]), store.load_meta(OBS["other_project"])
+    pairs = [(tags.Tag(OBS["acp"], "acp", acp_meta.get("project_id"), False, "flag"),
+              brief_for(OBS["acp"], acp_meta.get("project_id"), "claude")),
+             (tags.Tag(OBS["other_project"], "elsewhere", other_meta.get("project_id"), True,
+                       "cross-project-flag"),
+              brief_for(OBS["other_project"], other_meta.get("project_id"), "native"))]
+    attached = tags.Attached(tags=[p[0] for p in pairs], briefs=[p[1] for p in pairs],
+                             rendered=briefs.render([p[1] for p in pairs]))
+    tags.record_links(store, OBS["tagger"], attached)
+    # usage at three ages, one per range boundary region
+    for key, age_h in (("age-2h", 2), ("age-3d", 72), ("age-20d", 480)):
+        ledger.append({"kind": "native_model_call", "key": key, "time": now - age_h * 3600,
+                       "session_id": "aged-usage", "call_purpose": "controller", "harness": "native",
+                       "model": "m/x", "input_tokens": 1000, "output_tokens": 0,
+                       "total_tokens": 1000, "cost_usd": 1.0})
+    return OBS
+
+
 if __name__ == "__main__":
-    seed(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "/tmp")
+    ids = seed(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "/tmp")
+    if "--observability" in sys.argv:
+        seed_observability(Path(sys.argv[1]), sys.argv[2])
