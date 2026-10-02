@@ -808,3 +808,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `extends` merges structurally first; authority is applied afterwards from
   provenance, so a project definition is held to the project ceiling even
   for values it inherits.
+
+## 2026-10-02 — Every agent field has an owner and an observable effect (issue #160, H.12a)
+
+- `context.condenser`, `limits.deadline_sec`, `completion.verifier` and
+  `workspace.docker.network/memory/cpus` are now supported, each mapped to the
+  `AgentConfig` or environment value that enforces it, with a test observing
+  the effect.
+- Budgets are checked before activation (`agent.invalid_budget` with the
+  field path). A project or narrower delegate cannot switch off the verifier,
+  nor the acceptance contract where the eval or rigorous posture requires
+  it (`agent.required_gate`). Docker limits in a
+  definition only narrow the operator's grant; legacy workspace kinds are
+  never translated to `local`.
