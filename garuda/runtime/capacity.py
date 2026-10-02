@@ -55,15 +55,30 @@ def configured_ceiling(key: str, global_settings: dict | None = None) -> int | N
         global_settings = _load_global_settings()
     table = (global_settings or {}).get("capacity")
     if table is None:
-        return None
+        return _harness_ceiling(key)
     if not isinstance(table, dict):
         raise CapacityError("global settings: `capacity` must map runtime ids to positive integers")
     value = table.get(key)
     if value is None:
-        return None
+        return _harness_ceiling(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise CapacityError(f"global settings: capacity.{key} must be a positive integer, got {value!r}")
     return value
+
+
+def _harness_ceiling(key: str) -> int | None:
+    """``harnesses.<key>.max_parallel`` from the user's ``garuda.yaml`` (D.1).
+
+    Only the user's file counts: a project cannot raise (or set) a ceiling. A
+    file that cannot be read refuses rather than lift the limit."""
+    from garuda.config import garuda_yaml
+
+    try:
+        document = garuda_yaml.load_file(garuda_yaml.user_path())
+    except Exception as exc:
+        raise CapacityError(f"garuda.yaml: cannot read the capacity ceilings: {exc}") from exc
+    harness = ((document or {}).get("harnesses") or {}).get(key) or {}
+    return harness.get("max_parallel")
 
 
 @dataclass(frozen=True)
@@ -71,6 +86,20 @@ class Reservation:
     key: str
     holder: str
     owner: Owner
+
+
+#: Slots a process reserved on a queue claim's behalf (D.1): ``(key, holder) -> owner``.
+#: The run that follows a claim reserves the same holder; under the claim's owner that is
+#: the same reservation, not a second slot and not a replacement of someone else's.
+_ADOPTED: dict[tuple[str, str], Owner] = {}
+
+
+def adopt(key: str, holder: str, owner: Owner) -> None:
+    _ADOPTED[(key, holder)] = owner
+
+
+def unadopt(key: str, holder: str) -> None:
+    _ADOPTED.pop((key, holder), None)
 
 
 class CapacityStore:
@@ -98,7 +127,7 @@ class CapacityStore:
         """Take a slot, retry the exact owner, or refuse live/unknown replacement."""
         if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
             raise CapacityError(f"ceiling must be a positive integer, got {ceiling!r}")
-        owner = owner or current_owner()
+        owner = owner or _ADOPTED.get((key, holder)) or current_owner()
         try:
             with exclusive_lock(self.root):
                 document = self._load(key)

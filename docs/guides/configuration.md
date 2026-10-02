@@ -313,6 +313,13 @@ capacity:
 A run that finds its runtime full is refused right away rather than queued. A
 runtime with no entry isn't limited. Only the global settings file can set this.
 
+The ceiling can also be written as `harnesses.<id>.max_parallel` in your own
+`garuda.yaml`; a `capacity` entry in `settings.yaml` wins when both exist, and
+a project file can't set either. Background sessions wait in a durable FIFO
+queue per user and harness (`~/.agent/queue/`) and draw from this same limit:
+there is no separate queue capacity, so a foreground run and a queued one can
+never exceed it together.
+
 ## Agent definitions
 
 An agent definition says how one Garuda agent behaves: its instructions,

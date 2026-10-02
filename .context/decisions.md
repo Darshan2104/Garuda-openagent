@@ -915,3 +915,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   (user notes after user memory, project notes after project memory).
 - Fail closed: a missing safeguard makes `notes: propose` unavailable.
 
+## 2026-10-02 — The durable queue has no capacity of its own (issue #167, D.1)
+
+- `runtime/queue.py` promotes the A.4 spike: a versioned (v2; v1 read and
+  migrated), owner-only, locked document. Entries and claims bind user,
+  harness, session, configuration digest and worker identity; FIFO per
+  `<user>:<harness>`.
+- Capacity is the B.0 `CapacityStore` under `harnesses.<id>.max_parallel` /
+  settings `capacity`, so every launch kind shares one ceiling. Takeover is
+  by confirmed death of the owner (process identity), never by TTL or clock;
+  unknown liveness is quarantined. Inspection never locks or writes.
+
