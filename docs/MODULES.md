@@ -41,7 +41,7 @@ a behaviour.
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `buffer.py` | Session buffers holding large tool output and compacted history. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
-| `subagent.py` | Forked child runs. |
+| `subagent.py` | Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. |
 | `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports its own exits so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |
 
 ## `tools/` — what the agent can do

@@ -13,7 +13,7 @@ from garuda.context.manager import (
     normalize_handoff,
 )
 from garuda.core.events import SUBAGENT_LOG_DIR, EventStore, EventType
-from garuda.core.permissions import PermissionEngine
+from garuda.core.permissions import DelegatedPermissionEngine, PermissionEngine
 from garuda.core.run_state import reserved_output_tokens
 from garuda.model.protocol import Model
 from garuda.tools import build_toolkit
@@ -97,6 +97,15 @@ class SubagentRunner:
     # Parent's tool-output buffer, shared into a forked subagent so inherited
     # [buffer:...] stubs resolve (they live under the parent's session dir).
     parent_buffer: Any = None
+    # The parent's *effective* permission engine (itself delegated when the parent
+    # is a subagent). Every child call must also pass it, so a child profile
+    # declaring a wider mode (e.g. `harbor`'s yolo) cannot escalate past the run
+    # that started it. None only for direct programmatic construction.
+    parent_permissions: Any = None
+    # Tools the parent run was admitted with. A child selects among these rather
+    # than building a fresh toolkit, so constructing a child never connects a new
+    # MCP server or imports code the parent was not already running with.
+    parent_tools: list | None = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -164,17 +173,29 @@ class SubagentRunner:
         config.enable_three_step_summary = False
         config.system_prompt = resolve_system_prompt(profile, self.workspace_root)
 
-        permissions = PermissionEngine(
+        child_permissions = PermissionEngine(
             mode=profile.permission_mode,
             tool_rules=profile.tool_rules,
             path_rules=profile.path_rules,
             bash_rules=profile.bash_rules,
             approval_handler=self.approval_handler,
         )
-        tools, mcp_manager = await build_toolkit(
-            profile.tools,
-            profile.mcp_config_path,
+        permissions = (
+            DelegatedPermissionEngine(child_permissions, self.parent_permissions)
+            if self.parent_permissions is not None
+            else child_permissions
         )
+        if profile.mcp_config_path or profile.mcp_servers:
+            logger.warning(
+                "Subagent %r declares MCP servers; a subagent never opens its own MCP "
+                "connections and can only use MCP tools its parent already has",
+                profile.name,
+            )
+        mcp_manager = None
+        if self.parent_tools is not None:
+            tools = delegated_tools(profile.tools, self.parent_tools, profile.name)
+        else:
+            tools, mcp_manager = await build_toolkit(profile.tools, None)
         sub_events = EventStore()
         persist_child_events(self.events, sub_events)
         agent = DefaultAgent(profile_name=profile.name)
@@ -225,6 +246,45 @@ class SubagentRunner:
         result.metadata["subagent_session_id"] = sub_events.session_id
         result.metadata["subagent_profile"] = profile_name
         return result
+
+
+# Tools a run inserts for itself; a child gets its own copies from its own setup
+# when its configuration enables them, never the parent's bound instances.
+_RUN_SCOPED_TOOLS = frozenset({"delegate_collection", "submit_collection"})
+_MCP_META_TOOLS = frozenset({"search_tool", "use_tool"})
+
+
+def _is_mcp_tool(name: str) -> bool:
+    return name.startswith("mcp__") or name in _MCP_META_TOOLS
+
+
+def delegated_tools(requested: list[str] | None, parent_tools: list, profile_name: str) -> list:
+    """Select a child's tools from the parent's admitted toolkit.
+
+    A child can only narrow: a requested tool the parent does not have is dropped
+    (with a warning), never resolved fresh. With no explicit list the child gets
+    the parent's tools except MCP ones, which a child must name to receive.
+    """
+    available = {
+        tool.name: tool for tool in parent_tools if tool.name not in _RUN_SCOPED_TOOLS
+    }
+    if requested is None:
+        return [tool for name, tool in available.items() if not _is_mcp_tool(name)]
+    selected = []
+    missing = []
+    for name in dict.fromkeys(requested):
+        if name in available:
+            selected.append(available[name])
+        elif name not in _RUN_SCOPED_TOOLS:
+            missing.append(name)
+    if missing:
+        logger.warning(
+            "Subagent %r requested tools its parent run does not have; they are not "
+            "available to it: %s",
+            profile_name,
+            ", ".join(missing),
+        )
+    return selected
 
 
 _SUMMARY_BUFFER_RE = re.compile(r"\[buffer:([^\s|\]]+)")

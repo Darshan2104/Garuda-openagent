@@ -58,7 +58,7 @@ disabled.
 | Remote workspace | Runs commands in a container through another Docker daemon | Establish trust in that daemon, or provision its mount path |
 | `sandbox` workspace | Uses Bubblewrap or macOS Seatbelt to reduce write and network reach | Confine general host reads |
 | Permission rules | Screen tool names and literal path and command arguments | See shell expansion, or everything a broad read returns |
-| `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold subagents and MCP tools to read-only |
+| `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold MCP tools to read-only |
 | Workspace lease | Refuses overlapping `garuda run`, `serve`, SDK, and runtime sessions | Isolate the process, or cover `garuda chat`, dashboard chats, and recipes, which don't take one yet |
 
 Permission rules and OS sandbox policies are useful defense in depth. Don't
@@ -170,11 +170,12 @@ mount, a minimal copy of the workspace, or a container when that matters.
 `--mode readonly` and the `readonly` permission mode are guardrails with known
 gaps today:
 
-- **Subagents.** `invoke_subagent` starts the child with its **own**
-  profile's permission mode. A read-only `build` run can start a `build`
-  subagent that edits files. The dashboard's `--max-permission` ceiling and
-  smart mode's refusals don't carry over either. The `explore`, `plan`, and
-  `reviewer` profiles don't include `invoke_subagent`.
+- **Subagents.** A subagent can't do more than the run that started it.
+  Every call it makes must pass both its own profile's rules and its parent's
+  effective permissions (including `--permission-mode`, the dashboard's
+  `--max-permission` ceiling and any ancestor's rules); the stricter decision
+  wins, and an approval is asked once through the parent. A subagent also uses
+  only tools its parent already has: it never opens its own MCP connections.
 - **MCP tools.** MCP tools are added to every profile and aren't treated as
   writes, so a write-capable MCP tool still runs.
 - **Environment variables.** `env` and `printenv` count as inspection
@@ -213,9 +214,8 @@ garuda web --read-only
 
 For live conversations, repeat `--allow-workspace` for each allowed directory
 and set `--max-permission` as the browser's ceiling. A browser request can ask
-for that posture or a stricter one, never a looser one. Subagents still run
-with their own profile's permissions; see
-[read-only mode limits](#read-only-mode-limits).
+for that posture or a stricter one, never a looser one. Subagents started by
+that run stay within the same ceiling.
 
 ACP runtimes are different from native workspace execution. Garuda launches the
 user-authenticated harness and records approvals, session state, leases, and

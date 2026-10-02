@@ -755,6 +755,8 @@ async def prepare_run(
             parent_buffer=buffer,
             approval_handler=permissions.approval_handler,
             hooks=hooks,
+            parent_permissions=permissions,
+            parent_tools=list(tools),
         )
 
     ctx = ToolContext(
