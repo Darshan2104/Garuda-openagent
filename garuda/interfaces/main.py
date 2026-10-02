@@ -436,6 +436,23 @@ def build_parser():
     )
     sessions_remove.add_argument("--workspace", default=".")
 
+    approvals_parser = subparsers.add_parser(
+        "approvals", help="List or answer a running session's parked approvals"
+    )
+    approvals_sub = approvals_parser.add_subparsers(dest="approvals_command")
+    approvals_list = approvals_sub.add_parser("list", help="Parked approvals of a session")
+    approvals_list.add_argument("session", help="Session id, unique prefix, or name")
+    approvals_list.add_argument("--workspace", default=".")
+    approvals_answer = approvals_sub.add_parser(
+        "answer", help="Answer one parked approval (bound to that exact request)"
+    )
+    approvals_answer.add_argument("session", help="Session id, unique prefix, or name")
+    approvals_answer.add_argument("approval_id")
+    decision = approvals_answer.add_mutually_exclusive_group(required=True)
+    decision.add_argument("--allow", action="store_true")
+    decision.add_argument("--deny", action="store_true")
+    approvals_answer.add_argument("--workspace", default=".")
+
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
     mcp_list = mcp_sub.add_parser(
@@ -635,6 +652,42 @@ def run_sessions(args) -> int:
             f"{meta.get('updated_at', ''):<32} "
             f"{task}"
         )
+    return 0
+
+
+def run_approvals(args) -> int:
+    """`garuda approvals list|answer` over the session's file channel (B.8)."""
+    import sys
+
+    from garuda.acp.approval_channel import FileApprovalChannel, write_answer
+    from garuda.core.project_identity import ProjectIdentityError
+    from garuda.core.sessions import SessionStore
+
+    store = SessionStore()
+    try:
+        session_id = store.resolve(args.session, workspace=os.path.realpath(args.workspace))
+    except (ProjectIdentityError, OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    directory = store.session_dir(session_id) / "approvals"
+    if args.approvals_command == "answer":
+        try:
+            write_answer(directory, session_id, args.approval_id, allow=args.allow)
+        except FileExistsError:
+            print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
+            return 2
+        except (OSError, ValueError) as exc:
+            print(f"Error: cannot answer {args.approval_id}: {exc}", file=sys.stderr)
+            return 2
+        print(f"[garuda] answered {args.approval_id}: {'allow' if args.allow else 'deny'} "
+              "(the session decides once; a late or mismatched answer is a denial)")
+        return 0
+    pending = FileApprovalChannel(directory, session_id).pending()
+    if not pending:
+        print("No parked approvals.")
+        return 0
+    for request in pending:
+        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
     return 0
 
 
@@ -1422,6 +1475,10 @@ def main() -> None:
         raise SystemExit(run_doctor(args))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
+    if args.command == "approvals":
+        if args.approvals_command is None:
+            parser.parse_args(["approvals", "--help"])
+        raise SystemExit(run_approvals(args))
     if args.command == "eval":
         if args.eval_command == "dual-model" and args.dual_model_command == "report":
             raise SystemExit(run_dual_model_report(args))

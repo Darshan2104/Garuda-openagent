@@ -75,8 +75,33 @@ class ApprovalRecord:
         }
 
 
+class Decision:
+    """A handler's answer: truthy when allowed. An ACP adapter calls
+    :meth:`acknowledge` once the runtime has it (B.8 delivery record)."""
+
+    __slots__ = ("allowed", "approval_id", "_ack")
+
+    def __init__(self, allowed: bool, approval_id: str, ack: Callable[[], None] | None = None):
+        self.allowed = bool(allowed)
+        self.approval_id = approval_id
+        self._ack = ack
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+    def acknowledge(self) -> None:
+        ack, self._ack = self._ack, None
+        if ack is not None:
+            ack()
+
+
 class ApprovalBroker:
-    """One broker per session. Park, answer, timeout, persist — same path always."""
+    """One broker per session. Park, answer, timeout, persist — same path always.
+
+    With a :class:`~garuda.acp.approval_channel.FileApprovalChannel` a parked
+    approval is also published to files, and a valid file answer resolves it
+    exactly like a terminal or dashboard answer (B.8).
+    """
 
     def __init__(
         self,
@@ -86,15 +111,19 @@ class ApprovalBroker:
         timeout_sec: float = 300.0,
         alive: Callable[[], bool] | None = None,
         answerer: Callable[[ApprovalRequest], Any] | None = None,
+        channel=None,
     ):
         self._engine = engine
         self._store = store
         self._timeout_sec = timeout_sec
         self._alive = alive or (lambda: True)
         self._answerer = answerer
+        self._channel = channel
         self._parked: dict[str, ApprovalRequest] = {}
         self._answers: dict[str, asyncio.Future[bool]] = {}
         self._disconnected: set[str] = set()
+        self._via: dict[str, tuple[str, str | None]] = {}
+        self._seq = 0
 
     def set_answerer(
         self, answerer: Callable[[ApprovalRequest], Any] | None
@@ -112,12 +141,18 @@ class ApprovalBroker:
         """Parked approvals, oldest first — the single surface UI cards read."""
         return sorted(self._parked.values(), key=lambda r: r.requested_at)
 
-    def answer(self, approval_id: str, allow: bool) -> None:
-        """Resolve a parked approval. Unknown ids fail closed, never silently."""
+    def answer(self, approval_id: str, allow: bool, *, via: str = "answerer",
+               reason: str | None = None) -> None:
+        """Resolve a parked approval. Unknown ids fail closed, never silently.
+
+        The first answer wins, whatever its channel; later ones find nothing
+        parked and raise ``KeyError``.
+        """
         request = self._parked.pop(approval_id, None)
         if request is None:
             raise KeyError(f"no pending approval {approval_id!r}")
         self._disconnected.discard(approval_id)
+        self._via[approval_id] = (via, reason)
         future = self._answers.pop(approval_id, None)
         if future is not None and not future.done():
             future.set_result(bool(allow))
@@ -133,13 +168,25 @@ class ApprovalBroker:
         audited; without a session the audit is skipped like elsewhere.
         """
 
-        async def _handle(action: str) -> bool:
+        deferred = runtime_id != "native"
+
+        async def _handle(action: str) -> Decision:
+            approval_id = self._next_id()
             allowed, _ = await self._park_and_wait(
-                "approval", action, runtime_id, session_id, None
+                "approval", action, runtime_id, session_id, approval_id,
+                deliver="deferred" if deferred else "now",
             )
-            return allowed
+            ack = None
+            if deferred and self._channel is not None and allowed:
+                def ack(approval_id=approval_id):
+                    self._channel.acknowledge(approval_id)
+            return Decision(allowed, approval_id, ack)
 
         return _handle
+
+    def _next_id(self) -> str:
+        self._seq += 1
+        return f"apr-{self._seq}-{int(time.time() * 1000)}"
 
     async def decide_tool(
         self,
@@ -204,9 +251,47 @@ class ApprovalBroker:
         return self._engine.check_tool(family)
 
     async def _park_and_wait(
-        self, family: str, action: str, runtime_id: str, session_id: str, approval_id: str | None
+        self, family: str, action: str, runtime_id: str, session_id: str, approval_id: str | None,
+        *, deliver: str = "now",
     ) -> tuple[bool, str | None]:
-        approval_id = approval_id or f"apr-{len(self._parked) + 1}-{int(time.time() * 1000)}"
+        """Park, await the first answer, decide once, audit, reserve delivery.
+
+        ``deliver="deferred"``: the caller acknowledges delivery itself
+        (:class:`Decision`), because the runtime is told after this returns.
+        """
+        approval_id = approval_id or self._next_id()
+        outcome, via, reason = await self._await_outcome(
+            family, action, runtime_id, session_id, approval_id
+        )
+        if self._channel is not None and via != "replay":
+            from garuda.acp.approval_channel import ChannelError
+
+            try:
+                if not self._channel.decide(approval_id, outcome.value, via, reason):
+                    outcome, reason = ApprovalOutcome.DENY, (
+                        f"approval {approval_id} was already decided; not decided twice")
+            except ChannelError as exc:
+                outcome, reason = ApprovalOutcome.DENY, f"approval record failed, denying: {exc}"
+        err = self._audit(session_id, approval_id, outcome, action, family, runtime_id)
+        if err is not None:
+            return False, err if outcome is ApprovalOutcome.ALLOW else f"{reason}; {err}"
+        if outcome is not ApprovalOutcome.ALLOW:
+            return False, reason
+        if self._channel is not None:
+            from garuda.acp.approval_channel import ChannelError
+
+            try:
+                self._channel.reserve_delivery(approval_id)
+                if deliver == "now":
+                    self._channel.acknowledge(approval_id)
+            except ChannelError as exc:
+                return False, f"{exc}"
+        return True, None
+
+    async def _await_outcome(
+        self, family: str, action: str, runtime_id: str, session_id: str, approval_id: str
+    ) -> tuple[ApprovalOutcome, str, str | None]:
+        """``(outcome, via, reason)`` for one parked approval; no audit here."""
         if approval_id in self._parked:
             raise KeyError(f"approval {approval_id!r} is already parked")
         loop = asyncio.get_running_loop()
@@ -215,39 +300,68 @@ class ApprovalBroker:
             approval_id=approval_id, action=action, family=family,
             runtime_id=runtime_id, session_id=session_id or runtime_id,
         )
+        poll = None
+        if self._channel is not None:
+            poll = self._publish(request)
+            if poll is False:
+                return (ApprovalOutcome.DENY, "replay",
+                        f"approval {approval_id} was already decided; never sent twice")
         self._parked[approval_id] = request
         self._answers[approval_id] = future
         if self._answerer is not None:
             asyncio.ensure_future(self._run_answerer(approval_id, request))
         try:
-            allowed = await asyncio.wait_for(_wait_answer(future, self._alive), self._timeout_sec)
+            allowed = await asyncio.wait_for(
+                _wait_answer(future, self._alive, poll), self._timeout_sec
+            )
         except TimeoutError:
             self._parked.pop(approval_id, None)
             self._answers.pop(approval_id, None)
-            err = self._audit(session_id, approval_id, ApprovalOutcome.TIMEOUT, action, family, runtime_id)
-            if err is not None:
-                return False, f"Approval timed out: {action}; {err}"
-            return False, f"Approval timed out: {action}"
+            return ApprovalOutcome.TIMEOUT, "timeout", f"Approval timed out: {action}"
         except _Disconnected:
             self._parked.pop(approval_id, None)
             self._answers.pop(approval_id, None)
             self._disconnected.discard(approval_id)
-            err = self._audit(session_id, approval_id, ApprovalOutcome.DISCONNECTED, action, family, runtime_id)
-            if err is not None:
-                return False, f"Approval requester disconnected: {action}; {err}"
-            return False, f"Approval requester disconnected: {action}"
+            return (ApprovalOutcome.DISCONNECTED, "disconnect",
+                    f"Approval requester disconnected: {action}")
         self._parked.pop(approval_id, None)
+        via, why = self._via.pop(approval_id, ("answerer", None))
         if approval_id in self._disconnected:
             self._disconnected.discard(approval_id)
-            err = self._audit(session_id, approval_id, ApprovalOutcome.DISCONNECTED, action, family, runtime_id)
-            if err is not None:
-                return False, f"Approval requester disconnected: {action}; {err}"
-            return False, f"Approval requester disconnected: {action}"
-        outcome = ApprovalOutcome.ALLOW if allowed else ApprovalOutcome.DENY
-        err = self._audit(session_id, approval_id, outcome, action, family, runtime_id)
-        if err is not None:
-            return False, err
-        return bool(allowed), None if allowed else f"Denied: {action}"
+            return (ApprovalOutcome.DISCONNECTED, "disconnect",
+                    f"Approval requester disconnected: {action}")
+        if allowed:
+            return ApprovalOutcome.ALLOW, via, None
+        return ApprovalOutcome.DENY, via, why or f"Denied: {action}"
+
+    def _publish(self, request: ApprovalRequest):
+        """Publish to the file channel; returns its poller, ``None`` without one,
+        or ``False`` when this approval id was decided before (never resent)."""
+        from garuda.acp.approval_channel import ChannelError, ceiling_fingerprint
+
+        channel = self._channel
+        if channel._path(request.approval_id, "decision").exists():
+            return False
+        try:
+            published = channel.publish(
+                request, ceiling=ceiling_fingerprint(self._engine),
+                expires_at=request.requested_at + self._timeout_sec,
+            )
+        except (ChannelError, FileExistsError):
+            logger.warning("Approval %s has no file channel", request.approval_id, exc_info=True)
+            return None
+
+        def poll() -> None:
+            result = channel.poll(published, ceiling_now=ceiling_fingerprint(self._engine))
+            if result is None:
+                return
+            allow, reason = result
+            try:
+                self.answer(request.approval_id, allow, via="file", reason=reason)
+            except KeyError:
+                pass
+
+        return poll
 
     async def _run_answerer(self, approval_id: str, request: ApprovalRequest) -> None:
         """Drive one parked approval through the attached answerer.
@@ -321,10 +435,16 @@ def describe_gaps(
         return [str(exc)]
 
 
-async def _wait_answer(future: asyncio.Future[bool], alive: Callable[[], bool]) -> bool:
+async def _wait_answer(
+    future: asyncio.Future[bool], alive: Callable[[], bool], poll: Callable[[], None] | None = None
+) -> bool:
     while not future.done():
         if not alive():
             raise _Disconnected()
+        if poll is not None:
+            poll()
+            if future.done():
+                break
         await asyncio.sleep(0.02)
     return future.result()
 

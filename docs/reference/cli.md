@@ -14,6 +14,8 @@ for your installed version. For ready-made examples, see the
 | Sessions | `garuda sessions` | List recent saved sessions |
 | | `garuda sessions merge S --check CMD [--into BRANCH]` | Check a worktree session merged into a branch (in Docker) and publish `refs/garuda/integration/<S>`; never changes your checkout |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
+| | `garuda approvals list S` | List a running session's parked approvals |
+| | `garuda approvals answer S ID --allow` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |

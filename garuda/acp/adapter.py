@@ -610,8 +610,10 @@ class AcpRuntime:
 
     async def _answer_with_handler(self, approval_id: str, action: str) -> None:
         assert self._approval_handler is not None
+        decision = None
         try:
-            allowed = bool(await self._approval_handler(action))
+            decision = await self._approval_handler(action)
+            allowed = bool(decision)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -621,7 +623,14 @@ class AcpRuntime:
             await self.permission_response(approval_id=approval_id, allow=allowed)
         except (RuntimeProtocolError, RuntimeStartError, AcpError):
             # Already answered, cancelled, or the process is gone.
-            pass
+            return
+        # The runtime has the answer: a broker decision records its delivery (B.8).
+        acknowledge = getattr(decision, "acknowledge", None)
+        if acknowledge is not None:
+            try:
+                acknowledge()
+            except Exception:
+                logger.warning("Recording delivery of %s failed", approval_id, exc_info=True)
 
     async def _cancel_pending_approvals(self) -> None:
         """v1 requires every open permission request to be answered
