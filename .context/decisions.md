@@ -483,6 +483,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   liveness blocks takeover. Heartbeats and releases from a superseded epoch are
   refused. Legacy leases without an identity stay readable and can only be
   proven dead.
+- A capacity holder/session id is not ownership authority (#213). A repeat
+  reservation is idempotent only for the exact pid/start identity/process
+  group/epoch. A different owner cannot replace a live or unknown holder,
+  even when capacity remains free; takeover requires confirmed death. Release
+  checks the full recorded owner, not the epoch alone.
 - Every launch through `WorkspaceLeaseGuard` reserves capacity for its runtime
   key (`native`, or the ACP runtime id) before taking the workspace lease, and
   gives it back if the workspace is held — never waiting while holding a slot.

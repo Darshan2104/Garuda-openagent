@@ -877,6 +877,9 @@ harness, session, worker identity and configuration digest. Preserve FIFO within
 that scope, and expose read-only queue inspection. Capacity per harness comes
 from `harnesses.<id>.max_parallel` in the user file and uses B.0's shared
 capacity store; D.1 must not introduce queue-only capacity or TTL-only takeover.
+The shared store must also refuse same-holder replacement of live/unknown
+owners (#213); an exact-owner retry is idempotent and confirmed-dead takeover
+retains stale-release protection. Audit this prerequisite before queue wiring.
 
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.

@@ -96,7 +96,9 @@ destination and publishes only `refs/garuda/integration/<id>` by
 compare-and-swap. A worktree is a separate place to edit, not confinement. `runtime/capacity.py` holds one finite slot pool per
 runtime (`native`, `claude`, `codex`, …) shared by every launch through
 `WorkspaceLeaseGuard`; ceilings come from `capacity:` in the global settings,
-and a key without one is not limited. `run_agent_task` acquires the mutating lease for the workspace
+and a key without one is not limited. Reusing a capacity holder id refuses
+live/unknown ownership replacement; exact-owner retries are idempotent, and
+release validates the full owner identity and epoch. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
 last (also on cancellation) — concurrent `run_agent_task` runs on one workspace
 are refused, never interleaved. The interactive paths that call `agent.run`
