@@ -877,3 +877,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   8 launches) is shared by the whole tree so a child cannot reset it; a
   child never outruns its parent's turns or deadline.
 
+## 2026-10-02 — Agents may declare a final-output JSON Schema (issue #165, H.12b)
+
+- `jsonschema` (`Draft202012Validator`, no format checker) is a declared
+  dependency, pinned in `constraints.txt`. The schema is a bounded local file
+  checked at resolution: allowlisted keywords only, same-file `$ref` only, no
+  cycles, bounded size, depth and expansion. `pattern` and `format` refuse
+  (a file-supplied regular expression would run on model output; no format
+  checker is run), so nothing is silently ignored.
+- Validation happens first in the completion gate; two repair turns come out
+  of the run's own turn and deadline budget, then `agent.output_invalid`
+  ends the run without output. Valid output earns only the ordinary gates.
+

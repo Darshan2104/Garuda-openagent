@@ -72,6 +72,8 @@ class AgentProfile:
     tool_options: dict | None = None
     subagents: list[str] | None = None
     tools_removed: list[str] | None = None
+    # The compiled final-output JSON Schema (H.12b); set only by the resolver.
+    output_schema: dict | None = None
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -111,6 +113,7 @@ class AgentProfile:
             tool_options=dict(self.tool_options or {}),
             subagents=list(self.subagents) if self.subagents is not None else None,
             removed_tools=list(self.tools_removed or []),
+            output_schema=self.output_schema,
             enable_tmux=self.enable_tmux,
             marker_polling=self.marker_polling,
             enable_three_step_summary=self.enable_three_step_summary,
@@ -179,7 +182,7 @@ _PROFILE_FIELD_NAMES = {f.name for f in fields(AgentProfile)}
 _FIELD_ALIASES = {"model_bindings": "model_binding"}
 #: Fields a file never sets itself.
 _INTERNAL_FIELDS = frozenset({"declared_fields", "source_path", "spec_version",
-                              "tools_removed"})
+                              "tools_removed", "output_schema"})
 #: List fields a file may also give as a single string.
 _LIST_FIELDS = ("tools", "skills", "skills_dirs", "mcp_servers")
 

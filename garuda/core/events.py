@@ -22,6 +22,7 @@ class EventType(str, Enum):
     # The digest of the system message actually sent, recorded whenever it
     # changes (H.2): runtime blocks make it differ from the static prompt.
     SYSTEM_PROMPT = "system_prompt"
+    OUTPUT_VALIDATION = "output_validation"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     PERMISSION_ASK = "permission_ask"

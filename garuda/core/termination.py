@@ -9,7 +9,7 @@ copying the native loop or weakening normal ``task_complete`` verification.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from garuda.core.completion import CompletionGate
 from garuda.types import ToolCall
@@ -21,6 +21,10 @@ class TerminalDecision:
 
     accepted: bool
     summary: str = ""
+    #: The validated structured result of an accepted call (H.12b).
+    output: Any = None
+    #: A code when the run must end now, failed, rather than retry (H.12b).
+    failure: str | None = None
 
 
 class TerminalStrategy(Protocol):
@@ -53,8 +57,11 @@ class TaskCompletionStrategy:
     async def attempt(
         self, call: ToolCall, *, turn: int | None = None
     ) -> TerminalDecision:
-        accepted, summary = await self.completion_gate.attempt(call, turn=turn)
-        return TerminalDecision(accepted=accepted, summary=summary)
+        gate = self.completion_gate
+        accepted, summary = await gate.attempt(call, turn=turn)
+        if accepted:
+            return TerminalDecision(accepted=True, summary=summary, output=getattr(gate, "output", None))
+        return TerminalDecision(accepted=False, summary=summary, failure=getattr(gate, "failure", None))
 
     def flush_notes(self) -> None:
         self.completion_gate.flush_notes()

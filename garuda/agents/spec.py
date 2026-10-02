@@ -134,7 +134,7 @@ FIELDS: dict[str, Field] = {
     "workspace.docker.memory": _f("str", "docker_memory"),
     "workspace.docker.cpus": _f("number", "docker_cpus"),
     # output
-    "output.schema": _later("str", "H.12b", nullable=True),
+    "output.schema": _f("str", None, nullable=True),  # compiled by agents/output_schema.py
 }
 
 #: Legacy profile key -> version 1 path. ``system_prompt`` and ``tools`` are special.

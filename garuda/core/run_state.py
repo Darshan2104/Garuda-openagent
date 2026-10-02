@@ -171,7 +171,8 @@ class RunState:
                 )
             )
 
-    def result(self, success: bool, final_message: str, turns: int) -> AgentResult:
+    def result(self, success: bool, final_message: str, turns: int, *, output=None,
+               error_code: str | None = None) -> AgentResult:
         """Build the AgentResult, surfacing how the run behaved in metadata.
 
         Repetition, cleanup, and which stated requirements were actually
@@ -203,12 +204,15 @@ class RunState:
                 **contract.stats(),
                 "criteria": contract.to_dict()["criteria"],
             }
+        if error_code:
+            metadata["error_code"] = error_code
         return AgentResult(
             success=success,
             final_message=final_message,
             messages=self.context.get_messages(),
             turns=turns,
             metadata=metadata,
+            output=output,
         )
 
     def bare_result(self, success: bool, final_message: str, turns: int) -> AgentResult:
@@ -764,6 +768,13 @@ async def prepare_run(
 
         limited = InvokeSubagentTool.limited_to(config.subagents)
         tools = [limited if t.name == "invoke_subagent" else t for t in tools]
+    if terminal_strategy is None:
+        # The terminal tool carries the agent's output schema, or none: a child
+        # delegated the parent's tools must not inherit the parent's schema.
+        from garuda.tools.task_complete import TaskCompleteTool
+
+        tools = [TaskCompleteTool.with_output(config.output_schema)
+                 if type(t) is TaskCompleteTool else t for t in tools]
     tool_map = {tool.name: tool for tool in tools}
     tools_schema = build_tools_schema(tools)
     # Told to the context after dynamic tool insertion: a reused context has the

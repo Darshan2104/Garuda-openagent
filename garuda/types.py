@@ -139,6 +139,8 @@ class AgentConfig:
     tool_options: dict = field(default_factory=dict)
     subagents: list[str] | None = None
     removed_tools: list[str] = field(default_factory=list)
+    # Final-output JSON Schema (H.12b): task_complete must carry a valid ``result``.
+    output_schema: dict | None = None
     # Delegation bounds shared down a subagent tree (H.6): how deep this run
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0
@@ -241,6 +243,8 @@ class AgentResult:
     messages: list[Message]
     turns: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    # The validated structured result when the agent declares an output schema.
+    output: Any = None
 
 
 DEFAULT_SYSTEM_PROMPT = """You are Garuda, a highly capable autonomous agent. You solve tasks — \

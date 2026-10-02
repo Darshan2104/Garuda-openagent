@@ -33,6 +33,11 @@ REGISTRY: dict[str, str] = {
     "agent.unknown_mcp_server": "Configure the server, or remove it from {path}.",
     "agent.unknown_tool_option": "Use an option the tool declares in {path}; "
                                  "`garuda agent show` lists them.",
+    "agent.output_schema_invalid": "Fix the schema file named by {path}.",
+    "agent.output_schema_unsupported": "Remove the keyword from the schema; see the configuration guide for what is supported.",
+    "agent.output_schema_ref": "Use only same-file references (#/$defs/...) in the schema.",
+    "agent.output_schema_too_large": "Shrink the schema (size, depth, references).",
+    "agent.output_invalid": "Ask the agent for a result matching the schema, or relax the schema.",
     "agent.unknown_subagent": "Define the agent, or remove it from {path}.",
     "agent.mcp_tools_unknown": "Start a run to see the tools {servers} provide.",
     "agent.instruction_file_missing": "Create the file named in {path}, or remove it.",
