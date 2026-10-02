@@ -29,7 +29,17 @@ logger = logging.getLogger(__name__)
 class WorkspaceLeaseGuard:
     """Hold one mutating workspace lease for the length of a facade call."""
 
-    def __init__(self, workspace: str, session_id: str, *, lease_store=None, ttl_sec=None):
+    def __init__(
+        self,
+        workspace: str,
+        session_id: str,
+        *,
+        lease_store=None,
+        ttl_sec=None,
+        capacity_key: str | None = None,
+        capacity_store=None,
+        capacity_ceiling: int | None = None,
+    ):
         from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
 
         self.workspace = workspace
@@ -38,12 +48,53 @@ class WorkspaceLeaseGuard:
         self._ttl = DEFAULT_TTL_SEC if ttl_sec is None else ttl_sec
         self._heartbeat: asyncio.Future | None = None
         self._held = False
+        self._epoch: str | None = None
+        # The runtime/provider this launch draws capacity from (B.0). The
+        # ceiling comes from the user's global settings unless passed in.
+        self._capacity_key = capacity_key
+        self._capacity_store = capacity_store
+        self._capacity_ceiling = capacity_ceiling
+        self._reservation = None
 
     def acquire(self) -> None:
-        """Take the mutating lease. A live foreign mutating holder refuses:
-        `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked."""
-        self.leases.acquire(self.workspace, self.session_id, mode="mutating")
+        """Reserve runtime capacity, then take the mutating lease.
+
+        Capacity first and the workspace second, never waiting on either: if
+        no slot is free the run refuses (`CapacityUnavailable`), and if the
+        workspace is held the slot is given back before the conflict
+        propagates. `LeaseConflictError`/`LeaseError` never degrade to unlocked.
+        """
+        self._reserve_capacity()
+        try:
+            lease = self.leases.acquire(self.workspace, self.session_id, mode="mutating")
+        except BaseException:
+            self._release_capacity()
+            raise
+        self._epoch = getattr(lease, "epoch", None) or None
         self._held = True
+
+    def _reserve_capacity(self) -> None:
+        if not self._capacity_key:
+            return
+        from garuda.runtime.capacity import CapacityStore, configured_ceiling
+
+        ceiling = self._capacity_ceiling
+        if ceiling is None:
+            ceiling = configured_ceiling(self._capacity_key)
+        if ceiling is None:
+            return
+        store = self._capacity_store or CapacityStore()
+        self._reservation = store.reserve(self._capacity_key, self.session_id, ceiling)
+        self._capacity_store = store
+
+    def _release_capacity(self) -> None:
+        reservation, self._reservation = self._reservation, None
+        if reservation is None or self._capacity_store is None:
+            return
+        try:
+            self._capacity_store.release(reservation)
+        except Exception:
+            logger.warning("Capacity release failed", exc_info=True)
 
     def start_heartbeat(self) -> None:
         if self._heartbeat is not None:
@@ -54,7 +105,7 @@ class WorkspaceLeaseGuard:
                 await asyncio.sleep(self._ttl / 3)
                 # Losing the lease means the run can no longer prove exclusive
                 # mutation authority; the error ends `race` below.
-                self.leases.heartbeat(self.workspace, self.session_id)
+                self.leases.heartbeat(self.workspace, self.session_id, epoch=self._epoch)
 
         self._heartbeat = asyncio.ensure_future(_beat())
 
@@ -93,13 +144,16 @@ class WorkspaceLeaseGuard:
                 await heartbeat
             except (asyncio.CancelledError, Exception):
                 pass
-        if not self._held:
-            return
-        self._held = False
         try:
-            self.leases.release(self.workspace, self.session_id)
-        except Exception:
-            logger.warning("Lease release failed", exc_info=True)
+            if not self._held:
+                return
+            self._held = False
+            try:
+                self.leases.release(self.workspace, self.session_id, epoch=self._epoch)
+            except Exception:
+                logger.warning("Lease release failed", exc_info=True)
+        finally:
+            self._release_capacity()
 
 
 async def _cancel_quietly(task: asyncio.Future) -> None:

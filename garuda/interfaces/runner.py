@@ -203,7 +203,9 @@ async def run_agent_task(
     # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard, install_session_broker
 
-    lease = WorkspaceLeaseGuard(workspace, events.session_id)
+    # Native runs share one capacity pool ("native"), limited only when the
+    # user sets `capacity.native` in global settings.
+    lease = WorkspaceLeaseGuard(workspace, events.session_id, capacity_key="native")
     lease.acquire()
 
     try:

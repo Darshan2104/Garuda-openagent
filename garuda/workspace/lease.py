@@ -3,8 +3,10 @@
 One workspace has at most one live mutating owner; read-only holders share
 freely. A lease is a small JSON document in the agent-home leases dir (never
 in the workspace itself), published atomically and refreshed by heartbeat.
-Liveness is heartbeat TTL only — takeover replaces the lease file and nothing
-else, so user changes are never removed to resolve a conflict. A corrupt lease
+A heartbeat TTL marks a lease expired, but expiry alone never permits takeover:
+the owner (pid, start identity, process group) must be confirmed dead.
+Takeover replaces the lease file and nothing else, so user changes are never
+removed to resolve a conflict. A corrupt lease
 file fails closed: acquisition is refused until a human clears it.
 
 Parallel worktrees are separate workspaces by real path: `workspace_key`
@@ -14,7 +16,6 @@ maps each worktree to its own lease, session, and context state.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import subprocess
@@ -68,6 +69,11 @@ class Lease:
     ttl_sec: float
     pid: int
     stolen_from: str = ""
+    # Owner identity (v2). Empty in leases written before identities were kept;
+    # such an owner can be proven dead but never proven alive.
+    identity: str = ""
+    pgid: int = 0
+    epoch: str = ""
 
     def is_stale(self, now: float | None = None) -> bool:
         return (now if now is not None else time.time()) - self.heartbeat_at > self.ttl_sec
@@ -82,6 +88,9 @@ class Lease:
             "ttl_sec": self.ttl_sec,
             "pid": self.pid,
             "stolen_from": self.stolen_from,
+            "identity": self.identity,
+            "pgid": self.pgid,
+            "epoch": self.epoch,
         }
 
     @classmethod
@@ -104,6 +113,9 @@ class Lease:
                 ttl_sec=ttl_sec,
                 pid=int(data.get("pid", 0)),
                 stolen_from=str(data.get("stolen_from", "")),
+                identity=str(data.get("identity", "")),
+                pgid=int(data.get("pgid", 0)),
+                epoch=str(data.get("epoch", "")),
             )
         except (TypeError, ValueError) as exc:
             raise LeaseError(f"lease has malformed times/pid: {exc}") from exc
@@ -124,53 +136,56 @@ def default_leases_root() -> Path:
 
 
 class LeaseStore:
-    """Issues and tracks workspace leases under one root directory."""
+    """Issues and tracks workspace leases under one root directory.
 
-    def __init__(self, root: str | Path | None = None):
+    Storage is strict (``garuda.runtime.strict_store``): an owner-only
+    directory, an exclusive no-follow lock, and atomic fsynced writes. A lease
+    records its owner's pid, start identity, process group and an epoch. An
+    expired lease is taken over only when its owner is *confirmed* dead — a
+    live owner past its TTL keeps it, and an owner whose liveness cannot be
+    determined blocks takeover until a person clears it.
+    """
+
+    def __init__(self, root: str | Path | None = None, *, liveness=None, owner_factory=None):
+        from garuda.runtime.ownership import current_owner, owner_liveness
+
         self.root = Path(root) if root else default_leases_root()
+        self._liveness = liveness or owner_liveness
+        self._owner_factory = owner_factory or current_owner
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
         """Serialize read-check-publish cycles across processes.
 
         Fail-closed: without the lock two racers both read an empty slot and
-        both publish, and the loser never knows — the mutual-exclusion promise
-        would be fiction. So a platform without `fcntl`, or a filesystem where
-        locking fails, refuses acquisition instead of proceeding unlocked.
+        both publish, and the loser never knows. A platform without `fcntl`, a
+        symlinked directory or lock file, or a filesystem where locking fails
+        refuses instead of proceeding unlocked.
         """
+        from garuda.runtime.strict_store import StorageError, exclusive_lock
+
         if fcntl is None:
             raise LeaseError("lease locking unavailable on this platform (no fcntl)")
-        lock_path = self.root / ".lock"
         try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(lock_path, "a+")
-        except OSError as exc:
-            raise LeaseError(f"cannot open lease lock at {lock_path}: {exc}") from exc
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        except OSError as exc:
-            handle.close()
-            raise LeaseError(f"cannot lock {lock_path}: {exc}") from exc
-        try:
-            yield
-        finally:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                handle.close()
+            with exclusive_lock(self.root):
+                yield
+        except StorageError as exc:
+            raise LeaseError(f"lease storage unavailable: {exc}") from exc
 
     def _path_for(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode()).hexdigest()[:32]
         return self.root / f"{digest}.json"
 
     def _read_all(self, path: Path) -> list[Lease]:
-        if not path.exists():
-            return []
+        from garuda.runtime.strict_store import StorageError, read_document
+
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise LeaseError(f"unreadable lease at {path}: {exc}; refusing") from exc
-        if not isinstance(data, dict) or not isinstance(data.get("holders"), list):
+            data = read_document(path, versions=(1, 2))
+        except StorageError as exc:
+            raise LeaseError(f"unreadable lease at {path}: {exc}") from exc
+        if data is None:
+            return []
+        if not isinstance(data.get("holders"), list):
             raise LeaseError(f"unreadable lease at {path}: bad holders; refusing")
         try:
             return [Lease.from_dict(entry) for entry in data["holders"]]
@@ -178,13 +193,15 @@ class LeaseStore:
             raise LeaseError(f"unreadable lease at {path}: {exc}; refusing") from exc
 
     def _publish_all(self, path: Path, holders: list[Lease]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(
-            json.dumps({"version": 1, "holders": [h.to_dict() for h in holders]}, indent=2),
-            encoding="utf-8",
+        from garuda.runtime.strict_store import write_document
+
+        write_document(path, {"version": 2, "holders": [h.to_dict() for h in holders]})
+
+    def _owner_state(self, holder: Lease) -> bool | None:
+        """Liveness of a holder's owner: True alive, False dead, None unknown."""
+        return self._liveness(
+            {"pid": holder.pid, "identity": holder.identity, "pgid": holder.pgid}
         )
-        os.replace(tmp, path)
 
     def acquire(
         self,
@@ -195,8 +212,9 @@ class LeaseStore:
         ttl_sec: float = DEFAULT_TTL_SEC,
         now: float | None = None,
     ) -> Lease:
-        """Take a lease. A live foreign mutating lease refuses; a stale one is
-        taken over (recorded in `stolen_from`); read-only holders never block."""
+        """Take a lease. A live foreign mutating holder refuses; an expired one
+        is taken over only when its owner is confirmed dead (recorded in
+        `stolen_from`); read-only holders never block."""
         if mode not in ("mutating", "read-only"):
             raise LeaseError(f"mode must be mutating|read-only, got {mode!r}")
         if not session_id:
@@ -205,24 +223,40 @@ class LeaseStore:
         key = workspace_key(workspace)
         moment = now if now is not None else time.time()
         path = self._path_for(key)
+        owner = self._owner_factory()
         with self._locked():
             holders = self._read_all(path)
-            live = [h for h in holders if not h.is_stale(moment)]
-            foreign = [h for h in live if h.session_id != session_id]
-            if (
-                mode == "mutating"
-                and any(h.mode == "mutating" for h in foreign)
-            ):
-                holder = next(h for h in foreign if h.mode == "mutating")
+            kept: list[Lease] = []
+            stolen: list[str] = []
+            for holder in holders:
+                if holder.session_id == session_id:
+                    continue
+                if not holder.is_stale(moment):
+                    kept.append(holder)
+                    continue
+                state = self._owner_state(holder)
+                if state is False:
+                    stolen.append(holder.session_id)
+                    continue
+                if holder.mode == "mutating" and mode == "mutating":
+                    reason = (
+                        "its owner is still running past the lease TTL"
+                        if state
+                        else "its owner's liveness cannot be determined; clear it once "
+                        "you have confirmed the owner is gone"
+                    )
+                    raise LeaseConflictError(
+                        f"workspace {key} is mutably held by session {holder.session_id}: "
+                        f"{reason}",
+                        holder=holder.to_dict(),
+                    )
+                kept.append(holder)
+            if mode == "mutating" and any(h.mode == "mutating" for h in kept):
+                holder = next(h for h in kept if h.mode == "mutating")
                 raise LeaseConflictError(
                     f"workspace {key} is mutably held by session {holder.session_id}",
                     holder=holder.to_dict(),
                 )
-            stolen = sorted(
-                {h.session_id for h in holders if h.is_stale(moment)}
-                - {session_id}
-            )
-            kept = [h for h in live if h.session_id != session_id]
             lease = Lease(
                 workspace=key,
                 session_id=session_id,
@@ -230,19 +264,33 @@ class LeaseStore:
                 acquired_at=moment,
                 heartbeat_at=moment,
                 ttl_sec=ttl_sec,
-                pid=os.getpid(),
-                stolen_from=",".join(stolen),
+                pid=owner.pid,
+                stolen_from=",".join(sorted(set(stolen))),
+                identity=owner.identity,
+                pgid=owner.pgid,
+                epoch=owner.epoch,
             )
             self._publish_all(path, [*kept, lease])
             return lease
 
-    def heartbeat(self, workspace: str | Path, session_id: str) -> Lease:
-        """Refresh our lease. Foreign or missing leases fail closed."""
+    def _own_entry(self, holders: list[Lease], session_id: str, epoch: str | None, key: str):
+        current = next((h for h in holders if h.session_id == session_id), None)
+        if current is not None and epoch is not None and current.epoch and current.epoch != epoch:
+            raise LeaseConflictError(
+                f"workspace {key}: this lease was superseded (owner epoch changed)",
+                holder=current.to_dict(),
+            )
+        return current
+
+    def heartbeat(
+        self, workspace: str | Path, session_id: str, *, epoch: str | None = None
+    ) -> Lease:
+        """Refresh our lease. Foreign, missing or superseded leases fail closed."""
         key = workspace_key(workspace)
         path = self._path_for(key)
         with self._locked():
             holders = self._read_all(path)
-            current = next((h for h in holders if h.session_id == session_id), None)
+            current = self._own_entry(holders, session_id, epoch, key)
             if current is None:
                 live_holder = next((h for h in holders if not h.is_stale()), None)
                 if live_holder is not None:
@@ -258,20 +306,27 @@ class LeaseStore:
                 acquired_at=current.acquired_at,
                 heartbeat_at=time.time(),
                 ttl_sec=current.ttl_sec,
-                pid=os.getpid(),
+                pid=current.pid,
+                identity=current.identity,
+                pgid=current.pgid,
+                epoch=current.epoch,
             )
             self._publish_all(
                 path, [h if h.session_id != session_id else refreshed for h in holders]
             )
             return refreshed
 
-    def release(self, workspace: str | Path, session_id: str) -> None:
-        """Release our holder entry. Releasing another session's entry is refused."""
+    def release(
+        self, workspace: str | Path, session_id: str, *, epoch: str | None = None
+    ) -> None:
+        """Release our holder entry. Releasing another session's (or a
+        superseded owner's) entry is refused."""
         key = workspace_key(workspace)
         path = self._path_for(key)
         with self._locked():
             holders = self._read_all(path)
-            if not any(h.session_id == session_id for h in holders):
+            current = self._own_entry(holders, session_id, epoch, key)
+            if current is None:
                 live_holder = next((h for h in holders if not h.is_stale()), None)
                 if live_holder is not None:
                     raise LeaseConflictError(
@@ -288,11 +343,10 @@ class LeaseStore:
     def live_holders_for_session(
         self, session_id: str, *, now: float | None = None
     ) -> list[Lease]:
-        """Every unexpired lease held by `session_id`, across all workspaces.
+        """Every lease of `session_id` whose owner may still be running.
 
-        Restart recovery asks this before touching a session: a live holder
-        means another Garuda process may still own it. Session meta does not
-        carry a trustworthy workspace path, so every lease file is inspected.
+        Restart recovery asks this before touching a session. A lease counts
+        while it is unexpired, or expired but its owner is not confirmed dead.
         Never mutates; a corrupt lease file raises (fail closed), exactly as
         acquisition does.
         """
@@ -302,7 +356,9 @@ class LeaseStore:
         live: list[Lease] = []
         for path in sorted(self.root.glob("*.json")):
             for holder in self._read_all(path):
-                if holder.session_id == session_id and not holder.is_stale(moment):
+                if holder.session_id != session_id:
+                    continue
+                if not holder.is_stale(moment) or self._owner_state(holder) is not False:
                     live.append(holder)
         return live
 

@@ -32,14 +32,16 @@ POSIX only (macOS, Linux). Windows is refused at construction.
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+# Owner identity and liveness are shared with workspace leases and capacity
+# (B.0); re-exported here for the spike's callers.
+from garuda.runtime.ownership import Liveness, Owner, current_owner, owner_liveness
 
 STATE_VERSION = 1
 
@@ -54,64 +56,6 @@ class LockUnavailable(QueueError):
 
 class CorruptState(QueueError):
     """The state document is unreadable or from an unknown version."""
-
-
-@dataclass(frozen=True)
-class Owner:
-    """Who holds a claim: enough to tell the same process from a reused pid."""
-
-    pid: int
-    identity: str
-    pgid: int
-
-    def to_dict(self) -> dict:
-        return {"pid": self.pid, "identity": self.identity, "pgid": self.pgid}
-
-
-Liveness = Callable[[dict], "bool | None"]
-
-
-def current_owner() -> Owner:
-    from garuda.runtime.recovery import _process_identity
-
-    pid = os.getpid()
-    return Owner(pid=pid, identity=_process_identity(pid) or "unknown", pgid=os.getpgid(pid))
-
-
-def owner_liveness(owner: dict) -> bool | None:
-    """True = the recorded owner is alive, False = confirmed dead, None = unknown.
-
-    A live pid whose start identity differs from the recorded one is a reused pid:
-    the recorded owner is dead. A recorded identity of ``unknown`` can never be
-    confirmed either way.
-    """
-    from garuda.runtime.recovery import _process_identity, _process_live
-
-    pid = owner.get("pid")
-    recorded = owner.get("identity")
-    if not isinstance(pid, int) or not isinstance(recorded, str) or recorded == "unknown":
-        return None
-    live = _process_live(pid)
-    if live is None:
-        return None
-    if live:
-        current = _process_identity(pid)
-        if current is None:
-            return None
-        if current != recorded:
-            return False  # pid reused by another process: the owner is gone
-        return True
-    # The leader is gone; a descendant still in its process group keeps it alive.
-    pgid = owner.get("pgid")
-    if isinstance(pgid, int) and pgid > 1:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return None
-        return True
-    return False
 
 
 class QueueStore:
@@ -143,62 +87,33 @@ class QueueStore:
     @contextlib.contextmanager
     def _locked(self) -> Iterator[dict]:
         """Hold the exclusive lock, yield the state, write it back atomically."""
-        import fcntl
+        from garuda.runtime.strict_store import StorageUnavailable, exclusive_lock
 
         try:
-            fd = os.open(
-                self.root / ".lock",
-                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-        except OSError as exc:
-            raise LockUnavailable(f"cannot open the lock file: {exc}") from exc
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            except OSError as exc:
-                raise LockUnavailable(f"cannot lock {self.root}: {exc}") from exc
-            state = self._read()
-            before = json.dumps(state, sort_keys=True)
-            yield state
-            if json.dumps(state, sort_keys=True) != before:
-                self._write(state)
-        finally:
-            os.close(fd)
+            with exclusive_lock(self.root):
+                state = self._read()
+                before = json.dumps(state, sort_keys=True)
+                yield state
+                if json.dumps(state, sort_keys=True) != before:
+                    self._write(state)
+        except StorageUnavailable as exc:
+            raise LockUnavailable(str(exc)) from exc
 
     def _read(self) -> dict:
+        from garuda.runtime.strict_store import CorruptRecord, read_document
+
         try:
-            fd = os.open(self._state_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        except FileNotFoundError:
+            state = read_document(self._state_path, versions=(STATE_VERSION,))
+        except CorruptRecord as exc:
+            raise CorruptState(str(exc)) from exc
+        if state is None:
             return {"version": STATE_VERSION, "seq": 0, "scopes": {}}
-        except OSError as exc:
-            if exc.errno == errno.ELOOP:
-                raise CorruptState(f"{self._state_path} is a symlink") from exc
-            raise
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            try:
-                state = json.load(handle)
-            except ValueError as exc:
-                raise CorruptState(f"{self._state_path} is not valid JSON") from exc
-        if not isinstance(state, dict) or state.get("version") != STATE_VERSION:
-            raise CorruptState(f"{self._state_path} has an unsupported version")
         return state
 
     def _write(self, state: dict) -> None:
-        tmp = self.root / f".state.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(tmp, flags, 0o600)
-        try:
-            os.write(fd, json.dumps(state, sort_keys=True).encode())
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp, self._state_path)
-        dir_fd = os.open(self.root, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        from garuda.runtime.strict_store import write_document
+
+        write_document(self._state_path, state)
 
     @staticmethod
     def _scope(state: dict, scope: str, capacity: int | None = None) -> dict:

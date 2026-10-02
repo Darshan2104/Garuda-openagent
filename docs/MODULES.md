@@ -76,10 +76,15 @@ Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it
 records which confinement actually holds. `shell.py` is the opt-in persistent
 shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
-heartbeat TTL with audited stale takeover, corrupt leases fail closed, user
-files never touched; TTLs validated positive/finite, locking fail-closed when
-`fcntl` is unavailable or `flock` fails) plus worktree isolation keys and
-creation hooks. `run_agent_task` acquires the mutating lease for the workspace
+an expired lease taken over only when its owner — pid, start identity and
+process group, `runtime/ownership.py` — is confirmed dead, audited takeover,
+epoch-checked heartbeat/release, corrupt/symlinked/future-version leases fail
+closed, user files never touched; storage through `runtime/strict_store.py`:
+owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation keys
+and creation hooks. `runtime/capacity.py` holds one finite slot pool per
+runtime (`native`, `claude`, `codex`, …) shared by every launch through
+`WorkspaceLeaseGuard`; ceilings come from `capacity:` in the global settings,
+and a key without one is not limited. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
 last (also on cancellation) — concurrent `run_agent_task` runs on one workspace
 are refused, never interleaved. Interactive paths that call `agent.run`
