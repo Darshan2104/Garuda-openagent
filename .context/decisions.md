@@ -637,3 +637,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - A decision's delivery to an ACP runtime is reserved before and
   acknowledged after. A reservation without acknowledgement (a crash) is
   never resent: nothing proves the runtime's acknowledgement idempotent.
+
+## 2026-10-02 — An additive garuda.yaml with source-derived authority (issue #158, C.1)
+
+- Roles, harnesses, flows, checks and consult limits live in a new, optional
+  `garuda.yaml` (user file beside the settings; project file at the
+  repository root). `settings.yaml` and every legacy resolver are unchanged;
+  `garuda config migrate` only adds.
+- Authority comes from the file a value was read from (`user-config`,
+  `trusted-project`, `user-request`); an `authority` key is refused anywhere.
+- Layering: package < user < project < CLI; whole-definition replacement for
+  named roles and flows; ceilings intersect; checks accumulate; harnesses,
+  `sessions.keep_days`, fallback chains and consult grants are user-only and a
+  project may only narrow them.
+- In C.1 roles are validated but not yet applied to a run: a project-chosen
+  model string must wait for hash-bound project trust (C.2) and exact
+  resolution (C.3).

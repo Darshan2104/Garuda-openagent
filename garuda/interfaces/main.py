@@ -436,6 +436,16 @@ def build_parser():
     )
     sessions_remove.add_argument("--workspace", default=".")
 
+    config_parser = subparsers.add_parser("config", help="The garuda.yaml configuration")
+    config_sub = config_parser.add_subparsers(dest="config_command")
+    config_migrate = config_sub.add_parser(
+        "migrate",
+        help="Preview (or --write) the user garuda.yaml that carries settings.yaml's "
+        "runtimes and capacity; never removes anything",
+    )
+    config_migrate.add_argument("--write", action="store_true",
+                                help="Write it, keeping a backup of any existing file")
+
     approvals_parser = subparsers.add_parser(
         "approvals", help="List or answer a running session's parked approvals"
     )
@@ -653,6 +663,52 @@ def run_sessions(args) -> int:
             f"{task}"
         )
     return 0
+
+
+def run_config(args) -> int:
+    """`garuda config migrate [--write]` (C.1)."""
+    import datetime as _dt
+    import sys
+
+    from garuda.config import garuda_yaml as gy
+    from garuda.config.agent_home import _load_global_settings
+
+    target = gy.user_path()
+    try:
+        existing = gy.load_file(target)
+        proposed = gy.migrate(_load_global_settings(), existing)
+    except gy.GarudaConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    changes = gy.semantic_diff(existing, proposed)
+    if not changes:
+        print(f"[garuda] {target} already carries everything settings.yaml says; nothing to do")
+        return 0
+    print(f"[garuda] {'writing' if args.write else 'would write'} {target}:")
+    for line in changes:
+        print(f"  {line}")
+    if not args.write:
+        print("[garuda] preview only; run with --write to apply (settings.yaml is not changed)")
+        return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = target.with_name(f"garuda.yaml.bak-{stamp}")
+        backup.write_bytes(target.read_bytes())
+        print(f"[garuda] backed up the old file to {backup}")
+    tmp = target.with_name(f".garuda.yaml.{os.getpid()}.tmp")
+    tmp.write_text(gy.dump(proposed), encoding="utf-8")
+    os.replace(tmp, target)
+    return 0
+
+
+def check_garuda_config(args) -> None:
+    """Validate garuda.yaml layering before anything starts (C.1); raises on refusal."""
+    from garuda.config.garuda_yaml import load_effective
+
+    model = getattr(args, "model", None) or getattr(args, "reasoning_model", None)
+    load_effective(getattr(args, "workspace", "."), cli_runtime=getattr(args, "runtime", None),
+                   cli_model=model)
 
 
 def run_approvals(args) -> int:
@@ -1091,6 +1147,9 @@ async def run_task(args) -> int:
     if not task:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
+    # garuda.yaml is validated — a conflict or invalid file refuses — before
+    # tags, runtimes, models or the workspace are touched (C.1).
+    check_garuda_config(args)
     # Session tags are resolved — or refused — before any runtime, model,
     # workspace or prompt exists (B.7).
     attached = _session_tags(args, task)
@@ -1434,6 +1493,7 @@ def _run_with_runtime_gate(args) -> int:
     import asyncio
 
     from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.context.brief import BriefBudgetExceeded
     from garuda.context.tags import TagError
     from garuda.runtime.capacity import CapacityError
@@ -1447,7 +1507,7 @@ def _run_with_runtime_gate(args) -> int:
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
-            ResumeRefused) as exc:
+            ResumeRefused, GarudaConfigError) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
         import sys
@@ -1475,6 +1535,10 @@ def main() -> None:
         raise SystemExit(run_doctor(args))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
+    if args.command == "config":
+        if args.config_command is None:
+            parser.parse_args(["config", "--help"])
+        raise SystemExit(run_config(args))
     if args.command == "approvals":
         if args.approvals_command is None:
             parser.parse_args(["approvals", "--help"])

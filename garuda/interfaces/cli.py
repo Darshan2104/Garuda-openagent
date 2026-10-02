@@ -118,6 +118,15 @@ def _chat_tags(args, store, session_id: str, text: str, *, pinned, human):
 
 async def chat_loop(args) -> int:
     from garuda.config.agent_home import resolve_agents_dirs
+    from garuda.config.garuda_yaml import GarudaConfigError
+
+    try:
+        from garuda.interfaces.main import check_garuda_config
+
+        check_garuda_config(args)
+    except GarudaConfigError as exc:
+        print(f"Error: chat refused to start: {exc}", file=sys.stderr)
+        return 1
 
     agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
     from garuda.agents.loader import load_profile
