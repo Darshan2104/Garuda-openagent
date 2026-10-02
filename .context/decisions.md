@@ -573,3 +573,20 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `garuda sessions remove-worktree` refuses a worktree whose work was never
   published unless `--force`. Deferred: trusted worktree setup commands
   through the permission engine.
+
+## 2026-10-02 — One session lifecycle for every native entry point (issue #157, B.6)
+
+- `garuda run`, `garuda chat`, dashboard chats and the SDK `Conversation`
+  follow one ordered lifecycle (`interfaces/session_service.py`): workspace,
+  capacity then lease, session record and baseline, approval broker,
+  environment; at the end reap background processes, tear down, persist, and
+  release the lease last. Chats and the SDK now also get the session broker's
+  audited approvals and background-process reaping; the SDK `Conversation`
+  now records a session with a baseline and a delta.
+- A session is recorded only once its workspace is leased: a refused lease
+  leaves no record on any entry point.
+- A background process that cannot be proven dead quarantines the session:
+  the workspace lease stays held (heartbeat stopped, so it is taken over only
+  once this process is confirmed dead), the capacity slot is returned, and
+  the session records the pids. Fail closed rather than let a second editor in
+  beside a possible stray writer.

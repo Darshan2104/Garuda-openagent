@@ -5,7 +5,7 @@ import json
 import sys
 
 from garuda.core.sessions import SessionStore
-from garuda.interfaces.runner import cleanup_workspace, resolve_environment
+from garuda.interfaces.runner import resolve_environment
 from garuda.interfaces.session import AgentSession
 from garuda.interfaces.tui import ChatRenderer
 from garuda.model.factory import safe_model_identity
@@ -115,54 +115,44 @@ async def chat_loop(args) -> int:
     )
 
     store = SessionStore()
-    events_path = store.begin(
-        session_id=session.events.session_id,
-        task="(interactive chat)",
-        model=resolved_model_name(session),
-        agent=session.profile.name,
-        workspace=args.workspace,
-    )
-    # The same workspace lease as `garuda run` (B.4): a chat that edits files
-    # owns the workspace for its whole life, or does not start.
-    from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+    # One session lifecycle with `garuda run`, the dashboard and the SDK (B.6):
+    # capacity and the workspace lease, then the session record, the baseline,
+    # the approval broker and the environment — or a refusal with nothing held.
+    from garuda.interfaces import session_service
+    from garuda.interfaces.run_guard import lease_mode_for
 
-    lease = WorkspaceLeaseGuard(
-        args.workspace,
-        session.events.session_id,
-        capacity_key="native",
-        mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
-    )
-    try:
-        lease.acquire()
-    except Exception as exc:
-        evidence.record_startup_refusal(store, session.events.session_id)
-        await session.close()
-        print(f"Error: chat refused to start: {exc}", file=human)
-        return 1
-    lease.start_heartbeat()
-    # The same session-evidence boundary as `run_agent_task` and the dashboard:
-    # the baseline is persisted before an environment exists or a prompt is read,
-    # and a chat that cannot record it does not start.
-    try:
-        workspace_delta_loader = evidence.begin_session_evidence(
-            store, session.events.session_id, args.workspace, session.config.workspace_kind
+    recorded: dict[str, str] = {}
+
+    def begin(workspace: str) -> None:
+        recorded["events_path"] = store.begin(
+            session_id=session.events.session_id,
+            task="(interactive chat)",
+            model=resolved_model_name(session),
+            agent=session.profile.name,
+            workspace=workspace,
         )
-    except Exception as exc:
-        evidence.record_startup_refusal(store, session.events.session_id)
+
+    try:
+        live = await session_service.open_session(
+            store,
+            session.events.session_id,
+            args.workspace,
+            workspace_kind=session.config.workspace_kind,
+            permissions=getattr(session, "permissions", None),
+            lease_mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
+            docker_image=getattr(session.config, "docker_image", "ubuntu:22.04"),
+            docker_host=getattr(session.config, "docker_host", None),
+            begin=begin,
+            resolve_env=resolve_environment,
+        )
+    except session_service.SessionRefused as exc:
         await session.close()
-        await lease.release()
         print(f"Error: chat refused to start: {exc}", file=human)
         return 1
-
-    # One workspace/environment for the whole chat session, reused across turns.
-    env, env_handle = await resolve_environment(
-        session.config.workspace_kind,
-        args.workspace,
-        session.config.docker_image,
-        docker_host=session.config.docker_host,
-    )
+    env = live.env
+    events_path = recorded["events_path"]
     session.events.attach_persistence(events_path)
-    hooks = build_hook_registry(args.workspace)
+    hooks = build_hook_registry(live.workspace)
 
     # JSONL mode must keep stdout machine-readable, so rich rendering is off there.
     render = not args.json
@@ -190,7 +180,7 @@ async def chat_loop(args) -> int:
 
             context = session.prepare_context(task.strip())
             run_task = asyncio.create_task(
-                lease.race(session.agent.run(
+                live.turn(session.agent.run(
                     task=task.strip(),
                     model=session.model,
                     env=env,
@@ -201,7 +191,7 @@ async def chat_loop(args) -> int:
                     hooks=hooks,
                     agents_dir=session.agents_dir,
                     context=context,
-                    workspace_delta_loader=workspace_delta_loader,
+                    workspace_delta_loader=live.delta_loader,
                     collection_model=getattr(session, "collection", None),
                     collection_policy=getattr(session, "collection_policy", None),
                 ))
@@ -241,10 +231,10 @@ async def chat_loop(args) -> int:
     except KeyboardInterrupt:
         print(file=human)
     finally:
-        await cleanup_workspace(env_handle)
         await session.close()
-        try:
-            persisted = await _persist_chat_session(store, session, last_result, args.workspace)
+
+        async def finish() -> None:
+            persisted = await _persist_chat_session(store, session, last_result, live.workspace)
             await hooks.on_session_end(
                 {
                     "session_id": session.events.session_id,
@@ -252,9 +242,10 @@ async def chat_loop(args) -> int:
                     "turns": persisted.turns,
                 }
             )
-        finally:
-            # Released last, after the session is saved and its process torn down.
-            await lease.release()
+
+        # Reaps background processes and tears the environment down, saves the
+        # session, then releases the lease last (or quarantines).
+        await live.close(finish)
     print("Bye.", file=human)
     return 0
 

@@ -316,7 +316,14 @@ plus the `run --runtime <acp>` launch path), `run_guard.py` (run invariants shar
 by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat and
 race, and the P0.17 broker approval path), `server.py` + `jobs.py` (job-queue server: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
-`runner.py` (assembles a run and owns workspace teardown).
+`runner.py` (assembles a run and owns workspace teardown), `session_service.py`
+(B.6: the one session lifecycle every native entry point follows — workspace,
+capacity then lease, session record and baseline, approval broker, environment,
+then reap, teardown, persist and release last; `garuda chat`, dashboard chats and
+the SDK `Conversation` open through `open_session`, and `run_agent_task` uses the
+same workspace, lease and quarantine steps around its resume recovery. Background
+processes that cannot be proven dead quarantine the session: the lease stays
+held with its heartbeat stopped and the pids are recorded).
 
 ## `eval/` — measurement, outside the agent
 

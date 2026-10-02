@@ -15,6 +15,7 @@ on that backend — see :data:`BWRAP_UNSUPPORTED`.
 import asyncio
 import contextlib
 import logging
+import os
 import shlex
 import uuid
 from dataclasses import dataclass
@@ -76,8 +77,21 @@ async def reap_session(session_id: str, env: Environment) -> int:
     process down; for docker/remote the container teardown also handles it, so
     this is best-effort and never raises.
     """
-    keys = [k for k in list(_TASKS) if k[0] == session_id]
-    for key in keys:
+    keys = [k for k in _TASKS if k[0] == session_id]
+    await reap_session_verified(session_id, env)
+    return len(keys)
+
+
+async def reap_session_verified(session_id: str, env: Environment) -> list[str]:
+    """Kill a session's background tasks; return the pids whose death is unproven.
+
+    Local tasks lead their own process group, so a group with no members left
+    is proof. A group that still answers after the kill, or one this process
+    may not signal, is reported. Docker and remote tasks die with their
+    container and are not reported here. Never raises.
+    """
+    survivors: list[str] = []
+    for key in [k for k in list(_TASKS) if k[0] == session_id]:
         task = _TASKS.pop(key, None)
         if task is None:
             continue
@@ -88,7 +102,31 @@ async def reap_session(session_id: str, env: Environment) -> int:
                     await asyncio.wait_for(task.process.wait(), timeout=2.0)
         except Exception:
             logger.debug("Failed to reap background task %s", task.task_id, exc_info=True)
-    return len(keys)
+        if type(env).__name__ == "LocalEnvironment" and not await _group_gone(task.pid):
+            survivors.append(task.pid)
+    return survivors
+
+
+async def _group_gone(pid: str, attempts: int = 20) -> bool:
+    try:
+        group = int(pid)
+    except ValueError:
+        return False
+    for _ in range(attempts):
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass  # macOS reports a group of unreaped zombies this way
+        except OSError:
+            return False
+        # A killed leader that is our own child stays a zombie (and keeps its
+        # group answering) until it is reaped; reap it if nobody else has.
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(group, os.WNOHANG)
+        await asyncio.sleep(0.1)
+    return False
 
 
 @dataclass

@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.jobs import JobManager, JobState
 from garuda.interfaces.web import DashboardConfig, build_context
@@ -343,7 +344,7 @@ class _FakeSession:
         self.tools = []
         self.config = type("C", (), {"workspace_kind": "local", "docker_image": None})()
         self.model = object()
-        self.permissions = object()
+        self.permissions = PermissionEngine()
         self.agents_dir = None
         self.profile = type("P", (), {"name": "build"})()
         self.closed = False

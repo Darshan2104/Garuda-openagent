@@ -141,56 +141,6 @@ def build_resumed_context(
     return context
 
 
-def _choose_workspace(store, workspace, session_id, isolation, workspace_kind, *,
-                      resume, resume_all_projects):
-    """Return ``(path, worktree meta or None)`` for this run. See B.5."""
-    from garuda.workspace.worktrees import WorktreeError, prepare_workspace
-
-    if resume:
-        if isolation != "shared":
-            raise WorktreeError(
-                "worktree.resume", "a resumed session keeps the workspace it ran in; drop --isolation"
-            )
-        try:
-            prior = store.load_meta(
-                store.resolve(resume, workspace=workspace, all_projects=resume_all_projects)
-            )
-        except Exception:
-            return workspace, None  # resume resolution below reports the error
-        if prior.get("isolation") == "worktree" and prior.get("worktree"):
-            if not os.path.isdir(prior["worktree"]):
-                raise WorktreeError(
-                    "worktree.missing", f"the session's worktree {prior['worktree']} is gone"
-                )
-            keys = ("isolation", "worktree", "branch", "source_repo", "source_head",
-                    "dirty_source", "dirty_fingerprint")
-            return prior["worktree"], {k: prior.get(k) for k in keys}
-        return workspace, None
-    if isolation == "shared":
-        return workspace, None
-    if workspace_kind != "local":
-        raise WorktreeError(
-            "worktree.unsupported_kind", f"--isolation {isolation} needs a local workspace"
-        )
-    plan = prepare_workspace(workspace, session_id, isolation)
-    if plan.isolation == "shared":
-        return workspace, None
-    logger.warning(
-        "Session %s works in worktree %s on branch %s%s", session_id, plan.path, plan.branch,
-        "; uncommitted changes in the source checkout were not carried over"
-        if plan.dirty_source else "",
-    )
-    return plan.path, {**plan.meta(), "new": True}
-
-
-def _discard_new_worktree(plan: dict | None) -> None:
-    """Undo a worktree made for a run that was refused before it started."""
-    if plan and plan.pop("new", False):
-        from garuda.workspace.worktrees import discard_worktree
-
-        discard_worktree(plan)
-
-
 async def run_agent_task(
     task: str,
     model,
@@ -235,7 +185,9 @@ async def run_agent_task(
     # worktree. Decided before the lease so the lease, baseline and delta all
     # bind to the directory actually being changed. A resumed session goes
     # back to the worktree it ran in.
-    workspace, workspace_plan = _choose_workspace(
+    from garuda.interfaces import session_service
+
+    workspace, workspace_plan = session_service.choose_workspace(
         store, workspace, events.session_id, isolation, workspace_kind,
         resume=resume, resume_all_projects=resume_all_projects,
     )
@@ -262,16 +214,13 @@ async def run_agent_task(
     # lease — including a second concurrent `run_agent_task` on this
     # workspace — fails here instead of interleaving mutations. Fail-closed:
     # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.interfaces.run_guard import WorkspaceLeaseGuard, install_session_broker
+    from garuda.interfaces.run_guard import install_session_broker
 
     # Native runs share one capacity pool ("native"), limited only when the
     # user sets `capacity.native` in global settings.
-    lease = WorkspaceLeaseGuard(workspace, events.session_id, capacity_key="native")
-    try:
-        lease.acquire()
-    except BaseException:
-        _discard_new_worktree(workspace_plan)
-        raise
+    lease = session_service.acquire_lease(
+        workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan
+    )
 
     try:
         if initial_selection is not None:
@@ -356,9 +305,7 @@ async def run_agent_task(
             raise
         await runtime.start(task=task, session_id=events.session_id)
         if workspace_plan is not None:
-            update_session_meta(
-                store, events.session_id, {k: v for k, v in workspace_plan.items() if k != "new"}
-            )
+            update_session_meta(store, events.session_id, session_service.plan_meta(workspace_plan))
         # This is before environment setup, hooks, or a model prompt.  A
         # host-backed run which cannot persist its immutable start state must
         # not mutate and later pretend its delta is attributable.  The shared
@@ -455,6 +402,7 @@ async def run_agent_task(
             logger.warning("Failed to close refused runtime", exc_info=True)
         await lease.release()
         raise
+    survivors: list[str] = []
     try:
         # The prompt races the lease heartbeat: a lost lease cancels the turn,
         # and cancelling this call cancels the turn before teardown.
@@ -477,11 +425,11 @@ async def run_agent_task(
             # Kill any background tasks this session left running before tearing down
             # the workspace (essential for the local env, where nothing else reaps them).
             try:
-                from garuda.tools.background import reap_session
+                from garuda.tools.background import reap_session_verified
 
-                await reap_session(events.session_id, env)
+                survivors = await reap_session_verified(events.session_id, env)
             except Exception:
-                pass
+                survivors = []
             # Close a persistent shell if the local env opened one.
             if hasattr(env, "aclose"):
                 try:
@@ -543,8 +491,12 @@ async def run_agent_task(
         finally:
             # Release the mutating lease last even if session persistence or a
             # lifecycle hook fails. Otherwise the heartbeat task can outlive
-            # this call and hold the workspace indefinitely.
-            await lease.release()
+            # this call and hold the workspace indefinitely. Background
+            # processes not proven dead quarantine the session instead (B.6).
+            if survivors:
+                await session_service.quarantine(store, events.session_id, lease, survivors)
+            else:
+                await lease.release()
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.core.events import EventStore
-from garuda.interfaces.runner import cleanup_workspace, resolve_environment
+from garuda.interfaces.runner import resolve_environment
 from garuda.interfaces.session import AgentSession
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.types import AgentResult
@@ -53,13 +53,13 @@ class Conversation:
         self._model_binding = model_binding
         self._session: AgentSession | None = None
         self._env: Environment | None = None
-        self._env_handle: object | None = None
         self._acp: Any | None = None
         self._acp_trail: list = []
         self._sdk_session_id: str | None = None
         self._approval_task: Any | None = None
         self._approval_broker: Any | None = None
         self._lease: Any | None = None
+        self._live: Any | None = None
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
@@ -87,57 +87,72 @@ class Conversation:
             )
         return self._session
 
-    async def _ensure_env(self) -> Environment:
-        if self._env is None:
-            self._env, self._env_handle = await resolve_environment(
-                self._workspace_kind,
-                self._workspace,
-                self._docker_image,
-                docker_host=self._docker_host,
-            )
-        return self._env
-
     async def run(self, task: str) -> AgentResult:
         """Run a task in this conversation."""
         if self._runtime_name != "native":
             return await self._run_acp(task)
         session = await self._ensure_session()
-        self._ensure_lease(session)
-        env = await self._ensure_env()
+        live = await self._ensure_live(session, task)
         context = session.prepare_context(task)
-        return await self._lease.race(session.agent.run(
+        return await live.turn(session.agent.run(
             task=task,
             model=session.model,
-            env=env,
+            env=live.env,
             tools=session.tools,
             config=session.config,
             events=session.events,
             permissions=session.permissions,
             agents_dir=session.agents_dir,
             context=context,
+            workspace_delta_loader=live.delta_loader,
             collection_model=getattr(session, "collection", None),
             collection_policy=getattr(session, "collection_policy", None),
         ))
 
-    def _ensure_lease(self, session: AgentSession) -> None:
-        """Hold the workspace lease for the conversation's whole life (B.4).
+    async def _ensure_live(self, session: AgentSession, task: str):
+        """Open the conversation's session once, through the shared lifecycle (B.6).
 
-        Taken before the environment exists; a workspace another session is
-        editing refuses with ``LeaseConflictError`` instead of interleaving.
+        Capacity and the workspace lease (held for the conversation's whole
+        life; another editor raises ``LeaseConflictError``), then the session
+        record, the baseline, the approval broker and the environment.
         """
-        if self._lease is not None:
-            return
-        from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+        if self._live is not None:
+            return self._live
+        from garuda.core.sessions import SessionStore
+        from garuda.interfaces import session_service
+        from garuda.interfaces.run_guard import lease_mode_for
 
-        lease = WorkspaceLeaseGuard(
-            str(self._workspace),
-            session.events.session_id,
-            capacity_key="native",
-            mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
-        )
-        lease.acquire()
-        lease.start_heartbeat()
-        self._lease = lease
+        store = self._store or SessionStore()
+        self._store = store
+        recorded: dict[str, Any] = {}
+
+        def begin(path: str) -> None:
+            recorded["events_path"] = store.begin(
+                session.events.session_id,
+                task=task,
+                model=getattr(session.model, "model_name", str(self._model_name)),
+                agent=session.profile.name,
+                workspace=path,
+            )
+
+        try:
+            live = await session_service.open_session(
+                store,
+                session.events.session_id,
+                self._workspace,
+                workspace_kind=self._workspace_kind,
+                permissions=session.permissions,
+                lease_mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
+                docker_image=self._docker_image,
+                docker_host=self._docker_host,
+                begin=begin,
+                resolve_env=resolve_environment,
+            )
+        except session_service.SessionRefused as exc:
+            raise exc.cause from exc
+        session.events.attach_persistence(recorded["events_path"])
+        self._live, self._lease, self._env = live, live.lease, live.env
+        return live
 
     def _record_baseline(self, store, session_id: str) -> None:
         """Capture the authoritative baseline once per SDK session (local
@@ -370,15 +385,28 @@ class Conversation:
             self._acp_trail = []
         if self._session is not None:
             await self._session.close()
-            self._session = None
-        if self._env_handle is not None:
-            await cleanup_workspace(self._env_handle)
-            self._env = None
-            self._env_handle = None
-        if self._lease is not None:
-            # Released last, after the session and its environment are gone.
-            lease, self._lease = self._lease, None
-            await lease.release()
+        if self._live is not None:
+            # Reap, tear the environment down, record the delta, then release
+            # the lease last (or quarantine) — the shared close (B.6).
+            live, self._live, self._lease, self._env = self._live, None, None, None
+            await live.close(lambda: self._finish_native(live.workspace))
+        self._session = None
+
+    async def _finish_native(self, workspace: str) -> None:
+        from garuda.runtime.session_state import finished
+        from garuda.workspace import evidence
+
+        session_id = self._session.events.session_id
+        try:
+            await asyncio.to_thread(
+                evidence.finish_session_evidence, self._store, session_id, workspace,
+                extra_meta={"status": "finished", "state": finished(success=True)},
+            )
+        except Exception as exc:
+            self._store.update_meta(session_id, {
+                "status": "failed", "state": finished(success=False),
+                "workspace_delta_error": type(exc).__name__,
+            })
 
     @property
     def events(self) -> EventStore:
