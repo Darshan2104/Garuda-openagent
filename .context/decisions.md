@@ -758,3 +758,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - A configured flow of the same name replaces a packaged one; a flow whose
   roles are missing refuses with `flow.missing_roles`. Artifacts carry a
   version and an unknown one refuses (`flow.input_version`).
+
+## 2026-10-02 — Read-only ACP roles need proven Docker confinement (issue #158, C.8a)
+
+- An external ACP role with `permissions: readonly` (standalone, flow step
+  or fallback) runs only in Docker after a preflight proves: read-only source
+  and `.git`, writable bounded scratch, an unprivileged capability-free user,
+  and no Docker socket, home, credential store or other workspace mounted.
+- The in-container runtime is the user's own image and login; Garuda passes
+  no host credential. The image is user-only configuration.
+- Anything unproven refuses with `workspace.readonly_unenforced`. There is
+  no host, worktree or guardrail substitution.

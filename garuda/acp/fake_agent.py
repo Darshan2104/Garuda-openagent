@@ -15,7 +15,8 @@ resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
-artifacts (answers each requested artifact block; reviews approve),
+probe-writes (tries the workspace, .git, a SENTINEL= path and scratch;
+reports), artifacts (answers each requested artifact block; reviews approve),
 write-anyway (asks to edit, is refused, writes anyway), config-options (session/new offers model and effort options that
 session/set_config_option changes; replies name them), capabilities-<name>.
 """
@@ -66,6 +67,7 @@ BASE_PROFILES = frozenset(
         "config-options",
         "write-anyway",
         "artifacts",
+        "probe-writes",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -243,7 +245,8 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 _handle_prompt(
                     profile, call_id, params,
-                    cwd=session_cwd if (args.report_cwd or profile == "write-anyway") else None,
+                    cwd=session_cwd if (args.report_cwd or profile in ("write-anyway",
+                                                                        "probe-writes")) else None,
                     state_file=args.state_file,
                 )
             elif method == "session/cancel":
@@ -324,6 +327,26 @@ def _handle_prompt(
              "content": [{"type": "content",
                           "content": _text("approved" if allowed else "denied")}]},
         )
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "probe-writes":
+        # Tries to write everywhere it should not, and to scratch; reports.
+        targets = {"workspace": os.path.join(cwd or os.getcwd(), "planted.txt"),
+                   "git": os.path.join(cwd or os.getcwd(), ".git", "planted"),
+                   "scratch": os.path.join(os.environ.get("TMPDIR", "/tmp"), "planted")}
+        for word in text.split():
+            if word.startswith("SENTINEL="):
+                targets["sentinel"] = word.split("=", 1)[1]
+        wrote, refused = [], []
+        for name, target in targets.items():
+            try:
+                with open(target, "a", encoding="utf-8") as fh:
+                    fh.write("planted\n")
+                wrote.append(name)
+            except OSError:
+                refused.append(name)
+        _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                             "content": _text(f"done: wrote={','.join(wrote)} "
+                                              f"refused={','.join(refused)}")})
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "artifacts":
         # Answers every artifact block the prompt asks for; a review approves.
