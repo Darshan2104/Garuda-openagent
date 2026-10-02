@@ -274,6 +274,11 @@ class DefaultAgent:
                 response.tool_calls, None, reason="Not executed: the workspace became unavailable."
             )
             return state.abort_environment_dead(exc, turn)
+        if decision.failure:
+            state.answer_open_calls(
+                response.tool_calls, None, reason="Not executed: the run ended here."
+            )
+            return self._output_failed(state, decision, turn)
         if not decision.accepted:
             # The gate answered `call` with its rejection feedback; a second
             # terminal call in the same response would still be open.
@@ -292,7 +297,7 @@ class DefaultAgent:
                 EventType.SESSION_END,
                 {"success": True, "turns": turns, "via": "final_submission"},
             )
-        return state.result(True, decision.summary, turns)
+        return state.result(True, decision.summary, turns, output=decision.output)
 
     async def _timed_complete(
         self, state: RunState, model: Model, model_ms: list[float], tools: list[dict] | None = None
@@ -441,7 +446,7 @@ class DefaultAgent:
 
         if not response.tool_calls:
             state.final_message = response.content or ""
-            if not state.config.enable_verifier:
+            if not state.config.enable_verifier and state.config.output_schema is None:
                 if state.emit_session_events:
                     state.events.append(
                         EventType.SESSION_END, {"success": True, "turns": turn}
@@ -695,7 +700,12 @@ class DefaultAgent:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}
                         )
-                    return state.result(True, decision.summary, turn)
+                    return state.result(True, decision.summary, turn, output=decision.output)
+                if decision.failure:
+                    state.answer_open_calls(
+                        response_calls or calls, None, reason="Not executed: the run ended here."
+                    )
+                    return self._output_failed(state, decision, turn)
                 state.steering.note_completion_rejection()
                 continue
 
@@ -720,6 +730,15 @@ class DefaultAgent:
             turn_images.extend(tool_result.images)
             self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
         return None
+
+    def _output_failed(self, state: RunState, decision, turn: int) -> AgentResult:
+        """The final output stayed invalid through every repair: fail, with no output."""
+        if state.emit_session_events:
+            state.events.append(
+                EventType.SESSION_END,
+                {"success": False, "turns": turn, "reason": decision.failure},
+            )
+        return state.result(False, decision.summary, turn, error_code=decision.failure)
 
     def _exhausted(self, state: RunState, turn: int) -> AgentResult:
         """Budget exhausted without an accepted completion.

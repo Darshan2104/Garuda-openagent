@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 # longer steering, and repeating it just spends the turn budget.
 CONTRACT_REJECT_LIMIT = 3
 
+# Repair turns an invalid ``result`` gets before the run fails (H.12b). They are
+# ordinary turns, so they come out of the run's own turn and deadline budget.
+OUTPUT_REPAIR_LIMIT = 2
+
 
 @dataclass
 class CompletionGate:
@@ -79,6 +83,12 @@ class CompletionGate:
     # USER-role messages this attempt wants to add, held until the tool result for
     # the `task_complete` call is in the transcript. See `_defer`.
     _deferred_notes: list[str] = field(default_factory=list)
+    # Final-output schema state (H.12b): the accepted result, the invalid
+    # submissions so far, and the code that ends the run once repair runs out.
+    output: object | None = None
+    output_failures: int = 0
+    failure: str | None = None
+    failure_message: str = ""
 
     def _defer(self, content: str) -> None:
         """Queue a USER-role message to append *after* the call's tool result.
@@ -116,6 +126,8 @@ class CompletionGate:
         on the turn that caused it. Keyword-only and optional for the same reason as
         ``ToolRunner.record``: an out-of-tree caller keeps working, degraded.
         """
+        if self.config.output_schema is not None and not self._output_valid(call, turn):
+            return False, self.failure_message
         summary = call.arguments.get("summary", "")
         verification_commands = call.arguments.get("verification_commands") or []
         answer_rationale = call.arguments.get("answer_rationale")
@@ -167,6 +179,39 @@ class CompletionGate:
         self.gate.record_rejection(verification_commands, feedback)
         self._reject(call, feedback)
         return False, feedback
+
+    def _output_valid(self, call: ToolCall, turn: int | None) -> bool:
+        """Check the ``result`` against the agent's schema before anything else.
+
+        A valid shape only earns the ordinary gates; it verifies nothing. An invalid
+        one is never accepted: the model gets the reasons and up to
+        ``OUTPUT_REPAIR_LIMIT`` further turns, then the run fails.
+        """
+        from garuda.agents.output_schema import validation_errors
+
+        result = call.arguments.get("result")
+        errors = (["`result` is required"] if "result" not in call.arguments
+                  else validation_errors(self.config.output_schema, result))
+        if not errors:
+            self.output = result
+            return True
+        self.output_failures += 1
+        final = self.output_failures > OUTPUT_REPAIR_LIMIT
+        reasons = "; ".join(errors)
+        self.events.append(EventType.OUTPUT_VALIDATION, {
+            "valid": False, "attempt": self.output_failures, "turn": turn,
+            "errors": errors, "final": final})
+        if final:
+            self.failure = "agent.output_invalid"
+            feedback = (f"agent.output_invalid: the result still does not match the required "
+                        f"schema after {OUTPUT_REPAIR_LIMIT} repairs: {reasons}")
+        else:
+            feedback = (f"Completion rejected: `result` does not match the required JSON Schema "
+                        f"({reasons}). Call task_complete again with a corrected `result` "
+                        f"(repair {self.output_failures} of {OUTPUT_REPAIR_LIMIT}).")
+        self.failure_message = feedback
+        self._reject(call, feedback)
+        return False
 
     async def _ensure_contract(self) -> None:
         """Derive the acceptance contract on the first completion attempt, once."""

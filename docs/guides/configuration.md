@@ -400,6 +400,22 @@ instructions:
   `agent.delegation_exhausted`, `agent.delegation_busy`,
   `agent.delegation_deadline`). Only the MCP servers you select in
   `tools.mcp` are started.
+- `output: {schema: schemas/result.json}` makes `task_complete` carry a
+  structured `result` that must satisfy a JSON Schema (Draft 2020-12) before
+  the task is accepted. The file is relative to the definition that names it,
+  stays inside the agent's root, and is checked when the definition resolves:
+  at most 64 KiB, 32 levels deep, 64 references and a bounded expansion, with
+  `$ref` only to the same file (`#/$defs/...`; no remote or file references,
+  no cycles). A keyword Garuda does not support refuses rather than being
+  ignored: `format`, `pattern`, `patternProperties`, `content*`, `$id`,
+  `$anchor` and `$dynamic*`. Codes: `agent.output_schema_invalid`,
+  `_unsupported`, `_ref`, `_too_large`. A wrong `result` is sent back with the
+  reasons for at most two repair turns, which are ordinary turns from the run's
+  own turn and deadline budget; after that the run fails with
+  `agent.output_invalid` and returns no output. A valid shape is not task
+  verification: the usual completion and verification gates still apply. The
+  accepted value is `AgentResult.output`. A child inherits the schema, and
+  `schema: null` drops it. Native runs only.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

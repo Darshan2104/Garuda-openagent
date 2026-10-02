@@ -14,6 +14,8 @@ dependencies = [
     # round-trip must exist or extended thinking silently no-ops.
     "litellm>=1.63.0",
     "pyyaml>=6.0",
+    # >=4.18: the `referencing` library, so a $ref never triggers a lookup on its own.
+    "jsonschema>=4.18",
     # >=1.9: the streamable-HTTP / SSE transports used by mcp/client.py exist.
     # <2: mcp 2.0 renamed `streamablehttp_client` to `streamable_http_client` *and*
     # changed its signature — `headers` and `timeout` were replaced by a caller-built

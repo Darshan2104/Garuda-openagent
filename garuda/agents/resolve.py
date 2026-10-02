@@ -78,6 +78,7 @@ class ResolvedAgent:
     warnings: list[str] = field(default_factory=list)
     versioned: bool = False  # the requested file itself is version 1
     removed: set[str] = field(default_factory=set)  # tools any level removed
+    output_schema: dict | None = None  # the compiled final-output JSON Schema (H.12b)
 
     @property
     def source(self) -> Source:
@@ -107,6 +108,7 @@ class ResolvedAgent:
         if self.versioned and "tools.subagents" not in self.leaves:
             values["subagents"] = list(DEFAULT_SUBAGENTS)  # read-only agents only
         values["tools_removed"] = sorted(self.removed) or None
+        values["output_schema"] = self.output_schema
         return AgentProfile(declared_fields=set(self.declared), source_path=self.source.path,
                             **values)
 
@@ -463,12 +465,14 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         merged, prov = dict(parent.leaves), dict(parent.provenance)
         instructions, tools = parent.instructions, parent.tools
         removed = set(parent.removed)
+        output_schema = parent.output_schema
         declared = set(parent.declared) | declared
         warnings = parent.warnings + warnings
         chain = [*parent.chain, source]
     else:
         merged, prov, instructions, tools, chain = {}, {}, None, None, [source]
         removed = set()
+        output_schema = None
     own = {k: v for k, v in leaves.items() if not k.startswith(("instructions.",))
            and k not in ("tools.preset", "tools.add", "tools.remove")}
     _merge(merged, prov, own, source)
@@ -491,6 +495,11 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         prov["tools"] = source
         removed = (removed - set(tool_leaves.get("tools.add", []))) | set(
             tool_leaves.get("tools.remove", []))
+    if "output.schema" in leaves:  # relative to this file; null drops an inherited schema
+        from garuda.agents import output_schema as schemas
+
+        rel = leaves["output.schema"]
+        output_schema = None if rel is None else schemas.load(source, rel)
     if "tools.options" in leaves:
         _check_options(leaves["tools.options"], str(source.path))
     for path in ("tools.preset", "tools.add", "tools.remove"):
@@ -504,7 +513,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         description=merged.get("description", ""),
         leaves=merged, provenance=prov, instructions=instructions, tools=tools,
         chain=chain, declared=declared, warnings=warnings, versioned=is_v1,
-        removed=removed,
+        removed=removed, output_schema=output_schema,
     )
 
 

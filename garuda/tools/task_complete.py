@@ -48,6 +48,29 @@ class TaskCompleteTool:
         "required": ["summary"],
     }
 
+    #: The agent's final-output JSON Schema when it declares one (H.12b).
+    output_schema: dict | None = None
+
+    @classmethod
+    def with_output(cls, schema: dict | None) -> "TaskCompleteTool":
+        """A copy that also asks for a ``result`` matching ``schema`` (None: the plain tool)."""
+        import copy
+        import json
+
+        tool = cls()
+        if schema is None:
+            return tool
+        tool.output_schema = schema
+        tool.parameters = copy.deepcopy(cls.parameters)
+        tool.parameters["properties"]["result"] = {
+            "description": (
+                "The final structured result. It is checked against this JSON Schema "
+                "(Draft 2020-12) before the task can be accepted:\n"
+                + json.dumps(schema, separators=(",", ":"))),
+        }
+        tool.parameters["required"] = [*cls.parameters["required"], "result"]
+        return tool
+
     async def execute(
         self,
         arguments: dict,
