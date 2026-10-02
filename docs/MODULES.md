@@ -264,6 +264,16 @@ rather than being audit-only; an ACP start fallback retains the same session
 and can transfer only to native. It shares no type names
 with `router.py` (P2 #49) and exposes no handoff API.
 
+`queue_proto.py` is the A.4 spike (#153), not yet wired to any entry point: a
+cross-process FIFO queue with one finite capacity per scope. Mutations take an
+exclusive `flock` and refuse (`LockUnavailable`) rather than write unlocked;
+state is one owner-only JSON document replaced atomically with fsync. A claim
+past its TTL is reclaimed only when its owner (pid plus start identity plus
+process group) is confirmed dead; a live owner keeps it and unknown liveness is
+quarantined. Waiters poll with bounded backoff. `claim_with_workspace` gives the
+slot back when the workspace cannot be acquired. Teams tasks B.0 and D.1 promote
+it.
+
 ## `interfaces/` — entry points
 
 `main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
