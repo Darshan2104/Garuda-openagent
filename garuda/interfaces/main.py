@@ -495,6 +495,8 @@ def build_parser():
         "show", help="The effective garuda.yaml and where each value came from"
     )
     config_show.add_argument("--workspace", default=".")
+    config_show.add_argument("--flow", metavar="NAME",
+                             help="Print one flow (packaged or yours) to copy into garuda.yaml")
     config_trust = config_sub.add_parser(
         "trust",
         help="Trust this project's garuda.yaml checks and native models (exact bytes; "
@@ -874,6 +876,16 @@ def run_config(args) -> int:
         from garuda.interfaces.onboarding import config_show
 
         try:
+            if getattr(args, "flow", None):
+                from garuda.config.garuda_yaml import load_effective
+                from garuda.flows import packaged
+
+                try:
+                    print(packaged.show(args.flow, load_effective(args.workspace)))
+                except KeyError:
+                    print(f"Error: flow.unknown: no flow named {args.flow!r}", file=sys.stderr)
+                    return 2
+                return 0
             print("\n".join(config_show(args.workspace)))
         except GarudaConfigError as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -1050,13 +1062,23 @@ def run_flow(args) -> int:
             name, task, workspace = meta["flow"]["name"], meta["task"], meta["workspace"]
         else:
             name, task, workspace = args.name, args.task, args.workspace
+        from garuda.flows import packaged
+
         resolved = load_effective(workspace)
-        flows = (resolved.config.get("flows", {}) if resolved else {})
+        flows = packaged.available(resolved)
         if name not in flows:
             print(f"Error: flow.unknown: no flow named {name!r} "
-                  f"(have: {', '.join(sorted(flows)) or 'none'})", file=sys.stderr)
+                  f"(have: {', '.join(sorted(flows))})", file=sys.stderr)
             return 2
-        runner = engine.FlowRunner(store, workspace, name, flows[name], resolved, task=task,
+        flow, _source = flows[name]
+        missing = packaged.missing_roles(flow, resolved)
+        if missing:
+            print(f"Error: flow.missing_roles: flow {name} needs the roles "
+                  f"{', '.join(packaged.required_roles(flow))}; define "
+                  f"{', '.join(missing)} in garuda.yaml (`garuda init` proposes them)",
+                  file=sys.stderr)
+            return 2
+        runner = engine.FlowRunner(store, workspace, name, flow, resolved, task=task,
                                    launcher=launch_step,
                                    flow_session=getattr(args, "flow_session", None))
         result = asyncio.run(runner.run(resume=args.flow_command == "resume"))

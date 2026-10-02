@@ -33,6 +33,7 @@ from pathlib import Path
 from garuda.config.garuda_yaml import ARTIFACTS
 
 MAX_ARTIFACT_CHARS = 64_000
+ARTIFACT_VERSION = 1
 #: Artifacts that describe the workspace as it was: stale once it changes. A
 #: plan or notes describe the task and stay usable across a retry (C.7).
 WORKSPACE_BOUND = ("patch", "review", "findings")
@@ -57,13 +58,15 @@ class ArtifactRef:
     size: int
     workspace_version: str | None
     path: str  # relative to the flow directory
+    version: int | None = ARTIFACT_VERSION
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ArtifactRef":
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        fields = {k: data[k] for k in cls.__dataclass_fields__ if k != "version"}
+        return cls(**fields, version=data.get("version"))
 
 
 def extract(output: str) -> dict[str, str]:
@@ -113,6 +116,10 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
 
 def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> str:
     """The artifact's content, after every check in the module docstring."""
+    if ref.version != ARTIFACT_VERSION:
+        raise ArtifactError("flow.input_version",
+                            f"{ref.type} from {ref.producer_step} is artifact version "
+                            f"{ref.version!r}; this Garuda reads version {ARTIFACT_VERSION}")
     root = flow_dir.resolve()
     path = (flow_dir / ref.path)
     if Path(ref.path).is_absolute() or ".." in Path(ref.path).parts:

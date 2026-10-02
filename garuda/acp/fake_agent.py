@@ -15,6 +15,7 @@ resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
+artifacts (answers each requested artifact block; reviews approve),
 write-anyway (asks to edit, is refused, writes anyway), config-options (session/new offers model and effort options that
 session/set_config_option changes; replies name them), capabilities-<name>.
 """
@@ -64,6 +65,7 @@ BASE_PROFILES = frozenset(
         "strict-v1",
         "config-options",
         "write-anyway",
+        "artifacts",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -322,6 +324,22 @@ def _handle_prompt(
              "content": [{"type": "content",
                           "content": _text("approved" if allowed else "denied")}]},
         )
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "artifacts":
+        # Answers every artifact block the prompt asks for; a review approves.
+        blocks = []
+        kinds = []
+        marker = '<garuda-artifact type="'
+        for chunk in text.split(marker)[1:]:
+            kind, _, rest = chunk.partition('">')
+            if kind.isalpha() and rest.startswith("\n...your") and kind not in kinds:
+                kinds.append(kind)
+        for kind in kinds:
+            body = "verdict: approve\nfindings:\n- [nit] fine" if kind == "review" else (
+                f"{kind} for: {text.splitlines()[0][:60]}")
+            blocks.append(f'<garuda-artifact type="{kind}">\n{body}\n</garuda-artifact>')
+        _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                             "content": _text("done.\n" + "\n".join(blocks))})
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "write-anyway":
         # Asks to edit, is refused, and writes anyway: what the no-edits

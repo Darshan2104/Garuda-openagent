@@ -749,3 +749,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Independence (default on) compares actual runtime and model identities,
   including fallbacks and consults. The flow ends `review_approved` or
   `review_changes_requested`; verification is untouched.
+
+## 2026-10-02 — Packaged flows run without Docker (issue #158, C.6b)
+
+- `plan-only`, `pair` and `plan-build-review` ship as package data; their
+  scout, planner and reviewer steps are `no-edits`, so they run with Claude
+  Code and Codex under the no-edits guardrail rather than Docker.
+- A configured flow of the same name replaces a packaged one; a flow whose
+  roles are missing refuses with `flow.missing_roles`. Artifacts carry a
+  version and an unknown one refuses (`flow.input_version`).
