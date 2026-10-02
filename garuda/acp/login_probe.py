@@ -80,6 +80,19 @@ def classify(manifest, outcome) -> LoginState:
     return LoginState.UNRECOGNIZED
 
 
+def cached_login(manifest, *, now=None) -> tuple[LoginState, float] | None:
+    """The last recorded conclusion for ``manifest`` and when it was made, or ``None``.
+    Reads only; nothing is run."""
+    if getattr(manifest, "auth_probe", None) is None:
+        return (LoginState.NO_PROBE, 0.0)
+    try:
+        cache = json.loads(_cache_path().read_text(encoding="utf-8"))
+        entry = cache.get(_key(manifest)) if isinstance(cache, dict) else None
+        return (LoginState(entry["state"]), float(entry["at"])) if isinstance(entry, dict) else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def probe_login(manifest, *, timeout: float = 10.0, cache_ttl: float = CACHE_TTL,
                 run=None, now=None) -> LoginState:
     """The login state of one harness; see the module docstring."""

@@ -107,6 +107,33 @@ def seed(root: Path, workspace: str) -> dict:
         "resumed_from": IDS["done"]})
     store.mutate_meta(IDS["done"], lambda m: {"context_to": [{"session_id": IDS["convo"],
                                                               "at": "t"}]})
+    # providers: two harnesses (one with a proved limit source), observations and events
+    from garuda.acp.login_probe import probe_login
+    from garuda.config.agent_home import global_settings_path
+    from garuda.observability.limits import LimitObservation, LimitStore, Window
+    from garuda.runtime.registry import parse_global_manifests
+
+    settings = global_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("runtimes:\n" + "".join(
+        f"  - runtime_id: {rid}\n    kind: acp\n    command: [sh]\n    version: '1'\n"
+        f"    auth_probe: {{argv: [sh, status], authenticated_pattern: 'Logged in',"
+        " unauthenticated_pattern: 'Not logged in'}\n" for rid in ("codex", "claude")))
+    manifests = {m.runtime_id: m for m in parse_global_manifests(
+        [{"runtime_id": rid, "kind": "acp", "command": ["sh"], "version": "1",
+          "auth_probe": {"argv": ["sh", "status"], "authenticated_pattern": "Logged in",
+                         "unauthenticated_pattern": "Not logged in"}}
+         for rid in ("codex", "claude")], source="seed")}
+    probe_login(manifests["claude"], cache_ttl=0, run=lambda argv, timeout: (1, "Not logged in"))
+    limits = LimitStore()
+    when = time.time()
+    for limit_id, reached, reset in (("a", True, when + 7200), ("b", True, when - 7200),
+                                     ("c", True, None), ("d", False, None)):
+        limits.record(LimitObservation(
+            harness="codex", harness_version="0.159.3", observed_at=when - 600,
+            source="codex.account.rateLimits.read", account_digest=limits.account_digest("acct"),
+            windows=(Window("primary", 1.0 if reached else 0.2, when + 3600, 300),),
+            limit_id=limit_id, reached=reached, reset_at=reset))
     # an expired request beside the live one
     FileApprovalChannel(store.session_dir(IDS["waiting"]) / "approvals", IDS["waiting"]).publish(
         ApprovalRequest("a2", "git push", "terminal", "native", IDS["waiting"]),
