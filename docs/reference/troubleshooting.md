@@ -4,6 +4,16 @@ Click a problem to see the fix.
 
 ## Install and models
 
+??? question "What is wrong with my setup?"
+
+    Run `garuda doctor`. Every line carries a stable code and a fix, for
+    example `harness.logged_out` (log in with the harness's own CLI),
+    `harness.cli_missing` (install it), `config.invalid` (with the path of the
+    bad value) or `config.project_untrusted` (review the project file with
+    `garuda config trust`). A login check that timed out, failed or answered
+    something unexpected is reported as such, never as "logged out". Only
+    the harnesses your roles use are checked; add `--runtime ID` for another.
+
 ??? question "`garuda: command not found`"
 
     Activate the virtual environment you installed into

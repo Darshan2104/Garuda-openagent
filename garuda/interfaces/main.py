@@ -413,6 +413,23 @@ def build_parser():
     )
 
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose and repair local Garuda state")
+    doctor_parser.add_argument("--workspace", default=".")
+    doctor_parser.add_argument(
+        "--runtime", action="append", default=[], metavar="ID",
+        help="Also check this harness (by default only those your roles use are probed)",
+    )
+    doctor_parser.add_argument("--json", action="store_true")
+
+    init_parser = subparsers.add_parser(
+        "init", help="Propose a garuda.yaml (roles, or with --project the project's checks)"
+    )
+    init_parser.add_argument("--workspace", default=".")
+    init_parser.add_argument("--project", action="store_true",
+                             help="Propose the project file: checks from marker files")
+    init_parser.add_argument("--model", action="append", default=[], metavar="HARNESS=ID",
+                             help="Exact model id to use for a harness (repeatable)")
+    init_parser.add_argument("--yes", action="store_true",
+                             help="Confirm without asking (not for --project, which needs trust)")
     doctor_parser.add_argument(
         "--recover-project-ids",
         action="store_true",
@@ -459,6 +476,10 @@ def build_parser():
     )
     config_migrate.add_argument("--write", action="store_true",
                                 help="Write it, keeping a backup of any existing file")
+    config_show = config_sub.add_parser(
+        "show", help="The effective garuda.yaml and where each value came from"
+    )
+    config_show.add_argument("--workspace", default=".")
     config_trust = config_sub.add_parser(
         "trust",
         help="Trust this project's garuda.yaml checks and native models (exact bytes; "
@@ -632,12 +653,11 @@ def _parse_params(pairs: list[str]) -> dict[str, str]:
 
 
 def run_doctor(args) -> int:
-    """`garuda doctor`. Today it only recovers project ids; checks come with C.4."""
+    """`garuda doctor`: the C.4 report, or `--recover-project-ids`."""
     import sys
 
     if not args.recover_project_ids:
-        print("Nothing to do. Use --recover-project-ids after the project key was lost.")
-        return 0
+        return run_doctor_report(args)
     from garuda.core.project_recovery import RecoveryRefused, recover_project_ids
     from garuda.core.sessions import SessionStore
 
@@ -655,6 +675,82 @@ def run_doctor(args) -> int:
             f"{len(report.unmapped)} project(s) could not be verified (moved, replaced or "
             "missing) and keep their old ids; their sessions still resolve by full id."
         )
+    return 0
+
+
+def run_doctor_report(args) -> int:
+    import json
+
+    from garuda.interfaces.onboarding import doctor_report
+
+    report = doctor_report(getattr(args, "workspace", "."), runtimes=getattr(args, "runtime", []))
+    if getattr(args, "json", False):
+        print(json.dumps([d.to_dict() for d in report], indent=2))
+    else:
+        for item in report:
+            print(item.render())
+    return 1 if any(d.level == "error" for d in report) else 0
+
+
+def _confirmed(prompt: str, *, yes: bool) -> bool:
+    import sys
+
+    if yes:
+        return True
+    try:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            return False
+    except (AttributeError, ValueError):
+        return False
+    print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def run_init(args) -> int:
+    """`garuda init [--project]`: propose, then write only after confirmation."""
+    import sys
+
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.config import garuda_yaml as gy
+    from garuda.config import project_trust as pt
+    from garuda.interfaces.onboarding import init_proposal, project_proposal, write_file
+
+    if args.project:
+        doc, lines = project_proposal(args.workspace)
+        target = gy.project_path(args.workspace)
+    else:
+        models = dict(m.split("=", 1) for m in args.model if "=" in m)
+        doc, lines = init_proposal(prepare_runtime_catalog(args.workspace), models=models)
+        target = gy.user_path()
+    text = gy.dump(doc)
+    print(f"[garuda] proposed {target}:")
+    for line in lines or ["nothing detected"]:
+        print(f"  {line}")
+    print(text.rstrip())
+    if args.project:
+        if not _confirmed("Write it and trust exactly these bytes?", yes=False):
+            print("[garuda] not written (writing a project file creates trust, which needs a "
+                  "yes in a terminal: config.trust_requires_terminal)")
+            return 0 if not args.yes else 2
+    elif not _confirmed("Write it?", yes=args.yes):
+        print("[garuda] not written; confirm in a terminal or pass --yes")
+        return 0
+    backup = write_file(target, text)
+    if backup is not None:
+        print(f"[garuda] backed up the old file to {backup}")
+    if args.project:
+        project = pt.read_project_file(args.workspace)
+        if project is None or project.data != text.encode():
+            print("Error: the project file changed while it was written; not trusted",
+                  file=sys.stderr)
+            return 2
+        pt.grant(project)
+        print(f"[garuda] wrote and trusted {target}")
+    else:
+        print(f"[garuda] wrote {target}")
     return 0
 
 
@@ -744,6 +840,16 @@ def run_config(args) -> int:
 
     if args.config_command == "trust":
         return run_config_trust(args)
+    if args.config_command == "show":
+        from garuda.config.garuda_yaml import GarudaConfigError
+        from garuda.interfaces.onboarding import config_show
+
+        try:
+            print("\n".join(config_show(args.workspace)))
+        except GarudaConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     from garuda.config import garuda_yaml as gy
     from garuda.config.agent_home import _load_global_settings
@@ -1651,6 +1757,8 @@ def main() -> None:
         raise SystemExit(run_doctor(args))
     if args.command == "sessions":
         raise SystemExit(run_sessions(args))
+    if args.command == "init":
+        raise SystemExit(run_init(args))
     if args.command == "config":
         if args.config_command is None:
             parser.parse_args(["config", "--help"])

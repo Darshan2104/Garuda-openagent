@@ -678,3 +678,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   version) proven by the A.3 captures, and only to a value the agent offered
   in `session/new`; the reply must show it applied. Otherwise the run refuses
   before any prompt (`role.options_unproven`, `role.model_unavailable`).
+
+## 2026-10-02 — Onboarding and one diagnostics registry (issue #158, C.4)
+
+- `garuda/diagnostics.py` holds one `Diagnostic(code, message, fix)` and the
+  registry of stable codes; every code has a fix template and tests assert
+  codes, never message text.
+- `garuda doctor` probes only harnesses a role or `--runtime` names; a login
+  check keeps "logged out" (the documented answer) apart from a failed,
+  timed-out or unrecognized check, and caches only its conclusion for 60 s.
+- `garuda init` writes only after confirmation (a yes in a terminal or
+  `--yes`); `init --project` needs a terminal because it creates trust, and
+  writes the project file and its trust record together. Proposals open no
+  file and run nothing.

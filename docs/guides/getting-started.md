@@ -131,6 +131,22 @@ garuda run --mode readonly --resume latest -t "Now explain how the tests are org
 `garuda sessions`. Garuda starts a new session linked to the old one, so the
 original record is never overwritten.
 
+## 6. Optional: name your roles
+
+If you use Claude Code or Codex alongside Garuda, `garuda init` proposes a
+`garuda.yaml` with `scout`, `planner`, `coder` and `reviewer` roles on the
+harnesses it finds on your `PATH` (it only looks the names up; nothing is run).
+It shows the file and writes it only after you say yes. `garuda init --project`
+proposes the checks for this repository from its marker files
+(`pyproject.toml`, `package.json`, …) and, once you confirm in a terminal,
+writes the project file and trusts it.
+
+```bash
+garuda init
+garuda doctor        # configuration, harness logins, leases and worktrees
+garuda config show   # the effective configuration and where each value came from
+```
+
 ## You're set up. What next?
 
 <div class="grid cards" markdown>
