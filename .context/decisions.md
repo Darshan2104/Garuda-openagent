@@ -889,3 +889,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   of the run's own turn and deadline budget, then `agent.output_invalid`
   ends the run without output. Valid output earns only the ordinary gates.
 
+## 2026-10-02 — One agent definition from every entry point (issue #166, H.8)
+
+- `AgentSpec` is the pure-resolution result (no model, MCP, hook or project
+  code); `prepare_agent_run` takes a name, spec, mapping or path and activates.
+  `--agent-file` is a source selection, not trust: location still decides
+  authority and the project ceiling.
+- `narrow` is an allowlist of tightenings (lower numbers, fewer tools/servers/
+  subagents/domains, more deny/ask rules, checks on); anything else refuses.
+- Remote callers (`serve`, web) select by name only; inline definitions refuse.
+  The operator allowlist and a permission ceiling (default: the server's own
+  agent) cap every named selection, including permissive packaged agents.
+- Sessions record the definition digest; a resume with a changed definition
+  starts a new identified segment rather than altering the earlier session.
+

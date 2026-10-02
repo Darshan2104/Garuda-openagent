@@ -119,6 +119,11 @@ class PreparedNativeRun:
         return 6
 
     @property
+    def spec_digest(self) -> str | None:
+        """Identifies the resolved definition this run started from (H.8)."""
+        return getattr(self.profile, "spec_digest", None)
+
+    @property
     def reasoning(self) -> Any:
         """The reasoning client (owns the controller loop)."""
         return self.resolved.reasoning
@@ -907,11 +912,27 @@ def static_agent_config(profile, workspace, *, mode=None, permission_mode=None,
     config.system_prompt = resolve_system_prompt(
         profile, workspace, diagnostics=config.prompt_diagnostics
     )
+    config.agent_digest = getattr(profile, 'spec_digest', None)
     return config
 
 
+def resolve_profile(agent, workspace: str, agents_dirs) -> AgentProfile:
+    """Pure resolution of any agent selection into a fresh profile (H.8).
+
+    ``agent`` is a name, an :class:`~garuda.agents.spec_api.AgentSpec`, a mapping
+    (inline, SDK) or a path (a definition file). Nothing is started here: models,
+    toolkit, MCP and hooks belong to activation in :func:`prepare_agent_run`.
+    """
+    from garuda.agents.spec_api import AgentSpec, coerce
+
+    spec = coerce(agent, workspace, agents_dirs)
+    if spec is None:
+        spec = AgentSpec.load(agent, workspace, agents_dirs)
+    return spec.profile()
+
+
 async def prepare_agent_run(
-    agent_name: str,
+    agent_name: str | Any,
     *,
     workspace: str,
     agents_dir: Path | list[Path] | None = None,
@@ -952,7 +973,7 @@ async def prepare_agent_run(
     # Default the profiles dirs to the project's `.agent/agents` then `.garuda/agents`
     # when the caller didn't pass any. Idempotent: an explicit dir/list is kept as-is.
     agents_dirs = resolve_agents_dirs(workspace, agents_dir)
-    profile = load_profile(agent_name, extra_dir=agents_dirs)
+    profile = resolve_profile(agent_name, workspace, agents_dirs)
     from garuda.agents.resolve import check_references
 
     check_references(profile, workspace, mcp_config_path=mcp_config_path)
@@ -1136,16 +1157,23 @@ async def prepare_agent_run(
                 profile.source_path or "built-in",
                 ", ".join(map(str, missing)),
             )
-    agent = create_agent(profile.name, mode=config.mode)
-    return PreparedNativeRun(
-        profile=profile,
-        config=config,
-        permissions=permissions,
-        tools=tools,
-        agent=agent,
-        mcp_manager=mcp_manager,
-        bindings=bindings,
-        resolved=resolved,
-        provenance=provenance,
-        collection_policy=collection_policy,
-    )
+    try:
+        agent = create_agent(profile.name, mode=config.mode)
+        return PreparedNativeRun(
+            profile=profile,
+            config=config,
+            permissions=permissions,
+            tools=tools,
+            agent=agent,
+            mcp_manager=mcp_manager,
+            bindings=bindings,
+            resolved=resolved,
+            provenance=provenance,
+            collection_policy=collection_policy,
+        )
+    except BaseException:
+        # Cancelled or failed after the toolkit started: close what it opened
+        # before the exception leaves, so no MCP connection outlives the attempt.
+        if mcp_manager is not None:
+            await mcp_manager.close()
+        raise

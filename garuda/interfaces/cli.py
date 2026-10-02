@@ -129,9 +129,11 @@ async def chat_loop(args) -> int:
         return 1
 
     agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
-    from garuda.agents.loader import load_profile
+    from garuda.agents.setup import resolve_profile
+    from garuda.interfaces.main import agent_selection
 
-    profile = load_profile(args.agent, extra_dir=agents_dir)
+    selection = agent_selection(args)
+    profile = resolve_profile(selection, args.workspace, agents_dir)
     # In JSONL mode stdout carries one JSON event per line and nothing else, so
     # every human-facing write — prompts, header, status, final message, "Bye." —
     # goes to stderr instead. A consumer piping stdout to a parser must never see
@@ -144,7 +146,7 @@ async def chat_loop(args) -> int:
     )
 
     session = await AgentSession.create(
-        agent_name=args.agent,
+        agent_name=selection,
         model=getattr(args, "model", None),
         reasoning_model=getattr(args, "reasoning_model", None),
         collection_model=getattr(args, "collection_model", None),

@@ -332,8 +332,21 @@ async def run_agent_task(
         )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
+        agent_digest = getattr(config, "agent_digest", None)
+        if agent_digest:
+            update_session_meta(store, events.session_id, {"agent_digest": agent_digest})
         if resumed_from:
             update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
+            # The definition may have changed since the session being resumed
+            # started. The old run is never altered: this is a new, identified
+            # segment, recorded so it can be told apart afterwards (H.8).
+            before = (store.load_meta(resumed_from) or {}).get("agent_digest")
+            if before and agent_digest and before != agent_digest:
+                update_session_meta(store, events.session_id, {"agent_segment": {
+                    "previous_digest": before, "digest": agent_digest,
+                    "reason": "the agent definition changed since the resumed session"}})
+                logger.warning("Resuming %s with a changed agent definition (%s -> %s)",
+                               resumed_from, before[:12], agent_digest[:12])
             # Copy the prior session's tool-output buffers into the new session dir so
             # inherited [buffer:...] stubs in the resumed conversation still resolve
             # (buffers are keyed to the session id, which changes on resume).

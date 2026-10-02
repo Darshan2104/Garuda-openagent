@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from garuda.agents.loader import load_profile, resolve_system_prompt
+from garuda.agents.loader import resolve_system_prompt
 from garuda.context.manager import (
     FORK_BRIEF,
     FORK_NONE,
@@ -219,7 +219,11 @@ class SubagentRunner:
                 return _refused("agent.delegation_deadline", "the run's deadline has passed")
         budget.launches += 1
 
-        profile = load_profile(profile_name, extra_dir=self.agents_dir)
+        # The same pure resolver every entry point uses; activation below is the
+        # parent's already-authorized toolkit and permissions, never a fresh one.
+        from garuda.agents.setup import resolve_profile
+
+        profile = resolve_profile(profile_name, self.workspace_root or ".", self.agents_dir)
         config = profile.to_agent_config()
         parent_left = self.turns_left() if callable(self.turns_left) else self.max_turns
         config.max_turns = max(1, min(config.max_turns, self.max_turns, parent_left))

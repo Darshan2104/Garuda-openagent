@@ -38,7 +38,7 @@ class AgentSession:
     async def create(
         cls,
         *,
-        agent_name: str,
+        agent_name: Any,
         model: str | Any | None = None,
         workspace: str,
         agents_dir: Path | list[Path] | None = None,

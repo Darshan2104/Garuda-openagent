@@ -174,6 +174,11 @@ def build_parser():
     run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
     run_parser.add_argument("--agent", default="build", help="Agent profile name")
     run_parser.add_argument(
+        "--agent-file", metavar="PATH",
+        help="Run a definition file instead of a named agent. It selects a source and grants "
+        "no trust: a file inside the repository stays under the project ceiling.",
+    )
+    run_parser.add_argument(
         "--runtime",
         default=None,
         help="Trusted global runtime id or project alias. Naming one (including "
@@ -316,6 +321,8 @@ def build_parser():
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
     chat_parser.add_argument("--docker-host")
     chat_parser.add_argument("--agent", default="build")
+    chat_parser.add_argument("--agent-file", metavar="PATH",
+                             help="Chat with a definition file instead of a named agent")
     _add_tag_flags(chat_parser)
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
@@ -341,6 +348,16 @@ def build_parser():
     serve_parser.add_argument("--port", type=int, default=8765)
     _add_model_flags(serve_parser)
     serve_parser.add_argument("--agent", default="build")
+    serve_parser.add_argument(
+        "--allow-agent", action="append", metavar="NAME",
+        help="An agent a request may select by name; repeatable. Without it any agent the "
+        "operator's directories define may be named. A request never supplies a definition.",
+    )
+    serve_parser.add_argument(
+        "--permission-ceiling", choices=["readonly", "smart", "auto", "yolo"], default=None,
+        help="The loosest permission mode a request's agent may run with "
+        "(default: that of --agent).",
+    )
     serve_parser.add_argument("--workspace", default=".")
     serve_parser.add_argument(
         "--workspace-kind",
@@ -416,6 +433,11 @@ def build_parser():
     )
     web_parser.add_argument(
         "--web-agent", default="build", help="Default agent profile for dashboard conversations"
+    )
+    web_parser.add_argument(
+        "--allow-agent", action="append", metavar="NAME",
+        help="An agent a request may select by name; repeatable. A request never supplies a "
+        "definition, and every run is held to --max-permission.",
     )
     web_parser.add_argument(
         "--web-workspace-kind",
@@ -1821,7 +1843,7 @@ async def run_task(args) -> int:
     agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
     try:
         prepared = await prepare_agent_run(
-            args.agent,
+            agent_selection(args),
             workspace=args.workspace,
             agents_dir=args.agents_dir,
             mcp_config_path=args.mcp_config,
@@ -1835,7 +1857,7 @@ async def run_task(args) -> int:
             thinking_budget_tokens=getattr(args, "thinking_budget", None),
             load_project_tools=getattr(args, "load_project_tools", None),
         )
-    except ConfigError as exc:
+    except (ConfigError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     config = prepared.config
@@ -2019,6 +2041,8 @@ async def run_serve(args) -> int:
         token=args.token,
         max_jobs=getattr(args, "max_jobs", 4),
         model_max_concurrency=getattr(args, "model_max_concurrency", 0),
+        allowed_agents=getattr(args, "allow_agent", None) or None,
+        permission_ceiling=getattr(args, "permission_ceiling", None),
     )
     await serve(config)
     return 0
@@ -2037,6 +2061,7 @@ async def run_web(args) -> int:
         max_permission=args.max_permission,
         model=args.web_model or "",
         agent=args.web_agent,
+        allowed_agents=getattr(args, 'allow_agent', None) or None,
         workspace_kind=args.web_workspace_kind,
         open_browser=not args.no_browser,
     )
@@ -2045,6 +2070,16 @@ async def run_web(args) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive
         pass
     return 0
+
+
+def agent_selection(args):
+    """The agent a command runs: ``--agent-file`` (resolved, not trusted) or ``--agent``."""
+    path = getattr(args, "agent_file", None)
+    if not path:
+        return args.agent
+    from garuda.agents.spec_api import AgentSpec
+
+    return AgentSpec.from_file(path, args.workspace, getattr(args, "agents_dir", None))
 
 
 def _run_with_runtime_gate(args) -> int:

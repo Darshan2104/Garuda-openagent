@@ -98,6 +98,7 @@ every project. A full ID always resolves.
     | Flag | Use |
     |---|---|
     | `--agent NAME` | Profile: `build` (default), `plan`, `explore`, `reviewer`, `harbor`, or your own |
+    | `--agent-file PATH` | Run (or chat with) a definition file instead of a named agent. It selects a source and grants no trust: a file in the repository stays under the project ceiling. the `agent` inspection commands also take a path |
     | `--agents-dir DIR` | Profiles directory to use instead of `.agent/agents` and `.garuda/agents` (built-ins still apply) |
     | `--mode MODE` | `interactive` (default), `readonly`, `eval`, or `rigorous` (`standard` = `interactive`) |
     | `--permission-mode MODE` | `smart`, `readonly`, `auto`, or `yolo`; overrides the mode and profile |
@@ -160,6 +161,8 @@ isolation boundary.
     | `--port N` | Port (default `8765`) |
     | `--token TOKEN` | Bearer token (or `GARUDA_SERVE_TOKEN`); generated on loopback when unset |
     | `--max-jobs N` | Concurrent jobs (default `4`) |
+    | `--allow-agent NAME` | An agent a request may select by name; repeatable (unset: any the operator defines). A request never supplies a definition |
+    | `--permission-ceiling MODE` | Loosest permission mode a requested agent may run with (default: that of `--agent`) |
     | `--model-max-concurrency N` | Cap concurrent model calls per provider across jobs (`0` = unlimited) |
 
     Plus the model, `--agent`, workspace, `--agents-dir`, and `--mcp-config`
