@@ -367,3 +367,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   owner-only, locked, atomically written store beside the global settings that
   never follows symlinks; a damaged store grants nothing. There is no global
   "trust all project MCP" switch.
+
+## 2026-10-02 — Guard hooks fail closed; rewritten calls are re-authorized (issue #144)
+
+- A `before_tool` hook is a guard. Exit 0 allows, exit 2 blocks, and every other
+  outcome — another exit code, a start failure, a timeout, an exception in a
+  programmatic guard, a malformed return, or the run's deadline passing — blocks
+  the call with `hook.failed_blocked`. Only a hook in the user's global settings
+  (`on_failure: allow`) or a programmatic hook registered with
+  `on_failure="allow"` may be advisory; a project's hooks always fail closed.
+- Hooks run in their own process group with a per-hook timeout of at most 300s,
+  bounded by the run's deadline; timeout and cancellation kill the whole group.
+- Permissions are checked before hooks run. When a hook changes the call's tool
+  or arguments (including in place), the final call must name a tool the run
+  has and gets its own permission decision; approval of the original arguments
+  never covers rewritten ones. An unchanged call is not asked about twice.
