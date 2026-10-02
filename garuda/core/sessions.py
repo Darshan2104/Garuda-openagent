@@ -233,6 +233,15 @@ def project_root(path: str | Path) -> str:
             return str(common.parent if common.name == ".git" else common)
     return str(current)
 
+def _finished_state(result: AgentResult) -> dict:
+    from garuda.runtime.session_state import finished
+
+    return finished(
+        success=bool(result.success),
+        completion_gate=(result.metadata or {}).get("completion_gate"),
+    )
+
+
 class SessionStore:
     def __init__(self, root: str | Path | None = None):
         self.root = Path(root) if root else default_sessions_root()
@@ -287,6 +296,13 @@ class SessionStore:
         # Locked + atomic like every other meta write: a plain write_text here let a
         # concurrent list_sessions read a half-created document.
         document = {**meta.to_dict(), **identity_fields}
+        if not existing.get("state"):
+            from garuda.runtime.ownership import current_owner
+            from garuda.runtime.session_state import started
+
+            document["state"] = started(current_owner().to_dict())
+        else:
+            document["state"] = existing["state"]
         if runtime_segment is not None:
             document.update(
                 {
@@ -380,6 +396,7 @@ class SessionStore:
             "turns": result.turns,
             "final_message": result.final_message[:2000],
             "usage": result.metadata.get("usage", {}),
+            "state": _finished_state(result),
         }
         # `metrics`, `mode` and `acceptance` were computed on every run and then
         # dropped here, so a finished run read back off disk had no latency figures
