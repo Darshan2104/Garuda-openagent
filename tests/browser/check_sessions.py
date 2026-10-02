@@ -67,6 +67,12 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#/sessions/{WAITING}", wait_until="networkidle")
     page.wait_for_selector("#session-approvals")
     check("pending approval is listed", "rm -rf build" in page.locator("#session-approvals").inner_text())
+    page.goto(f"{BASE}#/inbox", wait_until="networkidle")
+    page.wait_for_selector("#inbox-list")
+    inbox = page.locator("#inbox-list").inner_text()
+    check("the inbox lists the waiting approval", "rm -rf build" in inbox and "ceiling smart" in inbox)
+    check("a read-only dashboard offers no buttons", "read-only dashboard" in inbox
+          and page.locator("#inbox-list button").count() == 0)
     browser.close()
 
 if problems:

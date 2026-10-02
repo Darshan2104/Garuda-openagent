@@ -17,6 +17,7 @@ var ROUTES = [
   [/^#\/runs$/, function () { return runsView(); }],
   [/^#\/sessions\/([^/]+)$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
   [/^#\/sessions$/, function () { return sessionsView(); }],
+  [/^#\/inbox$/, function () { return inboxView(); }],
   [/^#\/runtimes$/, function () { return runtimesView(); }],
   [/^#\/chat$/, function () { return chatView(); }]
 ];

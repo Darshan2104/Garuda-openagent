@@ -25,6 +25,7 @@ from garuda.interfaces.web.grounding import SourceError
 from garuda.interfaces.web.security import check_request
 from garuda.interfaces.web.tail import tail_records
 from garuda.interfaces.web.wire import (
+    CODE_EXPIRED,
     CODE_READ_ONLY,
     Request,
     Response,
@@ -232,6 +233,68 @@ def _session(request: Request, ctx: DashboardContext, match) -> Response:
                                      queue=_queue_or_none()))
     except (FileNotFoundError, ValueError):
         return not_found(f"No session {match['sid']!r}.")
+
+
+@route("GET", r"/api/inbox")
+def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
+    """Pending approvals across active sessions, with the digest each answer must bind."""
+    return ok({"approvals": read_model.inbox(ctx.store)})
+
+
+_APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+@route("POST", r"/api/sessions/(?P<sid>[^/]+)/approvals/(?P<aid>[^/]+)")
+def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response:
+    """Answer one session's parked approval through its file channel (B.8).
+
+    The inbox never answers a runtime: it writes the session-bound answer file and the
+    broker, the one place a decision is made, validates it (session, request digest,
+    nonce, expiry, permission ceiling) and records the single decision. So a 200 here
+    means "the answer was recorded for the broker", not "the tool will run". The page must
+    send the request digest it was shown; a request that has since changed refuses.
+    """
+    from garuda.acp.approval_channel import (
+        AnswerRefused,
+        RequestExpired,
+        StaleRequest,
+        write_answer,
+    )
+
+    refusal = requires_write(ctx)
+    if refusal is not None:
+        return refusal
+    try:
+        session_id = validate_session_ref(match["sid"])
+    except ValueError:
+        return not_found("No such session.")
+    approval_id = match["aid"]
+    body = request.json_body()
+    if not _APPROVAL_ID.match(approval_id):
+        return invalid("Not an approval id.")
+    if (not isinstance(body, dict) or not isinstance(body.get("allow"), bool)
+            or not isinstance(body.get("digest"), str) or not _DIGEST.match(body["digest"])):
+        return invalid("`allow` (true or false) and the request `digest` you were shown are required.")
+    directory = ctx.store.session_dir(session_id) / "approvals"
+    try:
+        write_answer(directory, session_id, approval_id, body["allow"],
+                     expect_digest=body["digest"])
+    except FileNotFoundError:
+        return not_found("No such pending approval.")
+    except FileExistsError:
+        # One winner: a terminal answer, another tab or an earlier click got there first.
+        return error("already_answered", "That approval already has an answer or a decision.",
+                     status=409)
+    except StaleRequest:
+        return error("stale_request", "That request changed since the page loaded; reload it.",
+                     status=409)
+    except RequestExpired:
+        return error(CODE_EXPIRED, "That approval expired and will be denied.", status=410)
+    except (AnswerRefused, OSError, ValueError) as exc:
+        return error("refused", f"The answer was not recorded: {exc}", status=409)
+    return ok({"session_id": session_id, "approval_id": approval_id, "allow": body["allow"],
+               "state": "answer_recorded"})
 
 
 STREAM_MAX_SECONDS = 60.0
