@@ -44,6 +44,9 @@ every project. A full ID always resolves.
     | `--resume ID` | Continue a saved session (ID, prefix, or `latest`: this project's newest) |
     | `--all-projects` | With `--resume latest`, take the newest session from any project |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
+    | `--with NAME` | Attach the brief of a session in this project (repeatable); `@name` in the task does the same |
+    | `--with-id FULL_ID` | Attach a session's brief by full id; another project's needs `--allow-cross-project-context` or a yes when asked |
+    | `--allow-cross-project-context` | Grant `--with-id` sessions from other projects without asking (headless) |
     | `--model MODEL` | Reasoning model, `provider/model` (alias of `--reasoning-model`) |
     | `--collection-model MODEL` | Optional collection model (needs collection enabled in trusted settings) |
     | `--no-collection` | Turn the collection role off for this run |
@@ -110,6 +113,9 @@ isolation boundary.
     `garuda chat` takes the model, workspace, agent, MCP, `--mode`, and
     `--permission-mode` flags of `run`, plus `--json`. It has no `-t`: type
     tasks at the `task>` prompt, and finish with an empty line or ++ctrl+d++.
+    `--with`, `--with-id` and `--allow-cross-project-context` attach briefs to
+    the first turn; `@name` in any message attaches that session's brief to
+    that turn.
 
 === "sessions"
 

@@ -181,6 +181,15 @@ scrubs automatically, rebuilds from the scrubbed map, and blocks unsafe
 handoffs, while durable repository files are unreachable by construction
 (strings in, never paths).
 
+`brief.py` (B.7) builds a bounded, redacted brief of one session — task,
+state, changed files, checks (fingerprinted against the tree they ran on and
+rendered stale when the workspace differs) and the end of its final output —
+and renders briefs in one escaped, line-quoted, data-labelled envelope inside
+one shared budget, reporting what it trimmed. `tags.py` resolves `--with`,
+`--with-id` and `@name` tags (names only in the current project; another
+project only by full id with the user's grant), records the link on both
+sessions and writes an immutable, text-free receipt for a cross-project grant.
+
 ## `agents/` — profiles
 
 `setup.py::prepare_agent_run` is the shared chokepoint for every entry point.

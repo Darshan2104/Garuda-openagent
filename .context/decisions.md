@@ -590,3 +590,22 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   once this process is confirmed dead), the capacity slot is returned, and
   the session records the pids. Fail closed rather than let a second editor in
   beside a possible stray writer.
+
+## 2026-10-02 — Session tags carry bounded briefs, never transcripts (issue #157, B.7)
+
+- There is no automatic cross-session index. Another session's brief reaches
+  a run only when the user tags it: `--with NAME`, or an `@name` token that
+  exactly matches a current-project session name. `@pytest.fixture`, unknown
+  names and full ids in message text stay text.
+- Another project's session needs `--with-id FULL_ID` plus the user's grant
+  (`--allow-cross-project-context`, or yes at an interactive preview).
+  Project configuration and model or tool output can never grant it; plain
+  `--with` refuses with `session.cross_project_context_denied`.
+- A brief holds only the redacted task, state, changed files, baseline
+  commit, checks and the end of the final output, each bounded. It is
+  escaped and line-quoted inside an envelope that labels it data; checks run
+  against a different tree render stale and are never current evidence.
+- Both sessions record the link; a cross-project grant writes an immutable
+  receipt (ids, projects, field names, fingerprint, provenance) without the
+  brief's text. ACP runs now record the end of the agent's reply as
+  `final_message` so their briefs have an output.

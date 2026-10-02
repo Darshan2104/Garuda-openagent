@@ -48,6 +48,51 @@ def _add_model_flags(parser) -> None:
     )
 
 
+def _add_tag_flags(parser) -> None:
+    """`--with`, `--with-id` and the cross-project grant (B.7 session tags)."""
+    parser.add_argument(
+        "--with",
+        dest="with_sessions",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Attach the brief of a session in this project (repeatable)",
+    )
+    parser.add_argument(
+        "--with-id",
+        dest="with_ids",
+        action="append",
+        default=[],
+        metavar="FULL_ID",
+        help="Attach the brief of a session by full id; another project's needs a grant",
+    )
+    parser.add_argument(
+        "--allow-cross-project-context",
+        action="store_true",
+        help="Grant --with-id sessions from other projects (headless; otherwise you are asked)",
+    )
+
+
+def _session_tags(args, task: str, *, exclude: str | None = None):
+    """Resolve a run's session tags (B.7), echo them, or refuse before any prompt."""
+    import os
+    import sys
+
+    from garuda.context.tags import attach_for_cli
+    from garuda.interfaces.cli import confirm_cross_project
+
+    return attach_for_cli(
+        os.path.realpath(getattr(args, "workspace", ".")),
+        task,
+        with_refs=getattr(args, "with_sessions", None) or [],
+        with_ids=getattr(args, "with_ids", None) or [],
+        allow_cross_project=getattr(args, "allow_cross_project_context", False),
+        confirm=confirm_cross_project,
+        out=sys.stderr if getattr(args, "json", False) else sys.stdout,
+        exclude=exclude,
+    )
+
+
 def build_parser():
     import argparse
     import os
@@ -183,6 +228,7 @@ def build_parser():
         "--name",
         help="Name this session (unique in the project); resume or tag it by name later",
     )
+    _add_tag_flags(run_parser)
     run_parser.add_argument(
         "--isolation",
         choices=["shared", "worktree", "auto"],
@@ -203,6 +249,7 @@ def build_parser():
     chat_parser.add_argument("--docker-image", default="ubuntu:22.04")
     chat_parser.add_argument("--docker-host")
     chat_parser.add_argument("--agent", default="build")
+    _add_tag_flags(chat_parser)
     chat_parser.add_argument("--agents-dir")
     chat_parser.add_argument("--mcp-config")
     chat_parser.add_argument(
@@ -927,6 +974,8 @@ async def run_acp_command(args, task: str, catalog) -> int:
             approval=interactive_approval(),
             initial_selection=getattr(args, "_initial_selection", None),
             initial_plan=getattr(args, "_initial_plan", None),
+            attached=getattr(args, "_attached", None),
+            name=getattr(args, "name", None),
         )
     except NativeStartupFallback:
         raise
@@ -950,6 +999,10 @@ async def run_task(args) -> int:
     if not task:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
+    # Session tags are resolved — or refused — before any runtime, model,
+    # workspace or prompt exists (B.7).
+    attached = _session_tags(args, task)
+    args._attached = attached
 
     # Resolve policy before constructing a model, toolkit, workspace, or
     # provider adapter. The selected id is then handed to the matching
@@ -1130,6 +1183,7 @@ async def run_task(args) -> int:
         resume_all_projects=getattr(args, "all_projects", False),
         session_name=getattr(args, "name", None),
         isolation=getattr(args, "isolation", "shared"),
+        context_attached=attached,
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
@@ -1269,6 +1323,8 @@ def _run_with_runtime_gate(args) -> int:
     import asyncio
 
     from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.context.brief import BriefBudgetExceeded
+    from garuda.context.tags import TagError
     from garuda.runtime.capacity import CapacityError
     from garuda.runtime.registry import RegistryError
     from garuda.workspace.lease import LeaseError
@@ -1278,7 +1334,7 @@ def _run_with_runtime_gate(args) -> int:
         return asyncio.run(run_task(args))
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
-    except (LeaseError, CapacityError, WorktreeError) as exc:
+    except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
         import sys
