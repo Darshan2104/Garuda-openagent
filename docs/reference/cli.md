@@ -28,6 +28,11 @@ for your installed version. For ready-made examples, see the
 | | `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics) |
 | Evaluation | `garuda eval dual-model report ...` | Build a paired rollout report from completed native sessions |
 
+`--resume` continues a native session from its transcript. A session of an
+ACP runtime continues through the agent's own reload where that is proven for
+the adapter version, and otherwise through a new linked session started from
+its brief; a session whose owner is still running refuses.
+
 Session arguments (`--resume`, `--session`) accept a full ID, a unique prefix
 from `garuda sessions`, a session name, or `latest`. Names, prefixes and
 `latest` are looked up in the current project; add `--all-projects` to search
@@ -43,6 +48,7 @@ every project. A full ID always resolves.
     | `-f, --file PATH` | Read the task from a file |
     | `--resume ID` | Continue a saved session (ID, prefix, or `latest`: this project's newest) |
     | `--all-projects` | With `--resume latest`, take the newest session from any project |
+    | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
     | `--with NAME` | Attach the brief of a session in this project (repeatable); `@name` in the task does the same |
     | `--with-id FULL_ID` | Attach a session's brief by full id; another project's needs `--allow-cross-project-context` or a yes when asked |

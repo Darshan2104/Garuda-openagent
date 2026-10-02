@@ -335,6 +335,23 @@ class AcpProcess:
             raise AcpProtocolError("session/new returned no sessionId")
         return session_id
 
+    async def session_load(
+        self,
+        session_id: str,
+        cwd: str,
+        mcp_servers: list[dict[str, Any]] | None = None,
+        *,
+        timeout: float = HANDSHAKE_TIMEOUT,
+    ) -> None:
+        """Reload an agent session this agent persisted (`session/load`)."""
+        if not os.path.isabs(cwd):
+            raise AcpProtocolError("session/load cwd must be absolute")
+        await self._call(
+            "session/load",
+            {"sessionId": session_id, "cwd": cwd, "mcpServers": list(mcp_servers or [])},
+            timeout=timeout,
+        )
+
     async def session_prompt(
         self,
         session_id: str,

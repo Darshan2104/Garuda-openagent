@@ -321,6 +321,13 @@ python scripts/capture_acp_capabilities.py --name codex --out tests/fixtures/acp
 Proving `session/load`, `session/resume` and usage reporting needs one small,
 separately approved prompted session per adapter version.
 
+`garuda run --resume S` on a session of an ACP runtime uses the agent's own
+`session/load` only for an adapter version on which it was exercised (none
+of the two above yet). Otherwise — or when the agent stops declaring
+`loadSession` at the handshake — it starts a new, linked session on the same
+runtime with `S`'s brief attached (`resume_mode: brief`). `--as RUNTIME`
+continues on another runtime the same way.
+
 ## Custom ACP servers
 
 Register any compatible stdio ACP server in trusted global settings. An entry

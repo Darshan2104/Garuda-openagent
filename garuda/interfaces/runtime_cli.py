@@ -578,6 +578,30 @@ def recover_dict(store, session_id: str) -> dict[str, Any]:
     return report_to_dict(recover(store, session_id))
 
 
+async def _resume_or_brief(runtime, make_runtime, plan, store, session_id, task, workspace,
+                           attached):
+    """Reload the agent's own session (a proven adapter), or — when the agent
+    no longer offers it — start fresh with the source session's brief (B.7)."""
+    from garuda.acp.adapter import ResumeUnavailable
+    from garuda.context.tags import with_resume_brief
+    from garuda.runtime.resume import as_brief
+
+    try:
+        info = await runtime.resume(native_session_id=plan.native_session_id,
+                                    session_id=session_id)
+        return info, runtime, attached
+    except ResumeUnavailable as drift:
+        try:
+            await runtime.close()
+        except Exception:
+            logger.warning("Closing the refused resume failed", exc_info=True)
+        fallback = as_brief(plan, f"{plan.runtime_id}: {drift}")
+        store.update_meta(session_id, fallback.record())
+        attached = with_resume_brief(store, fallback, workspace, attached)
+        runtime = make_runtime()
+        return await runtime.start(task=task, session_id=session_id), runtime, attached
+
+
 async def run_acp_task(
     task: str,
     *,
@@ -592,6 +616,7 @@ async def run_acp_task(
     initial_plan=None,
     attached=None,
     name: str | None = None,
+    resume_plan=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -636,6 +661,8 @@ async def run_acp_task(
             ),
         )
         began = True
+        if resume_plan is not None:
+            store.update_meta(session_id, resume_plan.record())
         if attached is not None:
             from garuda.context.tags import record_links
 
@@ -661,14 +688,17 @@ async def run_acp_task(
         handler, _broker = broker_approval_handler(
             store, session_id, manifest.runtime_id, handler=approval
         )
-        runtime = adapter_for_discovered(
-            manifest,
-            record,
-            cwd=workspace,
-            store=store,
-            approval_handler=handler,
-            persist_dir=str(store.session_dir(session_id)),
-        )
+        def make_runtime():
+            return adapter_for_discovered(
+                manifest,
+                record,
+                cwd=workspace,
+                store=store,
+                approval_handler=handler,
+                persist_dir=str(store.session_dir(session_id)),
+            )
+
+        runtime = make_runtime()
         # Capture a baseline before start solely for the narrow startup
         # fallback gate. Evidence begins only after a successful start, so a
         # native fallback owns its own evidence span on this same session.
@@ -676,9 +706,15 @@ async def run_acp_task(
 
         baseline_before = capture_baseline(workspace)
         try:
-            info = await runtime.start(task=task, session_id=session_id)
+            if resume_plan is not None and resume_plan.mode == "acp":
+                info, runtime, attached = await _resume_or_brief(
+                    runtime, make_runtime, resume_plan, store, session_id, task,
+                    workspace, attached,
+                )
+            else:
+                info = await runtime.start(task=task, session_id=session_id)
         except Exception as start_error:
-            if initial_plan is None:
+            if initial_plan is None or resume_plan is not None:
                 raise
             from garuda.runtime.selection import (
                 SelectionError,
