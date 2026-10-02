@@ -58,6 +58,19 @@ carries its model and purpose badge. The panel also lists the runtime lanes, the
 this one resumed from or was continued by, the sessions it tagged, and those that tagged it.
 `GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
 
+**Consults.** When the session asked other roles questions, a **Consults** panel lists each as
+a lane under it: who asked whom, the identity that ran, its admission, outcome (`answered`,
+`withheld` when the snapshot changed or could not be compared, `failed`, `timeout`,
+`quarantined`, `interrupted`), duration, denied operations and observed changes, with a link
+to the consulted session. A consult with no receipt (for example a quarantined one) reads
+**no receipt** and its changes read **unknown**, never "unchanged". The question and answer
+are not stored, so they are not shown. In **Models used**, the consulted role's calls are
+rolled into its asker once, marked **consult**, with the original work type (a consulted
+summarizer call is still a summarizer call). The Usage view's **By origin** table groups the
+original events by run, subagent, flow and consult, and adds up to the total. Setup lists who
+may consult whom, the ceilings, and for each captured ACP adapter whether it proved the three
+transport gates; none is offered the tool today.
+
 ## Providers and limits
 
 `#/providers` shows one card per harness and per API provider. For a harness: whether it is

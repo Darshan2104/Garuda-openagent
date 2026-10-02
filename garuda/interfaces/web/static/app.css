@@ -698,3 +698,7 @@ a { color: var(--accent); }
 .approval-item pre { margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
 .approval-item[data-state="recorded"] { border-color: var(--ok); }
 .approval-item[data-state="stale_request"], .approval-item[data-state="error"] { border-color: var(--err); }
+
+/* consult lanes (G.4): the consults a session asked for, nested under it */
+.consult-lanes { list-style: none; margin: 8px 0 0; padding-left: 16px; border-left: 2px solid var(--border); }
+.consult-lane { padding: 4px 0; overflow-wrap: anywhere; }

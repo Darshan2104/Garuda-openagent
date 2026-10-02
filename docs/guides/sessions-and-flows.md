@@ -129,6 +129,15 @@ tool is never offered to an ACP role and nothing else about the session changes
 token. This is a local guardrail between processes of one user, not protection
 from a hostile process running as you.
 
+**Seeing consults.** `garuda sessions show <id>` prints a `consults:` line (and the rows
+with `--json`); a run prints one after it finishes. Each row has the request id, asker,
+target, the identity that ran, admission, outcome, duration, denied operations and observed
+changes. Rows hold identities and counts, never the question or answer. A review step records
+the independence decision with the identities that *actually* ran: the reviewed role's
+launched plan after any fallback and the roles its sessions really consulted, beside the
+configured ones. With the default `independent: true`, a reviewer that shares one of them
+stops the flow with `flow.review_not_independent`.
+
 Native targets work everywhere. An external (ACP) target runs only inside the
 Docker read-only confinement; without it the call is refused
 (`consult.isolation_unavailable`) and nothing runs on the host. Quiescing the

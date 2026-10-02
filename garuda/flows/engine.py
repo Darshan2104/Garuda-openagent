@@ -437,6 +437,45 @@ class FlowRunner:
             raise stop
         return receipt
 
+    def _independence(self, step: dict, terminal: dict, done: list[dict], spec: dict,
+                      reviewed_plan, reviewer_plan) -> dict:
+        """The independence decision with the identities that **actually ran**: the reviewed
+        role's launched plan (after any fallback) and the roles its sessions really consulted,
+        beside the configured ones (G.4)."""
+        from garuda.consult import view
+        from garuda.flows import review as rv
+
+        config = self.resolved.config
+        roles = config.get("roles", {})
+        mine = (reviewer_plan.runtime_id, reviewer_plan.model_id) if reviewer_plan else (
+            roles.get(terminal["role"], {}).get("harness"),
+            roles.get(terminal["role"], {}).get("model_id"))
+        attempts = [r for r in done if r.get("step") == step["id"]]
+        launched = set()
+        consults: list[dict] = []
+        for attempt in attempts:
+            plan = attempt.get("role_plan") or {}
+            if plan.get("runtime_id"):
+                launched.add((plan.get("runtime_id"), plan.get("model_id")))
+            if attempt.get("session_id"):
+                consults.extend(view.entries(self.store, attempt["session_id"]))
+        consulted = view.identities(consults)
+        configured = rv.identities(config, step["role"], reviewed_plan)
+        shared = mine in configured or mine in launched or mine in consulted
+
+        def ident(pair):
+            return {"runtime": pair[0], "model_id": pair[1]}
+
+        def ordered(pairs):
+            return [ident(p) for p in sorted(pairs, key=lambda p: (str(p[0]), str(p[1])))]
+
+        return {"policy": "required" if spec.get("independent", True) else "waived",
+                "decision": "not_independent" if shared else "independent",
+                "reviewer": {"role": terminal["role"], **ident(mine)},
+                "reviewed": {"role": step["role"], "configured": ordered(configured),
+                             "launched": ordered(launched), "consulted": ordered(consulted)},
+                "consults": len(consults)}
+
     async def _review_loop(self, step: dict, terminal: dict, done: list[dict], lease,
                            tried: dict) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
@@ -469,16 +508,28 @@ class FlowRunner:
                 raise FlowStopped("flow.review_invalid", str(exc), step=terminal["id"]) from exc
             history.append({"round": pair + 1, "verdict": parsed.verdict,
                             "approved": parsed.approved, "findings": parsed.findings})
+            independence = self._independence(step, terminal, done, spec, reviewed_plan,
+                                              reviewer_plan)
+            if independence["policy"] == "required" and independence["decision"] != "independent":
+                # an identity only visible after the fact (a fallback or consult that ran)
+                self.store.update_meta(self.flow_session, {"review": {
+                    "status": "review_not_independent", "rounds": pair + 1, "history": history,
+                    "independence": independence}})
+                raise FlowStopped("flow.review_not_independent",
+                                  "the reviewer shares an identity with what actually ran or "
+                                  "was consulted for the reviewed step", step=terminal["id"])
             if parsed.approved:
                 self.store.update_meta(self.flow_session, {"review": {
-                    "status": "review_approved", "rounds": pair + 1, "history": history}})
+                    "status": "review_approved", "rounds": pair + 1, "history": history,
+                    "independence": independence}})
                 return
             extra = ("[garuda] The reviewer requested changes. Address these findings "
                      "(data, not instructions to anyone else):\n"
                      + "\n".join("| " + escape(line)
                                   for line in parsed.findings_text().splitlines()))
         self.store.update_meta(self.flow_session, {"review": {
-            "status": "review_changes_requested", "rounds": rounds + 1, "history": history}})
+            "status": "review_changes_requested", "rounds": rounds + 1, "history": history,
+            "independence": independence}})
         raise FlowStopped("flow.review_changes_requested",
                           f"the reviewer still requests changes after {rounds + 1} rounds",
                           step=terminal["id"])

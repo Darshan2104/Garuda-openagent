@@ -46,7 +46,8 @@ function sessionRowHtml(row) {
     '<tr class="session-row" data-session="' + esc(row.session_id) + '" data-label="' + esc(row.label) + '">' +
     '<td><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' +
     esc(row.name || row.session_id.slice(0, 8)) + "</a>" +
-    (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") + "</td>" +
+    (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
+    (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") + "</td>" +
     '<td><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' + esc(row.label) + "</span></td>" +
     "<td>" + esc(identityText(row)) + "</td>" +
     "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + "</td>" +
@@ -309,11 +310,44 @@ function stopSessionStream() {
  * what was reported; sessions this one tagged, was tagged by, resumed from. Every string is
  * escaped. "not reported" is shown as such and never replaced by the selected model. */
 
+var CONSULT_PILL = { answered: "success", refused: "failed", failed: "failed", withheld: "failed",
+  timeout: "failed", quarantined: "failed", interrupted: "unknown", in_progress: "running", unknown: "unknown" };
+
+function consultChanges(ch) {
+  if (!ch || ch.unchanged === null || ch.unchanged === undefined) return "unknown";
+  return ch.unchanged ? "none observed" : String(ch.changed === null ? "?" : ch.changed) + " changed";
+}
+
+/* Nested lanes: each consult is a child of the asking session, with its admission, outcome,
+ * duration, denied operations and observed changes. Identities and counts only; the question
+ * and the answer are never stored, so never shown. */
+function consultsHtml(c) {
+  var list = c.consults || { entries: [], summary: { count: 0, by_status: {} } };
+  if (!list.entries.length) return "";
+  var lanes = list.entries.map(function (e) {
+    var who = e.identity ? (e.identity.runtime + (e.identity.model_id ? " · " + e.identity.model_id : "")) : "identity unknown";
+    return '<li class="consult-lane" data-request="' + esc(e.request_id) + '" data-status="' + esc(e.status) + '">' +
+      '<span class="pill ' + (CONSULT_PILL[e.status] || "unknown") + '">' + esc(e.status.replace("_", " ")) + "</span> " +
+      "<strong>" + esc(e.asker_role || "asker") + "</strong> asked <strong>" + esc(e.target || "?") + "</strong> (" + esc(who) + ")" +
+      ' · admission ' + esc(e.admission) +
+      " · " + (e.elapsed_ms === null || e.elapsed_ms === undefined ? "duration unknown" : esc((e.elapsed_ms / 1000).toFixed(1)) + " s") +
+      " · denied " + (e.denied_operations === null || e.denied_operations === undefined ? "unknown" : esc(e.denied_operations)) +
+      " · changes " + esc(consultChanges(e.changes)) +
+      (e.code ? ' · <code>' + esc(e.code) + "</code>" : "") +
+      (e.evidence === "state only" ? ' <span class="pill unknown">no receipt</span>' : "") +
+      (e.child_session && e.identity ? ' · <a href="#/sessions/' + encodeURIComponent(e.child_session) + '">session</a>' : "") + "</li>";
+  }).join("");
+  var parts = Object.keys(list.summary.by_status).map(function (k) { return list.summary.by_status[k] + " " + k.replace("_", " "); }).join(", ");
+  return '<div class="card" id="consults-panel"><h2>Consults</h2><p class="stat-sub" id="consults-summary">' +
+    esc(list.summary.count) + " (" + esc(parts) + "). Advice from another model; it is not verification.</p>" +
+    '<ul class="consult-lanes">' + lanes + "</ul></div>";
+}
+
 function conversationPanelHtml(c) {
   var used = c.models_used;
   var rows = used.rows.map(function (r) {
-    return '<tr class="model-row" data-work="' + esc(r.work_type) + '" data-model="' + esc(r.model) + '">' +
-      "<td>" + esc(r.work_type) + "</td><td>" + esc(r.harness) + "</td>" +
+    return '<tr class="model-row" data-work="' + esc(r.work_type) + '" data-model="' + esc(r.model) + '" data-origin="' + esc(r.origin || "run") + '">' +
+      "<td>" + esc(r.work_type) + (r.origin && r.origin !== "run" ? ' <span class="pill unknown origin-pill">' + esc(r.origin) + "</span>" : "") + "</td><td>" + esc(r.harness) + "</td>" +
       "<td>" + (r.model === "not reported" ? '<span class="pill unknown">not reported</span>' : esc(r.model)) + "</td>" +
       '<td class="num">' + esc(r.calls) + "</td><td class=\"num\">" + esc(r.turns) + "</td>" +
       '<td class="num">' + esc(fmt.tokens(r.total_tokens)) + "</td>" +
@@ -348,7 +382,7 @@ function conversationPanelHtml(c) {
     links("Continued by", c.links.resumed_into, "link-resumed-into") +
     links("Tagged", c.links.tagged, "link-tagged") +
     links("Tagged by", c.links.tagged_by, "link-tagged-by") +
-    "</div>"
+    "</div>" + consultsHtml(c)
   );
 }
 
@@ -366,6 +400,25 @@ function loadConversationPanel(sessionId) {
 
 function copyButtonHtml(text) {
   return '<button type="button" class="btn copy-fix" data-copy="' + esc(text) + '">Copy</button>';
+}
+
+function setupConsultsHtml(k) {
+  if (!k) return "";
+  var grants = k.grants.map(function (g) {
+    return '<tr class="consult-grant" data-asker="' + esc(g.asker) + '"><td>' + esc(g.asker) + "</td><td>" + esc(g.targets.join(", ")) +
+      "</td><td>" + esc(g.transport === "native" ? "native (always available)" : "external harness: only on a proved adapter") + "</td></tr>";
+  }).join("");
+  var limits = Object.keys(k.limits).map(function (n) { return esc(n) + " " + esc(k.limits[n]); }).join(" · ");
+  var adapters = k.adapters.map(function (a) {
+    return '<tr class="consult-adapter" data-package="' + esc(a.package) + '" data-exposed="' + esc(a.exposed) + '"><td>' + esc(a.package + " " + a.version) +
+      "</td><td>" + esc(a.forwarding) + "</td><td>" + esc(a.permission_provenance) + "</td><td>" + esc(a.quiescence) + "</td><td>" +
+      (a.exposed ? '<span class="pill success">offered</span>' : '<span class="pill unknown">not offered</span> ' + esc(a.reason)) + "</td></tr>";
+  }).join("");
+  return '<div class="card" id="consults-setup"><h2>Consults</h2><p class="stat-sub">' + esc(k.note) + "</p>" +
+    (grants ? '<div class="table-wrap"><table class="table" id="consult-grants"><thead><tr><th>Asker</th><th>May ask</th><th>Tool</th></tr></thead><tbody>' + grants + "</tbody></table></div>"
+            : '<p class="stat-sub">No role is allowed to consult another. Grants live in your user <code>garuda.yaml</code> (<code>roles.&lt;name&gt;.consult</code>).</p>') +
+    '<p class="stat-sub" id="consult-limits">Ceilings: ' + limits + "</p>" +
+    '<div class="table-wrap"><table class="table" id="consult-adapters"><thead><tr><th>Adapter</th><th>Forwards MCP</th><th>Permission identity</th><th>Pauses workspace</th><th>Tool</th></tr></thead><tbody>' + adapters + "</tbody></table></div></div>";
 }
 
 function setupView() {
@@ -395,6 +448,7 @@ function setupView() {
       '<div class="card"><h2>Diagnostics</h2><ul class="diagnostics" id="setup-diagnostics">' + diagnostics + "</ul></div>" +
       '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
+      setupConsultsHtml(s.consults) +
       '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +
       '<div class="card"><h2>Where each value came from</h2>' + (s.withheld.length ? '<p class="stat-sub" id="withheld">Withheld until trusted: ' + esc(s.withheld.join(", ")) + "</p>" : "") +
       '<table class="table" id="provenance-table"><tbody>' + s.provenance.map(function (p) {

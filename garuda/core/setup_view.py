@@ -8,6 +8,7 @@ recorded conclusion, or "not checked"), no model is called. It reports
 * **provenance** — which layer (package, user, trusted project, CLI) supplied every effective
   value, and what a project file asked for that is withheld until trusted;
 * **roles** — harness, exact model id, effort and fallback chain;
+* **consults** — role grants, the ceilings, and per-adapter transport status;
 * **flows** — every flow, the packaged examples marked as such, and any role a flow needs
   that is not defined.
 """
@@ -76,6 +77,28 @@ def _roles(resolved) -> list[dict]:
     return rows
 
 
+def _consults(resolved) -> dict:
+    """Who may ask whom, the ceilings, and which ACP adapters could host the tool."""
+    from garuda.consult import transports
+    from garuda.consult.limits import from_config
+
+    roles = (resolved.config.get("roles", {}) if resolved else {})
+    grants = [{"asker": name, "targets": list(spec.get("consult") or []),
+               "asker_harness": spec.get("harness"),
+               # an external asker is offered the tool only on a proved adapter (G.3)
+               "transport": ("native" if spec.get("harness") == "native" else "acp")}
+              for name, spec in sorted(roles.items()) if spec.get("consult")]
+    limits = from_config(resolved.config).to_dict() if resolved else {}
+    adapters = []
+    for gate in transports.GATES:
+        decision = transports.exposure(gate.package, gate.version)
+        adapters.append({"package": gate.package, "version": gate.version, **gate.outcomes(),
+                         "exposed": decision.exposed, "reason": decision.reason})
+    return {"grants": grants, "limits": limits, "adapters": adapters,
+            "note": "Native askers can always consult. An ACP asker is offered the tool only "
+                    "for an adapter whose three transport gates are all proved."}
+
+
 def _flows(resolved) -> list[dict]:
     from garuda.config import garuda_yaml as gy
     from garuda.flows import packaged
@@ -100,6 +123,7 @@ def setup(workspace: str) -> dict[str, Any]:
         "diagnostics": [d.to_dict() for d in diagnostics],
         "roles": _roles(resolved),
         "flows": _flows(resolved),
+        "consults": _consults(resolved),
         "provenance": ([{"key": k, "source": v} for k, v in sorted(resolved.provenance.items())]
                        if resolved else []),
         "withheld": list(resolved.withheld) if resolved else [],

@@ -62,6 +62,7 @@ function usageView(range) {
       '<div class="card" id="daily-card">' + bars(s.daily.map(function (d) { return { value: d.total_tokens, label: d.date + ": " + d.total_tokens + " tokens" }; }),
         { title: "Tokens per day (UTC)", emptyNote: "No usage in this range." }) + "</div>" +
       '<div class="card"><h2>By role</h2>' + table("role-table", s.by_role, function (r) { return r.role; }) + "</div>" +
+      '<div class="card"><h2>By origin</h2><p class="stat-sub">Who made the calls: the run itself, a subagent, a flow step or a consulted role. These are the original events, so the rows add up to the total.</p>' + table("origin-table", s.by_origin, function (r) { return r.origin; }) + "</div>" +
       '<div class="card"><h2>By project</h2><p class="stat-sub">Projects are opaque ids.</p>' + table("project-table", s.by_project, function (r) { return r.project_id; }) + "</div>"
     );
     el("export-csv").addEventListener("click", function () { downloadUsage(range, "csv"); });

@@ -18,12 +18,20 @@ Three separations are kept on purpose:
   usage is never assigned to the selected model;
 * **context snapshots** (occupancy, latest report) are not billable usage;
 * **ACP turns** are not native call counts.
+
+**Consults (G.4).** A consulted role runs as its own session, so a conversation also lists the
+consults requested under it (and under its flow's step sessions) and rolls their usage up: the
+descendants' ledger records are added to the parent's **once** (records are de-duplicated by
+their ledger key), with ``origin`` (``run``, ``consult`` …) kept as a grouping dimension beside
+the original ``call_purpose``, so a consulted summarizer call stays a summarizer call. Global
+statistics sum the original records and never the parent rollups, so nothing is counted twice.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from garuda.consult.view import summary as consult_summary
 from garuda.core import read_model
 from garuda.observability import ledger as ledger_module
 
@@ -110,23 +118,49 @@ def _row(work_type, harness, model, selected) -> dict:
             "cost_usd": 0.0, "cost_unknown": 0, "snapshots": 0}
 
 
-def models_used(store, session_id: str, meta: dict, ledger) -> dict:
+def consult_rows(store, session_id: str, meta: dict) -> list[dict]:
+    """The consults requested under this session and its flow's step sessions."""
+    from garuda.consult import view
+
+    roots = [session_id] + [sid for sid, _ in _flow_sessions(store, session_id, meta)
+                            if sid != session_id]
+    rows: list[dict] = []
+    for root in dict.fromkeys(roots):
+        rows.extend(view.entries(store, root))
+    return rows
+
+
+def models_used(store, session_id: str, meta: dict, ledger, consults=()) -> dict:
     flow_sessions = _flow_sessions(store, session_id, meta)
-    ids = {session_id} | {sid for sid, _ in flow_sessions}
+    ids = {session_id} | {sid for sid, _ in flow_sessions} | {
+        row["child_session"] for row in consults if row.get("child_session")}
     flow_roles = {sid: role for sid, role in flow_sessions}
     selected = (meta.get("role") or {}).get("model_id") if isinstance(meta.get("role"), dict) \
         else None
     selected = selected or meta.get("model")
-    records = [r for r in ledger.records() if r.get("session_id") in ids] if ledger else []
+    records, seen = [], set()
+    for record in (ledger.records() if ledger else []):
+        if record.get("session_id") not in ids:
+            continue
+        key = record.get("key")
+        if key is not None:
+            if key in seen:
+                continue  # a descendant's event is rolled up once
+            seen.add(key)
+        records.append(record)
     rows: dict[tuple, dict] = {}
+    current = {"origin": "run"}
 
     def row_for(work_type, harness, model, selected_model):
-        key = (work_type, harness, model)
-        return rows.setdefault(key, _row(work_type, harness, model, selected_model))
+        key = (current["origin"], work_type, harness, model)
+        row = rows.setdefault(key, _row(work_type, harness, model, selected_model))
+        row["origin"] = current["origin"]
+        return row
 
     snapshots = []
     for record in records:
         kind = record.get("kind")
+        current["origin"] = record.get("origin") or "run"
         harness = record.get("harness") or ("native" if kind == "native_model_call" else None)
         if kind == "native_model_call":
             row = row_for(_work_type(record, flow_roles), harness or "native",
@@ -158,8 +192,14 @@ def models_used(store, session_id: str, meta: dict, ledger) -> dict:
         fallback = _from_metrics(store, session_id, meta, selected)
         if fallback:
             rows, source, label = fallback, "session_metrics", FROM_METRICS
+    origins = sorted({r.get("origin") or "run" for r in records})
     return {"source": source, "label": label,
-            "rows": sorted(rows.values(), key=lambda r: (r["work_type"], str(r["model"]))),
+            "rows": sorted(rows.values(), key=lambda r: (r.get("origin", "run") != "run",
+                                                         r["work_type"], str(r["model"]))),
+            # Own work and each descendant origin, which add up to ``totals`` exactly.
+            "by_origin": {o: ledger_module.totals([r for r in records
+                                                   if (r.get("origin") or "run") == o])
+                          for o in origins},
             # Occupancy and cumulative reports are display evidence, never billable usage.
             "snapshots": snapshots[-5:],
             "totals": ledger_module.totals(records) if records else None}
@@ -199,12 +239,14 @@ def conversation(store, session_id: str, *, ledger=None, queue=None) -> dict[str
                                 else lane.native_event_end - lane.native_event_start),
               "external_events": lane.external_events} for lane in trace.lanes]
     role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
+    consults = consult_rows(store, session_id, meta)
     return {
         "session": {k: row[k] for k in ("session_id", "name", "kind", "label", "state", "task",
                                         "runtime", "model", "verification")},
         "selected": {"harness": role.get("runtime_id"), "model_id": role.get("model_id")
                      or meta.get("model"), "fallback": role.get("fallback")},
         "lanes": lanes,
-        "models_used": models_used(store, session_id, meta, ledger),
+        "consults": {"summary": consult_summary(consults), "entries": consults},
+        "models_used": models_used(store, session_id, meta, ledger, consults),
         "links": _story(store, session_id, meta),
     }
