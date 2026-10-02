@@ -159,6 +159,32 @@ Click a problem to see the fix.
     `~/.agent/settings.yaml`, or its version check fails. Login and quota often
     show as `unknown`; that alone does not make a runtime unavailable.
 
+??? question "A `consult` call is refused (`consult.*`)"
+
+    The code says why, and a refused consult never runs the other role or
+    spends its budget (except `consult.timeout`, `consult.failed` and
+    `consult.unexpected_changes`, which did run and say so in the receipt).
+
+    - `consult.not_granted`: the asking role's `consult:` list (user
+      `garuda.yaml`) does not include the target. Projects cannot grant it.
+    - `consult.nested`: a consulted role tried to consult.
+    - `consult.limit`, `consult.too_long`: `consults.max_per_session` or the
+      question size limit was reached; raise it in your user file.
+    - `consult.busy`: another consult from this session (or the same request id)
+      is still in progress; consults run one at a time per asker.
+    - `consult.capacity_unavailable`: the target's harness is at its
+      `max_parallel`; consults never wait for a slot.
+    - `consult.snapshot_unsupported`, `consult.snapshot_unstable`: the workspace
+      is not a git checkout Garuda can snapshot, or it changed (or background
+      processes ran) while the snapshot was taken. Retry when it is quiet.
+    - `consult.isolation_unavailable`: an external target needs the Docker
+      read-only confinement and it is not available.
+    - `consult.payload_changed`: the same request id was reused with a different
+      question.
+    - `consult.interrupted`, `consult.quarantined`: Garuda was killed mid-consult,
+      or the consulted process could not be confirmed stopped. The slot stays held
+      until you inspect it with `garuda sessions`.
+
 ## Dashboard and MCP
 
 ??? question "The dashboard port is busy, or the browser doesn't open"

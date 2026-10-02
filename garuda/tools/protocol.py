@@ -74,6 +74,8 @@ class ToolContext:
     removed_tools: frozenset[str] = frozenset()
     # Reviewed-notes ledger when the agent may propose notes (H.9).
     notes: Any = None
+    # Consult context when the session may ask other roles (G.2).
+    consult: Any = None
 
     def option(self, tool: str, name: str, default=None):
         return (self.tool_options.get(tool) or {}).get(name, default)

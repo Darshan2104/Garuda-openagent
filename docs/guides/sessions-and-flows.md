@@ -90,6 +90,39 @@ By default the reviewer must be independent: it may not run as the same
 harness and model as the role it reviews, as one of that role's fallbacks,
 or as a role it consulted.
 
+## Consults
+
+A role can ask another role one question mid-task. In `garuda.yaml` (user file
+only) a role lists the roles it may ask:
+
+```yaml
+roles:
+  coder: {harness: native, model_id: gpt-5, consult: [reviewer]}
+  reviewer: {harness: native, model_id: claude-sonnet-5}
+```
+
+The coder then has a `consult` tool whose `target` is limited to those roles.
+Each call:
+
+- runs the target role as its own session, **read-only, in a separate snapshot
+  of the workspace**: it cannot edit your files, run commands or call other
+  tools, and the snapshot is checked afterwards (`consult.unexpected_changes`
+  withholds the answer);
+- is bounded by `consults:` limits (questions per session, timeout, question and
+  answer size, child turns), with a deadline from admission to cleanup;
+- cannot be nested: a consulted role cannot consult;
+- returns the answer as labelled, untrusted advice. It is not verification and
+  does not replace acceptance checks;
+- uses a durable request id, so a retried call never asks twice, and leaves a
+  receipt without the question or answer text.
+
+Native targets only for now. An external (ACP) target runs only inside the
+Docker read-only confinement; without it the call is refused
+(`consult.isolation_unavailable`) and nothing runs on the host. Quiescing the
+asker is "tool calls run one at a time"; a run with background processes
+refuses the consult rather than guessing (`consult.snapshot_unstable`). This
+read-only profile is a guardrail, not a sandbox boundary.
+
 ## Interruptions
 
 Before each step starts, Garuda records that it is about to run it; after

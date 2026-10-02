@@ -990,3 +990,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   snapshots are display evidence only and ACP turns are a separate measure. A
   session with no ledger records falls back to its metrics, labelled as such.
 
+## 2026-10-02 — Consults are read-only questions in a snapshot, dispatched at most once (issue #170, G.2)
+
+- A consult authorizes (user-file grants, no nesting), reserves a durable
+  request id bound to the payload digest, reserves capacity without waiting,
+  quiesces the asker, and runs the target read-only in an independent snapshot
+  repository. The child must be reaped before the slot is released; if that
+  cannot be confirmed the slot is quarantined.
+- Native-tool quiescence is sequential tool execution plus a refusal when the
+  run has background processes; the snapshot's stability check rejects a tree
+  that changes during capture. External targets run only in Docker read-only
+  confinement; otherwise `consult.isolation_unavailable`.
+- Answers are untrusted advice in a labelled envelope, validated with
+  `NoEditsGuard`; receipts are text-free. Dispatch is at most once: after the
+  point of dispatch a failure is recorded, never retried or refunded.
+

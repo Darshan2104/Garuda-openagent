@@ -147,6 +147,10 @@ class AgentConfig:
     # the subagent tree so the proposal limit is per root task.
     memory_notes: str = "off"
     notes_ledger: Any = None
+    # Consults (G.2): the service, the roles this session may ask, and its root task.
+    consult_service: Any = None
+    consult_targets: list[str] = field(default_factory=list)
+    consult_root: str | None = None
     # Delegation bounds shared down a subagent tree (H.6): how deep this run
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0

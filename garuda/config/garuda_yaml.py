@@ -321,7 +321,9 @@ def parse(data: Any, *, source: str = "") -> dict:
         out["checks"] = [_check(c, f"checks[{i}]") for i, c in enumerate(data["checks"])]
     if "consults" in data:
         consults = _mapping(data["consults"], "consults",
-                            ("max_per_session", "timeout_sec", "max_answer_chars"))
+                            ("max_per_session", "timeout_sec", "max_answer_chars",
+                             "max_question_chars", "max_brief_tokens", "max_turns",
+                             "max_output_tokens"))
         out["consults"] = {}
         if "max_per_session" in consults:
             out["consults"]["max_per_session"] = _int(
@@ -332,6 +334,10 @@ def parse(data: Any, *, source: str = "") -> dict:
         if "max_answer_chars" in consults:
             out["consults"]["max_answer_chars"] = _int(
                 consults["max_answer_chars"], "consults.max_answer_chars", 1, 100_000)
+        for key, high in (("max_question_chars", 100_000), ("max_brief_tokens", 32_768),
+                          ("max_turns", 50), ("max_output_tokens", 32_768)):
+            if key in consults:
+                out["consults"][key] = _int(consults[key], f"consults.{key}", 1, high)
     if "sessions" in data:
         sessions = _mapping(data["sessions"], "sessions", ("isolation", "keep_days"))
         out["sessions"] = {}
