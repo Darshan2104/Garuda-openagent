@@ -59,7 +59,7 @@ disabled.
 | `sandbox` workspace | Uses Bubblewrap or macOS Seatbelt to reduce write and network reach | Confine general host reads |
 | Permission rules | Screen tool names and literal path and command arguments | See shell expansion, or everything a broad read returns |
 | `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold MCP tools to read-only |
-| Workspace lease | Refuses overlapping `garuda run`, `serve`, SDK, and runtime sessions | Isolate the process, or cover `garuda chat`, dashboard chats, and recipes, which don't take one yet |
+| Workspace lease | Refuses a second editor of a workspace across `garuda run`, `garuda chat`, dashboard chats, `serve`, the SDK, recipes, and runtime sessions | Isolate the process |
 
 Permission rules and OS sandbox policies are useful defense in depth. Don't
 describe or treat them as equivalent to containment.

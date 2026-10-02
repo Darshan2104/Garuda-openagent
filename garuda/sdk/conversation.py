@@ -59,6 +59,7 @@ class Conversation:
         self._sdk_session_id: str | None = None
         self._approval_task: Any | None = None
         self._approval_broker: Any | None = None
+        self._lease: Any | None = None
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
@@ -101,9 +102,10 @@ class Conversation:
         if self._runtime_name != "native":
             return await self._run_acp(task)
         session = await self._ensure_session()
+        self._ensure_lease(session)
         env = await self._ensure_env()
         context = session.prepare_context(task)
-        return await session.agent.run(
+        return await self._lease.race(session.agent.run(
             task=task,
             model=session.model,
             env=env,
@@ -115,7 +117,27 @@ class Conversation:
             context=context,
             collection_model=getattr(session, "collection", None),
             collection_policy=getattr(session, "collection_policy", None),
+        ))
+
+    def _ensure_lease(self, session: AgentSession) -> None:
+        """Hold the workspace lease for the conversation's whole life (B.4).
+
+        Taken before the environment exists; a workspace another session is
+        editing refuses with ``LeaseConflictError`` instead of interleaving.
+        """
+        if self._lease is not None:
+            return
+        from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+
+        lease = WorkspaceLeaseGuard(
+            str(self._workspace),
+            session.events.session_id,
+            capacity_key="native",
+            mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
         )
+        lease.acquire()
+        lease.start_heartbeat()
+        self._lease = lease
 
     def _record_baseline(self, store, session_id: str) -> None:
         """Capture the authoritative baseline once per SDK session (local
@@ -353,6 +375,10 @@ class Conversation:
             await cleanup_workspace(self._env_handle)
             self._env = None
             self._env_handle = None
+        if self._lease is not None:
+            # Released last, after the session and its environment are gone.
+            lease, self._lease = self._lease, None
+            await lease.release()
 
     @property
     def events(self) -> EventStore:

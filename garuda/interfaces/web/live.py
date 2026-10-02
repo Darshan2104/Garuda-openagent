@@ -60,6 +60,10 @@ LOOP_CALL_TIMEOUT = 30.0
 MAX_TASK_CHARS = 20_000
 
 
+class WorkspaceBusy(Exception):
+    """The chat's workspace is held by another session (or its runtime is full)."""
+
+
 def _closed_state(ok: bool) -> dict:
     """A closed dashboard chat: finished by the user, never verified by Garuda."""
     from garuda.runtime.session_state import finished
@@ -256,6 +260,23 @@ class LiveRuns:
             agent=session.profile.name,
             workspace=str(workspace),
         )
+        # The same workspace lease as `garuda run` (B.4), held for the chat's
+        # whole life: a second editor of the workspace is refused, not interleaved.
+        from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+
+        lease = WorkspaceLeaseGuard(
+            str(workspace),
+            session.events.session_id,
+            capacity_key="native",
+            mode=lease_mode_for(permission_mode),
+        )
+        try:
+            lease.acquire()
+        except Exception as exc:
+            evidence.record_startup_refusal(self.store, session.events.session_id)
+            await session.close()
+            raise WorkspaceBusy(str(exc)) from exc
+        lease.start_heartbeat()
         try:
             # The dashboard does not use `run_agent_task` for held multi-turn
             # chats, so it enters the same shared session-evidence boundary
@@ -270,6 +291,7 @@ class LiveRuns:
         except Exception:
             evidence.record_startup_refusal(self.store, session.events.session_id)
             await session.close()
+            await lease.release()
             raise
         env, env_handle = await resolve_environment(
             session.config.workspace_kind, str(workspace), session.config.docker_image,
@@ -281,7 +303,7 @@ class LiveRuns:
             chat_id=chat_id, session=session, env=env, env_handle=env_handle,
             workspace=workspace, permission_mode=permission_mode, model=model,
             agent=session.profile.name, last_seen_at=time.monotonic(),
-            workspace_delta_loader=workspace_delta_loader,
+            workspace_delta_loader=workspace_delta_loader, lease=lease,
         )
         self.chats[chat_id] = chat
         logger.info("Dashboard opened chat %s in %s as %s", chat_id, workspace, permission_mode)
@@ -323,7 +345,7 @@ class LiveRuns:
             self.store.update_meta(chat.session_id, {"task": chat.session_task})
         context = chat.session.prepare_context(prompt)
         job = self.jobs.submit(
-            lambda job: chat.session.agent.run(
+            lambda job: chat.guarded(chat.session.agent.run(
                 task=prompt,
                 model=chat.session.model,
                 env=chat.env,
@@ -336,7 +358,7 @@ class LiveRuns:
                 workspace_delta_loader=chat.workspace_delta_loader,
                 collection_model=getattr(chat.session, "collection", None),
                 collection_policy=getattr(chat.session, "collection_policy", None),
-            ),
+            )),
             task=prompt,
             events=chat.session.events,
         )
@@ -453,6 +475,9 @@ class LiveRuns:
                 )
             except Exception:
                 logger.warning("Recording chat %s evidence failure failed", chat_id, exc_info=True)
+        if chat.lease is not None:
+            # Released last: after the session, its workspace and its evidence.
+            await chat.lease.release()
         return {**summary, "closed": True, "denied_approvals": denied}
 
     async def reap(self) -> dict[str, int]:
@@ -542,6 +567,12 @@ class LiveChat:
     #: "which files does this turn need to mention" is exactly a queue.
     sources: list[Any] = field(default_factory=list)
     new_sources: list[Any] = field(default_factory=list)
+    #: The workspace lease held for the chat's whole life (B.4).
+    lease: Any = None
+
+    def guarded(self, work):
+        """Run a turn under the chat's lease: a lost lease stops the turn."""
+        return self.lease.race(work) if self.lease is not None else work
 
     @property
     def session_id(self) -> str:

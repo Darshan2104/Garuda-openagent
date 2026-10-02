@@ -122,6 +122,24 @@ async def chat_loop(args) -> int:
         agent=session.profile.name,
         workspace=args.workspace,
     )
+    # The same workspace lease as `garuda run` (B.4): a chat that edits files
+    # owns the workspace for its whole life, or does not start.
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+
+    lease = WorkspaceLeaseGuard(
+        args.workspace,
+        session.events.session_id,
+        capacity_key="native",
+        mode=lease_mode_for(getattr(session.config, "permission_mode", None)),
+    )
+    try:
+        lease.acquire()
+    except Exception as exc:
+        evidence.record_startup_refusal(store, session.events.session_id)
+        await session.close()
+        print(f"Error: chat refused to start: {exc}", file=human)
+        return 1
+    lease.start_heartbeat()
     # The same session-evidence boundary as `run_agent_task` and the dashboard:
     # the baseline is persisted before an environment exists or a prompt is read,
     # and a chat that cannot record it does not start.
@@ -132,6 +150,7 @@ async def chat_loop(args) -> int:
     except Exception as exc:
         evidence.record_startup_refusal(store, session.events.session_id)
         await session.close()
+        await lease.release()
         print(f"Error: chat refused to start: {exc}", file=human)
         return 1
 
@@ -171,7 +190,7 @@ async def chat_loop(args) -> int:
 
             context = session.prepare_context(task.strip())
             run_task = asyncio.create_task(
-                session.agent.run(
+                lease.race(session.agent.run(
                     task=task.strip(),
                     model=session.model,
                     env=env,
@@ -185,7 +204,7 @@ async def chat_loop(args) -> int:
                     workspace_delta_loader=workspace_delta_loader,
                     collection_model=getattr(session, "collection", None),
                     collection_policy=getattr(session, "collection_policy", None),
-                )
+                ))
             )
             # Run the turn in the background and drain events as they arrive so
             # tool calls/results render live under a "thinking" spinner.
@@ -224,14 +243,18 @@ async def chat_loop(args) -> int:
     finally:
         await cleanup_workspace(env_handle)
         await session.close()
-        persisted = await _persist_chat_session(store, session, last_result, args.workspace)
-        await hooks.on_session_end(
-            {
-                "session_id": session.events.session_id,
-                "success": persisted.success,
-                "turns": persisted.turns,
-            }
-        )
+        try:
+            persisted = await _persist_chat_session(store, session, last_result, args.workspace)
+            await hooks.on_session_end(
+                {
+                    "session_id": session.events.session_id,
+                    "success": persisted.success,
+                    "turns": persisted.turns,
+                }
+            )
+        finally:
+            # Released last, after the session is saved and its process torn down.
+            await lease.release()
     print("Bye.", file=human)
     return 0
 
