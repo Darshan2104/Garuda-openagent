@@ -936,3 +936,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Cancellation verifies the recorded process identity before signalling; a
   recycled pid is never signalled. Logs are bounded.
 
+## 2026-10-02 — One read model, resumable by byte offset (issue #167, D.3)
+
+- `core/read_model.py` is the only place session rows are built; the CLI
+  (`sessions --json`) and the dashboard (`/api/sessions*`) render it. Reads
+  only; unreadable records read `unknown`; a review outcome is never
+  verification; accounting stays `unknown` until Set E.
+- Live updates are server-sent events whose ids are byte offsets into the
+  event log (after snapshots; polling remains), so `Last-Event-ID` resumes with
+  no duplicate or skipped event; a torn last line is held back.
+

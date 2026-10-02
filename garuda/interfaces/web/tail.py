@@ -125,3 +125,43 @@ def tail_jsonl(path: Path, offset: int = 0, *, max_bytes: int = MAX_TAIL_BYTES) 
         eof=consumed >= size,
         malformed=malformed,
     )
+
+
+def tail_records(path: Path, offset: int = 0, *,
+                 max_bytes: int = MAX_TAIL_BYTES) -> tuple[list[tuple[int, dict[str, Any]]], int]:
+    """Like :func:`tail_jsonl`, but each record carries the byte offset just after its line.
+
+    That offset is a stable resume point: a stream that reconnects with the last one it
+    saw continues with the next record, never repeating or skipping one. A shrunken file
+    restarts from the beginning (offset 0) rather than seeking past its end."""
+    offset = max(0, offset)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [], offset
+    if offset > size:
+        offset = 0
+    if offset == size:
+        return [], offset
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read(max_bytes)
+    except OSError:
+        return [], offset
+    cut = chunk.rfind(b"\n")
+    if cut == -1:
+        return [], offset
+    records: list[tuple[int, dict[str, Any]]] = []
+    position = offset
+    for line in chunk[: cut + 1].splitlines(keepends=True):
+        position += len(line)
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append((position, record))
+    return records, position

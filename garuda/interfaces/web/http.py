@@ -117,7 +117,34 @@ class _Handler(BaseHTTPRequestHandler):
             body=body,
         )
 
+    def _send_stream(self, response: Response) -> None:
+        self.send_response(response.status)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
+        for key, value in response.headers.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for chunk in response.stream:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            logger.debug("dashboard stream client disconnected")
+        finally:
+            close = getattr(response.stream, "close", None)
+            if close:
+                close()
+
     def _send(self, response: Response, *, include_body: bool = True) -> None:
+        if response.stream is not None:
+            if include_body:
+                self._send_stream(response)
+            return
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Content-Length", str(len(response.body)))

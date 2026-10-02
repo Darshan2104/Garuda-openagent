@@ -482,6 +482,8 @@ def build_parser():
 
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
     sessions_parser.add_argument("--limit", type=int, default=20)
+    sessions_parser.add_argument("--json", action="store_true",
+                                 help="The shared read model the dashboard serves, as JSON")
     sessions_sub = sessions_parser.add_subparsers(dest="sessions_command")
     sessions_merge = sessions_sub.add_parser(
         "merge",
@@ -502,6 +504,11 @@ def build_parser():
     )
     sessions_merge.add_argument("--timeout", type=float, default=600)
     sessions_merge.add_argument("--workspace", default=".")
+    sessions_show = sessions_sub.add_parser(
+        "show", help="One session in full: state, queue, approvals, flow")
+    sessions_show.add_argument("session", help="Session id, unique prefix, or name")
+    sessions_show.add_argument("--json", action="store_true")
+    sessions_show.add_argument("--workspace", default=".")
     sessions_cancel = sessions_sub.add_parser(
         "cancel", help="Stop a background session: remove it from the queue, or stop its worker"
     )
@@ -875,23 +882,49 @@ def run_sessions(args) -> int:
         return run_sessions_cancel(args)
     if getattr(args, "sessions_command", None) in ("merge", "remove-worktree"):
         return run_sessions_merge(args)
-    sessions = SessionStore().list_sessions(limit=args.limit)
-    if not sessions:
+    import json as _json
+
+    from garuda.core import read_model
+    from garuda.runtime.queue import QueueStore
+
+    store = SessionStore()
+    try:
+        queue = QueueStore()
+    except Exception:
+        queue = None
+    if getattr(args, "sessions_command", None) == "show":
+        import os
+        import sys
+
+        try:
+            session_id = store.resolve(args.session, workspace=os.path.realpath(args.workspace))
+            row = read_model.session(store, session_id, queue=queue)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        print(_json.dumps(row, indent=2, default=str) if args.json else
+              "\n".join(f"{k}: {v}" for k, v in row.items()))
+        return 0
+    rows = read_model.sessions(store, limit=args.limit, queue=queue)
+    if getattr(args, "json", False):
+        print(_json.dumps({"sessions": rows}, indent=2, default=str))
+        return 0
+    if not rows:
         print("No saved sessions.")
         return 0
-    from garuda.runtime.session_state import effective_state, summary_label
-
-    print(f"{'ID':<10} {'NAME':<24} {'STATE':<10} {'TURNS':>5}  {'UPDATED':<32} TASK")
-    for meta in sessions:
-        task = " ".join((meta.get("task") or "").split())
+    print(f"{'ID':<10} {'NAME':<24} {'STATE':<10} {'QUEUE':<8} {'UPDATED':<32} TASK")
+    for row in rows:
+        task = " ".join((row.get("task") or "").split())
         if len(task) > 60:
             task = task[:57] + "..."
+        queue_cell = (f"#{row['queue']['position']}" if (row["queue"] or {}).get("state") == "queued"
+                      else "-")
         print(
-            f"{meta.get('session_id', '')[:8]:<10} "
-            f"{(meta.get('name') or '-')[:24]:<24} "
-            f"{summary_label(effective_state(meta)):<10} "
-            f"{meta.get('turns', 0):>5}  "
-            f"{meta.get('updated_at', ''):<32} "
+            f"{row['session_id'][:8]:<10} "
+            f"{(row.get('name') or '-')[:24]:<24} "
+            f"{row['label']:<10} "
+            f"{queue_cell:<8} "
+            f"{row.get('updated_at') or '':<32} "
             f"{task}"
         )
     return 0
