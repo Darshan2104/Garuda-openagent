@@ -416,6 +416,21 @@ instructions:
   verification: the usual completion and verification gates still apply. The
   accepted value is `AgentResult.output`. A child inherits the schema, and
   `schema: null` drops it. Native runs only.
+- `memory: {notes: propose}` gives the agent a `remember(text, scope)` tool
+  (`scope` is `user` or `project`). It records a **proposal** (at most 500
+  characters, ten per root task, shared with its subagents) and changes no
+  memory file. Secret-shaped text is refused, and scrubbed before it can reach
+  the event log or the saved transcript. `garuda memory review` lists the
+  proposals; you accept, edit or reject each one, at a terminal only (a headless
+  run can propose but never accept). Accepted user notes append to
+  `~/.agent/memory.md` and load after your `AGENTS.md`; accepted project notes
+  append to `.agent/memory.md` and load after the project's memory files, both
+  labelled as reviewed information, never instructions. Acceptance is
+  journaled so a replay can't append twice, and refuses symbolic links, another
+  project's proposals and a proposal that changed after you saw it. The
+  dashboard lists pending proposals read-only. If a needed safeguard is missing,
+  `notes: propose` refuses (`agent.notes_unavailable`) rather than running
+  without it.
 - **One definition everywhere.** `garuda run`, `garuda chat`, `garuda serve`,
   the dashboard and the SDK resolve a definition through the same code, so
   `garuda agent show NAME --json` and the prompt digest are the same whichever

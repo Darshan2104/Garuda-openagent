@@ -134,6 +134,8 @@ class SubagentRunner:
     deadline_monotonic: float | None = None
     turns_left: Any = None
     busy: bool = False
+    # The root task's reviewed-notes ledger, shared with every descendant (H.9).
+    notes: Any = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -231,6 +233,7 @@ class SubagentRunner:
             config.deadline_sec = min(config.deadline_sec or remaining, remaining)
         config.delegation_depth = self.depth
         config.delegation_budget = budget
+        config.notes_ledger = self.notes
         if self.allowed is not None:
             child = config.subagents if config.subagents is not None else self.allowed
             config.subagents = [name for name in child if name in self.allowed]

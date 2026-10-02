@@ -562,6 +562,16 @@ def build_parser():
     agent_migrate.add_argument("--accept-tightening", action="store_true",
                                help="Write even where version 1 is stricter than the old file")
 
+    memory_parser = subparsers.add_parser(
+        "memory", help="Review notes agents have proposed (only you accept them)")
+    memory_sub = memory_parser.add_subparsers(dest="memory_command")
+    memory_list = memory_sub.add_parser("list", help="Pending proposals for this project")
+    memory_list.add_argument("--workspace", default=".")
+    memory_list.add_argument("--json", action="store_true")
+    memory_review = memory_sub.add_parser(
+        "review", help="Accept, edit or reject each pending proposal (needs a terminal)")
+    memory_review.add_argument("--workspace", default=".")
+
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")
     flow_run = flow_sub.add_parser("run", help="Run a flow by name")
@@ -2140,6 +2150,12 @@ def main() -> None:
         if args.agent_command is None:
             parser.parse_args(["agent", "--help"])
         raise SystemExit(run_agent(args))
+    if args.command == "memory":
+        if args.memory_command is None:
+            parser.parse_args(["memory", "--help"])
+        from garuda.interfaces.memory_cli import run_memory
+
+        raise SystemExit(run_memory(args))
     if args.command == "flow":
         if args.flow_command is None:
             parser.parse_args(["flow", "--help"])

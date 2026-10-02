@@ -768,6 +768,22 @@ async def prepare_run(
 
         limited = InvokeSubagentTool.limited_to(config.subagents)
         tools = [limited if t.name == "invoke_subagent" else t for t in tools]
+    notes_ledger = None
+    if config.memory_notes == "propose":
+        # Reviewed notes (H.9): one ledger for the whole task tree, so the limit on
+        # proposals is per root task. A failure to set it up leaves the agent
+        # without `remember`, never with an unchecked one.
+        try:
+            from garuda.context.notes import NotesLedger
+            from garuda.tools.remember import RememberTool
+
+            notes_ledger = config.notes_ledger or NotesLedger.create(
+                getattr(env, "workspace_root", None) or ".", events.session_id)
+            if not any(t.name == "remember" for t in tools):
+                tools = [*tools, RememberTool()]
+        except Exception:
+            logger.warning("memory.notes: propose is unavailable for this run", exc_info=True)
+            notes_ledger = None
     if terminal_strategy is None:
         # The terminal tool carries the agent's output schema, or none: a child
         # delegated the parent's tools must not inherit the parent's schema.
@@ -800,6 +816,7 @@ async def prepare_run(
             parent_permissions=permissions,
             parent_tools=list(tools),
             allowed=config.subagents,
+            notes=notes_ledger,
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
             deadline_monotonic=deadline_at,
@@ -819,6 +836,7 @@ async def prepare_run(
         allowed_tool_effects=allowed_tool_effects,
         tool_options=dict(config.tool_options or {}),
         removed_tools=frozenset(config.removed_tools or ()),
+        notes=notes_ledger,
     )
     ctx.deadline_monotonic = deadline_at
     ledger = SideEffectLedger()

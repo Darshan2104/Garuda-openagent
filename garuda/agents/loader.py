@@ -62,6 +62,7 @@ class AgentProfile:
     memory_max_chars: int = 8000
     memory_max_total_chars: int = 32_000
     memory_context_pack: bool = False
+    memory_notes: str = "off"
     # Skill sources and selection (H.5). None: a legacy profile's project dirs.
     skills_from: list[str] | None = None
     skills_exclude: list[str] | None = None
@@ -115,6 +116,7 @@ class AgentProfile:
             tool_options=dict(self.tool_options or {}),
             subagents=list(self.subagents) if self.subagents is not None else None,
             removed_tools=list(self.tools_removed or []),
+            memory_notes=self.memory_notes,
             output_schema=self.output_schema,
             enable_tmux=self.enable_tmux,
             marker_polling=self.marker_polling,

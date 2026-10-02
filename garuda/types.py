@@ -143,6 +143,10 @@ class AgentConfig:
     output_schema: dict | None = None
     # Identifies the resolved agent definition this run started from (H.8).
     agent_digest: str | None = None
+    # Reviewed notes (H.9): "propose" gives the agent `remember`; the ledger is shared down
+    # the subagent tree so the proposal limit is per root task.
+    memory_notes: str = "off"
+    notes_ledger: Any = None
     # Delegation bounds shared down a subagent tree (H.6): how deep this run
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0

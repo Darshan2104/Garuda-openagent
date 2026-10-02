@@ -76,7 +76,7 @@ FIELDS: dict[str, Field] = {
     "memory.max_chars": _f("int", "memory_max_chars"),
     "memory.max_total_chars": _f("int", "memory_max_total_chars"),
     "memory.context_pack": _f("bool", "memory_context_pack"),
-    "memory.notes": _later("choice", "H.9", choices=("off", "propose")),
+    "memory.notes": _f("choice", "memory_notes", choices=("off", "propose")),
     # skills
     "skills.include": _f("strs", "skills", nullable=True),
     "skills.dirs": _f("strs", "skills_dirs", nullable=True),
