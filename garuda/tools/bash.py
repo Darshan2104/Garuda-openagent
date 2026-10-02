@@ -2,7 +2,7 @@ import time
 import uuid
 
 from garuda.core.side_effects import LAUNCH_DIR, is_backgrounding, read_launch, wrap_launch
-from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.protocol import ToolContext, ToolEffect, positive_int, positive_number
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -49,6 +49,9 @@ def resolve_timeout(
 class BashTool:
     effect = ToolEffect.MUTATING
     name = "bash"
+    #: Per-agent options (H.6): the timeout the command runs with (the most it
+    #: may ask for) and a cap on the output returned.
+    options_schema = {"timeout_sec": positive_number, "max_output_bytes": positive_int}
     description = (
         "Execute a shell command in the workspace and return stdout, stderr, and exit code. "
         "Set timeout for long builds/tests (default 120s) and cwd to run in a subdirectory."
@@ -78,6 +81,9 @@ class BashTool:
         command = arguments["command"]
         timeout = arguments.get("timeout")
         cwd = arguments.get("cwd")
+        limit = ctx.option("bash", "timeout_sec") if hasattr(ctx, "option") else None
+        if limit is not None:
+            timeout = limit if timeout is None else min(float(timeout), float(limit))
         effective, asked, remaining = resolve_timeout(
             float(timeout) if timeout is not None else None,
             getattr(ctx, "deadline_monotonic", None),
@@ -116,6 +122,10 @@ class BashTool:
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             ).strip()
+        cap = ctx.option("bash", "max_output_bytes") if hasattr(ctx, "option") else None
+        if cap is not None and len(output.encode("utf-8")) > cap:
+            output = (output.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+                      + f"\n[output cut at {cap} bytes by tools.options.bash.max_output_bytes]")
         if asked is not None:
             output += BUDGET_CAPPED_NOTE.format(
                 capped=effective, asked=asked, remaining=remaining or 0.0

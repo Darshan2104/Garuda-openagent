@@ -84,6 +84,9 @@ class RunState:
     # ``build_tools_schema``). Held here so the loop sends the same object each
     # turn and the context budget can cache its cost against it.
     tools_schema: list[dict] = field(default_factory=list)
+    #: The turn in progress (1-based); 0 before the first. A delegated child's
+    #: turns are bounded by what the parent has left (H.6).
+    turn: int = 0
     # The run's deterministic self-knowledge: goal, todos, files touched, checks
     # run, criteria. Re-pinned after compaction and fed to the summarizer as given
     # facts, so the model is not asked to remember what the harness already knows.
@@ -755,6 +758,12 @@ async def prepare_run(
         # need to list a dynamic tool that single-model runs never expose.
         tools = [*tools, DelegateCollectionTool()]
 
+    if config.subagents is not None and any(t.name == "invoke_subagent" for t in tools):
+        # The schema enumerates exactly the allowed agents; the runner enforces it too.
+        from garuda.tools.subagent import InvokeSubagentTool
+
+        limited = InvokeSubagentTool.limited_to(config.subagents)
+        tools = [limited if t.name == "invoke_subagent" else t for t in tools]
     tool_map = {tool.name: tool for tool in tools}
     tools_schema = build_tools_schema(tools)
     # Told to the context after dynamic tool insertion: a reused context has the
@@ -762,7 +771,8 @@ async def prepare_run(
     context.set_tools(tools_schema)
     events.append(EventType.USER_MESSAGE, {"content": task})
 
-    if subagent_runner is None and "invoke_subagent" in tool_map:
+    built_runner = subagent_runner is None and "invoke_subagent" in tool_map
+    if built_runner:
         from garuda.core.subagent import SubagentRunner
 
         subagent_runner = SubagentRunner(
@@ -778,6 +788,10 @@ async def prepare_run(
             hooks=hooks,
             parent_permissions=permissions,
             parent_tools=list(tools),
+            allowed=config.subagents,
+            depth=config.delegation_depth + 1,
+            budget=config.delegation_budget,
+            deadline_monotonic=deadline_at,
         )
 
     ctx = ToolContext(
@@ -792,6 +806,8 @@ async def prepare_run(
         persistent_shell=config.persistent_shell,
         permissions=permissions,
         allowed_tool_effects=allowed_tool_effects,
+        tool_options=dict(config.tool_options or {}),
+        removed_tools=frozenset(config.removed_tools or ()),
     )
     ctx.deadline_monotonic = deadline_at
     ledger = SideEffectLedger()
@@ -880,4 +896,7 @@ async def prepare_run(
         # which only exist once the run is assembled — and passing a callable keeps
         # garuda/context from having to import garuda/core to read them.
         context.set_state_provider(run_state.render_state_card)
+    if built_runner:
+        # A child never outruns the turns its parent has left.
+        subagent_runner.turns_left = lambda: max(1, config.max_turns - run_state.turn)
     return run_state

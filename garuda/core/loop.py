@@ -142,6 +142,7 @@ class DefaultAgent:
 
         turn = 0
         for turn in range(1, state.config.max_turns + 1):
+            state.turn = turn
             # Opened before compaction so this turn's record owns the compaction
             # cost. Compaction happens *because* of the history this turn inherited,
             # and attributing it to the previous turn would make the turn that paid

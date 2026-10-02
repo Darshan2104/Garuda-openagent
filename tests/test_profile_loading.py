@@ -116,6 +116,8 @@ NON_DEFAULTS = {
     "skills_from": ["project", "user"],
     "skills_exclude": ["old-skill"],
     "skills_load": "full",
+    "tool_options": {"bash": {"timeout_sec": 30}},
+    "subagents": ["explore"],
 }
 
 
@@ -123,7 +125,7 @@ def test_the_fixture_covers_every_authorable_field():
     from dataclasses import fields
 
     authorable = {f.name for f in fields(AgentProfile)} - {"name", "system_prompt", "declared_fields", "source_path",
-                                                      "spec_version"}
+                                                      "spec_version", "tools_removed"}
     assert authorable == set(NON_DEFAULTS)
 
 

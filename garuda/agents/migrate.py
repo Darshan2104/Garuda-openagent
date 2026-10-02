@@ -60,6 +60,11 @@ def plan(path: str | Path) -> Migration:
     # A legacy profile never loaded user memory; its version 1 form says so
     # rather than opting in to the new default (H.4).
     doc.setdefault("memory", {}).setdefault("user", False)
+    # Likewise it could start any subagent; version 1 defaults to read-only ones (H.6).
+    if isinstance(doc.get("tools"), dict):
+        doc["tools"].setdefault("subagents", None)
+    else:
+        doc["tools"] = {"subagents": None}
     body = None
     if target.suffix == ".md":
         instructions = dict(doc.get("instructions") or {})

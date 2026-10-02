@@ -77,6 +77,7 @@ class ResolvedAgent:
     declared: set[str] = field(default_factory=set)  # legacy profile fields set
     warnings: list[str] = field(default_factory=list)
     versioned: bool = False  # the requested file itself is version 1
+    removed: set[str] = field(default_factory=set)  # tools any level removed
 
     @property
     def source(self) -> Source:
@@ -103,6 +104,9 @@ class ResolvedAgent:
             values.pop("tools")
         if self.versioned and "memory.user" not in self.leaves:
             values["memory_user"] = True  # version 1 default: your AGENTS.md when it exists
+        if self.versioned and "tools.subagents" not in self.leaves:
+            values["subagents"] = list(DEFAULT_SUBAGENTS)  # read-only agents only
+        values["tools_removed"] = sorted(self.removed) or None
         return AgentProfile(declared_fields=set(self.declared), source_path=self.source.path,
                             **values)
 
@@ -318,8 +322,8 @@ def translate_legacy(data: dict, body: str | None, *, source: Source | None = No
 def _declared(leaves: dict[str, Any]) -> set[str]:
     out = set()
     for path in leaves:
-        if path.startswith("memory."):
-            continue  # memory sources do not steer mode presets
+        if path.startswith(("memory.", "tools.subagents", "tools.options")):
+            continue  # memory sources and tool settings do not steer mode presets
         target = spec.FIELDS.get(path)
         if target is not None and target.profile:
             out.add(target.profile)
@@ -345,16 +349,33 @@ def _merge(current: dict[str, Any], prov: dict[str, Source], leaves: dict[str, A
         prov[path] = source
 
 
+def builtin_tools() -> list[str]:
+    from garuda.tools.registry import list_tool_names
+
+    return sorted(list_tool_names())
+
+
+def read_only_tools() -> list[str]:
+    """Built-ins that neither write, run commands nor use the network — read from
+    each tool's declared effect, never a hand-kept list — plus task_complete."""
+    from garuda.tools.protocol import ToolEffect, tool_effect
+    from garuda.tools.registry import get_tool
+
+    names = [n for n in builtin_tools() if tool_effect(get_tool(n)) is ToolEffect.READ_ONLY]
+    return sorted({*names, "task_complete"})
+
+
 def _apply_tools(base: list[str] | None, leaves: dict[str, Any], where: str) -> list[str] | None:
     preset = leaves.get("tools.preset", "inherit")
     add, remove = leaves.get("tools.add", []), leaves.get("tools.remove", [])
     if preset == "none":
         base = []
+    elif preset == "all":
+        base = builtin_tools()
+    elif preset == "read-only":
+        base = read_only_tools()
     if base is None and (add or remove):
-        raise spec.AgentSpecError(
-            "agent.unsupported_field", "tools.add" if add else "tools.remove",
-            "changing an unrestricted tool list needs a preset (arrives with H.6); "
-            "use preset: none and list the tools", source=where)
+        base = builtin_tools()  # an unrestricted list edited by name starts from every built-in
     if base is None:
         return None
     out = list(base)
@@ -362,6 +383,39 @@ def _apply_tools(base: list[str] | None, leaves: dict[str, Any], where: str) -> 
         if name not in out:
             out.append(name)
     return [name for name in out if name not in set(remove)]
+
+
+DEFAULT_SUBAGENTS = ("explore", "plan", "reviewer")
+
+
+def _check_options(options, where: str) -> None:
+    """``tools.options``: every tool and option must be declared, every value valid."""
+    from garuda.tools.registry import get_tool
+
+    for tool_name, values in options.items():
+        try:
+            tool = get_tool(tool_name)
+        except KeyError:
+            tool = None
+        schema = getattr(tool, "options_schema", None) if tool else None
+        if not schema:
+            raise spec.AgentSpecError("agent.unknown_tool_option", f"tools.options.{tool_name}",
+                                      f"{tool_name!r} takes no options", source=where)
+        if not isinstance(values, dict):
+            raise spec.AgentSpecError("agent.invalid_value", f"tools.options.{tool_name}",
+                                      "must be a mapping of option to value", source=where)
+        for option, value in values.items():
+            check = schema.get(option)
+            if check is None:
+                raise spec.AgentSpecError(
+                    "agent.unknown_tool_option", f"tools.options.{tool_name}.{option}",
+                    f"{tool_name} has no option {option!r} (it has {', '.join(sorted(schema))})",
+                    source=where)
+            problem = check(value)
+            if problem:
+                raise spec.AgentSpecError("agent.invalid_value",
+                                          f"tools.options.{tool_name}.{option}", problem,
+                                          source=where)
 
 
 def _check_tools(names, where: str) -> None:
@@ -408,11 +462,13 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         parent = resolve_agent(parent_ref, dirs, _stack=(*_stack, source))
         merged, prov = dict(parent.leaves), dict(parent.provenance)
         instructions, tools = parent.instructions, parent.tools
+        removed = set(parent.removed)
         declared = set(parent.declared) | declared
         warnings = parent.warnings + warnings
         chain = [*parent.chain, source]
     else:
         merged, prov, instructions, tools, chain = {}, {}, None, None, [source]
+        removed = set()
     own = {k: v for k, v in leaves.items() if not k.startswith(("instructions.",))
            and k not in ("tools.preset", "tools.add", "tools.remove")}
     _merge(merged, prov, own, source)
@@ -433,6 +489,10 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
     if tool_leaves:
         tools = _apply_tools(tools, tool_leaves, str(source.path))
         prov["tools"] = source
+        removed = (removed - set(tool_leaves.get("tools.add", []))) | set(
+            tool_leaves.get("tools.remove", []))
+    if "tools.options" in leaves:
+        _check_options(leaves["tools.options"], str(source.path))
     for path in ("tools.preset", "tools.add", "tools.remove"):
         if path in leaves:
             merged[path] = leaves[path]  # kept for activation checks and display
@@ -444,6 +504,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         description=merged.get("description", ""),
         leaves=merged, provenance=prov, instructions=instructions, tools=tools,
         chain=chain, declared=declared, warnings=warnings, versioned=is_v1,
+        removed=removed,
     )
 
 
@@ -463,7 +524,8 @@ def _instruction_file(source: Source, rel: str) -> str:
 
 
 def check_references(profile, workspace, *, mcp_config_path: str | None = None) -> None:
-    """Version 1 refusals that need the workspace: unknown skills and MCP servers.
+    """Version 1 refusals that need the workspace: unknown skills, subagents and MCP
+    servers.
 
     Reads configuration only; nothing is started.
     """
@@ -477,6 +539,19 @@ def check_references(profile, workspace, *, mcp_config_path: str | None = None) 
             raise spec.AgentSpecError("agent.unknown_skill", "skills.include",
                                       f"no skill named {unknown[0]!r} in the selected sources",
                                       source=str(profile.source_path))
+    if profile.subagents:
+        from garuda.agents.loader import load_profile
+        from garuda.config.agent_home import resolve_agents_dirs
+        from garuda.model.config import ConfigError
+
+        dirs = resolve_agents_dirs(str(workspace), None)
+        for name in profile.subagents:
+            try:
+                load_profile(name, extra_dir=dirs)
+            except (ConfigError, OSError) as exc:
+                raise spec.AgentSpecError("agent.unknown_subagent", "tools.subagents",
+                                          f"subagent {name!r} does not load: {exc}",
+                                          source=str(profile.source_path)) from exc
     if profile.mcp_servers:
         from garuda.mcp.config import load_mcp_config, resolve_mcp_config_paths
 

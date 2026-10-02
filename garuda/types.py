@@ -135,6 +135,14 @@ class AgentConfig:
     marker_polling: bool = True
     enable_three_step_summary: bool = True
     condenser: str = "microcompact"
+    # Agent-definition tool settings (H.6).
+    tool_options: dict = field(default_factory=dict)
+    subagents: list[str] | None = None
+    removed_tools: list[str] = field(default_factory=list)
+    # Delegation bounds shared down a subagent tree (H.6): how deep this run
+    # is, and the root's launch budget object (None: this run is the root).
+    delegation_depth: int = 0
+    delegation_budget: Any = None
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared

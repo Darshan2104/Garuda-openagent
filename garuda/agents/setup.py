@@ -1118,6 +1118,9 @@ async def prepare_agent_run(
         mcp_servers=profile.mcp_servers,
         mcp_user_paths=mcp_user_paths,
     )
+    if profile.tools_removed:
+        # `tools.remove` also removes an explicit or custom tool of that name (H.6).
+        tools = [tool for tool in tools if tool.name not in profile.tools_removed]
     if profile.tools is not None:
         # A misspelled tool name used to vanish without a trace.
         available = {tool.name for tool in tools}

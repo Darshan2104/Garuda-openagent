@@ -91,8 +91,8 @@ FIELDS: dict[str, Field] = {
     "tools.mcp_config": _f("str", "mcp_config_path", nullable=True),
     "tools.tmux": _f("bool", "enable_tmux"),
     "tools.marker_polling": _f("bool", "marker_polling"),
-    "tools.options": _later("map", "H.6"),
-    "tools.subagents": _later("strs", "H.6"),
+    "tools.options": _f("map", "tool_options"),
+    "tools.subagents": _f("strs", "subagents", nullable=True),
     "tools.subagent_only": _f("bool", "subagent"),
     # permissions
     "permissions.mode": _f("choice", "permission_mode", choices=PERMISSIONS),
@@ -243,10 +243,9 @@ def validate(doc: dict, *, source: str = "") -> dict[str, Any]:
 def unsupported(leaves: dict[str, Any]) -> list[str]:
     """Recognized fields whose owner PR has not shipped."""
     out = []
-    for path, value in leaves.items():
+    for path in leaves:
         field = FIELDS.get(path)
         if field is not None and not field.supported:
             out.append(f"{path} (arrives with {field.owner})")
-        elif path == "tools.preset" and value in ("all", "read-only"):
-            out.append(f"tools.preset: {value} (arrives with H.6)")
+
     return out
