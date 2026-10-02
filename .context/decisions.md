@@ -545,3 +545,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   writes into the tree it is changing or its own delta.
 - Committed durable `.context/` files remain read-only repository input. Packs
   older runs left in a workspace's `.context/` are neither read nor deleted.
+
+## 2026-10-02 — Every mutating entry point holds the workspace lease (issue #157, B.4)
+
+- CLI chat, dashboard chats, the SDK `Conversation` and recipes take the same
+  `WorkspaceLeaseGuard` as `garuda run`: acquired before the environment or
+  the first prompt, heartbeated for the session's whole life, each turn raced
+  against the heartbeat (a lost lease stops the turn), released last on close
+  and on every failure path. A `readonly` posture takes a shared read-only
+  lease, which never blocks an editor.
+- A second editor is refused: `garuda chat` exits 1 before any environment,
+  the dashboard returns `409 workspace_busy`, the SDK raises
+  `LeaseConflictError`.

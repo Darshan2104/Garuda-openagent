@@ -359,6 +359,8 @@ def _start_chat(request: Request, ctx: DashboardContext, _match) -> Response:
         payload = live_module.call_on_loop(ctx.loop, ctx.live.start_chat(spec))
     except live_module.SpecError as exc:
         return invalid(str(exc))
+    except live_module.WorkspaceBusy as exc:
+        return error("workspace_busy", str(exc), status=409)
     except TimeoutError:
         return error("unavailable", "The agent loop did not open the chat in time.", status=504)
     return ok(payload, status=201)

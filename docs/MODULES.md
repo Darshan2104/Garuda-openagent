@@ -87,9 +87,10 @@ runtime (`native`, `claude`, `codex`, …) shared by every launch through
 and a key without one is not limited. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
 last (also on cancellation) — concurrent `run_agent_task` runs on one workspace
-are refused, never interleaved. Interactive paths that call `agent.run`
-directly (dashboard chat, CLI chat, SDK `Conversation`) take no lease yet; see
-`BACKLOG.md`.
+are refused, never interleaved. The interactive paths that call `agent.run`
+directly — CLI chat, dashboard chat, SDK `Conversation` and recipes — hold the
+same `WorkspaceLeaseGuard` for their whole life (read-only for a `readonly`
+posture), race each turn against its heartbeat, and release last on close.
 `diff.py` holds the git mechanics of the authoritative delta: baseline
 commit/status/fingerprints, per-file added/modified/deleted/renamed/untracked
 with preexisting dirt flagged separately, bounded diff text recoverable from

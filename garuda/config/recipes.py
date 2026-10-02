@@ -127,6 +127,30 @@ async def run_recipe(
     results: list[AgentResult] = []
     prior_context = ""
 
+    # One workspace lease for the whole recipe (B.4): its steps edit the same
+    # tree in sequence, and nobody else may edit it in between.
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+
+    lease = WorkspaceLeaseGuard(str(workspace), events.session_id, capacity_key="native")
+    lease.acquire()
+    lease.start_heartbeat()
+    try:
+        return await _run_steps(
+            recipe, resolved, lease, results, prior_context,
+            workspace=workspace, agents_dir=agents_dir, mcp_config_path=mcp_config_path,
+            run_reasoning=run_reasoning, collection_model=collection_model,
+            no_collection=no_collection, model_binding=model_binding,
+            env=env, events=events, hooks=hooks,
+        )
+    finally:
+        await lease.release()
+
+
+async def _run_steps(
+    recipe, resolved, lease, results, prior_context, *, workspace, agents_dir,
+    mcp_config_path, run_reasoning, collection_model, no_collection, model_binding,
+    env, events, hooks,
+) -> list[AgentResult]:
     for step in recipe.steps:
         prompt = render_template(step.prompt, resolved)
         if prior_context:
@@ -147,7 +171,7 @@ async def run_recipe(
         config.enable_verifier = step.agent != "plan"
         config.system_prompt = resolve_system_prompt(profile, workspace)
 
-        result = await agent.run(
+        result = await lease.race(agent.run(
             task=prompt,
             model=prepared.reasoning,
             env=env,
@@ -159,7 +183,7 @@ async def run_recipe(
             agents_dir=agents_dir,
             collection_model=prepared.collection,
             collection_policy=prepared.collection_policy,
-        )
+        ))
         if mcp_manager is not None:
             await mcp_manager.close()
 

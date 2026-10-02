@@ -765,3 +765,41 @@ async def test_the_first_message_names_the_session_in_the_run_list(chatting, sto
     assert payload_of(await call(ctx, f"/api/chat/{chat_id}"))["task"] == (
         "why does the parser drop the last token?"
     )
+
+
+# --- B.4: a dashboard chat holds the workspace lease for its whole life ------
+
+
+async def test_a_chat_holds_the_workspace_and_a_second_editor_gets_409(chatting, monkeypatch):
+    from garuda.workspace.lease import LeaseStore
+
+    live, session, ctx = chatting
+
+    async def fresh_session(**kwargs):
+        return _FakeSession()  # a distinct session per chat, as in production
+
+    monkeypatch.setattr("garuda.interfaces.session.AgentSession.create", fresh_session)
+    first = payload_of(await call(ctx, "/api/chat", method="POST", body={}))
+    (workspace,) = live.workspaces
+    holders = LeaseStore().holders_of(workspace)
+    assert [(h.session_id, h.mode) for h in holders] == [(first["session_id"], "mutating")]
+
+    second = await call(ctx, "/api/chat", method="POST", body={})
+    assert second.status == 409
+    assert json.loads(second.body)["error"]["code"] == "workspace_busy"
+
+    await live.close_chat(first["chat_id"])
+    assert LeaseStore().holders_of(workspace) == []
+
+
+async def test_read_only_chats_share_the_workspace(chatting, monkeypatch):
+    live, session, ctx = chatting
+
+    async def fresh_session(**kwargs):
+        return _FakeSession()
+
+    monkeypatch.setattr("garuda.interfaces.session.AgentSession.create", fresh_session)
+    body = {"permission_mode": "readonly"}
+    a = await call(ctx, "/api/chat", method="POST", body=body)
+    b = await call(ctx, "/api/chat", method="POST", body=body)
+    assert a.status == 201 and b.status == 201

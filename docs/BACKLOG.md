@@ -261,11 +261,6 @@ be a per-manifest allowlist of variable *names* in trusted global settings only,
 passed through without Garuda reading or logging the values, with a decision
 record on why that is not token proxying.
 
-**Interactive sessions take no workspace lease.** Only `run_agent_task` acquires
-the mutating lease. Dashboard chat (`interfaces/web/live.py`), CLI chat, and the
-SDK `Conversation` call `agent.run` directly, so they can interleave with a
-leased run on the same workspace.
-
 **SDK `Conversation`, `recipe run`, and eval runners carry no workspace
 baseline.** They persist no session (`sdk/conversation.py`,
 `config/recipes.run_recipe` via `interfaces/main.run_recipe_command`,

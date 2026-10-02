@@ -26,6 +26,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def lease_mode_for(permission_mode: str | None) -> str:
+    """A read-only permission posture takes a shared read-only lease."""
+    return "read-only" if permission_mode == "readonly" else "mutating"
+
+
 class WorkspaceLeaseGuard:
     """Hold one mutating workspace lease for the length of a facade call."""
 
@@ -39,6 +44,7 @@ class WorkspaceLeaseGuard:
         capacity_key: str | None = None,
         capacity_store=None,
         capacity_ceiling: int | None = None,
+        mode: str = "mutating",
     ):
         from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
 
@@ -55,6 +61,9 @@ class WorkspaceLeaseGuard:
         self._capacity_store = capacity_store
         self._capacity_ceiling = capacity_ceiling
         self._reservation = None
+        # "read-only" work shares the workspace with other readers and never
+        # blocks or is blocked by them; it still conflicts with nothing else.
+        self._mode = mode
 
     def acquire(self) -> None:
         """Reserve runtime capacity, then take the mutating lease.
@@ -66,7 +75,7 @@ class WorkspaceLeaseGuard:
         """
         self._reserve_capacity()
         try:
-            lease = self.leases.acquire(self.workspace, self.session_id, mode="mutating")
+            lease = self.leases.acquire(self.workspace, self.session_id, mode=self._mode)
         except BaseException:
             self._release_capacity()
             raise
