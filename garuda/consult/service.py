@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import shutil
 import time
@@ -207,7 +208,9 @@ class ConsultService:
                 raise ConsultRefused("consult.capacity_unavailable", str(exc)) from exc
         # 4. quiesce, snapshot
         if held.quiesce is not None:
-            held.quiesce()
+            paused = held.quiesce()
+            if inspect.isawaitable(paused):
+                await paused
         scratch = Path(self.store.root) / ".consult" / req.root_session / "scratch" / child_id
         held.scratch = scratch
         snapshot = self._snapshot(req.workspace, scratch / "snapshot")

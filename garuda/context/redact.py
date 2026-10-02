@@ -68,9 +68,32 @@ class UnsafeHandoffError(ValueError):
     """A handoff failed validation. Carries every violation, not just the first."""
 
 
+_REGISTERED: set[str] = set()
+_MIN_REGISTERED = 16  # a shorter literal would be too ambiguous to blank out of arbitrary text
+
+
+def register_secret(value: str) -> None:
+    """Have ``redact_text`` blank this exact literal wherever it appears.
+
+    For values minted at run time (a per-session endpoint token) that no pattern
+    could recognise. Register **before** the value is placed in any structure that
+    might be logged or exported. Anything shorter than 16 characters is refused."""
+    if len(value) < _MIN_REGISTERED:
+        raise ValueError("a registered secret must be at least 16 characters")
+    _REGISTERED.add(value)
+
+
+def forget_secret(value: str) -> None:
+    _REGISTERED.discard(value)
+
+
 def redact_text(text: str) -> tuple[str, list[RedactionFinding]]:
     """Replace secret patterns with `[REDACTED:<kind>]`. Returns text + findings."""
     findings: list[RedactionFinding] = []
+    for literal in sorted(_REGISTERED, key=len, reverse=True):
+        if literal in text:
+            findings.append(RedactionFinding(kind="registered-secret", count=text.count(literal)))
+            text = text.replace(literal, "[REDACTED:registered-secret]")
     for kind, pattern in _SECRET_PATTERNS:
 
         def _mask(match: re.Match[str], kind: str = kind) -> str:
