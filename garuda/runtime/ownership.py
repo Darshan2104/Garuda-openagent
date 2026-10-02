@@ -57,7 +57,7 @@ def owner_liveness(owner: dict) -> bool | None:
     without an identity (written before identities were kept) can only be
     proven dead, never proven alive.
     """
-    from garuda.runtime.recovery import _process_identity, _process_live
+    from garuda.runtime.recovery import _process_identity, _process_live, same_process
 
     pid = owner.get("pid")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
@@ -78,7 +78,7 @@ def owner_liveness(owner: dict) -> bool | None:
             return None
         if current is None:
             return None
-        return True if current == recorded else False
+        return same_process(recorded, current)
     # The leader is gone. Its process group says something about its
     # descendants only when it led that group; otherwise the group is shared
     # with unrelated processes (a shell, a test runner) and proves nothing.

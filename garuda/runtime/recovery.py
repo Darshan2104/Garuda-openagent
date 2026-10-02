@@ -191,6 +191,25 @@ def _process_identity(pid: int) -> str | None:
     return "ps:" + " ".join(out.split())
 
 
+def same_process(recorded: str | None, current: str | None) -> bool:
+    """Whether two identities of one pid name the same process.
+
+    Equal strings do. A ``ps:`` identity ends with the executable's name, which a process can
+    legitimately change by re-executing itself without changing pid or start time (macOS's
+    ``python3.12`` stub becomes ``Python`` inside the framework), so a launcher that records the
+    identity right after spawning would never match the running worker. For those, the start
+    time (the first five fields of ``lstart``) decides; Linux identities (boot id plus start
+    ticks) are compared exactly."""
+    if not recorded or not current:
+        return False
+    if recorded == current:
+        return True
+    if recorded.startswith("ps:") and current.startswith("ps:"):
+        start = recorded.split()[:5]
+        return len(start) == 5 and start == current.split()[:5]
+    return False
+
+
 def _is_zombie(pid: int) -> bool:
     """True for an exited process that only awaits reaping by its parent.
 

@@ -299,3 +299,18 @@ def test_the_worker_log_is_bounded(tmp_path):
     log.close()
     text = (tmp_path / "w.log").read_text()
     assert len(text) < 200 and text.count("[log cut") == 1
+
+
+def test_a_worker_that_reexecs_keeps_its_identity():
+    """macOS: a launcher records the identity right after spawn (`python3.12`), then the stub
+    re-executes into the framework binary (`Python`) with the same pid and start time."""
+    from garuda.runtime.recovery import same_process
+
+    spawned = "ps:Fri Oct 2 19:08:41 2026 python3.12"
+    running = "ps:Fri Oct 2 19:08:41 2026 Python"
+    assert same_process(spawned, running) and same_process(running, running)
+    assert not same_process(spawned, "ps:Fri Oct 2 19:08:42 2026 Python")   # another start time
+    assert not same_process(spawned, None) and not same_process("", running)
+    assert same_process("linux:b:123", "linux:b:123")
+    assert not same_process("linux:b:123", "linux:b:124")                    # Linux is exact
+    assert not same_process("linux:b:123", "ps:Fri Oct 2 19:08:41 2026 Python")
