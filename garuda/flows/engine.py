@@ -294,8 +294,9 @@ class FlowRunner:
                 if step["id"] in completed_steps:
                     continue  # completed before a resume: never run again
                 if "parallel" in step:
-                    raise FlowStopped("flow.parallel_unsupported",
-                                      "parallel review groups arrive with C.8b", step=step["id"])
+                    attempt = tried.get(step["id"], 0) + 1
+                    done.append(await self._run_group(step, done, attempt=attempt))
+                    continue
                 if step.get("review"):
                     await self._review_loop(step, steps[-1], done, lease, tried)
                     completed_steps.add(steps[-1]["id"])
@@ -322,6 +323,110 @@ class FlowRunner:
             await lease.release()
         result.receipts = receipts(self.store, self.flow_session)
         return result
+
+    async def _run_group(self, step: dict, done: list[dict], *, attempt: int) -> dict:
+        """A parallel review group on one immutable snapshot (C.8b).
+
+        Every member reviews the same detached snapshot repository, never the
+        workspace: native members run ``readonly`` and external ones must be
+        ``readonly`` roles, which run only in proven Docker confinement
+        (C.8a). Source and snapshot must both be unchanged afterwards.
+        """
+        import asyncio
+
+        from garuda.workspace import snapshot_proto as snap
+        from garuda.workspace.no_edits import NoEditsGuard
+
+        members = step["parallel"]
+        plans = {role: self._role_plan(role) for role in members}
+        for role, plan in plans.items():
+            if plan is not None and plan.kind == "acp" and plan.permissions != "readonly":
+                raise FlowStopped("flow.parallel_reviewer_not_readonly",
+                                  f"{role} is an external role without permissions: readonly; "
+                                  "a parallel reviewer must be confined", step=step["id"])
+        inputs = self._inputs(step, done)
+        version = self._version()
+        target = self.dir / "snapshots" / f"{step['id']}-{attempt}"
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            snapshot = await asyncio.to_thread(snap.detached_repository, self.workspace, target)
+        except snap.SnapshotRefused as exc:
+            raise FlowStopped("flow.snapshot_unavailable", str(exc), step=step["id"]) from exc
+        # The same refusal contract as a standalone or sequential reviewer:
+        # every external member's confinement is proven before any launches.
+        from garuda.workspace.confined_acp import Confinement, ConfinementRefused, preflight
+
+        for role, plan in plans.items():
+            if plan is not None and plan.kind == "acp":
+                try:
+                    await asyncio.to_thread(preflight, target,
+                                            Confinement.from_config(plan.harness))
+                except ConfinementRefused as exc:
+                    raise FlowStopped(exc.code, f"{role}: {exc}", step=step["id"]) from exc
+        _append(self.dir / JOURNAL, {"event": "intent", "index": step["index"],
+                                     "step": step["id"], "attempt": attempt, "at": _now()})
+        source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
+        prompt = self._prompt(step, "reviewer", inputs)
+
+        async def one(role):
+            return role, await self.launcher(StepLaunch(
+                flow_session=self.flow_session, step_id=f"{step['id']}:{role}", role=role,
+                role_plan=plans[role], prompt=prompt, workspace=str(target), capability=None,
+                attempt=attempt, no_edits=True))
+
+        results = await asyncio.gather(*(one(role) for role in members), return_exceptions=True)
+        outcomes = []
+        for role, item in zip(members, results, strict=True):
+            if isinstance(item, BaseException):
+                if isinstance(item, asyncio.CancelledError):
+                    raise item
+                outcomes.append((role, StepResult("", False, f"{type(item).__name__}: {item}")))
+            else:
+                outcomes.append(item)
+        receipt: dict[str, Any] = {
+            "index": step["index"], "step": step["id"], "attempt": attempt,
+            "snapshot": snapshot.commit, "inputs": [ref.to_dict() for ref, _ in inputs],
+            "workspace_version_before": version, "recorded_at": _now(), "members": [],
+            "outputs": [],
+        }
+        stop = None
+        source, copy = source_guard.check(), snapshot_guard.check()
+        receipt["source_check"], receipt["snapshot_check"] = source.record(), copy.record()
+        if not (source.unchanged and copy.unchanged):
+            stop = FlowStopped("flow.parallel_changed",
+                               "a parallel reviewer changed the source or its snapshot",
+                               step=step["id"])
+        for role, outcome in outcomes:
+            member = {"role": role, "session_id": outcome.session_id,
+                      "success": outcome.success, "outputs": []}
+            if stop is None and not outcome.success:
+                stop = FlowStopped("flow.step_failed", f"reviewer {role} did not complete",
+                                   step=step["id"])
+            produced = art.extract(outcome.output) if stop is None else {}
+            for kind in step.get("outputs", []):
+                if stop is not None:
+                    break
+                if kind not in produced:
+                    stop = FlowStopped("flow.output_missing", f"reviewer {role} gave no {kind}",
+                                       step=step["id"])
+                    break
+                ref = art.store(self.dir, type=kind, content=produced[kind],
+                                step=f"{step['id']}-{role}", session_id=outcome.session_id,
+                                attempt=attempt, workspace_version=version)
+                member["outputs"].append(ref.to_dict())
+            receipt["members"].append(member)
+        if stop is None:
+            receipt["outputs"] = [o for m in receipt["members"] for o in m["outputs"]]
+        receipt["workspace_version_after"] = self._version()
+        receipt["status"] = "done" if stop is None else "stopped"
+        if stop is not None:
+            receipt["stop"] = {"code": stop.code, "message": str(stop)}
+        _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
+        _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
+                                     "attempt": attempt, "at": _now()})
+        if stop is not None:
+            raise stop
+        return receipt
 
     async def _review_loop(self, step: dict, terminal: dict, done: list[dict], lease,
                            tried: dict) -> None:

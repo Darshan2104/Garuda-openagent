@@ -769,3 +769,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   no host credential. The image is user-only configuration.
 - Anything unproven refuses with `workspace.readonly_unenforced`. There is
   no host, worktree or guardrail substitution.
+
+## 2026-10-02 — Parallel reviewers share one immutable snapshot (issue #158, C.8b)
+
+- A parallel review group runs on one detached snapshot repository of the
+  workspace. Native members are `readonly`; external members must be
+  `readonly` roles in proven Docker confinement (C.8a) — the same refusal
+  contract as standalone and sequential reviewers, checked before any
+  member launches.
+- Source and snapshot are compared after the group; any change stops the
+  flow. Read-only runs take shared read-only leases so members never contend.
