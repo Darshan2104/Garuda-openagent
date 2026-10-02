@@ -923,6 +923,9 @@ async def prepare_agent_run(
     # when the caller didn't pass any. Idempotent: an explicit dir/list is kept as-is.
     agents_dirs = resolve_agents_dirs(workspace, agents_dir)
     profile = load_profile(agent_name, extra_dir=agents_dirs)
+    from garuda.agents.resolve import check_references
+
+    check_references(profile, workspace, mcp_config_path=mcp_config_path)
     # Before anything starts: a repository's own profile cannot raise its
     # permission mode above the user's project ceiling.
     from garuda.agents.authority import PROJECT, enforce_project_ceiling, profile_authority
