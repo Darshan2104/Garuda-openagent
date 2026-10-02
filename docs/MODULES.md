@@ -315,15 +315,7 @@ rather than being audit-only; an ACP start fallback retains the same session
 and can transfer only to native. It shares no type names
 with `router.py` (P2 #49) and exposes no handoff API.
 
-`queue_proto.py` is the A.4 spike (#153), not yet wired to any entry point: a
-cross-process FIFO queue with one finite capacity per scope. Mutations take an
-exclusive `flock` and refuse (`LockUnavailable`) rather than write unlocked;
-state is one owner-only JSON document replaced atomically with fsync. A claim
-past its TTL is reclaimed only when its owner (pid plus start identity plus
-process group) is confirmed dead; a live owner keeps it and unknown liveness is
-quarantined. Waiters poll with bounded backoff. `claim_with_workspace` gives the
-slot back when the workspace cannot be acquired. Teams tasks B.0 and D.1 promote
-it.
+`queue.py` (D.1, promoted from the A.4 spike #153) is the durable session queue: a versioned owner-only JSON document under an exclusive `flock` (a lock it can't take refuses with `LockUnavailable`; a corrupt, symlinked or future-version document is `CorruptState` and left in place). Entries and claims are bound to user, harness, session, configuration digest and, for a claim, the worker (pid, start identity, process group, epoch); FIFO within `<user>:<harness>`. It has **no capacity of its own**: a claim reserves a slot in the shared `CapacityStore` under `harnesses.<id>.max_parallel` (or the settings `capacity` table), so foreground, background, SDK, flow and consult launches share one ceiling. A claim is taken over only on confirmed death of its owner (by process identity, never a clock); unknown liveness is quarantined. `entries()` inspects without the lock and writes nothing; version 1 documents are read in place and migrated on the first write. Waiters poll with bounded backoff, and `claim_with_workspace` gives the slot back when the workspace cannot be acquired.
 
 ## `interfaces/` — entry points
 
