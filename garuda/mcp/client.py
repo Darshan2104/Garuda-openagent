@@ -14,10 +14,11 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from garuda.mcp.config import (
     McpServerConfig,
-    load_and_merge_mcp_configs,
     load_mcp_config,
     normalize_transport,
+    partition_mcp_servers,
 )
+from garuda.model.config import ConfigError
 from garuda.tools.protocol import Tool, ToolContext, ToolEffect
 from garuda.types import ToolResult
 
@@ -114,6 +115,10 @@ def _trust_remote_effect(tool: McpRemoteTool) -> None:
     _TRUSTED_EFFECT_TOOLS.add(tool)
 
 
+class McpTrustError(ConfigError):
+    """A run requires a project MCP server the user has not trusted."""
+
+
 class McpClientManager:
     def __init__(self):
         self._stack = AsyncExitStack()
@@ -128,18 +133,50 @@ class McpClientManager:
 
     @classmethod
     async def from_paths(
-        cls, paths: list[str], allowed_servers: list[str] | None = None
+        cls,
+        paths: list[str],
+        allowed_servers: list[str] | None = None,
+        *,
+        workspace: str | None = None,
+        user_paths: list[str] | tuple[str, ...] = (),
     ) -> "McpClientManager":
         """Load and merge several config files (project + global) into one manager.
 
         When ``allowed_servers`` is given, only servers whose name is in the list
         are connected — filtering happens *before* connecting so excluded servers
         never launch a subprocess or open a socket.
+
+        With ``workspace``, a server defined by the project's own config needs a
+        user trust grant (``garuda mcp trust``). An untrusted one is skipped with
+        a warning before anything starts; one that ``allowed_servers`` names
+        explicitly refuses the run instead, because the profile requires it.
         """
+        from garuda.mcp.trust import UNTRUSTED_CODE, describe
+
         manager = cls()
-        servers = load_and_merge_mcp_configs(paths)
-        if allowed_servers is not None:
-            allow = set(allowed_servers)
+        servers, untrusted = partition_mcp_servers(
+            paths, workspace=workspace, user_paths=user_paths
+        )
+        allow = set(allowed_servers) if allowed_servers is not None else None
+        required = sorted({s.name for s in untrusted if allow is not None and s.name in allow})
+        if required:
+            raise McpTrustError(
+                f"{UNTRUSTED_CODE}: the profile requires project MCP server(s) "
+                f"{', '.join(required)}, which you have not trusted for this repository. "
+                f"Review them and run `garuda mcp trust --workspace {workspace}`."
+            )
+        for server in untrusted:
+            logger.warning(
+                "%s: skipped project MCP server %r from %s (would %s). Review it and "
+                "run `garuda mcp trust --workspace %s %s` to allow it.",
+                UNTRUSTED_CODE,
+                server.name,
+                server.source_path,
+                describe(server),
+                workspace,
+                server.name,
+            )
+        if allow is not None:
             servers = [s for s in servers if s.name in allow]
         await manager.start(servers)
         return manager

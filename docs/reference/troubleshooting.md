@@ -135,8 +135,9 @@ Click a problem to see the fix.
 
     Run `garuda mcp list --no-connect` to see which config files were found
     and which servers they define. Then `garuda mcp list` connects and lists
-    each server's tools. Project and global configs merge by default; set
-    `GARUDA_MCP_MERGE=0` to use only one, or pass `--mcp-config FILE`.
+    each server's tools. A project server marked "not trusted" never starts;
+    review it and run `garuda mcp trust`. Project and global configs merge by
+    default; set `GARUDA_MCP_MERGE=0` to use only one, or pass `--mcp-config FILE`.
 
 ## Still stuck?
 

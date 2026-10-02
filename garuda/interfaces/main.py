@@ -309,6 +309,22 @@ def build_parser():
         action="store_true",
         help="Only show configured servers; do not connect to enumerate tools",
     )
+    mcp_trust = mcp_sub.add_parser(
+        "trust",
+        help="Review and trust MCP servers that this project's own config defines",
+    )
+    mcp_trust.add_argument("names", nargs="*", help="Server names (default: every untrusted one)")
+    mcp_trust.add_argument("--workspace", default=".")
+    mcp_trust.add_argument(
+        "--mcp-config",
+        help="A project config file to review instead of the discovered ones "
+        "(for example one a project profile names)",
+    )
+    mcp_trust.add_argument(
+        "--yes",
+        action="store_true",
+        help="Trust the listed servers without asking (you have reviewed them)",
+    )
 
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
@@ -491,7 +507,7 @@ def run_dual_model_report(args) -> int:
 
 async def run_mcp_list(args) -> int:
     """Show which MCP config file(s) resolve and the tools each server exposes."""
-    from garuda.mcp.config import load_and_merge_mcp_configs, resolve_mcp_config_paths
+    from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
 
     paths = resolve_mcp_config_paths(args.workspace, args.mcp_config)
     if not paths:
@@ -505,21 +521,32 @@ async def run_mcp_list(args) -> int:
     for path in paths:
         print(f"  {path}")
 
-    servers = load_and_merge_mcp_configs(paths)
-    if not servers:
+    user_paths = [args.mcp_config] if args.mcp_config else []
+    servers, untrusted = partition_mcp_servers(
+        paths, workspace=args.workspace, user_paths=user_paths
+    )
+    if not servers and not untrusted:
         print("\nNo servers defined in the resolved config.")
         return 0
 
-    print(f"\n{len(servers)} server(s) configured:")
+    print(f"\n{len(servers) + len(untrusted)} server(s) configured:")
     for server in servers:
         target = server.url or f"{server.command} {' '.join(server.args)}".strip()
         print(f"  - {server.name} [{server.transport}] {target}")
+    for server in untrusted:
+        target = server.url or f"{server.command} {' '.join(server.args)}".strip()
+        print(
+            f"  - {server.name} [{server.transport}] {target}  "
+            f"(project server, not trusted: run `garuda mcp trust {server.name}`)"
+        )
 
     if args.no_connect:
         return 0
 
     print("\nConnecting to enumerate tools...")
-    tools, manager = await build_toolkit([], paths)
+    tools, manager = await build_toolkit(
+        [], paths, workspace=args.workspace, mcp_user_paths=user_paths
+    )
     try:
         mcp_tools = [t for t in tools if t.name.startswith("mcp__")]
         if not mcp_tools:
@@ -529,6 +556,54 @@ async def run_mcp_list(args) -> int:
     finally:
         if manager is not None:
             await manager.close()
+    return 0
+
+
+def run_mcp_trust(args, *, ask=input) -> int:
+    """Show each untrusted project MCP server and record the user's trust in it.
+
+    A grant binds this exact entry (and any repository script it runs) to this
+    repository; editing either later means asking again.
+    """
+    import sys
+
+    from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
+    from garuda.mcp.trust import describe, grant, repository_identity
+
+    explicit = getattr(args, "mcp_config", None)
+    paths = [explicit] if explicit else resolve_mcp_config_paths(args.workspace)
+    _, untrusted = partition_mcp_servers(paths, workspace=args.workspace)
+    wanted = set(args.names or [])
+    candidates = [s for s in untrusted if not wanted or s.name in wanted]
+    unknown = sorted(wanted - {s.name for s in untrusted})
+    if unknown:
+        print(
+            "Not an untrusted project server here: " + ", ".join(unknown),
+            file=sys.stderr,
+        )
+    if not candidates:
+        print("No untrusted project MCP servers.")
+        return 1 if unknown else 0
+    if not args.yes and not sys.stdin.isatty():
+        print(
+            "Refusing to trust project MCP servers without a terminal; review them and "
+            "pass --yes.",
+            file=sys.stderr,
+        )
+        return 2
+    repository = repository_identity(args.workspace)
+    for server in candidates:
+        print(f"\n{server.name}  (from {server.source_path})")
+        print(f"  This would {describe(server)}")
+        if server.env:
+            print(f"  with environment variables: {', '.join(sorted(server.env))}")
+        if not args.yes:
+            answer = ask(f"Trust {server.name!r} for {repository}? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("  skipped")
+                continue
+        grant(server, args.workspace)
+        print("  trusted")
     return 0
 
 
@@ -1073,6 +1148,8 @@ def main() -> None:
     if args.command == "mcp":
         if args.mcp_command == "list":
             raise SystemExit(asyncio.run(run_mcp_list(args)))
+        if args.mcp_command == "trust":
+            raise SystemExit(run_mcp_trust(args))
         parser.parse_args(["mcp", "--help"])
         raise SystemExit(1)
     if args.command == "recipe" and args.recipe_command == "run":

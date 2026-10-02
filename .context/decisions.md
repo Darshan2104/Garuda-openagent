@@ -348,3 +348,22 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   warning. A subagent profile's `mcp_config_path`/`mcp_servers` are ignored.
 - The nominal mode order is used only to report the delegated posture, never to
   authorize a call.
+
+## 2026-10-02 — Project authority: profile ceiling and MCP trust (issue #143)
+
+- A profile whose file is inside the workspace is project content. Its
+  `permission_mode` may not exceed the user-only `agents.project_ceiling`
+  (global settings, default `smart`); a widening refuses with
+  `agent.project_widening` before any model, MCP server or project code starts.
+  An explicit caller permission mode is user authority. Location decides, so
+  `--agents-dir` pointing into the repository does not change the authority.
+- A project MCP entry (`.agent/`, `.garuda/` or `.cursor/` config, or a project
+  profile's `mcp_config_path`) starts or connects only with a user trust grant
+  bound to the repository path, server name, a digest of the raw entry (before
+  `${VAR}` interpolation) and the bytes/targets of repository files its command
+  line names. Untrusted entries are filtered before name merging, so they never
+  shadow a user server; a profile that requires one refuses.
+- Grants are made by `garuda mcp trust` (interactive, or `--yes`) and kept in an
+  owner-only, locked, atomically written store beside the global settings that
+  never follows symlinks; a damaged store grants nothing. There is no global
+  "trust all project MCP" switch.

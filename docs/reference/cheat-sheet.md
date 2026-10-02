@@ -81,6 +81,7 @@ garuda serve --workspace . --port 8765
 
 ```bash
 garuda mcp list --no-connect
+garuda mcp trust
 garuda mcp list
 garuda run --mcp-config tools.json -t "Use the issue tracker to find open bugs"
 ```

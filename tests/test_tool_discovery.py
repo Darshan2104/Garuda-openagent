@@ -170,7 +170,7 @@ def _patch_mcp(monkeypatch, fake_tools):
         async def close(self):
             pass
 
-    async def fake_from_paths(paths, allowed_servers=None):
+    async def fake_from_paths(paths, allowed_servers=None, **_trust):
         return FakeManager()
 
     monkeypatch.setattr(mcp_client.McpClientManager, "from_paths", fake_from_paths)

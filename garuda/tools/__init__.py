@@ -203,6 +203,7 @@ async def build_toolkit(
     load_project_tools: bool | None = None,
     mcp_servers: list[str] | None = None,
     lazy_mcp_threshold: int | None = None,
+    mcp_user_paths: list[str] | tuple[str, ...] = (),
 ) -> tuple[list[Tool], "McpClientManager | None"]:
     """Resolve a run's tool list from names, custom tools, and MCP servers.
 
@@ -210,6 +211,10 @@ async def build_toolkit(
     tools) are given, ``workspace`` yields opt-in ``.agent/tools`` modules, or an
     explicit ``registry`` is passed — selection happens against a per-run *layer*
     so these additions never mutate the shared base or leak into other runs.
+
+    With ``workspace``, MCP servers defined by the project's own config files
+    start only with a user trust grant; ``mcp_user_paths`` names config files the
+    user chose explicitly, which are never treated as project content.
     """
     from garuda.mcp.client import McpClientManager
 
@@ -264,7 +269,12 @@ async def build_toolkit(
     else:
         paths = [p for p in (mcp_config_path or []) if p]
     if paths:
-        manager = await McpClientManager.from_paths(paths, allowed_servers=mcp_servers)
+        manager = await McpClientManager.from_paths(
+            paths,
+            allowed_servers=mcp_servers,
+            workspace=workspace,
+            user_paths=mcp_user_paths,
+        )
         mcp_tools = manager.get_tools()
         threshold = lazy_mcp_threshold if lazy_mcp_threshold is not None else _default_lazy_threshold()
         if len(mcp_tools) > threshold:

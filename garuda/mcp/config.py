@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -41,6 +42,13 @@ class McpServerConfig:
     # Only populated from the user-owned global MCP config. Project config may
     # request this key, but the parser deliberately ignores it there.
     trusted_tool_effects: dict[str, ToolEffect] = field(default_factory=dict)
+    # Digest of the raw entry as written, before ``${VAR}`` interpolation, so a
+    # trust grant binds the repository's text without hashing resolved secrets.
+    spec_digest: str = ""
+    # Where the entry came from, and whether that file is repository content
+    # (which needs a user trust grant before it may start or connect).
+    source_path: str | None = None
+    project_scoped: bool = False
 
 
 # Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
@@ -222,6 +230,9 @@ def _dict_to_server_configs(
             trusted_tool_effects = _trusted_tool_effects(
                 entry, str(name), trusted_source=trusted_source
             )
+            spec_digest = hashlib.sha256(
+                json.dumps(entry, sort_keys=True, default=str).encode()
+            ).hexdigest()
             configs.append(
                 McpServerConfig(
                     name=name,
@@ -232,6 +243,7 @@ def _dict_to_server_configs(
                     url=url,
                     headers=headers,
                     trusted_tool_effects=trusted_tool_effects,
+                    spec_digest=spec_digest,
                 )
             )
         except Exception as exc:
@@ -386,15 +398,82 @@ def resolve_mcp_config(workspace: str | Path, explicit_path: str | None = None) 
     return paths[0] if paths else None
 
 
-def load_and_merge_mcp_configs(paths: list[str | Path]) -> list[McpServerConfig]:
-    """Load several config files and merge their servers, union by name.
+def is_project_mcp_config(
+    path: str | Path,
+    workspace: str | Path | None,
+    user_paths: tuple[str | Path, ...] | list[str | Path] = (),
+) -> bool:
+    """Whether a config file is repository content rather than the user's own.
 
-    Earlier paths win on name collisions (callers pass project-scope files before
-    the global one), so a repo-local server definition overrides a global one of
-    the same name.
+    A file inside the workspace is project-controlled unless it is the user's
+    global file or a path the user named explicitly (``--mcp-config``, an SDK
+    argument). With no workspace there is no repository to attribute it to.
     """
+    if workspace is None or _is_global_mcp_config(path):
+        return False
+    try:
+        literal = Path(os.path.abspath(Path(path).expanduser()))
+        resolved = Path(path).expanduser().resolve()
+        root = Path(workspace).expanduser().resolve()
+        if any(resolved == Path(p).expanduser().resolve() for p in user_paths if p):
+            return False
+    except OSError:
+        return True
+    # Judged by where the file sits *and* where it points: a project file that is
+    # a symlink to somewhere else is still something the repository chose.
+    if _within(literal, root) or _within(literal, Path(os.path.abspath(workspace))):
+        return True
+    return _within(resolved, root)
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def partition_mcp_servers(
+    paths: list[str | Path],
+    *,
+    workspace: str | Path | None = None,
+    user_paths: tuple[str | Path, ...] | list[str | Path] = (),
+) -> tuple[list[McpServerConfig], list[McpServerConfig]]:
+    """Merge configs into (usable, untrusted) servers.
+
+    A project-scoped entry is usable only with a matching user trust grant
+    (:mod:`garuda.mcp.trust`). An untrusted one is set aside *before* name
+    merging, so it neither starts nor shadows a user server of the same name.
+    Among usable entries, earlier paths win on name collisions (callers pass
+    project files before the global one).
+    """
+    from garuda.mcp.trust import is_trusted
+
     by_name: dict[str, McpServerConfig] = {}
+    untrusted: list[McpServerConfig] = []
     for path in paths:
+        project = is_project_mcp_config(path, workspace, user_paths)
         for cfg in load_mcp_config(path):
+            cfg.source_path = str(path)
+            cfg.project_scoped = project
+            if project and not is_trusted(cfg, workspace):
+                untrusted.append(cfg)
+                continue
             by_name.setdefault(cfg.name, cfg)
-    return list(by_name.values())
+    return list(by_name.values()), untrusted
+
+
+def load_and_merge_mcp_configs(
+    paths: list[str | Path],
+    *,
+    workspace: str | Path | None = None,
+    user_paths: tuple[str | Path, ...] | list[str | Path] = (),
+) -> list[McpServerConfig]:
+    """Load several config files and merge their usable servers, union by name.
+
+    Pass ``workspace`` whenever the paths came from project discovery: untrusted
+    project entries are then left out (see :func:`partition_mcp_servers`).
+    """
+    servers, _ = partition_mcp_servers(paths, workspace=workspace, user_paths=user_paths)
+    return servers

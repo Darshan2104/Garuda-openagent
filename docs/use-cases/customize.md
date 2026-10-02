@@ -78,6 +78,10 @@ garuda run --agent docs-writer -t "Update the install section of README.md for P
 - Garuda looks for the profile in `.agent/agents/`, then `.garuda/agents/`, then
   the built-ins. A project file named after a built-in (for example
   `build.yaml`) replaces it in that project.
+- A profile inside the project can't raise its own `permission_mode` above
+  `smart`; Garuda refuses the run with `agent.project_widening`. Raise
+  `agents.project_ceiling` in `~/.agent/settings.yaml`, or pass
+  `--permission-mode` for one run.
 - `tools` limits Garuda's built-in tools. MCP tools, `task_complete`, and
   tools you register are always added.
 - In `smart` mode, `path_rules` and `bash_rules` are checked on every call:
@@ -157,10 +161,11 @@ Create `.agent/mcp.json`:
 }
 ```
 
-Check it, then connect and list the tools:
+Check it, trust its servers, then connect and list the tools:
 
 ```bash
 garuda mcp list --no-connect
+garuda mcp trust
 garuda mcp list
 ```
 
@@ -168,8 +173,13 @@ garuda mcp list
 
 - `command` servers start as local processes over stdio. `url` servers are
   reached over HTTP.
-- Project and global (`~/.agent/mcp.json`) servers are merged; the project wins
-  on a name clash. Set `GARUDA_MCP_MERGE=0` to use only one file.
+- A server defined in the project's own config doesn't start, and its URL isn't
+  contacted, until you trust it. `garuda mcp trust` shows what each server
+  would run and records your answer for that exact entry in this repository;
+  editing the entry or a script it runs means trusting it again. Until then,
+  runs skip it with `agent.untrusted_project_code`.
+- Project and global (`~/.agent/mcp.json`) servers are merged; a trusted
+  project entry wins on a name clash. Set `GARUDA_MCP_MERGE=0` to use only one file.
 - With many tools, Garuda exposes `search_tool` and `use_tool` instead of every
   schema, to keep the prompt small.
 - MCP tool calls are permission-screened like any other tool. Use
