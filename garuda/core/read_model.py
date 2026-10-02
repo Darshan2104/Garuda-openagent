@@ -57,6 +57,32 @@ def approvals(store, session_id: str) -> list[dict]:
         return []
 
 
+def _ref(ref: dict) -> dict:
+    return {k: ref.get(k) for k in ("type", "digest", "producer_step", "producer_session",
+                                    "attempt", "size")}
+
+
+def _attempt(receipt: dict) -> dict:
+    """One step attempt as a receipt recorded it. ``delta`` is whether the workspace
+    version moved during the step; ``None`` when a version was not recorded."""
+    before, after = receipt.get("workspace_version_before"), receipt.get("workspace_version_after")
+    no_edits = receipt.get("no_edits") or {}
+    return {
+        "attempt": receipt.get("attempt"), "role": receipt.get("role"),
+        "session_id": receipt.get("session_id") or receipt.get("session"),
+        "status": receipt.get("status") or receipt.get("state"),
+        "success": receipt.get("success"),
+        "recorded_at": receipt.get("recorded_at"),
+        "inputs": [_ref(r) for r in receipt.get("inputs") or []],
+        "outputs": [_ref(r) for r in receipt.get("outputs") or []],
+        "members": [{k: m.get(k) for k in ("role", "session_id", "success")}
+                    for m in receipt.get("members") or []],
+        "delta": None if before is None or after is None else before != after,
+        "no_edits": no_edits.get("result"),
+        "stop": receipt.get("stop"),
+    }
+
+
 def flow(store, session_id: str, meta: dict | None = None) -> dict | None:
     """A flow session's steps, attempts, receipts and review outcome, or ``None``."""
     meta = meta if meta is not None else store.load_meta(session_id)
@@ -70,14 +96,18 @@ def flow(store, session_id: str, meta: dict | None = None) -> dict | None:
     except Exception:
         receipts = []
     steps = []
+    edges = []
     for step in declared:
-        attempts = [r for r in receipts if r.get("step") == step]
-        steps.append({"id": step, "attempts": [
-            {k: r.get(k) for k in ("attempt", "session", "state", "outcome", "started_at",
-                                   "finished_at", "artifacts", "delta") if k in r}
-            for r in attempts]})
+        attempts = [_attempt(r) for r in receipts if r.get("step") == step]
+        for attempt in attempts:
+            for ref in attempt["inputs"]:
+                edge = {"from_step": ref["producer_step"], "to_step": step, "type": ref["type"],
+                        "digest": ref["digest"]}
+                if edge not in edges:
+                    edges.append(edge)
+        steps.append({"id": step, "attempts": attempts})
     return {"name": (meta.get("flow") or {}).get("name"), "state": meta.get("flow_state"),
-            "steps": steps,
+            "steps": steps, "edges": edges,
             # Own field: a review verdict is advice about the work, not verification of it.
             "review": meta.get("review")}
 

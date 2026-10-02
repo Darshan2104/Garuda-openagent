@@ -19,4 +19,5 @@ The runner seeds session fixtures, starts dashboards on free ports, and tears th
 | `check_inspector.py` | Trace and subagent rendering. |
 | `check_live.py` | Tail refresh, expansion state, and polling lifecycle. |
 | `check_chat.py` | Browser upload, URL grounding, and approvals. |
+| `seed_sessions.py`, `check_sessions.py` | Sessions view over fixtures written by the production session, queue, flow and approval writers: states (queued with position, derived crashed, completed, working, waiting), unknown usage/cost, a self-check not shown as verification, and a flow's steps, attempts, edges, deltas and separate review badge. |
 | `check_runtimes.py` | Runtimes board: list/select, handoff preview/prepare, diff session-vs-dirt split, recovery classify/run, and read-only control gating. |

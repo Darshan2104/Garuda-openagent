@@ -46,6 +46,8 @@ native Garuda agent.
 
 ## What you can see
 
+- **Sessions** (`#/sessions`): every session's state, runtime/role/model, outcome and verification (separately), queue position, workspace and branch, approvals waiting, and usage and cost (`unknown` until the ledger exists). A session opens to its pending approvals and, for a flow, its steps, attempts, artifact edges, workspace change per attempt and its review outcome (a review is never shown as verification);
+
 - live turns, model thinking where available, and tool calls;
 - approvals, completion checks, diffs, and metrics;
 - nested subagent traces.
