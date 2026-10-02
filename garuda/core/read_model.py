@@ -16,6 +16,7 @@ accounting); the row says ``unknown``.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,8 @@ def approvals(store, session_id: str) -> list[dict]:
             out.append({"approval_id": r.get("approval_id"),
                         "action": redact_text(str(r.get("action", "")))[0],
                         **{k: r.get(k) for k in ("family", "runtime_id", "expires_at", "ceiling",
-                                                 "digest")}})
+                                                 "digest")},
+                        "expired": time.time() > float(r.get("expires_at") or 0)})
         return out
     except Exception:
         return []
@@ -81,6 +83,21 @@ def _attempt(receipt: dict) -> dict:
         "no_edits": no_edits.get("result"),
         "stop": receipt.get("stop"),
     }
+
+
+def inbox(store, *, limit: int = 200) -> list[dict]:
+    """Every pending approval across active sessions, oldest session first."""
+    from garuda.runtime.session_state import ACTIVE_WORK
+
+    out = []
+    for meta in reversed(store.list_sessions(limit=limit)):
+        session_id = meta.get("session_id") or ""
+        if effective_state(meta).get("work") not in ACTIVE_WORK:
+            continue
+        for request in approvals(store, session_id):
+            out.append({"session_id": session_id, "name": meta.get("name"),
+                        "task": meta.get("task"), **request})
+    return out
 
 
 def flow(store, session_id: str, meta: dict | None = None) -> dict | None:

@@ -270,21 +270,46 @@ class FileApprovalChannel:
         return out
 
 
-def write_answer(directory: str | Path, session_id: str, approval_id: str, allow: bool) -> dict:
+class AnswerRefused(ValueError):
+    """An answer that must not be written; ``code`` says why (stable, for callers)."""
+
+    code = "refused"
+
+
+class StaleRequest(AnswerRefused):
+    """The request is not the one the answerer saw (replaced, or its digest differs)."""
+
+    code = "stale_request"
+
+
+class RequestExpired(AnswerRefused):
+    code = "expired"
+
+
+def write_answer(directory: str | Path, session_id: str, approval_id: str, allow: bool,
+                 *, expect_digest: str | None = None) -> dict:
     """Answer a parked approval from another process (``garuda approvals answer``).
 
     Binds the answer to the request as published. Exclusive: a second answer,
-    from anyone, raises ``FileExistsError``.
+    from anyone, raises ``FileExistsError``. ``expect_digest`` is the digest of
+    the request the answerer was shown (a dashboard page): if the request on
+    disk is not that one, the answer is refused as :class:`StaleRequest` rather
+    than binding a decision to something its author never saw. A request that
+    already has a decision is not answerable.
     """
     channel = FileApprovalChannel(directory, session_id)
     request = read_owned(channel._path(approval_id, "request"))
     fields = {k: v for k, v in request.items() if k != "digest"}
     if request_digest(fields) != request.get("digest"):
-        raise ValueError("the request file was modified")
+        raise AnswerRefused("the request file was modified")
     if request.get("session_id") != session_id:
-        raise ValueError("the request belongs to another session")
+        raise AnswerRefused("the request belongs to another session")
+    if expect_digest is not None and expect_digest != request["digest"]:
+        raise StaleRequest("the request changed since it was shown")
     if time.time() > float(request.get("expires_at", 0)):
-        raise ValueError("the request has expired")
+        raise RequestExpired("the request has expired")
+    if channel._path(approval_id, "decision").exists():
+        raise FileExistsError(f"approval {approval_id} already has a decision")
     answer = {
         "version": VERSION, "session_id": session_id, "approval_id": approval_id,
         "request_digest": request["digest"], "nonce": request["nonce"], "allow": bool(allow),

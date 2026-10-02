@@ -691,3 +691,10 @@ label.btn { display: inline-flex; align-items: center; }
 }
 
 a { color: var(--accent); }
+
+/* Approval inbox (D.5) */
+.approvals { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.approval-item { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.approval-item pre { margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
+.approval-item[data-state="recorded"] { border-color: var(--ok); }
+.approval-item[data-state="stale_request"], .approval-item[data-state="error"] { border-color: var(--err); }

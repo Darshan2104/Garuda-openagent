@@ -127,6 +127,15 @@ Click a problem to see the fix.
     garuda runtime resume --session latest -t "Continue natively"
     ```
 
+??? question "The Approvals page says `stale_request`, `already_answered` or `expired`"
+
+    The page answered a request that is no longer the one it showed
+    (`stale_request`: reload), one that already has an answer or a decision from
+    the terminal, another tab or an earlier click (`already_answered`), or one
+    past its expiry (`expired`; it is denied). "Answer recorded" only means the
+    broker has the file: if the permission ceiling changed meanwhile, the broker
+    denies it and says why in the session's approval decision.
+
 ??? question "A `--bg` session stays `queued`"
 
     Its worker is waiting for a slot: the harness is at its `max_parallel`

@@ -946,3 +946,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   event log (after snapshots; polling remains), so `Last-Event-ID` resumes with
   no duplicate or skipped event; a torn last line is held back.
 
+## 2026-10-02 — The approval inbox answers through the broker (issue #167, D.5)
+
+- The dashboard inbox writes a session-bound answer file (B.8); the broker is
+  still the only decider. The answer must bind the request digest the page was
+  shown (stale pages refuse), is exclusive (one winner against terminal and
+  other tabs), is refused after expiry, and the broker re-checks the ceiling.
+  A 200 means "recorded for the broker". Token, Host and Origin gates apply.
+

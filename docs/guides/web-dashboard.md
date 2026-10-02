@@ -66,6 +66,21 @@ state, outcome, verification and provenance:
 | `GET /api/sessions/<id>` | One session, with its pending approvals and, for a flow, its steps, attempts and review outcome |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 
+| `GET /api/inbox` | Every pending approval across active sessions, each with the request digest an answer must bind |
+| `POST /api/sessions/<id>/approvals/<approval>` | Record an answer (`{"allow": true, "digest": "..."}`); write mode only |
+
+**Approvals.** The Approvals page (`#/inbox`) answers a parked approval — including
+one in a background session — by writing a session-bound answer file to that
+session's approval channel. It never answers a runtime: the broker validates the
+answer (session, request digest, nonce, expiry and the permission ceiling) and
+records the single decision, so a successful response means "answer recorded for
+the broker", not "the tool will run". The page must send the digest it was shown:
+a request that changed since is refused (`stale_request`, 409); a second answer
+or one after a terminal decision loses (`already_answered`, 409); an expired
+request is refused (`expired`, 410) and will be denied; and a ceiling change
+after the answer makes the broker deny it. The usual token, Host and Origin
+checks apply, and a `--read-only` dashboard offers no buttons.
+
 Usage and cost read `unknown` until the usage ledger lands; a flow's review
 outcome is shown on its own and never as verification; a queue that cannot be
 read shows as `unknown`, not as empty. The stream's `id` is a byte offset into

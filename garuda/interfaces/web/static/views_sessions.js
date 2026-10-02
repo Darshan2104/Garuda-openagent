@@ -152,3 +152,70 @@ function sessionDetailView(id) {
            '<div class="notice-body">' + esc(err.message) + "</div></div>");
   });
 }
+
+/* --- the approval inbox (D.5) ---------------------------------------------
+ * Lists what is waiting across sessions and sends the person's answer, bound to the request
+ * digest this page was shown, to the session's file channel. It never answers a runtime: the
+ * broker validates and decides, so "answer recorded" is not "allowed". */
+
+function canAnswer() {
+  return !!(STATE.health && STATE.health.mode === "read-write");
+}
+
+function approvalRowHtml(a) {
+  var buttons = canAnswer() && !a.expired
+    ? '<button type="button" class="btn btn-primary" data-act="allow">Approve</button> ' +
+      '<button type="button" class="btn" data-act="deny">Deny</button>'
+    : '<span class="stat-sub">' + (a.expired ? "expired — it will be denied" : "read-only dashboard") + "</span>";
+  return (
+    '<li class="approval-item" data-session="' + esc(a.session_id) + '" data-approval="' + esc(a.approval_id) +
+    '" data-digest="' + esc(a.digest) + '">' +
+    "<div><strong>" + esc(a.name || a.session_id.slice(0, 8)) + "</strong> " +
+    '<span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></div>" +
+    "<pre>" + esc(a.action) + "</pre>" +
+    '<div class="approval-actions">' + buttons + ' <span class="stat-sub approval-result"></span></div></li>'
+  );
+}
+
+function inboxView() {
+  render('<div class="loading">Loading approvals…</div>');
+  return api("/api/inbox").then(function (payload) {
+    var items = payload.approvals;
+    render(
+      '<div class="page-head"><h1>Approvals</h1><span class="meta">' + items.length + " waiting</span>" +
+      '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
+      (items.length ? '<ul class="approvals" id="inbox-list">' + items.map(approvalRowHtml).join("") + "</ul>"
+                    : '<div class="empty" id="inbox-empty"><p>Nothing is waiting for you.</p></div>')
+    );
+    el("inbox-refresh").addEventListener("click", inboxView);
+    var list = el("inbox-list");
+    if (!list) return;
+    list.addEventListener("click", function (event) {
+      var button = event.target.closest("button[data-act]");
+      if (!button) return;
+      var item = button.closest(".approval-item");
+      answerApproval(item, button.getAttribute("data-act") === "allow");
+    });
+  }).catch(function (err) {
+    if (err.status === 401) { render(tokenRequiredPanel()); return; }
+    render('<div class="notice err"><div class="notice-title">Could not load approvals</div>' +
+           '<div class="notice-body">' + esc(err.message) + "</div></div>");
+  });
+}
+
+function answerApproval(item, allow) {
+  var result = item.querySelector(".approval-result");
+  var buttons = item.querySelectorAll("button");
+  buttons.forEach(function (b) { b.disabled = true; });
+  return api("/api/sessions/" + encodeURIComponent(item.getAttribute("data-session")) +
+             "/approvals/" + encodeURIComponent(item.getAttribute("data-approval")), {
+    method: "POST", body: { allow: allow, digest: item.getAttribute("data-digest") }
+  }).then(function () {
+    result.textContent = "answer recorded — the broker decides";
+    item.setAttribute("data-state", "recorded");
+  }).catch(function (err) {
+    // Stale page, an earlier answer, an expired request: say so and let them reload.
+    result.textContent = err.message + " (" + (err.code || err.status) + ")";
+    item.setAttribute("data-state", err.code || "error");
+  });
+}
