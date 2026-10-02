@@ -115,3 +115,17 @@ def test_a_symlink_escaping_the_static_dir_is_refused(tmp_path):
 
 def test_an_unknown_asset_is_a_404():
     assert serve_static("nope.js", STATIC_DIR).status == 404
+
+
+def test_no_two_scripts_define_the_same_global_function():
+    """The dashboard has no modules: every script shares one global scope, so a function
+    defined twice silently replaces the earlier one in whichever file loads last."""
+    import re
+    from collections import defaultdict
+
+    defined = defaultdict(list)
+    for script in sorted(STATIC_DIR.glob("*.js")):
+        for name in re.findall(r"^function ([A-Za-z0-9_$]+)\(", script.read_text(), re.M):
+            defined[name].append(script.name)
+    clashes = {name: files for name, files in defined.items() if len(files) > 1}
+    assert not clashes, clashes

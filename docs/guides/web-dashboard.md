@@ -44,6 +44,18 @@ native Garuda agent.
 | `--port` | `8787` | Port to listen on |
 | `--no-browser` | off | Don't open a browser automatically |
 
+## Background sessions
+
+`garuda run --bg` queues a session and returns; the Sessions page shows it
+**queued** (with its position), **working**, **waiting** on an approval,
+**crashed** (derived when its worker is gone) or **stopped**, with the outcome and
+verification kept apart. A session detail page has a Stop button for a background
+session (a write-mode dashboard only), a live events panel that reconnects with the
+last event id so nothing repeats or is skipped, and, for a flow, its steps and
+review. `garuda sessions --json` prints the same rows. The worker's own output is
+`worker.log` in the session directory; see the troubleshooting page for worker and
+approval diagnostics.
+
 ## What you can see
 
 - **Sessions** (`#/sessions`): every session's state, runtime/role/model, outcome and verification (separately), queue position, workspace and branch, approvals waiting, and usage and cost (`unknown` until the ledger exists). A session opens to its pending approvals and, for a flow, its steps, attempts, artifact edges, workspace change per attempt and its review outcome (a review is never shown as verification);
@@ -66,6 +78,7 @@ state, outcome, verification and provenance:
 | `GET /api/sessions/<id>` | One session, with its pending approvals and, for a flow, its steps, attempts and review outcome |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 
+| `POST /api/sessions/<id>/cancel` | Stop a background session: leave the queue, or stop its worker (only after its recorded process identity matches); write mode only |
 | `GET /api/inbox` | Every pending approval across active sessions, each with the request digest an answer must bind |
 | `POST /api/sessions/<id>/approvals/<approval>` | Record an answer (`{"allow": true, "digest": "..."}`); write mode only |
 

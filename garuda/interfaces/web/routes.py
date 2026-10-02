@@ -297,6 +297,24 @@ def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response
                "state": "answer_recorded"})
 
 
+@route("POST", r"/api/sessions/(?P<sid>[^/]+)/cancel")
+def _cancel_session(request: Request, ctx: DashboardContext, match) -> Response:
+    """Stop a background session: leave the queue, or stop its worker (identity-checked)."""
+    from garuda.interfaces.bg_sessions import BackgroundRefused, cancel
+
+    refusal = requires_write(ctx)
+    if refusal is not None:
+        return refusal
+    try:
+        session_id = validate_session_ref(match["sid"])
+        message = cancel(ctx.store, session_id, queue=_queue_or_none())
+    except (FileNotFoundError, ValueError):
+        return not_found(f"No session {match['sid']!r}.")
+    except BackgroundRefused as exc:
+        return error("not_background", str(exc), status=409)
+    return ok({"session_id": session_id, "result": message})
+
+
 STREAM_MAX_SECONDS = 60.0
 STREAM_HEARTBEAT_SECONDS = 15.0
 STREAM_POLL_SECONDS = 0.5

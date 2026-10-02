@@ -36,23 +36,24 @@ with sync_playwright() as p:
             if m.type in ("error", "warning") else None)
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
 
-    page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    page.goto(f"{BASE}#/sessions", wait_until="networkidle")
+    page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
+    page.goto(f"{BASE}#/sessions", wait_until="load")
     page.wait_for_selector("#sessions-table")
     rows = page.locator("tr.session-row")
-    check("five sessions are listed", rows.count() == 5, str(rows.count()))
+    check("every seeded session is listed", rows.count() == 8, str(rows.count()))
     labels = sorted(page.locator("tr.session-row").evaluate_all("r => r.map(x => x.dataset.label)"))
-    check("states: queued, crashed, completed, working, waiting",
-          labels == ["completed", "crashed", "queued", "waiting", "working"], str(labels))
+    check("states: queued, crashed, completed, failed, stopped, working x2, waiting",
+          labels == ["cancelled", "completed", "crashed", "failed", "queued", "waiting", "working",
+                     "working"], str(labels))
     table = page.locator("#sessions-table").inner_text()
     check("the queued session shows its position", "queued #1" in table)
     check("usage and cost stay unknown", "unknown / unknown" in table)
     check("a self-check is not verification", "verification: unavailable" in table
           and "verification: passed" not in table)
-    check("the waiting session shows its approval", "1 waiting" in table)
+    check("the waiting session shows its approval", "2 waiting" in table)
     page.screenshot(path=str(SHOTS / "sessions-list.png"))
 
-    page.goto(f"{BASE}#/sessions/{FLOW}", wait_until="networkidle")
+    page.goto(f"{BASE}#/sessions/{FLOW}", wait_until="load")
     page.wait_for_selector("#flow-detail")
     flow = page.locator("#flow-detail").inner_text()
     check("flow steps and attempts", "code" in flow and "review" in flow and "attempt 1" in flow)
@@ -64,10 +65,10 @@ with sync_playwright() as p:
     check("verification does not borrow the review", "verification: unavailable" in facts, facts)
     page.screenshot(path=str(SHOTS / "sessions-flow.png"))
 
-    page.goto(f"{BASE}#/sessions/{WAITING}", wait_until="networkidle")
+    page.goto(f"{BASE}#/sessions/{WAITING}", wait_until="load")
     page.wait_for_selector("#session-approvals")
     check("pending approval is listed", "rm -rf build" in page.locator("#session-approvals").inner_text())
-    page.goto(f"{BASE}#/inbox", wait_until="networkidle")
+    page.goto(f"{BASE}#/inbox", wait_until="load")
     page.wait_for_selector("#inbox-list")
     inbox = page.locator("#inbox-list").inner_text()
     check("the inbox lists the waiting approval", "rm -rf build" in inbox and "ceiling smart" in inbox)

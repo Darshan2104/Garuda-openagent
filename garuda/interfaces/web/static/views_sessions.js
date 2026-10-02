@@ -131,6 +131,8 @@ function sessionDetailView(id) {
     render(
       '<div class="page-head"><h1>' + esc(row.name || row.session_id.slice(0, 8)) + "</h1>" +
       '<span class="pill unknown" id="session-label">' + esc(row.label) + "</span>" +
+      (row.background && isActive(state) && canAnswer()
+        ? '<button type="button" class="btn" id="session-stop">Stop</button>' : "") +
       '<a class="btn" href="#/runs/' + encodeURIComponent(row.session_id) + '">Trace</a>' +
       '<a class="btn" href="#/sessions">All sessions</a></div>' +
       '<div class="chips" id="session-facts">' +
@@ -144,8 +146,17 @@ function sessionDetailView(id) {
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
         return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
       }).join("") + "</ul>" : "") +
-      flowHtml(row.flow)
+      flowHtml(row.flow) +
+      '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>'
     );
+    var stop = el("session-stop");
+    if (stop) stop.addEventListener("click", function () {
+      stop.disabled = true;
+      api("/api/sessions/" + encodeURIComponent(row.session_id) + "/cancel", { method: "POST", body: {} })
+        .then(function (r) { toast(r.result); return sessionDetailView(row.session_id); })
+        .catch(function (err) { toast(err.message); stop.disabled = false; });
+    });
+    startSessionStream(row.session_id);
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
@@ -194,7 +205,7 @@ function inboxView() {
       var button = event.target.closest("button[data-act]");
       if (!button) return;
       var item = button.closest(".approval-item");
-      answerApproval(item, button.getAttribute("data-act") === "allow");
+      answerInboxApproval(item, button.getAttribute("data-act") === "allow");
     });
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -203,7 +214,7 @@ function inboxView() {
   });
 }
 
-function answerApproval(item, allow) {
+function answerInboxApproval(item, allow) {
   var result = item.querySelector(".approval-result");
   var buttons = item.querySelectorAll("button");
   buttons.forEach(function (b) { b.disabled = true; });
@@ -218,4 +229,77 @@ function answerApproval(item, allow) {
     result.textContent = err.message + " (" + (err.code || err.status) + ")";
     item.setAttribute("data-state", err.code || "error");
   });
+}
+
+function isActive(state) { return ["queued", "working", "waiting"].indexOf(state.work) >= 0; }
+
+/* --- the live stream (D.3), read with fetch so the token header can be sent ------------
+ * Reconnects with the id of the last frame it saw, which is a byte offset into the session's
+ * log, so nothing repeats and nothing is skipped. */
+
+function streamSession(id, options) {
+  options = options || {};
+  var handle = {
+    lastId: options.lastId || "0", events: [], ended: false, stopped: false, connections: 0,
+    stop: function () { handle.stopped = true; if (handle._abort) handle._abort.abort(); }
+  };
+  function connect() {
+    if (handle.stopped || handle.ended) return;
+    handle.connections += 1;
+    handle._abort = new AbortController();
+    fetch("/api/sessions/" + encodeURIComponent(id) + "/stream", {
+      headers: { "X-Garuda-Token": TOKEN, "Last-Event-ID": handle.lastId },
+      signal: handle._abort.signal
+    }).then(function (response) {
+      if (!response.ok || !response.body) throw new Error("stream " + response.status);
+      var reader = response.body.getReader(), decoder = new TextDecoder(), buffer = "";
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) return;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var blocks = buffer.split("\n\n");
+          buffer = blocks.pop();
+          blocks.forEach(function (block) {
+            var frame = {};
+            block.split("\n").forEach(function (line) {
+              var at = line.indexOf(": ");
+              if (at > 0) frame[line.slice(0, at)] = line.slice(at + 2);
+            });
+            if (frame.id) handle.lastId = frame.id;
+            if (frame.event === "end") { handle.ended = true; }
+            else if (frame.event === "event") {
+              var data = JSON.parse(frame.data);
+              handle.events.push(data);
+              if (options.onEvent) options.onEvent(data, handle);
+            }
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () { /* dropped: reconnect below */ }).then(function () {
+      if (!handle.stopped && !handle.ended) setTimeout(connect, options.retryMs || 1000);
+      if (options.onClose) options.onClose(handle);
+    });
+  }
+  connect();
+  return handle;
+}
+
+function startSessionStream(id) {
+  stopSessionStream();
+  var panel = el("live-events");
+  STATE.sessionStream = streamSession(id, {
+    onEvent: function (event, handle) {
+      if (!panel) return;
+      panel.textContent = handle.events.length + " events · last: " + (event.type || "?");
+    },
+    onClose: function (handle) {
+      if (panel && handle.ended) panel.textContent = handle.events.length + " events · finished";
+    }
+  });
+}
+
+function stopSessionStream() {
+  if (STATE.sessionStream) { STATE.sessionStream.stop(); STATE.sessionStream = null; }
 }
