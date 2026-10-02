@@ -141,6 +141,56 @@ def build_resumed_context(
     return context
 
 
+def _choose_workspace(store, workspace, session_id, isolation, workspace_kind, *,
+                      resume, resume_all_projects):
+    """Return ``(path, worktree meta or None)`` for this run. See B.5."""
+    from garuda.workspace.worktrees import WorktreeError, prepare_workspace
+
+    if resume:
+        if isolation != "shared":
+            raise WorktreeError(
+                "worktree.resume", "a resumed session keeps the workspace it ran in; drop --isolation"
+            )
+        try:
+            prior = store.load_meta(
+                store.resolve(resume, workspace=workspace, all_projects=resume_all_projects)
+            )
+        except Exception:
+            return workspace, None  # resume resolution below reports the error
+        if prior.get("isolation") == "worktree" and prior.get("worktree"):
+            if not os.path.isdir(prior["worktree"]):
+                raise WorktreeError(
+                    "worktree.missing", f"the session's worktree {prior['worktree']} is gone"
+                )
+            keys = ("isolation", "worktree", "branch", "source_repo", "source_head",
+                    "dirty_source", "dirty_fingerprint")
+            return prior["worktree"], {k: prior.get(k) for k in keys}
+        return workspace, None
+    if isolation == "shared":
+        return workspace, None
+    if workspace_kind != "local":
+        raise WorktreeError(
+            "worktree.unsupported_kind", f"--isolation {isolation} needs a local workspace"
+        )
+    plan = prepare_workspace(workspace, session_id, isolation)
+    if plan.isolation == "shared":
+        return workspace, None
+    logger.warning(
+        "Session %s works in worktree %s on branch %s%s", session_id, plan.path, plan.branch,
+        "; uncommitted changes in the source checkout were not carried over"
+        if plan.dirty_source else "",
+    )
+    return plan.path, {**plan.meta(), "new": True}
+
+
+def _discard_new_worktree(plan: dict | None) -> None:
+    """Undo a worktree made for a run that was refused before it started."""
+    if plan and plan.pop("new", False):
+        from garuda.workspace.worktrees import discard_worktree
+
+        discard_worktree(plan)
+
+
 async def run_agent_task(
     task: str,
     model,
@@ -162,6 +212,7 @@ async def run_agent_task(
     resume: str | None = None,
     resume_all_projects: bool = False,
     session_name: str | None = None,
+    isolation: str = "shared",
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -180,6 +231,14 @@ async def run_agent_task(
     # launched would persist to the default location and be invisible in the list that
     # launched it — a silent divergence, not an error.
     store = store or SessionStore()
+    # Where this session edits (B.5): the workspace itself, or its own linked
+    # worktree. Decided before the lease so the lease, baseline and delta all
+    # bind to the directory actually being changed. A resumed session goes
+    # back to the worktree it ran in.
+    workspace, workspace_plan = _choose_workspace(
+        store, workspace, events.session_id, isolation, workspace_kind,
+        resume=resume, resume_all_projects=resume_all_projects,
+    )
     # Every native run — CLI, SDK, server, web — executes through the
     # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
     # record and the normalized event log; execution below is unchanged.
@@ -208,7 +267,11 @@ async def run_agent_task(
     # Native runs share one capacity pool ("native"), limited only when the
     # user sets `capacity.native` in global settings.
     lease = WorkspaceLeaseGuard(workspace, events.session_id, capacity_key="native")
-    lease.acquire()
+    try:
+        lease.acquire()
+    except BaseException:
+        _discard_new_worktree(workspace_plan)
+        raise
 
     try:
         if initial_selection is not None:
@@ -292,6 +355,10 @@ async def run_agent_task(
             logger.warning("Runtime routing failed", exc_info=True)
             raise
         await runtime.start(task=task, session_id=events.session_id)
+        if workspace_plan is not None:
+            update_session_meta(
+                store, events.session_id, {k: v for k, v in workspace_plan.items() if k != "new"}
+            )
         # This is before environment setup, hooks, or a model prompt.  A
         # host-backed run which cannot persist its immutable start state must
         # not mutate and later pretend its delta is attributable.  The shared

@@ -557,3 +557,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - A second editor is refused: `garuda chat` exits 1 before any environment,
   the dashboard returns `409 workspace_busy`, the SDK raises
   `LeaseConflictError`.
+
+## 2026-10-02 — Session worktrees and integration publication (issue #157, B.5)
+
+- `garuda run --isolation shared|worktree|auto` (default `shared` until the
+  team runtime chooses). A worktree session edits a linked worktree on its own
+  `garuda/<session>` branch; uncommitted source changes are not inherited and
+  the session records that they existed. It is a separate place to edit, never
+  described as confinement.
+- `garuda sessions merge` never changes the destination branch, HEAD, index or
+  checkout. It publishes only `refs/garuda/integration/<session>` by
+  compare-and-swap after required checks pass in Docker against the merged
+  tree; without a check or without Docker it refuses — a host check is never a
+  substitute. Applying is the person's `git merge --ff-only`.
+- `garuda sessions remove-worktree` refuses a worktree whose work was never
+  published unless `--force`. Deferred: trusted worktree setup commands
+  through the permission engine.

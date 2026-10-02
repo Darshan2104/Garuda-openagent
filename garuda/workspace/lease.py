@@ -388,17 +388,3 @@ def is_worktree(path: str | Path) -> bool:
         timeout=15,
     )
     return result.returncode == 0 and result.stdout.strip() == "true"
-
-
-def create_worktree(repo: str | Path, path: str | Path, *, branch: str | None = None) -> Path:
-    """Create a linked worktree for parallel runs. Never touches existing files."""
-    target = Path(path)
-    if target.exists():
-        raise LeaseError(f"worktree target already exists: {target}")
-    command = ["git", "-C", str(repo), "worktree", "add", str(target)]
-    if branch:
-        command.append(branch)
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise LeaseError(f"git worktree add failed: {result.stderr.strip()}")
-    return target
