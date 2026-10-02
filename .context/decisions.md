@@ -983,3 +983,10 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   is proved for that exact version. Failure to refresh, or any doubt, keeps the
   candidate. Still decided once, before start; never after a prompt.
 
+## 2026-10-02 — The conversation view reports, it does not attribute (issue #169, F.1)
+
+- Models used come from ledger records grouped by work type × harness × model; an
+  unreported model reads `not reported` and is never replaced by the selected one;
+  snapshots are display evidence only and ACP turns are a separate measure. A
+  session with no ledger records falls back to its metrics, labelled as such.
+

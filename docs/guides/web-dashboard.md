@@ -44,6 +44,20 @@ native Garuda agent.
 | `--port` | `8787` | Port to listen on |
 | `--no-browser` | off | Don't open a browser automatically |
 
+## Conversations
+
+A run's page (`#/runs/<id>`) opens with a **Models used** table from the usage ledger,
+grouped by work type × harness × model: a native session's controller, collector,
+classifier and summarizer calls each get a row, and the sessions of a flow use their step
+roles as work types. A session from before the ledger falls back to its own metrics and says
+**from session metrics**. Three things are kept apart: the model that was *selected* is not
+the one *reported* (an external harness's internal calls on other models read **not
+reported** and are never assigned to the selected model); context snapshots are occupancy,
+not billable usage; and ACP turns are not native call counts. Each model call in the trace
+carries its model and purpose badge. The panel also lists the runtime lanes, the sessions
+this one resumed from or was continued by, the sessions it tagged, and those that tagged it.
+`GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
+
 ## Background sessions
 
 `garuda run --bg` queues a session and returns; the Sessions page shows it

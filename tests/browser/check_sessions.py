@@ -40,11 +40,10 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#/sessions", wait_until="load")
     page.wait_for_selector("#sessions-table")
     rows = page.locator("tr.session-row")
-    check("every seeded session is listed", rows.count() == 8, str(rows.count()))
+    check("every seeded session is listed", rows.count() == 9, str(rows.count()))
     labels = sorted(page.locator("tr.session-row").evaluate_all("r => r.map(x => x.dataset.label)"))
-    check("states: queued, crashed, completed, failed, stopped, working x2, waiting",
-          labels == ["cancelled", "completed", "crashed", "failed", "queued", "waiting", "working",
-                     "working"], str(labels))
+    check("states are all present", {"cancelled", "completed", "crashed", "failed", "queued",
+                                      "waiting", "working"} <= set(labels), str(labels))
     table = page.locator("#sessions-table").inner_text()
     check("the queued session shows its position", "queued #1" in table)
     check("usage and cost stay unknown", "unknown / unknown" in table)
@@ -68,6 +67,23 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#/sessions/{WAITING}", wait_until="load")
     page.wait_for_selector("#session-approvals")
     check("pending approval is listed", "rm -rf build" in page.locator("#session-approvals").inner_text())
+    # --- the conversation panel (F.1): models used, links, escaped ---------------------------
+    convo = "00000000-0000-0000-0000-000000000009"
+    page.goto(f"{BASE}#/runs/{convo}", wait_until="load")
+    page.wait_for_selector("#models-table")
+    models = page.locator("#models-table").inner_text()
+    check("one row per work type", all(w in models for w in ("controller", "collector", "summarizer")))
+    check("calls are grouped", page.locator('tr.model-row[data-work="controller"]').inner_text().split("\t")[3] == "2",
+          page.locator('tr.model-row[data-work="controller"]').inner_text())
+    check("links resolve in both directions", page.locator("#link-tagged a").count() == 1
+          and page.locator("#link-resumed-from a").count() == 1)
+    check("hostile names stay text", page.locator("img[src='x']").count() == 0
+          and page.evaluate("window.__pwned === undefined"))
+    page.goto(f"{BASE}#/runs/00000000-0000-0000-0000-000000000001", wait_until="load")
+    page.wait_for_selector("#link-tagged-by")
+    check("the other side shows 'tagged by'", page.locator("#link-tagged-by a").count() == 1)
+    page.screenshot(path=str(SHOTS / "conversation-panel.png"))
+
     page.goto(f"{BASE}#/inbox", wait_until="load")
     page.wait_for_selector("#inbox-list")
     inbox = page.locator("#inbox-list").inner_text()

@@ -30,7 +30,10 @@ IDS = {
     "stopped": "00000000-0000-0000-0000-000000000006",
     "running": "00000000-0000-0000-0000-000000000007",
     "failed": "00000000-0000-0000-0000-000000000008",
+    "convo": "00000000-0000-0000-0000-000000000009",
 }
+HOSTILE = '"><img src=x onerror="window.__pwned=1">'
+
 
 
 def seed(root: Path, workspace: str) -> dict:
@@ -80,6 +83,30 @@ def seed(root: Path, workspace: str) -> dict:
     # failed outcome, but its own self-check passed: outcome and verification stay separate
     store.finish(IDS["failed"], AgentResult(success=False, final_message="no", messages=[],
                                             turns=1, metadata={}))
+    # a conversation with several kinds of calls and hostile names, through the production
+    # writers: an event store with the ledger observer attached
+    from garuda.core.events import EventStore, EventType
+    from garuda.observability import usage as usage_ledger
+
+    earlier = EventStore(IDS["done"], persist_path=store.events_path(IDS["done"]))
+    earlier.append(EventType.SESSION_START, {"task": "task done", "model": "m/x"})
+    earlier.append(EventType.SESSION_END, {"success": True, "turns": 1})
+    events = EventStore(IDS["convo"], persist_path=store.events_path(IDS["convo"]))
+    usage_ledger.attach(events, store)
+    events.append(EventType.SESSION_START, {"task": "convo", "model": "m/x"})
+    for purpose, tokens in (("controller", 100), ("controller", 120), ("collector", 30),
+                            ("summarizer", 55)):
+        events.append(EventType.MODEL_RESPONSE, {
+            "turn": 1, "content": "ok", "tool_calls": [], "call_purpose": purpose, "model": "m/x",
+            "usage": {"prompt_tokens": tokens, "completion_tokens": 5,
+                      "total_tokens": tokens + 5}})
+    events.append(EventType.SESSION_END, {"success": True, "turns": 1})
+    store.update_meta(IDS["convo"], {
+        "name": HOSTILE, "context_from": [{"session_id": IDS["done"], "name": HOSTILE,
+                                           "provenance": "name", "cross_project": True}],
+        "resumed_from": IDS["done"]})
+    store.mutate_meta(IDS["done"], lambda m: {"context_to": [{"session_id": IDS["convo"],
+                                                              "at": "t"}]})
     # an expired request beside the live one
     FileApprovalChannel(store.session_dir(IDS["waiting"]) / "approvals", IDS["waiting"]).publish(
         ApprovalRequest("a2", "git push", "terminal", "native", IDS["waiting"]),
