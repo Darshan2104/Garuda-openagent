@@ -19,6 +19,7 @@ var ROUTES = [
   [/^#\/sessions$/, function () { return sessionsView(); }],
   [/^#\/inbox$/, function () { return inboxView(); }],
   [/^#\/providers$/, function () { return providersView(); }],
+  [/^#\/usage(?:\?range=([0-9a-z]+))?$/, function (m) { return usageView(m[1]); }],
   [/^#\/runtimes$/, function () { return runtimesView(); }],
   [/^#\/chat$/, function () { return chatView(); }]
 ];
@@ -42,7 +43,7 @@ function navigate() {
 }
 
 function setActiveNav(hash) {
-  var section = hash.slice(2).split("/")[0] || "runs";
+  var section = hash.slice(2).split("?")[0].split("/")[0] || "runs";
   var links = document.querySelectorAll(".nav-link");
   for (var i = 0; i < links.length; i++) {
     links[i].classList.toggle("active", links[i].getAttribute("data-nav") === section);
