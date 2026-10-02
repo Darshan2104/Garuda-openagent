@@ -6,8 +6,10 @@ first; a candidate is skipped only for a recorded reason:
 
 - ``harness.cli_missing`` — its executable is not installed;
 - ``harness.logged_out`` — its documented login check, run fresh, says so;
-- ``harness.limit_reached`` — reserved for a proven, same-account
-  exhaustion with a known reset (E.2); never inferred.
+- ``harness.limit_reached`` — a refresh made just now shows a proved,
+  same-account exhaustion with a fresh reading and a known future reset
+  (E.2's ``LimitStore.assess``); never inferred, and any doubt keeps the
+  candidate.
 
 Anything uncertain — an unknown, failed or timed-out login check, an unknown
 limit — is **not** a reason: the candidate is taken. Trust, configuration
@@ -24,7 +26,27 @@ from dataclasses import replace
 from garuda.runtime.roles import RolePlan, RoleRefused
 
 
-def _skip_reason(catalog, runtime_id: str, *, login_run=None) -> str | None:
+def default_limit_check(catalog, runtime_id: str) -> bool:
+    """Whether ``runtime_id`` is exhausted *for fallback purposes*: only for a harness
+    whose limit source is proved, by a refresh made now that no prompt is part of."""
+    from garuda.observability.limits import PROVED_SOURCES, LimitStore
+
+    if runtime_id not in PROVED_SOURCES:
+        return False
+    manifest = next((m for m in catalog.registry.manifests if m.runtime_id == runtime_id), None)
+    if manifest is None or manifest.auth_probe is None or not manifest.auth_probe.argv:
+        return False
+    from garuda.acp.limit_probe import refresh_codex
+
+    store = LimitStore()
+    executable = manifest.auth_probe.argv[0]
+    try:
+        return store.assess(runtime_id, lambda: refresh_codex(executable, store)).eligible_exhausted
+    except Exception:
+        return False  # anything uncertain is not a reason
+
+
+def _skip_reason(catalog, runtime_id: str, *, login_run=None, limit_check=None) -> str | None:
     from garuda.acp.login_probe import LoginState, probe_login
 
     resolved = catalog.registry.get(runtime_id)
@@ -38,10 +60,12 @@ def _skip_reason(catalog, runtime_id: str, *, login_run=None) -> str | None:
                     if m.runtime_id == resolved.runtime_id)
     if probe_login(manifest, cache_ttl=0, run=login_run) is LoginState.LOGGED_OUT:
         return "harness.logged_out"
+    if (limit_check or (lambda rid: default_limit_check(catalog, rid)))(resolved.runtime_id):
+        return "harness.limit_reached"
     return None  # unknown, failed or timed out is never a reason
 
 
-def choose(plan: RolePlan, resolved, catalog, *, login_run=None) -> RolePlan:
+def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None) -> RolePlan:
     """The plan to start, with the fallback decision recorded on it."""
     spec = resolved.config.get("roles", {}).get(plan.role, {})
     chain = spec.get("fallback", [])
@@ -56,7 +80,8 @@ def choose(plan: RolePlan, resolved, catalog, *, login_run=None) -> RolePlan:
     ]
     skipped = []
     for index, candidate in enumerate(candidates):
-        reason = _skip_reason(catalog, candidate.runtime_id, login_run=login_run)
+        reason = _skip_reason(catalog, candidate.runtime_id, login_run=login_run,
+                              limit_check=limit_check)
         if reason is None:
             decision = {
                 "primary": {"harness": plan.runtime_id, "model_id": plan.model_id},

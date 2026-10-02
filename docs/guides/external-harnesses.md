@@ -275,8 +275,9 @@ reading names an account and the harness is logged into the same one now; it is 
 seconds old; and it reports the limit reached with an explicit reset time still ahead.
 Anything else, including a changed account, version or login, a stale reading, an unknown
 or past reset, or a source with no account id, is shown as history and leaves the harness
-eligible. An unknown reset time never bans a provider. (Enabling the `harness.limit_reached`
-fallback reason is a separate step; until then limit observations are display evidence.)
+eligible. An unknown reset time never bans a provider. This is what
+makes a role's fallback chain skip a harness as `harness.limit_reached`, once, before the
+run starts and never after a prompt has been sent.
 
 To record another version (no prompt is sent):
 

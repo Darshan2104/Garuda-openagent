@@ -110,3 +110,31 @@ def test_the_decision_is_recorded_before_the_prompt(harnesses, tmp_path, monkeyp
     assert meta["runtime_segments"][0]["runtime_id"] == "fakeb"
     assert meta["role"]["fallback"]["skipped"] == [
         {"harness": "fakec", "model_id": None, "reason": "harness.cli_missing"}]
+
+
+def test_a_proved_exhaustion_skips_the_harness_and_any_doubt_keeps_it(harnesses):
+    plan, resolved, catalog = _plan("fakea", ["fakeb"], harnesses)
+    chosen = choose(plan, resolved, catalog, login_run=_logins({}),
+                    limit_check=lambda runtime_id: runtime_id == "fakea")
+    assert chosen.runtime_id == "fakeb"
+    assert [s["reason"] for s in chosen.fallback["skipped"]] == ["harness.limit_reached"]
+    # not exhausted, or unable to tell: the primary starts
+    for answer in (False, None):
+        kept = choose(plan, resolved, catalog, login_run=_logins({}),
+                      limit_check=lambda runtime_id, answer=answer: answer)
+        assert kept.runtime_id == "fakea" and kept.fallback["skipped"] == []
+
+
+def test_every_candidate_exhausted_refuses_with_the_reason(harnesses):
+    plan, resolved, catalog = _plan("fakea", ["fakeb"], harnesses)
+    with pytest.raises(RoleRefused) as caught:
+        choose(plan, resolved, catalog, login_run=_logins({}), limit_check=lambda rid: True)
+    assert "fakea (harness.limit_reached)" in str(caught.value)
+    assert "fakeb (harness.limit_reached)" in str(caught.value)
+
+
+def test_a_harness_without_a_proved_limit_source_is_never_skipped_for_quota(harnesses):
+    from garuda.agents.fallbacks import default_limit_check
+
+    _plan_, _resolved, catalog = _plan("fakea", ["fakeb"], harnesses)
+    assert default_limit_check(catalog, "fakea") is False  # no proved source: the real check
