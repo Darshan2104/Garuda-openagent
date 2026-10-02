@@ -502,6 +502,20 @@ def build_parser():
     )
     config_trust.add_argument("--workspace", default=".")
 
+    flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
+    flow_sub = flow_parser.add_subparsers(dest="flow_command")
+    flow_run = flow_sub.add_parser("run", help="Run a flow by name")
+    flow_run.add_argument("name")
+    flow_run.add_argument("-t", "--task", required=True)
+    flow_run.add_argument("--workspace", default=".")
+    flow_show = flow_sub.add_parser("show", help="A flow session's steps and receipts")
+    flow_show.add_argument("flow_session")
+    flow_resume = flow_sub.add_parser(
+        "resume", help="Continue a flow after its last receipted step (never replays one)"
+    )
+    flow_resume.add_argument("flow_session")
+    flow_resume.add_argument("--workspace", default=".")
+
     approvals_parser = subparsers.add_parser(
         "approvals", help="List or answer a running session's parked approvals"
     )
@@ -1003,6 +1017,60 @@ def _apply_role(args, resolved, catalog):
     print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
           file=out)
     return plan
+
+
+def run_flow(args) -> int:
+    """`garuda flow run|show|resume` (C.6a)."""
+    import asyncio
+    import json
+    import sys
+
+    from garuda.config.garuda_yaml import GarudaConfigError, load_effective
+    from garuda.core.sessions import SessionStore
+    from garuda.flows import engine
+    from garuda.flows.launch import launch_step
+    from garuda.workspace.lease import LeaseError
+
+    store = SessionStore()
+    if args.flow_command == "show":
+        try:
+            meta = store.load_meta(args.flow_session)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        print(f"flow {meta.get('flow', {}).get('name')}: {meta.get('flow_state')}")
+        for receipt in engine.receipts(store, args.flow_session):
+            outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
+            print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
+                  f"outputs: {outs}")
+        return 0
+    try:
+        if args.flow_command == "resume":
+            meta = store.load_meta(args.flow_session)
+            name, task, workspace = meta["flow"]["name"], meta["task"], meta["workspace"]
+        else:
+            name, task, workspace = args.name, args.task, args.workspace
+        resolved = load_effective(workspace)
+        flows = (resolved.config.get("flows", {}) if resolved else {})
+        if name not in flows:
+            print(f"Error: flow.unknown: no flow named {name!r} "
+                  f"(have: {', '.join(sorted(flows)) or 'none'})", file=sys.stderr)
+            return 2
+        runner = engine.FlowRunner(store, workspace, name, flows[name], resolved, task=task,
+                                   launcher=launch_step,
+                                   flow_session=getattr(args, "flow_session", None))
+        result = asyncio.run(runner.run(resume=args.flow_command == "resume"))
+    except (GarudaConfigError, LeaseError, engine.FlowStopped, OSError, ValueError,
+            KeyError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    for receipt in result.receipts:
+        print(f"[garuda] {receipt['step']}: {receipt['status']}")
+    if result.stopped:
+        print(f"[garuda] flow stopped: {result.stopped}", file=sys.stderr)
+        return 3
+    print(json.dumps({"flow_session": result.flow_session, "state": "completed"}))
+    return 0
 
 
 def run_approvals(args) -> int:
@@ -1860,6 +1928,10 @@ def main() -> None:
         if args.config_command is None:
             parser.parse_args(["config", "--help"])
         raise SystemExit(run_config(args))
+    if args.command == "flow":
+        if args.flow_command is None:
+            parser.parse_args(["flow", "--help"])
+        raise SystemExit(run_flow(args))
     if args.command == "approvals":
         if args.approvals_command is None:
             parser.parse_args(["approvals", "--help"])

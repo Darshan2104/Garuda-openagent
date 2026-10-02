@@ -165,6 +165,7 @@ async def run_agent_task(
     isolation: str = "shared",
     context_attached=None,
     session_record: dict | None = None,
+    lease_capability=None,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -221,7 +222,8 @@ async def run_agent_task(
     # Native runs share one capacity pool ("native"), limited only when the
     # user sets `capacity.native` in global settings.
     lease = session_service.acquire_lease(
-        workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan
+        workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan,
+        capability=lease_capability,
     )
 
     try:

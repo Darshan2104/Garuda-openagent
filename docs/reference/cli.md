@@ -18,6 +18,9 @@ for your installed version. For ready-made examples, see the
 | | `garuda approvals answer S ID --allow` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only |
 | | `garuda doctor [--runtime ID] [--json]` | Check configuration, the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
+| Flows | `garuda flow run NAME -t TASK` | Run a `garuda.yaml` flow: its steps in order, each as its own session under its role |
+| | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
+| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Configuration | `garuda init [--project] [--model HARNESS=ID] [--yes]` | Propose a user `garuda.yaml` (roles) or, with `--project`, the project's checks; writes only after confirmation |

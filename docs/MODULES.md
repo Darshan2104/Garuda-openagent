@@ -338,6 +338,22 @@ same workspace, lease and quarantine steps around its resume recovery. Backgroun
 processes that cannot be proven dead quarantine the session: the lease stays
 held with its heartbeat stopped and the pids are recorded).
 
+## `flows/` — sequential role steps (C.6a)
+
+`engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
+holds the workspace lease from the first step to the last and lends each step
+a revocable `LeaseCapability` (`interfaces/run_guard.py`), so nothing outside
+the flow takes the workspace between steps and no step keeps it. Per step
+attempt it resolves typed inputs, journals the intent (fsynced) before launch,
+runs the step as its own session, applies the no-edits guardrail, takes
+declared outputs only from the structured-output envelope, and writes an
+immutable receipt. An intent without a receipt is quarantined by `recover`,
+never replayed; `resume` continues past receipted steps only. `artifacts.py`
+stores bounded artifacts once (owner-only, no symlinks) and refuses forged,
+escaping, symlinked or stale inputs. `launch.py` starts native steps through
+`run_agent_task` and ACP steps through `run_acp_task`, each borrowing the flow's
+lease.
+
 ## `eval/` — measurement, outside the agent
 
 `harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),
