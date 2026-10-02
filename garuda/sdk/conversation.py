@@ -151,6 +151,9 @@ class Conversation:
         except session_service.SessionRefused as exc:
             raise exc.cause from exc
         session.events.attach_persistence(recorded["events_path"])
+        from garuda.observability import usage as usage_ledger
+
+        usage_ledger.attach(session.events, store)
         self._live, self._lease, self._env = live, live.lease, live.env
         return live
 

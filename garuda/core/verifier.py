@@ -14,6 +14,7 @@ from garuda.workspace.protocol import Environment
 if TYPE_CHECKING:
     from garuda.core.permissions import PermissionEngine
     from garuda.model.protocol import Model
+from garuda.model import accounting
 
 logger = logging.getLogger(__name__)
 
@@ -881,7 +882,7 @@ class CompletionVerifier:
         response = None
         for attempt in range(2):  # one retry, then fail closed
             try:
-                response = await model.complete(verifier_messages)
+                response = await accounting.tagged(model, "verifier").complete(verifier_messages)
                 break
             except Exception:
                 logger.warning("LLM verifier call failed (attempt %d/2)", attempt + 1, exc_info=True)

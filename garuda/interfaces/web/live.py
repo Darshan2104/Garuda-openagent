@@ -307,6 +307,9 @@ class LiveRuns:
             raise exc.cause from exc
         env, env_handle = live.env, live.env_handle
         session.events.attach_persistence(recorded["events_path"])
+        from garuda.observability import usage as usage_ledger
+
+        usage_ledger.attach(session.events, self.store)
 
         chat = LiveChat(
             chat_id=chat_id, session=session, env=env, env_handle=env_handle,

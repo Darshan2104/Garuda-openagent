@@ -380,13 +380,6 @@ summarized, and `metrics`/`mode`/`acceptance` reach `meta.json`
   steering note kinds (`CONTINUE_NUDGE`, `REPEAT_NUDGE`, `TASK_COMPLETE_STUCK_NUDGE`,
   `CONTEXT_WARNING_NUDGE`, `turn_budget_notice`) emit nothing at all, so "the agent was
   nudged for repetition on turn 14" is not answerable.
-- **Summarizer model calls are invisible in token accounting.** `summarize_incremental`
-  and `summarize_three_step` call `model.complete` directly rather than through the
-  loop's `_timed_complete`, so their prompt/completion tokens never reach
-  `accumulate_usage`, `usage_totals` or `turn_metrics`. A three-step summarize is three
-  uncounted model calls; only its wall-clock shows, as `compaction_ms`. Any cost figure
-  derived from the event log therefore understates a run that compacted — which is the
-  opposite of the direction `eval/costs.py` is careful about elsewhere.
 
 ## Before the next benchmark run
 

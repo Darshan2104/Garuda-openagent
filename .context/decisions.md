@@ -954,3 +954,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   other tabs), is refused after expiry, and the broker re-checks the ceiling.
   A 200 means "recorded for the broker". Token, Host and Origin gates apply.
 
+## 2026-10-02 — The usage ledger counts identities, once (issue #168, E.1)
+
+- One record per native model call, keyed `native:<session>:<event index>`; the
+  writer refuses a repeated key under the lock, any field outside the per-kind
+  schema, and path-like strings. Auxiliary calls are tagged through
+  `model/accounting.py` so the ledger and `aggregate_model_metrics` agree.
+- ACP usage reports are snapshots unless a policy for the exact adapter version
+  is proved (the shipped table is empty). Cumulative sources keep a persisted
+  high-water mark; replay, out-of-order, gap, decrease and adapter change never
+  produce a delta. Records are appended before the cursor moves.
+- Unknown cost is `null`; ledger totals exclude snapshots and say so.
+

@@ -1,3 +1,4 @@
+from garuda.model import accounting
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
@@ -64,7 +65,7 @@ async def summarize_incremental(
         system = _STATE_SYSTEM
         preamble = f"Task:\n{task}\n\nCurrent state:\n{prior}\n\n"
         closing = "Return the full updated structured state."
-    response = await model.complete(
+    response = await accounting.tagged(model, "summarizer").complete(
         [
             Message(role=Role.SYSTEM, content=system),
             Message(
@@ -115,7 +116,7 @@ def _tail_within_budget(lines: list[str], budget: int) -> str:
 async def summarize_three_step(model: Model, messages: list[Message], task: str) -> str:
     history_text = _render_history(messages)
 
-    summary_response = await model.complete(
+    summary_response = await accounting.tagged(model, "summarizer").complete(
         [
             Message(role=Role.SYSTEM, content="Summarize the agent conversation for context compaction."),
             Message(
@@ -130,7 +131,7 @@ async def summarize_three_step(model: Model, messages: list[Message], task: str)
     )
     summary = summary_response.content or ""
 
-    question_response = await model.complete(
+    question_response = await accounting.tagged(model, "summarizer").complete(
         [
             Message(
                 role=Role.SYSTEM,
@@ -151,7 +152,7 @@ async def summarize_three_step(model: Model, messages: list[Message], task: str)
     )
     questions = question_response.content or ""
 
-    answer_response = await model.complete(
+    answer_response = await accounting.tagged(model, "summarizer").complete(
         [
             Message(role=Role.SYSTEM, content="Answer questions using the conversation history."),
             Message(

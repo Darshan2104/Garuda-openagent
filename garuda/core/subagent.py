@@ -38,6 +38,7 @@ def persist_child_events(parent: EventStore, child: EventStore) -> None:
     ``docs/ARCHITECTURE.md`` — a subagent invoked in a run nobody persisted stays
     unpersisted, which is the right answer rather than inventing a directory for it.
     """
+    child.inherit_observers(parent)
     parent_path = parent.persist_path
     if parent_path is None:
         return
