@@ -450,3 +450,22 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   workspace is not immediately available, so no process holds a slot while
   waiting on a workspace.
 - POSIX only for now (macOS, Linux); the spike refuses other hosts.
+
+## 2026-10-02 — Git snapshot and publication contract proved by the A.5 spike (issue #154)
+
+- Snapshots never run repository code: Git runs with no inherited `GIT_*`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, and
+  `core.fsmonitor=false`, `core.hooksPath=/dev/null`, signing off. Content is
+  read without following symlinks, hashed with `--no-filters` and placed in a
+  temporary index; the source index, stash, refs and checkout are unchanged.
+  A manifest change during capture refuses. v1 refuses submodules, sparse
+  checkouts, `filter=` attributes, symlinked parent directories, special files
+  and oversized trees.
+- Consult snapshots live in a detached repository with its own metadata, no
+  alternates and no hardlinks.
+- Integration publishes only `refs/garuda/integration/<id>` with an
+  expected-old-value compare-and-swap and returns `git merge --ff-only`; the
+  destination branch, HEAD, index and checkout are never changed. Required
+  checks run in Docker with the detached source read-only, no network, no
+  socket, an unprivileged user and a tmpfs scratch; a tree change voids the
+  evidence.

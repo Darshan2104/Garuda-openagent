@@ -130,6 +130,19 @@ into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
 `.context/` pack files the harness syncs into the workspace appear in the delta
 as session changes.
 
+`snapshot_proto.py` is the A.5 spike (#154), not yet wired to sessions. It
+snapshots a work tree (tracked edits, deletions, untracked non-ignored files)
+with sanitized Git: no inherited `GIT_*`, no system/global config, fsmonitor
+and hooks off, files read without following symlinks and hashed with
+`hash-object --no-filters` into a temporary index — never `git add`. The
+manifest is compared before and after; submodules, sparse checkouts, custom
+filters and symlinked parents refuse. `detached_repository` writes the
+snapshot into a fresh repository with its own metadata (for consults);
+`allocate_branch` has one winner; `preview_integration` uses `merge-tree
+--write-tree`; `publish_integration` moves only `refs/garuda/integration/<id>`
+by compare-and-swap; `run_confined_check` runs a check in Docker against the
+read-only detached copy. Teams task B.5 promotes it.
+
 ## `context/` — fitting the conversation in the window
 
 `manager.py` holds history and decides when to act. `shaper.py` caps and shapes
