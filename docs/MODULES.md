@@ -82,7 +82,7 @@ process group, `runtime/ownership.py` — is confirmed dead, audited takeover,
 epoch-checked heartbeat/release, corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
 owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
-keys. `worktrees.py` (B.5) decides where a session edits — `shared`, its own
+keys. `no_edits.py` (C.10) — the no-edits guardrail: a bounded, no-follow manifest of the workspace (ignored files, modes, symlinks, change times) and of the repository's refs, HEAD, hooks, config and staged entries by content, taken before a run and compared after every descendant exits; any difference or an incomplete manifest withholds outputs. `worktrees.py` (B.5) decides where a session edits — `shared`, its own
 linked worktree on `garuda/<session>` (create-only branch, sanitized Git,
 source HEAD and dirty fingerprint recorded, uncommitted source edits not
 carried over) or `auto` — and `run_agent_task` calls it before the lease so the

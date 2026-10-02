@@ -708,3 +708,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   (`verification.test_infra_changed`), never repository-wide.
 - Outcome, verification and self-check stay independent; the legacy `status`
   is unchanged.
+
+## 2026-10-02 — no-edits is a refusal plus an after-the-fact check (issue #158, C.10)
+
+- `write_policy: no-edits` (role or `--no-edits`) refuses edits and commands
+  — native `readonly`; ACP approvals denied and audited — and is never
+  described as confinement.
+- After every descendant exits, a bounded no-follow manifest is compared with
+  the one taken before (ignored files, modes, symlinks, change times; git
+  refs, HEAD, hooks, config and staged entries by content). Any change or an
+  incomplete comparison withholds the outputs, stops the run (exit 3) and
+  records the evidence; nothing is reverted. Only a complete, identical
+  comparison says "no changes detected".
+- A parallel group cannot be no-edits, and a no-edits run is checked in
+  place (no `--isolation`).
