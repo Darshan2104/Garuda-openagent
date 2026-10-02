@@ -10,3 +10,5 @@ reference, and architecture documentation.
 - [Paired-trial report CLI](2026-09-29-paired-trial-report-cli-design.md)
 - [Runtime session-reference resolution](2026-09-29-runtime-session-ref-resolution-design.md)
 - [Documentation refresh](2026-09-30-documentation-refresh-design.md)
+- [Teams and sessions](2026-10-01-teams-and-sessions-design.md)
+- [Agent definitions](2026-10-01-agent-definitions-design.md)

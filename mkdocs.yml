@@ -136,6 +136,8 @@ nav:
           - Paired-trial report CLI: design/2026-09-29-paired-trial-report-cli-design.md
           - Runtime session references: design/2026-09-29-runtime-session-ref-resolution-design.md
           - Documentation refresh: design/2026-09-30-documentation-refresh-design.md
+          - Teams and sessions: design/2026-10-01-teams-and-sessions-design.md
+          - Agent definitions: design/2026-10-01-agent-definitions-design.md
       - Implementation plans:
           - plans/index.md
           - Dual-model delegation and routing: plans/2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md
@@ -144,6 +146,8 @@ nav:
           - Runtime session references: plans/2026-09-29-runtime-session-ref-resolution-implementation.md
           - Documentation refresh: plans/2026-09-30-documentation-refresh-implementation.md
           - GitHub Pages publishing: plans/2026-10-01-github-pages-implementation.md
+          - Teams and sessions: plans/2026-10-01-teams-and-sessions-implementation.md
+          - Agent definitions: plans/2026-10-01-agent-definitions-implementation.md
       - Archive:
           - archive/index.md
           - Harness RFC: archive/2026-07-02-GARUDA_OPEN_AGENT_RFC.md

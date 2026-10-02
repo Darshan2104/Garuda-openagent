@@ -13,7 +13,7 @@ Garuda is a provider-agnostic coding-agent harness. Its product boundary is the 
 
 - Preserve user changes in a dirty worktree. Stage only files you intentionally changed.
 - Keep a module focused on one responsibility. New cross-entry-point wiring belongs in `garuda/agents/setup.py` or a dedicated shared service, not copied into every interface.
-- Use protocols at product boundaries. `Model` is for inference transports; external coding agents belong behind the planned `AgentRuntime` boundary, not behind `Model`.
+- Use protocols at product boundaries. `Model` is for inference transports; external coding agents belong behind the `AgentRuntime` boundary, not behind `Model`.
 - Fail closed for security, permission, workspace, network, and verification ambiguity. Never describe a guardrail as a sandbox boundary.
 - Do not read, copy, persist, or proxy vendor OAuth tokens. Integrations launch user-authenticated official CLIs or documented public APIs.
 - Keep reasoning, secrets, raw transcripts, and large tool outputs out of `.context/`. Handoffs contain decisions, evidence, next actions, and paths.
