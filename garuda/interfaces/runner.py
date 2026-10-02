@@ -217,13 +217,15 @@ async def run_agent_task(
     # lease — including a second concurrent `run_agent_task` on this
     # workspace — fails here instead of interleaving mutations. Fail-closed:
     # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.interfaces.run_guard import install_session_broker
+    from garuda.interfaces.run_guard import install_session_broker, lease_mode_for
 
     # Native runs share one capacity pool ("native"), limited only when the
     # user sets `capacity.native` in global settings.
     lease = session_service.acquire_lease(
         workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan,
         capability=lease_capability,
+        # A read-only posture shares the workspace with other readers (B.4).
+        mode=lease_mode_for(getattr(config, "permission_mode", None)),
     )
 
     try:

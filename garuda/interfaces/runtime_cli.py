@@ -672,7 +672,10 @@ async def run_acp_task(
         lease = acquire_lease(workspace, session_id, capacity_key=manifest.runtime_id,
                               capability=lease_capability)
     else:
-        lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id)
+        # A read-only role shares the workspace with other readers.
+        readonly = role_plan is not None and role_plan.permissions == "readonly"
+        lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id,
+                                    mode="read-only" if readonly else "mutating")
         lease.acquire()
     runtime = None
     began = False
