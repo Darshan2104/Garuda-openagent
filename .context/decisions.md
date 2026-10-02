@@ -926,3 +926,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   by confirmed death of the owner (process identity), never by TTL or clock;
   unknown liveness is quarantined. Inspection never locks or writes.
 
+## 2026-10-02 — Background sessions are a queue entry plus a detached worker (issue #167, D.2)
+
+- `run --bg` creates the session and queue entry and re-executes a hidden
+  worker; the worker waits without a workspace lease, then runs the ordinary
+  `run_task` path with a preassigned session id. Claim, heartbeat and release
+  are bound to the worker's epoch; every exit path releases the slot, and a
+  killed worker's slot is reclaimed on proof of death (derived `crashed`).
+- Cancellation verifies the recorded process identity before signalling; a
+  recycled pid is never signalled. Logs are bounded.
+
