@@ -221,6 +221,9 @@ class AgentConfig:
     max_context_tokens: int = 128_000
     skills: list[str] | None = None
     skills_dirs: list[str] | None = None
+    # Things the user should know about how the prompt was built (for example a
+    # truncated AGENTS.md); reported on the session_start event.
+    prompt_diagnostics: list[dict] = field(default_factory=list)
 
 
 @dataclass

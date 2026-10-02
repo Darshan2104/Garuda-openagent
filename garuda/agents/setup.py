@@ -955,7 +955,9 @@ async def prepare_agent_run(
         config.reasoning_effort = reasoning_effort
     if thinking_budget_tokens is not None:
         config.thinking_budget_tokens = thinking_budget_tokens
-    config.system_prompt = resolve_system_prompt(profile, workspace)
+    config.system_prompt = resolve_system_prompt(
+        profile, workspace, diagnostics=config.prompt_diagnostics
+    )
 
     # --- Model bindings -----------------------------------------------------
     from garuda.config.routing import load_global_orchestration, project_orchestration_from_home

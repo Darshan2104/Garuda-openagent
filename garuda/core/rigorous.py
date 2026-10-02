@@ -114,6 +114,11 @@ class RigorousAgent:
                     "mode": "rigorous",
                     "permission_mode": permissions.mode,
                     "config": describe_config(config),
+                    **(
+                        {"diagnostics": list(config.prompt_diagnostics)}
+                        if getattr(config, "prompt_diagnostics", None)
+                        else {}
+                    ),
                 },
             )
 
