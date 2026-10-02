@@ -51,9 +51,21 @@ def world(tmp_path):
         "flow_state": "running", "review": {"verdict": "approved", "reviewer": "r"}})
     directory = engine.flow_dir(store, ids["flow"])
     (directory / "receipts").mkdir(parents=True, exist_ok=True)
-    engine._write_once(directory / "receipts" / "code-1.json",
-                       {"step": "code", "attempt": 1, "index": 0, "state": "done",
-                        "session": ids["done"]})
+    ref = {"type": "diff", "digest": "d" * 64, "producer_step": "code",
+           "producer_session": ids["done"], "attempt": 1, "size": 12,
+           "workspace_version": "v1", "path": "artifacts/x", "version": 1}
+    engine._write_once(directory / "receipts" / "code-1.json", {
+        "index": 0, "step": "code", "role": "coder", "attempt": 1, "session_id": ids["done"],
+        "success": True, "inputs": [], "outputs": [ref], "status": "done",
+        "workspace_version_before": "v1", "workspace_version_after": "v2",
+        "recorded_at": "2026-10-02T00:00:00+00:00"})
+    engine._write_once(directory / "receipts" / "review-1.json", {
+        "index": 1, "step": "review", "role": "reviewer", "attempt": 1,
+        "session_id": ids["queued"], "success": True, "inputs": [ref], "outputs": [],
+        "status": "stopped", "stop": {"code": "flow.no_edits_changed", "message": "m"},
+        "no_edits": {"result": "changed"},
+        "workspace_version_before": "v2", "workspace_version_after": "v2",
+        "recorded_at": "2026-10-02T00:01:00+00:00"})
     # a session waiting on an approval
     store.update_meta(ids["waiting"], {"state": {**session_state.started(), "work": "waiting"}})
     channel = FileApprovalChannel(store.session_dir(ids["waiting"]) / "approvals", ids["waiting"])
@@ -87,8 +99,14 @@ def test_a_review_outcome_is_never_verification(world):
     assert row["flow"]["review"] == {"verdict": "approved", "reviewer": "r"}
     assert row["verification"]["status"] == "unavailable"
     assert [s["id"] for s in row["flow"]["steps"]] == ["code", "review"]
-    assert row["flow"]["steps"][0]["attempts"][0]["state"] == "done"
-    assert row["flow"]["steps"][1]["attempts"] == []
+    code, review = row["flow"]["steps"]
+    assert (code["attempts"][0]["status"], code["attempts"][0]["delta"]) == ("done", True)
+    assert code["attempts"][0]["outputs"][0]["type"] == "diff"
+    attempt = review["attempts"][0]
+    assert (attempt["status"], attempt["delta"], attempt["no_edits"]) == ("stopped", False, "changed")
+    assert attempt["stop"]["code"] == "flow.no_edits_changed"
+    assert row["flow"]["edges"] == [
+        {"from_step": "code", "to_step": "review", "type": "diff", "digest": "d" * 64}]
 
 
 def test_pending_approvals_are_listed_and_redacted(world):
@@ -235,7 +253,9 @@ def test_the_stream_over_a_real_socket_resumes_with_last_event_id(world):
             response = conn.getresponse()
             assert response.status == 200
             assert response.getheader("Content-Type").startswith("text/event-stream")
-            return response.read().decode()
+            text = response.read().decode()
+            conn.close()
+            return text
 
         text = fetch()
         ids_seen = [line[4:] for line in text.splitlines() if line.startswith("id: ")]
@@ -245,7 +265,10 @@ def test_the_stream_over_a_real_socket_resumes_with_last_event_id(world):
 
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn.request("GET", f"/api/sessions/{sid}/stream", headers={"Host": f"127.0.0.1:{port}"})
-        assert conn.getresponse().status == 401  # the same token gate as every API route
+        refused = conn.getresponse()
+        refused.read()
+        assert refused.status == 401  # the same token gate as every API route
+        conn.close()
     finally:
         server.shutdown()
         server.server_close()

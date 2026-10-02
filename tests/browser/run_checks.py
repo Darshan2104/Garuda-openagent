@@ -187,6 +187,18 @@ def main() -> int:
                           "GARUDA_CHECK_RO_BASE": f"http://127.0.0.1:{port}/"}):
             failures.append("check_runtimes.py")
 
+        # --- sessions, queue and flows: the shared read model, rendered ------
+        sess_sessions = workdir / "sess-sessions"
+        sess_settings = workdir / "sess-settings.yaml"
+        sess_env = {"GARUDA_GLOBAL_SETTINGS": str(sess_settings)}
+        subprocess.run([sys.executable, str(HERE / "seed_sessions.py"), str(sess_sessions),
+                        str(workdir)], check=True, env={**os.environ, **sess_env})
+        sess_port = free_port(live_port + 2)
+        processes.append(start_dashboard(sess_sessions, sess_port, workdir / "web-sess.log",
+                                         extra_env=sess_env))
+        if not run_check("check_sessions.py", sess_port, shots):
+            failures.append("check_sessions.py")
+
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
         chat_sessions.mkdir()
