@@ -505,7 +505,7 @@ def _fake_catalog():
             manifest("native", "native", ("prompt", "file-edit")),
             manifest("codex", "acp", ("prompt", "file-edit", "terminal")),
         ]),
-        discover=lambda: (),
+        discover=lambda **_: (),
     )
 
 

@@ -191,6 +191,7 @@ def discover(
     project_disabled: frozenset[str] | set[str] = frozenset(),
     probe_timeout: float = PROBE_TIMEOUT,
     run_probe: Callable[..., str | None] | None = None,
+    cache_ttl: float | None = None,
 ) -> list[DiscoveredRuntime]:
     """Inspect configured harnesses without logging in, installing, or reading tokens.
 
@@ -199,6 +200,10 @@ def discover(
     `project_disabled` is recommendation-only: matching ids stay fully
     available and selectable, carrying a warning that the project suggestion
     was ignored — only global settings disable runtimes.
+
+    With ``cache_ttl`` (seconds), a result recorded within that time for the
+    same runtime, executable file and probe argv is reused instead of running
+    the probes again (see :func:`_cached_inspect`).
     """
     run = run_probe or _run_probe
     by_id = {m.runtime_id: m for m in manifests}
@@ -218,7 +223,11 @@ def discover(
                 )
             )
             continue
-        record = _inspect(manifest, run, probe_timeout)
+        record = (
+            _cached_inspect(manifest, run, probe_timeout, cache_ttl)
+            if cache_ttl
+            else _inspect(manifest, run, probe_timeout)
+        )
         if manifest.runtime_id in project_warned:
             # `replace` keeps every other field (login flow, instructions, …)
             # so the advisory warning cannot silently drop login guidance.
@@ -299,6 +308,122 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
     if not isinstance(data, Mapping):
         raise RuntimeSettingsError(f"trusted runtime settings {path} must be a mapping")
     return data
+
+
+def _probe_cache_path() -> Path:
+    from garuda.config.agent_home import global_settings_path
+
+    return global_settings_path().expanduser().parent / "cache" / "runtime-probes.json"
+
+
+def _probe_cache_key(manifest) -> str | None:
+    """Identity of one probe result: runtime, executable file and probe argv.
+
+    ``None`` (do not cache) when there is no executable to identify.
+    """
+    import hashlib
+
+    executable = _resolve_executable(manifest.command)
+    if executable is None:
+        return None
+    try:
+        info = os.stat(executable)
+    except OSError:
+        return None
+    auth = manifest.auth_probe
+    material = [
+        manifest.runtime_id,
+        os.path.realpath(executable),
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ino,
+        list(manifest.command or ()),
+        list(manifest.version_args or ()),
+        manifest.version_pattern,
+        list(auth.argv) if auth else None,
+        auth.authenticated_pattern if auth else None,
+        auth.unauthenticated_pattern if auth else None,
+    ]
+    return hashlib.sha256(json.dumps(material, default=str).encode()).hexdigest()
+
+
+def _read_probe_cache(path: Path) -> dict:
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return {}
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_probe_cache(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(tmp, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.replace(tmp, path)
+    except OSError:
+        logger.debug("Could not write the runtime probe cache %s", path, exc_info=True)
+
+
+def _cached_inspect(
+    manifest, run: Callable[..., str | None], timeout: float, ttl: float
+) -> DiscoveredRuntime:
+    """``_inspect`` with a short-lived cache of its *conclusions*.
+
+    Only the derived fields of the record (availability, extracted version,
+    auth/health status, capabilities, warnings) are stored — never raw probe
+    output — owner-only, beside the global settings. Changing the executable
+    file, its path or the probe argv changes the key.
+    """
+    import time
+
+    key = _probe_cache_key(manifest)
+    if key is None:
+        return _inspect(manifest, run, timeout)
+    path = _probe_cache_path()
+    cache = _read_probe_cache(path)
+    now = time.time()
+    entry = cache.get(key)
+    if isinstance(entry, dict) and 0 <= now - float(entry.get("at", 0)) < ttl:
+        try:
+            fields = dict(entry["record"])
+            fields["auth"] = AuthStatus(fields["auth"])
+            fields["health"] = HealthStatus(fields["health"])
+            fields["capabilities"] = tuple(fields["capabilities"])
+            fields["warnings"] = tuple(fields["warnings"])
+            return DiscoveredRuntime(**fields)
+        except (KeyError, TypeError, ValueError):
+            pass
+    record = _inspect(manifest, run, timeout)
+    stored = {
+        "runtime_id": record.runtime_id,
+        "kind": record.kind,
+        "available": record.available,
+        "executable": record.executable,
+        "version": record.version,
+        "auth": record.auth.value,
+        "health": record.health.value,
+        "capabilities": list(record.capabilities),
+        "warnings": list(record.warnings),
+        "login_flow": record.login_flow,
+        "login_instructions": record.login_instructions,
+    }
+    fresh = {
+        k: v
+        for k, v in cache.items()
+        if isinstance(v, dict) and 0 <= now - float(v.get("at", 0)) < ttl
+    }
+    fresh[key] = {"at": now, "record": stored}
+    _write_probe_cache(path, fresh)
+    return record
 
 
 def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> DiscoveredRuntime:
