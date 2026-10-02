@@ -445,6 +445,12 @@ def build_parser():
     )
     config_migrate.add_argument("--write", action="store_true",
                                 help="Write it, keeping a backup of any existing file")
+    config_trust = config_sub.add_parser(
+        "trust",
+        help="Trust this project's garuda.yaml checks and native models (exact bytes; "
+        "asks in a terminal)",
+    )
+    config_trust.add_argument("--workspace", default=".")
 
     approvals_parser = subparsers.add_parser(
         "approvals", help="List or answer a running session's parked approvals"
@@ -665,10 +671,65 @@ def run_sessions(args) -> int:
     return 0
 
 
+def run_config_trust(args) -> int:
+    """`garuda config trust`: an interactive, hash-bound grant (C.2)."""
+    import sys
+
+    from garuda.config import project_trust as pt
+    from garuda.config.garuda_yaml import GarudaConfigError, load_text
+
+    try:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            print("Error: config.trust_requires_terminal: trust is granted interactively; "
+                  "a headless run cannot create it", file=sys.stderr)
+            return 2
+    except (AttributeError, ValueError):
+        return 2
+    try:
+        project = pt.read_project_file(args.workspace)
+        if project is None:
+            print("No garuda.yaml in this project.")
+            return 0
+        doc = load_text(project.data.decode("utf-8"), source=str(project.path))
+    except (GarudaConfigError, UnicodeDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    paths = pt.needs_trust(doc)
+    if not paths:
+        print(f"[garuda] {project.path} asks for nothing that needs trust")
+        return 0
+    if pt.is_trusted(project):
+        print(f"[garuda] {project.path} is already trusted as it is now")
+        return 0
+    print(f"[garuda] {project.path} (sha256 {project.digest[:16]}) would run:", file=sys.stderr)
+    for check in doc.get("checks", []):
+        run = check["run"] if isinstance(check["run"], str) else " ".join(check["run"])
+        print(f"  check: {run}" + (f"  (in {check['cwd']})" if check.get("cwd") else ""),
+              file=sys.stderr)
+    for name, role in doc.get("roles", {}).items():
+        if role.get("harness") == "native" and "model_id" in role:
+            print(f"  native model for role {name}: {role['model_id']}", file=sys.stderr)
+    print("Trust exactly this file? Any later change needs trust again. [y/N] ", end="",
+          file=sys.stderr, flush=True)
+    try:
+        answer = input().strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes"):
+        print("[garuda] not trusted")
+        return 1
+    pt.grant(project)
+    print(f"[garuda] trusted {project.path} at sha256 {project.digest[:16]}")
+    return 0
+
+
 def run_config(args) -> int:
-    """`garuda config migrate [--write]` (C.1)."""
+    """`garuda config migrate [--write]` (C.1) and `garuda config trust` (C.2)."""
     import datetime as _dt
     import sys
+
+    if args.config_command == "trust":
+        return run_config_trust(args)
 
     from garuda.config import garuda_yaml as gy
     from garuda.config.agent_home import _load_global_settings
@@ -704,11 +765,17 @@ def run_config(args) -> int:
 
 def check_garuda_config(args) -> None:
     """Validate garuda.yaml layering before anything starts (C.1); raises on refusal."""
+    import sys
+
     from garuda.config.garuda_yaml import load_effective
 
     model = getattr(args, "model", None) or getattr(args, "reasoning_model", None)
-    load_effective(getattr(args, "workspace", "."), cli_runtime=getattr(args, "runtime", None),
-                   cli_model=model)
+    resolved = load_effective(getattr(args, "workspace", "."),
+                              cli_runtime=getattr(args, "runtime", None), cli_model=model)
+    if resolved is not None and resolved.withheld:
+        print("[garuda] config.project_untrusted: this project's garuda.yaml is not trusted "
+              f"as it is now; ignoring {', '.join(resolved.withheld)} "
+              "(review it with `garuda config trust`)", file=sys.stderr)
 
 
 def run_approvals(args) -> int:

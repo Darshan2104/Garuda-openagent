@@ -165,6 +165,12 @@ def is_trusted(server, workspace: str | Path) -> bool:
     except (TrustError, OSError) as exc:
         logger.warning("MCP server %r cannot be trusted: %s", server.name, exc)
         return False
+    return has_grant(key)
+
+
+def has_grant(key: TrustKey) -> bool:
+    """Whether this exact (repository, name, digest) was granted. Content-bound:
+    any change to what the digest covers means no grant."""
     for grant in _read_store(trust_store_path()):
         if (
             grant.get("repository") == key.repository
@@ -198,7 +204,11 @@ def _locked(directory: Path):
 
 def grant(server, workspace: str | Path) -> TrustKey:
     """Record the user's trust in this exact entry for this repository."""
-    key = trust_key(server, workspace)
+    return grant_key(trust_key(server, workspace))
+
+
+def grant_key(key: TrustKey) -> TrustKey:
+    """Record a grant for ``key``, replacing an older one of the same name."""
     path = trust_store_path()
     _ensure_private_dir(path.parent)
     with _locked(path.parent):

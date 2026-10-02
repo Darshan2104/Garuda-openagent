@@ -363,8 +363,18 @@ contradicts the selected role is refused as `config.conflict`.
 It never removes anything from `settings.yaml`, and running it twice changes
 nothing.
 
+A project file can narrow your roles without asking. It cannot make Garuda
+run something it chose — its `checks`, or a model string for the `native`
+harness — until you trust it: `garuda config trust` shows exactly what the
+file would run and asks. Trust covers those exact bytes in that repository;
+any change to the file needs trust again, and a symlinked `garuda.yaml` is
+refused. Until then those values are ignored and the run says so
+(`config.project_untrusted`). A role a project adds may not ask for more
+than `agents.project_ceiling` allows, and a headless run can never create
+trust.
+
 Roles do not yet change which harness or model a run uses: that arrives with
-project trust and exact model resolution.
+exact model resolution.
 
 ## Environment variables
 
