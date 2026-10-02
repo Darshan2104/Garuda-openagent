@@ -210,6 +210,15 @@ def approval_answerer(
     return _answer
 
 
+def session_approval_channel(store, session_id: str):
+    """The session's file approval channel (B.8), or ``None`` without a store."""
+    if store is None or not session_id:
+        return None
+    from garuda.acp.approval_channel import FileApprovalChannel
+
+    return FileApprovalChannel(store.session_dir(session_id) / "approvals", session_id)
+
+
 def install_session_broker(permissions, store, session_id: str):
     """Route a native engine's ASK decisions through the session broker.
 
@@ -218,7 +227,8 @@ def install_session_broker(permissions, store, session_id: str):
     """
     from garuda.acp.broker import ApprovalBroker
 
-    broker = ApprovalBroker(engine=permissions, store=store)
+    broker = ApprovalBroker(engine=permissions, store=store,
+                            channel=session_approval_channel(store, session_id))
     broker.set_answerer(approval_answerer(permissions.approval_handler))
     permissions.install_approval_handler(broker.handler(session_id=session_id))
     return broker
@@ -262,7 +272,8 @@ def broker_approval_handler(
     from garuda.core.permissions import PermissionEngine
 
     broker = ApprovalBroker(
-        engine=PermissionEngine(), store=store, timeout_sec=timeout_sec
+        engine=PermissionEngine(), store=store, timeout_sec=timeout_sec,
+        channel=session_approval_channel(store, session_id),
     )
     broker.set_answerer(approval_answerer(handler))
     return broker.handler(session_id=session_id, runtime_id=runtime_id), broker
@@ -270,6 +281,7 @@ def broker_approval_handler(
 
 __all__ = [
     "WorkspaceLeaseGuard",
+    "session_approval_channel",
     "approval_answerer",
     "broker_approval_handler",
     "install_session_broker",

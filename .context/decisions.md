@@ -622,3 +622,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `--as RUNTIME` continues on another runtime through a brief. A model or
   role change on a native resume is recorded as `link_reason`.
 - A session whose owner is still live refuses (`session.live_owner`).
+
+## 2026-10-02 — File-backed approval channel (issue #157, B.8)
+
+- A parked approval is also published to `<session dir>/approvals/` so
+  another process can answer it (`garuda approvals answer`). The broker stays
+  the only place a decision is made; the terminal, the dashboard and a file
+  answer race to it and the first counts, recorded once by exclusive creation.
+- A file answer counts only if it is a regular owner-only file (not a
+  symlink) bound to the session, approval id, request digest and nonce,
+  arrives before expiry, and the permission ceiling is unchanged. Anything
+  else is a denial with its reason. Answers appear by exclusive `link`, so a
+  partial file is never visible.
+- A decision's delivery to an ACP runtime is reserved before and
+  acknowledged after. A reservation without acknowledgement (a crash) is
+  never resent: nothing proves the runtime's acknowledgement idempotent.
