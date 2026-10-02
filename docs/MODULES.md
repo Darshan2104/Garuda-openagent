@@ -166,6 +166,9 @@ implementation (streaming, tool calls, reasoning effort, prompt caching, retries
 test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost
 semantics, and migration notes required; private endpoints never admissible.
+Import-time admission checks only the shipped record; that the named integration
+test exists is a repository check (`assert_repository_admission`, run in CI), so
+an installed wheel without `tests/` still imports.
 `config.py` owns role specs/bindings, provenance, compat translation, and
 collection-narrowing; `factory.py` builds one client per role per run. The
 reasoning client owns the parent loop. An enabled collection client runs only

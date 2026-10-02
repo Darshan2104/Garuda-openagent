@@ -70,6 +70,32 @@ jobs:
       - name: Test
         run: pytest -q
 
+  wheel-install:
+    # Issue #145: a non-editable install must import and run without the
+    # repository's tests/ directory. The test job only installs editable.
+    name: wheel install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the wheel
+        run: |
+          pip install build
+          python -m build --wheel --outdir dist
+
+      - name: Install it outside the checkout and run it
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install dist/*.whl -c constraints.txt
+          cd /tmp
+          /tmp/wheel-venv/bin/python -c "import garuda.model.factory, garuda.interfaces.main"
+          /tmp/wheel-venv/bin/garuda --help > /dev/null
+
   docs-contract:
     # Issue #9 (P0.3): fail on broken local docs links, nested READMEs,
     # hand-maintained test counts, and duplicate tables. Stdlib only and never

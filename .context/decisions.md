@@ -382,3 +382,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   or arguments (including in place), the final call must name a tool the run
   has and gets its own permission decision; approval of the original arguments
   never covers rewritten ones. An unchanged call is not asked about twice.
+
+## 2026-10-02 — Transport admission splits runtime and repository checks (issue #145)
+
+- Import-time and build-time admission (`assert_admissible`) validates only the
+  shipped `TransportRecord`, including that its integration test is a
+  well-formed relative nodeid. It reads nothing outside the package, so a
+  non-editable install imports without the repository's `tests/`.
+- Whether that integration test exists and defines the named function is a
+  repository contract (`assert_repository_admission`), enforced by the
+  transport tests in CI. A `wheel install` CI job builds the wheel, installs it
+  outside the checkout and runs `garuda --help`.
