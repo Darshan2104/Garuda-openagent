@@ -333,7 +333,21 @@ class AcpProcess:
         session_id = result.get("sessionId") if isinstance(result, dict) else None
         if not session_id:
             raise AcpProtocolError("session/new returned no sessionId")
+        options = result.get("configOptions") if isinstance(result, dict) else None
+        self.session_config_options = list(options) if isinstance(options, list) else []
         return session_id
+
+    async def session_set_config_option(
+        self, session_id: str, config_id: str, value: str, *, timeout: float = HANDSHAKE_TIMEOUT
+    ) -> list[dict[str, Any]]:
+        """Set one session option; returns the agent's options after the change."""
+        result = await self._call(
+            "session/set_config_option",
+            {"sessionId": session_id, "configId": config_id, "value": value},
+            timeout=timeout,
+        )
+        options = result.get("configOptions") if isinstance(result, dict) else None
+        return list(options) if isinstance(options, list) else []
 
     async def session_load(
         self,

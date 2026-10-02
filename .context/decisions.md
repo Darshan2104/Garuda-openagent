@@ -665,3 +665,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - The parsed values that run come from the same bytes that were hashed, so a
   file swapped after the check cannot run as trusted. Headless runs cannot
   create trust. A project-added role is capped at `agents.project_ceiling`.
+
+## 2026-10-02 — Roles resolve to exact ids; ACP options only where proven (issue #158, C.3)
+
+- A role resolves to one plan: runtime id, exact model id, effort,
+  permission ceiling, profile, a config digest and provenance, recorded on
+  the session. No friendly matching outside interactive setup.
+- Native roles act through the existing flags; an explicit permission flag
+  and the role's ceiling intersect.
+- ACP model and effort are set with `session/set_config_option` before the
+  first prompt, only for an adapter identity (runtime id + discovered
+  version) proven by the A.3 captures, and only to a value the agent offered
+  in `session/new`; the reply must show it applied. Otherwise the run refuses
+  before any prompt (`role.options_unproven`, `role.model_unavailable`).

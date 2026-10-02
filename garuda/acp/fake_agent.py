@@ -15,7 +15,8 @@ resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
-capabilities-<name>.
+config-options (session/new offers model and effort options that
+session/set_config_option changes; replies name them), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ BASE_PROFILES = frozenset(
         "odd-stop",
         "cancel-stop",
         "strict-v1",
+        "config-options",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -149,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sessions = 0
     session_cwd = ""
+    config = {"model": "fake-small", "effort": "medium"}
     try:
         while True:
             request = _read_frame()
@@ -198,7 +201,18 @@ def main(argv: list[str] | None = None) -> int:
                     _save_state(args.state_file, state)
                 else:
                     session_id = f"fake-s{sessions}"
-                _result(call_id, {"sessionId": session_id})
+                if profile == "config-options":
+                    _result(call_id, {"sessionId": session_id, "configOptions": _options(config)})
+                else:
+                    _result(call_id, {"sessionId": session_id})
+            elif method == "session/set_config_option" and profile == "config-options":
+                config_id, value = params.get("configId"), params.get("value")
+                allowed = {o["id"]: [v["value"] for v in o["options"]] for o in _options(config)}
+                if value not in allowed.get(config_id, []):
+                    _invalid(call_id, f"unknown value {value!r} for {config_id!r}")
+                    continue
+                config[config_id] = value
+                _result(call_id, {"configOptions": _options(config)})
             elif method == "session/load" and profile == "resume":
                 state = _load_state(args.state_file)
                 if params.get("sessionId") != state.get("session_id"):
@@ -216,6 +230,14 @@ def main(argv: list[str] | None = None) -> int:
                     ):
                         _invalid(call_id, "session/prompt requires content blocks")
                         continue
+                if profile == "config-options":
+                    text = _prompt_text(params.get("prompt"))
+                    _update(params.get("sessionId", ""), {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": _text(f"done: {text} (model={config['model']}, "
+                                         f"effort={config['effort']})")})
+                    _result(call_id, {"stopReason": "end_turn"})
+                    continue
                 _handle_prompt(
                     profile, call_id, params, cwd=session_cwd if args.report_cwd else None,
                     state_file=args.state_file,
@@ -225,6 +247,16 @@ def main(argv: list[str] | None = None) -> int:
     except EOFError:
         pass
     return 0
+
+
+def _options(config: dict) -> list[dict]:
+    """The `config-options` profile's session options (the shape #152 captured)."""
+    return [
+        {"id": "model", "category": "model", "currentValue": config["model"],
+         "options": [{"value": v, "name": v} for v in ("fake-small", "fake-large")]},
+        {"id": "effort", "category": "thought_level", "currentValue": config["effort"],
+         "options": [{"value": v, "name": v} for v in ("low", "medium", "high")]},
+    ]
 
 
 def _handle_prompt(

@@ -373,8 +373,19 @@ refused. Until then those values are ignored and the run says so
 than `agents.project_ceiling` allows, and a headless run can never create
 trust.
 
-Roles do not yet change which harness or model a run uses: that arrives with
-exact model resolution.
+`garuda run --role coder` (or `defaults.role`, unless you pass `--runtime` or
+`--model`) runs as that role. A native role sets the model, reasoning effort,
+permission mode and profile exactly as the matching flags would; a
+`--permission-mode` you pass and the role's ceiling combine to the stricter
+of the two. Model ids are used exactly as written, never matched loosely.
+
+For an ACP harness, Garuda sets the agent's own model and effort options
+(`session/set_config_option`) before the first prompt, and only on an adapter
+version where that was proven (today Claude Code adapter 0.85.0 and Codex
+adapter 2.1.1). The agent must offer the exact id in its session; a missing or
+changed id, or an unproven adapter, refuses before anything is prompted. A
+role with no model or effort runs on any adapter version. The role, the ids
+set and the adapter version are recorded on the session.
 
 ## Environment variables
 

@@ -229,7 +229,7 @@ project-level aliases that reference and narrow but never self-authorize; one
 instance per job, never process-global. `session_state.py` records a session's
 process, work, outcome and verification as four separate fields (a gate pass is
 a self-check; `crashed` is derived from the owner's liveness, never stored), with
-a mapping table for legacy `status` values. `resume.py` (B.7) decides how
+a mapping table for legacy `status` values. `roles.py` (C.3) turns a `garuda.yaml` role into one exact plan (runtime, model id, effort, permissions, profile, config digest, provenance) and maps ACP model/effort to `session/set_config_option` ids only for adapter identities proven in `PROVEN_OPTIONS`; the adapter checks each value against the agent's `session/new` options and its reply before the first prompt. `resume.py` (B.7) decides how
 `--resume` continues — native transcript, the ACP agent's own `session/load`
 (only for adapter versions in `PROVEN_LOAD`), or a new linked session started
 from a brief — and refuses a live owner. `session.py` is the unified session
