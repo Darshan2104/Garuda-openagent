@@ -722,3 +722,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   comparison says "no changes detected".
 - A parallel group cannot be no-edits, and a no-edits run is checked in
   place (no `--isolation`).
+
+## 2026-10-02 — Flows hold one lease and never replay a step (issue #158, C.6a)
+
+- A flow's parent session holds the workspace lease for the whole flow and
+  lends each step a capability it issues and revokes; a step cannot take,
+  renew or keep the lease, and nothing outside the flow can take the
+  workspace between steps.
+- Intent is journaled before every launch and an immutable receipt written
+  after. A launched step without a receipt is quarantined and never replayed;
+  a resume continues only past receipted steps, each retry its own attempt
+  and session.
+- Artifacts come only from the bounded `<garuda-artifact type=…>` envelope;
+  Garuda chooses where they live, and every input is checked for digest,
+  file type, containment and workspace version before a step runs.

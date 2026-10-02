@@ -23,6 +23,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from garuda.workspace.lease import LeaseError
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,6 +146,16 @@ class WorkspaceLeaseGuard:
             raise error
         return await task
 
+    def delegate(self, session_id: str) -> LeaseCapability:
+        """Lend this lease to one child step; revoke it when the step ends."""
+        if not self._held:
+            raise LeaseError("cannot delegate a lease that is not held")
+        return LeaseCapability(self, session_id, _issuer=_ISSUER)
+
+    @staticmethod
+    def revoke(capability: LeaseCapability) -> None:
+        capability.revoked = True
+
     async def _stop_beating(self) -> None:
         heartbeat, self._heartbeat = self._heartbeat, None
         if heartbeat is not None:
@@ -175,6 +187,69 @@ class WorkspaceLeaseGuard:
                 logger.warning("Lease release failed", exc_info=True)
         finally:
             self._release_capacity()
+
+
+_ISSUER = object()  # only a WorkspaceLeaseGuard can issue a capability
+
+
+class LeaseCapability:
+    """A parent's lease, lent to one child step (C.6a).
+
+    Issued only by :meth:`WorkspaceLeaseGuard.delegate`; the parent revokes it
+    when the step ends, after which it lends nothing. A child holding it
+    draws its own capacity slot but never acquires, renews or releases the
+    workspace lease: the parent holds it across every step, so nothing else
+    can take the workspace between them.
+    """
+
+    def __init__(self, parent: "WorkspaceLeaseGuard", session_id: str, *, _issuer=None):
+        if _issuer is not _ISSUER:
+            raise LeaseError("a lease capability is issued by its parent lease, not constructed")
+        self._parent = parent
+        self.session_id = session_id
+        self.revoked = False
+
+    @property
+    def workspace(self) -> str:
+        return self._parent.workspace
+
+    def guard(self, *, capacity_key: str | None = None) -> "BorrowedLease":
+        if self.revoked or not self._parent._held:
+            raise LeaseError("this lease capability was revoked")
+        return BorrowedLease(self, capacity_key=capacity_key)
+
+
+class BorrowedLease:
+    """The lease surface a step sees: capacity of its own, the parent's lease."""
+
+    def __init__(self, capability: LeaseCapability, *, capacity_key: str | None):
+        self._capability = capability
+        self.workspace = capability.workspace
+        self.session_id = capability.session_id
+        self.leases = capability._parent.leases
+        self._capacity = WorkspaceLeaseGuard(self.workspace, self.session_id,
+                                             capacity_key=capacity_key)
+
+    def _check(self) -> None:
+        if self._capability.revoked:
+            raise LeaseError("this lease capability was revoked")
+
+    def acquire(self) -> None:
+        self._check()
+        self._capacity._reserve_capacity()
+
+    def start_heartbeat(self) -> None:
+        self._check()
+
+    async def race(self, work: Awaitable[Any]) -> Any:
+        self._check()
+        return await self._capability._parent.race(work)
+
+    async def stop_heartbeat(self) -> None:
+        self._capacity._release_capacity()
+
+    async def release(self) -> None:
+        self._capacity._release_capacity()
 
 
 async def _cancel_quietly(task: asyncio.Future) -> None:

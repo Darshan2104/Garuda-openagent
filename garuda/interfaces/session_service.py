@@ -101,10 +101,23 @@ def plan_meta(plan: dict | None) -> dict:
 
 
 def acquire_lease(workspace, session_id, *, capacity_key="native", mode="mutating",
-                  worktree_plan=None):
-    """Step 4a: capacity, then the lease. A refusal discards a new worktree."""
-    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+                  worktree_plan=None, capability=None):
+    """Step 4a: capacity, then the lease. A refusal discards a new worktree.
 
+    With a flow ``capability`` (C.6a) the step borrows its parent's lease for
+    that exact workspace and takes only its own capacity slot.
+    """
+    import os
+
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+    from garuda.workspace.lease import LeaseError
+
+    if capability is not None:
+        if os.path.realpath(str(workspace)) != os.path.realpath(capability.workspace):
+            raise LeaseError("the lease capability is for another workspace")
+        lease = capability.guard(capacity_key=capacity_key)
+        lease.acquire()
+        return lease
     lease = WorkspaceLeaseGuard(str(workspace), session_id, capacity_key=capacity_key, mode=mode)
     try:
         lease.acquire()

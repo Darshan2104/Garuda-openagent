@@ -618,6 +618,7 @@ async def run_acp_task(
     name: str | None = None,
     resume_plan=None,
     role_plan=None,
+    lease_capability=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -650,8 +651,14 @@ async def run_acp_task(
     store = store or SessionStore()
     events = EventStore()
     session_id = events.session_id
-    lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id)
-    lease.acquire()
+    if lease_capability is not None:
+        from garuda.interfaces.session_service import acquire_lease
+
+        lease = acquire_lease(workspace, session_id, capacity_key=manifest.runtime_id,
+                              capability=lease_capability)
+    else:
+        lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id)
+        lease.acquire()
     runtime = None
     began = False
     transferred_to_native = False
