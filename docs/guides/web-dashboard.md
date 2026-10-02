@@ -58,6 +58,23 @@ carries its model and purpose badge. The panel also lists the runtime lanes, the
 this one resumed from or was continued by, the sessions it tagged, and those that tagged it.
 `GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
 
+## Providers and limits
+
+`#/providers` shows one card per harness and per API provider. For a harness: whether it is
+installed, its last recorded **login** conclusion (`not checked` until a refresh), and its
+**limits**. A limit value always carries its source and when it was observed. A harness
+whose limit source Garuda has not proved for its exact version reads **unknown** (Claude
+Code has no documented non-interactive source); a proved one reads **known** within a
+minute of its observation and **stale**, with its age, after that; a version other than the
+one the source was proved for is flagged, as is a source that supplied no account id or more
+than one account seen. A limit **event** reads `active` while its reset is ahead, `expired`
+once past, and `historical` when no reset time was ever reported, which never counts as a
+ban. **Observed use** over 5 hours, 7 days and 30 days (sessions, native calls, ACP turns,
+tokens, known and unpriced cost) is labelled *through Garuda only*, because use outside
+Garuda draws on the same quota. **Refresh** (write mode) re-runs the documented status
+reads and never sends a prompt. `GET /api/providers` and `POST /api/providers/refresh` serve
+this.
+
 ## Background sessions
 
 `garuda run --bg` queues a session and returns; the Sessions page shows it

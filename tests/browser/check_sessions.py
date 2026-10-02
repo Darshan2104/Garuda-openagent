@@ -84,6 +84,24 @@ with sync_playwright() as p:
     check("the other side shows 'tagged by'", page.locator("#link-tagged-by a").count() == 1)
     page.screenshot(path=str(SHOTS / "conversation-panel.png"))
 
+    # --- providers and limits (F.2) -----------------------------------------------------------
+    page.goto(f"{BASE}#/providers", wait_until="load")
+    page.wait_for_selector("#provider-cards")
+    codex = page.locator('.provider-card[data-provider="codex"]')
+    claude = page.locator('.provider-card[data-provider="claude"]')
+    check("a stale observation is labelled", codex.locator('.limits[data-status="stale"]').count() == 1,
+          codex.inner_text()[:300])
+    check("windows show used fraction and reset", "20% used" in codex.inner_text()
+          or "100% used" in codex.inner_text())
+    states = sorted(codex.locator(".limit-event").evaluate_all("e => e.map(x => x.dataset.state)"))
+    check("active, expired and historical events", states == ["active", "expired", "historical"], str(states))
+    check("an unproved harness reads unknown", claude.locator('.limits[data-status="unknown"]').count() == 1)
+    check("a logged-out harness says so", claude.locator('[data-login="logged_out"]').count() == 1)
+    check("observed use is labelled", "through Garuda only" in codex.inner_text())
+    check("an API provider has a card", page.locator('.provider-card[data-kind="api_provider"]').count() >= 1)
+    check("a read-only dashboard cannot refresh", page.locator("#providers-refresh").is_disabled())
+    page.screenshot(path=str(SHOTS / "providers.png"))
+
     page.goto(f"{BASE}#/inbox", wait_until="load")
     page.wait_for_selector("#inbox-list")
     inbox = page.locator("#inbox-list").inner_text()

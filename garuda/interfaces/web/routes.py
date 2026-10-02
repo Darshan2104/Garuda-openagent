@@ -771,6 +771,30 @@ def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
     return ok(list_runtimes(workspace=str(ctx.workspace), extra=ctx.extra))
 
 
+@route("GET", r"/api/providers")
+def _providers(request: Request, ctx: DashboardContext, _match) -> Response:
+    """One card per harness and per API provider: limits with their source and time,
+    observed use "through Garuda only". Reads records; starts nothing."""
+    from garuda.interfaces.web import providers
+    from garuda.interfaces.web.runtimes import list_runtimes, registry_from_context
+
+    workspace = str(ctx.workspace)
+    entries = list_runtimes(workspace=workspace, extra=ctx.extra)
+    manifests = {m.runtime_id: m for m in registry_from_context(ctx.extra, workspace).manifests}
+    return ok(providers.cards(entries, manifests))
+
+
+@route("POST", r"/api/providers/refresh")
+def _providers_refresh(request: Request, ctx: DashboardContext, _match) -> Response:
+    """Re-run the documented status reads (login check, proved limit read). No prompt."""
+    from garuda.interfaces.web import providers
+
+    refusal = requires_write(ctx)
+    if refusal is not None:
+        return refusal
+    return ok(providers.refresh(str(ctx.workspace)))
+
+
 @route("GET", r"/api/runtimes/(?P<rid>[A-Za-z0-9._-]+)")
 def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.interfaces.web.runtimes import inspect_runtime

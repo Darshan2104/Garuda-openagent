@@ -18,6 +18,7 @@ var ROUTES = [
   [/^#\/sessions\/([^/]+)$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
   [/^#\/sessions$/, function () { return sessionsView(); }],
   [/^#\/inbox$/, function () { return inboxView(); }],
+  [/^#\/providers$/, function () { return providersView(); }],
   [/^#\/runtimes$/, function () { return runtimesView(); }],
   [/^#\/chat$/, function () { return chatView(); }]
 ];
