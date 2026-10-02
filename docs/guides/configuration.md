@@ -313,6 +313,42 @@ capacity:
 A run that finds its runtime full is refused right away rather than queued. A
 runtime with no entry isn't limited. Only the global settings file can set this.
 
+## Agent definitions
+
+An agent definition says how one Garuda agent behaves: its instructions,
+tools, permissions, limits and model. The smallest useful one changes one
+thing about a packaged agent:
+
+```yaml
+# ~/.agent/agents/careful-coder.yaml   (or .agent/agents/ in a project)
+version: 1
+extends: garuda/build
+instructions:
+  text: |
+    Make the smallest change that fixes the problem.
+```
+
+`garuda run --agent careful-coder` then uses everything from the packaged
+`build` agent except the extra instructions, which are appended to its own.
+
+- A bare name is looked up in the project (`.agent/agents/`, then
+  `.garuda/agents/`), then in your user directory (`~/.agent/agents/`), then
+  among the packaged agents. `garuda/build` always means the packaged one;
+  `user/<name>` and `project/<name>` pick a location explicitly.
+- `extends` chains up to four levels. Settings merge key by key; lists
+  replace; `tools: {add: [...], remove: [...]}` edits the parent's tool list
+  and `preset: none` starts from an empty one; `instructions.mode: replace`
+  drops the parent's text. A definition that extends itself refuses —
+  extend `garuda/<name>` to change a packaged agent.
+- Version 1 is strict: unknown fields, unknown tools, a missing instruction
+  file and duplicate keys refuse, each with a code such as
+  `agent.unknown_field`. A field Garuda recognizes but does not support yet
+  (for example `memory:` or `hooks:`) refuses with `agent.unsupported_field`
+  rather than being ignored.
+- Files without `version` are legacy profiles and keep working unchanged.
+  `garuda agent migrate PATH` shows the version 1 form and confirms it
+  resolves to the same agent; `--write` replaces the file and keeps a backup.
+
 ## Roles and flows: garuda.yaml
 
 `garuda.yaml` is a new, optional file that names **roles** — which harness and

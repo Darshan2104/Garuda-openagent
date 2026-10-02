@@ -107,7 +107,8 @@ NON_DEFAULTS = {
 def test_the_fixture_covers_every_authorable_field():
     from dataclasses import fields
 
-    authorable = {f.name for f in fields(AgentProfile)} - {"name", "system_prompt", "declared_fields", "source_path"}
+    authorable = {f.name for f in fields(AgentProfile)} - {"name", "system_prompt", "declared_fields", "source_path",
+                                                      "spec_version"}
     assert authorable == set(NON_DEFAULTS)
 
 

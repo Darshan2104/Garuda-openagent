@@ -195,7 +195,7 @@ sessions and writes an immutable, text-free receipt for a cross-project grant.
 
 `fallbacks.py` (C.9) walks a role's fallback chain once before start, skipping a candidate only for `harness.cli_missing` or a freshly checked `harness.logged_out` (never an unknown login or limit), records primary, taken entry and reasons on the role plan, and refuses with every reason when none can start.
 
-`setup.py::prepare_agent_run` is the shared chokepoint for every entry point.
+`spec.py` and `resolve.py` (H.1) are the version 1 agent definition and its one resolver: a field table that drives validation, the legacy translation and the `AgentProfile` projection; locations (project, user, packaged; `garuda/`, `user/`, `project/` qualified); bounded no-follow reads contained in each location; `extends` up to depth four with cycle refusal; key-by-key merge, appended or replaced instructions and `tools.add`/`remove`; provenance for every value; and activation that refuses recognized-but-unsupported fields. `load_profile` and `md_loader.py` are thin adapters over it; `migrate.py` backs `garuda agent migrate`. `setup.py::prepare_agent_run` is the shared chokepoint for every entry point.
 `loader.py` reads YAML profiles (and records which fields were declared, so mode
 presets don't override authored intent); `md_loader.py` + `frontmatter.py` read
 OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,

@@ -2,21 +2,22 @@
 
 from pathlib import Path
 
-import yaml
-
-from garuda.agents.frontmatter import parse_frontmatter
-from garuda.agents.loader import AgentProfile, _refuse, profile_from_mapping
+from garuda.agents.loader import AgentProfile
 
 
 def load_agent_md(path: str | Path) -> AgentProfile:
-    """Parse an agent.md file into an AgentProfile.
+    """Parse one agent.md file through the resolver (H.1).
 
-    Front matter holds the same fields as a YAML profile (one shared parser);
-    the Markdown body, when present, is the system prompt.
+    Front matter holds the fields; the Markdown body is the instruction text.
+    The file resolves on its own: an ``extends`` in it resolves against the
+    packaged and user agents only.
     """
+    import hashlib
+
+    from garuda.agents import resolve
+
     target = Path(path)
-    try:
-        meta, body = parse_frontmatter(target.read_text(encoding="utf-8"), unique_keys=True)
-    except yaml.YAMLError as exc:
-        _refuse(target, f"has invalid front matter: {exc}")
-    return profile_from_mapping(meta, target.stem, target, system_prompt=body or None)
+    data = resolve._read(target, target.parent)
+    source = resolve.Source(resolve.INLINE, target, hashlib.sha256(data).hexdigest(),
+                            f"project/{target.stem}", target.parent)
+    return resolve.activate(resolve.resolve_source(source, data, []))

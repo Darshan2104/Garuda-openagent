@@ -789,3 +789,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Trust, configuration and confinement errors refuse; nothing falls back
   after a prompt. The session (and a flow step's receipt) records the
   primary, the entry taken and every skip reason before the prompt.
+
+## 2026-10-02 — One versioned agent definition and one resolver (issue #159, H.1)
+
+- Every agent loads through `agents/resolve.py`: project, then user
+  (`<global home>/agents/`, new), then packaged; `garuda/<name>` is always
+  packaged. Legacy profiles translate mechanically and resolve to exactly the
+  same `AgentProfile` (golden-tested for every packaged profile).
+- Version 1 is strict (unknown fields, tools, skills, MCP servers, missing
+  instruction files, duplicate keys, cycles and future versions refuse) and a
+  recognized field whose owner PR has not shipped refuses activation instead
+  of being ignored.
+- `extends` merges structurally first; authority is applied afterwards from
+  provenance, so a project definition is held to the project ceiling even
+  for values it inherits.

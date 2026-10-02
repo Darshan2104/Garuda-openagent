@@ -504,6 +504,17 @@ def build_parser():
     )
     config_trust.add_argument("--workspace", default=".")
 
+    agent_parser = subparsers.add_parser("agent", help="Agent definitions")
+    agent_sub = agent_parser.add_subparsers(dest="agent_command")
+    agent_migrate = agent_sub.add_parser(
+        "migrate", help="Preview (or --write) a legacy profile as a version 1 definition"
+    )
+    agent_migrate.add_argument("path")
+    agent_migrate.add_argument("--write", action="store_true",
+                               help="Replace the file, keeping a backup")
+    agent_migrate.add_argument("--accept-tightening", action="store_true",
+                               help="Write even where version 1 is stricter than the old file")
+
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")
     flow_run = flow_sub.add_parser("run", help="Run a flow by name")
@@ -1034,6 +1045,50 @@ def _apply_role(args, resolved, catalog):
     for skipped in (plan.fallback or {}).get("skipped", []):
         print(f"[garuda] skipped {skipped['harness']}: {skipped['reason']}", file=out)
     return plan
+
+
+def run_agent(args) -> int:
+    """`garuda agent migrate PATH [--write]` (H.1)."""
+    import sys
+
+    from garuda.agents import migrate
+    from garuda.model.config import ConfigError
+
+    try:
+        plan = migrate.plan(args.path)
+    except (ConfigError, OSError, UnicodeDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if plan.text is None:
+        print(f"[garuda] {plan.path} is already a version 1 definition; nothing to do")
+        return 0
+    print(f"[garuda] {plan.path} as version 1:")
+    print(plan.text.rstrip())
+    for line in plan.dropped:
+        print(f"[garuda] dropped: {line}")
+    for line in plan.diff:
+        print(f"[garuda] changes behaviour: {line}")
+    for line in plan.tightening:
+        print(f"[garuda] safety tightening: {line}")
+    if not plan.diff and not plan.tightening:
+        print("[garuda] it resolves to exactly the same agent")
+    if not args.write:
+        print("[garuda] preview only; --write replaces the file and keeps a backup")
+        return 0
+    if plan.diff:
+        print("Error: agent.migrate_changes_behaviour: not written", file=sys.stderr)
+        return 2
+    if plan.tightening and not args.accept_tightening:
+        print("Error: version 1 is stricter here; review it and pass --accept-tightening",
+              file=sys.stderr)
+        return 2
+    try:
+        backup = migrate.write(plan)
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(f"[garuda] wrote {plan.path} (backup: {backup})")
+    return 0
 
 
 def run_flow(args) -> int:
@@ -1959,6 +2014,10 @@ def main() -> None:
         if args.config_command is None:
             parser.parse_args(["config", "--help"])
         raise SystemExit(run_config(args))
+    if args.command == "agent":
+        if args.agent_command is None:
+            parser.parse_args(["agent", "--help"])
+        raise SystemExit(run_agent(args))
     if args.command == "flow":
         if args.flow_command is None:
             parser.parse_args(["flow", "--help"])

@@ -3,8 +3,6 @@ from dataclasses import dataclass, field, fields
 from importlib import resources
 from pathlib import Path
 
-import yaml
-
 from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -71,6 +69,8 @@ class AgentProfile:
     # intent alone. Diffing against dataclass defaults would not do: a profile
     # declaring a value that happens to equal the default still chose it.
     declared_fields: set[str] = field(default_factory=set)
+    # 1 when the definition was a version 1 file (H.1); None for legacy profiles.
+    spec_version: int | None = None
 
     def to_agent_config(self) -> AgentConfig:
         return AgentConfig(
@@ -133,7 +133,9 @@ def _as_dir_list(extra_dir: Path | list[Path] | None) -> list[Path]:
 
 
 def list_profiles(extra_dir: Path | list[Path] | None = None) -> list[str]:
-    names = _profile_names_in_dir(_defaults_dir())
+    from garuda.agents.resolve import user_agents_dir
+
+    names = _profile_names_in_dir(_defaults_dir()) | _profile_names_in_dir(user_agents_dir())
     for directory in _as_dir_list(extra_dir):
         names.update(_profile_names_in_dir(directory))
     return sorted(names)
@@ -145,7 +147,7 @@ _PROFILE_FIELD_NAMES = {f.name for f in fields(AgentProfile)}
 #: Older spelling accepted for ``model_binding``.
 _FIELD_ALIASES = {"model_bindings": "model_binding"}
 #: Fields a file never sets itself.
-_INTERNAL_FIELDS = frozenset({"declared_fields", "source_path"})
+_INTERNAL_FIELDS = frozenset({"declared_fields", "source_path", "spec_version"})
 #: List fields a file may also give as a single string.
 _LIST_FIELDS = ("tools", "skills", "skills_dirs", "mcp_servers")
 
@@ -243,43 +245,17 @@ def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> Age
 
 
 def load_profile(name: str, extra_dir: Path | list[Path] | None = None) -> AgentProfile:
-    """Load agent profile from YAML or agent.md (OpenCode-compatible).
+    """Load an agent by name through the one resolver (H.1).
 
-    ``extra_dir`` may be a single dir or an ordered list (e.g. ``.agent/agents``
-    then ``.garuda/agents``); earlier dirs win. Built-in defaults are the final
-    fallback.
+    ``extra_dir`` holds the project agent directories, earliest first (e.g.
+    ``.agent/agents`` then ``.garuda/agents``); the user's agents directory
+    and the packaged defaults follow. ``garuda/<name>``, ``user/<name>`` and
+    ``project/<name>`` pick a location explicitly. Legacy profiles and
+    version 1 definitions (with ``extends``) resolve the same way.
     """
-    from garuda.agents.md_loader import load_agent_md
+    from garuda.agents.resolve import activate, resolve_agent
 
-    candidates: list[Path] = []
-    for directory in _as_dir_list(extra_dir):
-        candidates.extend(
-            [
-                directory / f"{name}.yaml",
-                directory / f"{name}.md",
-                directory / f"{name}" / "agent.md",
-            ]
-        )
-    candidates.extend(
-        [
-            _defaults_dir() / f"{name}.yaml",
-            _defaults_dir() / f"{name}.md",
-            _defaults_dir() / name / "agent.md",
-        ]
-    )
-    for path in candidates:
-        if not path.exists():
-            continue
-        if path.suffix == ".md":
-            return load_agent_md(path)
-        from garuda.agents.frontmatter import load_yaml_unique
-
-        try:
-            data = load_yaml_unique(path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            _refuse(path, f"is not valid YAML: {exc}")
-        return _profile_from_yaml(data, name, source=path)
-    raise FileNotFoundError(f"Agent profile not found: {name}")
+    return activate(resolve_agent(name, _as_dir_list(extra_dir)))
 
 
 # Maximum characters of AGENTS.md/GARUDA.md content injected into the system prompt.
