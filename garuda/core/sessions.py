@@ -254,6 +254,7 @@ class SessionStore:
         workspace: str,
         *,
         runtime_segment: RuntimeSegment | None = None,
+        name: str | None = None,
     ) -> Path:
         """Create the session directory and initial meta; returns the events path
         for EventStore.attach_persistence().
@@ -264,6 +265,13 @@ class SessionStore:
         `ensure_unified` later records the native segment.
         """
         directory = self.session_dir(session_id)
+        existing: dict = {}
+        if (directory / "meta.json").is_file():
+            try:
+                existing = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = {}
+        identity_fields = self._identity_fields(session_id, workspace, task, name, existing)
         directory.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
@@ -278,7 +286,7 @@ class SessionStore:
         )
         # Locked + atomic like every other meta write: a plain write_text here let a
         # concurrent list_sessions read a half-created document.
-        document = meta.to_dict()
+        document = {**meta.to_dict(), **identity_fields}
         if runtime_segment is not None:
             document.update(
                 {
@@ -290,6 +298,33 @@ class SessionStore:
             )
         merge_meta(directory / "meta.json", document)
         return self.events_path(session_id)
+
+    def _identity_fields(
+        self, session_id: str, workspace: str, task: str, name: str | None, existing: dict
+    ) -> dict:
+        """Project id and name for a new session; a second ``begin`` keeps them.
+
+        Raises :class:`~garuda.core.project_identity.ProjectKeyMissing` rather
+        than inventing a new key when identities already exist.
+        """
+        from garuda.core.project_identity import allocate_name, project_identity
+
+        if existing.get("project_id") and existing.get("name"):
+            return {
+                k: existing[k]
+                for k in ("project_id", "project_path", "project_fs_id", "name")
+                if k in existing
+            }
+        identity = project_identity(self.root, workspace)
+        allocated = allocate_name(
+            self.root, identity.project_id, session_id, wanted=name, task=task
+        )
+        return {
+            "project_id": identity.project_id,
+            "project_path": identity.path,
+            "project_fs_id": identity.fs_id,
+            "name": allocated,
+        }
 
     def checkpoint_messages(self, session_id: str, messages: list[Message]) -> None:
         """Atomically persist the current message list mid-run.
@@ -501,18 +536,28 @@ class SessionStore:
         path = self.session_dir(session_id) / "meta.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def _in_project(self, meta: dict, project_id: str, project_path: str) -> bool:
+        """Whether a session belongs to the project (legacy sessions by path)."""
+        if meta.get("project_id"):
+            return meta["project_id"] == project_id
+        recorded = meta.get("workspace")
+        return (
+            isinstance(recorded, str)
+            and os.path.isabs(recorded)
+            and project_root(recorded) == project_path
+        )
+
     def _latest_in_project(self, workspace: str | Path) -> str:
-        project = project_root(workspace)
+        from garuda.core.project_identity import project_identity
+
+        identity = project_identity(self.root, workspace)
         everything = self.list_sessions(limit=None)
         for meta in everything:
-            recorded = meta.get("workspace")
-            if not isinstance(recorded, str) or not os.path.isabs(recorded):
-                continue
-            if project_root(recorded) == project:
+            if self._in_project(meta, identity.project_id, identity.path):
                 return meta["session_id"]
         if everything:
             raise FileNotFoundError(
-                f"No saved session for this project ({project}); {len(everything)} "
+                f"No saved session for this project ({identity.path}); {len(everything)} "
                 "session(s) belong to other projects or recorded no workspace. "
                 "Pass --all-projects to resume the newest one anywhere."
             )
@@ -539,12 +584,14 @@ class SessionStore:
         workspace: str | Path | None = None,
         all_projects: bool = False,
     ) -> str:
-        """Resolve 'latest' or a unique session-id prefix to a full session id.
+        """Resolve a full id, a session name, a unique prefix or 'latest'.
 
-        With ``workspace``, ``latest`` means the newest session *of that
-        project* (linked worktrees and symlinked paths count as the same
-        project); ``all_projects`` asks for the newest anywhere. Sessions that
-        recorded no absolute workspace are never a project's ``latest``.
+        With ``workspace``, names, prefixes and ``latest`` are looked up within
+        that project (by opaque project id; linked worktrees and symlinked
+        paths are the same project; legacy sessions by recorded path).
+        ``all_projects`` searches every project; a full id always resolves.
+        Sessions that recorded no absolute workspace and no project id are
+        never a project's ``latest``.
 
         Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
         from remote clients via the server's ``resume`` param.
@@ -559,8 +606,27 @@ class SessionStore:
         validate_session_ref(session_ref)
         if self.session_dir(session_ref).is_dir():
             return session_ref
+        scoped = workspace is not None and not all_projects
+        identity = None
+        if scoped:
+            from garuda.core.project_identity import project_identity, session_for_name
+
+            identity = project_identity(self.root, workspace)
+            named = session_for_name(self.root, identity.project_id, session_ref)
+            if named and self.session_dir(named).is_dir():
+                return named
         if self.root.exists():
-            matches = [d.name for d in self.root.iterdir() if d.name.startswith(session_ref)]
+            matches = [
+                d.name
+                for d in self.root.iterdir()
+                if not d.name.startswith(".") and d.name.startswith(session_ref)
+            ]
+            if identity is not None:
+                matches = [
+                    m for m in matches
+                    if (self.session_dir(m) / "meta.json").is_file()
+                    and self._in_project(self.load_meta(m), identity.project_id, identity.path)
+                ]
             if len(matches) == 1:
                 return matches[0]
             if len(matches) > 1:

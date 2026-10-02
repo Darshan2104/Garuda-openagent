@@ -179,6 +179,10 @@ def build_parser():
         action="store_true",
         help="With --resume latest, resume the newest session from any project",
     )
+    run_parser.add_argument(
+        "--name",
+        help="Name this session (unique in the project); resume or tag it by name later",
+    )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
     _add_model_flags(chat_parser)
@@ -459,13 +463,14 @@ def run_sessions(args) -> int:
     if not sessions:
         print("No saved sessions.")
         return 0
-    print(f"{'ID':<10} {'STATUS':<8} {'TURNS':>5}  {'UPDATED':<32} TASK")
+    print(f"{'ID':<10} {'NAME':<24} {'STATUS':<8} {'TURNS':>5}  {'UPDATED':<32} TASK")
     for meta in sessions:
         task = " ".join((meta.get("task") or "").split())
         if len(task) > 60:
             task = task[:57] + "..."
         print(
             f"{meta.get('session_id', '')[:8]:<10} "
+            f"{(meta.get('name') or '-')[:24]:<24} "
             f"{meta.get('status', '?'):<8} "
             f"{meta.get('turns', 0):>5}  "
             f"{meta.get('updated_at', ''):<32} "
@@ -1013,6 +1018,7 @@ async def run_task(args) -> int:
         agents_dir=agents_dir,
         resume=args.resume,
         resume_all_projects=getattr(args, "all_projects", False),
+        session_name=getattr(args, "name", None),
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
