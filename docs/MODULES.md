@@ -132,8 +132,8 @@ both toward refusing or narrow: fingerprints hash content, not mode, so a
 `chmod` between sessions on an already-dirty file goes unnoticed; a
 session-end hook that writes into the workspace makes every resume refuse. `runtime/handoff.execute_handoff(workspace=...)` carries the delta
 into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
-`.context/` pack files the harness syncs into the workspace appear in the delta
-as session changes.
+Generated pack files live in the session store, so they never appear in the
+workspace delta.
 
 `snapshot_proto.py` is the A.5 spike (#154), not yet wired to sessions. It
 snapshots a work tree (tracked edits, deletions, untracked non-ignored files)
@@ -158,7 +158,8 @@ pruned history into buffers, `summarizer.py` produces the summaries.
 versions rejected). `pack.py` is the single writer: it compiles both files
 deterministically from the state card, session record, and git evidence
 (byte-identical recompilation, budgeted briefs that keep provenance), writes
-atomically, and refuses any other target. `RunState` syncs the pack at the
+atomically, and refuses any other target. The pack lives in the session's own
+directory in the session store, never the workspace (B.3). `RunState` syncs the pack at the
 checkpoint boundary and re-syncs after every compaction; resume restores the
 persisted working state first, so compaction and restart preserve pack facts.
 `redact.py` validates packs (size, workspace-relative paths, no-reasoning

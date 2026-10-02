@@ -322,9 +322,11 @@ async def run_agent_task(
         if hooks is None:
             hooks = build_hook_registry(workspace)
 
-        # Single-writer pack publisher for this workspace (P0.9). Best-effort:
-        # when the workspace root is not a writable local dir the manager simply
-        # never syncs, and every sync failure is caught inside RunState.
+        # Single-writer pack publisher for this session (P0.9, B.3). The
+        # generated files live in the session's own directory, never in the
+        # workspace: two sessions in one repository each keep their own, and a
+        # run no longer writes into the tree it is changing. Best-effort: every
+        # sync failure is caught inside RunState.
         pack_manager = None
         pack_git_evidence = ""
         try:
@@ -332,9 +334,9 @@ async def run_agent_task(
 
             from garuda.context.pack import ContextPackManager, collect_git_evidence
 
-            pack_root = _Path(workspace) / ".context" if workspace else None
-            if pack_root is not None:
-                pack_manager = ContextPackManager(pack_root)
+            pack_root = _Path(store.session_dir(events.session_id))
+            pack_manager = ContextPackManager(pack_root)
+            if workspace:
                 pack_git_evidence = collect_git_evidence(workspace)
         except Exception:
             logger.debug("Context pack manager unavailable for workspace", exc_info=True)

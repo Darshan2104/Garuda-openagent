@@ -535,3 +535,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   active with no outcome); a recorded live owner that is confirmed dead reads
   as `missing`. Legacy records map through a fixed table and keep
   `legacy_status`; the raw `status`, exit codes and API results are unchanged.
+
+## 2026-10-02 — Generated context lives in the session store (issue #157, B.3)
+
+- `current-task.md` and `handoff.md` are published by `ContextPackManager` into
+  the session's own directory in the session store — the same place
+  `runtime handoff` and the dashboard already used — never into the workspace.
+  Two sessions in one repository keep separate packs, and a run no longer
+  writes into the tree it is changing or its own delta.
+- Committed durable `.context/` files remain read-only repository input. Packs
+  older runs left in a workspace's `.context/` are neither read nor deleted.
