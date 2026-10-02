@@ -519,3 +519,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   before any session changes; metadata keeps `previous_project_ids`; the key
   is published last and the journal becomes a receipt. An interrupted run
   resumes from the journal; a finished one is a no-op.
+
+## 2026-10-02 — Session state is four independent fields (issue #157, B.2)
+
+- Session metadata gains a versioned `state`: `process` (starting, live,
+  exited, missing, unknown), `work` (queued, working, waiting, done, stopped),
+  `outcome` (unset while active; completed, failed, refused, cancelled) and
+  `verification` (passed, failed, unavailable, invalidated, with an authority).
+  Impossible combinations are rejected.
+- A native completion-gate pass is a `self_check`, not verification. Only an
+  authoritative grader (`answer_check`) yields `verification: passed` with
+  authority `user-config`; trusted acceptance checks follow in C.5. Results
+  carry `completion_gate` provenance (verifier ran, grader authoritative).
+- `crashed` is derived at read time (process exited/missing while work is
+  active with no outcome); a recorded live owner that is confirmed dead reads
+  as `missing`. Legacy records map through a fixed table and keep
+  `legacy_status`; the raw `status`, exit codes and API results are unchanged.

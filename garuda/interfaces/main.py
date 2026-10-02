@@ -497,7 +497,9 @@ def run_sessions(args) -> int:
     if not sessions:
         print("No saved sessions.")
         return 0
-    print(f"{'ID':<10} {'NAME':<24} {'STATUS':<8} {'TURNS':>5}  {'UPDATED':<32} TASK")
+    from garuda.runtime.session_state import effective_state, summary_label
+
+    print(f"{'ID':<10} {'NAME':<24} {'STATE':<10} {'TURNS':>5}  {'UPDATED':<32} TASK")
     for meta in sessions:
         task = " ".join((meta.get("task") or "").split())
         if len(task) > 60:
@@ -505,7 +507,7 @@ def run_sessions(args) -> int:
         print(
             f"{meta.get('session_id', '')[:8]:<10} "
             f"{(meta.get('name') or '-')[:24]:<24} "
-            f"{meta.get('status', '?'):<8} "
+            f"{summary_label(effective_state(meta)):<10} "
             f"{meta.get('turns', 0):>5}  "
             f"{meta.get('updated_at', ''):<32} "
             f"{task}"

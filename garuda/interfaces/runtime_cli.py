@@ -739,7 +739,18 @@ async def run_acp_task(
                     except Exception as exc:
                         outcome["workspace_delta_error"] = type(exc).__name__
                 try:
-                    store.update_meta(session_id, {"status": status, "verified": False})
+                    from garuda.runtime.session_state import finished
+
+                    store.update_meta(
+                        session_id,
+                        {
+                            "status": status,
+                            "verified": False,
+                            # The external harness's own checks are not Garuda's
+                            # completion gate: no self-check, no verification.
+                            "state": finished(success=status == "completed"),
+                        },
+                    )
                 except Exception:
                     logger.warning("Failed to record ACP session status", exc_info=True)
                 if outcome is not None:

@@ -60,6 +60,13 @@ LOOP_CALL_TIMEOUT = 30.0
 MAX_TASK_CHARS = 20_000
 
 
+def _closed_state(ok: bool) -> dict:
+    """A closed dashboard chat: finished by the user, never verified by Garuda."""
+    from garuda.runtime.session_state import finished
+
+    return finished(success=ok)
+
+
 class SpecError(ValueError):
     """A bad request. Surfaces as a 400 with the message."""
 
@@ -431,14 +438,18 @@ class LiveRuns:
                 self.store,
                 chat.session_id,
                 chat.workspace,
-                extra_meta={"status": "finished"},
+                extra_meta={"status": "finished", "state": _closed_state(True)},
             )
         except Exception as exc:
             # Closing cannot turn missing evidence into a successful chat.
             try:
                 self.store.update_meta(
                     chat.session_id,
-                    {"status": "failed", "workspace_delta_error": type(exc).__name__},
+                    {
+                        "status": "failed",
+                        "state": _closed_state(False),
+                        "workspace_delta_error": type(exc).__name__,
+                    },
                 )
             except Exception:
                 logger.warning("Recording chat %s evidence failure failed", chat_id, exc_info=True)

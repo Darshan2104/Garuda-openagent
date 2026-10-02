@@ -460,7 +460,11 @@ async def run_agent_task(
                 await asyncio.to_thread(
                     record_end_state, store, events.session_id, workspace
                 )
-                update_session_meta(store, events.session_id, {"status": "failed"})
+                from garuda.runtime.session_state import interrupted
+
+                update_session_meta(
+                    store, events.session_id, {"status": "failed", "state": interrupted()}
+                )
                 summary = {"session_id": events.session_id, "success": False, "turns": 0}
             try:
                 await runtime.close()

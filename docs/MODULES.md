@@ -204,7 +204,10 @@ test double with scripted scenarios; every adapter must pass the shared suite in
 `tests/test_runtime_conformance.py`. `registry.py` resolves trusted global
 harness manifests (the only place that authorizes an executable) plus
 project-level aliases that reference and narrow but never self-authorize; one
-instance per job, never process-global. `session.py` is the unified session
+instance per job, never process-global. `session_state.py` records a session's
+process, work, outcome and verification as four separate fields (a gate pass is
+a self-check; `crashed` is derived from the owner's liveness, never stored), with
+a mapping table for legacy `status` values. `session.py` is the unified session
 schema (runtime segments, baseline, handoff, cursors) plus legacy migration;
 `SessionStore` publishes through the atomic locked meta path, so a failed
 migration or write leaves the original readable. `native.py` adapts the native

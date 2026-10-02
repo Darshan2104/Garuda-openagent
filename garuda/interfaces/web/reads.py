@@ -103,6 +103,13 @@ class ReaderCache:
             return len(self._readers)
 
 
+def _state_fields(meta: dict) -> dict:
+    from garuda.runtime.session_state import effective_state, is_crashed, summary_label
+
+    state = effective_state(meta)
+    return {"state": state, "crashed": is_crashed(state), "state_label": summary_label(state)}
+
+
 def _cache(readers: ReaderCache | None) -> ReaderCache:
     """``readers``, or a throwaway.
 
@@ -152,6 +159,8 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
         "final_message": meta.get("final_message"),
         "metrics": meta.get("metrics"),
         "acceptance": meta.get("acceptance"),
+        # The four independent facts (B.2); `crashed` is derived, never stored.
+        **_state_fields(meta),
         "has_events": has_events,
         "events_bytes": events_path.stat().st_size if has_events else 0,
     }
@@ -379,6 +388,7 @@ def tail_run(
     return {
         **result.as_dict(),
         "status": meta.get("status"),
+        **_state_fields(meta),
         "session_id": session_id,
         # `eof and not running` is the client's stop condition, and it needs both halves
         # from the same read: a finished run whose last events have not been consumed yet
