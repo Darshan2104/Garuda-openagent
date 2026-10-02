@@ -405,7 +405,7 @@ async def cmd_handoff_confirm(
     # Classifies first: prepared switches roll back, ambiguous trails refuse,
     # and a session an external runtime owns is never taken back natively.
     await source.resume(native_session_id=session_id)
-    lease = WorkspaceLeaseGuard(workspace, session_id)
+    lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=resolved.runtime_id)
     lease.acquire()
     try:
         lease.start_heartbeat()
@@ -615,7 +615,7 @@ async def run_acp_task(
     store = store or SessionStore()
     events = EventStore()
     session_id = events.session_id
-    lease = WorkspaceLeaseGuard(workspace, session_id)
+    lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id)
     lease.acquire()
     runtime = None
     began = False

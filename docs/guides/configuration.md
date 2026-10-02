@@ -14,7 +14,7 @@
 
 | File | Scope | Holds |
 |---|---|---|
-| `~/.agent/settings.yaml` | All projects, trusted | Models and bindings, collection, routing, runtime manifests, `trust_project_hooks`, `load_project_tools`, `agents.project_ceiling` |
+| `~/.agent/settings.yaml` | All projects, trusted | Models and bindings, collection, routing, runtime manifests, `trust_project_hooks`, `load_project_tools`, `agents.project_ceiling`, `capacity` |
 | `~/.agent/mcp.json` | All projects, trusted | MCP servers, including per-tool `tool_effects` |
 | `.agent/settings.yaml` | One project | Project defaults, proposed routing rules, `runtime_refs` aliases, classifier opt-out |
 | `.agent/mcp.json` | One project | Project MCP servers (`tool_effects` here is ignored) |
@@ -296,6 +296,22 @@ Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in
 [Create your own agent profile](../use-cases/customize.md#create-your-own-agent-profile).
 Read [Safety and workspaces](safety-and-workspaces.md) before enabling project
 code, permissive modes, network access, or host-backed execution.
+
+## Runtime capacity
+
+Limit how many runs of one runtime may be active at once, across every way of
+starting one (CLI, SDK, dashboard, server, handoffs):
+
+```yaml
+# ~/.agent/settings.yaml
+capacity:
+  native: 2
+  claude: 1
+  codex: 1
+```
+
+A run that finds its runtime full is refused right away rather than queued. A
+runtime with no entry isn't limited. Only the global settings file can set this.
 
 ## Environment variables
 

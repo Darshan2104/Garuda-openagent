@@ -469,3 +469,24 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   checks run in Docker with the detached source read-only, no network, no
   socket, an unprivileged user and a tmpfs scratch; a tree change voids the
   evidence.
+
+## 2026-10-02 — Strict ownership storage and shared runtime capacity (issue #157, B.0)
+
+- Ownership records (workspace leases, capacity slots) use one strict storage
+  contract: owner-only directories, an exclusive no-follow `flock`, atomic
+  fsynced writes, and refusal of corrupt, symlinked or future-version records,
+  which are kept for diagnosis. Lock failure is an error, never an unlocked
+  write.
+- An owner is pid + start identity + process group (used only when the owner
+  leads it) + epoch. An expired lease or slot is reclaimed only when its owner
+  is confirmed dead; a live owner past its TTL keeps it, and indeterminate
+  liveness blocks takeover. Heartbeats and releases from a superseded epoch are
+  refused. Legacy leases without an identity stay readable and can only be
+  proven dead.
+- Every launch through `WorkspaceLeaseGuard` reserves capacity for its runtime
+  key (`native`, or the ACP runtime id) before taking the workspace lease, and
+  gives it back if the workspace is held — never waiting while holding a slot.
+  Ceilings are user-only (`capacity:` in global settings); an unset key is not
+  limited until teams C.1 supplies packaged defaults.
+- Journaled launch intents and supervised process-group identity before
+  dispatch remain B.6 work.

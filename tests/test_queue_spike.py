@@ -163,7 +163,7 @@ def test_a_live_owner_past_its_ttl_keeps_its_claim(tmp_path):
 
 def test_a_reused_pid_is_not_mistaken_for_the_owner():
     me = current_owner()
-    impostor = Owner(pid=me.pid, identity=me.identity + "-earlier-process", pgid=me.pgid)
+    impostor = Owner(pid=me.pid, identity=me.identity + "-earlier-process", pgid=me.pgid, epoch="old")
     assert owner_liveness(me.to_dict()) is True
     assert owner_liveness(impostor.to_dict()) is False
 

@@ -65,25 +65,132 @@ def test_read_only_shares_and_never_blocks_mutation_end(tmp_path):
     }
 
 
+def _acquire_in_subprocess(store_root, workspace, session_id, ttl_sec):
+    """Take a lease from a separate process that then exits (a confirmed-dead owner)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    code = (
+        "import sys; from garuda.workspace.lease import LeaseStore; "
+        "LeaseStore(sys.argv[1]).acquire(sys.argv[2], sys.argv[3], 'mutating', ttl_sec=float(sys.argv[4]))"
+    )
+    subprocess.run(
+        [sys.executable, "-c", code, str(store_root), str(workspace), session_id, str(ttl_sec)],
+        check=True,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(root), "HOME": str(store_root)},
+    )
+
+
 def test_heartbeat_loss_and_stale_recovery(tmp_path):
     store = _store(tmp_path)
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    lease = store.acquire(workspace, "old", "mutating", ttl_sec=1000)
-    assert not lease.is_stale()
-    stale = store.acquire(workspace, "old", "mutating", ttl_sec=1000, now=lease.heartbeat_at)
-    assert stale.session_id == "old"
+    _acquire_in_subprocess(store.root, workspace, "old", 1000)
+    (lease,) = store.holders_of(workspace)
+    assert lease.identity and lease.epoch  # v2 records carry the owner identity
 
-    # Another session cannot steal a live lease...
+    # Another session cannot steal a live (unexpired) lease...
     with pytest.raises(LeaseConflictError, match="mutably held"):
         store.acquire(workspace, "new", "mutating")
-    # ...but heartbeat loss past TTL recovers safely, recording the takeover.
+    # ...but past its TTL, with its owner process confirmed gone, it is taken
+    # over safely and the takeover is recorded.
     recovered = store.acquire(workspace, "new", "mutating", now=lease.heartbeat_at + 1001)
     assert recovered.stolen_from == "old"
     assert [h.session_id for h in store.holders_of(workspace)] == ["new"]
     # The old owner's heartbeat now fails closed instead of clobbering.
     with pytest.raises(LeaseConflictError):
         store.heartbeat(workspace, "old")
+
+
+def test_a_live_owner_past_its_ttl_keeps_the_lease(tmp_path):
+    """Expiry alone never permits takeover (#157, B.0)."""
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    lease = store.acquire(workspace, "alive", "mutating", ttl_sec=1)  # this live process
+
+    with pytest.raises(LeaseConflictError, match="still running past the lease TTL"):
+        store.acquire(workspace, "intruder", "mutating", now=lease.heartbeat_at + 10)
+    assert [h.session_id for h in store.holders_of(workspace)] == ["alive"]
+
+
+def test_unknown_owner_liveness_blocks_takeover(tmp_path):
+    store = LeaseStore(tmp_path / "leases", liveness=lambda owner: None)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    lease = store.acquire(workspace, "ghost", "mutating", ttl_sec=1)
+
+    with pytest.raises(LeaseConflictError, match="cannot be determined"):
+        store.acquire(workspace, "new", "mutating", now=lease.heartbeat_at + 10)
+
+
+def test_a_superseded_owner_cannot_heartbeat_or_release(tmp_path):
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    first = store.acquire(workspace, "s", "mutating")
+    second = store.acquire(workspace, "s", "mutating")  # same session re-acquired
+
+    with pytest.raises(LeaseConflictError, match="superseded"):
+        store.heartbeat(workspace, "s", epoch=first.epoch)
+    with pytest.raises(LeaseConflictError, match="superseded"):
+        store.release(workspace, "s", epoch=first.epoch)
+    store.heartbeat(workspace, "s", epoch=second.epoch)
+    store.release(workspace, "s", epoch=second.epoch)
+    assert store.holders_of(workspace) == []
+
+
+def test_lease_storage_is_owner_only_and_refuses_symlinks(tmp_path):
+    import os
+
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store.acquire(workspace, "s", "mutating")
+    (path,) = list(store.root.glob("*.json"))
+    assert oct(os.stat(store.root).st_mode & 0o777) == "0o700"
+    assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+    planted = tmp_path / "planted.json"
+    planted.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(planted)
+    with pytest.raises(LeaseError, match="symlink"):
+        store.acquire(workspace, "t", "mutating")
+
+
+def test_a_future_lease_version_refuses(tmp_path):
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store.acquire(workspace, "s", "mutating")
+    (path,) = list(store.root.glob("*.json"))
+    path.write_text('{"version": 99, "holders": []}')
+    with pytest.raises(LeaseError, match="version"):
+        store.acquire(workspace, "t", "mutating")
+
+
+def test_a_legacy_lease_without_identity_is_still_read(tmp_path):
+    """v1 records stay readable; such an owner can be proven dead, never alive."""
+    import hashlib
+    import json
+
+    store = _store(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    key = workspace_key(workspace)
+    path = store.root / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {"workspace": key, "session_id": "old", "mode": "mutating", "acquired_at": 1.0,
+              "heartbeat_at": 1.0, "ttl_sec": 60, "pid": 999999, "stolen_from": ""}
+    path.write_text(json.dumps({"version": 1, "holders": [legacy]}))
+
+    (holder,) = store.holders_of(workspace)
+    assert holder.session_id == "old" and holder.identity == ""
+    recovered = store.acquire(workspace, "new", "mutating")  # pid 999999 is not running
+    assert recovered.stolen_from == "old"
 
 
 def test_corrupt_lease_fails_closed(tmp_path):
@@ -280,7 +387,7 @@ async def test_production_run_stops_when_heartbeat_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
     monkeypatch.setattr(lease_mod, "DEFAULT_TTL_SEC", 0.03)
 
-    def fail_heartbeat(self, workspace, session_id):
+    def fail_heartbeat(self, workspace, session_id, **_epoch):
         raise LeaseError("heartbeat storage unavailable")
 
     monkeypatch.setattr(lease_mod.LeaseStore, "heartbeat", fail_heartbeat)

@@ -1134,12 +1134,21 @@ def _run_with_runtime_gate(args) -> int:
     import asyncio
 
     from garuda.acp.catalog import RuntimeSettingsError
+    from garuda.runtime.capacity import CapacityError
     from garuda.runtime.registry import RegistryError
+    from garuda.workspace.lease import LeaseError
 
     try:
         return asyncio.run(run_task(args))
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
+    except (LeaseError, CapacityError) as exc:
+        # The workspace is held by another run, or the runtime is at its
+        # capacity: a refusal to report, not a crash.
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 def main() -> None:
