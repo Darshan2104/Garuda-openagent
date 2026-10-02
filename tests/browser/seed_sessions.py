@@ -272,6 +272,23 @@ def seed_observability(root: Path, workspace: str) -> dict:
     attached = tags.Attached(tags=[p[0] for p in pairs], briefs=[p[1] for p in pairs],
                              rendered=briefs.render([p[1] for p in pairs]))
     tags.record_links(store, OBS["tagger"], attached)
+    # an agent definition: the native conversation ran under it, and the system prompt it sent
+    # changed once (a digest and a length per change, never the text); plus one that cannot
+    # resolve. The dashboard is started with this workspace so Setup lists them.
+    from garuda.agents.spec_api import AgentSpec
+
+    agents = Path(workspace) / ".agent" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "careful.yaml").write_text(
+        "version: 1\nextends: garuda/explore\ndescription: Checks twice\n"
+        "limits: {max_turns: 12}\ninstructions: {text: SEED-INSTRUCTION-MARKER check twice.}\n")
+    (agents / "broken.yaml").write_text("version: 1\nlimits: {max_turns: lots}\n")
+    careful = AgentSpec.load("careful", workspace)
+    store.update_meta(OBS["native"], {"agent": "careful", "agent_digest": careful.digest})
+    native_events = EventStore(OBS["native"], persist_path=store.events_path(OBS["native"]))
+    for digest, chars in (("a1" * 32, 4100), ("b2" * 32, 4320)):
+        native_events.append(EventType.SYSTEM_PROMPT, {"digest": digest, "chars": chars,
+                                                       "kind": "actual"})
     # usage at three ages, one per range boundary region
     for key, age_h in (("age-2h", 2), ("age-3d", 72), ("age-20d", 480)):
         ledger.append({"kind": "native_model_call", "key": key, "time": now - age_h * 3600,

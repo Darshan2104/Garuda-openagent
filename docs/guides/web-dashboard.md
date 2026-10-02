@@ -58,6 +58,11 @@ carries its model and purpose badge. The panel also lists the runtime lanes, the
 this one resumed from or was continued by, the sessions it tagged, and those that tagged it.
 `GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
 
+**Agent.** A run's page also says which agent definition the session ran under (its digest,
+and a note when the definition changed on resume) and the digests of the system prompts it
+actually sent, with their lengths: the prompt digest changes when runtime blocks such as the
+environment snapshot do, so it can differ from the static one in Setup.
+
 **Consults.** When the session asked other roles questions, a **Consults** panel lists each as
 a lane under it: who asked whom, the identity that ran, its admission, outcome (`answered`,
 `withheld` when the snapshot changed or could not be compared, `failed`, `timeout`,
@@ -114,8 +119,14 @@ shows each role's harness, exact model id, effort, permissions and fallback chai
 **flow list** marks the packaged examples and names any role a flow needs that you have not
 defined; and **where each value came from** lists the layer behind every effective value
 (package, your file, the project's trusted file, the command line), plus anything a project
-file asked for that is withheld until you trust it. To change anything, edit your
-`garuda.yaml` or run `garuda init`. `GET /api/setup` serves it.
+file asked for that is withheld until you trust it. The **Agents** card lists every agent
+definition: its source (packaged, yours or the project's) and `extends`, a shadowing note, the
+settings it declares with the layer each came from, its definition digest, its static prompt
+digest and the estimated size of each prompt section. It never shows instruction or prompt
+text (use `garuda agent show NAME` for that) and a definition that cannot resolve is listed
+with its problem beside the others. The digests are the ones `garuda agent show` and
+`garuda agent prompt` print. To change anything, edit your `garuda.yaml` or run `garuda init`.
+`GET /api/setup` serves it.
 
 ## Background sessions
 

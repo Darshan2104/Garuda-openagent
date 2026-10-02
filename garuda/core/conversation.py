@@ -118,6 +118,40 @@ def _row(work_type, harness, model, selected) -> dict:
             "cost_usd": 0.0, "cost_unknown": 0, "snapshots": 0}
 
 
+def agent_info(store, session_id: str, meta: dict) -> dict:
+    """Which agent definition ran, and the system prompt digests it actually sent.
+
+    The definition digest and name come from the session record; the prompt digests are the
+    ``system_prompt`` events a run appends when the outbound system message changes. Only
+    digests and lengths are kept, never text."""
+    import json
+
+    prompts: list[dict] = []
+    try:
+        with store.events_path(session_id).open(encoding="utf-8") as handle:
+            for line in handle:
+                if '"system_prompt"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                payload = event.get("payload") or {}
+                if event.get("type") == "system_prompt" and payload.get("digest"):
+                    prompts.append({"digest": payload["digest"], "chars": payload.get("chars")})
+    except OSError:
+        pass
+    seen, distinct = set(), []
+    for prompt in reversed(prompts):  # newest first, each once
+        if prompt["digest"] not in seen:
+            seen.add(prompt["digest"])
+            distinct.append(prompt)
+    role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
+    return {"name": meta.get("agent"), "digest": meta.get("agent_digest"),
+            "role_agent": role.get("agent"), "segment": meta.get("agent_segment"),
+            "prompts": distinct[:5], "prompt_changes": len(prompts)}
+
+
 def consult_rows(store, session_id: str, meta: dict) -> list[dict]:
     """The consults requested under this session and its flow's step sessions."""
     from garuda.consult import view
@@ -246,6 +280,7 @@ def conversation(store, session_id: str, *, ledger=None, queue=None) -> dict[str
         "selected": {"harness": role.get("runtime_id"), "model_id": role.get("model_id")
                      or meta.get("model"), "fallback": role.get("fallback")},
         "lanes": lanes,
+        "agent": agent_info(store, session_id, meta),
         "consults": {"summary": consult_summary(consults), "entries": consults},
         "models_used": models_used(store, session_id, meta, ledger, consults),
         "links": _story(store, session_id, meta),
