@@ -852,3 +852,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Memory files stay inside the workspace: a link may point within it (for
   example AGENTS.md -> CLAUDE.md); an escape refuses for version 1 and is
   skipped with a diagnostic for legacy profiles.
+
+## 2026-10-02 — Skills have sources, precedence and filters (issue #163, H.5)
+
+- Sources: project, user (`<global home>/skills`, new), packaged; the nearer
+  source wins a name collision and the others are recorded as shadowed.
+  `from`, `include`/`exclude` and `load: index|full` select per agent; an
+  unknown `include` refuses for version 1 and warns for legacy profiles,
+  which keep exactly their old project-only sources.
+- `allowed-tools` stays advisory (prompt wording kept, enforcement
+  deferred); `agent check` reports `skill.tool_not_granted`. Skill files are
+  read bounded and no-follow inside their source.

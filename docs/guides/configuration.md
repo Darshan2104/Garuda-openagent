@@ -370,6 +370,16 @@ instructions:
   trimming the context pack first and then project memory. The agent's own
   instructions are never cut — a definition whose instructions do not fit
   refuses. Project memory must stay inside the repository.
+- `skills:` picks the agent's skills. Sources are this project's
+  `.agent/skills` (and `.garuda/skills`), your `~/.agent/skills`, then the
+  packaged ones; when two define the same name, the nearer wins and
+  `garuda agent show` lists the shadowed copies. `from: [project, user,
+  packaged]` limits the sources, `include` (`null`: all; `[]`: none) and
+  `exclude` filter by name, and `load: index` (the default: names and paths,
+  read on demand) or `full` puts every body in the prompt. A skill's
+  `allowed-tools` is advice to the model, not enforcement; `garuda agent
+  check` warns (`skill.tool_not_granted`) when it names a tool the agent
+  lacks. Project skills are project text and grant nothing.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.
