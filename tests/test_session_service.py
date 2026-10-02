@@ -66,8 +66,9 @@ class Probe(ScriptModel):
         self.seen: list[dict] = []
         super().__init__([
             ModelResponse(content=None, tool_calls=[ToolCall(
-                id="bg", name="bash_background",
-                arguments={"command": "echo $$ > bg.pid; exec sleep 300"})]),
+                id="bg", name="bash_background", arguments={"command": "exec sleep 300"})]),
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                id="w", name="bash", arguments={"command": "echo made > made.txt"})]),
             ModelResponse(content=None, tool_calls=[ToolCall(
                 id="d", name="task_complete",
                 arguments={"summary": "A fully detailed completion summary of the work done."})]),
@@ -168,7 +169,9 @@ async def test_every_entry_point_has_the_same_visible_lifecycle(repo, monkeypatc
 
     # After it ended: the background process is dead, nothing is held, and
     # the session records its delta.
-    pid = int((repo / "bg.pid").read_text())
+    # The pid as the tool reported it: the process itself may be killed
+    # before it could write anything (a fast close is the point).
+    pid = _background_pid(session_id)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert LeaseStore().holders_of(repo) == []
@@ -176,7 +179,19 @@ async def test_every_entry_point_has_the_same_visible_lifecycle(repo, monkeypatc
     meta = SessionStore().load_meta(session_id)
     assert "quarantine" not in meta
     assert meta["delta_attribution"] == "captured"
-    assert "bg.pid" in meta["delta_changed"]
+    assert "made.txt" in meta["delta_changed"]
+
+
+def _background_pid(session_id: str) -> int:
+    import json
+    import re
+
+    for line in SessionStore().events_path(session_id).read_text().splitlines():
+        event = json.loads(line)
+        found = re.search(r"Started background task \w+ \(pid (\d+)\)", json.dumps(event))
+        if found:
+            return int(found.group(1))
+    raise AssertionError("no background task was started")
 
 
 def _refusal(entry):
