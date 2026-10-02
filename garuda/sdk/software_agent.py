@@ -79,11 +79,13 @@ class SoftwareAgent:
         *,
         events: EventStore | None = None,
         resume: str | None = None,
+        resume_all_projects: bool = False,
     ) -> AgentResult:
         """Execute a task and return the agent result.
 
         Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
-        seed the run with a prior session's conversation. Non-native runtimes
+        seed the run with a prior session's conversation. ``"latest"`` is this
+        workspace's newest session unless ``resume_all_projects`` is true. Non-native runtimes
         execute one ACP turn per run through the selected harness.
         """
         if self.runtime_name != "native":
@@ -127,6 +129,7 @@ class SoftwareAgent:
             mcp_manager=mcp_manager,
             agents_dir=agents_dir,
             resume=resume,
+            resume_all_projects=resume_all_projects,
             collection_model=prepared.collection,
             collection_policy=prepared.collection_policy,
         )

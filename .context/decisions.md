@@ -423,3 +423,14 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   executable path/identity and probe argv, from an owner-only cache that stores
   the derived record (availability, extracted version, auth/health, warnings),
   never raw output. Listing and inspection bypass the cache.
+
+## 2026-10-02 — `latest` is project-scoped; sessions record absolute workspaces (issue #149)
+
+- `--resume latest` (CLI, SDK, JSON-RPC) resolves to the newest session whose
+  recorded workspace belongs to the current project. Project identity is the
+  resolved path, with linked Git worktrees mapped to the main repository root
+  (read from `.git`/`commondir`, never by running `git`). `--all-projects` /
+  `resume_all_projects=True` keeps the old "newest anywhere" meaning; JSON-RPC
+  has no global form. Sessions without an absolute workspace are never a
+  project's `latest`. Teams task B.1 later replaces the path with an opaque id.
+- Native sessions now record the absolute workspace instead of `"."`.

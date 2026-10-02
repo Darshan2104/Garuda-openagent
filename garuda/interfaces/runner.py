@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from garuda.context.manager import ContextManager
@@ -159,6 +160,7 @@ async def run_agent_task(
     context: ContextManager | None = None,
     close_mcp: bool = True,
     resume: str | None = None,
+    resume_all_projects: bool = False,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -188,6 +190,7 @@ async def run_agent_task(
         permissions=permissions,
         store=store,
         events=events,
+        workspace=os.path.realpath(workspace),
     )
 
     # One mutating session owns a workspace (P0.16). Acquired before any
@@ -214,7 +217,7 @@ async def run_agent_task(
                 task=task,
                 model=getattr(model, "model_name", str(model)),
                 agent=getattr(agent, "profile_name", "agent"),
-                workspace=workspace,
+                workspace=os.path.realpath(workspace),
             )
             from garuda.runtime.selection import record_initial_selection
 
@@ -227,7 +230,9 @@ async def run_agent_task(
     initial_state: dict | None = None
     if resume:
         try:
-            resumed_from = store.resolve(resume)
+            resumed_from = store.resolve(
+                resume, workspace=workspace, all_projects=resume_all_projects
+            )
             # Recover the retained session before resuming it (resume only; a
             # fresh run has nothing to recover): a live owner or lease holder
             # refuses, prepared switches roll back (marked failed), orphans

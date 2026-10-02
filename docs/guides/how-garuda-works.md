@@ -114,7 +114,8 @@ Each `garuda run` or `garuda chat` creates a session under
 event log. Use it to:
 
 - list runs with `garuda sessions`;
-- continue one with `--resume latest` (or an ID prefix);
+- continue one with `--resume latest` (this project's newest session) or an ID
+  prefix;
 - browse it with `garuda web --read-only`;
 - export events with `--trajectory run.jsonl`.
 

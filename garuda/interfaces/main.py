@@ -171,7 +171,13 @@ def build_parser():
     run_parser.add_argument(
         "--resume",
         metavar="ID",
-        help="Resume a saved session (full id, unique prefix, or 'latest')",
+        help="Resume a saved session (full id, unique prefix, or 'latest' for this "
+        "project's newest)",
+    )
+    run_parser.add_argument(
+        "--all-projects",
+        action="store_true",
+        help="With --resume latest, resume the newest session from any project",
     )
 
     chat_parser = subparsers.add_parser("chat", help="Interactive agent session with permission prompts")
@@ -1006,6 +1012,7 @@ async def run_task(args) -> int:
         mcp_manager=mcp_manager,
         agents_dir=agents_dir,
         resume=args.resume,
+        resume_all_projects=getattr(args, "all_projects", False),
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
