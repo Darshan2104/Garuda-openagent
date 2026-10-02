@@ -307,11 +307,13 @@ class DefaultAgent:
         whole mechanism — so it cannot simply reuse ``state.tools_schema``.
         """
         elapsed = [0.0]
+        messages = state.context.get_messages()
+        _record_system_digest(state, messages)
         try:
             with stopwatch() as holder:
                 elapsed = holder
                 return await model.complete(
-                    state.context.get_messages(),
+                    messages,
                     tools=state.tools_schema if tools is None else tools,
                     # Sent, not merely reserved against. run_state.reserved_output_tokens
                     # takes this as the ceiling on the response and shrinks the prompt
@@ -744,3 +746,27 @@ class DefaultAgent:
             or "Budget exhausted before the task was verified.",
             turns,
         )
+
+
+def _record_system_digest(state, messages) -> None:
+    """Record the actual outbound system message's digest when it changes (H.2).
+
+    ``garuda agent prompt`` predicts the *static* prompt; this is what was
+    really sent, runtime blocks (environment snapshot, resume content, …)
+    included. Only a digest and a length are kept, never the text.
+    """
+    import hashlib
+
+    system = next((m.content for m in messages if getattr(m.role, "value", m.role) == "system"
+                   and isinstance(m.content, str)), None)
+    if system is None:
+        return
+    digest = hashlib.sha256(system.encode("utf-8")).hexdigest()
+    if getattr(state, "_system_digest", None) == digest:
+        return
+    state._system_digest = digest
+    try:
+        state.events.append(EventType.SYSTEM_PROMPT, {
+            "digest": digest, "chars": len(system), "kind": "actual"})
+    except Exception:
+        pass

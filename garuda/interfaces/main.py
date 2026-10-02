@@ -506,6 +506,31 @@ def build_parser():
 
     agent_parser = subparsers.add_parser("agent", help="Agent definitions")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
+    agent_list = agent_sub.add_parser("list", help="Agents, where each comes from, and shadowing")
+    agent_list.add_argument("--workspace", default=".")
+    agent_list.add_argument("--json", action="store_true")
+    agent_show = agent_sub.add_parser(
+        "show", help="An agent's effective fields, each with its source (secrets redacted)")
+    agent_show.add_argument("name")
+    agent_show.add_argument("--workspace", default=".")
+    agent_show.add_argument("--json", action="store_true")
+    agent_show.add_argument("--raw", action="store_true", help="Show text unredacted (local only)")
+    agent_prompt = agent_sub.add_parser(
+        "prompt", help="The static system prompt, section by section, with sizes and a digest")
+    agent_prompt.add_argument("name")
+    agent_prompt.add_argument("--workspace", default=".")
+    agent_prompt.add_argument("--json", action="store_true")
+    agent_prompt.add_argument("--raw", action="store_true", help="Show text unredacted (local only)")
+    agent_check = agent_sub.add_parser("check", help="Every diagnostic for an agent or file")
+    agent_check.add_argument("target", help="Agent name or definition file path")
+    agent_check.add_argument("--workspace", default=".")
+    agent_check.add_argument("--json", action="store_true")
+    agent_new = agent_sub.add_parser("new", help="Write a minimal definition (never overwrites)")
+    agent_new.add_argument("name")
+    agent_new.add_argument("--from", dest="from_agent", default="garuda/build")
+    agent_new.add_argument("--project", action="store_true",
+                           help="Write it into this project's .agent/agents instead of yours")
+    agent_new.add_argument("--workspace", default=".")
     agent_migrate = agent_sub.add_parser(
         "migrate", help="Preview (or --write) a legacy profile as a version 1 definition"
     )
@@ -1048,11 +1073,70 @@ def _apply_role(args, resolved, catalog):
 
 
 def run_agent(args) -> int:
-    """`garuda agent migrate PATH [--write]` (H.1)."""
+    """`garuda agent list|show|prompt|check|new|migrate` (H.1, H.2)."""
+    import json
     import sys
 
-    from garuda.agents import migrate
+    from garuda.agents import inspect, migrate
     from garuda.model.config import ConfigError
+
+    command = args.agent_command
+    try:
+        if command == "list":
+            rows = inspect.list_agents(args.workspace)
+            if args.json:
+                print(json.dumps(rows, indent=2))
+            else:
+                for r in rows:
+                    shadow = f"  (shadowed by {r['shadowed_by']})" if r["shadowed_by"] else ""
+                    ext = f" extends {r['extends']}" if r["extends"] else ""
+                    print(f"{r['qualified']:<28} {r['source']:<9}{ext} {r['description']}{shadow}")
+            return 0
+        if command == "show":
+            data = inspect.show(args.name, args.workspace, raw=args.raw)
+            if args.json:
+                print(json.dumps(data, indent=2, default=str))
+            else:
+                print(f"{data['name']}  ({data['source']}: {data['path']})")
+                print(f"chain: {' -> '.join(data['chain'])}")
+                for path, item in sorted(data["fields"].items()):
+                    flag = "" if item.get("supported", True) else "  [unsupported]"
+                    value = item["value"]
+                    if isinstance(value, str) and len(value) > 70:
+                        value = value[:67] + "..."
+                    print(f"  {path:<34} {value!r:<40} {item['source']}{flag}")
+            return 0
+        if command == "prompt":
+            data = inspect.prompt(args.name, args.workspace, raw=args.raw)
+            if args.json:
+                print(json.dumps(data, indent=2))
+            else:
+                for section in data["sections"]:
+                    print(f"--- {section['section']} ({section['source']}; {section['bytes']} "
+                          f"bytes, {section['chars']} chars, ~{section['tokens']} tokens "
+                          f"by {data['estimator']})")
+                    print(section["text"])
+                print(f"--- static digest {data['digest']} ({data['note']})")
+            return 0
+        if command == "check":
+            report = inspect.check(args.target, args.workspace)
+            if args.json:
+                print(json.dumps([d.to_dict() for d in report], indent=2))
+            else:
+                for item in report:
+                    print(item.render())
+            return 1 if any(d.level == "error" for d in report) else 0
+        if command == "new":
+            path = inspect.new(args.name, args.workspace, from_agent=args.from_agent,
+                               project=args.project)
+            print(f"[garuda] wrote {path}; check it with `garuda agent check {args.name}`")
+            return 0
+    except FileExistsError as exc:
+        print(f"Error: {exc.filename} already exists; not overwritten", file=sys.stderr)
+        return 2
+    except (ConfigError, OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     try:
         plan = migrate.plan(args.path)

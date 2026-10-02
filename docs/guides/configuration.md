@@ -352,6 +352,13 @@ instructions:
   acceptance contract in the `eval` or `rigorous` modes that require it
   (`agent.required_gate`), and its
   `workspace.docker` limits can only narrow what you granted.
+- `garuda agent show NAME` prints every effective value and where it came
+  from; `garuda agent prompt NAME` prints the system prompt the first request
+  will send, section by section, and its digest. Both redact secrets unless
+  you pass `--raw`, and neither starts an MCP server, a hook or a model. A run
+  records the digest of the system message it actually sent; it differs from
+  the static one once runtime blocks such as the environment snapshot are
+  added.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

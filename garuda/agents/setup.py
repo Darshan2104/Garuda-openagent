@@ -880,6 +880,36 @@ def resolve_and_record_routing(
     )
 
 
+def static_agent_config(profile, workspace, *, mode=None, permission_mode=None,
+                        reasoning_effort=None, thinking_budget_tokens=None) -> AgentConfig:
+    """The :class:`AgentConfig` a run of ``profile`` starts from — no model, MCP,
+    hook or tool is touched. ``prepare_agent_run`` and ``garuda agent show`` both
+    use it, so inspection reports exactly what a run uses."""
+    config = profile.to_agent_config()
+    # Only override the profile's own mode when a caller explicitly asked for one,
+    # so a `mode: rigorous` profile isn't silently downgraded.
+    if mode:
+        config.mode = mode
+    # The mode decides the gate posture; fields the profile declared explicitly are
+    # left alone. Every entry point funnels through here, so this is the one place
+    # a preset needs applying.
+    apply_mode_preset(config, declared_fields=profile.declared_fields)
+    # After the preset, so an explicit request is the narrower statement of intent and
+    # wins — the same ordering the CLI uses for its own flags.
+    if permission_mode:
+        config.permission_mode = permission_mode
+    # Legacy reasoning knobs from CLI flags narrow the profile's own before the
+    # compatibility translation turns them into the reasoning ModelSpec.
+    if reasoning_effort is not None:
+        config.reasoning_effort = reasoning_effort
+    if thinking_budget_tokens is not None:
+        config.thinking_budget_tokens = thinking_budget_tokens
+    config.system_prompt = resolve_system_prompt(
+        profile, workspace, diagnostics=config.prompt_diagnostics
+    )
+    return config
+
+
 async def prepare_agent_run(
     agent_name: str,
     *,
@@ -939,27 +969,9 @@ async def prepare_agent_run(
         explicit_permission_mode=permission_mode,
         global_settings=profile_home.global_settings,
     )
-    config = profile.to_agent_config()
-    # Only override the profile's own mode when a caller explicitly asked for one,
-    # so a `mode: rigorous` profile isn't silently downgraded.
-    if mode:
-        config.mode = mode
-    # The mode decides the gate posture; fields the profile declared explicitly are
-    # left alone. Every entry point funnels through here, so this is the one place
-    # a preset needs applying.
-    apply_mode_preset(config, declared_fields=profile.declared_fields)
-    # After the preset, so an explicit request is the narrower statement of intent and
-    # wins — the same ordering the CLI uses for its own flags.
-    if permission_mode:
-        config.permission_mode = permission_mode
-    # Legacy reasoning knobs from CLI flags narrow the profile's own before the
-    # compatibility translation below turns them into the reasoning ModelSpec.
-    if reasoning_effort is not None:
-        config.reasoning_effort = reasoning_effort
-    if thinking_budget_tokens is not None:
-        config.thinking_budget_tokens = thinking_budget_tokens
-    config.system_prompt = resolve_system_prompt(
-        profile, workspace, diagnostics=config.prompt_diagnostics
+    config = static_agent_config(
+        profile, workspace, mode=mode, permission_mode=permission_mode,
+        reasoning_effort=reasoning_effort, thinking_budget_tokens=thinking_budget_tokens,
     )
 
     # --- Model bindings -----------------------------------------------------
