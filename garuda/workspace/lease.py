@@ -340,6 +340,22 @@ class LeaseStore:
         """Inspect current holders, if any. Never mutates."""
         return self._read_all(self._path_for(workspace_key(workspace)))
 
+    def possibly_live_holders(self, *, now: float | None = None) -> list[Lease]:
+        """Every lease, in any workspace, whose owner may still be running.
+
+        Unexpired leases, and expired ones whose owner is not confirmed dead.
+        Never mutates; a corrupt lease file raises (fail closed).
+        """
+        if not self.root.is_dir():
+            return []
+        moment = now if now is not None else time.time()
+        live: list[Lease] = []
+        for path in sorted(self.root.glob("*.json")):
+            for holder in self._read_all(path):
+                if not holder.is_stale(moment) or self._owner_state(holder) is not False:
+                    live.append(holder)
+        return live
+
     def live_holders_for_session(
         self, session_id: str, *, now: float | None = None
     ) -> list[Lease]:

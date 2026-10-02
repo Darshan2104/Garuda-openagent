@@ -12,6 +12,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda chat` | Interactive session with `y/N` permission prompts |
 | | `garuda recipe run file.yaml` | Execute a YAML workflow |
 | Sessions | `garuda sessions` | List recent saved sessions |
+| | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Configuration | `garuda mcp list` | Resolve and inspect MCP configuration |

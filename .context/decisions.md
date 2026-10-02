@@ -506,3 +506,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Names, prefixes and `latest` resolve within the current project (legacy
   sessions by recorded path); `--all-projects` searches everywhere; a full id
   always resolves.
+
+## 2026-10-02 — Journaled project-id recovery (issue #157, B.1)
+
+- `garuda doctor --recover-project-ids` rebuilds project ids under a new key
+  only when the key is missing; it refuses while any lease owner may be alive.
+  A session maps to a new id only when its recorded path still has its
+  recorded filesystem identity; otherwise it keeps its old id (unmapped).
+  Name reservations move with their project; merges that would collide refuse
+  before anything changes.
+- The plan is journaled (`recovery.json`) and the new key staged (`key.next`)
+  before any session changes; metadata keeps `previous_project_ids`; the key
+  is published last and the journal becomes a receipt. An interrupted run
+  resumes from the journal; a finished one is a no-op.
