@@ -263,6 +263,21 @@ Garuda never calls it. A limit or usage value without a supported source stays
 `unknown`, and an `unknown` or account-unbound limit never triggers a
 fallback.
 
+**Limit observations and quota fallback.** A refresh re-runs the documented status
+reads (for Codex: the app-server's read-only `account/read` and
+`account/rateLimits/read`; never a prompt, a credential file or `getAuthStatus`) and
+records the reading with its source, the exact version, the time and a **local digest** of
+the official account id (a salted hash kept only in your Garuda home; names are never
+stored). Reaching a limit appends one `limit_event` to the usage ledger, however often it is
+observed. Such an event may make a harness count as exhausted for **fallback** only when
+all of these hold at selection time: the source is proved for this exact version; the
+reading names an account and the harness is logged into the same one now; it is at most 60
+seconds old; and it reports the limit reached with an explicit reset time still ahead.
+Anything else, including a changed account, version or login, a stale reading, an unknown
+or past reset, or a source with no account id, is shown as history and leaves the harness
+eligible. An unknown reset time never bans a provider. (Enabling the `harness.limit_reached`
+fallback reason is a separate step; until then limit observations are display evidence.)
+
 To record another version (no prompt is sent):
 
 ```bash
