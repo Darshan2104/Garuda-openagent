@@ -203,13 +203,22 @@ class FlowRunner:
         return fingerprint(self.workspace)
 
     def _role_plan(self, role: str):
+        from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
         from garuda.config.garuda_yaml import Resolved
         from garuda.runtime.roles import plan_role
 
         resolved = Resolved(config=self.resolved.config, provenance=self.resolved.provenance,
                             role=role)
-        return plan_role(resolved, prepare_runtime_catalog(self.workspace))
+        catalog = prepare_runtime_catalog(self.workspace)
+        plan = plan_role(resolved, catalog)
+        # A step's fallback is decided before it launches and lands in its receipt.
+        from garuda.runtime.roles import RoleRefused
+
+        try:
+            return choose(plan, resolved, catalog) if plan is not None else None
+        except RoleRefused as exc:
+            raise FlowStopped(exc.code, str(exc), step=role) from exc
 
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})

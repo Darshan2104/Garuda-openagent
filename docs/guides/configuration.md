@@ -387,6 +387,18 @@ changed id, or an unproven adapter, refuses before anything is prompted. A
 role with no model or effort runs on any adapter version. The role, the ids
 set and the adapter version are recorded on the session.
 
+### Fallbacks
+
+A role's `fallback` list (your user file only; a project file may only remove
+entries) is tried once, before the run starts. Garuda moves past the role's
+own harness, or an entry, only when its CLI is not installed
+(`harness.cli_missing`) or its documented login check says you are logged
+out (`harness.logged_out`). A login check that fails, times out or answers
+something unexpected is not a reason to move on. Once a prompt is sent there
+is no fallback, and trust, configuration or confinement errors refuse rather
+than fall back. The session records which harness was planned, which one ran
+and why; if none can start, the run refuses and lists every reason.
+
 ## Environment variables
 
 | Variable | Purpose |

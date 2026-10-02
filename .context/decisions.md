@@ -779,3 +779,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   member launches.
 - Source and snapshot are compared after the group; any change stops the
   flow. Read-only runs take shared read-only leases so members never contend.
+
+## 2026-10-02 — Role fallbacks happen once, before start, for proven reasons (issue #158, C.9)
+
+- A role's fallback chain is walked once before the runtime starts. A
+  candidate is skipped only when its CLI is missing or its documented login
+  check, run fresh, says logged out; an unknown, failed or timed-out check or
+  an unknown limit keeps it. `harness.limit_reached` waits for E.2's proof.
+- Trust, configuration and confinement errors refuse; nothing falls back
+  after a prompt. The session (and a flow step's receipt) records the
+  primary, the entry taken and every skip reason before the prompt.
