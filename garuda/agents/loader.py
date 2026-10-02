@@ -350,20 +350,22 @@ def _warn_unsatisfiable_skill_tools(skills, granted_tools: list[str] | None) -> 
                 )
 
 
-def resolve_system_prompt(
+def system_prompt_sections(
     profile: AgentProfile,
     workspace_root: str | Path | None = None,
     *,
     diagnostics: list[dict] | None = None,
-) -> str:
-    """Build system prompt with optional skill injection and project memory.
+) -> list[tuple[str, str, str]]:
+    """The static system prompt as ``(section, source, text)`` in order.
 
-    ``diagnostics`` collects anything the user should know about what was
-    left out (for example a truncated ``AGENTS.md``).
+    Joined, the texts are exactly :func:`resolve_system_prompt`'s result, so
+    ``garuda agent prompt`` shows what a run sends before any runtime block.
     """
     from garuda.skills.loader import discover_skills, format_skills_prompt
 
     base = profile.system_prompt or DEFAULT_SYSTEM_PROMPT
+    source = str(profile.source_path) if profile.system_prompt else "default"
+    sections = [("instructions", source, base)]
     skill_dirs: list[Path] = []
     if workspace_root:
         # Standard discovery: the `.agent/skills` (and back-compat `.garuda/skills`)
@@ -389,7 +391,26 @@ def resolve_system_prompt(
         discovered = [s for s in discovered if s.name in allowed]
     _warn_unsatisfiable_skill_tools(discovered, profile.tools)
     skills_block = format_skills_prompt(discovered)
-    prompt = f"{base}\n\n{skills_block}" if skills_block else base
+    if skills_block:
+        sections.append(("skills", ", ".join(str(d) for d in skill_dirs) or "-",
+                         f"\n\n{skills_block}"))
     if workspace_root:
-        prompt += _project_memory_block(workspace_root, diagnostics)
-    return prompt
+        memory = _project_memory_block(workspace_root, diagnostics)
+        if memory:
+            sections.append(("project memory", str(workspace_root), memory))
+    return sections
+
+
+def resolve_system_prompt(
+    profile: AgentProfile,
+    workspace_root: str | Path | None = None,
+    *,
+    diagnostics: list[dict] | None = None,
+) -> str:
+    """Build system prompt with optional skill injection and project memory.
+
+    ``diagnostics`` collects anything the user should know about what was
+    left out (for example a truncated ``AGENTS.md``).
+    """
+    return "".join(text for _name, _source, text in
+                   system_prompt_sections(profile, workspace_root, diagnostics=diagnostics))

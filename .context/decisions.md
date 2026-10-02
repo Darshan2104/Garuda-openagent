@@ -821,3 +821,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   it (`agent.required_gate`). Docker limits in a
   definition only narrow the operator's grant; legacy workspace kinds are
   never translated to `local`.
+
+## 2026-10-02 — Agent inspection is pure and shows sources (issue #161, H.2)
+
+- `garuda agent list/show/prompt/check/new` read definitions and
+  configuration only; nothing is imported, connected, run or probed, and MCP
+  tools a live server would list are reported `unknown`.
+- `show` uses the same `static_agent_config` as `prepare_agent_run`, so it
+  reports exactly the run's configuration; every value names its source.
+- `prompt` reports the static first-request prompt and its digest. Runs
+  record the actual outbound system-message digest (`system_prompt` events)
+  whenever it changes; runtime blocks make the two differ, by design.
+- Secrets are redacted unless `--raw`, which prints locally and is never
+  persisted.
