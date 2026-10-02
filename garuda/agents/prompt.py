@@ -9,7 +9,8 @@ prefix first):
 3. the skills index;
 4. project memory files (``memory.project``, ``first`` or ``all``), labelled
    as project text with their path;
-5. accepted notes (reviewed notes, H.9 — not yet);
+5. accepted project notes (``.agent/memory.md``, reviewed by the user, H.9; accepted
+   user notes follow user memory as section 2);
 6. the durable context pack (``.context/architecture.md`` …) when
    ``memory.context_pack`` is on.
 
@@ -243,11 +244,16 @@ def build_plan(profile, workspace_root=None, *, base: str, skills_block: str = "
     source = str(profile.source_path) if profile.system_prompt else "default"
     sections = [Section("instructions", source, base)]
     sections += _safely(lambda: _user_memory(profile, found), strict, found)
+    from garuda.context.notes import prompt_sections as accepted_notes
+
+    notes = accepted_notes(profile, workspace_root, profile.memory_max_chars, found)
+    sections += [s for s in notes if s.kind == "user_memory"]
     if skills_block:
         sections.append(Section("skills", skills_source, f"\n\n{skills_block}"))
     if workspace_root:
         root = Path(workspace_root)
         sections += _safely(lambda: _project_memory(profile, root, found), strict, found)
+        sections += [s for s in notes if s.kind == "notes"]
         sections += _safely(lambda: _context_pack(profile, root, found), strict, found)
     sections = _fit(sections, profile.memory_max_total_chars, "memory.max_total_chars", found,
                     strict, "agent.instructions_too_large")

@@ -28,6 +28,8 @@ for your installed version. For ready-made examples, see the
 | | `garuda agent prompt NAME [--json] [--raw]` | The static system prompt by section, with bytes, characters, estimated tokens and a digest |
 | | `garuda agent check NAME_OR_PATH` | Every diagnostic, each with its code, field path and fix; exits 1 on an error |
 | | `garuda agent new NAME [--from AGENT] [--project]` | Write a minimal definition (your agents directory by default); never overwrites |
+| | `garuda memory list [--json]` | The note proposals waiting for your review in this project |
+| | `garuda memory review` | Accept, edit or reject each proposal; needs a terminal, and is the only way a note becomes memory |
 | | `garuda agent migrate PATH [--write]` | Preview a legacy profile as a version 1 definition (and confirm it resolves the same); `--write` replaces it with a backup |
 | Configuration | `garuda init [--project] [--model HARNESS=ID] [--yes]` | Propose a user `garuda.yaml` (roles) or, with `--project`, the project's checks; writes only after confirmation |
 | | `garuda config show [--flow NAME]` | The effective `garuda.yaml` and where each value came from, or one flow to copy |

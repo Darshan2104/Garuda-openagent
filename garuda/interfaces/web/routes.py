@@ -203,6 +203,21 @@ def _agent_detail(request: Request, ctx: DashboardContext, match) -> Response:
     )
 
 
+@route("GET", r"/api/memory/proposals")
+def _memory_proposals(request: Request, ctx: DashboardContext, _match) -> Response:
+    """Pending note proposals, read-only. Accepting happens only at a terminal
+    (`garuda memory review`); this route cannot change anything."""
+    from garuda.context.notes import ProposalStore
+
+    try:
+        pending = ProposalStore(ctx.store, ctx.workspace).pending()
+    except Exception as exc:
+        return invalid(f"The proposal store is unavailable: {exc}")
+    return ok({"proposals": [
+        {"id": p.id, "scope": p.scope, "text": p.text, "session_id": p.session_id,
+         "state": p.state, "created_at": p.created_at} for p in pending]})
+
+
 # --- runs --------------------------------------------------------------------
 
 

@@ -903,3 +903,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Sessions record the definition digest; a resume with a changed definition
   starts a new identified segment rather than altering the earlier session.
 
+## 2026-10-02 — Agents propose notes; only a person at a terminal accepts (issue #171, H.9)
+
+- `memory.notes: propose` gives `remember(text, scope)`, which only records a
+  proposal in the session store (`.memory/<project>/proposals`). The target
+  file comes from the owner's binding, never from model-supplied paths.
+  Acceptance is a locked, journaled, digest-bound, idempotent append (marker
+  per proposal) and refuses symlinks, foreign projects and stale proposals.
+- Secret-shaped text is rejected, and `remember` arguments are scrubbed before
+  the event log or transcript see them. Accepted notes load as labelled data
+  (user notes after user memory, project notes after project memory).
+- Fail closed: a missing safeguard makes `notes: propose` unavailable.
+

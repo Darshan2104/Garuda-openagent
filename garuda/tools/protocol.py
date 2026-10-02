@@ -72,6 +72,8 @@ class ToolContext:
     # tools the agent removed (a meta-tool must not dispatch to one).
     tool_options: dict = field(default_factory=dict)
     removed_tools: frozenset[str] = frozenset()
+    # Reviewed-notes ledger when the agent may propose notes (H.9).
+    notes: Any = None
 
     def option(self, tool: str, name: str, default=None):
         return (self.tool_options.get(tool) or {}).get(name, default)

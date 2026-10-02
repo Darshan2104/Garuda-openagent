@@ -46,6 +46,15 @@ def check(agent) -> None:
     leaves = agent.leaves
     source = agent.source.path
 
+    if leaves.get("memory.notes") == "propose":
+        from garuda.context import notes
+        from garuda.model.config import ConfigError
+
+        try:
+            notes.require_available()
+        except ConfigError as exc:
+            raise spec.AgentSpecError("agent.notes_unavailable", "memory.notes", str(exc), source=str(source or "")) from exc
+
     def get(path, default):
         return leaves.get(path, default)
 

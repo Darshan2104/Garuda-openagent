@@ -442,6 +442,7 @@ class DefaultAgent:
             record.model_ms = model_ms[0]
         state.accumulate_usage(response.usage)
         state.context.note_usage(response.usage)
+        self._scrub(response)
         self._record_response(state, response, turn, model_ms[0])
 
         if not response.tool_calls:
@@ -730,6 +731,14 @@ class DefaultAgent:
             turn_images.extend(tool_result.images)
             self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
         return None
+
+    @staticmethod
+    def _scrub(response) -> None:
+        """Redact secret-shaped ``remember`` text before the event log or transcript sees it."""
+        if any(call.name == "remember" for call in response.tool_calls or ()):
+            from garuda.context.notes import scrub_response
+
+            scrub_response(response)
 
     def _output_failed(self, state: RunState, decision, turn: int) -> AgentResult:
         """The final output stayed invalid through every repair: fail, with no output."""

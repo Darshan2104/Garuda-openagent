@@ -113,6 +113,7 @@ NON_DEFAULTS = {
     "memory_max_chars": 100,
     "memory_max_total_chars": 9000,
     "memory_context_pack": True,
+    "memory_notes": "propose",
     "skills_from": ["project", "user"],
     "skills_exclude": ["old-skill"],
     "skills_load": "full",
