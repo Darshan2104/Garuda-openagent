@@ -966,3 +966,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   produce a delta. Records are appended before the cursor moves.
 - Unknown cost is `null`; ledger totals exclude snapshots and say so.
 
+## 2026-10-02 — Limit observations bind to an account or stay history (issue #168, E.2)
+
+- A limit reading comes only from a source proved for the exact version
+  (today: Codex app-server read-only methods); it records a local salted
+  digest of the official account id, never a name. Exhaustion is fallback
+  evidence only when fresh (<= 60 s), same account and version, reached, with
+  an explicit future reset; every other case leaves the harness eligible.
+  Enabling `harness.limit_reached` in C.9 is a separate change.
+
