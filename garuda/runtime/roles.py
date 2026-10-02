@@ -52,6 +52,8 @@ class RolePlan:
     profile: str | None = None
     digest: str = ""
     provenance: dict = field(default_factory=dict)
+    #: The user's harness settings (allowed models, confinement image).
+    harness: dict = field(default_factory=dict)
 
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
@@ -93,6 +95,7 @@ def plan_role(resolved, catalog) -> RolePlan | None:
         permissions=spec.get("permissions"), write_policy=spec.get("write_policy", "edits"),
         profile=spec.get("profile"), digest=digest,
         provenance={k: resolved.provenance[k] for k in keys},
+        harness=resolved.config.get("harnesses", {}).get(spec["harness"], {}),
     )
 
 

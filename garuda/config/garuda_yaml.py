@@ -136,9 +136,25 @@ def _strs(value, path) -> list[str]:
     return [_str(v, f"{path}[{i}]") for i, v in enumerate(value)]
 
 
+def _confinement(value, path) -> dict:
+    data = _mapping(value, path, ("image", "command", "mounts"))
+    out: dict[str, Any] = {"image": _str(data.get("image"), f"{path}.image")}
+    if "command" in data:
+        out["command"] = _strs(data["command"], f"{path}.command")
+    if "mounts" in data:
+        mounts = _strs(data["mounts"], f"{path}.mounts")
+        for i, mount in enumerate(mounts):
+            if not mount.startswith("/"):
+                _fail(f"{path}.mounts[{i}]", "must be an absolute path (mounted read-only)")
+        out["mounts"] = mounts
+    return out
+
+
 def _harness(value, path) -> dict:
-    data = _mapping(value or {}, path, ("allowed_models", "max_parallel"))
+    data = _mapping(value or {}, path, ("allowed_models", "max_parallel", "confinement"))
     out: dict[str, Any] = {}
+    if "confinement" in data:
+        out["confinement"] = _confinement(data["confinement"], f"{path}.confinement")
     if "allowed_models" in data:
         out["allowed_models"] = _strs(data["allowed_models"], f"{path}.allowed_models")
     if "max_parallel" in data:
@@ -482,6 +498,9 @@ def _narrow_harnesses(user: dict, project: dict) -> dict:
             base["allowed_models"] = spec["allowed_models"]
         if "max_parallel" in spec:
             base["max_parallel"] = min(spec["max_parallel"], base.get("max_parallel", 64))
+        if "confinement" in spec:
+            _fail(f"{path}.confinement", "confinement is user-only",
+                  code="config.project_widening")
     return out
 
 

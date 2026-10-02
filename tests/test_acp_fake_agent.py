@@ -49,6 +49,7 @@ def test_public_profile_sets_are_pinned():
         "config-options",
         "write-anyway",
         "artifacts",
+        "probe-writes",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",

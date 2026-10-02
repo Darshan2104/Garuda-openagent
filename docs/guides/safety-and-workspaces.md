@@ -269,3 +269,33 @@ could not be completed, the run reports **changes detected**, withholds its
 output, exits with status 3, and records which paths changed. Nothing is
 reverted: the changes stay for you to inspect. Only a complete, identical
 comparison reports **no changes detected**.
+
+## Read-only external harnesses run in Docker
+
+A role for an external harness (Claude Code, Codex, …) with
+`permissions: readonly` runs only inside a Docker container that Garuda has
+just proved is confined:
+
+- your workspace is mounted read-only, and writing into it or its `.git`
+  fails;
+- a bounded scratch directory is writable;
+- the container user is not root and has no capabilities;
+- no Docker socket, home directory, credential store or other workspace is
+  mounted.
+
+The harness inside the image must be one you installed and logged in to
+there yourself; Garuda passes no host credential in. Name the image in your
+user `garuda.yaml`:
+
+```yaml
+harnesses:
+  claude:
+    confinement:
+      image: my-claude-acp:latest
+      command: [claude-agent-acp]   # optional; the manifest's command otherwise
+```
+
+Without a configured image, without Docker, or if the proof fails, the run
+refuses with `workspace.readonly_unenforced`. Garuda never runs such a role
+on the host instead, in a worktree or under the no-edits guardrail. This
+setting is user-only; a project file cannot add or change it.

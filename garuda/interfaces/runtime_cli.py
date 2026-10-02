@@ -640,7 +640,21 @@ async def run_acp_task(
     workspace = os.path.abspath(workspace)
     if catalog is None:
         catalog = configured_catalog(workspace)
-    manifest, record = acp_launch_target(catalog, runtime_id)
+    # A read-only ACP role runs only in proven Docker confinement (C.8a); its
+    # adapter runs in the image, so no host executable is required or used.
+    confinement = None
+    if role_plan is not None and role_plan.kind == "acp" and role_plan.permissions == "readonly":
+        from garuda.acp.catalog import DiscoveredRuntime
+        from garuda.workspace.confined_acp import Confinement, preflight
+
+        confinement = Confinement.from_config(role_plan.harness)
+        preflight(workspace, confinement)
+        resolved_rt = catalog.registry.get(runtime_id)
+        manifest = next(m for m in catalog.registry.manifests
+                        if m.runtime_id == resolved_rt.runtime_id)
+        record = DiscoveredRuntime(runtime_id=manifest.runtime_id, kind="acp", available=True)
+    else:
+        manifest, record = acp_launch_target(catalog, runtime_id)
     # A role's exact model and effort must be settable on this adapter
     # identity — decided before anything is launched (C.3).
     role_options: dict[str, str] = {}
@@ -648,6 +662,7 @@ async def run_acp_task(
         from garuda.runtime.roles import acp_options
 
         role_options = acp_options(role_plan, getattr(record, "version", "unknown"))
+
     store = store or SessionStore()
     events = EventStore()
     session_id = events.session_id
@@ -676,6 +691,9 @@ async def run_acp_task(
             ),
         )
         began = True
+        if confinement is not None:
+            store.update_meta(session_id, {"confinement": {
+                "kind": "docker", "image": confinement.image, "source": "read-only"}})
         if resume_plan is not None:
             store.update_meta(session_id, resume_plan.record())
         if attached is not None:
@@ -704,6 +722,16 @@ async def run_acp_task(
             store, session_id, manifest.runtime_id, handler=approval
         )
         def make_runtime():
+            if confinement is not None:
+                from garuda.acp.catalog import adapter_for_manifest
+                from garuda.workspace.confined_acp import CONTAINER_WORKSPACE, docker_argv
+
+                command = list(confinement.command or manifest.command)
+                return adapter_for_manifest(
+                    manifest, argv_override=docker_argv(workspace, confinement, command),
+                    cwd=CONTAINER_WORKSPACE, store=store, approval_handler=handler,
+                    persist_dir=str(store.session_dir(session_id)),
+                )
             return adapter_for_discovered(
                 manifest,
                 record,
