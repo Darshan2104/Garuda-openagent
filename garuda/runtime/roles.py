@@ -54,12 +54,16 @@ class RolePlan:
     provenance: dict = field(default_factory=dict)
     #: The user's harness settings (allowed models, confinement image).
     harness: dict = field(default_factory=dict)
+    #: The start-time fallback decision (C.9), when the role has a chain.
+    fallback: dict | None = None
 
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
                "model_id": self.model_id, "effort": self.effort,
                "permissions": self.permissions, "write_policy": self.write_policy,
                "profile": self.profile, "digest": self.digest, "provenance": self.provenance}
+        if self.fallback is not None:
+            out["fallback"] = self.fallback
         if adapter is not None:
             out["adapter"] = adapter
         if options is not None:

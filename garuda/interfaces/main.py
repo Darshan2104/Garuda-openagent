@@ -1009,6 +1009,9 @@ def _apply_role(args, resolved, catalog):
     plan = plan_role(resolved, catalog) if resolved is not None else None
     if plan is None:
         return None
+    from garuda.agents.fallbacks import choose
+
+    plan = choose(plan, resolved, catalog)  # once, before anything starts (C.9)
     args.runtime = args.runtime or plan.runtime_id
     if plan.kind == "native":
         if plan.model_id and not getattr(args, "model", None):
@@ -1028,6 +1031,8 @@ def _apply_role(args, resolved, catalog):
     detail = " · ".join(str(v) for v in (plan.model_id, plan.effort) if v)
     print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
           file=out)
+    for skipped in (plan.fallback or {}).get("skipped", []):
+        print(f"[garuda] skipped {skipped['harness']}: {skipped['reason']}", file=out)
     return plan
 
 

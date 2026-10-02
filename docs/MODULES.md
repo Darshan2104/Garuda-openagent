@@ -193,6 +193,8 @@ sessions and writes an immutable, text-free receipt for a cross-project grant.
 
 ## `agents/` — profiles
 
+`fallbacks.py` (C.9) walks a role's fallback chain once before start, skipping a candidate only for `harness.cli_missing` or a freshly checked `harness.logged_out` (never an unknown login or limit), records primary, taken entry and reasons on the role plan, and refuses with every reason when none can start.
+
 `setup.py::prepare_agent_run` is the shared chokepoint for every entry point.
 `loader.py` reads YAML profiles (and records which fields were declared, so mode
 presets don't override authored intent); `md_loader.py` + `frontmatter.py` read
