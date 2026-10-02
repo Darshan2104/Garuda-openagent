@@ -74,6 +74,16 @@ def _add_tag_flags(parser) -> None:
     )
 
 
+def _session_record(args) -> dict | None:
+    """What a native run records about its resume and role before it starts."""
+    record = {}
+    if getattr(args, "_resume_plan", None):
+        record.update(args._resume_plan.record())
+    if getattr(args, "_role_plan", None):
+        record["role"] = args._role_plan.record()
+    return record or None
+
+
 def _plan_resume(args, catalog):
     """`--resume`/`--as` as a :class:`ResumePlan`, echoed; ``None`` without one."""
     import os
@@ -267,6 +277,10 @@ def build_parser():
         "starts from the resumed session's brief",
     )
     _add_tag_flags(run_parser)
+    run_parser.add_argument(
+        "--role",
+        help="Run as a garuda.yaml role: its harness, exact model, effort and permissions",
+    )
     run_parser.add_argument(
         "--isolation",
         choices=["shared", "worktree", "auto"],
@@ -763,19 +777,52 @@ def run_config(args) -> int:
     return 0
 
 
-def check_garuda_config(args) -> None:
-    """Validate garuda.yaml layering before anything starts (C.1); raises on refusal."""
+def check_garuda_config(args):
+    """Validate garuda.yaml layering before anything starts (C.1); raises on
+    refusal. Returns the effective configuration, or ``None`` without one."""
     import sys
 
     from garuda.config.garuda_yaml import load_effective
 
     model = getattr(args, "model", None) or getattr(args, "reasoning_model", None)
     resolved = load_effective(getattr(args, "workspace", "."),
+                              cli_role=getattr(args, "role", None),
                               cli_runtime=getattr(args, "runtime", None), cli_model=model)
     if resolved is not None and resolved.withheld:
         print("[garuda] config.project_untrusted: this project's garuda.yaml is not trusted "
               f"as it is now; ignoring {', '.join(resolved.withheld)} "
               "(review it with `garuda config trust`)", file=sys.stderr)
+    return resolved
+
+
+def _apply_role(args, resolved, catalog):
+    """Turn the selected role into the run's runtime, model, effort and
+    permissions (C.3); returns the plan, or ``None`` without a role."""
+    import sys
+
+    from garuda.config.garuda_yaml import PERMISSIONS
+    from garuda.runtime.roles import plan_role
+
+    plan = plan_role(resolved, catalog) if resolved is not None else None
+    if plan is None:
+        return None
+    args.runtime = args.runtime or plan.runtime_id
+    if plan.kind == "native":
+        if plan.model_id and not getattr(args, "model", None):
+            args.model = plan.model_id
+        if plan.effort and not getattr(args, "reasoning_effort", None):
+            args.reasoning_effort = plan.effort
+        if plan.profile:
+            args.agent = plan.profile
+    if plan.permissions:
+        given = getattr(args, "permission_mode", None)
+        args.permission_mode = plan.permissions if given is None else min(
+            given, plan.permissions, key=PERMISSIONS.index)
+    out = sys.stderr if getattr(args, "json", False) else sys.stdout
+    detail = " · ".join(str(v) for v in (plan.model_id, plan.effort) if v)
+    print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
+          file=out)
+    return plan
 
 
 def run_approvals(args) -> int:
@@ -1191,6 +1238,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             attached=getattr(args, "_attached", None),
             name=getattr(args, "name", None),
             resume_plan=getattr(args, "_resume_plan", None),
+            role_plan=getattr(args, "_role_plan", None),
         )
     except NativeStartupFallback:
         raise
@@ -1216,7 +1264,7 @@ async def run_task(args) -> int:
         return 1
     # garuda.yaml is validated — a conflict or invalid file refuses — before
     # tags, runtimes, models or the workspace are touched (C.1).
-    check_garuda_config(args)
+    resolved_config = check_garuda_config(args)
     # Session tags are resolved — or refused — before any runtime, model,
     # workspace or prompt exists (B.7).
     attached = _session_tags(args, task)
@@ -1237,6 +1285,7 @@ async def run_task(args) -> int:
     # resolves and explains the initial owner from the same trusted registry;
     # its selected id is the executor below, never merely an audit record.
     runtime_catalog = prepare_runtime_catalog(args.workspace)
+    args._role_plan = _apply_role(args, resolved_config, runtime_catalog)
     # How a resumed session continues (B.7) is decided before selection: a
     # session of an ACP runtime continues on it — by the agent's own reload
     # when that is proven for the adapter, otherwise through a brief — and
@@ -1419,8 +1468,7 @@ async def run_task(args) -> int:
         session_name=getattr(args, "name", None),
         isolation=getattr(args, "isolation", "shared"),
         context_attached=getattr(args, "_attached", None),
-        session_record=(args._resume_plan.record() if getattr(args, "_resume_plan", None)
-                        else None),
+        session_record=_session_record(args),
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
@@ -1566,6 +1614,7 @@ def _run_with_runtime_gate(args) -> int:
     from garuda.runtime.capacity import CapacityError
     from garuda.runtime.registry import RegistryError
     from garuda.runtime.resume import ResumeRefused
+    from garuda.runtime.roles import RoleRefused
     from garuda.workspace.lease import LeaseError
     from garuda.workspace.worktrees import WorktreeError
 
@@ -1574,7 +1623,7 @@ def _run_with_runtime_gate(args) -> int:
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
-            ResumeRefused, GarudaConfigError) as exc:
+            ResumeRefused, GarudaConfigError, RoleRefused) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
         import sys

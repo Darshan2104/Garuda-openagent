@@ -456,6 +456,33 @@ class AcpRuntime:
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "resumed"})
         return self._info()
 
+    async def set_config_options(self, options: dict[str, str]) -> dict[str, str]:
+        """Apply exact session options before the first prompt (C.3).
+
+        Each value must be one the agent offered in ``session/new``, and the
+        agent's reply must show it selected; otherwise
+        :class:`~garuda.runtime.roles.RoleRefused` and nothing is prompted.
+        """
+        from garuda.runtime.roles import RoleRefused, check_offered
+
+        if not options:
+            return {}
+        if self._process is None or self._state is not LifecycleState.IDLE or self._turn:
+            raise RuntimeNotActiveError("options are set once, before the first prompt")
+        check_offered(options, getattr(self._process, "session_config_options", []))
+        applied = {}
+        for config_id, value in options.items():
+            current = await self._process.session_set_config_option(
+                self._agent_session_id or "", config_id, value
+            )
+            now = next((o.get("currentValue") for o in current
+                        if isinstance(o, dict) and o.get("id") == config_id), None)
+            if now != value:
+                raise RoleRefused("role.option_not_applied",
+                                  f"the agent reports {config_id}={now!r} after setting {value!r}")
+            applied[config_id] = value
+        return applied
+
     async def prompt(self, text: str, *, timeout: float | None = None) -> int:
         if self._process is None or self._normalizer is None:
             raise RuntimeStartError("runtime is not started")

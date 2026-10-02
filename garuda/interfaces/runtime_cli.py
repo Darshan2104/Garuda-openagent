@@ -617,6 +617,7 @@ async def run_acp_task(
     attached=None,
     name: str | None = None,
     resume_plan=None,
+    role_plan=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -639,6 +640,13 @@ async def run_acp_task(
     if catalog is None:
         catalog = configured_catalog(workspace)
     manifest, record = acp_launch_target(catalog, runtime_id)
+    # A role's exact model and effort must be settable on this adapter
+    # identity — decided before anything is launched (C.3).
+    role_options: dict[str, str] = {}
+    if role_plan is not None:
+        from garuda.runtime.roles import acp_options
+
+        role_options = acp_options(role_plan, getattr(record, "version", "unknown"))
     store = store or SessionStore()
     events = EventStore()
     session_id = events.session_id
@@ -744,6 +752,12 @@ async def run_acp_task(
             raise NativeStartupFallback(
                 store=store, events=events, selection=fallback
             ) from start_error
+        if role_plan is not None:
+            applied = await runtime.set_config_options(role_options)
+            store.update_meta(session_id, {"role": role_plan.record(
+                adapter={"runtime_id": manifest.runtime_id,
+                         "version": getattr(record, "version", "unknown")},
+                options=applied)})
         begin_session_evidence(store, session_id, workspace, "local")
         from garuda.context.tags import prompt_with
 
