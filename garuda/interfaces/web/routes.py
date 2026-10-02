@@ -7,6 +7,7 @@ server lifecycle. ``http.py`` is the only thing that knows about sockets.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -15,12 +16,14 @@ from typing import Any, Callable
 
 import garuda
 from garuda.agents.loader import list_profiles, load_profile
+from garuda.core import read_model
 from garuda.core.modes import GATE_FIELDS, MODE_CHOICES, MODE_PRESETS
-from garuda.core.sessions import SessionStore
+from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.interfaces.web import live as live_module
 from garuda.interfaces.web import reads
 from garuda.interfaces.web.grounding import SourceError
 from garuda.interfaces.web.security import check_request
+from garuda.interfaces.web.tail import tail_records
 from garuda.interfaces.web.wire import (
     CODE_READ_ONLY,
     Request,
@@ -201,6 +204,99 @@ def _agent_detail(request: Request, ctx: DashboardContext, match) -> Response:
             "declared_fields": sorted(getattr(profile, "declared_fields", set()) or set()),
         }
     )
+
+
+def _queue_or_none():
+    from garuda.runtime.queue import QueueStore
+
+    try:
+        return QueueStore()
+    except Exception:
+        return None
+
+
+@route("GET", r"/api/sessions")
+def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
+    """The shared read model (D.3): the same rows ``garuda sessions --json`` prints."""
+    limit = request.int_param("limit", reads.DEFAULT_LIMIT)
+    if limit is None:
+        return invalid("`limit` must be a non-negative integer.")
+    return ok({"sessions": read_model.sessions(ctx.store, limit=min(limit, reads.MAX_LIMIT),
+                                               queue=_queue_or_none())})
+
+
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)")
+def _session(request: Request, ctx: DashboardContext, match) -> Response:
+    try:
+        return ok(read_model.session(ctx.store, validate_session_ref(match["sid"]),
+                                     queue=_queue_or_none()))
+    except (FileNotFoundError, ValueError):
+        return not_found(f"No session {match['sid']!r}.")
+
+
+STREAM_MAX_SECONDS = 60.0
+STREAM_HEARTBEAT_SECONDS = 15.0
+STREAM_POLL_SECONDS = 0.5
+
+
+def sse_frames(store, session_id: str, offset: int, *, max_seconds: float = STREAM_MAX_SECONDS,
+               poll: float = STREAM_POLL_SECONDS, heartbeat: float = STREAM_HEARTBEAT_SECONDS,
+               sleep=None, clock=None):
+    """Server-sent frames for one session's event log, resumable by byte offset.
+
+    Each event frame's ``id`` is the offset just after its line, so ``Last-Event-ID``
+    resumes with the next event: nothing repeats and nothing is skipped. The stream ends
+    with an ``end`` frame once the session is finished and its log is drained, and after
+    ``max_seconds`` regardless (the client reconnects with its last id)."""
+    import time as _time
+
+    from garuda.runtime.session_state import ACTIVE_WORK, effective_state
+
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    path = store.events_path(session_id)
+    started = last_sent = clock()
+    while True:
+        records, offset = tail_records(path, offset)
+        for end, event in records:
+            yield f"id: {end}\nevent: event\ndata: {json.dumps(event, default=str)}\n\n".encode()
+            last_sent = clock()
+        if not records:
+            try:
+                finished = effective_state(store.load_meta(session_id)).get("work") \
+                    not in ACTIVE_WORK
+            except (OSError, ValueError):
+                finished = True
+            if finished:
+                yield f"id: {offset}\nevent: end\ndata: {{}}\n\n".encode()
+                return
+        now = clock()
+        if now - started >= max_seconds:
+            return
+        if now - last_sent >= heartbeat:
+            yield b": keep-alive\n\n"
+            last_sent = now
+        if not records:
+            sleep(poll)
+
+
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)/stream")
+def _session_stream(request: Request, ctx: DashboardContext, match) -> Response:
+    try:
+        session_id = validate_session_ref(match["sid"])
+    except ValueError:
+        return not_found("No such session.")
+    if not ctx.store.session_dir(session_id).is_dir():
+        return not_found(f"No session {session_id!r}.")
+    raw = request.headers.get("last-event-id") or request.first("last_event_id") or "0"
+    try:
+        offset = int(raw)
+    except ValueError:
+        return invalid("`Last-Event-ID` must be a byte offset from an earlier frame.")
+    if offset < 0:
+        return invalid("`Last-Event-ID` must be a byte offset from an earlier frame.")
+    return Response(content_type="text/event-stream; charset=utf-8",
+                    stream=sse_frames(ctx.store, session_id, offset))
 
 
 @route("GET", r"/api/memory/proposals")

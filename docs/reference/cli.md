@@ -11,7 +11,8 @@ for your installed version. For ready-made examples, see the
 | Run tasks | `garuda run -t "…"` | Execute one headless task |
 | | `garuda chat` | Interactive session with `y/N` permission prompts |
 | | `garuda recipe run file.yaml` | Execute a YAML workflow |
-| Sessions | `garuda sessions` | List recent saved sessions |
+| Sessions | `garuda sessions [--json]` | List recent sessions with state and queue position; `--json` is the same model the dashboard serves |
+| | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
 | | `garuda sessions cancel S` | Stop a background session: remove it from the queue before it starts, or stop its running worker |
 | | `garuda sessions merge S --check CMD [--into BRANCH]` | Check a worktree session merged into a branch (in Docker) and publish `refs/garuda/integration/<S>`; never changes your checkout |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |

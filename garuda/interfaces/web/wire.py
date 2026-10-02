@@ -73,6 +73,9 @@ class Response:
     body: bytes = b""
     content_type: str = JSON_CONTENT_TYPE
     headers: dict[str, str] = field(default_factory=dict)
+    #: Server-sent events: when set, ``body`` is ignored and these chunks are written as
+    #: they are produced, until the iterator ends or the client goes away.
+    stream: Any = None
 
 
 def ok(payload: Any, *, status: int = 200) -> Response:

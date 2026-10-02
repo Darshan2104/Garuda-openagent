@@ -52,6 +52,28 @@ native Garuda agent.
 
 A chat can continue without discarding its workspace or event history.
 
+## Sessions, the queue and approvals
+
+`garuda sessions --json` and the dashboard read **one model**
+(`garuda/core/read_model.py`), so the CLI and the web API agree on a session's
+state, outcome, verification and provenance:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/sessions` | Every session's row: the four facts (`process`, `work`, `outcome`, `verification`), the derived `crashed` label, queue position, worker, approvals waiting, agent digest and resume provenance |
+| `GET /api/sessions/<id>` | One session, with its pending approvals and, for a flow, its steps, attempts and review outcome |
+| `GET /api/sessions/<id>/stream` | Live events as server-sent events |
+
+Usage and cost read `unknown` until the usage ledger lands; a flow's review
+outcome is shown on its own and never as verification; a queue that cannot be
+read shows as `unknown`, not as empty. The stream's `id` is a byte offset into
+the session's log, so reconnecting with `Last-Event-ID` continues with the next
+event: none repeats and none is skipped. It sends a heartbeat every 15 seconds,
+ends with an `end` event once the session is finished and drained, and closes
+after a minute for the client to reconnect. It needs the same token and Host
+checks as every route; a browser `EventSource` cannot send the token header, so
+read it with `fetch`. Polling `/api/sessions/<id>/tail` still works.
+
 ## Grounding files and URLs
 
 Uploads and URL sources are saved under `grounding/` in the selected workspace.
