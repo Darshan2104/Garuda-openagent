@@ -133,7 +133,11 @@ def test_a_waiter_claims_soon_after_release(tmp_path):
     out, err = waiter.communicate(timeout=30)
     ok, _waited = out.split()
     assert ok == "True", err
-    assert time.monotonic() - released_at < 3.0
+    # Polling is capped at 0.25 s, so a waiter claims within a poll or two of the release. The
+    # bound is generous (a loaded CI runner took 3 s once) yet far below the 30 s timeout a
+    # waiter that never noticed the release would hit.
+    assert time.monotonic() - released_at < 15.0
+    assert float(_waited) - 0.5 < 15.0
 
 
 def test_a_killed_owners_claim_is_reclaimed_on_proof_of_death(tmp_path):
