@@ -67,7 +67,7 @@ from `garuda sessions`, or `latest`.
     | `--permission-mode MODE` | `smart`, `readonly`, `auto`, or `yolo`; overrides the mode and profile |
     | `--mcp-config PATH` | Explicit MCP config (skips discovery and merge) |
     | `--load-project-tools` | Import `.agent/tools/*.py` (runs repository code) |
-    | `--runtime ID` | A trusted ACP runtime ID or alias. `native` (the default) counts as no choice, so routing rules still apply |
+    | `--runtime ID` | A trusted runtime ID or alias. Naming one, including `native`, pins it; omit the flag to let routing rules choose (native is the default) |
 
 === "Limits and output"
 

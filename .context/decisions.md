@@ -403,3 +403,11 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   toolkit resolves, each naming the profile file. Duplicate keys, an unknown
   `permission_mode`, and malformed `tool_rules`/`path_rules`/`bash_rules`
   refuse the profile instead of being normalized.
+
+## 2026-10-02 — Explicit `--runtime native` pins the native runtime (issue #147)
+
+- `garuda run --runtime` now defaults to "not given". Naming any runtime,
+  including `native`, is an explicit selection: the policy router, trusted and
+  project rules and the classifier are not consulted. Omitting the flag keeps
+  the previous precedence (router, rules, classifier, `default_runtime`,
+  native). This supersedes the earlier "`--runtime native` counts as no choice".

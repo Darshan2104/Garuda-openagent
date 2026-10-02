@@ -212,8 +212,8 @@ flowchart LR
   a["--runtime ID"] --> b["Trusted global rule"] --> c["Project rule<br/>(only if globally trusted)"] --> d["Optional classifier"] --> e["default_runtime"] --> f["native"]
 ```
 
-`--runtime native` counts as no choice, so rules can still pick another
-runtime. Every condition in a rule must match; higher `priority` wins. An optional
+Naming a runtime with `--runtime` pins it, including `--runtime native`; omit
+the flag to let rules pick another runtime. Every condition in a rule must match; higher `priority` wins. An optional
 classifier model can pick between approved candidates when no rule matches.
 Its answer is re-checked, and on any doubt the default is used. See
 [Configuration → initial runtime selection](../guides/configuration.md#initial-runtime-selection).
