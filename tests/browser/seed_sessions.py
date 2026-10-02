@@ -6,6 +6,9 @@ The queue lives beside the settings file, so the dashboard must be started with 
 same GARUDA_GLOBAL_SETTINGS to see it.
 """
 
+import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +27,9 @@ IDS = {
     "crashed": "00000000-0000-0000-0000-000000000003",
     "flow": "00000000-0000-0000-0000-000000000004",
     "waiting": "00000000-0000-0000-0000-000000000005",
+    "stopped": "00000000-0000-0000-0000-000000000006",
+    "running": "00000000-0000-0000-0000-000000000007",
+    "failed": "00000000-0000-0000-0000-000000000008",
 }
 
 
@@ -36,6 +42,7 @@ def seed(root: Path, workspace: str) -> dict:
                                           metadata={"completion_gate": {"verifier": True}}))
     store.update_meta(IDS["queued"], {"status": "queued", "state": session_state.queued(),
                                       "background": True})
+    os.environ.setdefault("GARUDA_SEED", "1")
     queue = QueueStore()
     queue.enqueue(scope_for("native"), "blocker")
     queue.try_claim(scope_for("native"), "blocker")
@@ -67,6 +74,30 @@ def seed(root: Path, workspace: str) -> dict:
         ApprovalRequest("a1", "bash({'command': 'rm -rf build'})", "terminal", "native",
                         IDS["waiting"]),
         ceiling="smart", expires_at=time.time() + 3600)
+    # stopped: cancelled, with no verification either way
+    store.update_meta(IDS["stopped"], {"status": "cancelled",
+                                       "state": session_state.interrupted(cancelled=True)})
+    # failed outcome, but its own self-check passed: outcome and verification stay separate
+    store.finish(IDS["failed"], AgentResult(success=False, final_message="no", messages=[],
+                                            turns=1, metadata={}))
+    # an expired request beside the live one
+    FileApprovalChannel(store.session_dir(IDS["waiting"]) / "approvals", IDS["waiting"]).publish(
+        ApprovalRequest("a2", "git push", "terminal", "native", IDS["waiting"]),
+        ceiling="smart", expires_at=time.time() - 5)
+    # a really running background worker we can stop: a detached `sleep`
+    from garuda.runtime.ownership import current_owner
+    from garuda.runtime.recovery import _process_identity
+
+    worker = subprocess.Popen(["sleep", "600"], start_new_session=True, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    identity = _process_identity(worker.pid)
+    store.update_meta(IDS["running"], {
+        "background": True, "status": "running", "worker": {
+            "pid": worker.pid, "identity": identity, "pgid": worker.pid, "command": "sleep"},
+        "state": session_state.started({"pid": worker.pid, "identity": identity,
+                                        "pgid": worker.pid, "epoch": current_owner().epoch})})
+    store.begin  # noqa: B018 - the store is the writer; nothing else to record
+    (root.parent / "seed.json").write_text(json.dumps({"worker_pid": worker.pid}))
     return IDS
 
 

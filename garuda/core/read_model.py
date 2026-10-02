@@ -146,6 +146,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None) -> dict[s
         "name": meta.get("name"),
         "project_id": meta.get("project_id"),
         "kind": meta.get("kind") or "session",
+        "background": bool(meta.get("background")),
         "task": meta.get("task"),
         "agent": meta.get("agent"),
         "agent_digest": meta.get("agent_digest"),

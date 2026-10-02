@@ -167,3 +167,24 @@ def test_over_the_wire_the_post_needs_the_token_origin_and_host(world):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_stopping_a_background_session_from_the_dashboard(world):
+    from garuda.runtime.queue import QueueStore, scope_for
+
+    ctx, store, _channels, _published = world
+    queue = QueueStore()
+    queue.enqueue(scope_for("native"), "blocker")
+    queue.try_claim(scope_for("native"), "blocker")
+    queue.enqueue(scope_for("native"), SID, harness="native", session_id=SID)
+    store.update_meta(SID, {"background": True, "state": session_state.queued()})
+
+    stopped = post(ctx, f"/api/sessions/{SID}/cancel", {})
+    assert stopped.status == 200 and "removed from the queue" in body(stopped)["result"]
+    row = read_model.session(store, SID, queue=queue)
+    assert (row["state"]["work"], row["state"]["outcome"]) == ("stopped", "cancelled")
+    assert row["queue"] is None
+    # a session that is not a background one cannot be "stopped" this way
+    assert post(ctx, f"/api/sessions/{OTHER}/cancel", {}).status == 409
+    ctx.allow_run = False
+    assert post(ctx, f"/api/sessions/{SID}/cancel", {}).status == 503

@@ -199,6 +199,19 @@ def main() -> int:
         if not run_check("check_sessions.py", sess_port, shots):
             failures.append("check_sessions.py")
 
+        # --- background control: a write-mode dashboard over the same kind of fixtures --
+        bg_sessions = workdir / "bg-sessions"
+        bg_settings = workdir / "bg-settings.yaml"
+        bg_env = {"GARUDA_GLOBAL_SETTINGS": str(bg_settings)}
+        subprocess.run([sys.executable, str(HERE / "seed_sessions.py"), str(bg_sessions),
+                        str(workdir)], check=True, env={**os.environ, **bg_env})
+        bg_port = free_port(sess_port + 1)
+        processes.append(start_dashboard(bg_sessions, bg_port, workdir / "web-bg.log",
+                                         read_only=False, extra_env=bg_env))
+        if not run_check("check_background.py", bg_port, shots,
+                         {**bg_env, "GARUDA_CHECK_SESSIONS": str(bg_sessions)}):
+            failures.append("check_background.py")
+
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
         chat_sessions.mkdir()

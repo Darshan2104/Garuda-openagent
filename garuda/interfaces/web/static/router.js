@@ -30,6 +30,7 @@ function navigate() {
   // nobody is looking at, which is precisely what the reaper is for.
   stopLive();
   stopChat();
+  if (typeof stopSessionStream === "function") stopSessionStream();
   var hash = location.hash || "#/runs";
   setActiveNav(hash);
   for (var i = 0; i < ROUTES.length; i++) {
