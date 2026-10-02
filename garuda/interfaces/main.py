@@ -283,6 +283,13 @@ def build_parser():
     )
     _add_tag_flags(run_parser)
     run_parser.add_argument(
+        "--bg",
+        action="store_true",
+        help="Queue the run and return at once: a detached worker waits for its turn, runs "
+        "it, and releases its slot on every way out. Follow it with `garuda sessions`; "
+        "stop it with `garuda sessions cancel`",
+    )
+    run_parser.add_argument(
         "--no-edits",
         action="store_true",
         help="Ask the run not to change the workspace: edits and commands are refused and any "
@@ -495,6 +502,11 @@ def build_parser():
     )
     sessions_merge.add_argument("--timeout", type=float, default=600)
     sessions_merge.add_argument("--workspace", default=".")
+    sessions_cancel = sessions_sub.add_parser(
+        "cancel", help="Stop a background session: remove it from the queue, or stop its worker"
+    )
+    sessions_cancel.add_argument("session", help="Session id, unique prefix, or name")
+    sessions_cancel.add_argument("--workspace", default=".")
     sessions_remove = sessions_sub.add_parser(
         "remove-worktree", help="Remove a worktree session's worktree once its work is published"
     )
@@ -503,6 +515,9 @@ def build_parser():
         "--force", action="store_true", help="Remove even if the work was never published"
     )
     sessions_remove.add_argument("--workspace", default=".")
+
+    worker_parser = subparsers.add_parser("__worker", help=argparse.SUPPRESS)
+    worker_parser.add_argument("session")
 
     config_parser = subparsers.add_parser("config", help="The garuda.yaml configuration")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -856,6 +871,8 @@ def run_init(args) -> int:
 def run_sessions(args) -> int:
     from garuda.core.sessions import SessionStore
 
+    if getattr(args, "sessions_command", None) == "cancel":
+        return run_sessions_cancel(args)
     if getattr(args, "sessions_command", None) in ("merge", "remove-worktree"):
         return run_sessions_merge(args)
     sessions = SessionStore().list_sessions(limit=args.limit)
@@ -1308,6 +1325,43 @@ def run_approvals(args) -> int:
         return 0
     for request in pending:
         print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
+    return 0
+
+
+def run_background(args) -> int:
+    """`garuda run --bg`: queue the session, start its worker, print the id."""
+    import sys
+
+    from garuda.interfaces.bg_sessions import BackgroundRefused, launch
+    from garuda.model.config import ConfigError
+
+    try:
+        check_garuda_config(args)
+        session_id = launch(args)
+    except (BackgroundRefused, ConfigError, OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(session_id)
+    print(f"[garuda] queued in the background; follow it with `garuda sessions`, stop it with "
+          f"`garuda sessions cancel {session_id[:8]}`", file=sys.stderr)
+    return 0
+
+
+def run_sessions_cancel(args) -> int:
+    """`garuda sessions cancel`: remove a queued session or stop its worker."""
+    import os
+    import sys
+
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.bg_sessions import BackgroundRefused, cancel
+
+    store = SessionStore()
+    try:
+        session_id = store.resolve(args.session, workspace=os.path.realpath(args.workspace))
+        print(f"[garuda] {cancel(store, session_id)}")
+    except (BackgroundRefused, OSError, ValueError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -1916,7 +1970,7 @@ async def run_task(args) -> int:
                 f"[garuda] collection={safe_model_identity(prepared.collection)} "
                 f"({prepared.provenance['collection'].provenance.value})",
             )
-    events = fallback_events or EventStore()
+    events = fallback_events or EventStore(session_id=getattr(args, "_session_id", None))
     from garuda.workspace.no_edits import NoEditsGuard
 
     guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
@@ -2096,6 +2150,11 @@ def _run_with_runtime_gate(args) -> int:
     """`garuda run`, with a refused runtime selection as a message, not a traceback."""
     import asyncio
 
+    return asyncio.run(run_task_guarded(args))
+
+
+async def run_task_guarded(args) -> int:
+    """`run_task` with refusals turned into messages (shared with the background worker)."""
     from garuda.acp.catalog import RuntimeSettingsError
     from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.context.brief import BriefBudgetExceeded
@@ -2108,7 +2167,7 @@ def _run_with_runtime_gate(args) -> int:
     from garuda.workspace.worktrees import WorktreeError
 
     try:
-        return asyncio.run(run_task(args))
+        return await run_task(args)
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
@@ -2126,7 +2185,13 @@ def main() -> None:
 
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "__worker":
+        from garuda.interfaces.bg_sessions import run_worker
+
+        raise SystemExit(run_worker(args.session))
     if args.command == "run":
+        if getattr(args, "bg", False):
+            raise SystemExit(run_background(args))
         raise SystemExit(_run_with_runtime_gate(args))
     if args.command == "chat":
         raise SystemExit(asyncio.run(chat_loop(args)))

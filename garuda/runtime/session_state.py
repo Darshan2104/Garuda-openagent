@@ -85,6 +85,22 @@ def started(owner: dict | None = None) -> dict:
     return validate(state)
 
 
+def queued(owner: dict | None = None) -> dict:
+    """A background session whose worker is waiting for its turn (D.2): the process
+    exists but no work has begun."""
+    state = {
+        "version": STATE_VERSION,
+        "process": "live",
+        "work": "queued",
+        "outcome": None,
+        "verification": {"status": "unavailable"},
+        "self_check": None,
+    }
+    if owner:
+        state["owner"] = owner
+    return validate(state)
+
+
 def finished(*, success: bool, completion_gate: dict | None = None) -> dict:
     """The terminal state of a run that ended normally.
 
@@ -152,6 +168,16 @@ def from_legacy(meta: dict) -> dict:
     return validate(state)
 
 
+def _worker_owner(meta: dict) -> dict | None:
+    """A background session's worker (D.2) as an owner, for the moments before it
+    has recorded its own: the launcher wrote its pid and start identity."""
+    worker = meta.get("worker")
+    if isinstance(worker, dict) and isinstance(worker.get("pid"), int) and worker.get("identity"):
+        return {"pid": worker["pid"], "identity": worker["identity"],
+                "pgid": worker.get("pgid", worker["pid"]), "epoch": ""}
+    return None
+
+
 def effective_state(meta: dict, *, liveness: Callable[[dict], bool | None] | None = None) -> dict:
     """The session's state as of now, with process liveness checked.
 
@@ -164,7 +190,7 @@ def effective_state(meta: dict, *, liveness: Callable[[dict], bool | None] | Non
     except SessionStateError:
         state = from_legacy(meta)
     if state["process"] in ("starting", "live"):
-        owner = state.get("owner")
+        owner = state.get("owner") or _worker_owner(meta)
         if owner is None:
             state["process"] = "unknown"
         else:
@@ -179,7 +205,7 @@ def is_crashed(state: dict) -> bool:
     """Derived, never stored: the process is gone but the work never ended."""
     return (
         state.get("process") in ("exited", "missing")
-        and state.get("work") in ("working", "waiting")
+        and state.get("work") in ACTIVE_WORK
         and state.get("outcome") is None
     )
 

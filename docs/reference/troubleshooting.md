@@ -127,6 +127,22 @@ Click a problem to see the fix.
     garuda runtime resume --session latest -t "Continue natively"
     ```
 
+??? question "A `--bg` session stays `queued`"
+
+    Its worker is waiting for a slot: the harness is at its `max_parallel`
+    (`capacity` in `settings.yaml`), shared with foreground runs. See what holds
+    the slot with `garuda sessions`; a session that reads `crashed` lost its
+    worker, and its slot is reclaimed automatically once the process is
+    confirmed dead. `garuda sessions cancel SESSION` removes a queued session
+    or stops a running one. The worker's output is in
+    `<sessions dir>/<id>/worker.log`, cut at 1 MB.
+
+??? question "`sessions cancel` says the worker's pid was reused"
+
+    The recorded process identity no longer matches that pid, so nothing was
+    signalled; the session is marked failed. Garuda never signals a process it
+    cannot prove is its worker.
+
 ??? question "A runtime shows as unavailable"
 
     Run `garuda runtime inspect <id>`. Common causes: the vendor CLI isn't
