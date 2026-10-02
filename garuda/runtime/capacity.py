@@ -95,7 +95,7 @@ class CapacityStore:
         return document
 
     def reserve(self, key: str, holder: str, ceiling: int, *, owner: Owner | None = None) -> Reservation:
-        """Take one of ``ceiling`` slots for ``key``, or raise :class:`CapacityUnavailable`."""
+        """Take a slot, retry the exact owner, or refuse live/unknown replacement."""
         if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
             raise CapacityError(f"ceiling must be a positive integer, got {ceiling!r}")
         owner = owner or current_owner()
@@ -103,6 +103,18 @@ class CapacityStore:
             with exclusive_lock(self.root):
                 document = self._load(key)
                 slots = document["slots"]
+                existing = slots.get(holder)
+                if existing is not None:
+                    if existing.get("owner") == owner.to_dict():
+                        return Reservation(key=key, holder=holder, owner=owner)
+                    # A session id is a lookup key, not authority to steal its
+                    # slot. This includes same-process callers with a new epoch.
+                    if self._liveness(existing.get("owner") or {}) is not False:
+                        raise CapacityUnavailable(
+                            f"runtime {key!r}: holder {holder!r} already has a live "
+                            "or unknown owner; refusing replacement"
+                        )
+                    del slots[holder]
                 for other, slot in list(slots.items()):
                     if other != holder and self._liveness(slot.get("owner") or {}) is False:
                         del slots[other]  # owner confirmed dead: reclaim
@@ -123,7 +135,7 @@ class CapacityStore:
             with exclusive_lock(self.root):
                 document = self._load(reservation.key)
                 slot = document["slots"].get(reservation.holder)
-                if slot is None or (slot.get("owner") or {}).get("epoch") != reservation.owner.epoch:
+                if slot is None or slot.get("owner") != reservation.owner.to_dict():
                     return
                 del document["slots"][reservation.holder]
                 write_document(self._path(reservation.key), document)

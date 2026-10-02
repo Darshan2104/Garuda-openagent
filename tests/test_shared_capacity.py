@@ -22,7 +22,7 @@ from garuda.runtime.capacity import (
     CapacityUnavailable,
     configured_ceiling,
 )
-from garuda.runtime.ownership import current_owner
+from garuda.runtime.ownership import Owner, current_owner
 from garuda.workspace.lease import LeaseConflictError, LeaseStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,12 +137,95 @@ def test_a_live_or_unknown_owner_keeps_its_slot(tmp_path, liveness):
         caps.reserve("codex", "next", 1)
 
 
+@pytest.mark.parametrize("ceiling", [1, 2])
+def test_another_process_cannot_replace_a_live_session_reservation(tmp_path, ceiling):
+    caps = CapacityStore(tmp_path / "cap")
+    original = caps.reserve("codex", "same-session", ceiling)
+    workspace = tmp_path / "other-workspace"
+    workspace.mkdir()
+    sentinel = workspace / "started"
+    code = """
+        import sys
+        from pathlib import Path
+        from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+        from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
+        from garuda.workspace.lease import LeaseStore
+        root, workspace, ceiling = sys.argv[1:]
+        guard = WorkspaceLeaseGuard(
+            workspace, "same-session", lease_store=LeaseStore(Path(root) / "leases"),
+            capacity_key="codex", capacity_store=CapacityStore(root),
+            capacity_ceiling=int(ceiling),
+        )
+        try:
+            guard.acquire()
+        except CapacityUnavailable:
+            sys.exit(3)
+        Path(workspace, "started").write_text("unwanted launch")
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code), str(tmp_path / "cap"),
+         str(workspace), str(ceiling)],
+        env=dict(os.environ, PYTHONPATH=str(ROOT)), capture_output=True, text=True,
+        timeout=30,
+    )
+    assert result.returncode == 3, result.stderr
+    assert not sentinel.exists()
+    caps.release(original)
+    assert caps.holders("codex") == []
+
+
+def test_an_unknown_owner_cannot_be_replaced_using_its_holder_id(tmp_path):
+    caps = CapacityStore(tmp_path / "cap", liveness=lambda owner: None)
+    original = caps.reserve("codex", "s", 2)
+    with pytest.raises(CapacityUnavailable):
+        caps.reserve("codex", "s", 2)
+    caps.release(original)
+    assert caps.holders("codex") == []
+
+
+def test_reserving_with_the_same_owner_is_idempotent(tmp_path):
+    caps = CapacityStore(tmp_path / "cap")
+    original = caps.reserve("codex", "s", 1)
+    repeated = caps.reserve("codex", "s", 1, owner=original.owner)
+    assert repeated == original
+    caps.release(original)
+    assert caps.holders("codex") == []
+
+
+def test_a_matching_epoch_without_the_owner_identity_cannot_release(tmp_path):
+    from garuda.runtime.capacity import Reservation
+
+    caps = CapacityStore(tmp_path / "cap")
+    original = caps.reserve("codex", "s", 1)
+    owner = original.owner
+    foreign = Owner(owner.pid, owner.identity + "-other-start", owner.pgid, owner.epoch)
+    caps.release(Reservation("codex", "s", foreign))
+    assert caps.holders("codex") == ["s"]
+    caps.release(original)
+    assert caps.holders("codex") == []
+
+
 def test_a_superseded_reservation_does_not_free_the_new_one(tmp_path):
     caps = CapacityStore(tmp_path / "cap")
-    old = caps.reserve("codex", "s", 1)
-    caps.reserve("codex", "s", 1)  # same holder re-reserved under a new epoch
+    code = """
+        import json, sys
+        from garuda.runtime.capacity import CapacityStore
+        reservation = CapacityStore(sys.argv[1]).reserve("codex", "s", 1)
+        print(json.dumps(reservation.owner.to_dict()))
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code), str(tmp_path / "cap")],
+        check=True, capture_output=True, text=True, timeout=30,
+        env=dict(os.environ, PYTHONPATH=str(ROOT)),
+    )
+    from garuda.runtime.capacity import Reservation
+
+    old = Reservation("codex", "s", Owner(**json.loads(result.stdout)))
+    new = caps.reserve("codex", "s", 1)  # the original process is confirmed dead
     caps.release(old)
     assert caps.holders("codex") == ["s"]
+    caps.release(new)
+    assert caps.holders("codex") == []
 
 
 def test_ceilings_come_from_user_settings(tmp_path, monkeypatch):

@@ -64,6 +64,12 @@ disabled.
 Permission rules and OS sandbox policies are useful defense in depth. Don't
 describe or treat them as equivalent to containment.
 
+Configured runtime capacity is shared across launch paths. A second launch
+cannot bypass it by reusing an active session id, even in another workspace.
+Garuda refuses a live or unknown owner rather than replacing its reservation.
+Do not delete ownership records to force a new run; close the original run or
+use the documented recovery path when its owner has ended.
+
 ## Local and tmux workspaces
 
 `local` runs tools as you, in the selected directory. `tmux` does the same

@@ -110,6 +110,10 @@ fastest way to learn the system.
 - **Fail closed on anything security-shaped.** An unresolvable host, an
   unparseable address, an unclear verifier verdict: refuse. Several existing
   comments explain a specific fail-closed choice; keep that habit.
+- **Session names do not confer ownership.** Shared capacity reservations are
+  bound to process identity and epoch. Reusing a holder id cannot replace a
+  live or unknown owner; exact-owner retries are idempotent, and a different
+  owner can take over only after confirmed death.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live
