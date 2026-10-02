@@ -57,6 +57,9 @@ class EventStore:
         # any observer) react to events without the agent loop knowing. It is
         # always wrapped in try/except and can never break appends.
         self._on_append = on_append
+        #: Observers called as ``fn(event, store)`` after every append (the usage ledger).
+        #: A child run's store inherits its parent's (see ``inherit_observers``).
+        self._observers: list[Callable[[dict[str, Any], "EventStore"], None]] = []
         self.model_binding_role = model_binding_role
         self.call_purpose = call_purpose
         self.model_name = model_name
@@ -103,12 +106,25 @@ class EventStore:
                 # Don't let a full/again-unwritable disk break the run, but surface
                 # it once so a silently-stopped trajectory isn't a mystery.
                 logger.warning("Failed to persist event to %s", self._persist_path, exc_info=True)
+        for observer in self._observers:
+            try:
+                observer(event, self)
+            except Exception:
+                logger.debug("event observer failed", exc_info=True)
         if self._on_append is not None:
             try:
                 self._on_append(event)
             except Exception:
                 # Observers must never break the event trail.
                 pass
+
+    def add_observer(self, observer: Callable[[dict[str, Any], "EventStore"], None]) -> None:
+        if observer not in self._observers:
+            self._observers.append(observer)
+
+    def inherit_observers(self, parent: "EventStore") -> None:
+        for observer in parent._observers:
+            self.add_observer(observer)
 
     def get_all(self) -> list[dict[str, Any]]:
         return list(self._events)

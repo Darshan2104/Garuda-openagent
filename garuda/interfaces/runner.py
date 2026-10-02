@@ -312,6 +312,9 @@ async def run_agent_task(
         await runtime.start(task=task, session_id=events.session_id)
         if session_record:
             update_session_meta(store, events.session_id, session_record)
+            from garuda.observability import usage as usage_ledger
+
+            usage_ledger.record_fallback_start(store, events.session_id)
         if context_attached is not None:
             # Tagged sessions' briefs (B.7): both sides record the link, and a
             # cross-project grant writes its receipt, before the first prompt.
@@ -332,6 +335,9 @@ async def run_agent_task(
         )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
+        from garuda.observability import usage as usage_ledger
+
+        usage_ledger.attach(events, store)
         agent_digest = getattr(config, "agent_digest", None)
         if agent_digest:
             update_session_meta(store, events.session_id, {"agent_digest": agent_digest})

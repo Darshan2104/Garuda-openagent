@@ -18,6 +18,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 
 from garuda.core.events import EventStore, EventType
+from garuda.model import accounting
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
 
@@ -251,7 +252,7 @@ async def derive_contract(
         Message(role=Role.USER, content=f"Task statement:\n\n{task}"),
     ]
     try:
-        response = await model.complete(messages)
+        response = await accounting.tagged(model, "contract").complete(messages)
     except Exception:
         logger.warning("Acceptance-criteria extraction failed; continuing without", exc_info=True)
         return None

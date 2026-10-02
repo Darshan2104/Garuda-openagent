@@ -4,6 +4,7 @@ When a tool's output is large it is stored in a `ToolOutputBuffer` and only a st
 enters the context. These tools let the model pull back exactly the lines it needs.
 """
 
+from garuda.model import accounting
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import Message, Role, ToolResult
 from garuda.workspace.protocol import Environment
@@ -182,7 +183,7 @@ class BufferQueryTool:
         total = 0
         for _start, _end, body in chunks:
             try:
-                resp = await model.complete(
+                resp = await accounting.tagged(model, "buffer_query").complete(
                     [
                         Message(role=Role.SYSTEM, content=_MAP_SYSTEM),
                         Message(
@@ -211,7 +212,7 @@ class BufferQueryTool:
         joined = "\n".join(excerpts)[:QUERY_MAX_EXCERPT_CHARS]
         answer = ""
         try:
-            resp = await model.complete(
+            resp = await accounting.tagged(model, "buffer_query").complete(
                 [
                     Message(role=Role.SYSTEM, content=_REDUCE_SYSTEM),
                     Message(

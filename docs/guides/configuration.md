@@ -297,6 +297,26 @@ Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in
 Read [Safety and workspaces](safety-and-workspaces.md) before enabling project
 code, permissive modes, network access, or host-backed execution.
 
+## Usage ledger
+
+Garuda keeps a usage ledger in your Garuda home (`usage/YYYY-MM.jsonl`, owner-only, one
+file per month) so statistics survive pruned sessions. It records **identities and counts
+only**: ids, role, origin and call purpose as separate fields, harness, adapter version
+and exact model id, token counts, a known cost or `null`, and durations. It never holds
+task text, prompts, outputs, tool arguments, account names, raw provider payloads or
+paths, and the writer refuses any field outside its schema.
+
+- A native session's calls are written as they happen, once each, including the
+  summarizer, `buffer_query`, contract and verifier calls that used to be uncounted; its
+  ledger totals equal the session's own metrics.
+- An external (ACP) harness's usage reports stay **snapshots** (latest wins, never summed
+  and never a call count) until a policy for that exact adapter version is proved.
+  Simultaneous per-turn and cumulative reports are never added together. A gap, reset,
+  decrease or adapter change leaves the delta unavailable instead of guessing.
+- Unknown cost stays unknown (`null`), never zero. A session killed mid-run is incomplete
+  until reconciled from its event log, which adds only what is missing.
+- Month files are kept for 13 months; cleaning up sessions does not touch them.
+
 ## Runtime capacity
 
 Limit how many runs of one runtime may be active at once, across every way of

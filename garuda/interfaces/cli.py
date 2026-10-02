@@ -219,6 +219,8 @@ async def chat_loop(args) -> int:
     env = live.env
     events_path = recorded["events_path"]
     session.events.attach_persistence(events_path)
+    from garuda.observability import usage as usage_ledger
+    usage_ledger.attach(session.events, store)
     hooks = build_hook_registry(live.workspace)
 
     # JSONL mode must keep stdout machine-readable, so rich rendering is off there.

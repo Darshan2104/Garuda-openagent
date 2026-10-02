@@ -796,6 +796,9 @@ async def run_acp_task(
                 adapter={"runtime_id": manifest.runtime_id,
                          "version": getattr(record, "version", "unknown")},
                 options=applied)})
+            from garuda.observability import usage as usage_ledger
+
+            usage_ledger.record_fallback_start(store, session_id)
         begin_session_evidence(store, session_id, workspace, "local")
         from garuda.context.tags import prompt_with
 

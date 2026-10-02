@@ -11,6 +11,7 @@ from garuda.core.modes import apply_mode_preset, describe_config, is_rigorous
 from garuda.core.permissions import PermissionEngine
 from garuda.core.termination import TerminalStrategy
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
+from garuda.model import accounting
 from garuda.model.protocol import Model
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools import tools_for_names
@@ -239,7 +240,7 @@ class RigorousAgent:
         if git_evidence:
             user_parts.append(f"Git evidence from the workspace:\n{git_evidence}")
         try:
-            response = await model.complete(
+            response = await accounting.tagged(model, "critic").complete(
                 [
                     Message(
                         role=Role.SYSTEM,

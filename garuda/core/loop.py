@@ -44,6 +44,7 @@ from garuda.core.steering import (
 )
 from garuda.core.termination import TerminalStrategy
 from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
+from garuda.model import accounting
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import ContextOverflowError, Model
 from garuda.plugins.hooks import HookRegistry
@@ -140,34 +141,40 @@ class DefaultAgent:
             allowed_tool_effects=allowed_tool_effects,
         )
 
-        turn = 0
-        for turn in range(1, state.config.max_turns + 1):
-            state.turn = turn
-            # Opened before compaction so this turn's record owns the compaction
-            # cost. Compaction happens *because* of the history this turn inherited,
-            # and attributing it to the previous turn would make the turn that paid
-            # for it look cheap.
-            state.metrics.open_turn(turn)
+        # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
+        # run's store for as long as it runs.
+        accounting_token = accounting.bind(state.events)
+        try:
+            turn = 0
+            for turn in range(1, state.config.max_turns + 1):
+                state.turn = turn
+                # Opened before compaction so this turn's record owns the compaction
+                # cost. Compaction happens *because* of the history this turn inherited,
+                # and attributing it to the previous turn would make the turn that paid
+                # for it look cheap.
+                state.metrics.open_turn(turn)
 
-            await state.compact_if_needed(turn)
+                await state.compact_if_needed(turn)
 
-            state.steering.flush(state.context)
-            state.save_checkpoint()
+                state.steering.flush(state.context)
+                state.save_checkpoint()
 
-            should_stop, _ = state.steering.open_turn(turn, state.context, state.events)
-            if should_stop:
-                break
+                should_stop, _ = state.steering.open_turn(turn, state.context, state.events)
+                if should_stop:
+                    break
 
-            outcome = await self._run_turn(state, model, turn)
-            # Emitted after the turn's work, so a trajectory carries its own timing
-            # without a consumer having to difference event timestamps. A turn that
-            # ended the run has already flushed its own record (see
-            # RunState.flush_turn_metrics), and this is then a no-op.
-            state.flush_turn_metrics()
-            if outcome is not None:
-                return outcome
+                outcome = await self._run_turn(state, model, turn)
+                # Emitted after the turn's work, so a trajectory carries its own timing
+                # without a consumer having to difference event timestamps. A turn that
+                # ended the run has already flushed its own record (see
+                # RunState.flush_turn_metrics), and this is then a no-op.
+                state.flush_turn_metrics()
+                if outcome is not None:
+                    return outcome
 
-        return await self._final_submission(state, model, turn)
+            return await self._final_submission(state, model, turn)
+        finally:
+            accounting.reset(accounting_token)
 
     async def _final_submission(
         self, state: RunState, model: Model, turn: int
