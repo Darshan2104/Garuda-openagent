@@ -33,6 +33,7 @@ flows:
       - {id: plan, role: planner, outputs: [plan]}
       - {id: build, role: coder, inputs: [plan], outputs: [patch], retries: 2,
          review: {by: reviewer, max_rounds: 2}}
+      - {id: review, role: reviewer, inputs: [patch], outputs: [review]}
 """
 
 

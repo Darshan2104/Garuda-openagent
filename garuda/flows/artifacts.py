@@ -16,7 +16,8 @@ produced against, and its flow-relative path.
 
 Before a step runs, every input it declares must resolve to an earlier
 step's artifact whose file is still a regular, non-symlink file inside the
-flow directory with the recorded digest and size, produced against the
+flow directory with the recorded digest and size; a workspace-bound one
+(``patch``, ``review``, ``findings``) must also have been produced against the
 workspace as it is now. A forged, escaping, symlinked or stale input refuses.
 """
 
@@ -32,6 +33,9 @@ from pathlib import Path
 from garuda.config.garuda_yaml import ARTIFACTS
 
 MAX_ARTIFACT_CHARS = 64_000
+#: Artifacts that describe the workspace as it was: stale once it changes. A
+#: plan or notes describe the task and stay usable across a retry (C.7).
+WORKSPACE_BOUND = ("patch", "review", "findings")
 _BLOCK = re.compile(
     r"<garuda-artifact\s+([^>]*)>\n?(.*?)\n?</garuda-artifact>", re.DOTALL)
 _TYPE = re.compile(r'\btype\s*=\s*"([a-z]+)"')
@@ -129,7 +133,7 @@ def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> 
     if len(data) != ref.size or hashlib.sha256(data).hexdigest() != ref.digest:
         raise ArtifactError("flow.input_forged",
                             f"{ref.path} does not match the digest its step recorded")
-    if ref.workspace_version != workspace_version:
+    if ref.type in WORKSPACE_BOUND and ref.workspace_version != workspace_version:
         raise ArtifactError(
             "flow.input_stale",
             f"{ref.type} from {ref.producer_step} was produced against another version "

@@ -143,17 +143,20 @@ async def test_a_no_edits_step_that_writes_stops_the_flow_before_the_next(repo):
 
 async def test_a_stale_input_refuses(repo):
     config = {**CONFIG, "flows": {"pbr": {"steps": [
-        {"id": "plan", "role": "planner", "outputs": ["plan"]},
-        {"id": "build", "role": "coder", "inputs": ["plan"], "outputs": ["patch"]},
-        {"id": "again", "role": "reviewer", "inputs": ["plan"], "outputs": ["review"]}]}}}
+        {"id": "build", "role": "coder", "outputs": ["patch"]},
+        {"id": "more", "role": "coder", "outputs": ["notes"]},
+        {"id": "check", "role": "reviewer", "inputs": ["patch"], "outputs": ["review"]}]}}}
 
     async def build(launch):
-        (repo / "a.txt").write_text("changed\n")
         return StepResult("s", True, _block("patch", "x"))
 
-    fake = Fake(repo, {"plan": _plan, "build": build})
+    async def more(launch):  # changes the workspace after the patch was produced
+        (repo / "a.txt").write_text("changed\n")
+        return StepResult("s", True, _block("notes", "n"))
+
+    fake = Fake(repo, {"build": build, "more": more})
     result = await _runner(repo, fake, config=config).run()
-    assert result.stopped.code == "flow.input_stale" and result.stopped.step == "again"
+    assert result.stopped.code == "flow.input_stale" and result.stopped.step == "check"
 
 
 @pytest.mark.parametrize("attack, code", [
