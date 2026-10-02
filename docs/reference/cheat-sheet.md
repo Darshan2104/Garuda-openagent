@@ -58,6 +58,9 @@ garuda sessions
 garuda sessions --limit 20
 garuda run --resume latest -t "Continue where you left off"
 garuda run --resume 3f2a -t "Continue from that session"
+garuda run --name fix-login -t "Fix the login bug"
+garuda run -t "Review the change from @fix-login"
+garuda run --with fix-login --with add-tests -t "Write the release note"
 ```
 
 ## Dashboard

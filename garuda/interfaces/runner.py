@@ -163,6 +163,7 @@ async def run_agent_task(
     resume_all_projects: bool = False,
     session_name: str | None = None,
     isolation: str = "shared",
+    context_attached=None,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -304,6 +305,12 @@ async def run_agent_task(
             logger.warning("Runtime routing failed", exc_info=True)
             raise
         await runtime.start(task=task, session_id=events.session_id)
+        if context_attached is not None:
+            # Tagged sessions' briefs (B.7): both sides record the link, and a
+            # cross-project grant writes its receipt, before the first prompt.
+            from garuda.context.tags import record_links
+
+            record_links(store, events.session_id, context_attached)
         if workspace_plan is not None:
             update_session_meta(store, events.session_id, session_service.plan_meta(workspace_plan))
         # This is before environment setup, hooks, or a model prompt.  A
@@ -406,7 +413,9 @@ async def run_agent_task(
     try:
         # The prompt races the lease heartbeat: a lost lease cancels the turn,
         # and cancelling this call cancels the turn before teardown.
-        await lease.race(runtime.prompt(task))
+        from garuda.context.tags import prompt_with
+
+        await lease.race(runtime.prompt(prompt_with(context_attached, task)))
         result = runtime.last_result
     except asyncio.CancelledError:
         try:

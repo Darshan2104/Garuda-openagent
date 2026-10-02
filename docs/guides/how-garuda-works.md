@@ -116,6 +116,10 @@ event log. Use it to:
 - list runs with `garuda sessions`;
 - continue one with `--resume latest` (this project's newest session) or an ID
   prefix;
+- give a new session another session's brief with `--with NAME` or `@name`
+  in the task — its task, state, changed files, checks and final output,
+  never its transcript, attached as labelled data. Other projects' sessions
+  need `--with-id` and your explicit grant;
 - browse it with `garuda web --read-only`;
 - export events with `--trajectory run.jsonl`.
 

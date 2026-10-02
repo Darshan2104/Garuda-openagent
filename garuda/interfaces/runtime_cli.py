@@ -590,6 +590,8 @@ async def run_acp_task(
     emit=print,
     initial_selection=None,
     initial_plan=None,
+    attached=None,
+    name: str | None = None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -628,11 +630,16 @@ async def run_acp_task(
             model=f"acp:{manifest.runtime_id}",
             agent=manifest.runtime_id,
             workspace=workspace,
+            name=name,
             runtime_segment=RuntimeSegment(
                 runtime_id=manifest.runtime_id, kind="acp", version=manifest.version
             ),
         )
         began = True
+        if attached is not None:
+            from garuda.context.tags import record_links
+
+            record_links(store, session_id, attached)
         if initial_selection is not None:
             if initial_selection.selected != manifest.runtime_id:
                 raise ValueError(
@@ -702,10 +709,22 @@ async def run_acp_task(
                 store=store, events=events, selection=fallback
             ) from start_error
         begin_session_evidence(store, session_id, workspace, "local")
-        turn = await lease.race(runtime.prompt(task, timeout=prompt_timeout))
+        from garuda.context.tags import prompt_with
+
+        turn = await lease.race(
+            runtime.prompt(prompt_with(attached, task), timeout=prompt_timeout)
+        )
         events, _ = await runtime.poll_events(0)
         for event in events:
             emit(f"[{event.kind.value} t{event.turn}] {event.payload}")
+        # The agent's own words, bounded: what a brief of this session reports
+        # as its output (B.7). Never a transcript.
+        reply = "".join(
+            str(e.payload.get("chunk") or "") for e in events
+            if e.kind.value == "message" and "thought" not in e.payload
+        )
+        if reply:
+            store.update_meta(session_id, {"final_message": reply[-2000:]})
         outcome = {
             "session_id": session_id,
             "native_session_id": info.native_session_id,

@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import functools
 import json
+import os
 import sys
 
 from garuda.core.sessions import SessionStore
@@ -77,6 +78,44 @@ def _render_event(renderer: ChatRenderer, event: dict) -> None:
         )
 
 
+def confirm_cross_project(brief) -> bool:
+    """Interactive grant for one cross-project brief (B.7); headless never asks."""
+    try:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            return False
+    except (AttributeError, ValueError):
+        return False
+    print(f"[garuda] share session {brief.label} from another project with this one?",
+          file=sys.stderr)
+    print(f"  fields: {', '.join(brief.fields())}", file=sys.stderr)
+    print(f"  task: {brief.task[:200]}", file=sys.stderr)
+    print("Share it? [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _chat_tags(args, store, session_id: str, text: str, *, pinned, human):
+    """A turn's tags: the startup ``--with``/``--with-id`` ones on the first
+    turn (``pinned``), plus ``@name`` mentions on any turn, in one budget."""
+    import os
+
+    from garuda.context.tags import brief_tags, resolve
+
+    workspace = os.path.realpath(args.workspace)
+    tags = list(pinned)
+    for tag in resolve(store, workspace, text=text, exclude=session_id):
+        if all(t.session_id != tag.session_id for t in tags):
+            tags.append(tag)
+    if not tags:
+        return None
+    attached = brief_tags(store, tags, workspace)
+    for line in attached.echo_lines():
+        print(f"[garuda] {line}", file=human)
+    return attached
+
+
 async def chat_loop(args) -> int:
     from garuda.config.agent_home import resolve_agents_dirs
 
@@ -115,6 +154,23 @@ async def chat_loop(args) -> int:
     )
 
     store = SessionStore()
+    # `--with`/`--with-id` are resolved — or refused — before the session
+    # opens (B.7); they are attached to the first turn.
+    from garuda.context.brief import BriefBudgetExceeded
+    from garuda.context.tags import TagError, prompt_with, record_links, resolve
+
+    try:
+        pinned = resolve(
+            store, os.path.realpath(args.workspace),
+            with_refs=getattr(args, "with_sessions", None) or [],
+            with_ids=getattr(args, "with_ids", None) or [],
+            allow_cross_project=getattr(args, "allow_cross_project_context", False),
+            confirm=confirm_cross_project, exclude=session.events.session_id,
+        )
+    except TagError as exc:
+        await session.close()
+        print(f"Error: chat refused to start: {exc}", file=human)
+        return 1
     # One session lifecycle with `garuda run`, the dashboard and the SDK (B.6):
     # capacity and the workspace lease, then the session record, the baseline,
     # the approval broker and the environment — or a refusal with nothing held.
@@ -178,10 +234,20 @@ async def chat_loop(args) -> int:
             if not task.strip():
                 break
 
-            context = session.prepare_context(task.strip())
+            try:
+                attached = _chat_tags(args, store, live.session_id, task.strip(),
+                                      pinned=pinned, human=human)
+            except (TagError, BriefBudgetExceeded) as exc:
+                renderer.on_error(str(exc))
+                continue
+            pinned = []
+            if attached is not None:
+                record_links(store, live.session_id, attached)
+            prompt = prompt_with(attached, task.strip())
+            context = session.prepare_context(prompt)
             run_task = asyncio.create_task(
                 live.turn(session.agent.run(
-                    task=task.strip(),
+                    task=prompt,
                     model=session.model,
                     env=env,
                     tools=session.tools,
