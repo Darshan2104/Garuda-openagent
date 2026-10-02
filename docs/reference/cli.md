@@ -19,7 +19,8 @@ for your installed version. For ready-made examples, see the
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
-| Configuration | `garuda mcp list` | Resolve and inspect MCP configuration |
+| Configuration | `garuda config migrate [--write]` | Preview or write the user `garuda.yaml` that carries `settings.yaml`'s runtimes and capacity |
+| | `garuda mcp list` | Resolve and inspect MCP configuration |
 | | `garuda mcp trust` | Review and trust MCP servers the project's own config defines |
 | Runtimes | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable) |
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |

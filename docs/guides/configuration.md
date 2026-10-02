@@ -313,6 +313,59 @@ capacity:
 A run that finds its runtime full is refused right away rather than queued. A
 runtime with no entry isn't limited. Only the global settings file can set this.
 
+## Roles and flows: garuda.yaml
+
+`garuda.yaml` is a new, optional file that names **roles** — which harness and
+exact model to use for which job — and the flows and checks built on them.
+Nothing that works today needs it, and `settings.yaml` keeps working
+unchanged beside it.
+
+- The **user** file lives next to your settings, normally `~/.agent/garuda.yaml`.
+- A **project** file `garuda.yaml` at the repository root may add checks and
+  flows and narrow your roles.
+
+```yaml
+# ~/.agent/garuda.yaml
+version: 1
+defaults: {role: coder}
+harnesses:
+  claude-code: {allowed_models: [<exact-id>], max_parallel: 2}
+  codex: {allowed_models: [<exact-id>]}
+roles:
+  planner:  {harness: claude-code, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
+  coder:    {harness: codex, model_id: <exact-id>, effort: high,
+             fallback: [{harness: claude-code, model_id: <exact-id>}], consult: [reviewer]}
+  reviewer: {harness: claude-code, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
+consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
+sessions: {isolation: auto, keep_days: 30}
+```
+
+How the layers combine (package default, then user, then project, then the
+command line):
+
+- A role or flow with the same name **replaces** the whole definition below it.
+- Permission ceilings and consult limits **intersect**: the stricter one wins.
+- Checks **accumulate**; an identical check is listed once.
+- `harnesses`, `sessions.keep_days`, `fallback` chains and `consult` grants are
+  **yours only**: a project file may keep a subset or remove them, never add.
+- `--runtime` or `--model` on the command line skips an implicit
+  `defaults.role`.
+
+The file is strict: unknown or duplicate keys, YAML tags, values out of range
+and an `authority` key are refused with the full path of the value, before
+anything starts. A `settings.yaml` key such as `routing` in a `garuda.yaml`, a
+`max_parallel` that disagrees with `capacity`, or a `--runtime` that
+contradicts the selected role is refused as `config.conflict`.
+
+`garuda config migrate` previews the user `garuda.yaml` that carries what
+`settings.yaml` already says (trusted runtimes as `harnesses`, `capacity` as
+`max_parallel`); `--write` applies it, keeping a backup of any existing file.
+It never removes anything from `settings.yaml`, and running it twice changes
+nothing.
+
+Roles do not yet change which harness or model a run uses: that arrives with
+project trust and exact model resolution.
+
 ## Environment variables
 
 | Variable | Purpose |
