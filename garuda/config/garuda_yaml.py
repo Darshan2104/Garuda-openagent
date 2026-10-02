@@ -611,7 +611,7 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
     user = load_file(user_path())
     loaded = load_project(workspace)
     project = loaded.doc
-    if user is None and project is None and not cli_role:
+    if user is None and project is None and not cli_role and not cli_checks:
         return None
     from garuda.agents.authority import project_ceiling
     from garuda.config.agent_home import _load_global_settings

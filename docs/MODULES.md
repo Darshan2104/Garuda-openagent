@@ -24,6 +24,7 @@ a behaviour.
 |---|---|
 | `loop.py` | `DefaultAgent`: the turn loop, and nothing else. Model call → tool step → repeat. Re-exports the constants callers import from here. |
 | `run_state.py` | `prepare_run` (assembly: tool filtering, buffer, context bootstrap, subagent/collection wiring, deadline) and `RunState` (what the loop reads and writes, plus result building). |
+| `acceptance.py` | C.5 attributed verification: runs `user-config`, `trusted-project` and `user-request` checks after a session, writes a receipt each (authority, command, code fingerprint, exit code, bounded redacted output), voids a check that changes the tree, withholds a pass when the session changed that check's own test infrastructure, and derives verification; agent-suggested checks only ever set the self-check. |
 | `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
 | `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |

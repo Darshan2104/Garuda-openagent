@@ -57,6 +57,7 @@ every project. A full ID always resolves.
     | `--all-projects` | With `--resume latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
+    | `--check COMMAND` | An acceptance check run after the session (repeatable); its result is the session's verification |
     | `--role NAME` | Run as a `garuda.yaml` role: its harness, exact model, effort and permission ceiling |
     | `--with NAME` | Attach the brief of a session in this project (repeatable); `@name` in the task does the same |
     | `--with-id FULL_ID` | Attach a session's brief by full id; another project's needs `--allow-cross-project-context` or a yes when asked |

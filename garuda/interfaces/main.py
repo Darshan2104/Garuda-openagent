@@ -278,6 +278,15 @@ def build_parser():
     )
     _add_tag_flags(run_parser)
     run_parser.add_argument(
+        "--check",
+        dest="checks",
+        action="append",
+        default=[],
+        metavar="COMMAND",
+        help="An acceptance check to run after the session (repeatable); its result is "
+        "the session's verification",
+    )
+    run_parser.add_argument(
         "--role",
         help="Run as a garuda.yaml role: its harness, exact model, effort and permissions",
     )
@@ -893,12 +902,36 @@ def check_garuda_config(args):
     model = getattr(args, "model", None) or getattr(args, "reasoning_model", None)
     resolved = load_effective(getattr(args, "workspace", "."),
                               cli_role=getattr(args, "role", None),
-                              cli_runtime=getattr(args, "runtime", None), cli_model=model)
+                              cli_runtime=getattr(args, "runtime", None), cli_model=model,
+                              cli_checks=getattr(args, "checks", None) or ())
     if resolved is not None and resolved.withheld:
         print("[garuda] config.project_untrusted: this project's garuda.yaml is not trusted "
               f"as it is now; ignoring {', '.join(resolved.withheld)} "
               "(review it with `garuda config trust`)", file=sys.stderr)
     return resolved
+
+
+def _accept_session(args, session_id: str | None) -> None:
+    """Run the acceptance checks for a finished session and say what they found (C.5)."""
+    import sys
+
+    from garuda.core.acceptance import accept, checks_with_authority
+    from garuda.core.sessions import SessionStore
+
+    if not session_id:
+        return
+    store = SessionStore()
+    try:
+        workspace = store.load_meta(session_id).get("workspace") or args.workspace
+    except Exception:
+        return
+    checks = checks_with_authority(getattr(args, "_config", None))
+    verification = accept(store, session_id, workspace, checks)
+    out = sys.stderr if getattr(args, "json", False) else sys.stdout
+    if checks:
+        print(f"[garuda] verification: {verification['status']}"
+              + (f" ({verification['authority']})" if verification.get("authority") else "")
+              + (f" [{verification['code']}]" if verification.get("code") else ""), file=out)
 
 
 def _apply_role(args, resolved, catalog):
@@ -1356,6 +1389,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
         f"(turn {summary['turn']}, {summary['events']} normalized events; "
         "the ACP result is not verified by Garuda)"
     )
+    _accept_session(args, summary.get("session_id"))
     return 0 if summary["status"] == "completed" else 1
 
 
@@ -1371,6 +1405,7 @@ async def run_task(args) -> int:
     # garuda.yaml is validated — a conflict or invalid file refuses — before
     # tags, runtimes, models or the workspace are touched (C.1).
     resolved_config = check_garuda_config(args)
+    args._config = resolved_config
     # Session tags are resolved — or refused — before any runtime, model,
     # workspace or prompt exists (B.7).
     attached = _session_tags(args, task)
@@ -1585,6 +1620,7 @@ async def run_task(args) -> int:
 
     if args.trajectory:
         events.save(args.trajectory)
+    _accept_session(args, events.session_id)
     if not args.json:
         print(result.final_message)
         if getattr(args, "isolation", "shared") != "shared" or args.resume:

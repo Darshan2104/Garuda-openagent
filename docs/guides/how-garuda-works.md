@@ -37,6 +37,17 @@ authority. Garuda still records the session, but does not verify the result.
 Pick one with `--runtime`. Without it, Garuda uses `native` unless trusted
 routing rules choose otherwise. See [External harnesses](external-harnesses.md).
 
+**Verification is yours, not the agent's.** Passing the native completion
+gate, or an ACP agent's own checks, is a *self-check*. A session is
+*verified* only by an acceptance check you stand behind: a `checks:` entry in
+your `garuda.yaml`, one in a project file you trusted, or `--check COMMAND`.
+Garuda runs them after the session, records a receipt for each (who asked
+for it, the exact command, the code it ran against, the result), and sets
+verification to `passed` or `failed`. With none, verification is
+`unavailable` (`verification.no_trusted_check`). A check that changes the code
+it checks, or that depends on test infrastructure the session itself
+changed (`conftest.py` for pytest, `package.json` for `npm test`), cannot pass.
+
 ## 2. Profile and permissions: what the agent may do
 
 A **profile** bundles tools, permission rules, and a system prompt. Choose one
