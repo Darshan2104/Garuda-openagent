@@ -28,7 +28,7 @@ function verificationChip(v) {
 
 function identityText(row) {
   var parts = [row.runtime || "native"];
-  if (row.role && row.role.role) parts.push("role " + row.role.role);
+  if (row.role && row.role.name) parts.push("role " + row.role.name);
   if (row.model) parts.push(row.model);
   return parts.join(" · ");
 }

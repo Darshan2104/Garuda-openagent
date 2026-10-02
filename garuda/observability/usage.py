@@ -122,7 +122,8 @@ class NativeUsageObserver:
             meta = {}
         context["project_id"] = meta.get("project_id")
         role = meta.get("role")
-        context["role"] = role.get("role") if isinstance(role, dict) else None
+        # RolePlan.record() stores the role's name under "name".
+        context["role"] = role.get("name") if isinstance(role, dict) else None
         step = meta.get("flow_step")
         if isinstance(step, dict):
             context["flow_step"] = step.get("step")
@@ -185,7 +186,7 @@ def record_fallback_start(store, session_id: str, *, ledger: Ledger | None = Non
         return (ledger or Ledger()).append({
             "kind": ledger_module.FALLBACK, "key": f"fallback:{session_id}",
             "time": time.time(), "session_id": session_id, "project_id": meta.get("project_id"),
-            "role": (meta.get("role") or {}).get("role"),
+            "role": (meta.get("role") or {}).get("name"),
             "from_harness": (decision.get("primary") or {}).get("harness"),
             "to_harness": taken.get("harness"), "reason": reasons[0] if reasons else None})
     except Exception:

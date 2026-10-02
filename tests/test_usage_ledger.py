@@ -259,7 +259,7 @@ def test_a_fallback_is_recorded_once_and_is_not_a_call(tmp_path):
     store = SessionStore(tmp_path / "sessions")
     sid = "66666666-6666-6666-6666-666666666666"
     store.begin(sid, task="t", model="m", agent="a", workspace=str(tmp_path))
-    store.update_meta(sid, {"role": {"role": "reviewer", "fallback": {
+    store.update_meta(sid, {"role": {"name": "reviewer", "fallback": {
         "primary": {"harness": "claude"}, "taken": {"harness": "codex", "index": 1},
         "skipped": [{"harness": "claude", "reason": "harness.logged_out"}]}}})
     ledger = Ledger(tmp_path / "usage")
@@ -270,7 +270,7 @@ def test_a_fallback_is_recorded_once_and_is_not_a_call(tmp_path):
         "fallback_start", "claude", "codex", "harness.logged_out")
     assert totals([record])["native_calls"] == 0 and totals([record])["fallback_starts"] == 1
     # a session that started on its primary records nothing
-    store.update_meta(sid, {"role": {"role": "reviewer", "fallback": {"taken": {"index": 0}}}})
+    store.update_meta(sid, {"role": {"name": "reviewer", "fallback": {"taken": {"index": 0}}}})
     assert usage.record_fallback_start(store, "66666666-6666-6666-6666-666666666666",
                                        ledger=Ledger(tmp_path / "other")) is False
 
@@ -280,3 +280,20 @@ def test_the_clock_is_not_a_source_of_records(ledger):
     with pytest.raises(LedgerRefused):
         ledger.append({"kind": "native_model_call", "key": "x"})
     assert time.time() > NOW
+
+
+def test_the_role_comes_from_the_shape_the_role_plan_really_records(tmp_path):
+    from garuda.runtime.roles import RolePlan
+
+    store = SessionStore(tmp_path / "sessions")
+    sid = "77777777-7777-7777-7777-777777777777"
+    store.begin(sid, task="t", model="m", agent="a", workspace=str(tmp_path))
+    store.update_meta(sid, {"role": RolePlan(role="reviewer", runtime_id="native",
+                                             kind="native").record()})
+    events = EventStore(sid)
+    ledger = Ledger(tmp_path / "usage")
+    usage.attach(events, store, ledger=ledger)
+    events.append(EventType.MODEL_RESPONSE, {"usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                                       "total_tokens": 2}, "call_purpose": "controller"})
+    (record,) = ledger.records()
+    assert record["role"] == "reviewer"
