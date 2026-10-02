@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from garuda.agents.loader import load_profile  # noqa: F401
 from garuda.agents.setup import prepare_agent_run
+from garuda.agents.spec_api import AgentSpec, coerce
 from garuda.core.events import EventStore
 from garuda.interfaces.runner import run_agent_task
 from garuda.interfaces.runtime_cli import RUNTIME_API_VERSION
@@ -25,7 +26,7 @@ class SoftwareAgent:
         self,
         workspace: str | Path = ".",
         model: str | object = DEFAULT_MODEL,
-        agent: str = "build",
+        agent: "str | AgentSpec | dict" = "build",
         agents_dir: str | Path | None = None,
         mcp_config: str | None = None,
         workspace_kind: str = "local",
@@ -47,7 +48,13 @@ class SoftwareAgent:
         # configured bindings are honored; strings name models, live `Model`
         # objects are kept by identity for this instance's runs.
         self.model_name = model
-        self.agent_name = agent
+        # A mapping or a spec is resolved now and frozen: this instance (and any
+        # conversation it opens) runs one definition, whatever happens to files later.
+        # A name is looked up at run time, as it always was.
+        if isinstance(agent, (dict, AgentSpec)):
+            agent = coerce(agent, self.workspace, agents_dir)
+        self._agent = agent
+        self.agent_name = agent.name if isinstance(agent, AgentSpec) else agent
         self.agents_dir = Path(agents_dir) if agents_dir else None
         self.mcp_config = mcp_config
         self.workspace_kind = workspace_kind
@@ -94,7 +101,7 @@ class SoftwareAgent:
 
         agents_dir = resolve_agents_dirs(self.workspace, self.agents_dir)
         prepared = await prepare_agent_run(
-            self.agent_name,
+            self._agent,
             workspace=self.workspace,
             agents_dir=agents_dir,
             mcp_config_path=self.mcp_config,
@@ -213,7 +220,7 @@ class SoftwareAgent:
             collection_model=self.collection_model,
             no_collection=self.no_collection,
             model_binding=self.model_binding,
-            agent=self.agent_name,
+            agent=self._agent,
             agents_dir=self.agents_dir,
             mcp_config=self.mcp_config,
             mode=self.mode,

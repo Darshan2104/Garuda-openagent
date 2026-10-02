@@ -416,6 +416,37 @@ instructions:
   verification: the usual completion and verification gates still apply. The
   accepted value is `AgentResult.output`. A child inherits the schema, and
   `schema: null` drops it. Native runs only.
+- **One definition everywhere.** `garuda run`, `garuda chat`, `garuda serve`,
+  the dashboard and the SDK resolve a definition through the same code, so
+  `garuda agent show NAME --json` and the prompt digest are the same whichever
+  entry point runs it. `--agent-file PATH` (run, chat; also `agent show`)
+  selects a file; it is a source, not trust, so a file inside the repository is
+  still project content under the project ceiling. In Python:
+
+  ```python
+  from garuda import AgentSpec, SoftwareAgent
+
+  spec = AgentSpec.load("careful-coder", workspace=".")
+  agent = SoftwareAgent(workspace=".", agent=spec.narrow(limits={"max_turns": 40}))
+  ```
+
+  `SoftwareAgent(agent=...)` also takes a name or a mapping (`AgentSpec.from_dict`;
+  an inline mapping can't reference instruction or schema files). A spec is frozen
+  and hands out copies, so concurrent runs never share one.
+- `AgentSpec.narrow(...)` returns a stricter copy and nothing else. A looser
+  permission mode, more tools, wider MCP, subagent or domain allowances, larger
+  budgets, a disabled check, and any setting not listed as narrowable refuse
+  with `agent.narrow_refused`.
+- `serve` and the dashboard take an agent **name** only. An inline definition,
+  `agent_file` or (with an allowlist) `agents_dir` over a request refuses
+  (`agent.inline_over_http`); `--allow-agent` limits which names (`agent.not_allowed`),
+  and the run never exceeds `--permission-ceiling` (`serve`; default the server's
+  own `--agent`) or `--max-permission` (dashboard), so naming `garuda/harbor`
+  cannot raise the server's authority.
+- Each run records the digest of the definition it started from
+  (`agent_digest` in the session). Resuming with a changed definition does not
+  alter the earlier session: the new session records an `agent_segment` with both
+  digests.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

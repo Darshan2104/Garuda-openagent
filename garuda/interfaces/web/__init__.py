@@ -66,6 +66,8 @@ class DashboardConfig:
     max_permission: str = DEFAULT_MAX_PERMISSION
     model: str = ""
     agent: str = "build"
+    #: H.8: agent names a request may select; None allows any the operator defines.
+    allowed_agents: list[str] | None = None
     workspace_kind: str = "local"
     open_browser: bool = True
     extra: dict = field(default_factory=dict)
@@ -101,6 +103,7 @@ def build_context(
             max_permission=config.max_permission,
             default_model=config.model or DEFAULT_MODEL,
             default_agent=config.agent,
+            allowed_agents=config.allowed_agents,
             agents_dir=ctx.agents_dir,
             workspace_kind=config.workspace_kind,
         )

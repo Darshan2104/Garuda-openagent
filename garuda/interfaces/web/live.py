@@ -40,6 +40,7 @@ from garuda.core.sessions import SessionStore
 from garuda.interfaces.jobs import Job, JobManager
 from garuda.interfaces.web import grounding
 from garuda.interfaces.web.approvals import ApprovalBroker
+from garuda.model.config import ConfigError
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.workspace import evidence
 
@@ -151,6 +152,9 @@ class LiveRuns:
     max_permission: str = DEFAULT_MAX_PERMISSION
     default_model: str = DEFAULT_MODEL
     default_agent: str = "build"
+    #: H.8: the agent names a request may select (None: any the operator defines). A
+    #: request names an agent; it never supplies a definition.
+    allowed_agents: list[str] | None = None
     agents_dir: Path | None = None
     workspace_kind: str = "local"
     docker_image: str | None = None
@@ -237,6 +241,14 @@ class LiveRuns:
         chat_id = uuid.uuid4().hex
         model = spec.model or self.default_model
         agent = spec.agent or self.default_agent
+        if self.allowed_agents is not None:
+            from garuda.agents.selection import check_named
+
+            try:
+                check_named(agent, workspace=str(workspace), agents_dirs=self.agents_dir,
+                            allowed=self.allowed_agents, ceiling=self.max_permission)
+            except ConfigError as exc:
+                raise SpecError(str(exc)) from exc
 
         # The handler needs the session's own event store to recover structured tool
         # arguments, but `AgentSession.create` takes the handler and creates the store. A

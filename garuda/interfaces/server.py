@@ -65,6 +65,11 @@ class ServerConfig:
     mcp_config: str | None = None
     token: str | None = None
     max_jobs: int = 4
+    # Operator-owned limits on what a caller may select (H.8): the agent names a
+    # request may choose (None: any the operator's directories define) and the loosest
+    # permission mode a run may use (None: that of the default `agent`).
+    allowed_agents: list[str] | None = None
+    permission_ceiling: str | None = None
     model_max_concurrency: int = 0
     # Retention for finished jobs. A completed job keeps its whole event history
     # in memory, so on a long-lived server these bound the process, not just the
@@ -347,6 +352,12 @@ class JsonRpcServer:
         from garuda.config.agent_home import resolve_agents_dirs
 
         agent_name = params.get("agent", self._config.agent)
+        for forbidden in ("agent_file", "agent_spec", "definition"):
+            if forbidden in params:
+                from garuda.agents.selection import SelectionRefused
+
+                raise SelectionRefused("agent.inline_over_http",
+                                       f"params.{forbidden} is not accepted from a request")
         mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
         workspace = params.get("workspace", self._config.workspace)
@@ -357,6 +368,17 @@ class JsonRpcServer:
         # subagents resolve custom profiles the same standard way.
         agents_path = resolve_agents_dirs(workspace, agents_dir)
 
+        from garuda.agents.selection import SelectionRefused, check_named
+
+        if self._config.allowed_agents is not None and "agents_dir" in params and (
+                params["agents_dir"] != self._config.agents_dir):
+            raise SelectionRefused("agent.inline_over_http",
+                                   "params.agents_dir cannot add definitions to a server with an "
+                                   "agent allowlist")
+        capped = check_named(agent_name, workspace=workspace, agents_dirs=agents_path,
+                             allowed=self._config.allowed_agents,
+                             ceiling=self._config.permission_ceiling,
+                             default_agent=self._config.agent)
         # Resolved fresh per request through shared setup: one job's models
         # never leak into another's, and identical inputs resolve identically
         # to every other entry point.
@@ -364,6 +386,7 @@ class JsonRpcServer:
             agent_name,
             workspace=workspace,
             agents_dir=agents_path,
+            permission_mode=capped,
             mcp_config_path=mcp_config,
             mode=mode,
             model=params.get("model", self._config.model),

@@ -74,6 +74,8 @@ class AgentProfile:
     tools_removed: list[str] | None = None
     # The compiled final-output JSON Schema (H.12b); set only by the resolver.
     output_schema: dict | None = None
+    # Identifies the resolved definition a run started from (H.8); set by AgentSpec.
+    spec_digest: str | None = None
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -182,7 +184,8 @@ _PROFILE_FIELD_NAMES = {f.name for f in fields(AgentProfile)}
 _FIELD_ALIASES = {"model_bindings": "model_binding"}
 #: Fields a file never sets itself.
 _INTERNAL_FIELDS = frozenset({"declared_fields", "source_path", "spec_version",
-                              "tools_removed", "output_schema"})
+                              "tools_removed", "output_schema",
+                              "spec_digest"})
 #: List fields a file may also give as a single string.
 _LIST_FIELDS = ("tools", "skills", "skills_dirs", "mcp_servers")
 

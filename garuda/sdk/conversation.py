@@ -36,7 +36,7 @@ class Conversation:
     ):
         self._workspace = str(workspace)
         self._model_name = model
-        self._agent_name = agent
+        self._agent_name = agent  # a name or a frozen AgentSpec
         self._agents_dir = Path(agents_dir) if agents_dir else None
         self._mcp_config = mcp_config
         self._mode = mode
@@ -198,7 +198,7 @@ class Conversation:
                 events.session_id,
                 task=task,
                 model=self._model_name,
-                agent=self._agent_name,
+                agent=getattr(self._agent_name, 'name', self._agent_name),
                 workspace=self._workspace,
             )
             store.ensure_unified(events.session_id)

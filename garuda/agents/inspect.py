@@ -52,6 +52,8 @@ def _redact(value, raw: bool):
 def _label(agent, origin) -> str:
     if origin is None:
         return "default"
+    if origin.qualified == "narrowed":
+        return "narrowed"
     if origin is agent.source:
         return origin.authority
     return f"extends:{origin.qualified}"
@@ -86,11 +88,26 @@ def list_agents(workspace) -> list[dict]:
 # --- show -----------------------------------------------------------------------------------
 
 
-def show(name: str, workspace, *, raw: bool = False) -> dict:
-    from garuda.agents.setup import static_agent_config
+def _target(target: str, workspace) -> resolve.ResolvedAgent:
+    """A name, or a path to a definition file (``--agent-file``), resolved purely."""
+    if os.sep in target or target.endswith((".yaml", ".yml", ".md")):
+        from garuda.agents.spec_api import AgentSpec
 
-    agent = resolve.resolve_agent(name, _dirs(workspace))
+        return AgentSpec.from_file(target, workspace).resolved()
+    return resolve.resolve_agent(target, _dirs(workspace))
+
+
+def show(name: str, workspace, *, raw: bool = False) -> dict:
+    return show_agent(_target(name, workspace), workspace, raw=raw)
+
+
+def show_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False) -> dict:
+    """``show`` for an already-resolved agent: the one definition every entry point reads."""
+    from garuda.agents.setup import static_agent_config
+    from garuda.agents.spec_api import _digest
+
     profile = resolve.activate(agent)
+    profile.spec_digest = _digest(agent)
     fields = {}
     for path, field in spec.FIELDS.items():
         if path in agent.leaves:
@@ -114,9 +131,12 @@ def show(name: str, workspace, *, raw: bool = False) -> dict:
     config = dataclasses.asdict(static_agent_config(profile, workspace))
     prompt_text = config.pop("system_prompt") or ""
     config["system_prompt_digest"] = hashlib.sha256(prompt_text.encode()).hexdigest()
+    from garuda.agents.spec_api import _digest
+
     return {
         "name": agent.name, "source": agent.source.authority,
         "path": str(agent.source.path), "chain": [s.qualified for s in agent.chain],
+        "digest": _digest(agent),
         "fields": fields, "skills": skills, "config": _redact(config, raw),
         "warnings": agent.warnings,
     }
@@ -126,9 +146,13 @@ def show(name: str, workspace, *, raw: bool = False) -> dict:
 
 
 def prompt(name: str, workspace, *, raw: bool = False) -> dict:
+    return prompt_agent(_target(name, workspace), workspace, raw=raw)
+
+
+def prompt_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False) -> dict:
     from garuda.agents.loader import system_prompt_sections
 
-    profile = resolve.activate(resolve.resolve_agent(name, _dirs(workspace)))
+    profile = resolve.activate(agent)
     sections = system_prompt_sections(profile, str(workspace))
     full = "".join(text for _n, _s, text in sections)
     return {
