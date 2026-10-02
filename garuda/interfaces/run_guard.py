@@ -144,8 +144,7 @@ class WorkspaceLeaseGuard:
             raise error
         return await task
 
-    async def release(self) -> None:
-        """Stop the heartbeat and release. Best-effort; never masks an error."""
+    async def _stop_beating(self) -> None:
         heartbeat, self._heartbeat = self._heartbeat, None
         if heartbeat is not None:
             heartbeat.cancel()
@@ -153,6 +152,19 @@ class WorkspaceLeaseGuard:
                 await heartbeat
             except (asyncio.CancelledError, Exception):
                 pass
+
+    async def stop_heartbeat(self) -> None:
+        """Quarantine (B.6): keep the lease, stop renewing it, give the slot back.
+
+        The expired lease is taken over only once this process is confirmed
+        dead, so the workspace stays held while possible stray writers remain.
+        """
+        await self._stop_beating()
+        self._release_capacity()
+
+    async def release(self) -> None:
+        """Stop the heartbeat and release. Best-effort; never masks an error."""
+        await self._stop_beating()
         try:
             if not self._held:
                 return

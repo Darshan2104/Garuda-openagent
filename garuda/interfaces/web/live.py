@@ -253,57 +253,54 @@ class LiveRuns:
             workspace_kind=spec.workspace_kind or self.workspace_kind,
         )
         holder["events"] = session.events
-        events_path = self.store.begin(
-            session_id=session.events.session_id,
-            task="(dashboard chat)",
-            model=model,
-            agent=session.profile.name,
-            workspace=str(workspace),
-        )
-        # The same workspace lease as `garuda run` (B.4), held for the chat's
-        # whole life: a second editor of the workspace is refused, not interleaved.
-        from garuda.interfaces.run_guard import WorkspaceLeaseGuard, lease_mode_for
+        # One session lifecycle with `garuda run`, `garuda chat` and the SDK
+        # (B.6), held for the chat's whole life: capacity and the workspace
+        # lease, then the session record, the baseline, the approval broker
+        # and the environment. A second editor of the workspace is refused,
+        # not interleaved.
+        from garuda.interfaces import session_service
+        from garuda.interfaces.run_guard import lease_mode_for
 
-        lease = WorkspaceLeaseGuard(
-            str(workspace),
-            session.events.session_id,
-            capacity_key="native",
-            mode=lease_mode_for(permission_mode),
-        )
+        recorded: dict[str, Any] = {}
+
+        def begin(path: str) -> None:
+            recorded["events_path"] = self.store.begin(
+                session_id=session.events.session_id,
+                task="(dashboard chat)",
+                model=model,
+                agent=session.profile.name,
+                workspace=str(path),
+            )
+
         try:
-            lease.acquire()
-        except Exception as exc:
-            evidence.record_startup_refusal(self.store, session.events.session_id)
-            await session.close()
-            raise WorkspaceBusy(str(exc)) from exc
-        lease.start_heartbeat()
-        try:
-            # The dashboard does not use `run_agent_task` for held multi-turn
-            # chats, so it enters the same shared session-evidence boundary
-            # itself before allocating an environment or accepting a prompt.
-            # No capture means no runnable chat.
-            workspace_delta_loader = evidence.begin_session_evidence(
+            live = await session_service.open_session(
                 self.store,
                 session.events.session_id,
-                workspace,
-                session.config.workspace_kind,
+                str(workspace),
+                workspace_kind=session.config.workspace_kind,
+                permissions=session.permissions,
+                lease_mode=lease_mode_for(permission_mode),
+                docker_image=session.config.docker_image,
+                docker_host=getattr(session.config, "docker_host", None),
+                begin=begin,
+                resolve_env=resolve_environment,
             )
-        except Exception:
-            evidence.record_startup_refusal(self.store, session.events.session_id)
+        except session_service.SessionRefused as exc:
             await session.close()
-            await lease.release()
-            raise
-        env, env_handle = await resolve_environment(
-            session.config.workspace_kind, str(workspace), session.config.docker_image,
-            docker_host=getattr(session.config, "docker_host", None),
-        )
-        session.events.attach_persistence(events_path)
+            from garuda.runtime.capacity import CapacityError
+            from garuda.workspace.lease import LeaseError
+
+            if isinstance(exc.cause, (LeaseError, CapacityError)):
+                raise WorkspaceBusy(str(exc)) from exc.cause
+            raise exc.cause from exc
+        env, env_handle = live.env, live.env_handle
+        session.events.attach_persistence(recorded["events_path"])
 
         chat = LiveChat(
             chat_id=chat_id, session=session, env=env, env_handle=env_handle,
             workspace=workspace, permission_mode=permission_mode, model=model,
             agent=session.profile.name, last_seen_at=time.monotonic(),
-            workspace_delta_loader=workspace_delta_loader, lease=lease,
+            workspace_delta_loader=live.delta_loader, lease=live.lease, live=live,
         )
         self.chats[chat_id] = chat
         logger.info("Dashboard opened chat %s in %s as %s", chat_id, workspace, permission_mode)
@@ -448,36 +445,46 @@ class LiveRuns:
             await chat.session.close()
         except Exception:
             logger.warning("Closing chat %s session failed", chat_id, exc_info=True)
-        try:
-            from garuda.interfaces.runner import cleanup_workspace
 
-            await cleanup_workspace(chat.env_handle)
-        except Exception:
-            logger.warning("Tearing down chat %s workspace failed", chat_id, exc_info=True)
-        try:
-            await asyncio.to_thread(
-                evidence.finish_session_evidence,
-                self.store,
-                chat.session_id,
-                chat.workspace,
-                extra_meta={"status": "finished", "state": _closed_state(True)},
-            )
-        except Exception as exc:
-            # Closing cannot turn missing evidence into a successful chat.
+        async def finish() -> None:
             try:
-                self.store.update_meta(
+                await asyncio.to_thread(
+                    evidence.finish_session_evidence,
+                    self.store,
                     chat.session_id,
-                    {
-                        "status": "failed",
-                        "state": _closed_state(False),
-                        "workspace_delta_error": type(exc).__name__,
-                    },
+                    chat.workspace,
+                    extra_meta={"status": "finished", "state": _closed_state(True)},
                 )
+            except Exception as exc:
+                # Closing cannot turn missing evidence into a successful chat.
+                try:
+                    self.store.update_meta(
+                        chat.session_id,
+                        {
+                            "status": "failed",
+                            "state": _closed_state(False),
+                            "workspace_delta_error": type(exc).__name__,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "Recording chat %s evidence failure failed", chat_id, exc_info=True
+                    )
+
+        if chat.live is not None:
+            # Reap background processes, tear the workspace down, record the
+            # evidence, then release the lease last (or quarantine) — B.6.
+            await chat.live.close(finish)
+        else:
+            try:
+                from garuda.interfaces.runner import cleanup_workspace
+
+                await cleanup_workspace(chat.env_handle)
             except Exception:
-                logger.warning("Recording chat %s evidence failure failed", chat_id, exc_info=True)
-        if chat.lease is not None:
-            # Released last: after the session, its workspace and its evidence.
-            await chat.lease.release()
+                logger.warning("Tearing down chat %s workspace failed", chat_id, exc_info=True)
+            await finish()
+            if chat.lease is not None:
+                await chat.lease.release()
         return {**summary, "closed": True, "denied_approvals": denied}
 
     async def reap(self) -> dict[str, int]:
@@ -569,6 +576,8 @@ class LiveChat:
     new_sources: list[Any] = field(default_factory=list)
     #: The workspace lease held for the chat's whole life (B.4).
     lease: Any = None
+    #: The shared session lifecycle that opened this chat (B.6).
+    live: Any = None
 
     def guarded(self, work):
         """Run a turn under the chat's lease: a lost lease stops the turn."""

@@ -358,7 +358,7 @@ class _ChatSession:
         )()
         self.model = object()
         self.tools = []
-        self.permissions = object()
+        self.permissions = PermissionEngine()
         self.agents_dir = None
         self.context = None
         self.agent = self
