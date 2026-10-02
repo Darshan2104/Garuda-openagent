@@ -39,6 +39,6 @@ Run the narrowest relevant tests first. Browser-dashboard checks require a live 
 
 Committed, durable context: `.context/architecture.md`, `.context/decisions.md`, `.context/discoveries.md`, and `.context/conventions.md`.
 
-Session-managed, gitignored context: `.context/current-task.md` and `.context/handoff.md`.
+Session-managed context: `current-task.md` and `handoff.md`, written to each session's own directory in the session store, never to the workspace. Older runs may have left them in `.context/`, which stays gitignored.
 
 Only Garuda's `ContextPackManager` writes generated files. Agents may read them and propose changes, but durable context is reviewed repository content and runtime context is not a collaboration scratchpad.

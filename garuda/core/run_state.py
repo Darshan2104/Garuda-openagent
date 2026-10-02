@@ -72,7 +72,7 @@ class RunState:
     # the only remaining record of which files were touched and which checks passed.
     state_checkpoint: object | None = None
     # Single-writer context-pack publisher (P0.9, issue #17). When set, the run
-    # compiles `WorkingState` into `.context/current-task.md` + `handoff.md` at
+    # compiles `WorkingState` into the session's `current-task.md` + `handoff.md` at
     # the checkpoint/compaction boundaries via `ContextPackManager` — the only
     # production writer of those files. None disables the publish (unit paths
     # that never configured a workspace), never fails the run.
