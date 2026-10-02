@@ -229,7 +229,10 @@ project-level aliases that reference and narrow but never self-authorize; one
 instance per job, never process-global. `session_state.py` records a session's
 process, work, outcome and verification as four separate fields (a gate pass is
 a self-check; `crashed` is derived from the owner's liveness, never stored), with
-a mapping table for legacy `status` values. `session.py` is the unified session
+a mapping table for legacy `status` values. `resume.py` (B.7) decides how
+`--resume` continues — native transcript, the ACP agent's own `session/load`
+(only for adapter versions in `PROVEN_LOAD`), or a new linked session started
+from a brief — and refuses a live owner. `session.py` is the unified session
 schema (runtime segments, baseline, handoff, cursors) plus legacy migration;
 `SessionStore` publishes through the atomic locked meta path, so a failed
 migration or write leaves the original readable. `native.py` adapts the native

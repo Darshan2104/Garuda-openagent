@@ -255,3 +255,11 @@ def attach_for_cli(workspace, task: str, *, with_refs=(), with_ids=(), allow_cro
     for line in attached.echo_lines():
         print(f"[garuda] {line}", file=out)
     return attached
+
+
+def with_resume_brief(store, plan, workspace, attached: Attached | None) -> Attached:
+    """Add a brief-resumed session's own brief to a run's tags (B.7)."""
+    meta = store.load_meta(plan.source)
+    tag = Tag(plan.source, meta.get("name"), meta.get("project_id"), False, "resume")
+    existing = [t for t in (attached.tags if attached else []) if t.session_id != plan.source]
+    return brief_tags(store, [tag, *existing], workspace)

@@ -164,6 +164,7 @@ async def run_agent_task(
     session_name: str | None = None,
     isolation: str = "shared",
     context_attached=None,
+    session_record: dict | None = None,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -305,6 +306,8 @@ async def run_agent_task(
             logger.warning("Runtime routing failed", exc_info=True)
             raise
         await runtime.start(task=task, session_id=events.session_id)
+        if session_record:
+            update_session_meta(store, events.session_id, session_record)
         if context_attached is not None:
             # Tagged sessions' briefs (B.7): both sides record the link, and a
             # cross-project grant writes its receipt, before the first prompt.

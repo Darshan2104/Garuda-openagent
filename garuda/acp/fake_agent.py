@@ -11,7 +11,8 @@ No network, no subscription, no workspace access — argv and files here are the
 only inputs, so the test server is isolated from credentials by construction.
 
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
-resume (stable ids via --state-file), version-mismatch, odd-stop (a stop
+resume (stable ids via --state-file; declares loadSession, answers session/load
+for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
 capabilities-<name>.
@@ -166,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     hello: dict = {
                         "protocolVersion": 1,
-                        "agentCapabilities": capabilities,
+                        "agentCapabilities": (
+                            {**capabilities, "loadSession": True}
+                            if profile == "resume" else capabilities
+                        ),
                     }
                     if args.quota_json:
                         try:
@@ -190,10 +194,18 @@ def main(argv: list[str] | None = None) -> int:
                 if profile == "resume":
                     session_id = state.get("session_id", "resume-s1")
                     state["session_id"] = session_id
+                    state["prompts"] = []  # a new session starts with no history
                     _save_state(args.state_file, state)
                 else:
                     session_id = f"fake-s{sessions}"
                 _result(call_id, {"sessionId": session_id})
+            elif method == "session/load" and profile == "resume":
+                state = _load_state(args.state_file)
+                if params.get("sessionId") != state.get("session_id"):
+                    _invalid(call_id, "unknown session")
+                    continue
+                session_cwd = str(params.get("cwd", ""))
+                _result(call_id, None)
             elif method == "session/prompt":
                 if profile == "strict-v1":
                     prompt = params.get("prompt")
@@ -205,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
                         _invalid(call_id, "session/prompt requires content blocks")
                         continue
                 _handle_prompt(
-                    profile, call_id, params, cwd=session_cwd if args.report_cwd else None
+                    profile, call_id, params, cwd=session_cwd if args.report_cwd else None,
+                    state_file=args.state_file,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -214,7 +227,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _handle_prompt(profile: str, call_id: int, params: dict, *, cwd: str | None = None) -> None:
+def _handle_prompt(
+    profile: str, call_id: int, params: dict, *, cwd: str | None = None,
+    state_file: str | None = None,
+) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
     if profile == "malformed":
@@ -285,6 +301,14 @@ def _handle_prompt(profile: str, call_id: int, params: dict, *, cwd: str | None 
              "content": [{"type": "diff", "path": "a.py", "oldText": None,
                           "newText": "x = 1"}]},
         )
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "resume" and state_file:
+        state = _load_state(state_file)
+        history = [*state.get("prompts", []), text]
+        state["prompts"] = history
+        _save_state(state_file, state)
+        _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                             "content": _text(f"done: {text} (prompts so far: {len(history)})")})
         _result(call_id, {"stopReason": "end_turn"})
     else:
         reply = f"done: {text}" if cwd is None else f"done: {text} (cwd={cwd})"

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # Compatibility seam for the fail-closed startup gate tests.  The native
@@ -71,6 +72,36 @@ def _add_tag_flags(parser) -> None:
         action="store_true",
         help="Grant --with-id sessions from other projects (headless; otherwise you are asked)",
     )
+
+
+def _plan_resume(args, catalog):
+    """`--resume`/`--as` as a :class:`ResumePlan`, echoed; ``None`` without one."""
+    import os
+    import sys
+
+    resume = getattr(args, "resume", None)
+    if getattr(args, "as_runtime", None) and not resume:
+        from garuda.runtime.resume import ResumeRefused
+
+        raise ResumeRefused("session.as_needs_resume", "--as continues a session; add --resume")
+    if not resume:
+        return None
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.resume import plan_resume
+
+    plan = plan_resume(
+        SessionStore(), resume, workspace=os.path.realpath(args.workspace),
+        all_projects=getattr(args, "all_projects", False),
+        runtime=args.runtime, as_runtime=getattr(args, "as_runtime", None),
+        model=getattr(args, "model", None), agent=getattr(args, "agent", None),
+        catalog=catalog,
+    )
+    out = sys.stderr if getattr(args, "json", False) else sys.stdout
+    how = {"native": "its transcript", "acp": f"{plan.runtime_id}'s own session reload",
+           "brief": "a brief"}[plan.mode]
+    print(f"[garuda] resuming {plan.source[:8]} on {plan.runtime_id} through {how}"
+          + (f" ({plan.reason})" if plan.reason else ""), file=out)
+    return plan
 
 
 def _session_tags(args, task: str, *, exclude: str | None = None):
@@ -227,6 +258,13 @@ def build_parser():
     run_parser.add_argument(
         "--name",
         help="Name this session (unique in the project); resume or tag it by name later",
+    )
+    run_parser.add_argument(
+        "--as",
+        dest="as_runtime",
+        metavar="RUNTIME",
+        help="With --resume, continue on another runtime: a new linked session that "
+        "starts from the resumed session's brief",
     )
     _add_tag_flags(run_parser)
     run_parser.add_argument(
@@ -976,6 +1014,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             initial_plan=getattr(args, "_initial_plan", None),
             attached=getattr(args, "_attached", None),
             name=getattr(args, "name", None),
+            resume_plan=getattr(args, "_resume_plan", None),
         )
     except NativeStartupFallback:
         raise
@@ -1019,6 +1058,23 @@ async def run_task(args) -> int:
     # resolves and explains the initial owner from the same trusted registry;
     # its selected id is the executor below, never merely an audit record.
     runtime_catalog = prepare_runtime_catalog(args.workspace)
+    # How a resumed session continues (B.7) is decided before selection: a
+    # session of an ACP runtime continues on it — by the agent's own reload
+    # when that is proven for the adapter, otherwise through a brief — and
+    # `--as` continues on another runtime through a brief.
+    resume_plan = _plan_resume(args, runtime_catalog)
+    if resume_plan is not None and resume_plan.mode != "native":
+        args.runtime = resume_plan.runtime_id
+        args.resume = None
+        if resume_plan.mode == "brief":
+            from garuda.context.tags import with_resume_brief
+            from garuda.core.sessions import SessionStore
+
+            attached = with_resume_brief(
+                SessionStore(), resume_plan, os.path.realpath(args.workspace), attached
+            )
+            args._attached = attached
+    args._resume_plan = resume_plan
     # `None` means the flag was omitted. Naming a runtime, including `native`,
     # is an explicit choice that routing rules and the classifier never override.
     runtime_named = args.runtime is not None
@@ -1183,7 +1239,9 @@ async def run_task(args) -> int:
         resume_all_projects=getattr(args, "all_projects", False),
         session_name=getattr(args, "name", None),
         isolation=getattr(args, "isolation", "shared"),
-        context_attached=attached,
+        context_attached=getattr(args, "_attached", None),
+        session_record=(args._resume_plan.record() if getattr(args, "_resume_plan", None)
+                        else None),
         runtime_catalog=runtime_catalog,
         runtime_ref=args.runtime,
         initial_selection=args._initial_selection,
@@ -1327,6 +1385,7 @@ def _run_with_runtime_gate(args) -> int:
     from garuda.context.tags import TagError
     from garuda.runtime.capacity import CapacityError
     from garuda.runtime.registry import RegistryError
+    from garuda.runtime.resume import ResumeRefused
     from garuda.workspace.lease import LeaseError
     from garuda.workspace.worktrees import WorktreeError
 
@@ -1334,7 +1393,8 @@ def _run_with_runtime_gate(args) -> int:
         return asyncio.run(run_task(args))
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
-    except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded) as exc:
+    except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
+            ResumeRefused) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
         import sys

@@ -14,9 +14,10 @@ JSON-RPC error, because Garuda advertises no `fs` or `terminal` capability. Vend
 and registry wiring arrive with the P1 adapters; every one of them runs the
 shared conformance suite through this class.
 
-Resume reattaches to the live process only. Cross-process resume is adapter
-work for later — claiming it here would need wire methods the owned subset
-does not have.
+Resume reattaches to the live process, or in a new process reloads the
+agent's session with `session/load` — attempted only for adapters whose load
+was exercised (`runtime.resume.PROVEN_LOAD`); otherwise sessions continue
+through a brief (B.7).
 """
 
 from __future__ import annotations
@@ -61,6 +62,10 @@ from garuda.runtime.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ResumeUnavailable(RuntimeStartError):
+    """The agent cannot reload the session here; continue through a brief."""
 
 #: JSON-RPC error codes used when refusing agent-initiated requests.
 _METHOD_NOT_FOUND = -32601
@@ -402,14 +407,51 @@ class AcpRuntime:
             self._store = None
             raise
 
-    async def resume(self, *, native_session_id: str) -> RuntimeInfo:
+    async def resume(self, *, native_session_id: str, session_id: str | None = None) -> RuntimeInfo:
+        """Reattach to the live child, or — in a new process — reload the
+        agent's own session with `session/load`.
+
+        Cross-process load is attempted only when the caller has proved it
+        for this adapter (`runtime.resume.PROVEN_LOAD`); an agent that no
+        longer declares `loadSession` at the handshake raises
+        :class:`ResumeUnavailable` so the caller can fall back to a brief.
+        """
         if self._state is not LifecycleState.DISCOVERED:
             raise RuntimeStartError(f"cannot resume (state={self._state.value})")
-        if self._process is None or self._agent_session_id != native_session_id:
-            raise RuntimeStartError(
-                "cross-process resume is not supported by this adapter yet"
-            )
+        if self._process is not None:
+            if self._agent_session_id != native_session_id:
+                raise RuntimeStartError("the live child holds a different agent session")
+            self._move(LifecycleState.STARTING)
+            self._move(LifecycleState.IDLE)
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "resumed"})
+            return self._info()
         self._move(LifecycleState.STARTING)
+        self._garuda_session_id = session_id or str(uuid.uuid4())
+        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        try:
+            with self._timed("startup"):
+                await process.launch()
+                self._record_prepared_launch(process)
+                handshake = await process.initialize()
+                self._refresh_prepared_identity()
+            caps = handshake.get("agentCapabilities")
+            if not (isinstance(caps, dict) and caps.get("loadSession") is True):
+                raise ResumeUnavailable("the agent no longer declares loadSession")
+            with self._timed("negotiation"):
+                self._authority = negotiate(self._policy, AgentCapabilities.from_dict(caps))
+            await process.session_load(native_session_id, self._cwd or os.getcwd())
+            self._agent_session_id = native_session_id
+            if self._store is not None:
+                self._persist_identity(process)
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                self._note_error(exc)
+            await process.close()
+            self._retire_prepared_child()
+            self._move(LifecycleState.FAILED)
+            raise
+        self._process = process
+        self._normalizer = AcpNormalizer(self._agent_session_id)
         self._move(LifecycleState.IDLE)
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "resumed"})
         return self._info()

@@ -609,3 +609,16 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   receipt (ids, projects, field names, fingerprint, provenance) without the
   brief's text. ACP runs now record the end of the agent's reply as
   `final_message` so their briefs have an output.
+
+## 2026-10-02 — Resume modes: native, proven reload, or a brief (issue #157, B.7)
+
+- `--resume S` always continues in a new, linked session (`resumed_from`,
+  `resume_mode`). A native session restores its transcript. An ACP session
+  uses the agent's own `session/load` only for an adapter version on which it
+  was exercised (`runtime/resume.py` `PROVEN_LOAD`, empty today: Claude Code
+  and Codex only declare it); otherwise, and whenever the agent stops
+  declaring `loadSession` at the handshake, it starts a new session on the
+  same runtime with `S`'s brief (`resume_mode: brief`, with the reason).
+- `--as RUNTIME` continues on another runtime through a brief. A model or
+  role change on a native resume is recorded as `link_reason`.
+- A session whose owner is still live refuses (`session.live_owner`).
