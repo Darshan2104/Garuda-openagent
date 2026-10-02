@@ -31,6 +31,9 @@ REGISTRY: dict[str, str] = {
     "agent.unknown_tool": "Use a registered tool name in {path}.",
     "agent.unknown_skill": "Add the skill, or remove it from {path}.",
     "agent.unknown_mcp_server": "Configure the server, or remove it from {path}.",
+    "agent.unknown_tool_option": "Use an option the tool declares in {path}; "
+                                 "`garuda agent show` lists them.",
+    "agent.unknown_subagent": "Define the agent, or remove it from {path}.",
     "agent.mcp_tools_unknown": "Start a run to see the tools {servers} provide.",
     "agent.instruction_file_missing": "Create the file named in {path}, or remove it.",
     "agent.extends_cycle": "Break the cycle at {path}; extend garuda/<name> for a packaged agent.",

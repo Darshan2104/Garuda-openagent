@@ -66,6 +66,12 @@ class AgentProfile:
     skills_from: list[str] | None = None
     skills_exclude: list[str] | None = None
     skills_load: str = "index"
+    # Tools (H.6): per-tool options, the subagents invoke_subagent may start
+    # (None: any, as legacy profiles always allowed), and tools this agent
+    # removed, so an explicitly supplied tool of that name is dropped too.
+    tool_options: dict | None = None
+    subagents: list[str] | None = None
+    tools_removed: list[str] | None = None
     workspace_kind: str = "local"
     docker_image: str = "ubuntu:22.04"
     mcp_config_path: str | None = None
@@ -102,6 +108,9 @@ class AgentProfile:
             enable_verifier=self.enable_verifier,
             condenser=self.condenser,
             deadline_sec=self.deadline_sec,
+            tool_options=dict(self.tool_options or {}),
+            subagents=list(self.subagents) if self.subagents is not None else None,
+            removed_tools=list(self.tools_removed or []),
             enable_tmux=self.enable_tmux,
             marker_polling=self.marker_polling,
             enable_three_step_summary=self.enable_three_step_summary,
@@ -169,7 +178,8 @@ _PROFILE_FIELD_NAMES = {f.name for f in fields(AgentProfile)}
 #: Older spelling accepted for ``model_binding``.
 _FIELD_ALIASES = {"model_bindings": "model_binding"}
 #: Fields a file never sets itself.
-_INTERNAL_FIELDS = frozenset({"declared_fields", "source_path", "spec_version"})
+_INTERNAL_FIELDS = frozenset({"declared_fields", "source_path", "spec_version",
+                              "tools_removed"})
 #: List fields a file may also give as a single string.
 _LIST_FIELDS = ("tools", "skills", "skills_dirs", "mcp_servers")
 

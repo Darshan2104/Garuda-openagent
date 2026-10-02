@@ -863,3 +863,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - `allowed-tools` stays advisory (prompt wording kept, enforcement
   deferred); `agent check` reports `skill.tool_not_granted`. Skill files are
   read bounded and no-follow inside their source.
+
+## 2026-10-02 — Tool presets, options and bounded delegation (issue #164, H.6)
+
+- Presets are derived from each tool's declared effect, never a hand-kept
+  list. Options are declared by the tool (`options_schema`), so an unknown
+  tool or option refuses. `allowed_domains` is documented as a guardrail on
+  the request (redirects included), not network confinement.
+- Removals are part of the final toolkit: they drop explicit SDK tools of the
+  same name and are refused behind `use_tool`.
+- Version 1 agents may start only read-only subagents by default; legacy
+  profiles keep "any" (migration pins it). One delegation budget (depth 2,
+  8 launches) is shared by the whole tree so a child cannot reset it; a
+  child never outruns its parent's turns or deadline.
+

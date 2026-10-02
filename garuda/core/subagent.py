@@ -77,6 +77,24 @@ def _drop_incomplete_tail(messages: list[Message]) -> list[Message]:
 
 
 @dataclass
+class DelegationBudget:
+    """One root run's delegation allowance, shared down its subagent tree (H.6).
+
+    A child cannot reset it by delegating again: every runner in the tree
+    draws from this one object.
+    """
+
+    max_depth: int = 2
+    max_launches: int = 8
+    launches: int = 0
+
+
+def _refused(code: str, message: str) -> AgentResult:
+    return AgentResult(success=False, final_message=f"{code}: {message}", messages=[], turns=0,
+                       metadata={"refused": code})
+
+
+@dataclass
 class SubagentRunner:
     model: Model
     env: Environment
@@ -106,6 +124,16 @@ class SubagentRunner:
     # than building a fresh toolkit, so constructing a child never connects a new
     # MCP server or imports code the parent was not already running with.
     parent_tools: list | None = None
+    # Delegation bounds (H.6). ``allowed``: the agents this run may start (None:
+    # any). ``depth``: the depth a child started here runs at. The budget and
+    # deadline are the root's, shared; ``turns_left`` reports the parent's
+    # remaining turns so a child never outruns them.
+    allowed: list[str] | None = None
+    depth: int = 1
+    budget: DelegationBudget | None = None
+    deadline_monotonic: float | None = None
+    turns_left: Any = None
+    busy: bool = False
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -165,11 +193,43 @@ class SubagentRunner:
         *,
         fork_parent_context: bool | str | None = None,
     ) -> AgentResult:
+        import time
+
         from garuda.core.loop import DefaultAgent
+
+        # The allowlist is enforced here, not only in the tool schema: a model
+        # (or a caller) naming another agent directly is refused all the same.
+        if self.allowed is not None and profile_name not in self.allowed:
+            return _refused("agent.subagent_not_allowed",
+                            f"{profile_name!r} is not one of {', '.join(self.allowed) or 'none'}")
+        budget = self.budget if self.budget is not None else DelegationBudget()
+        self.budget = budget
+        if self.depth > budget.max_depth:
+            return _refused("agent.delegation_too_deep",
+                            f"subagents may nest {budget.max_depth} deep")
+        if budget.launches >= budget.max_launches:
+            return _refused("agent.delegation_exhausted",
+                            f"this run has started its {budget.max_launches} subagents")
+        if self.busy:
+            return _refused("agent.delegation_busy", "a subagent is already running")
+        remaining = None
+        if self.deadline_monotonic is not None:
+            remaining = self.deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                return _refused("agent.delegation_deadline", "the run's deadline has passed")
+        budget.launches += 1
 
         profile = load_profile(profile_name, extra_dir=self.agents_dir)
         config = profile.to_agent_config()
-        config.max_turns = min(config.max_turns, self.max_turns)
+        parent_left = self.turns_left() if callable(self.turns_left) else self.max_turns
+        config.max_turns = max(1, min(config.max_turns, self.max_turns, parent_left))
+        if remaining is not None:
+            config.deadline_sec = min(config.deadline_sec or remaining, remaining)
+        config.delegation_depth = self.depth
+        config.delegation_budget = budget
+        if self.allowed is not None:
+            child = config.subagents if config.subagents is not None else self.allowed
+            config.subagents = [name for name in child if name in self.allowed]
         config.enable_three_step_summary = False
         config.system_prompt = resolve_system_prompt(profile, self.workspace_root)
 
@@ -211,6 +271,7 @@ class SubagentRunner:
                 # Share the parent buffer so inherited stubs are retrievable.
                 shared_buffer = self.parent_buffer
 
+        self.busy = True
         try:
             result = await agent.run(
                 task=task,
@@ -225,6 +286,7 @@ class SubagentRunner:
                 buffer=shared_buffer,
             )
         finally:
+            self.busy = False
             if mcp_manager is not None:
                 await mcp_manager.close()
 

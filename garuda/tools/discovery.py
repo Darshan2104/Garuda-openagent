@@ -168,6 +168,10 @@ class UseToolTool:
                 ),
                 is_error=True,
             )
+        # A tool this agent removed stays removed behind the lazy wrapper (H.6).
+        if name in getattr(ctx, "removed_tools", frozenset()):
+            return ToolResult(tool_call_id="", is_error=True,
+                              content=f"{name} was removed from this agent's tools")
         # Re-screen the *target* tool through the permission engine. The agent loop
         # only evaluated "use_tool" (always allowed); without this, a per-tool deny/ask
         # rule on the underlying tool would be silently bypassed whenever it is reached

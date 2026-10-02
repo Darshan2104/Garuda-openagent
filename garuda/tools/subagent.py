@@ -43,6 +43,19 @@ class InvokeSubagentTool:
         "required": ["profile", "task"],
     }
 
+    @classmethod
+    def limited_to(cls, names: list[str]) -> "InvokeSubagentTool":
+        """A copy whose schema enumerates exactly ``names`` (H.6)."""
+        import copy
+
+        tool = cls()
+        tool.parameters = copy.deepcopy(cls.parameters)
+        tool.parameters["properties"]["profile"] = {
+            "type": "string", "enum": list(names),
+            "description": f"The subagent to start: one of {', '.join(names) or '(none)'}",
+        }
+        return tool
+
     async def execute(
         self,
         arguments: dict,

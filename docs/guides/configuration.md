@@ -343,7 +343,7 @@ instructions:
 - Version 1 is strict: unknown fields, unknown tools, a missing instruction
   file and duplicate keys refuse, each with a code such as
   `agent.unknown_field`. A field Garuda recognizes but does not support yet
-  (for example `memory:` or `hooks:`) refuses with `agent.unsupported_field`
+  (for example `hooks:`) refuses with `agent.unsupported_field`
   rather than being ignored.
 - Numbers are checked before the agent starts: the output reserve plus the
   safety margin must fit inside `context.max_tokens`, `summarize_after_tokens`
@@ -380,6 +380,26 @@ instructions:
   `allowed-tools` is advice to the model, not enforcement; `garuda agent
   check` warns (`skill.tool_not_granted`) when it names a tool the agent
   lacks. Project skills are project text and grant nothing.
+- `tools:` shapes what the agent can call. `preset: all` is every built-in
+  tool, `read-only` is the built-ins whose declared effect only reads (plus
+  `task_complete`), and `none` starts empty; `add` and `remove` edit the result,
+  and `remove` also drops a same-named tool an SDK caller supplied. Per-tool
+  settings go under `options`: `bash: {timeout_sec, max_output_bytes}` caps how
+  long a command may run and how much output returns, and `web_fetch` /
+  `web_search` take `allowed_domains` (a host or its subdomains, redirects
+  included). Unknown tools, options and bad values refuse
+  (`agent.unknown_tool_option`, `agent.invalid_value`). `allowed_domains` is a
+  guardrail on what the tool requests, not network confinement.
+- `tools.subagents` lists the agents `invoke_subagent` may start (version 1
+  default: `explore`, `plan`, `reviewer`; legacy profiles: any). The list is
+  the tool's schema and is enforced when the child starts, and it can only
+  narrow further down. A run's delegation is bounded: two levels deep, eight
+  launches across the whole tree, one child at a time, never past the
+  parent's remaining turns or deadline. Refusals say why
+  (`agent.subagent_not_allowed`, `agent.delegation_too_deep`,
+  `agent.delegation_exhausted`, `agent.delegation_busy`,
+  `agent.delegation_deadline`). Only the MCP servers you select in
+  `tools.mcp` are started.
 - Files without `version` are legacy profiles and keep working unchanged.
   `garuda agent migrate PATH` shows the version 1 form and confirms it
   resolves to the same agent; `--write` replaces the file and keeps a backup.

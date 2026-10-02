@@ -16,7 +16,7 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
-from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.protocol import ToolContext, ToolEffect, domain_allowed, domain_list
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -191,14 +191,19 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     max_repeats = MAX_REDIRECTS
     max_redirections = MAX_REDIRECTS
 
+    allowed_domains = None
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        if self.allowed_domains and not domain_allowed(newurl, self.allowed_domains):
+            raise urllib.error.HTTPError(newurl, code, "blocked redirect: outside the allowed "
+                                         f"domains ({GUARDRAIL})", headers, fp)
         error = _ssrf_error(newurl)
         if error is not None:
             raise urllib.error.HTTPError(newurl, code, f"blocked redirect: {error}", headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
+def _build_opener(allowed_domains=None) -> urllib.request.OpenerDirector:
     """An opener that re-vets every redirect target and pins every connect.
 
     The pinned handlers are installed ahead of urllib's defaults so no request
@@ -211,10 +216,12 @@ def _build_opener() -> urllib.request.OpenerDirector:
     than the target host, so pinning applies to the proxy hostname; the proxy
     itself becomes the trust boundary for the target.
     """
+    redirects = _ValidatingRedirectHandler()
+    redirects.allowed_domains = allowed_domains
     return urllib.request.build_opener(
         _PinnedHTTPHandler(),
         _PinnedHTTPSHandler(),
-        _ValidatingRedirectHandler(),
+        redirects,
     )
 
 # Content types (besides text/*) we are willing to return as text.
@@ -311,14 +318,14 @@ def validate_http_url(url: str) -> str | None:
     return None
 
 
-def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
+def _blocking_fetch(url: str, max_bytes: int, allowed_domains=None) -> tuple[str | None, str]:
     """GET the URL. Returns (error, text). Runs in a worker thread."""
     ssrf = _ssrf_error(url)
     if ssrf:
         return (ssrf, "")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with _build_opener().open(request, timeout=REQUEST_TIMEOUT) as response:
+        with _build_opener(allowed_domains).open(request, timeout=REQUEST_TIMEOUT) as response:
             content_type = response.headers.get_content_type()
             if not (content_type.startswith("text/") or content_type in _TEXTUAL_TYPES):
                 return (f"Unsupported content type '{content_type}' at {url} (not text).", "")
@@ -341,9 +348,14 @@ def _blocking_fetch(url: str, max_bytes: int) -> tuple[str | None, str]:
     return (None, truncate_to_bytes(text, max_bytes))
 
 
+GUARDRAIL = "a guardrail on what the tool requests, not network confinement"
+
+
 class WebFetchTool:
     effect = ToolEffect.EXTERNAL_READ
     name = "web_fetch"
+    #: Per-agent options (H.6). ``allowed_domains`` is a guardrail, not confinement.
+    options_schema = {"allowed_domains": domain_list}
     description = (
         "Fetch a web page over HTTP(S) and return its readable text content. "
         "HTML is converted to plain text; output is truncated to max_bytes."
@@ -373,6 +385,11 @@ class WebFetchTool:
         error = validate_http_url(url)
         if error:
             return ToolResult(tool_call_id="", content=error, is_error=True)
+        domains = ctx.option("web_fetch", "allowed_domains") if hasattr(ctx, "option") else None
+        if domains and not domain_allowed(url, domains):
+            return ToolResult(tool_call_id="", is_error=True, content=(
+                f"{url} is outside this agent's allowed domains ({', '.join(domains)}); "
+                f"{GUARDRAIL}."))
         try:
             max_bytes = int(arguments.get("max_bytes") or DEFAULT_MAX_BYTES)
         except (TypeError, ValueError):
@@ -381,7 +398,7 @@ class WebFetchTool:
 
         try:
             error, text = await asyncio.wait_for(
-                asyncio.to_thread(_blocking_fetch, url.strip(), max_bytes),
+                asyncio.to_thread(_blocking_fetch, url.strip(), max_bytes, domains),
                 timeout=TOTAL_FETCH_DEADLINE,
             )
         except (asyncio.TimeoutError, TimeoutError):
@@ -492,7 +509,7 @@ def format_search_results(results: list[dict[str, str]]) -> str:
     return "\n\n".join(lines)
 
 
-def _blocking_search(query: str, max_results: int) -> tuple[str | None, str]:
+def _blocking_search(query: str, max_results: int, allowed_domains=None) -> tuple[str | None, str]:
     """Run a web search. Returns (error, formatted results). Runs in a thread."""
     api_key = os.environ.get("SERPAPI_API_KEY")
     if api_key:
@@ -522,6 +539,12 @@ def _blocking_search(query: str, max_results: int) -> tuple[str | None, str]:
             return (error, "")
         results = parse_duckduckgo_results(body, max_results)
 
+    if allowed_domains:
+        kept = [r for r in results if domain_allowed(r.get("url") or "", allowed_domains)]
+        if results and not kept:
+            return (None, f"No results within the allowed domains "
+                          f"({', '.join(allowed_domains)}; {GUARDRAIL}) for: {query}")
+        results = kept
     if not results:
         return (None, f"No results found for: {query}")
     return (None, format_search_results(results))
@@ -553,6 +576,8 @@ def _fetch_raw(url: str) -> tuple[str | None, str]:
 class WebSearchTool:
     effect = ToolEffect.EXTERNAL_READ
     name = "web_search"
+    #: Per-agent options (H.6): results outside ``allowed_domains`` are dropped.
+    options_schema = {"allowed_domains": domain_list}
     description = (
         "Search the web and return the top results (title, URL, snippet). "
         "Uses SerpAPI when SERPAPI_API_KEY is set, otherwise DuckDuckGo."
@@ -589,7 +614,8 @@ class WebSearchTool:
             max_results = DEFAULT_MAX_RESULTS
         max_results = min(max(1, max_results), 20)
 
-        error, text = await asyncio.to_thread(_blocking_search, query, max_results)
+        domains = ctx.option("web_search", "allowed_domains") if hasattr(ctx, "option") else None
+        error, text = await asyncio.to_thread(_blocking_search, query, max_results, domains)
         if error:
             return ToolResult(tool_call_id="", content=error, is_error=True)
         return ToolResult(tool_call_id="", content=text)

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -68,6 +68,13 @@ class ToolContext:
     # the ordinary run has no effect restriction; a collection child supplies a
     # fail-closed set and the meta-tool re-checks its selected underlying tool.
     allowed_tool_effects: frozenset[ToolEffect] | None = None
+    # Agent-definition tool settings (H.6): ``{tool: {option: value}}`` and the
+    # tools the agent removed (a meta-tool must not dispatch to one).
+    tool_options: dict = field(default_factory=dict)
+    removed_tools: frozenset[str] = frozenset()
+
+    def option(self, tool: str, name: str, default=None):
+        return (self.tool_options.get(tool) or {}).get(name, default)
 
 
 # Attribute name marking a tool the caller supplied explicitly — via
@@ -95,3 +102,31 @@ class Tool(Protocol):
         env: Environment,
         ctx: ToolContext,
     ) -> ToolResult: ...
+
+
+def positive_number(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        return "must be a positive number"
+    return None
+
+
+def positive_int(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return "must be a positive integer"
+    return None
+
+
+def domain_list(value) -> str | None:
+    if not isinstance(value, list) or not value or not all(
+            isinstance(d, str) and d and "/" not in d and " " not in d for d in value):
+        return "must be a non-empty list of domain names (docs.python.org)"
+    return None
+
+
+def domain_allowed(url: str, domains) -> bool:
+    """Whether ``url``'s host is one of ``domains`` or below one. A guardrail on
+    what a tool asks for, not network confinement."""
+    import urllib.parse
+
+    host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+    return any(host == d.lower() or host.endswith("." + d.lower()) for d in domains)
