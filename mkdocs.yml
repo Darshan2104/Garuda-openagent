@@ -103,6 +103,7 @@ nav:
   - Guides:
       - Safety and workspaces: guides/safety-and-workspaces.md
       - Configuration: guides/configuration.md
+      - Sessions and flows: guides/sessions-and-flows.md
       - External harnesses: guides/external-harnesses.md
       - Web dashboard: guides/web-dashboard.md
   - Reference:
