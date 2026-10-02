@@ -834,3 +834,21 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   whenever it changes; runtime blocks make the two differ, by design.
 - Secrets are redacted unless `--raw`, which prints locally and is never
   persisted.
+
+## 2026-10-02 — The system prompt is a plan of labelled sections (issue #162, H.4)
+
+- Order: agent instructions, user memory, skills, project memory, (notes),
+  context pack; runtime blocks are added by the run and show in its actual
+  digest, not in the plan.
+- Per-file cap with `memory.truncated`; total cap (default 32,000 characters)
+  and the model's token budget after reserve and margin. Optional memory
+  trims context pack first, then project memory, at paragraph boundaries;
+  instructions and skills are never cut, and a version 1 definition whose
+  mandatory sections do not fit refuses.
+- Legacy profiles keep exactly their old sources (no user memory), so a
+  zero-config prompt is byte-identical; `agent migrate` writes
+  `memory: {user: false}` to preserve that. Version 1 loads `~/.agent/AGENTS.md`
+  by default when it exists.
+- Memory files stay inside the workspace: a link may point within it (for
+  example AGENTS.md -> CLAUDE.md); an escape refuses for version 1 and is
+  skipped with a diagnostic for legacy profiles.

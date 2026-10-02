@@ -172,7 +172,7 @@ def _refuses(project, files: dict, name: str, code: str):
     ({"a.yaml": "version: 2\n"}, "a", "agent.unsupported_version"),
     ({"a.md": "---\nversion: 1\ninstructions: {text: inline}\n---\nbody too\n"}, "a",
      "agent.ambiguous_instructions"),
-    ({"a.yaml": "version: 1\nmemory: {user: false}\n"}, "a", "agent.unsupported_field"),
+    ({"a.yaml": "version: 1\nmemory: {notes: propose}\n"}, "a", "agent.unsupported_field"),
     ({"a.yaml": "version: 1\ntools: {preset: all}\n"}, "a", "agent.unsupported_field"),
     ({"a.yaml": "version: 1\npermissions: {mode: root}\n"}, "a", "agent.invalid_value"),
     ({"a.yaml": "version: 1\nlimits: {max_turns: null}\n"}, "a", "agent.invalid_value"),
