@@ -113,6 +113,7 @@ function renderTrajectory(payload, sources) {
     (live ? liveStreamHtml() : "") +
     '<div class="grid cols-4">' + detailTilesHtml(payload) + "</div>" +
     runFlagsHtml(payload) +
+    '<div id="conversation-host"></div>' +
     overviewHtml(traj) +
     '<div class="card">' + pressureChartHtml(payload) + "</div>" +
     (hasGates || traj.gate_stack ? '<div class="card">' + gateStackHtml(traj) + "</div>" : "") +
@@ -124,6 +125,7 @@ function renderTrajectory(payload, sources) {
   );
 
   el("traj").addEventListener("click", onTurnClick);
+  if (typeof loadConversationPanel === "function") loadConversationPanel(run.session_id);
   wireRawEvents();
   wireTimelineHead();
   restoreOpenTurns(turns);
@@ -697,6 +699,10 @@ function turnBodyHtml(turn, previous, traj, steps) {
              "tool call it was mid-way through writing is not in the log.</div></div>";
     }
     var suffix = (turn.model_calls.length > 1) ? " · call " + (index + 1) : "";
+    // Which model did this call: the badge is the reported one, separate from the selected.
+    out += '<div class="call-model"><span class="chip chip-off" data-call-model="' + esc(call.model || "") + '">' +
+           esc(call.model || "model not reported") + (call.call_purpose ? " · " + esc(call.call_purpose) : "") +
+           "</span></div>";
     if (call.reasoning) out += blockHtml("thinking" + suffix, call.reasoning, "reasoning");
     if (call.content) out += blockHtml("says" + suffix, call.content, "output");
     if (!call.reasoning && !call.content && !(call.tool_steps || []).length) {

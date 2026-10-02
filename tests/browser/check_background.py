@@ -103,7 +103,7 @@ with sync_playwright() as p:
     mismatches = [s["session_id"] for s in web if any(
         s[k] != cli[s["session_id"]][k]
         for k in ("state", "verification", "label", "crashed", "kind", "queue", "agent_digest"))]
-    check("CLI JSON and the web API agree", not mismatches and len(web) == len(cli) == 8,
+    check("CLI JSON and the web API agree", not mismatches and len(web) == len(cli) == 9,
           str(mismatches))
 
     # --- approvals: answer, expired, stale page -----------------------------------------------

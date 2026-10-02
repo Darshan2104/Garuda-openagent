@@ -297,6 +297,20 @@ def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response
                "state": "answer_recorded"})
 
 
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)/conversation")
+def _conversation(request: Request, ctx: DashboardContext, match) -> Response:
+    """Models used, lanes and linked sessions for one conversation (F.1)."""
+    from garuda.core import conversation
+    from garuda.observability.ledger import Ledger
+
+    try:
+        session_id = validate_session_ref(match["sid"])
+        return ok(conversation.conversation(ctx.store, session_id, ledger=Ledger(),
+                                            queue=_queue_or_none()))
+    except (FileNotFoundError, ValueError):
+        return not_found(f"No session {match['sid']!r}.")
+
+
 @route("POST", r"/api/sessions/(?P<sid>[^/]+)/cancel")
 def _cancel_session(request: Request, ctx: DashboardContext, match) -> Response:
     """Stop a background session: leave the queue, or stop its worker (identity-checked)."""

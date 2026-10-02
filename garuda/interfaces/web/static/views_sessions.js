@@ -303,3 +303,54 @@ function startSessionStream(id) {
 function stopSessionStream() {
   if (STATE.sessionStream) { STATE.sessionStream.stop(); STATE.sessionStream = null; }
 }
+
+/* --- the conversation panel (F.1) -------------------------------------------------------
+ * Models used, grouped by work type, harness and model; the selected model kept apart from
+ * what was reported; sessions this one tagged, was tagged by, resumed from. Every string is
+ * escaped. "not reported" is shown as such and never replaced by the selected model. */
+
+function conversationPanelHtml(c) {
+  var used = c.models_used;
+  var rows = used.rows.map(function (r) {
+    return '<tr class="model-row" data-work="' + esc(r.work_type) + '" data-model="' + esc(r.model) + '">' +
+      "<td>" + esc(r.work_type) + "</td><td>" + esc(r.harness) + "</td>" +
+      "<td>" + (r.model === "not reported" ? '<span class="pill unknown">not reported</span>' : esc(r.model)) + "</td>" +
+      '<td class="num">' + esc(r.calls) + "</td><td class=\"num\">" + esc(r.turns) + "</td>" +
+      '<td class="num">' + esc(fmt.tokens(r.total_tokens)) + "</td>" +
+      '<td class="num">' + (r.cost_unknown ? "unknown" : esc(fmt.cost(r.cost_usd))) +
+      (r.cost_unknown && r.cost_usd ? " + " + esc(fmt.cost(r.cost_usd)) + " known" : "") + "</td></tr>";
+  }).join("");
+  function links(title, list, id) {
+    if (!list.length) return "";
+    return '<div id="' + id + '"><strong>' + title + "</strong> " + list.map(function (s) {
+      return '<a href="#/sessions/' + encodeURIComponent(s.session_id) + '">' +
+             esc(s.name || s.session_id.slice(0, 8)) + "</a>" +
+             (s.cross_project ? ' <span class="pill unknown">other project</span>' : "");
+    }).join(", ") + "</div>";
+  }
+  return (
+    '<div class="card" id="conversation-panel"><h2>Models used</h2>' +
+    (used.label ? '<p class="stat-sub" id="models-label">' + esc(used.label) + "</p>" : "") +
+    '<p class="stat-sub">Selected: ' + esc((c.selected.harness || c.session.runtime) + " · " + (c.selected.model_id || "—")) +
+    ". Reported attribution is shown separately; ACP turns are not call counts.</p>" +
+    (rows ? '<div class="table-wrap"><table class="table" id="models-table"><thead><tr><th>Work</th><th>Harness</th><th>Model</th>' +
+            "<th>Calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+          : '<p class="stat-sub">No model calls recorded.</p>') +
+    (used.snapshots.length ? '<p class="stat-sub" id="snapshots-note">Context snapshots (occupancy, not billable usage): ' +
+      used.snapshots.map(function (s) { return esc((s.context_used === null ? "?" : s.context_used) + "/" + (s.context_size === null ? "?" : s.context_size)); }).join(", ") + "</p>" : "") +
+    (c.lanes.length ? '<p class="stat-sub" id="lanes-note">Lanes: ' + c.lanes.map(function (l) { return esc(l.runtime_id + " (" + l.kind + ")"); }).join(" → ") + "</p>" : "") +
+    links("Resumed from", c.links.resumed_from, "link-resumed-from") +
+    links("Continued by", c.links.resumed_into, "link-resumed-into") +
+    links("Tagged", c.links.tagged, "link-tagged") +
+    links("Tagged by", c.links.tagged_by, "link-tagged-by") +
+    "</div>"
+  );
+}
+
+function loadConversationPanel(sessionId) {
+  var host = el("conversation-host");
+  if (!host) return;
+  api("/api/sessions/" + encodeURIComponent(sessionId) + "/conversation").then(function (c) {
+    if (el("conversation-host") === host) host.innerHTML = conversationPanelHtml(c);
+  }).catch(function () { host.innerHTML = ""; });
+}
