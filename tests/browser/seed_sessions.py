@@ -124,6 +124,13 @@ def seed(root: Path, workspace: str) -> dict:
           "auth_probe": {"argv": ["sh", "status"], "authenticated_pattern": "Logged in",
                          "unauthenticated_pattern": "Not logged in"}}
          for rid in ("codex", "claude")], source="seed")}
+    from garuda.config import garuda_yaml as gy
+
+    gy.user_path().write_text(
+        "version: 1\nharnesses:\n  claude: {}\n  codex: {}\nroles:\n  coder:\n    harness: native\n"
+        "    model_id: big/model\n    effort: high\n  reviewer:\n    harness: claude\n"
+        "    model_id: claude-x\n    permissions: readonly\n    fallback:\n"
+        "      - {harness: codex, model_id: codex-y}\n")
     probe_login(manifests["claude"], cache_ttl=0, run=lambda argv, timeout: (1, "Not logged in"))
     limits = LimitStore()
     when = time.time()

@@ -814,6 +814,14 @@ def _usage_export(request: Request, ctx: DashboardContext, _match) -> Response:
         headers={"Content-Disposition": f'attachment; filename="garuda-usage-{name}.{fmt}"'})
 
 
+@route("GET", r"/api/setup")
+def _setup(request: Request, ctx: DashboardContext, _match) -> Response:
+    """Diagnostics, effective-config provenance, roles and flows (F.4). Read-only."""
+    from garuda.core import setup_view
+
+    return ok(setup_view.setup(str(ctx.workspace)))
+
+
 @route("GET", r"/api/providers")
 def _providers(request: Request, ctx: DashboardContext, _match) -> Response:
     """One card per harness and per API provider: limits with their source and time,
