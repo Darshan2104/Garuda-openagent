@@ -56,6 +56,12 @@ class RolePlan:
     harness: dict = field(default_factory=dict)
     #: The start-time fallback decision (C.9), when the role has a chain.
     fallback: dict | None = None
+    #: The digest of the resolved agent definition the role runs under (H.10); part of the
+    #: execution identity, so changing the definition changes ``digest``.
+    agent_digest: str | None = None
+    #: An ACP role's agent instructions, sent as a labelled context block with the first
+    #: task. Never recorded on the session (only its digest is).
+    instructions: str | None = None
 
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
@@ -64,6 +70,11 @@ class RolePlan:
                "profile": self.profile, "digest": self.digest, "provenance": self.provenance}
         if self.fallback is not None:
             out["fallback"] = self.fallback
+        if self.agent_digest is not None:
+            out["agent"] = {"name": self.profile, "digest": self.agent_digest}
+            if self.instructions:
+                out["agent"]["instructions_sha256"] = hashlib.sha256(
+                    self.instructions.encode("utf-8")).hexdigest()
         if adapter is not None:
             out["adapter"] = adapter
         if options is not None:

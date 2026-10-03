@@ -567,6 +567,33 @@ changed id, or an unproven adapter, refuses before anything is prompted. A
 role with no model or effort runs on any adapter version. The role, the ids
 set and the adapter version are recorded on the session.
 
+### A role's agent
+
+`roles.<name>.agent: careful-coder` runs the role under an [agent definition](#agent-definitions)
+(`profile:` is the older spelling of the same key; naming two different agents is
+`config.conflict`). The definition is resolved for the harness that will actually run, after any
+fallback was chosen, and its digest becomes part of the role's identity on the session, so
+changing the definition changes the identity.
+
+- **Native roles** run exactly as `garuda run --agent careful-coder` would. If the role and the
+  definition name different efforts, the run refuses (`config.conflict`).
+- **ACP roles** (an external harness has its own prompt, skills and memory) receive only what
+  the harness can honour: the definition's `model.effort`, its `permissions.mode` (combined with
+  the role's as the stricter of the two) and its appended `instructions`, which arrive as a
+  labelled block of user-supplied role instructions before your first task message, never as a
+  system prompt. Anything else the definition asks for, directly or through `extends` - skills,
+  memory, a tool list, `tools.mcp`, limits, completion checks, a final-output schema, permission
+  rules, a model binding, or replacing the prompt - refuses by name as
+  `agent.field_unsupported`; defaults a definition does not declare are not expanded and
+  rejected. Forwarding MCP servers to an external harness is not enabled. A fallback that changes
+  the harness kind is projected again, and a definition the new harness cannot honour refuses
+  rather than falling back.
+- **Consulted native roles** keep the definition's model, instructions, memory and skills but use
+  the consult profile's read-only tools and limits, whatever tools the definition grants. A
+  definition that requires a final-output schema or a completion check cannot be honoured by a
+  read-only question-and-answer child and refuses the consult
+  (`consult.target_unavailable`).
+
 ### Fallbacks
 
 A role's `fallback` list (your user file only; a project file may only remove

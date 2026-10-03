@@ -807,10 +807,13 @@ async def run_acp_task(
 
             usage_ledger.record_fallback_start(store, session_id)
         begin_session_evidence(store, session_id, workspace, "local")
+        from garuda.agents.role_agent import with_instructions
         from garuda.context.tags import prompt_with
 
+        first_message = (task if resume_plan is not None and resume_plan.mode == "acp"
+                         else with_instructions(role_plan, task))  # a reattached session has them
         turn = await lease.race(
-            runtime.prompt(prompt_with(attached, task), timeout=prompt_timeout)
+            runtime.prompt(prompt_with(attached, first_message), timeout=prompt_timeout)
         )
         events, _ = await runtime.poll_events(0)
         for event in events:

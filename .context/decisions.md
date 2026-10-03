@@ -1037,3 +1037,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   under the default policy a shared actual identity stops the flow
   (`flow.review_not_independent`).
 
+## 2026-10-02 — A role's agent is projected for the harness that runs, never expanded (issue #172, H.10)
+
+- `roles.<name>.agent` (alias of `profile`) is bound after fallback selection. Native roles
+  carry the definition's digest in their identity. ACP roles get a projection of
+  `model.effort`, `permissions.mode` (stricter of role and agent) and appended
+  instructions (a labelled context block, not a system prompt); any other explicit or
+  inherited request refuses `agent.field_unsupported`, a differing effort refuses
+  `config.conflict`, and undeclared native defaults are not expanded. `tools.mcp` on ACP
+  roles stays refused until forwarding is separately enabled.
+- A consulted native role is its definition narrowed to the consult profile (readonly,
+  consult tools only, no MCP or subagents, hooks and project tools absent). A definition
+  that requires a schema or completion check refuses consult admission instead of being
+  dropped or enabled. The child resolves the agent against the source workspace; the
+  narrowing, not the snapshot path, bounds its authority.
+

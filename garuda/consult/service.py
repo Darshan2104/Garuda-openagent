@@ -75,6 +75,7 @@ class ChildRequest:
     root_session: str
     request_id: str
     store: object
+    source_workspace: str = "."
 
 
 @dataclass
@@ -195,7 +196,7 @@ class ConsultService:
         from garuda.runtime.capacity import CapacityStore, CapacityUnavailable, configured_ceiling
 
         deadline = started + self.limits.timeout_sec
-        plan = self._resolve_target(req.target)
+        plan = self._resolve_target(req.target, req.workspace)
         held.plan = plan
         # 3. capacity, immediately and without waiting
         ceiling = configured_ceiling(plan.runtime_id)
@@ -224,7 +225,7 @@ class ConsultService:
             prompt=prompt, workspace=str(scratch / "snapshot"), plan=plan, limits=self.limits,
             deadline_sec=max(1.0, deadline - self._clock()), child_id=child_id,
             asker_session=req.asker_session, root_session=req.root_session,
-            request_id=request_id, store=self.store)
+            request_id=request_id, store=self.store, source_workspace=req.workspace)
         # 5-6. dispatch is recorded first; from here a failure counts
         state.mark_dispatched(request_id)
         held.dispatched = True
@@ -259,7 +260,8 @@ class ConsultService:
 
     # --- pieces ---------------------------------------------------------------------------
 
-    def _resolve_target(self, target: str):
+    def _resolve_target(self, target: str, workspace: str = "."):
+        from garuda.agents import role_agent
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
         from garuda.config.garuda_yaml import Resolved
@@ -272,7 +274,7 @@ class ConsultService:
             plan = plan_role(resolved, catalog)
             if plan is None:
                 raise ConsultRefused("consult.target_unavailable", "no such role")
-            return choose(plan, resolved, catalog)
+            return role_agent.bind(choose(plan, resolved, catalog), workspace)
         except RoleRefused as exc:
             raise ConsultRefused("consult.target_unavailable", str(exc)) from exc
 
@@ -422,8 +424,13 @@ async def native_child(child: ChildRequest) -> ChildOutcome:
     from garuda.plugins.hooks import HookRegistry
 
     plan = child.plan
+    agent = "garuda/consult"
+    if plan.profile:  # the role's agent: its model, instructions, memory and skills (H.10)
+        from garuda.agents import role_agent
+
+        agent = role_agent.consult_spec(plan.profile, child.source_workspace)
     prepared = await prepare_agent_run(
-        "garuda/consult", workspace=child.workspace, model=plan.model_id,
+        agent, workspace=child.workspace, model=plan.model_id,
         permission_mode="readonly", reasoning_effort=plan.effort, no_collection=True,
         load_project_tools=False)
     config = prepared.config

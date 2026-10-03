@@ -216,7 +216,10 @@ class FlowRunner:
         from garuda.runtime.roles import RoleRefused
 
         try:
-            return choose(plan, resolved, catalog) if plan is not None else None
+            from garuda.agents import role_agent
+
+            return role_agent.bind(choose(plan, resolved, catalog) if plan is not None else None,
+                                   self.workspace)
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=role) from exc
 
