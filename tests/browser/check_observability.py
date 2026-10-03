@@ -55,6 +55,11 @@ with sync_playwright() as p:
     check("controller calls are counted once each", native["controller"][3] == "2", str(native["controller"]))
     check("unpriced calls read unknown", "unknown" in native["classifier"][-1], str(native["classifier"]))
     page.screenshot(path=str(SHOTS / "obs-native.png"))
+    agent_line = page.locator("#agent-line").inner_text()
+    check("the conversation names its agent and definition digest",
+          "careful" in agent_line and len(page.locator("#agent-digest").inner_text()) == 12, agent_line)
+    check("it shows each system prompt actually sent, as digests", page.locator("code.prompt-digest").count() == 2
+          and "changed 1" in agent_line, agent_line)
 
     # --- ACP, cumulative reports with a replay: two deltas, models not reported ---------------
     page.goto(f"{BASE}#/runs/{N['acp']}", wait_until="load")
@@ -120,6 +125,23 @@ with sync_playwright() as p:
           and all(set(r) == set(exported["fields"]) for r in exported["rows"]))
     check("the export holds the 30d rows", len(exported["rows"]) >= 16 + 4)
     page.screenshot(path=str(SHOTS / "obs-usage.png"))
+    # --- Setup lists the agents: digests and sizes, never instruction text ---------------------------
+    page.goto(f"{BASE}#/setup", wait_until="load")
+    page.wait_for_selector("#agents-table")
+    careful = page.locator('tr.agent-row[data-agent="project/careful"]')
+    check("a project agent is listed with its source", careful.count() == 1
+          and "project" in careful.inner_text() and "extends garuda/explore" in careful.inner_text())
+    check("with a definition digest and a prompt digest",
+          len(careful.locator("code.agent-digest").inner_text()) == 12
+          and len(careful.locator("code.agent-prompt-digest").inner_text()) == 12)
+    careful.locator("summary").click()
+    declared = careful.locator("ul.agent-fields").inner_text()
+    check("its declared settings say where each came from", "limits.max_turns" in declared and "project" in declared, declared)
+    check("a packaged agent is listed", page.locator('tr.agent-row[data-agent="garuda/build"]').count() == 1)
+    check("an agent that cannot resolve is shown with its problem",
+          "cannot resolve" in page.locator('tr.agent-row[data-agent="project/broken"]').inner_text())
+    check("no instruction text on the page", "SEED-INSTRUCTION-MARKER" not in page.locator("body").inner_text())
+    page.screenshot(path=str(SHOTS / "obs-agents.png"))
     browser.close()
 
 if problems:

@@ -90,7 +90,9 @@ def list_agents(workspace) -> list[dict]:
 
 def _target(target: str, workspace) -> resolve.ResolvedAgent:
     """A name, or a path to a definition file (``--agent-file``), resolved purely."""
-    if os.sep in target or target.endswith((".yaml", ".yml", ".md")):
+    # A qualified name (`garuda/build`, `project/x`) has a separator too: it is a file only when
+    # it carries a definition extension or names a file that exists.
+    if target.endswith((".yaml", ".yml", ".md")) or (os.sep in target and os.path.isfile(target)):
         from garuda.agents.spec_api import AgentSpec
 
         return AgentSpec.from_file(target, workspace).resolved()
@@ -165,6 +167,56 @@ def prompt_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False) 
                       "chars": len(t), "tokens": len(t) // 4, "text": _redact(t, raw)}
                      for n, src, t in sections],
     }
+
+
+# --- dashboard ----------------------------------------------------------------------------------
+
+
+def _brief(value, limit: int = 120) -> str:
+    import json
+
+    text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+def dashboard_rows(workspace) -> list[dict]:
+    """Every agent for the Setup view: source, the settings it declares (with where each came
+    from), its definition digest, the static prompt digest and the size of each prompt section.
+
+    Read-only and bounded: no instruction or prompt text is returned (only its size and digest),
+    values are redacted, and a definition that fails to resolve is listed with its problem
+    instead of hiding the others. Nothing is started."""
+    rows = []
+    for listed in list_agents(workspace):
+        row = {k: listed.get(k) for k in ("name", "source", "qualified", "extends",
+                                          "description", "shadowed_by")}
+        row["description"] = _redact(row["description"], False)
+        if listed.get("error"):
+            row["error"] = str(listed["error"])[:300]
+            rows.append(row)
+            continue
+        try:
+            dirs = _dirs(workspace)
+            info = show_agent(resolve.resolve_agent(listed["qualified"], dirs), workspace)
+            agent = resolve.resolve_agent(listed["qualified"], dirs)
+            sections = prompt_agent(agent, workspace)
+        except Exception as exc:  # one broken definition does not hide the rest
+            row["error"] = str(exc)[:300]
+            rows.append(row)
+            continue
+        declared = set(agent.leaves) | {"tools"}
+        row.update(
+            digest=info["digest"], prompt_digest=sections["digest"], estimator=ESTIMATOR,
+            versioned=agent.versioned, warnings=info["warnings"],
+            instructions_chars=len(agent.instructions or ""),
+            sections=[{k: s[k] for k in ("section", "source", "bytes", "tokens")}
+                      for s in sections["sections"]],
+            tokens=sum(s["tokens"] for s in sections["sections"]),
+            fields=[{"path": path, "value": _brief(field["value"]), "source": field["source"]}
+                    for path, field in info["fields"].items()
+                    if path in declared and path != "description"])
+        rows.append(row)
+    return rows
 
 
 # --- check -------------------------------------------------------------------------------------

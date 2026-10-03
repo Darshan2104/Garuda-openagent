@@ -1052,3 +1052,13 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   dropped or enabled. The child resolves the agent against the source workspace; the
   narrowing, not the snapshot path, bounds its authority.
 
+## 2026-10-02 — The dashboard shows agent identities, never agent text (issue #173, H.11)
+
+- Setup lists every agent definition with its source, declared settings and their
+  provenance, definition digest, static prompt digest and section sizes; a session shows
+  its agent and the system-prompt digests it actually sent. Neither returns instruction,
+  prompt or memory text, values are redacted, and the view is read-only. A definition that
+  cannot resolve is listed with its problem.
+- A qualified agent name (`garuda/build`, `project/x`) is a name, not a path, in
+  `garuda agent show|prompt`; only an existing file or a definition extension selects a file.
+

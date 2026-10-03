@@ -57,6 +57,7 @@ def start_dashboard(
     *,
     read_only: bool = True,
     extra_env: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
 ):
     command = [
         sys.executable, "-m", "garuda.interfaces.main", "web",
@@ -66,6 +67,7 @@ def start_dashboard(
     ]
     if read_only:
         command.append("--read-only")
+    command.extend(extra_args or [])
     handle = log.open("w")
     process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT,
                               env={**os.environ, "GARUDA_WEB_TOKEN": TOKEN, **(extra_env or {})})
@@ -221,7 +223,8 @@ def main() -> int:
                        env={**os.environ, **obs_env})
         obs_port = free_port(bg_port + 1)
         processes.append(start_dashboard(obs_sessions, obs_port, workdir / "web-obs.log",
-                                         extra_env=obs_env))
+                                         extra_env=obs_env,
+                                         extra_args=["--allow-workspace", str(workdir)]))
         if not run_check("check_observability.py", obs_port, shots, obs_env):
             failures.append("check_observability.py")
 

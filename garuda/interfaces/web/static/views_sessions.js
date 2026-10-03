@@ -343,6 +343,20 @@ function consultsHtml(c) {
     '<ul class="consult-lanes">' + lanes + "</ul></div>";
 }
 
+/* Which definition ran and the system prompt it actually sent: digests and lengths only. */
+function agentLineHtml(a) {
+  if (!a || (!a.name && !a.digest && !(a.prompts || []).length)) return "";
+  var prompts = (a.prompts || []).map(function (p) {
+    return '<code class="prompt-digest" data-digest="' + esc(p.digest) + '">' + esc(String(p.digest).slice(0, 12)) + "</code>" +
+      (p.chars ? " (" + esc(fmt.tokens(p.chars)) + " chars)" : "");
+  }).join(", ");
+  return '<p class="stat-sub" id="agent-line">Agent: <strong>' + esc(a.name || "—") + "</strong>" +
+    (a.digest ? ' · definition <code id="agent-digest">' + esc(String(a.digest).slice(0, 12)) + "</code>" : "") +
+    (prompts ? " · system prompt " + prompts : " · no system prompt recorded") +
+    (a.prompt_changes > 1 ? " · changed " + esc(a.prompt_changes - 1) + "×" : "") +
+    (a.segment ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + "</p>";
+}
+
 function conversationPanelHtml(c) {
   var used = c.models_used;
   var rows = used.rows.map(function (r) {
@@ -366,6 +380,7 @@ function conversationPanelHtml(c) {
   }
   return (
     '<div class="card" id="conversation-panel"><h2>Models used</h2>' +
+    agentLineHtml(c.agent) +
     (used.label ? '<p class="stat-sub" id="models-label">' + esc(used.label) + "</p>" : "") +
     '<p class="stat-sub">Selected: ' + esc((c.selected.harness || c.session.runtime) + " · " + (c.selected.model_id || "—")) +
     ". Reported attribution is shown separately; ACP turns are not call counts.</p>" +
@@ -400,6 +415,33 @@ function loadConversationPanel(sessionId) {
 
 function copyButtonHtml(text) {
   return '<button type="button" class="btn copy-fix" data-copy="' + esc(text) + '">Copy</button>';
+}
+
+/* Agents (H.11): read-only. Source, declared settings with where each came from, the definition
+ * digest, the static prompt digest and each prompt section's size. No instruction or prompt text. */
+function setupAgentsHtml(agents) {
+  if (!agents) return "";
+  var rows = agents.map(function (a) {
+    if (a.error) {
+      return '<tr class="agent-row" data-agent="' + esc(a.qualified || a.name) + '"><td>' + esc(a.qualified || a.name) +
+        '</td><td colspan="5"><span class="pill failed">cannot resolve</span> ' + esc(a.error) + "</td></tr>";
+    }
+    var sections = (a.sections || []).map(function (s) { return esc(s.section) + " " + esc(fmt.tokens(s.tokens)); }).join(", ");
+    var fields = (a.fields || []).map(function (f) {
+      return "<li><code>" + esc(f.path) + "</code> = " + esc(f.value) + ' <span class="stat-sub">(' + esc(f.source) + ")</span></li>";
+    }).join("");
+    return '<tr class="agent-row" data-agent="' + esc(a.qualified) + '"><td>' + esc(a.qualified) +
+      (a.shadowed_by ? ' <span class="pill unknown">shadowed by ' + esc(a.shadowed_by) + "</span>" : "") +
+      "</td><td>" + esc(a.source) + (a.extends ? " · extends " + esc(a.extends) : "") + '</td><td><code class="agent-digest">' +
+      esc(String(a.digest).slice(0, 12)) + '</code></td><td><code class="agent-prompt-digest">' + esc(String(a.prompt_digest).slice(0, 12)) +
+      '</code></td><td class="num">' + esc(fmt.tokens(a.tokens)) + " tokens<br><span class=\"stat-sub\">" + sections + "</span></td>" +
+      "<td><details><summary>" + esc((a.fields || []).length) + " declared</summary><ul class=\"agent-fields\">" + fields + "</ul></details>" +
+      (a.warnings && a.warnings.length ? '<div class="stat-sub">' + a.warnings.map(esc).join("; ") + "</div>" : "") + "</td></tr>";
+  }).join("");
+  return '<div class="card" id="agents-setup"><h2>Agents</h2><p class="stat-sub">Read-only. Digests identify exactly what a run would use; ' +
+    "token sizes are estimated (chars/4). Instruction and prompt text is not shown here — use <code>garuda agent show NAME</code>.</p>" +
+    '<div class="table-wrap"><table class="table" id="agents-table"><thead><tr><th>Agent</th><th>Source</th><th>Definition</th><th>Prompt</th>' +
+    "<th>Size</th><th>Declared</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>";
 }
 
 function setupConsultsHtml(k) {
@@ -448,7 +490,7 @@ function setupView() {
       '<div class="card"><h2>Diagnostics</h2><ul class="diagnostics" id="setup-diagnostics">' + diagnostics + "</ul></div>" +
       '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
-      setupConsultsHtml(s.consults) +
+      setupAgentsHtml(s.agents) + setupConsultsHtml(s.consults) +
       '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +
       '<div class="card"><h2>Where each value came from</h2>' + (s.withheld.length ? '<p class="stat-sub" id="withheld">Withheld until trusted: ' + esc(s.withheld.join(", ")) + "</p>" : "") +
       '<table class="table" id="provenance-table"><tbody>' + s.provenance.map(function (p) {

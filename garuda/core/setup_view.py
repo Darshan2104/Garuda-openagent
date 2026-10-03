@@ -8,6 +8,8 @@ recorded conclusion, or "not checked"), no model is called. It reports
 * **provenance** — which layer (package, user, trusted project, CLI) supplied every effective
   value, and what a project file asked for that is withheld until trusted;
 * **roles** — harness, exact model id, effort and fallback chain;
+* **agents** — every definition with its source, declared settings, digest, static prompt
+  digest and per-section sizes (no instruction or prompt text);
 * **consults** — role grants, the ceilings, and per-adapter transport status;
 * **flows** — every flow, the packaged examples marked as such, and any role a flow needs
   that is not defined.
@@ -99,6 +101,15 @@ def _consults(resolved) -> dict:
                     "for an adapter whose three transport gates are all proved."}
 
 
+def _agents(workspace: str) -> list[dict]:
+    from garuda.agents import inspect
+
+    try:
+        return inspect.dashboard_rows(workspace)
+    except Exception as exc:  # the rest of Setup still loads
+        return [{"name": "(agents)", "source": "unknown", "error": str(exc)[:300]}]
+
+
 def _flows(resolved) -> list[dict]:
     from garuda.config import garuda_yaml as gy
     from garuda.flows import packaged
@@ -124,6 +135,7 @@ def setup(workspace: str) -> dict[str, Any]:
         "roles": _roles(resolved),
         "flows": _flows(resolved),
         "consults": _consults(resolved),
+        "agents": _agents(workspace),
         "provenance": ([{"key": k, "source": v} for k, v in sorted(resolved.provenance.items())]
                        if resolved else []),
         "withheld": list(resolved.withheld) if resolved else [],
