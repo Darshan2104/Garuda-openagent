@@ -325,7 +325,9 @@ function conversationPanelHtml(c) {
     return '<div id="' + id + '"><strong>' + title + "</strong> " + list.map(function (s) {
       return '<a href="#/sessions/' + encodeURIComponent(s.session_id) + '">' +
              esc(s.name || s.session_id.slice(0, 8)) + "</a>" +
-             (s.cross_project ? ' <span class="pill unknown">other project</span>' : "");
+             (s.cross_project ? ' <span class="pill unknown">other project</span>' +
+               (s.receipt && s.receipt.present ? ' <span class="pill success receipt" data-fingerprint="' + esc(s.receipt.fingerprint) + '">receipt ' + esc(String(s.receipt.fingerprint || "").slice(0, 8)) + "</span>"
+                                               : ' <span class="pill failed">no receipt</span>') : "");
     }).join(", ") + "</div>";
   }
   return (
@@ -338,6 +340,9 @@ function conversationPanelHtml(c) {
           : '<p class="stat-sub">No model calls recorded.</p>') +
     (used.snapshots.length ? '<p class="stat-sub" id="snapshots-note">Context snapshots (occupancy, not billable usage): ' +
       used.snapshots.map(function (s) { return esc((s.context_used === null ? "?" : s.context_used) + "/" + (s.context_size === null ? "?" : s.context_size)); }).join(", ") + "</p>" : "") +
+    (c.selected.fallback && c.selected.fallback.taken && c.selected.fallback.taken.index ?
+      '<p class="stat-sub" id="fallback-note">Started on ' + esc(c.selected.fallback.taken.harness) + " after " +
+      esc((c.selected.fallback.skipped || []).map(function (s) { return s.harness + " (" + s.reason + ")"; }).join(", ")) + ".</p>" : "") +
     (c.lanes.length ? '<p class="stat-sub" id="lanes-note">Lanes: ' + c.lanes.map(function (l) { return esc(l.runtime_id + " (" + l.kind + ")"); }).join(" → ") + "</p>" : "") +
     links("Resumed from", c.links.resumed_from, "link-resumed-from") +
     links("Continued by", c.links.resumed_into, "link-resumed-into") +

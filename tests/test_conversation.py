@@ -102,7 +102,7 @@ def test_an_acp_session_keeps_selected_reported_snapshots_and_turns_apart(world)
     (row,) = c["models_used"]["rows"]
     assert row["model"] == "not reported" and row["selected_model"] == "claude-sonnet-x"
     assert row["model"] != row["selected_model"]  # never borrowed from the selection
-    assert (row["calls"], row["turns"], row["total_tokens"], row["input_tokens"]) == (0, 2, 0, 200)
+    assert (row["calls"], row["turns"], row["total_tokens"], row["input_tokens"]) == (0, 2, 220, 200)  # 2 x (100 in + 10 out)
     assert c["models_used"]["snapshots"] and c["models_used"]["snapshots"][0]["context_used"] == 900
     # the snapshots add nothing to the rows or the totals
     assert c["models_used"]["totals"]["snapshots_excluded"] == 2
@@ -158,3 +158,39 @@ def test_lanes_and_the_fallback_story_ride_one_session(world):
     assert c["selected"]["fallback"]["taken"]["harness"] == "codex"
     assert isinstance(c["lanes"], list)
     json.dumps(c)  # everything is plain data
+
+
+def test_a_cross_project_tag_shows_its_receipt_and_never_its_content(world):
+    from garuda.context import brief as briefs
+    from garuda.context import tags
+
+    store, ledger, tmp = world
+    n = ids("tagger", "elsewhere", "local")
+    other = tmp / "other"
+    other.mkdir()
+    store.begin(n["tagger"], task="t", model="m", agent="a", workspace=str(tmp))
+    store.begin(n["elsewhere"], task="the secret plan", model="m", agent="a", workspace=str(other))
+    store.begin(n["local"], task="t", model="m", agent="a", workspace=str(tmp))
+    elsewhere = store.load_meta(n["elsewhere"]).get("project_id")
+    pairs = [
+        (tags.Tag(n["elsewhere"], "far", elsewhere, True, "cross-project-flag"),
+         briefs.Brief(session_id=n["elsewhere"], name="far", project_id=elsewhere, runtime="native",
+                      model="m", task="the secret plan", state="completed")),
+        (tags.Tag(n["local"], "near", store.load_meta(n["local"]).get("project_id"), False, "flag"),
+         briefs.Brief(session_id=n["local"], name="near", project_id=None, runtime="native",
+                      model="m", task="t", state="completed"))]
+    tags.record_links(store, n["tagger"], tags.Attached(
+        tags=[p[0] for p in pairs], briefs=[p[1] for p in pairs],
+        rendered=briefs.render([p[1] for p in pairs])))
+
+    links = {k["session_id"]: k for k in conversation.conversation(
+        store, n["tagger"], ledger=ledger)["links"]["tagged"]}
+    far, near = links[n["elsewhere"]], links[n["local"]]
+    assert far["cross_project"] and far["receipt"]["present"] and far["receipt"]["fingerprint"]
+    assert near["cross_project"] is False and near["receipt"] is None
+    assert "secret plan" not in json.dumps(far["receipt"])  # a fingerprint, never the content
+    # a cross-project link whose receipt is missing says so rather than implying a grant
+    (store.session_dir(n["tagger"]) / "receipts" / f"{n['elsewhere']}.json").chmod(0o600)
+    (store.session_dir(n["tagger"]) / "receipts" / f"{n['elsewhere']}.json").unlink()
+    gone = conversation.conversation(store, n["tagger"], ledger=ledger)["links"]["tagged"]
+    assert {k["session_id"]: k["receipt"] for k in gone}[n["elsewhere"]] == {"present": False}

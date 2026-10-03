@@ -212,6 +212,19 @@ def main() -> int:
                          {**bg_env, "GARUDA_CHECK_SESSIONS": str(bg_sessions)}):
             failures.append("check_background.py")
 
+        # --- observability: conversations, usage, tags and receipts ---------------------
+        obs_sessions = workdir / "obs-sessions"
+        obs_settings = workdir / "obs-settings.yaml"
+        obs_env = {"GARUDA_GLOBAL_SETTINGS": str(obs_settings)}
+        subprocess.run([sys.executable, str(HERE / "seed_sessions.py"), str(obs_sessions),
+                        str(workdir), "--observability"], check=True,
+                       env={**os.environ, **obs_env})
+        obs_port = free_port(bg_port + 1)
+        processes.append(start_dashboard(obs_sessions, obs_port, workdir / "web-obs.log",
+                                         extra_env=obs_env))
+        if not run_check("check_observability.py", obs_port, shots, obs_env):
+            failures.append("check_observability.py")
+
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
         chat_sessions.mkdir()
