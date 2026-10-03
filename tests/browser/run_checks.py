@@ -225,6 +225,18 @@ def main() -> int:
         if not run_check("check_observability.py", obs_port, shots, obs_env):
             failures.append("check_observability.py")
 
+        # --- consults: nested lanes, rollups, setup and usage by origin ------------------
+        con_sessions = workdir / "con-sessions"
+        con_settings = workdir / "con-settings.yaml"
+        con_env = {"GARUDA_GLOBAL_SETTINGS": str(con_settings)}
+        subprocess.run([sys.executable, str(HERE / "seed_sessions.py"), str(con_sessions),
+                        str(workdir), "--consults"], check=True, env={**os.environ, **con_env})
+        con_port = free_port(obs_port + 1)
+        processes.append(start_dashboard(con_sessions, con_port, workdir / "web-con.log",
+                                         extra_env=con_env))
+        if not run_check("check_consults.py", con_port, shots, con_env):
+            failures.append("check_consults.py")
+
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
         chat_sessions.mkdir()

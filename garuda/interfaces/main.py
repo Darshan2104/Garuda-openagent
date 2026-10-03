@@ -903,8 +903,11 @@ def run_sessions(args) -> int:
         except (OSError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
-        print(_json.dumps(row, indent=2, default=str) if args.json else
-              "\n".join(f"{k}: {v}" for k, v in row.items()))
+        if args.json:
+            print(_json.dumps(row, indent=2, default=str))
+        else:
+            shown = {**row, "consults": row.get("consults", {}).get("line") or "none"}
+            print("\n".join(f"{k}: {v}" for k, v in shown.items()))
         return 0
     rows = read_model.sessions(store, limit=args.limit, queue=queue)
     if getattr(args, "json", False):
@@ -2049,7 +2052,21 @@ async def run_task(args) -> int:
         print(result.final_message)
         if getattr(args, "isolation", "shared") != "shared" or args.resume:
             _print_worktree_note(fallback_store, events.session_id)
+        _print_consult_line(fallback_store, events.session_id)
     return 0 if result.success else 1
+
+
+def _print_consult_line(store, session_id: str) -> None:
+    """One line about the consults this run asked for; nothing when there were none (G.4)."""
+    from garuda.consult import view
+    from garuda.core.sessions import SessionStore
+
+    try:
+        line = view.line(view.entries(store or SessionStore(), session_id))
+    except Exception:
+        return
+    if line:
+        print(f"[garuda] {line}")
 
 
 def _print_worktree_note(store, session_id: str) -> None:

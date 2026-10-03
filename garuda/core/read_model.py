@@ -146,6 +146,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None) -> dict[s
         "name": meta.get("name"),
         "project_id": meta.get("project_id"),
         "kind": meta.get("kind") or "session",
+        "origin": meta.get("origin"),
         "background": bool(meta.get("background")),
         "task": meta.get("task"),
         "agent": meta.get("agent"),
@@ -190,4 +191,10 @@ def session(store, session_id: str, *, queue=None) -> dict:
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
     row["flow"] = flow(store, session_id, meta)
+    from garuda.consult import view
+    from garuda.core import conversation
+
+    consults = conversation.consult_rows(store, session_id, meta)
+    row["consults"] = {"summary": view.summary(consults), "line": view.line(consults),
+                       "entries": consults}
     return row

@@ -1023,3 +1023,17 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Permissions are auto-allowed only from the structured server and tool identity
   for the live session; display titles are never trusted.
 
+## 2026-10-02 — Consult usage rolls up once and a missing receipt reads unknown (issue #170, G.4)
+
+- A parent's views add its consulted children's ledger records once (de-duplicated by
+  record key), keeping `origin` beside the original `call_purpose`; global
+  statistics sum original records, never parent rollups. By-origin groups partition
+  the records and add up to the total.
+- A consult row with no receipt, or a receipt without comparison evidence, shows its
+  changes as `unknown`, never `unchanged`; the question and answer are not stored and
+  not shown.
+- A review records the independence decision with the identities that actually ran
+  (launched plan after fallback, roles really consulted) beside the configured ones;
+  under the default policy a shared actual identity stops the flow
+  (`flow.review_not_independent`).
+

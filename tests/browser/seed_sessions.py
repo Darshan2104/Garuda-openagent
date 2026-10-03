@@ -281,7 +281,121 @@ def seed_observability(root: Path, workspace: str) -> dict:
     return OBS
 
 
+CON = {
+    "asker": "00000000-0000-0000-0000-0000000000d1",
+    "quiet": "00000000-0000-0000-0000-0000000000d2",
+    "stuck": "00000000-0000-0000-0000-0000000000d3",
+}
+CONSULT_DOC = {
+    "version": 1,
+    "roles": {"coder": {"harness": "native", "model_id": "big/model", "consult": ["reviewer"]},
+              "reviewer": {"harness": "native", "model_id": "review/model"}},
+}
+
+
+def seed_consults(root: Path, workspace: str) -> dict:
+    """A session that asked four consults (answered, withheld on changed evidence, failed and
+    timed out) and another whose consult could not be reaped (quarantined, no receipt) - all
+    through the production consult service, ledger observer and session store. The answered
+    child made two summarizer calls, so the parent's rollup must show them once, as consult."""
+    import asyncio
+    import subprocess as sp
+
+    from garuda.config import garuda_yaml as gy
+    from garuda.consult import service as svc
+    from garuda.consult.service import ChildOutcome, ConsultRequest, ConsultService
+    from garuda.core.events import EventStore, EventType
+    from garuda.observability import usage as usage_ledger
+    from garuda.runtime.roles import RolePlan
+
+    store = SessionStore(root)
+    project = Path(workspace) / "consult-project"
+    project.mkdir(exist_ok=True)
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(project)]
+    sp.run(["git", "init", "-q", str(project)], check=True)
+    (project / "notes.txt").write_text("original\n")
+    sp.run([*git, "add", "."], check=True)
+    sp.run([*git, "commit", "-qm", "init"], check=True)
+    for name, sid in CON.items():
+        store.begin(sid, task=f"consult {name}", model="big/model", agent="build",
+                    workspace=str(project), name=f"consult-{name}")
+        store.update_meta(sid, {"role": RolePlan(role="coder", runtime_id="native",
+                                                 kind="native").record()})
+    parent = EventStore(CON["asker"], persist_path=store.events_path(CON["asker"]))
+    usage_ledger.attach(parent, store)
+    parent.append(EventType.SESSION_START, {"task": "asker", "model": "big/model"})
+    for _ in range(3):
+        parent.append(EventType.MODEL_RESPONSE, {
+            "turn": 1, "content": "ok", "tool_calls": [], "call_purpose": "controller",
+            "model": "big/model", "usage": {"prompt_tokens": 100, "completion_tokens": 5,
+                                            "total_tokens": 105, "cost_usd": 0.01}})
+    other = EventStore(CON["stuck"], persist_path=store.events_path(CON["stuck"]))
+    other.append(EventType.SESSION_START, {"task": "asker two", "model": "big/model"})
+    resolved = gy.resolve(gy.parse({**CONSULT_DOC, "consults": {"timeout_sec": 1}}))
+    svc.REAP_GRACE = 0.2
+
+    def child_session(child, calls):
+        """The consulted child's own session and summarizer calls, recorded the real way."""
+        store.begin(child.child_id, task="consulted question", model="review/model",
+                    agent="consult", workspace=child.workspace)
+        store.update_meta(child.child_id, {"origin": "consult", "consult": {
+            "asker_session": child.asker_session, "root_session": child.root_session}})
+        events = EventStore(child.child_id, persist_path=store.events_path(child.child_id))
+        usage_ledger.attach(events, store)
+        events.append(EventType.SESSION_START, {"task": "consulted", "model": "review/model"})
+        for _ in range(calls):
+            events.append(EventType.MODEL_RESPONSE, {
+                "turn": 1, "content": "ok", "tool_calls": [], "call_purpose": "summarizer",
+                "model": "review/model", "usage": {"prompt_tokens": 50, "completion_tokens": 1,
+                                                   "total_tokens": 51, "cost_usd": 0.02}})
+
+    async def answered(child):
+        child_session(child, 2)
+        return ChildOutcome(child.child_id, True, "Add a jitter to the retry delay.")
+
+    async def tampering(child):
+        (Path(child.workspace) / "notes.txt").write_text("edited in the snapshot\n")
+        return ChildOutcome(child.child_id, True, "trust me")
+
+    async def failing(child):
+        return ChildOutcome(child.child_id, False, "", denied_operations=2)
+
+    async def slow(child):
+        await asyncio.sleep(30)
+
+    stop = asyncio.Event()
+
+    async def stubborn(child):
+        while not stop.is_set():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0)
+
+    def ask(runner, asker, request_id):
+        request = ConsultRequest(asker_session=asker, root_session=asker, target="reviewer",
+                                 question="Is the retry loop safe?", workspace=str(project),
+                                 request_id=request_id)
+        try:
+            return asyncio.get_event_loop().run_until_complete(
+                ConsultService(store, resolved, runner=runner).consult(request))
+        except Exception:
+            return None  # a refusal is the point; its row is what the page shows
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    for request_id, runner in (("c-answer", answered), ("c-withheld", tampering),
+                               ("c-failed", failing), ("c-timeout", slow)):
+        ask(runner, CON["asker"], request_id)
+    ask(stubborn, CON["stuck"], "c-stuck")
+    stop.set()
+    loop.run_until_complete(asyncio.sleep(0.2))
+    return CON
+
+
 if __name__ == "__main__":
     ids = seed(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "/tmp")
     if "--observability" in sys.argv:
         seed_observability(Path(sys.argv[1]), sys.argv[2])
+    if "--consults" in sys.argv:
+        seed_consults(Path(sys.argv[1]), sys.argv[2])

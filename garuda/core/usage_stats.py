@@ -142,6 +142,9 @@ def stats(records, range_name: str, now: float) -> dict[str, Any]:
         "harness_model": harness_model,
         "daily": daily,
         "by_role": table("role", lambda r: r.get("role") or "unknown"),
+        # Original events grouped by who made them (run, subagent, flow, consult). The groups
+        # partition the records, so they add up to ``measures`` with no parent rollups in them.
+        "by_origin": table("origin", lambda r: r.get("origin") or "run"),
         "by_project": table("project_id", lambda r: r.get("project_id") or "unknown"),
         "median": {
             "tokens_per_native_call": statistics.median(tokens_per_call) if tokens_per_call else None,
