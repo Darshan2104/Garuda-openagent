@@ -1976,6 +1976,7 @@ async def run_task(args) -> int:
         config.post_edit_lint = False
     if getattr(args, "no_bootstrap", False):
         config.bootstrap_environment = False
+    _enable_consults(args, config)
     config.workspace_kind = args.workspace_kind
     config.docker_image = args.docker_image
     config.docker_host = args.docker_host
@@ -2167,6 +2168,25 @@ async def run_web(args) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive
         pass
     return 0
+
+
+def _enable_consults(args, config) -> None:
+    """Give a role the user granted consult targets the ``consult`` tool (G.2).
+
+    The grant is read from the effective ``garuda.yaml`` (user file; a project can only
+    narrow it); without a selected role, or without targets, there is no tool."""
+    resolved = getattr(args, "_config", None)
+    plan = getattr(args, "_role_plan", None)
+    if resolved is None or plan is None or plan.kind != "native":
+        return
+    targets = list((resolved.config.get("roles", {}).get(plan.role) or {}).get("consult", []))
+    if not targets:
+        return
+    from garuda.consult.service import ConsultService
+    from garuda.core.sessions import SessionStore
+
+    config.consult_service = ConsultService(SessionStore(), resolved)
+    config.consult_targets = targets
 
 
 def agent_selection(args):

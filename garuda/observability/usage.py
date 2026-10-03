@@ -130,6 +130,8 @@ class NativeUsageObserver:
             context["attempt"] = step.get("attempt")
             if session_id == self._root_id:
                 context["origin"] = "flow"
+        if meta.get("origin") == "consult":
+            context["origin"] = "consult"
         context["harness"] = "native"
         self._context[session_id] = context
         return context

@@ -784,6 +784,29 @@ async def prepare_run(
         except Exception:
             logger.warning("memory.notes: propose is unavailable for this run", exc_info=True)
             notes_ledger = None
+    consult_context = None
+    if config.consult_service is not None and config.consult_targets:
+        # Consults (G.2): the tool is present only for a role the user granted targets, and
+        # the service re-authorizes from the session record on every call.
+        from garuda.tools.consult import ConsultContext, ConsultTool
+
+        def _quiesce() -> None:
+            if run_state_ref and run_state_ref[0].ledger.processes:
+                from garuda.consult.errors import ConsultRefused
+
+                raise ConsultRefused(
+                    "consult.snapshot_unstable",
+                    "a background process this run started may still be writing; stop it first")
+
+        run_state_ref: list = []
+        consult_context = ConsultContext(
+            service=config.consult_service, asker_session=events.session_id,
+            root_session=config.consult_root or events.session_id,
+            targets=tuple(config.consult_targets),
+            workspace=str(getattr(env, "workspace_root", None) or "."), quiesce=_quiesce,
+            turn=lambda: run_state_ref[0].turn if run_state_ref else None)
+        if not any(t.name == "consult" for t in tools):
+            tools = [*tools, ConsultTool().limited_to(consult_context.targets)]
     if terminal_strategy is None:
         # The terminal tool carries the agent's output schema, or none: a child
         # delegated the parent's tools must not inherit the parent's schema.
@@ -837,6 +860,7 @@ async def prepare_run(
         tool_options=dict(config.tool_options or {}),
         removed_tools=frozenset(config.removed_tools or ()),
         notes=notes_ledger,
+        consult=consult_context,
     )
     ctx.deadline_monotonic = deadline_at
     ledger = SideEffectLedger()
@@ -928,4 +952,6 @@ async def prepare_run(
     if built_runner:
         # A child never outruns the turns its parent has left.
         subagent_runner.turns_left = lambda: max(1, config.max_turns - run_state.turn)
+    if consult_context is not None:
+        run_state_ref.append(run_state)  # the quiesce check and the source turn read it
     return run_state
