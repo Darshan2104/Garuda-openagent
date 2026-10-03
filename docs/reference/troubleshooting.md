@@ -179,6 +179,12 @@ Click a problem to see the fix.
       processes ran) while the snapshot was taken. Retry when it is quiet.
     - `consult.isolation_unavailable`: an external target needs the Docker
       read-only confinement and it is not available.
+    - `consult.transport_unsupported`: an ACP role asked to consult, but its
+      adapter version has not proved MCP forwarding, structured permission
+      identity and a workspace-pause handshake, so the tool is not offered. Use
+      a native role for the asking side.
+    - `consult.unauthenticated`: the consult endpoint of an ACP session refused
+      the token (old or wrong); it is replaced whenever the session resumes.
     - `consult.payload_changed`: the same request id was reused with a different
       question.
     - `consult.interrupted`, `consult.quarantined`: Garuda was killed mid-consult,

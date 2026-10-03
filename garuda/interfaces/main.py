@@ -525,6 +525,7 @@ def build_parser():
 
     worker_parser = subparsers.add_parser("__worker", help=argparse.SUPPRESS)
     worker_parser.add_argument("session")
+    subparsers.add_parser("_consult-mcp", help=argparse.SUPPRESS)  # an ACP adapter launches this
 
     config_parser = subparsers.add_parser("config", help="The garuda.yaml configuration")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -1783,6 +1784,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             name=getattr(args, "name", None),
             resume_plan=getattr(args, "_resume_plan", None),
             role_plan=getattr(args, "_role_plan", None),
+            consult_host=_acp_consult_host(args),
         )
     except NativeStartupFallback:
         raise
@@ -2189,6 +2191,24 @@ def _enable_consults(args, config) -> None:
     config.consult_targets = targets
 
 
+def _acp_consult_host(args):
+    """The consult offer for an ACP asker (G.3): present only for a role with granted targets;
+    whether the tool is actually exposed is decided per adapter identity at connection time."""
+    resolved = getattr(args, "_config", None)
+    plan = getattr(args, "_role_plan", None)
+    if resolved is None or plan is None or plan.kind != "acp":
+        return None
+    targets = list((resolved.config.get("roles", {}).get(plan.role) or {}).get("consult", []))
+    if not targets:
+        return None
+    from garuda.consult.handshake import AcpConsultHost
+    from garuda.consult.service import ConsultService
+    from garuda.core.sessions import SessionStore
+
+    return AcpConsultHost(ConsultService(SessionStore(), resolved), targets=targets,
+                          workspace=os.path.abspath(args.workspace))
+
+
 def agent_selection(args):
     """The agent a command runs: ``--agent-file`` (resolved, not trusted) or ``--agent``."""
     path = getattr(args, "agent_file", None)
@@ -2238,6 +2258,10 @@ def main() -> None:
 
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "_consult-mcp":
+        from garuda.interfaces.consult_mcp import main as consult_mcp_main
+
+        raise SystemExit(consult_mcp_main())
     if args.command == "__worker":
         from garuda.interfaces.bg_sessions import run_worker
 

@@ -619,6 +619,7 @@ async def run_acp_task(
     resume_plan=None,
     role_plan=None,
     lease_capability=None,
+    consult_host=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -725,6 +726,12 @@ async def run_acp_task(
             store, session_id, manifest.runtime_id, handler=approval
         )
         def make_runtime():
+            runtime = build_runtime()
+            if consult_host is not None and confinement is None:  # no host socket in a container
+                runtime.attach_consult(consult_host)  # exposed only for a proved adapter (G.3)
+            return runtime
+
+        def build_runtime():
             if confinement is not None:
                 from garuda.acp.catalog import adapter_for_manifest
                 from garuda.workspace.confined_acp import CONTAINER_WORKSPACE, docker_argv

@@ -127,6 +127,30 @@ class AcpRuntime:
         self._pending_approvals: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
         self._answer_tasks: set[asyncio.Task] = set()
         self._quota: dict[str, Any] | None = None
+        self._consult_host = None
+        self._agent_info: dict[str, Any] = {}
+
+    def attach_consult(self, host) -> None:
+        """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
+        self._consult_host = host
+
+    async def _consult_servers(self, handshake: dict[str, Any], process) -> list[dict[str, Any]]:
+        """The ``mcpServers`` to send: empty unless the host exposes the tool. Any failure
+        means no tool; it never fails the session."""
+        info = handshake.get("agentInfo")
+        self._agent_info = info if isinstance(info, dict) else {}
+        if self._consult_host is None:
+            return []
+        try:
+            return await self._consult_host.mcp_servers(
+                self._agent_info, session_id=self._garuda_session_id, pid=process.pid)
+        except Exception:
+            logger.warning("The consult tool was not offered", exc_info=False)
+            return []
+
+    async def _close_consult(self) -> None:
+        if self._consult_host is not None:
+            await self._consult_host.close()
 
     @property
     def runtime_id(self) -> str:
@@ -261,7 +285,9 @@ class AcpRuntime:
                 )
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
-            self._agent_session_id = await process.session_new(cwd=self._cwd)
+            servers = await self._consult_servers(handshake, process)
+            self._agent_session_id = await process.session_new(
+                cwd=self._cwd, mcp_servers=servers or None)
             if self._store is None and self._prepared_recorder is None:
                 # No store means no persisted child record: a Garuda crash
                 # would leave this child unrecoverable by `recover()`.
@@ -275,6 +301,7 @@ class AcpRuntime:
         except AcpProtocolError as exc:
             self._note_error(exc)
             await process.close()
+            await self._close_consult()
             self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             if "version mismatch" in str(exc) and self._setup_hint:
@@ -283,6 +310,7 @@ class AcpRuntime:
         except Exception as exc:
             self._note_error(exc)
             await process.close()
+            await self._close_consult()
             self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             raise
@@ -290,6 +318,7 @@ class AcpRuntime:
             # A cancelled start must not leave a launched child running with
             # no runtime that owns it: reap it, retire it, then propagate.
             await process.close()
+            await self._close_consult()
             self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             raise
@@ -439,7 +468,9 @@ class AcpRuntime:
                 raise ResumeUnavailable("the agent no longer declares loadSession")
             with self._timed("negotiation"):
                 self._authority = negotiate(self._policy, AgentCapabilities.from_dict(caps))
-            await process.session_load(native_session_id, self._cwd or os.getcwd())
+            servers = await self._consult_servers(handshake, process)
+            await process.session_load(native_session_id, self._cwd or os.getcwd(),
+                                       servers or None)
             self._agent_session_id = native_session_id
             if self._store is not None:
                 self._persist_identity(process)
@@ -447,6 +478,7 @@ class AcpRuntime:
             if isinstance(exc, Exception):
                 self._note_error(exc)
             await process.close()
+            await self._close_consult()
             self._retire_prepared_child()
             self._move(LifecycleState.FAILED)
             raise
@@ -613,6 +645,14 @@ class AcpRuntime:
             )
             return
         self._pending_approvals[approval_id] = (request_id, options)
+        if self._consult_host is not None and self._consult_host.allows_permission(
+                params, self._agent_info, agent_session_id=self._agent_session_id):
+            try:
+                await self.permission_response(approval_id=approval_id, allow=True)
+            except (RuntimeProtocolError, RuntimeStartError, AcpError):
+                return  # already answered, cancelled, or the process is gone
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "consult_tool_allowed"})
+            return
         action = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")
         self._emit(
             RuntimeEventKind.APPROVAL_REQUEST,
@@ -681,6 +721,8 @@ class AcpRuntime:
             task.cancel()
         if self._process is not None:
             await self._process.close()
+        if self._consult_host is not None:
+            await self._consult_host.close()
         self._mark_child_exited()
 
     def _mark_child_exited(self) -> None:

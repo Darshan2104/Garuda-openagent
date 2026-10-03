@@ -142,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="success")
     parser.add_argument("--state-file", default=None)
     parser.add_argument("--quota-json", default=None)
+    parser.add_argument("--agent-info", default=None,
+                        help="JSON agentInfo to report at initialize (adapter identity tests).")
+    parser.add_argument("--record-mcp", default=None,
+                        help="Append each session/new and session/load mcpServers list here.")
     parser.add_argument(
         "--report-cwd",
         action="store_true",
@@ -180,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
                             if profile == "resume" else capabilities
                         ),
                     }
+                    if args.agent_info:
+                        hello["agentInfo"] = json.loads(args.agent_info)
                     if args.quota_json:
                         try:
                             quota = json.loads(args.quota_json)
@@ -189,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
                             hello["quota"] = quota
                     _result(call_id, hello)
             elif method == "session/new":
+                if args.record_mcp:
+                    with open(args.record_mcp, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({"method": method,
+                                                 "mcpServers": params.get("mcpServers")}) + "\n")
                 if profile == "strict-v1" and (
                     not isinstance(params.get("cwd"), str)
                     or not os.path.isabs(params["cwd"])
@@ -219,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
                 config[config_id] = value
                 _result(call_id, {"configOptions": _options(config)})
             elif method == "session/load" and profile == "resume":
+                if args.record_mcp:
+                    with open(args.record_mcp, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({"method": method,
+                                                 "mcpServers": params.get("mcpServers")}) + "\n")
                 state = _load_state(args.state_file)
                 if params.get("sessionId") != state.get("session_id"):
                     _invalid(call_id, "unknown session")

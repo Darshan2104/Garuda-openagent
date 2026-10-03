@@ -1005,3 +1005,21 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   `NoEditsGuard`; receipts are text-free. Dispatch is at most once: after the
   point of dispatch a failure is recorded, never retried or refunded.
 
+## 2026-10-02 — ACP consult initiation stays closed until an adapter proves three gates (issue #170, G.3)
+
+- The `consult` MCP tool is offered to an ACP asker only for an exact adapter
+  identity (package and version reported at `initialize`) whose capture records
+  forwarding, structured permission provenance and a quiescence handshake all as
+  `supported`, and for which Garuda has implemented the handshake and the
+  permission-identity reader. The shipped table has no such row: both captured
+  adapters forward the server but prove neither other gate, so nothing changes
+  for them.
+- The endpoint is a local-process guardrail (a `0700` directory, a `0600`
+  socket, a per-epoch 256-bit token, the asker's process identity), not a defence
+  against a hostile same-user process. The token is registered with the redactor
+  before use and is never persisted, logged or passed to the consulted child;
+  resume rotates it. The session is fixed by the broker; a request cannot choose
+  another.
+- Permissions are auto-allowed only from the structured server and tool identity
+  for the live session; display titles are never trusted.
+

@@ -116,7 +116,20 @@ Each call:
 - uses a durable request id, so a retried call never asks twice, and leaves a
   receipt without the question or answer text.
 
-Native targets only for now. An external (ACP) target runs only inside the
+**ACP askers.** A role that runs on an external ACP harness can use the same
+tool through a small MCP server Garuda starts for that session
+(`garuda _consult-mcp`, over a private Unix socket with a per-session token). It
+is offered only for an adapter version that has proved three things: it
+forwards the MCP server, it names the server and tool in structured form in
+permission requests, and it has a documented way to pause its workspace while a
+snapshot is taken. No installed adapter has proved the last two, so today the
+tool is never offered to an ACP role and nothing else about the session changes
+(`consult.transport_unsupported`; the recorded captures are in the
+[external harnesses guide](external-harnesses.md)). A resumed session gets a new
+token. This is a local guardrail between processes of one user, not protection
+from a hostile process running as you.
+
+Native targets work everywhere. An external (ACP) target runs only inside the
 Docker read-only confinement; without it the call is refused
 (`consult.isolation_unavailable`) and nothing runs on the host. Quiescing the
 asker is "tool calls run one at a time"; a run with background processes
