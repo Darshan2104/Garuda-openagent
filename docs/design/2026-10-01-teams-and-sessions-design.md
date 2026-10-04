@@ -584,6 +584,13 @@ No daemon is required. Every accepted background request starts one worker
 process. If capacity is unavailable, that worker persists its queue entry and
 waits without owning a workspace lease.
 
+Within one queue store, an enqueue item id binds one scope, user, harness,
+session and frozen configuration digest. For current-version records, retrying
+that exact binding returns the existing id without changing the document,
+durable sequence or FIFO position, including after a claim. A conflicting
+retry refuses under the queue lock. Duplicate records for an id refuse retry
+and stay available for diagnosis; this does not authorize migration or recovery.
+
 `QueueStore` provides a cross-process lock on supported local filesystems. Under
 that lock, workers:
 

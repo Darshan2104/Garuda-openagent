@@ -217,14 +217,30 @@ class QueueStore:
     def enqueue(self, scope: str, item_id: str | None = None, *, harness: str | None = None,
                 user: str | None = None, session_id: str | None = None,
                 config_digest: str | None = None) -> str:
-        """Add a waiting entry; returns its id. Order is the order of this call."""
+        """Add an entry or retry its exact binding without changing FIFO order.
+
+        An item id identifies one binding across this store, including running claims.
+        A conflicting retry refuses; it cannot change work that was already admitted.
+        """
         item_id = item_id or uuid.uuid4().hex
+        binding = {"user": user or current_user(), "harness": harness or _harness_of(scope),
+                   "session_id": session_id, "config_digest": config_digest}
         with self._locked() as state:
+            existing = []
+            for name, entry in state["scopes"].items():
+                existing.extend((name, w) for w in entry["waiting"] if w["id"] == item_id)
+                if item_id in entry["claims"]:
+                    existing.append((name, entry["claims"][item_id]))
+            if len(existing) > 1:
+                raise CorruptState(f"queue item {item_id!r} has duplicate binding records; refusing")
+            if existing:
+                name, record = existing[0]
+                if name != scope or any(record.get(k) != v for k, v in binding.items()):
+                    raise QueueError(f"queue item {item_id!r} already has a different binding")
+                return item_id
             state["seq"] = int(state.get("seq", 0)) + 1
             self._scope(state, scope)["waiting"].append({
-                "id": item_id, "seq": state["seq"], "user": user or current_user(),
-                "harness": harness or _harness_of(scope), "session_id": session_id,
-                "config_digest": config_digest, "enqueued_at": self._clock()})
+                "id": item_id, "seq": state["seq"], **binding, "enqueued_at": self._clock()})
         return item_id
 
     def cancel(self, scope: str, item_id: str) -> bool:

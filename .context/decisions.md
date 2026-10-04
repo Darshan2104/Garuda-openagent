@@ -1,5 +1,15 @@
 # Durable decisions
 
+## 2026-10-04 — Queue enqueue retries preserve the admitted binding (#216)
+
+- Within one queue store, an item id binds one scope, user, harness, session and
+  frozen configuration digest, whether waiting or claimed. Exact retries of
+  current-version records are read-only and preserve FIFO sequence; conflicts
+  refuse under the queue lock. Already duplicated records refuse retries and remain available
+  for diagnosis. Cancellation and release retain their existing behavior.
+- This repair does not satisfy the outstanding queue/capacity crash journal,
+  safe legacy migration, ownership or inspection gates in #216.
+
 ## 2026-08-31 — external coding agents are runtimes, not models
 
 Garuda will directly orchestrate ACP-compatible coding agents rather than place one agent loop behind Garuda's `Model` protocol. This prevents conflicting ownership of tools, permissions, retries, context, and session restoration.

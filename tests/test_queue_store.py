@@ -19,6 +19,7 @@ from garuda.runtime.queue import (
     CorruptState,
     LockUnavailable,
     Owner,
+    QueueError,
     QueueStore,
     current_owner,
     owner_liveness,
@@ -317,6 +318,86 @@ def test_only_the_worker_that_claimed_may_release_or_heartbeat(tmp_path):
     assert store.try_claim("s", "x", owner)
     assert not store.heartbeat("s", "x", stranger) and not store.release("s", "x", stranger)
     assert store.heartbeat("s", "x", owner) and store.release("s", "x", owner)
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["waiting", "claimed"])
+def test_enqueue_retry_preserves_the_existing_binding_and_fifo(tmp_path, claimed):
+    store = _store(tmp_path)
+    binding = dict(user="u", harness="native", session_id="session-a", config_digest="aaa")
+    store.enqueue("u:native", "same", **binding)
+    store.enqueue("u:native", "next", session_id="session-next", config_digest="next")
+    if claimed:
+        assert store.try_claim("u:native", "same")
+    path = tmp_path / "q" / "state.json"
+    before, modified = path.read_bytes(), path.stat().st_mtime_ns
+
+    assert store.enqueue("u:native", "same", **binding) == "same"
+
+    assert path.read_bytes() == before and path.stat().st_mtime_ns == modified
+    entries = store.entries()
+    assert len([e for e in entries if e["id"] == "same"]) == 1
+    assert [e["id"] for e in entries if e["state"] == "queued"] == (
+        ["next"] if claimed else ["same", "next"])
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["waiting", "claimed"])
+@pytest.mark.parametrize("changed", ["scope", "user", "harness", "session_id", "config_digest"])
+def test_enqueue_conflicting_retry_refuses_without_changing_records(tmp_path, claimed, changed):
+    store = _store(tmp_path)
+    binding = dict(user="u", harness="native", session_id="session-a", config_digest="aaa")
+    store.enqueue("u:native", "same", **binding)
+    if claimed:
+        assert store.try_claim("u:native", "same")
+    path = tmp_path / "q" / "state.json"
+    before = path.read_bytes()
+    scope = "other:native" if changed == "scope" else "u:native"
+    if changed != "scope":
+        binding[changed] = "different"
+
+    with pytest.raises(QueueError, match="binding"):
+        store.enqueue(scope, "same", **binding)
+
+    assert path.read_bytes() == before
+    assert len(store.entries()) == 1
+
+
+@pytest.mark.parametrize("conflicting", [False, True], ids=["exact", "conflicting"])
+def test_concurrent_enqueue_retries_admit_only_one_binding(tmp_path, conflicting):
+    store = _store(tmp_path)
+    code = """
+        import sys
+        from garuda.runtime.queue import QueueError, QueueStore
+        try:
+            QueueStore(sys.argv[1]).enqueue('u:native', 'same', user='u', harness='native',
+                                           session_id='session-a', config_digest=sys.argv[2])
+        except QueueError:
+            raise SystemExit(3)
+    """
+    workers = [_python(code, str(tmp_path / "q"), str(i) if conflicting else "aaa")
+               for i in range(6)]
+    for worker in workers:
+        stdout, stderr = worker.communicate(timeout=30)
+        assert worker.returncode in (0, 3), (stdout, stderr)
+    assert sum(w.returncode == 0 for w in workers) == (1 if conflicting else 6)
+    (entry,) = store.entries()
+    assert entry["id"] == "same" and entry["seq"] == 1
+    assert entry["config_digest"] in (list(map(str, range(6))) if conflicting else ["aaa"])
+
+
+def test_enqueue_refuses_preexisting_duplicates_without_repairing_them(tmp_path):
+    store = _store(tmp_path)
+    store.enqueue("u:native", "same", session_id="session-a", config_digest="aaa")
+    path = tmp_path / "q" / "state.json"
+    state = json.loads(path.read_bytes())
+    state["scopes"]["u:native"]["waiting"].append(
+        dict(state["scopes"]["u:native"]["waiting"][0], seq=2))
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+
+    with pytest.raises(CorruptState, match="duplicate binding"):
+        store.enqueue("u:native", "same", session_id="session-a", config_digest="aaa")
+
+    assert path.read_bytes() == before
 
 
 def test_scopes_are_independent_queues(tmp_path):
