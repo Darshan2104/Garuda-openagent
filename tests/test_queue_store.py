@@ -521,7 +521,21 @@ def test_inspection_is_read_only_and_does_not_wait_for_the_lock(tmp_path):
     store.enqueue("s", "x")
     before = (tmp_path / "q" / "state.json").read_bytes()
     with exclusive_lock(tmp_path / "q"):  # a writer holds the lock
-        assert [e["id"] for e in store.entries()] == ["x"]
+        reader = _python("""
+            import json, sys
+            from garuda.runtime.queue import QueueStore
+            store = QueueStore(sys.argv[1])
+            print(json.dumps({'ids': [e['id'] for e in store.entries()],
+                              'version': store.snapshot()['version']}))
+        """, str(tmp_path / "q"))
+        try:
+            stdout, stderr = reader.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            reader.kill()
+            reader.communicate()
+            pytest.fail("queue inspection waited for the writer lock")
+        assert reader.returncode == 0, stderr
+        assert json.loads(stdout) == {"ids": ["x"], "version": 2}
     assert (tmp_path / "q" / "state.json").read_bytes() == before
 
 
@@ -533,6 +547,43 @@ V1 = {"version": 1, "seq": 3, "scopes": {"u:claude": {
     "waiting": [{"id": "w1", "seq": 2}, {"id": "w2", "seq": 3}],
     "claims": {"c1": {"owner": {"pid": 1, "identity": "x", "pgid": 1, "epoch": "e"},
                       "epoch": "z", "heartbeat": 1.0}}}}}
+
+
+def test_inspecting_a_missing_store_creates_nothing(tmp_path):
+    root = tmp_path / "absent" / "queue"
+    store = QueueStore(root)
+    assert store.entries() == []
+    assert store.snapshot() == {"version": 2, "seq": 0, "scopes": {}}
+    assert not root.parent.exists()
+
+
+@pytest.mark.parametrize("kind", ["current", "legacy", "future", "corrupt"])
+def test_inspection_preserves_record_bytes_directory_mode_and_inventory(tmp_path, kind):
+    root = tmp_path / "q"
+    root.mkdir()
+    os.chmod(root, 0o755)
+    content = {
+        "current": json.dumps({"version": 2, "seq": 0, "scopes": {}}),
+        "legacy": json.dumps(V1),
+        "future": json.dumps({"version": 99, "seq": 0, "scopes": {}}),
+        "corrupt": "{not json",
+    }[kind]
+    path = root / "state.json"
+    path.write_text(content)
+    os.chmod(path, 0o600)
+    before = (path.read_bytes(), path.stat().st_mtime_ns, root.stat().st_mode,
+              root.stat().st_mtime_ns, sorted(p.name for p in root.iterdir()))
+
+    store = QueueStore(root)
+    for inspect in (store.entries, store.snapshot):
+        if kind in ("future", "corrupt"):
+            with pytest.raises(CorruptState):
+                inspect()
+        else:
+            inspect()
+    after = (path.read_bytes(), path.stat().st_mtime_ns, root.stat().st_mode,
+             root.stat().st_mtime_ns, sorted(p.name for p in root.iterdir()))
+    assert after == before
 
 
 def test_a_version_1_document_is_read_in_place_and_migrated_on_the_first_write(tmp_path):

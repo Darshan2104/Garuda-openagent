@@ -892,6 +892,12 @@ claiming process, never owner data read from the store. Test unowned and stale
 instances, inherited fork authority, identity mismatches sharing an epoch, and
 a replacement claim during both refused and exceptional workspace acquisition.
 
+Make inspection pure from construction onward: no directory initialization,
+chmod, lock acquisition, migration publication or backups on `entries()` or
+`snapshot()`. Verify absent stores and existing current/legacy/corrupt/future
+records with independent byte, permission, timestamp and inventory checks,
+plus an inspecting subprocess while a real writer holds the lock.
+
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.
 

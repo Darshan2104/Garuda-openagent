@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-10-04 — Queue inspection does not initialize or migrate storage (#216)
+
+- Queue construction, `entries()` and `snapshot()` are pure reads. Missing
+  roots stay missing; existing permissions, document bytes and inventory stay
+  unchanged. Both APIs read the atomic document without taking a writer lock.
+- Historical documents are projected in memory for diagnosis. Mutations keep
+  their locked private-storage initialization and migration behavior; safe
+  legacy migration and the queue/capacity crash journal remain open work.
+
 ## 2026-10-04 — Queue mutation requires the complete claimant identity (#216)
 
 - Heartbeat, release and workspace requeue match pid, process start identity,

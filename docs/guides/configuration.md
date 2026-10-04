@@ -352,6 +352,12 @@ Another instance or an inherited fork cannot release the claim implicitly.
 If workspace acquisition fails, requeue also checks the original owner before
 returning capacity, so a replacement claim remains intact.
 
+Inspecting a queue through `entries()` or `snapshot()` reads its published
+document without waiting for a writer lock. Opening the store for inspection
+does not create directories, change permissions, migrate historical records
+or write backups. A missing queue remains absent; corrupt and future-version
+records refuse inspection and remain intact for diagnosis.
+
 ## Agent definitions
 
 An agent definition says how one Garuda agent behaves: its instructions,

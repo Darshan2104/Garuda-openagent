@@ -31,8 +31,10 @@ including process identity and epoch. Implicit heartbeat/release use only this
 instance's successfully claimed owners in the claiming process; a newly opened
 store or fork cannot infer that authority from the persisted document.
 
-**Inspection** (:meth:`QueueStore.entries`) reads without the lock and writes
-nothing. Documents written by the spike (version 1) are read and migrated to
+**Inspection** (:meth:`QueueStore.entries` and :meth:`QueueStore.snapshot`)
+reads without the lock and writes nothing, including at construction. Missing
+stores stay missing; existing permissions and legacy records stay untouched.
+Documents written by the spike (version 1) are read and migrated to
 version 2 on the first mutation; the old document is kept once as
 ``state.json.v1``.
 
@@ -120,8 +122,6 @@ class QueueStore:
         self._claimed_owners: dict[tuple[str, str], Owner] = {}
         if self.root.is_symlink():
             raise LockUnavailable(f"{self.root} is a symlink")
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.root, 0o700)
 
     # -- shared capacity (B.0) ---------------------------------------------------------
 
@@ -395,9 +395,13 @@ class QueueStore:
     # -- inspection (never writes) -------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
-        """A copy of the state under the lock, for tests and diagnostics."""
-        with self._locked() as state:
-            return json.loads(json.dumps(state))
+        """Detached state read from the atomic document, without locking or writing.
+
+        Historical records are projected in memory only; inspection never
+        publishes migrations, creates backups or initializes a missing store.
+        """
+        state, _migrated = self._read()
+        return state
 
     def entries(self, scope: str | None = None) -> list[dict]:
         """Queued and running entries with their position — read without the lock,

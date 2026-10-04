@@ -122,6 +122,10 @@ fastest way to learn the system.
   workspace requeue compare the complete persisted process identity and epoch.
   Implicit mutations use only the claiming instance's retained owner in the
   claiming process; opening a store or forking does not grant that authority.
+- **Queue inspection is read-only from construction onward.** `entries()` and
+  `snapshot()` read the atomically published document without a writer lock,
+  initialization, permission changes, migration publication or backup files.
+  Historical records are projected in memory; unsupported records refuse.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live
