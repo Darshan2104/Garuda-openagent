@@ -192,6 +192,20 @@ def test_reserving_with_the_same_owner_is_idempotent(tmp_path):
     assert caps.holders("codex") == []
 
 
+def test_a_short_os_write_still_publishes_one_complete_document(tmp_path, monkeypatch):
+    path = tmp_path / "store" / "document.json"
+    write = os.write
+
+    def short_write(fd, data):
+        return write(fd, data[:max(1, len(data) // 2)])
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(os, "write", short_write)
+        strict_store.write_document(path, {"version": 1, "value": "complete payload " * 64})
+    assert strict_store.read_document(path, versions=(1,)) == {
+        "version": 1, "value": "complete payload " * 64}
+
+
 def test_a_matching_epoch_without_the_owner_identity_cannot_release(tmp_path):
     from garuda.runtime.capacity import Reservation
 

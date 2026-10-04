@@ -176,7 +176,7 @@ def test_cancelling_a_running_session_stops_the_worker_and_frees_its_slot(env):
     assert _idle()
 
 
-def test_a_killed_worker_reads_as_crashed_and_its_slot_is_reclaimed(env):
+def test_a_killed_worker_reads_as_crashed_but_unproved_dispatch_stays_quarantined(env):
     session_id = _run_bg(env, LONG)
     _wait(lambda: _state(session_id)["work"] == "working", "the run to start")
     worker = _meta(session_id)["worker"]
@@ -187,9 +187,11 @@ def test_a_killed_worker_reads_as_crashed_and_its_slot_is_reclaimed(env):
     assert is_crashed(state) and summary_label(state) == "crashed"
     queue, scope = QueueStore(), scope_for("native")
     queue.enqueue(scope, "next")
-    assert queue.try_claim(scope, "next")  # proof of death frees the slot
-    assert [e["id"] for e in queue.entries() if e["state"] == "running"] == ["next"]
-    queue.release(scope, "next")
+    assert not queue.try_claim(scope, "next")  # worker death alone is no launch-closure proof
+    running = [e for e in queue.entries() if e["state"] == "running"]
+    assert [e["id"] for e in running] == [session_id]
+    assert running[0]["quarantined"]
+    assert CapacityStore().holders("native") == [session_id]
 
 
 def test_a_reused_pid_is_never_signalled(env):

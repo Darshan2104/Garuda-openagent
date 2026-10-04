@@ -120,11 +120,77 @@ def read_document(path: Path, *, versions: tuple[int, ...]) -> dict | None:
     if not isinstance(data, dict):
         raise CorruptRecord(f"record at {path} is not a mapping; refusing")
     version = data.get("version", 1)
-    if version not in versions:
+    if type(version) is not int or version not in versions:
         raise CorruptRecord(
             f"record at {path} has version {version!r}; this Garuda reads {versions}; refusing"
         )
     return data
+
+
+def read_private_bytes(directory_fd: int, name: str, *, durable: bool = False) -> bytes:
+    """Read a private regular source/backup through its owned directory."""
+    if Path(name).name != name or name in (".", ".."):
+        raise StorageUnavailable("private record name must be a single filename")
+    fd = None
+    try:
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise StorageUnavailable(f"source/backup {name} is not an owner-only regular file")
+        handle = os.fdopen(fd, "rb")
+        fd = None
+        with handle:
+            raw = handle.read()
+            if durable:
+                os.fsync(handle.fileno())
+            return raw
+    except OSError as exc:
+        raise StorageUnavailable(f"cannot read private source/backup {name}: {exc}") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def preserve_private_backup(directory_fd: int, name: str, raw: bytes) -> None:
+    """Durably create or verify an exact private archive; never overwrite ambiguity."""
+    if Path(name).name != name or name in (".", ".."):
+        raise StorageUnavailable("backup name must be a single filename")
+    try:
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                         0o600, dir_fd=directory_fd)
+        except FileExistsError:
+            if read_private_bytes(directory_fd, name, durable=True) != raw:
+                raise StorageUnavailable(f"backup {name} differs from source; preserve it") from None
+        else:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise StorageUnavailable(f"cannot preserve backup {name}: {exc}") from exc
+
+
+def write_locked_document(directory_fd: int, path: Path, document: dict) -> None:
+    """Publish in the locked directory descriptor, with no pathname redirection."""
+    temporary = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        bound = os.fstat(directory_fd)
+        current = path.parent.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (bound.st_dev, bound.st_ino):
+            raise StorageUnavailable("document directory changed before publication; refusing")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                     0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(json.dumps(document, indent=2, sort_keys=True).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise StorageUnavailable(f"cannot publish {path}: {exc}; preserved artifacts remain") from exc
 
 
 def write_document(path: Path, document: dict) -> None:
@@ -133,7 +199,12 @@ def write_document(path: Path, document: dict) -> None:
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
     try:
-        os.write(fd, json.dumps(document, indent=2, sort_keys=True).encode("utf-8"))
+        remaining = memoryview(json.dumps(document, indent=2, sort_keys=True).encode("utf-8"))
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError(errno.EIO, "document write made no progress")
+            remaining = remaining[written:]
         os.fsync(fd)
     finally:
         os.close(fd)

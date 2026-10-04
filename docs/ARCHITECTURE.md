@@ -113,7 +113,8 @@ fastest way to learn the system.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact-owner retries are idempotent, and a different
-  owner can take over only after confirmed death.
+  owner can take over ordinary slots only after confirmed death. Queue-bound
+  slots stay protected until the queue coordinator durably releases them.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the
@@ -126,10 +127,19 @@ fastest way to learn the system.
   `snapshot()` read the atomically published document without a writer lock,
   initialization, permission changes, migration publication or backup files.
   Historical records are projected in memory; unsupported records refuse.
+- **Queue selection precedes activation.** Version 3 journals queue intent,
+  protected shared-capacity reservation and selection commit. Only the successful
+  claiming process can activate a fully bound ticket, after publishing activation
+  in capacity version 2. Release publishes claim removal before slot removal.
+  Dead owners permit reconciliation before activation; activated or ambiguous
+  dispatch remains quarantined and is never automatically replayed.
 - **Legacy queue work cannot supply admission authority.** Version 1 jobs lack
   user/session/configuration bindings and refuse mutation, even for dead owners.
-  Only validated empty records migrate, after an exact durable source backup;
-  ambiguous backups remain intact and refuse. Legacy capacity is discarded.
+  Empty records and fully bound, ordered version 2 waiters migrate after an
+  exact durable source backup. Version 2 claims lack activation evidence and
+  refuse migration. Nonempty capacity version 1 records lack reservation origin
+  evidence and also refuse mutation; empty ones archive before upgrading.
+  Ambiguous backups remain intact and refuse. Legacy queue ceilings are discarded.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live

@@ -337,8 +337,9 @@ The ceiling can also be written as `harnesses.<id>.max_parallel` in your own
 `garuda.yaml`; a `capacity` entry in `settings.yaml` wins when both exist, and
 a project file can't set either. Background sessions wait in a durable FIFO
 queue per user and harness (`~/.agent/queue/`) and draw from this same limit:
-there is no separate queue capacity, so a foreground run and a queued one can
-never exceed it together.
+there is no separate queue capacity. Queue reservations keep counting through
+interrupted selection, release and activated-worker death. Ordinary launches
+cannot reclaim those slots independently of the queue coordinator.
 
 Queue enqueue retries preserve the existing entry and its FIFO position only
 when the item id, scope, user, harness, session and configuration digest match
@@ -361,11 +362,28 @@ records refuse inspection and remain intact for diagnosis.
 Prototype version 1 queues containing jobs also refuse mutation: those jobs
 lack user, session and configuration bindings, even if their owners are dead.
 Inspect the original `state.json` and resolve historical work with the prior
-version. Only a valid empty legacy queue migrates, after its exact original
-bytes are durably preserved as `state.json.v1`. An unrelated, partial, symlinked
+version. Valid empty queues and fully bound, ordered version 2 waiters migrate
+to version 3, after exact original bytes are durably preserved as `state.json.v1`
+or `state.json.v2`. Version 2 claims refuse because activation history is missing.
+An unrelated, partial, symlinked
 or nonregular backup refuses migration and is left intact; do not delete it
 without resolving that ambiguity. The old queue capacity cannot widen the
 configured shared limit.
+
+Selection publishes a queue intent, reserves a protected shared slot, then
+commits the claim before granting local activation authority. Dispatch records
+activation before invoking the runtime. A release removes the claim durably
+before returning its slot. `recover_pending()` reconciles only safe operations
+whose owners are confirmed dead; it never starts work. Activated or ambiguous
+dispatch remains quarantined because worker death does not prove descendant
+cleanup. Inspection exposes pending operations without repairing them.
+
+Capacity records now use version 2 to distinguish queue reservations. Nonempty
+version 1 capacity records stay readable but refuse mutation, even for dead
+owners: their reservation origin is unknown. Resolve them with the prior version
+before upgrading. Valid empty records preserve an exact private `.json.v1`
+backup before upgrade; backup ambiguity refuses. Full descendant supervision
+and cleanup receipts remain separate lifecycle requirements.
 
 ## Agent definitions
 

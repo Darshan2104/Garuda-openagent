@@ -1,5 +1,29 @@
 # Durable decisions
 
+## 2026-10-05 — Journal queue selection separately from activation (#216)
+
+- Queue version 3 records intent before protected shared-capacity reservation
+  (capacity version 2), publishes the claim and commits selection before granting
+  process-local activation authority. These are ordered durable publications
+  across separate files, not one atomic transaction. Release removes the claim
+  durably before returning its slot; ordinary capacity callers cannot release
+  or reclaim queue slots, even for confirmed-dead owners.
+- Only the successful claiming process with real birth/group identity and full
+  frozen bindings may activate. Background workers persist activation before
+  invoking the runner, including unlimited harnesses. Recovery never launches:
+  dead pre-activation transactions reconcile; activated or ambiguous dispatch
+  stays quarantined because worker death alone does not prove descendant cleanup.
+  Full launch supervision and cleanup receipts remain D.2 lifecycle work.
+- Workspace-refused claims return in original durable sequence, regardless of
+  callback completion order. Pending transactions remain visible in pure reads
+  and cannot be rebound before recovery.
+- Empty legacy queues and fully bound, ordered version 2 waiters preserve exact
+  private `.v1`/`.v2` archives before upgrade. Version 1 work and version 2 claims
+  refuse missing binding/activation evidence. Nonempty capacity version 1 records
+  refuse mutation without reservation origin evidence; empty ones archive before
+  upgrade. Ambiguous backups remain intact. All publications use owned locked
+  directory descriptors; process-death tests do not prove hardware power-loss behavior.
+
 ## 2026-10-04 — Legacy queues cannot invent admission bindings (#216)
 
 - Version 1 work stays readable for diagnosis but every mutation refuses: it
@@ -1104,4 +1128,3 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   cannot resolve is listed with its problem.
 - A qualified agent name (`garuda/build`, `project/x`) is a name, not a path, in
   `garuda agent show|prompt`; only an existing file or a definition extension selects a file.
-

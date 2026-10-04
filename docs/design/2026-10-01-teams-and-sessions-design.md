@@ -603,8 +603,12 @@ published document, project historical records in memory and leave missing
 stores absent. Storage initialization, permission changes and migration
 publication belong only to mutations. Legacy work cannot migrate without
 verified user/session/configuration bindings, regardless of owner liveness.
-Validated empty version 1 queues can migrate after a durable byte-exact backup,
-with publication through the locked directory descriptor. Existing archives
+Validated empty queues and fully bound, ordered version 2 waiters can migrate
+to version 3 after a durable byte-exact backup. Version 2 claims refuse because
+activation history is missing. Nonempty capacity version 1 records refuse
+mutation because their reservation origin is missing; empty ones archive before
+upgrading to version 2. Publication uses the locked directory descriptor.
+Existing archives
 must be private regular files matching the source; ambiguity refuses without
 overwriting them. Legacy capacity never supplies a configured ceiling.
 
@@ -614,9 +618,20 @@ that lock, workers:
 1. reclaim an expired claim only after the recorded process identity and all
    runtime descendants are proved dead; TTL alone never authorizes takeover;
 2. select the oldest eligible entry for that user and harness;
-3. atomically claim capacity;
+3. journal queue intent, acquire a protected shared slot and commit selection;
 4. acquire the workspace lease and start the runtime;
 5. release the claim only after the runtime and its descendants are reaped.
+
+The implemented queue journal orders durable publications across separate files;
+it does not make them one atomic transaction. Ordinary capacity callers retain
+all queue slots regardless of owner liveness. Selection grants activation only
+to the successful claiming process with frozen user/session/configuration
+bindings. Activation is persisted before the runner, including unlimited
+harnesses. Recovery reconciles confirmed-dead pre-activation transactions,
+publishing claim removal before slot release. Activated or ambiguous dispatch
+stays quarantined and is never automatically replayed. Workspace refusal
+restores waiting order by the original durable sequence. Full descendant
+supervision and proof of cleanup on every terminal path remain D.2 work.
 
 One strict `CapacityStore` owns slots for every entry point. Admission attempts
 capacity before workspace ownership, but releases the slot immediately if the
