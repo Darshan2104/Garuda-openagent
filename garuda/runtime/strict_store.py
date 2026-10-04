@@ -70,8 +70,16 @@ def exclusive_lock(directory: Path) -> Iterator[int]:
         raise StorageUnavailable(f"cannot open {directory} safely: {exc}") from exc
     try:
         try:
-            fd = os.open(".lock", os.O_RDWR | os.O_CREAT | _NOFOLLOW | os.O_NONBLOCK,
-                         0o600, dir_fd=directory_fd)
+            # Separate creation from opening an existing lock: concurrent
+            # openat(O_CREAT) reported ENOENT on macOS even with a stable
+            # directory inode and a present lock. Never retry a missing or
+            # replaced lock after the exclusive-create decision.
+            try:
+                fd = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | _NOFOLLOW | os.O_NONBLOCK,
+                             0o600, dir_fd=directory_fd)
+            except FileExistsError:
+                fd = os.open(".lock", os.O_RDWR | _NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
         except OSError as exc:
             raise StorageUnavailable(f"cannot open the lock in {directory}: {exc}") from exc
         try:
