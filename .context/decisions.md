@@ -1,5 +1,16 @@
 # Durable decisions
 
+## 2026-10-04 — Queue mutation requires the complete claimant identity (#216)
+
+- Heartbeat, release and workspace requeue match pid, process start identity,
+  process group and epoch against the persisted claim. An implicit mutation
+  uses only the instance's retained successful claimant in the same process;
+  a new instance or fork cannot derive authority from a shared record.
+- Workspace refusal/exception returns only the original owner's slot. If
+  another owner replaced the claim, its queue and capacity records stay intact.
+- The queue/capacity crash journal, legacy migration and inspection gates in
+  #216 remain outstanding.
+
 ## 2026-10-04 — Queue enqueue retries preserve the admitted binding (#216)
 
 - Within one queue store, an item id binds one scope, user, harness, session and

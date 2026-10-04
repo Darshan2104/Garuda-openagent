@@ -886,6 +886,12 @@ binding across waiting entries and claims, and preserve durable FIFO sequence.
 Conflicting retries refuse before writing. Cover exact and conflicting retries
 from real subprocess contenders and leave preexisting duplicate records intact.
 
+Check complete owner identity on heartbeat, release and workspace requeue.
+Implicit calls must use this instance's retained successful claim in the
+claiming process, never owner data read from the store. Test unowned and stale
+instances, inherited fork authority, identity mismatches sharing an epoch, and
+a replacement claim during both refused and exceptional workspace acquisition.
+
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.
 

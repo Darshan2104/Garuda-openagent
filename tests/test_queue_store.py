@@ -320,6 +320,111 @@ def test_only_the_worker_that_claimed_may_release_or_heartbeat(tmp_path):
     assert store.heartbeat("s", "x", owner) and store.release("s", "x", owner)
 
 
+@pytest.mark.parametrize("mutation", ["heartbeat", "release"])
+@pytest.mark.parametrize("stale", [False, True], ids=["unowned", "superseded"])
+def test_an_unowned_store_cannot_mutate_a_claim_implicitly(tmp_path, mutation, stale):
+    claimant = _store(tmp_path)
+    claimant.enqueue("s", "x")
+    owner = current_owner()
+    assert claimant.try_claim("s", "x", owner)
+    stranger = _store(tmp_path)
+    if stale:
+        assert stranger.release("s", "x", owner)
+        stranger.enqueue("s", "x")
+        assert stranger.try_claim("s", "x")
+        claimant, stranger = stranger, claimant
+    path = tmp_path / "q" / "state.json"
+    before = path.read_bytes()
+
+    assert not getattr(stranger, mutation)("s", "x")
+    assert path.read_bytes() == before
+    assert claimant.heartbeat("s", "x") and claimant.release("s", "x")
+
+
+def test_a_fork_does_not_inherit_implicit_claim_authority(tmp_path):
+    store = _store(tmp_path)
+    store.enqueue("s", "x")
+    worker = _python("""
+        import json, os, sys
+        from pathlib import Path
+        from garuda.runtime.queue import QueueStore
+        store = QueueStore(sys.argv[1])
+        assert store.try_claim('s', 'x')
+        path = Path(sys.argv[1]) / 'state.json'
+        before = path.read_bytes()
+        reader, writer = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(reader)
+            try:
+                os.write(writer, bytes([store.heartbeat('s', 'x'), store.release('s', 'x')]))
+            finally:
+                os._exit(0)
+        os.close(writer)
+        try:
+            result = os.read(reader, 2)
+        finally:
+            os.close(reader)
+            os.waitpid(pid, 0)
+        unchanged = path.read_bytes() == before
+        released = store.release('s', 'x')
+        print(json.dumps({'mutations': list(result), 'unchanged': unchanged, 'released': released}))
+    """, str(tmp_path / "q"))
+    stdout, stderr = worker.communicate(timeout=30)
+    assert worker.returncode == 0, stderr
+    assert json.loads(stdout) == {"mutations": [0, 0], "unchanged": True, "released": True}
+
+
+@pytest.mark.parametrize("field", ["pid", "identity", "pgid"])
+def test_an_epoch_without_the_claimants_process_identity_cannot_mutate(tmp_path, field):
+    from dataclasses import replace
+
+    store = _store(tmp_path)
+    owner = current_owner()
+    store.enqueue("s", "x")
+    assert store.try_claim("s", "x", owner)
+    impostor = replace(owner, **{field: "other" if field == "identity" else 1})
+    path = tmp_path / "q" / "state.json"
+    before = path.read_bytes()
+
+    assert not store.heartbeat("s", "x", impostor)
+    assert not store.release("s", "x", impostor)
+    assert path.read_bytes() == before
+    assert store.release("s", "x", owner)
+
+
+@pytest.mark.parametrize("raises", [False, True], ids=["refused", "exception"])
+def test_workspace_requeue_cannot_release_a_replacement_claim(tmp_path, raises):
+    from garuda.runtime.capacity import CapacityStore
+
+    capacity = CapacityStore(tmp_path / "capacity")
+    previous = _store(tmp_path, capacity=capacity, ceiling=lambda _: 1)
+    replacement = _store(tmp_path, capacity=capacity, ceiling=lambda _: 1)
+    previous.enqueue("u:native", "x", session_id="session-a", config_digest="aaa")
+    replacement_bytes = []
+
+    def unavailable():
+        assert previous.release("u:native", "x")
+        replacement.enqueue("u:native", "x", session_id="session-a", config_digest="aaa")
+        assert replacement.try_claim("u:native", "x")
+        replacement_bytes.append((tmp_path / "q" / "state.json").read_bytes())
+        if raises:
+            raise RuntimeError("workspace refused")
+        return False
+
+    if raises:
+        with pytest.raises(RuntimeError, match="workspace refused"):
+            previous.claim_with_workspace("u:native", "x", unavailable)
+    else:
+        assert not previous.claim_with_workspace("u:native", "x", unavailable)
+
+    assert (tmp_path / "q" / "state.json").read_bytes() == replacement_bytes[0]
+    assert capacity.holders("native") == ["x"]
+    assert not previous.release("u:native", "x")
+    assert replacement.release("u:native", "x")
+    assert capacity.holders("native") == []
+
+
 @pytest.mark.parametrize("claimed", [False, True], ids=["waiting", "claimed"])
 def test_enqueue_retry_preserves_the_existing_binding_and_fifo(tmp_path, claimed):
     store = _store(tmp_path)

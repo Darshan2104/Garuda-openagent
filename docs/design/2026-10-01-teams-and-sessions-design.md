@@ -591,6 +591,12 @@ durable sequence or FIFO position, including after a claim. A conflicting
 retry refuses under the queue lock. Duplicate records for an id refuse retry
 and stay available for diagnosis; this does not authorize migration or recovery.
 
+Queue mutations match the complete owner (pid, process start identity, process
+group and epoch). An omitted owner on heartbeat or release uses only a successful
+claim retained by that instance in the claiming process; opening another store
+or inheriting it through a fork grants no implicit authority. Workspace requeue
+uses the owner from the original claim and cannot release a replacement's slot.
+
 `QueueStore` provides a cross-process lock on supported local filesystems. Under
 that lock, workers:
 
