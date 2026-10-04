@@ -114,6 +114,10 @@ fastest way to learn the system.
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact-owner retries are idempotent, and a different
   owner can take over only after confirmed death.
+- **Queue ids bind admitted work.** Enqueue retries match the exact scope,
+  user, harness, session and configuration digest of a waiting entry or claim.
+  Exact retries preserve the durable sequence; conflicts refuse under the
+  queue lock before any write.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live

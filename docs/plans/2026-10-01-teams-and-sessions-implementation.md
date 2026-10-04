@@ -881,6 +881,11 @@ The shared store must also refuse same-holder replacement of live/unknown
 owners (#213); an exact-owner retry is idempotent and confirmed-dead takeover
 retains stale-release protection. Audit this prerequisite before queue wiring.
 
+Enqueue retries must preserve the exact scope/user/harness/session/configuration
+binding across waiting entries and claims, and preserve durable FIFO sequence.
+Conflicting retries refuse before writing. Cover exact and conflicting retries
+from real subprocess contenders and leave preexisting duplicate records intact.
+
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.
 

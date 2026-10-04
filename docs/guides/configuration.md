@@ -340,6 +340,11 @@ queue per user and harness (`~/.agent/queue/`) and draw from this same limit:
 there is no separate queue capacity, so a foreground run and a queued one can
 never exceed it together.
 
+Queue enqueue retries preserve the existing entry and its FIFO position only
+when the item id, scope, user, harness, session and configuration digest match
+exactly. This also applies after the entry is claimed. A conflicting retry
+refuses instead of replacing admitted work or adding a duplicate.
+
 ## Agent definitions
 
 An agent definition says how one Garuda agent behaves: its instructions,
