@@ -18,7 +18,9 @@
   Full launch supervision and cleanup receipts remain D.2 lifecycle work.
 - Workspace-refused claims return in original durable sequence, regardless of
   callback completion order. Pending transactions remain visible in pure reads
-  and cannot be rebound before recovery.
+  and cannot be rebound before recovery. Adoption invalidation matches the full
+  ticket under a process-local lock; finishing an old release cannot clear a
+  replacement queue's activation authority. Forks clear inherited adoption.
 - Empty legacy queues and fully bound, ordered version 2 waiters preserve exact
   private `.v1`/`.v2` archives before upgrade. Version 1 work and version 2 claims
   refuse missing binding/activation evidence. Nonempty capacity version 1 records

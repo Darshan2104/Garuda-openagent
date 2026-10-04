@@ -61,7 +61,6 @@ from garuda.runtime import queue_legacy
 from garuda.runtime.capacity import (
     CapacityStore,
     adopt,
-    unadopt,
 )
 from garuda.runtime.ownership import Liveness, Owner, current_owner, owner_liveness
 from garuda.runtime.queue_journal import JournalError, QueueJournal
@@ -377,7 +376,6 @@ class QueueStore:
             if claim is None or claim.get("owner") != owner.to_dict():
                 return
             QueueJournal(self).release(state, scope, item_id, claim, requeue=True)
-            unadopt(self.capacity.root, claim["harness"], item_id)
         if self._claimed_owners.get((scope, item_id)) == owner:
             del self._claimed_owners[(scope, item_id)]
 
@@ -404,7 +402,6 @@ class QueueStore:
             if claim is None or claim.get("owner") != owner.to_dict():
                 return False
             QueueJournal(self).release(state, scope, item_id, claim)
-            unadopt(self.capacity.root, claim["harness"], item_id)
         if self._claimed_owners.get((scope, item_id)) == owner:
             del self._claimed_owners[(scope, item_id)]
         return True

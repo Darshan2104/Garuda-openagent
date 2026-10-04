@@ -249,6 +249,47 @@ def test_a_launch_that_captured_adoption_before_release_cannot_activate_during_r
     assert capacity.holders("native") == ["job"]
 
 
+def test_finishing_an_old_queue_release_keeps_a_new_queues_adoption(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    queue, capacity = stores(tmp_path)
+    assert queue.try_claim("u:native", "job")
+    other = QueueStore(tmp_path / "other-queue", capacity=capacity, ceiling=lambda _: 1)
+    other.enqueue("u:native", "job", user="u", harness="native",
+                  session_id="job", config_digest="new-config")
+    removed, finish = Event(), Event()
+    replace = os.replace
+
+    def pause_commit(src, dst, **kwargs):
+        directory_fd = kwargs.get("dst_dir_fd")
+        at_queue = (os.fstat(directory_fd).st_ino == queue.root.stat().st_ino
+                    if directory_fd is not None else Path(dst).parent == queue.root)
+        if at_queue and Path(dst).name == "state.json":
+            candidate = Path(src) if Path(src).is_absolute() else queue.root / src
+            document = json.loads(candidate.read_bytes())
+            if not document["pending"] and not document["scopes"]["u:native"]["claims"]:
+                removed.set()
+                assert finish.wait(10), "new queue did not claim the returned slot"
+        replace(src, dst, **kwargs)
+
+    monkeypatch.setattr(os, "replace", pause_commit)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        releasing = pool.submit(queue.release, "u:native", "job")
+        try:
+            assert removed.wait(10), "old release did not reach its final publication"
+            assert other.try_claim("u:native", "job")
+        finally:
+            finish.set()
+        assert releasing.result(timeout=10)
+    # Both queues use the same ordinary capacity API. The old coordinator must
+    # not invalidate the new committed ticket after returning the old slot.
+    reservation = capacity.reserve("native", "job", 1)
+    capacity.release(reservation)
+    assert capacity.holders("native") == ["job"]
+    assert other.release("u:native", "job")
+
+
 def test_a_crashed_uncommitted_reservation_requires_queue_recovery_before_reuse(tmp_path):
     queue, capacity = stores(tmp_path)
     code = """

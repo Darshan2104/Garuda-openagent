@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,14 +105,30 @@ class Reservation:
 #: Successful committed claims retained by their claiming process, keyed by
 #: capacity root, runtime and holder. A fork cannot inherit activation authority.
 _ADOPTED: dict[tuple[str, str, str], QueueTicket] = {}
+_ADOPTION_LOCK = threading.Lock()
+
+
+def _after_fork() -> None:
+    global _ADOPTION_LOCK
+    _ADOPTION_LOCK = threading.Lock()
+    _ADOPTED.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def adopt(root: Path, ticket: QueueTicket) -> None:
-    _ADOPTED[(str(root.resolve()), ticket.key, ticket.holder)] = ticket
+    key = (str(root.resolve()), ticket.key, ticket.holder)
+    with _ADOPTION_LOCK:
+        _ADOPTED[key] = ticket
 
 
-def unadopt(root: Path, key: str, holder: str) -> None:
-    _ADOPTED.pop((str(root.resolve()), key, holder), None)
+def unadopt(root: Path, ticket: QueueTicket) -> None:
+    key = (str(root.resolve()), ticket.key, ticket.holder)
+    with _ADOPTION_LOCK:
+        if _ADOPTED.get(key) == ticket:
+            del _ADOPTED[key]
 
 
 class CapacityStore:
@@ -159,7 +176,9 @@ class CapacityStore:
         """Take a slot, retry the exact owner, or refuse live/unknown replacement."""
         if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
             raise CapacityError(f"ceiling must be a positive integer, got {ceiling!r}")
-        adopted = _ADOPTED.get((str(self.root.resolve()), key, holder))
+        cache_key = (str(self.root.resolve()), key, holder)
+        with _ADOPTION_LOCK:
+            adopted = _ADOPTED.get(cache_key)
         if adopted is not None and adopted.owner.pid != os.getpid():
             adopted = None  # a fork cannot inherit a queued launch's authority
         owner = owner or (adopted.owner if adopted else None) or current_owner()

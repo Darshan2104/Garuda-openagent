@@ -84,7 +84,7 @@ class QueueJournal:
     def release(self, state: dict, scope: str, item_id: str, claim: dict, *, requeue: bool = False,
                 preactivation_only: bool = False) -> None:
         ticket = self.ticket(scope, item_id, claim)
-        unadopt(self.queue.capacity.root, ticket.key, ticket.holder)
+        unadopt(self.queue.capacity.root, ticket)
         operation = "requeue" if requeue else "release"
         state["pending"][ticket.transaction] = self._record(operation, scope, claim["entry"], ticket)
         self.queue._publish(state)
