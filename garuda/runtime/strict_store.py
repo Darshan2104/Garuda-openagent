@@ -23,6 +23,7 @@ import contextlib
 import errno
 import json
 import os
+import stat
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -58,23 +59,41 @@ def ensure_private_dir(directory: Path) -> None:
 
 
 @contextlib.contextmanager
-def exclusive_lock(directory: Path) -> Iterator[None]:
+def exclusive_lock(directory: Path) -> Iterator[int]:
     """Hold the directory's cross-process lock; refuse rather than run unlocked."""
     if fcntl is None:
         raise StorageUnavailable("cross-process locking is unavailable on this platform")
     ensure_private_dir(directory)
     try:
-        fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
     except OSError as exc:
-        raise StorageUnavailable(f"cannot open the lock in {directory}: {exc}") from exc
+        raise StorageUnavailable(f"cannot open {directory} safely: {exc}") from exc
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # Separate creation from opening an existing lock: concurrent
+            # openat(O_CREAT) reported ENOENT on macOS even with a stable
+            # directory inode and a present lock. Never retry a missing or
+            # replaced lock after the exclusive-create decision.
+            try:
+                fd = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | _NOFOLLOW | os.O_NONBLOCK,
+                             0o600, dir_fd=directory_fd)
+            except FileExistsError:
+                fd = os.open(".lock", os.O_RDWR | _NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
         except OSError as exc:
-            raise StorageUnavailable(f"cannot lock {directory}: {exc}") from exc
-        yield
+            raise StorageUnavailable(f"cannot open the lock in {directory}: {exc}") from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise StorageUnavailable(f"the lock in {directory} is not a regular file")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StorageUnavailable(f"cannot lock {directory}: {exc}") from exc
+            yield directory_fd
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(directory_fd)
 
 
 def read_document(path: Path, *, versions: tuple[int, ...]) -> dict | None:
@@ -84,7 +103,7 @@ def read_document(path: Path, *, versions: tuple[int, ...]) -> dict | None:
     ``version`` counts as 1 (records written before versions were kept).
     """
     try:
-        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -93,6 +112,8 @@ def read_document(path: Path, *, versions: tuple[int, ...]) -> dict | None:
         raise CorruptRecord(f"cannot read {path}: {exc}; refusing") from exc
     try:
         with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise CorruptRecord(f"record at {path} is not a regular file; refusing")
             data = json.load(handle)
     except (OSError, ValueError) as exc:
         raise CorruptRecord(f"unreadable record at {path}: {exc}; refusing") from exc

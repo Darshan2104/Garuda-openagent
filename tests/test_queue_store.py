@@ -586,23 +586,209 @@ def test_inspection_preserves_record_bytes_directory_mode_and_inventory(tmp_path
     assert after == before
 
 
-def test_a_version_1_document_is_read_in_place_and_migrated_on_the_first_write(tmp_path):
+@pytest.mark.parametrize("kind", ["waiting", "live", "dead", "unknown"])
+def test_legacy_work_is_readable_but_never_migrated_without_bindings(tmp_path, kind):
     root = tmp_path / "q"
     root.mkdir(mode=0o700)
     document = root / "state.json"
-    document.write_text(json.dumps(V1))
+    state = json.loads(json.dumps(V1))
+    if kind == "waiting":
+        state["scopes"]["u:claude"]["claims"] = {}
+    else:
+        state["scopes"]["u:claude"]["waiting"] = []
+    document.write_text(json.dumps(state))
+    os.chmod(document, 0o600)
+    store = _store(tmp_path, liveness=lambda _: {"live": True, "dead": False}.get(kind))
+    before = document.read_bytes()
+
+    assert store.entries()  # historical diagnosis remains available
+    assert json.loads(document.read_text())["version"] == 1  # inspection never migrates
+    for mutation in (lambda: store.enqueue("u:claude", "w3"),
+                     lambda: store.cancel("u:claude", "w1"),
+                     lambda: store.try_claim("u:claude", "w1")):
+        with pytest.raises(CorruptState, match="bindings"):
+            mutation()
+        assert document.read_bytes() == before
+        assert not (root / "state.json.v1").exists()
+
+
+def test_an_empty_legacy_queue_migrates_without_importing_its_capacity(tmp_path):
+    from garuda.runtime.capacity import CapacityStore
+
+    ceilings(claude=1)
+    capacity = CapacityStore()
+    held = capacity.reserve("claude", "foreground", 1)
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    document = root / "state.json"
+    original = b'{"version":1, "seq":3,"scopes":{"u:claude":{"capacity":99,"waiting":[],"claims":{}}}}\n'
+    document.write_bytes(original)
     os.chmod(document, 0o600)
     store = _store(tmp_path)
-
-    assert [e["id"] for e in store.entries() if e["state"] == "queued"] == ["w1", "w2"]
-    assert json.loads(document.read_text())["version"] == 1  # inspection never migrates
-
     store.enqueue("u:claude", "w3")
     migrated = json.loads(document.read_text())
     assert migrated["version"] == 2 and "capacity" not in migrated["scopes"]["u:claude"]
-    assert [w["id"] for w in migrated["scopes"]["u:claude"]["waiting"]] == ["w1", "w2", "w3"]
-    assert json.loads((root / "state.json.v1").read_text()) == V1  # kept once, untouched
-    assert "c1" in migrated["scopes"]["u:claude"]["claims"]
+    assert [w["id"] for w in migrated["scopes"]["u:claude"]["waiting"]] == ["w3"]
+    assert migrated["seq"] == 4
+    assert (root / "state.json.v1").read_bytes() == original
+    assert not store.try_claim("u:claude", "w3")  # legacy 99 cannot widen shared capacity
+    capacity.release(held)
+    assert store.try_claim("u:claude", "w3")
+    assert store.release("u:claude", "w3")
+
+
+@pytest.mark.parametrize("kind", ["different", "symlink", "dangling", "directory", "partial"])
+def test_legacy_backup_ambiguity_refuses_and_preserves_user_files(tmp_path, kind):
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    document = root / "state.json"
+    original = b'{"version":1,"seq":0,"scopes":{}}\n'
+    document.write_bytes(original)
+    os.chmod(document, 0o600)
+    backup = root / "state.json.v1"
+    unrelated = tmp_path / "user-file"
+    if kind == "symlink":
+        unrelated.write_bytes(original)
+        backup.symlink_to(unrelated)
+    elif kind == "dangling":
+        backup.symlink_to(unrelated)
+    elif kind == "directory":
+        backup.mkdir()
+    else:
+        backup.write_bytes(b'{"version":' if kind == "partial" else b"unrelated data")
+        os.chmod(backup, 0o600)
+    unrelated_before = unrelated.read_bytes() if unrelated.exists() else None
+
+    with pytest.raises(CorruptState, match="backup"):
+        _store(tmp_path).enqueue("u:claude", "new")
+
+    assert document.read_bytes() == original
+    assert (unrelated.read_bytes() if unrelated.exists() else None) == unrelated_before
+    if kind in ("different", "partial"):
+        assert backup.read_bytes() == (b'{"version":' if kind == "partial" else b"unrelated data")
+
+
+@pytest.mark.parametrize("legacy", [
+    {"version": 1, "seq": 0},
+    {"version": 1, "seq": True, "scopes": {}},
+    {"version": 1, "seq": 0, "scopes": {"s": {"capacity": 1}}},
+    {"version": 1, "seq": 1, "scopes": {"s": {"capacity": 1, "waiting": [{"id": "x"}], "claims": {}}}},
+])
+def test_partial_legacy_records_refuse_without_publishing_a_migration(tmp_path, legacy):
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    document = root / "state.json"
+    original = json.dumps(legacy).encode()
+    document.write_bytes(original)
+    os.chmod(document, 0o600)
+    with pytest.raises(CorruptState):
+        _store(tmp_path).enqueue("u:claude", "new")
+    assert document.read_bytes() == original
+    assert not (root / "state.json.v1").exists()
+
+
+@pytest.mark.parametrize("boundary", ["sync-1", "sync-2", "sync-3", "sync-4", "replace"])
+def test_empty_legacy_migration_survives_process_death_and_exact_retry(tmp_path, boundary):
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    source = root / "state.json"
+    original = b'{"version":1,"seq":0,"scopes":{}}\n'
+    source.write_bytes(original)
+    os.chmod(source, 0o600)
+    worker = _python("""
+        import os, sys
+        from garuda.runtime.queue import QueueStore
+        boundary = sys.argv[2]
+        sync, replace = os.fsync, os.replace
+        count = 0
+        def interrupted_sync(fd):
+            global count
+            count += 1
+            if boundary == f'sync-{count}':
+                os._exit(73)
+            sync(fd)
+        def interrupted_replace(*args, **kwargs):
+            replace(*args, **kwargs)
+            if boundary == 'replace':
+                os._exit(73)
+        os.fsync, os.replace = interrupted_sync, interrupted_replace
+        QueueStore(sys.argv[1]).enqueue('u:native', 'new', session_id='session', config_digest='cfg')
+    """, str(root), boundary)
+    stdout, stderr = worker.communicate(timeout=30)
+    assert worker.returncode == 73, (stdout, stderr)
+    backup = root / "state.json.v1"
+    assert backup.read_bytes() == original
+    backup_modified = backup.stat().st_mtime_ns
+    if boundary in ("sync-1", "sync-2", "sync-3"):
+        assert source.read_bytes() == original
+    else:
+        assert json.loads(source.read_bytes())["version"] == 2
+
+    store = _store(tmp_path)
+    store.enqueue("u:native", "new", session_id="session", config_digest="cfg")
+    (entry,) = store.entries()
+    assert (entry["id"], entry["seq"], entry["session_id"], entry["config_digest"]) == (
+        "new", 1, "session", "cfg")
+    assert backup.read_bytes() == original and backup.stat().st_mtime_ns == backup_modified
+
+
+def test_legacy_migration_refuses_a_replaced_directory_without_touching_its_target(tmp_path, monkeypatch):
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    original = b'{"version":1,"seq":0,"scopes":{}}\n'
+    source = root / "state.json"
+    source.write_bytes(original)
+    os.chmod(source, 0o600)
+    target = tmp_path / "unrelated"
+    target.mkdir()
+    (target / "state.json").write_bytes(b"user data")
+    moved = tmp_path / "moved"
+    sync = os.fsync
+    count = 0
+
+    def replace_directory(fd):
+        nonlocal count
+        sync(fd)
+        count += 1
+        if count == 2:  # after archiving, before publishing the new source
+            root.rename(moved)
+            root.symlink_to(target, target_is_directory=True)
+
+    monkeypatch.setattr(os, "fsync", replace_directory)
+    with pytest.raises(CorruptState, match="directory changed"):
+        _store(tmp_path).enqueue("u:native", "new")
+    assert (moved / "state.json").read_bytes() == original
+    assert (moved / "state.json.v1").read_bytes() == original
+    assert sorted(p.name for p in target.iterdir()) == ["state.json"]
+    assert (target / "state.json").read_bytes() == b"user data"
+
+
+@pytest.mark.parametrize("name", ["state.json", ".lock", "state.json.v1"])
+def test_nonregular_queue_files_refuse_without_blocking_or_overwriting(tmp_path, name):
+    root = tmp_path / "q"
+    root.mkdir(mode=0o700)
+    if name == "state.json.v1":
+        (root / "state.json").write_bytes(b'{"version":1,"seq":0,"scopes":{}}')
+        os.chmod(root / "state.json", 0o600)
+    os.mkfifo(root / name, 0o600)
+    worker = _python("""
+        import sys
+        from garuda.runtime.queue import QueueError, QueueStore
+        try:
+            QueueStore(sys.argv[1]).enqueue('u:native', 'new')
+        except QueueError:
+            raise SystemExit(3)
+    """, str(root))
+    try:
+        stdout, stderr = worker.communicate(timeout=10)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.communicate()
+    assert worker.returncode == 3, (stdout, stderr)
+    import stat
+
+    assert stat.S_ISFIFO((root / name).stat().st_mode)
 
 
 @pytest.mark.parametrize("content", [

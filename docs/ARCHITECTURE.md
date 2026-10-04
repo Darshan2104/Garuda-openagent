@@ -126,6 +126,10 @@ fastest way to learn the system.
   `snapshot()` read the atomically published document without a writer lock,
   initialization, permission changes, migration publication or backup files.
   Historical records are projected in memory; unsupported records refuse.
+- **Legacy queue work cannot supply admission authority.** Version 1 jobs lack
+  user/session/configuration bindings and refuse mutation, even for dead owners.
+  Only validated empty records migrate, after an exact durable source backup;
+  ambiguous backups remain intact and refuse. Legacy capacity is discarded.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live
