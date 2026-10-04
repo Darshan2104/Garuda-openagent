@@ -122,6 +122,7 @@ def test_pending_approvals_are_listed_and_redacted(world):
 def test_an_unreadable_queue_is_visibly_unknown_not_an_error(world, tmp_path):
     store, _queue, ids = world
     broken = QueueStore(tmp_path / "broken-q")
+    broken.root.mkdir(mode=0o700)
     (tmp_path / "broken-q" / "state.json").write_text("{nope")
     import os
     os.chmod(tmp_path / "broken-q" / "state.json", 0o600)

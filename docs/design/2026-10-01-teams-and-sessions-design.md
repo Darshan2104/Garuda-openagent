@@ -597,6 +597,12 @@ claim retained by that instance in the claiming process; opening another store
 or inheriting it through a fork grants no implicit authority. Workspace requeue
 uses the owner from the original claim and cannot release a replacement's slot.
 
+Queue construction and both inspection APIs (`entries()` and `snapshot()`)
+write nothing and do not wait for a writer lock. They read the atomically
+published document, project historical records in memory and leave missing
+stores absent. Storage initialization, permission changes and migration
+publication belong only to mutations.
+
 `QueueStore` provides a cross-process lock on supported local filesystems. Under
 that lock, workers:
 
