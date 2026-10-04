@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-10-04 — Legacy queues cannot invent admission bindings (#216)
+
+- Version 1 work stays readable for diagnosis but every mutation refuses: it
+  lacks user/session/configuration binding evidence, even for dead owners.
+- Only a fully validated empty legacy queue migrates. Its exact source bytes
+  are backed up and file/directory-fsynced before v2 publication through the
+  locked directory descriptor. Existing backups must be private regular files
+  matching the source; partial, unrelated, symlinked and nonregular artifacts
+  refuse and remain available. Legacy capacity never widens a shared ceiling.
+- Process-interruption tests cover flush/publication boundaries and exact
+  retry. They prove process recovery, not hardware power-loss behavior. The
+  queue/capacity crash journal remains a separate requirement in issue #216.
+
 ## 2026-10-04 — Queue inspection does not initialize or migrate storage (#216)
 
 - Queue construction, `entries()` and `snapshot()` are pure reads. Missing

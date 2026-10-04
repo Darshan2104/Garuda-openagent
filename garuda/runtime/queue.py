@@ -34,9 +34,12 @@ store or fork cannot infer that authority from the persisted document.
 **Inspection** (:meth:`QueueStore.entries` and :meth:`QueueStore.snapshot`)
 reads without the lock and writes nothing, including at construction. Missing
 stores stay missing; existing permissions and legacy records stay untouched.
-Documents written by the spike (version 1) are read and migrated to
-version 2 on the first mutation; the old document is kept once as
-``state.json.v1``.
+Prototype version 1 records remain readable for diagnosis. Any legacy work
+refuses mutation because its user/session/configuration bindings are missing,
+even with confirmed-dead owners. Only validated empty legacy records migrate:
+the exact source bytes are backed up durably to ``state.json.v1`` before a
+version 2 document is published. Ambiguous archives refuse and stay intact.
+Legacy capacity never becomes a shared capacity setting.
 
 POSIX only: Windows is refused at construction.
 """
@@ -52,6 +55,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from garuda.runtime import queue_legacy
 from garuda.runtime.capacity import (
     CapacityStore,
     CapacityUnavailable,
@@ -165,22 +169,10 @@ class QueueStore:
     def _migrate(state: dict) -> dict:
         if state.get("version", 1) == STATE_VERSION:
             return state
-        scopes = {}
-        for scope, old in (state.get("scopes") or {}).items():
-            if not isinstance(old, dict):
-                raise CorruptState(f"scope {scope!r} is malformed")
-            # Queue-only capacity is gone: ceilings come from the shared capacity settings.
-            scopes[scope] = {
-                "waiting": [{"id": w["id"], "seq": w.get("seq", 0), "user": None,
-                             "harness": _harness_of(scope), "session_id": None,
-                             "config_digest": None, "enqueued_at": None}
-                            for w in old.get("waiting", [])],
-                "claims": {k: {**v, "user": None, "harness": _harness_of(scope),
-                               "session_id": None, "config_digest": None,
-                               "claimed_at": v.get("heartbeat")}
-                           for k, v in (old.get("claims") or {}).items()},
-            }
-        return {"version": STATE_VERSION, "seq": int(state.get("seq", 0)), "scopes": scopes}
+        try:
+            return queue_legacy.project(state)
+        except queue_legacy.LegacyQueueError as exc:
+            raise CorruptState(str(exc)) from exc
 
     @staticmethod
     def _validated(state: dict) -> dict:
@@ -201,17 +193,18 @@ class QueueStore:
         from garuda.runtime.strict_store import StorageUnavailable, exclusive_lock, write_document
 
         try:
-            with exclusive_lock(self.root):
+            with exclusive_lock(self.root) as directory_fd:
                 state, migrated = self._read()
                 before = json.dumps(state, sort_keys=True)
-                if migrated and self._state_path.exists():
-                    backup = self.root / "state.json.v1"
-                    if not backup.exists():
-                        backup.write_bytes(self._state_path.read_bytes())
-                        os.chmod(backup, 0o600)
+                if migrated:
+                    queue_legacy.preserve_empty(directory_fd, state)
                 yield state
-                if migrated or json.dumps(state, sort_keys=True) != before:
+                if migrated:
+                    queue_legacy.publish(directory_fd, self.root, state)
+                elif json.dumps(state, sort_keys=True) != before:
                     write_document(self._state_path, state)
+        except queue_legacy.LegacyQueueError as exc:
+            raise CorruptState(str(exc)) from exc
         except StorageUnavailable as exc:
             raise LockUnavailable(str(exc)) from exc
 

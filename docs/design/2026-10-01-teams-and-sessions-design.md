@@ -601,7 +601,12 @@ Queue construction and both inspection APIs (`entries()` and `snapshot()`)
 write nothing and do not wait for a writer lock. They read the atomically
 published document, project historical records in memory and leave missing
 stores absent. Storage initialization, permission changes and migration
-publication belong only to mutations.
+publication belong only to mutations. Legacy work cannot migrate without
+verified user/session/configuration bindings, regardless of owner liveness.
+Validated empty version 1 queues can migrate after a durable byte-exact backup,
+with publication through the locked directory descriptor. Existing archives
+must be private regular files matching the source; ambiguity refuses without
+overwriting them. Legacy capacity never supplies a configured ceiling.
 
 `QueueStore` provides a cross-process lock on supported local filesystems. Under
 that lock, workers:

@@ -898,6 +898,14 @@ chmod, lock acquisition, migration publication or backups on `entries()` or
 records with independent byte, permission, timestamp and inventory checks,
 plus an inspecting subprocess while a real writer holds the lock.
 
+Refuse mutation of any nonempty legacy record because binding evidence is
+missing, including live/dead/unknown owners. Validate empty legacy schemas,
+archive exact bytes durably before publication, reuse only verified matching
+private regular archives, and never import a legacy capacity ceiling. Test
+process death at each flush/publication boundary and an exact retry, backup
+ambiguity, replaced directories and nonregular files. These tests do not
+substitute for the cross-store queue/capacity crash journal.
+
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.
 

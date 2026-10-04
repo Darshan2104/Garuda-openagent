@@ -358,6 +358,15 @@ does not create directories, change permissions, migrate historical records
 or write backups. A missing queue remains absent; corrupt and future-version
 records refuse inspection and remain intact for diagnosis.
 
+Prototype version 1 queues containing jobs also refuse mutation: those jobs
+lack user, session and configuration bindings, even if their owners are dead.
+Inspect the original `state.json` and resolve historical work with the prior
+version. Only a valid empty legacy queue migrates, after its exact original
+bytes are durably preserved as `state.json.v1`. An unrelated, partial, symlinked
+or nonregular backup refuses migration and is left intact; do not delete it
+without resolving that ambiguity. The old queue capacity cannot widen the
+configured shared limit.
+
 ## Agent definitions
 
 An agent definition says how one Garuda agent behaves: its instructions,
