@@ -535,7 +535,7 @@ def test_inspection_is_read_only_and_does_not_wait_for_the_lock(tmp_path):
             reader.communicate()
             pytest.fail("queue inspection waited for the writer lock")
         assert reader.returncode == 0, stderr
-        assert json.loads(stdout) == {"ids": ["x"], "version": 2}
+        assert json.loads(stdout) == {"ids": ["x"], "version": 3}
     assert (tmp_path / "q" / "state.json").read_bytes() == before
 
 
@@ -553,7 +553,7 @@ def test_inspecting_a_missing_store_creates_nothing(tmp_path):
     root = tmp_path / "absent" / "queue"
     store = QueueStore(root)
     assert store.entries() == []
-    assert store.snapshot() == {"version": 2, "seq": 0, "scopes": {}}
+    assert store.snapshot() == {"version": 3, "seq": 0, "scopes": {}, "pending": {}}
     assert not root.parent.exists()
 
 
@@ -627,7 +627,7 @@ def test_an_empty_legacy_queue_migrates_without_importing_its_capacity(tmp_path)
     store = _store(tmp_path)
     store.enqueue("u:claude", "w3")
     migrated = json.loads(document.read_text())
-    assert migrated["version"] == 2 and "capacity" not in migrated["scopes"]["u:claude"]
+    assert migrated["version"] == 3 and "capacity" not in migrated["scopes"]["u:claude"]
     assert [w["id"] for w in migrated["scopes"]["u:claude"]["waiting"]] == ["w3"]
     assert migrated["seq"] == 4
     assert (root / "state.json.v1").read_bytes() == original
@@ -722,7 +722,7 @@ def test_empty_legacy_migration_survives_process_death_and_exact_retry(tmp_path,
     if boundary in ("sync-1", "sync-2", "sync-3"):
         assert source.read_bytes() == original
     else:
-        assert json.loads(source.read_bytes())["version"] == 2
+        assert json.loads(source.read_bytes())["version"] == 3
 
     store = _store(tmp_path)
     store.enqueue("u:native", "new", session_id="session", config_digest="cfg")
@@ -855,7 +855,7 @@ def test_the_run_a_claim_starts_reserves_the_same_slot_not_a_second_one(tmp_path
     ceilings(claude=1)
     capacity = CapacityStore()
     store = _store(tmp_path)
-    store.enqueue("u:claude", "sess", harness="claude", session_id="sess")
+    store.enqueue("u:claude", "sess", harness="claude", session_id="sess", config_digest="frozen-cfg")
     assert store.try_claim("u:claude", "sess")
     # What the run guard does at the start of the run it was claimed for: same holder,
     # no owner given. It must find the claim's reservation, not collide with it.

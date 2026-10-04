@@ -20,12 +20,14 @@ under the ceiling ``harnesses.<id>.max_parallel`` (or the settings ``capacity``
 table), so foreground, background, SDK, flow and consult launches all count
 against one limit. With no ceiling the harness is not limited.
 
-**Ownership.** A claim is kept on proof of life and taken only on proof of
-death: it is reclaimed only when its owner is *confirmed* dead (by process
-identity, as the shared capacity slot is); a live owner keeps it however old it
-is, and an owner whose liveness cannot be determined is quarantined once its
-heartbeat is past the lease TTL (or in the future). No takeover rests on a clock,
-so a moved clock can neither shorten a live owner's claim nor prolong a dead one's.
+**Ownership.** Pre-activation claims may be removed only on confirmed owner
+death. Activated claims stay quarantined after owner death because runtime
+descendants may still exist. A live owner keeps its claim however old it is;
+unknown liveness is quarantined after the lease TTL or a future heartbeat.
+TTL never grants takeover authority. Queue version 3 journals intent before
+reserving protected capacity (version 2), commits selection before adoption,
+and publishes claim removal before returning capacity. Ordinary capacity
+callers cannot reclaim queue slots, even after confirmed owner death.
 Heartbeat, release and workspace requeue match the complete recorded owner,
 including process identity and epoch. Implicit heartbeat/release use only this
 instance's successfully claimed owners in the claiming process; a newly opened
@@ -34,11 +36,11 @@ store or fork cannot infer that authority from the persisted document.
 **Inspection** (:meth:`QueueStore.entries` and :meth:`QueueStore.snapshot`)
 reads without the lock and writes nothing, including at construction. Missing
 stores stay missing; existing permissions and legacy records stay untouched.
-Prototype version 1 records remain readable for diagnosis. Any legacy work
-refuses mutation because its user/session/configuration bindings are missing,
-even with confirmed-dead owners. Only validated empty legacy records migrate:
-the exact source bytes are backed up durably to ``state.json.v1`` before a
-version 2 document is published. Ambiguous archives refuse and stay intact.
+Older records remain readable for diagnosis. Version 1 work and version 2
+claims refuse migration because their binding or activation evidence is missing.
+Empty records and fully bound, ordered version 2 waiters migrate after exact
+durable ``state.json.v1`` or ``state.json.v2`` backups, before version 3 publication.
+Ambiguous archives refuse and stay intact.
 Legacy capacity never becomes a shared capacity setting.
 
 POSIX only: Windows is refused at construction.
@@ -58,15 +60,13 @@ from typing import Any
 from garuda.runtime import queue_legacy
 from garuda.runtime.capacity import (
     CapacityStore,
-    CapacityUnavailable,
-    Reservation,
     adopt,
-    unadopt,
 )
 from garuda.runtime.ownership import Liveness, Owner, current_owner, owner_liveness
+from garuda.runtime.queue_journal import JournalError, QueueJournal
 
-STATE_VERSION = 2
-READABLE_VERSIONS = (1, 2)
+STATE_VERSION = 3
+READABLE_VERSIONS = (1, 2, 3)
 ENTRY_FIELDS = ("id", "seq", "user", "harness", "session_id", "config_digest", "enqueued_at")
 
 
@@ -150,7 +150,7 @@ class QueueStore:
 
     @staticmethod
     def _empty() -> dict:
-        return {"version": STATE_VERSION, "seq": 0, "scopes": {}}
+        return {"version": STATE_VERSION, "seq": 0, "scopes": {}, "pending": {}}
 
     def _read(self) -> tuple[dict, bool]:
         """``(state at the current version, whether it was migrated from an older one)``."""
@@ -167,43 +167,76 @@ class QueueStore:
 
     @staticmethod
     def _migrate(state: dict) -> dict:
-        if state.get("version", 1) == STATE_VERSION:
+        if state.get("version", 1) in (2, STATE_VERSION):
             return state
         try:
             return queue_legacy.project(state)
         except queue_legacy.LegacyQueueError as exc:
             raise CorruptState(str(exc)) from exc
 
-    @staticmethod
-    def _validated(state: dict) -> dict:
+    def _validated(self, state: dict) -> dict:
         scopes = state.get("scopes")
-        if not isinstance(scopes, dict) or not isinstance(state.get("seq", 0), int):
+        if (not isinstance(scopes, dict) or type(state.get("seq")) is not int or state["seq"] < 0
+                or type(state.get("version")) is not int):
             raise CorruptState("the queue state is malformed")
+        seen = set()
         for scope, entry in scopes.items():
+            if not isinstance(scope, str) or not isinstance(entry, dict):
+                raise CorruptState("the queue scope is malformed")
             waiting, claims = entry.get("waiting"), entry.get("claims")
             if (not isinstance(waiting, list) or not isinstance(claims, dict)
                     or not all(isinstance(w, dict) and isinstance(w.get("id"), str) for w in waiting)
                     or not all(isinstance(c, dict) for c in claims.values())):
                 raise CorruptState(f"scope {scope!r} is malformed")
+            for item_id in [w["id"] for w in waiting] + list(claims):
+                if item_id in seen:
+                    raise CorruptState(f"queue item {item_id!r} has duplicate binding records; refusing")
+                seen.add(item_id)
+            if state["version"] == STATE_VERSION:
+                if any(not all(isinstance(w.get(k), str) and w[k] for k in ("id", "user", "harness"))
+                       or any(w.get(k) is not None and (not isinstance(w[k], str) or not w[k])
+                              for k in ("session_id", "config_digest")) for w in waiting):
+                    raise CorruptState("waiting record has a malformed admission binding")
+                sequence = [w.get("seq") for w in waiting]
+                if (any(type(seq) is not int or not 1 <= seq <= state["seq"] for seq in sequence)
+                        or any(a >= b for a, b in zip(sequence, sequence[1:], strict=False))):
+                    raise CorruptState("waiting records have invalid durable FIFO sequences")
+        if state["version"] == STATE_VERSION:
+            try:
+                QueueJournal(self).validate(state)
+            except JournalError as exc:
+                raise CorruptState(str(exc)) from exc
         return state
+
+    def _publish(self, state: dict) -> None:
+        from garuda.runtime.strict_store import StorageUnavailable, write_locked_document
+
+        try:
+            write_locked_document(self._active_directory_fd, self._state_path, state)
+        except StorageUnavailable as exc:
+            raise CorruptState(str(exc)) from exc
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[dict]:
         """Hold the exclusive lock, yield the state, write it back atomically."""
-        from garuda.runtime.strict_store import StorageUnavailable, exclusive_lock, write_document
+        from garuda.runtime.strict_store import StorageUnavailable, exclusive_lock
 
         try:
             with exclusive_lock(self.root) as directory_fd:
-                state, migrated = self._read()
-                before = json.dumps(state, sort_keys=True)
-                if migrated:
-                    queue_legacy.preserve_empty(directory_fd, state)
-                yield state
-                if migrated:
-                    queue_legacy.publish(directory_fd, self.root, state)
-                elif json.dumps(state, sort_keys=True) != before:
-                    write_document(self._state_path, state)
-        except queue_legacy.LegacyQueueError as exc:
+                self._active_directory_fd = directory_fd
+                try:
+                    state, migrated = self._read()
+                    before = json.dumps(state, sort_keys=True)
+                    if migrated:
+                        queue_legacy.preserve_previous(directory_fd, state)
+                        state["version"] = STATE_VERSION
+                        state["pending"] = {}
+                    yield state
+                    if json.dumps(state, sort_keys=True) != before:
+                        self._publish(state)
+                finally:
+                    del self._active_directory_fd
+        except (queue_legacy.LegacyQueueError, JournalError) as exc:
             raise CorruptState(str(exc)) from exc
         except StorageUnavailable as exc:
             raise LockUnavailable(str(exc)) from exc
@@ -222,10 +255,16 @@ class QueueStore:
         An item id identifies one binding across this store, including running claims.
         A conflicting retry refuses; it cannot change work that was already admitted.
         """
-        item_id = item_id or uuid.uuid4().hex
+        if (not isinstance(scope, str) or not scope
+                or any(value is not None and (not isinstance(value, str) or not value)
+                       for value in (item_id, harness, user, session_id, config_digest))):
+            raise QueueError("queue identifiers and explicit bindings must be nonempty strings")
+        item_id = item_id if item_id is not None else uuid.uuid4().hex
         binding = {"user": user or current_user(), "harness": harness or _harness_of(scope),
                    "session_id": session_id, "config_digest": config_digest}
         with self._locked() as state:
+            if any(record["entry"]["id"] == item_id for record in state["pending"].values()):
+                raise QueueError(f"queue item {item_id!r} has an unresolved transaction")
             existing = []
             for name, entry in state["scopes"].items():
                 existing.extend((name, w) for w in entry["waiting"] if w["id"] == item_id)
@@ -252,50 +291,48 @@ class QueueStore:
             entry["waiting"] = kept
         return removed
 
-    def _expire(self, scope_state: dict, now: float) -> None:
-        """Drop claims whose owner is confirmed dead; quarantine unknowns after the TTL.
-
-        Death is decided by process identity, not by the clock, exactly as the shared
-        capacity slot is, so the two stores never disagree about who holds a slot and a
-        moved clock can neither shorten a live owner's claim nor prolong a dead one's."""
-        for claim_id, claim in list(scope_state["claims"].items()):
-            verdict = self._liveness(claim.get("owner") or {})
-            if verdict is False:
-                del scope_state["claims"][claim_id]
-            elif verdict is None:
-                age = now - float(claim.get("heartbeat", 0))
-                if age < 0 or age >= self.lease_ttl:
-                    claim["quarantined"] = True  # unknown liveness: never taken over
-
     def try_claim(self, scope: str, item_id: str, owner: Owner | None = None) -> bool:
-        """Claim capacity for ``item_id`` if it is next in line and a slot is free."""
+        """Select work only after durable queue intent, reservation and commit."""
         owner = owner or current_owner()
+        ticket = None
         with self._locked() as state:
+            journal = QueueJournal(self)
+            journal.recover(state)
             scope_state = self._scope(state, scope)
-            self._expire(scope_state, self._clock())
+            journal.expire(state, scope, self._clock())
             waiting = scope_state["waiting"]
             if not waiting or waiting[0]["id"] != item_id:
                 return False
-            entry = waiting[0]
-            harness = entry.get("harness") or _harness_of(scope)
-            ceiling = self.ceiling_for(harness)
-            if ceiling is not None:
-                try:
-                    self.capacity.reserve(harness, item_id, ceiling, owner=owner)
-                except CapacityUnavailable:
-                    return False
-                adopt(harness, item_id, owner)  # the run this claim starts reserves the same slot
-            waiting.pop(0)
-            scope_state["claims"][item_id] = {
-                "owner": owner.to_dict(), "epoch": uuid.uuid4().hex,
-                "heartbeat": self._clock(), "claimed_at": self._clock(),
-                "user": entry.get("user"), "harness": harness,
-                "session_id": entry.get("session_id"),
-                "config_digest": entry.get("config_digest"),
-                "reserved": ceiling is not None,
-            }
+            ticket = journal.claim(state, scope, dict(waiting[0]), owner)
+        if ticket is None:
+            return False
+        adopt(self.capacity.root, ticket)
         self._claimed_owners[(scope, item_id)] = owner
         return True
+
+    def recover_pending(self) -> list[dict]:
+        """Reconcile proved safe dead-owner transactions without launching work."""
+        with self._locked() as state:
+            journal = QueueJournal(self)
+            outcomes = journal.recover(state)
+            for scope in state["scopes"]:
+                journal.expire(state, scope, self._clock())
+            return outcomes
+
+    def begin_dispatch(self, scope: str, item_id: str, owner: Owner) -> None:
+        """Persist activation intent before the background runner can launch."""
+        with self._locked() as state:
+            claim = state["scopes"].get(scope, {}).get("claims", {}).get(item_id)
+            if (claim is None or claim.get("owner") != owner.to_dict()
+                    or self._claimed_owners.get((scope, item_id)) != owner
+                    or owner.pid != os.getpid() or owner.identity in ("", "unknown")
+                    or claim["transaction"] in state["pending"]):
+                raise QueueError("dispatch requires the complete committed claim owner")
+            journal = QueueJournal(self)
+            ticket = journal.ticket(scope, item_id, claim)
+            if not ticket.activation_ready:
+                raise QueueError("dispatch requires frozen user/session/configuration bindings")
+            journal.slots.transition(ticket, "activated")
 
     def claim(self, scope: str, item_id: str, *, timeout: float = 30.0,
               owner: Owner | None = None, initial_delay: float = 0.01,
@@ -333,27 +370,12 @@ class QueueStore:
         self._requeue(scope, item_id, owner)
         return False
 
-    def _give_back(self, claim: dict, item_id: str) -> None:
-        if claim.get("reserved"):
-            unadopt(claim["harness"], item_id)
-            owner = claim.get("owner") or {}
-            self.capacity.release(Reservation(
-                key=claim["harness"], holder=item_id,
-                owner=Owner(pid=owner.get("pid", 0), identity=owner.get("identity", ""),
-                            pgid=owner.get("pgid", 0), epoch=owner.get("epoch", ""))))
-
     def _requeue(self, scope: str, item_id: str, owner: Owner) -> None:
         with self._locked() as state:
-            scope_state = state["scopes"].get(scope)
-            claim = (scope_state or {}).get("claims", {}).get(item_id)
+            claim = state["scopes"].get(scope, {}).get("claims", {}).get(item_id)
             if claim is None or claim.get("owner") != owner.to_dict():
                 return
-            del scope_state["claims"][item_id]
-            self._give_back(claim, item_id)
-            scope_state["waiting"].insert(0, {
-                "id": item_id, "seq": 0, "user": claim.get("user"),
-                "harness": claim.get("harness"), "session_id": claim.get("session_id"),
-                "config_digest": claim.get("config_digest"), "enqueued_at": claim.get("claimed_at")})
+            QueueJournal(self).release(state, scope, item_id, claim, requeue=True)
         if self._claimed_owners.get((scope, item_id)) == owner:
             del self._claimed_owners[(scope, item_id)]
 
@@ -379,8 +401,7 @@ class QueueStore:
             claim = claims.get(item_id)
             if claim is None or claim.get("owner") != owner.to_dict():
                 return False
-            del claims[item_id]
-            self._give_back(claim, item_id)
+            QueueJournal(self).release(state, scope, item_id, claim)
         if self._claimed_owners.get((scope, item_id)) == owner:
             del self._claimed_owners[(scope, item_id)]
         return True
@@ -401,17 +422,28 @@ class QueueStore:
         writing nothing (a read of the atomically replaced document is consistent)."""
         state, _migrated = self._read()
         out = []
+        pending = {record["entry"]["id"]: record for record in state.get("pending", {}).values()}
         for name, entry in sorted(state["scopes"].items()):
             if scope is not None and name != scope:
                 continue
             for position, waiting in enumerate(entry["waiting"], start=1):
                 out.append({"scope": name, "state": "queued", "position": position,
-                            **{k: waiting.get(k) for k in ENTRY_FIELDS}})
+                            **{k: waiting.get(k) for k in ENTRY_FIELDS},
+                            **({"quarantined": True, "pending_operation": pending[waiting["id"]]["operation"]}
+                               if waiting["id"] in pending else {})})
             for item_id, claim in entry["claims"].items():
                 out.append({"scope": name, "state": "running", "position": 0, "id": item_id,
                             "user": claim.get("user"), "harness": claim.get("harness"),
                             "session_id": claim.get("session_id"),
                             "config_digest": claim.get("config_digest"),
                             "worker": claim.get("owner"), "heartbeat": claim.get("heartbeat"),
-                            "quarantined": bool(claim.get("quarantined"))})
+                            "quarantined": bool(claim.get("quarantined")) or item_id in pending,
+                            **({"pending_operation": pending[item_id]["operation"]}
+                               if item_id in pending else {})})
+        listed = {row["id"] for row in out}
+        for item_id, record in pending.items():
+            if item_id not in listed and (scope is None or scope == record["scope"]):
+                out.append({"scope": record["scope"], "state": "quarantined", "position": 0,
+                            **{k: record["entry"].get(k) for k in ENTRY_FIELDS},
+                            "quarantined": True, "pending_operation": record["operation"]})
         return out

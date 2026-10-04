@@ -276,6 +276,9 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
                 return 0
             await asyncio.sleep(delay)
             delay = min(delay * 2, poll_max)
+        # Persist launch intent before any runtime can start, including an
+        # unlimited harness. Death after this point quarantines the slot.
+        queue.begin_dispatch(scope, session_id, owner)
         # 3. Working.
         store.update_meta(session_id, {"status": "running",
                                        "state": session_state.started(owner.to_dict())})

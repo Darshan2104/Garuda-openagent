@@ -906,6 +906,22 @@ process death at each flush/publication boundary and an exact retry, backup
 ambiguity, replaced directories and nonregular files. These tests do not
 substitute for the cross-store queue/capacity crash journal.
 
+The production journal now uses queue version 3 and capacity version 2:
+publish intent, reserve a protected slot, publish claim, commit selection, clear
+intent, then retain local activation authority. Release publishes intent, fences
+captured adoption tickets in capacity while retaining activation history, then
+publishes claim removal before returning capacity. Ordinary callers cannot reclaim queue
+slots. Recover confirmed-dead pre-activation operations without launch; quarantine
+activated or ambiguous dispatch. Verify actual process death at every publication
+boundary and foreground admission through the ordinary launch guard. Requeue
+workspace-refused work by original durable sequence even when callbacks finish
+out of order. Keep unresolved transactions visible through pure inspection.
+
+Version 2 waiters may migrate only with full bindings and ordered sequences;
+version 2 claims refuse without activation evidence. Nonempty capacity version 1
+records refuse mutation without reservation origin evidence; empty ones archive
+exact bytes before upgrading. Preserve unrelated archives in every case.
+
 **Acceptance:** repeat A.4 against the production API plus migration, corrupt
 record and clock-skew cases.
 
@@ -918,6 +934,11 @@ workspace lease. Record PID/start-time/command identity before it can mutate.
 Implement queued cancellation, active cancellation, crash classification,
 bounded logs and terminal cleanup. `garuda sessions` remains a one-shot script-
 friendly view; background execution does not require the dashboard to run.
+
+The worker now persists activation before the runner. Worker death after that
+point quarantines its queue slot, including when a runtime survives in a separate
+process group. This fence does not complete descendant supervision or cleanup
+receipts; those remain required before every terminal path can safely release.
 
 **Acceptance:** real subprocess tests cover queue-to-run promotion, cancellation
 before launch, crash, stale PID reuse defense and slot release on every terminal
