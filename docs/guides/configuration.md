@@ -345,6 +345,13 @@ when the item id, scope, user, harness, session and configuration digest match
 exactly. This also applies after the entry is claimed. A conflicting retry
 refuses instead of replacing admitted work or adding a duplicate.
 
+Queue heartbeat and release accept an explicit owner matching the complete
+claim record. Without an explicit owner, they use only the owner retained by
+the instance that successfully claimed the item in the current process.
+Another instance or an inherited fork cannot release the claim implicitly.
+If workspace acquisition fails, requeue also checks the original owner before
+returning capacity, so a replacement claim remains intact.
+
 ## Agent definitions
 
 An agent definition says how one Garuda agent behaves: its instructions,

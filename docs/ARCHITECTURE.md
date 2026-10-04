@@ -118,6 +118,10 @@ fastest way to learn the system.
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the
   queue lock before any write.
+- **Queue mutations require claimant authority.** Heartbeat, release and
+  workspace requeue compare the complete persisted process identity and epoch.
+  Implicit mutations use only the claiming instance's retained owner in the
+  claiming process; opening a store or forking does not grant that authority.
 - **Comments explain *why*, especially the non-obvious.** The codebase leans on
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live

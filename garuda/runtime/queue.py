@@ -26,6 +26,10 @@ identity, as the shared capacity slot is); a live owner keeps it however old it
 is, and an owner whose liveness cannot be determined is quarantined once its
 heartbeat is past the lease TTL (or in the future). No takeover rests on a clock,
 so a moved clock can neither shorten a live owner's claim nor prolong a dead one's.
+Heartbeat, release and workspace requeue match the complete recorded owner,
+including process identity and epoch. Implicit heartbeat/release use only this
+instance's successfully claimed owners in the claiming process; a newly opened
+store or fork cannot infer that authority from the persisted document.
 
 **Inspection** (:meth:`QueueStore.entries`) reads without the lock and writes
 nothing. Documents written by the spike (version 1) are read and migrated to
@@ -111,6 +115,9 @@ class QueueStore:
         self._clock = clock
         self._capacity = capacity
         self._ceiling = ceiling
+        # Implicit mutation authority comes only from this instance's successful
+        # claims, never from reading an owner out of the shared queue document.
+        self._claimed_owners: dict[tuple[str, str], Owner] = {}
         if self.root.is_symlink():
             raise LockUnavailable(f"{self.root} is a symlink")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -294,7 +301,8 @@ class QueueStore:
                 "config_digest": entry.get("config_digest"),
                 "reserved": ceiling is not None,
             }
-            return True
+        self._claimed_owners[(scope, item_id)] = owner
+        return True
 
     def claim(self, scope: str, item_id: str, *, timeout: float = 30.0,
               owner: Owner | None = None, initial_delay: float = 0.01,
@@ -319,16 +327,17 @@ class QueueStore:
         The workspace is acquired outside the store lock. If it is not available
         right now, the capacity claim is released and the entry goes back to the
         head of its queue, so no slot is held by a process that cannot work."""
+        owner = owner or current_owner()
         if not self.try_claim(scope, item_id, owner):
             return False
         try:
             acquired = acquire_workspace()
         except BaseException:
-            self._requeue(scope, item_id)
+            self._requeue(scope, item_id, owner)
             raise
         if acquired:
             return True
-        self._requeue(scope, item_id)
+        self._requeue(scope, item_id, owner)
         return False
 
     def _give_back(self, claim: dict, item_id: str) -> None:
@@ -340,36 +349,48 @@ class QueueStore:
                 owner=Owner(pid=owner.get("pid", 0), identity=owner.get("identity", ""),
                             pgid=owner.get("pgid", 0), epoch=owner.get("epoch", ""))))
 
-    def _requeue(self, scope: str, item_id: str) -> None:
+    def _requeue(self, scope: str, item_id: str, owner: Owner) -> None:
         with self._locked() as state:
-            scope_state = self._scope(state, scope)
-            claim = scope_state["claims"].pop(item_id, None)
-            if claim is not None:
-                self._give_back(claim, item_id)
-                scope_state["waiting"].insert(0, {
-                    "id": item_id, "seq": 0, "user": claim.get("user"),
-                    "harness": claim.get("harness"), "session_id": claim.get("session_id"),
-                    "config_digest": claim.get("config_digest"), "enqueued_at": claim.get("claimed_at")})
+            scope_state = state["scopes"].get(scope)
+            claim = (scope_state or {}).get("claims", {}).get(item_id)
+            if claim is None or claim.get("owner") != owner.to_dict():
+                return
+            del scope_state["claims"][item_id]
+            self._give_back(claim, item_id)
+            scope_state["waiting"].insert(0, {
+                "id": item_id, "seq": 0, "user": claim.get("user"),
+                "harness": claim.get("harness"), "session_id": claim.get("session_id"),
+                "config_digest": claim.get("config_digest"), "enqueued_at": claim.get("claimed_at")})
+        if self._claimed_owners.get((scope, item_id)) == owner:
+            del self._claimed_owners[(scope, item_id)]
 
     def heartbeat(self, scope: str, item_id: str, owner: Owner | None = None) -> bool:
+        if owner is None:
+            owner = self._claimed_owners.get((scope, item_id))
+            if owner is None or owner.pid != os.getpid():
+                return False  # a fork cannot inherit implicit authority
         with self._locked() as state:
-            claim = self._scope(state, scope)["claims"].get(item_id)
-            if claim is None or (owner is not None
-                                 and (claim.get("owner") or {}).get("epoch") != owner.epoch):
+            claim = state["scopes"].get(scope, {}).get("claims", {}).get(item_id)
+            if claim is None or claim.get("owner") != owner.to_dict():
                 return False
             claim["heartbeat"] = self._clock()
             return True
 
     def release(self, scope: str, item_id: str, owner: Owner | None = None) -> bool:
+        if owner is None:
+            owner = self._claimed_owners.get((scope, item_id))
+            if owner is None or owner.pid != os.getpid():
+                return False
         with self._locked() as state:
-            claims = self._scope(state, scope)["claims"]
+            claims = state["scopes"].get(scope, {}).get("claims", {})
             claim = claims.get(item_id)
-            if claim is None or (owner is not None
-                                 and (claim.get("owner") or {}).get("epoch") != owner.epoch):
+            if claim is None or claim.get("owner") != owner.to_dict():
                 return False
             del claims[item_id]
             self._give_back(claim, item_id)
-            return True
+        if self._claimed_owners.get((scope, item_id)) == owner:
+            del self._claimed_owners[(scope, item_id)]
+        return True
 
     # -- inspection (never writes) -------------------------------------------------------
 
