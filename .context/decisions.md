@@ -6,7 +6,9 @@
   (capacity version 2), publishes the claim and commits selection before granting
   process-local activation authority. These are ordered durable publications
   across separate files, not one atomic transaction. Release removes the claim
-  durably before returning its slot; ordinary capacity callers cannot release
+  durably before returning its slot. A durable capacity release fence blocks
+  launch threads that captured adoption before invalidation and retains prior
+  activation history; ordinary capacity callers cannot release
   or reclaim queue slots, even for confirmed-dead owners.
 - Only the successful claiming process with real birth/group identity and full
   frozen bindings may activate. Background workers persist activation before

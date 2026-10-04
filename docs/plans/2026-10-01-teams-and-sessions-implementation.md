@@ -908,8 +908,9 @@ substitute for the cross-store queue/capacity crash journal.
 
 The production journal now uses queue version 3 and capacity version 2:
 publish intent, reserve a protected slot, publish claim, commit selection, clear
-intent, then retain local activation authority. Release publishes intent and
-claim removal before returning capacity. Ordinary callers cannot reclaim queue
+intent, then retain local activation authority. Release publishes intent, fences
+captured adoption tickets in capacity while retaining activation history, then
+publishes claim removal before returning capacity. Ordinary callers cannot reclaim queue
 slots. Recover confirmed-dead pre-activation operations without launch; quarantine
 activated or ambiguous dispatch. Verify actual process death at every publication
 boundary and foreground admission through the ordinary launch guard. Requeue

@@ -628,7 +628,8 @@ all queue slots regardless of owner liveness. Selection grants activation only
 to the successful claiming process with frozen user/session/configuration
 bindings. Activation is persisted before the runner, including unlimited
 harnesses. Recovery reconciles confirmed-dead pre-activation transactions,
-publishing claim removal before slot release. Activated or ambiguous dispatch
+fencing captured activation tickets before publishing claim removal and slot
+release. The fence retains activation history. Activated or ambiguous dispatch
 stays quarantined and is never automatically replayed. Workspace refusal
 restores waiting order by the original durable sequence. Full descendant
 supervision and proof of cleanup on every terminal path remain D.2 work.

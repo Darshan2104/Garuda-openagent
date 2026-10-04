@@ -207,6 +207,48 @@ def test_a_failed_queue_release_publication_keeps_the_slot_from_ordinary_launche
         queue.begin_dispatch("u:native", "job", Owner(**queue.entries()[0]["worker"]))
 
 
+def test_a_launch_that_captured_adoption_before_release_cannot_activate_during_release(tmp_path, monkeypatch):
+    import contextlib
+    import threading
+
+    import garuda.runtime.capacity as capacity_module
+
+    queue, capacity = stores(tmp_path)
+    assert queue.try_claim("u:native", "job")
+    captured, resume = threading.Event(), threading.Event()
+    lock = capacity_module.exclusive_lock
+
+    @contextlib.contextmanager
+    def pause_before_lock(root):
+        captured.set()
+        assert resume.wait(10), "release did not finish"
+        with lock(root) as fd:
+            yield fd
+
+    monkeypatch.setattr(capacity_module, "exclusive_lock", pause_before_lock)
+    result = []
+
+    def launch():
+        try:
+            result.append(capacity.reserve("native", "job", 1))
+        except BaseException as exc:
+            result.append(exc)
+
+    contender = threading.Thread(target=launch)
+    contender.start()
+    try:
+        assert captured.wait(10), "launch did not capture its ticket"
+        interrupt_publication(monkeypatch, queue, claimed=False, message="release interrupted")
+        with pytest.raises(QueueError, match="release interrupted"):
+            queue.release("u:native", "job")
+    finally:
+        resume.set()
+        contender.join(10)
+    assert not contender.is_alive()
+    assert len(result) == 1 and isinstance(result[0], CapacityUnavailable), result
+    assert capacity.holders("native") == ["job"]
+
+
 def test_a_crashed_uncommitted_reservation_requires_queue_recovery_before_reuse(tmp_path):
     queue, capacity = stores(tmp_path)
     code = """
@@ -326,7 +368,8 @@ def test_a_claim_without_frozen_runtime_bindings_cannot_begin_dispatch(tmp_path,
 
 @pytest.mark.parametrize("boundary", [
     "claim-intent", "reservation", "claim-publication", "capacity-commit", "claim-commit",
-    "release-intent", "release-publication", "capacity-release", "release-commit", "activation",
+    "release-intent", "release-fence", "release-activated-fence", "release-publication",
+    "capacity-release", "release-commit", "activation",
 ])
 def test_process_death_at_each_journal_boundary_cannot_grant_or_replay_work(tmp_path, boundary):
     queue, capacity = stores(tmp_path)
@@ -362,6 +405,8 @@ def test_process_death_at_each_journal_boundary_cannot_grant_or_replay_work(tmp_
                 hit = ((boundary == 'reservation' and phase == 'pending')
                        or (boundary == 'capacity-commit' and phase == 'selected')
                        or (boundary == 'activation' and phase == 'activated')
+                       or (boundary == 'release-fence' and phase == 'releasing_selected')
+                       or (boundary == 'release-activated-fence' and phase == 'releasing_activated')
                        or (boundary == 'capacity-release' and releasing and slot is None))
             else:
                 hit = False
@@ -375,6 +420,8 @@ def test_process_death_at_each_journal_boundary_cannot_grant_or_replay_work(tmp_
         if boundary == 'activation':
             queue.begin_dispatch('u:native', 'job', owner)
         elif boundary.startswith('release-') or boundary == 'capacity-release':
+            if boundary == 'release-activated-fence':
+                queue.begin_dispatch('u:native', 'job', owner)
             releasing = True
             queue.release('u:native', 'job', owner)
     """
@@ -390,7 +437,7 @@ def test_process_death_at_each_journal_boundary_cannot_grant_or_replay_work(tmp_
     before = queue.entries()
     queue.recover_pending()
     after = queue.entries()
-    if boundary == "activation":
+    if boundary in {"activation", "release-activated-fence"}:
         assert capacity.holders("native") == ["job"]
         assert len(after) == 1 and after[0]["state"] == "running" and after[0]["quarantined"]
     else:

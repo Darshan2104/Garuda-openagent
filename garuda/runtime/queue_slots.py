@@ -20,7 +20,8 @@ from garuda.runtime.strict_store import StorageError, exclusive_lock, write_lock
 if TYPE_CHECKING:
     from garuda.runtime.capacity import CapacityStore
 
-PHASES = {"pending", "selected", "activated"}
+PHASES = {"pending", "selected", "activated", "releasing_selected", "releasing_activated"}
+ACTIVATED_PHASES = {"activated", "releasing_activated"}
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,31 @@ class QueueSlots:
             raise CapacityUnavailable("queue reservation does not match its journal")
         return slot["queue"]["phase"]
 
+    def fence_release(self, ticket: QueueTicket, *, preactivation_only: bool = False) -> None:
+        """Block captured adoption tickets before durable claim removal.
+
+        Keep activation history in the fence: a dead owner cannot turn a
+        previously activated release into safe pre-activation recovery.
+        """
+        from garuda.runtime.capacity import CapacityError, CapacityUnavailable
+
+        try:
+            with exclusive_lock(self.capacity.root) as directory_fd:
+                document = self.capacity._load(ticket.key, for_mutation=True, directory_fd=directory_fd)
+                slot = document["slots"].get(ticket.holder)
+                if slot is None:
+                    return
+                if not self._same(slot, ticket):
+                    raise CapacityUnavailable("queue release cannot alter a replacement slot")
+                phase = slot["queue"]["phase"]
+                if preactivation_only and phase in ACTIVATED_PHASES:
+                    raise CapacityUnavailable("activated release cannot be recovered without cleanup proof")
+                slot["queue"]["phase"] = ("releasing_activated" if phase in ACTIVATED_PHASES
+                                           else "releasing_selected")
+                write_locked_document(directory_fd, self.capacity._path(ticket.key), document)
+        except StorageError as exc:
+            raise CapacityError(f"queue capacity storage unavailable: {exc}") from exc
+
     def release(self, ticket: QueueTicket) -> None:
         """Called only after the coordinator durably removes its queue claim."""
         from garuda.runtime.capacity import CapacityError, CapacityUnavailable
@@ -162,6 +188,8 @@ class QueueSlots:
                     return
                 if not self._same(slot, ticket):
                     raise CapacityUnavailable("queue release cannot alter a replacement slot")
+                if slot["queue"]["phase"] not in {"releasing_selected", "releasing_activated"}:
+                    raise CapacityUnavailable("queue release requires a durable activation fence")
                 del document["slots"][ticket.holder]
                 write_locked_document(directory_fd, self.capacity._path(ticket.key), document)
         except StorageError as exc:

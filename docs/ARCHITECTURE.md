@@ -130,7 +130,9 @@ fastest way to learn the system.
 - **Queue selection precedes activation.** Version 3 journals queue intent,
   protected shared-capacity reservation and selection commit. Only the successful
   claiming process can activate a fully bound ticket, after publishing activation
-  in capacity version 2. Release publishes claim removal before slot removal.
+  in capacity version 2. Release fences captured adoption tickets in capacity
+  before publishing claim removal, then removes the slot. The fence retains
+  whether the reservation was activated.
   Dead owners permit reconciliation before activation; activated or ambiguous
   dispatch remains quarantined and is never automatically replayed.
 - **Legacy queue work cannot supply admission authority.** Version 1 jobs lack

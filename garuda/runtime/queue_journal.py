@@ -14,7 +14,7 @@ from dataclasses import asdict
 
 from garuda.runtime.capacity import CapacityUnavailable, unadopt
 from garuda.runtime.ownership import Owner
-from garuda.runtime.queue_slots import QueueSlots, QueueTicket
+from garuda.runtime.queue_slots import ACTIVATED_PHASES, QueueSlots, QueueTicket
 
 
 class JournalError(ValueError):
@@ -81,12 +81,14 @@ class QueueJournal:
         self.queue._publish(state)
         return ticket
 
-    def release(self, state: dict, scope: str, item_id: str, claim: dict, *, requeue: bool = False) -> None:
+    def release(self, state: dict, scope: str, item_id: str, claim: dict, *, requeue: bool = False,
+                preactivation_only: bool = False) -> None:
         ticket = self.ticket(scope, item_id, claim)
         unadopt(self.queue.capacity.root, ticket.key, ticket.holder)
         operation = "requeue" if requeue else "release"
         state["pending"][ticket.transaction] = self._record(operation, scope, claim["entry"], ticket)
         self.queue._publish(state)
+        self.slots.fence_release(ticket, preactivation_only=preactivation_only)
         scope_state = state["scopes"][scope]
         del scope_state["claims"][item_id]
         if requeue:
@@ -103,15 +105,16 @@ class QueueJournal:
         outcomes = []
         for transaction, record in list(state["pending"].items()):
             ticket = self.decode(transaction, record)
-            phase = self.slots.phase(ticket)
             verdict = self.queue._liveness(ticket.owner.to_dict())
-            if phase == "activated" or verdict is not False:
+            phase = self.slots.phase(ticket)
+            if phase in ACTIVATED_PHASES or verdict is not False:
                 outcomes.append({"id": ticket.holder, "state": "quarantined"})
                 continue
             scope_state = state["scopes"][record["scope"]]
             claim = scope_state["claims"].get(ticket.holder)
             if phase is None and claim is not None:
                 raise JournalError("published queue claim has no paired reservation; refusing recovery")
+            self.slots.fence_release(ticket, preactivation_only=True)
             if claim is not None:
                 if self.ticket(record["scope"], ticket.holder, claim) != ticket:
                     raise JournalError("pending recovery cannot alter a replacement claim")
@@ -137,10 +140,10 @@ class QueueJournal:
                 continue
             verdict = self.queue._liveness(claim["owner"])
             phase = self.slots.phase(self.ticket(scope, item_id, claim))
-            if phase is None:
+            if phase not in {"selected", "activated"}:
                 raise JournalError("queue claim has no paired reservation; refusing takeover")
             if verdict is False and phase != "activated":
-                self.release(state, scope, item_id, claim)
+                self.release(state, scope, item_id, claim, preactivation_only=True)
             elif verdict is False or verdict is None:
                 age = now - float(claim["heartbeat"])
                 if verdict is False or age < 0 or age >= self.queue.lease_ttl:

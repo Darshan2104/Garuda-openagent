@@ -372,8 +372,10 @@ configured shared limit.
 
 Selection publishes a queue intent, reserves a protected shared slot, then
 commits the claim before granting local activation authority. Dispatch records
-activation before invoking the runtime. A release removes the claim durably
-before returning its slot. `recover_pending()` reconciles only safe operations
+activation before invoking the runtime. A release fences activation in capacity,
+removes the claim durably, then returns its slot. A thread that captured its
+ticket before release cannot activate through that fence. The fence keeps prior
+activation history. `recover_pending()` reconciles only safe operations
 whose owners are confirmed dead; it never starts work. Activated or ambiguous
 dispatch remains quarantined because worker death does not prove descendant
 cleanup. Inspection exposes pending operations without repairing them.
