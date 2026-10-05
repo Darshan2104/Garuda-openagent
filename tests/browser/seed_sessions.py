@@ -281,7 +281,7 @@ def seed_observability(root: Path, workspace: str) -> dict:
     agents.mkdir(parents=True, exist_ok=True)
     (agents / "careful.yaml").write_text(
         "version: 1\nextends: garuda/explore\ndescription: Checks twice\n"
-        "limits: {max_turns: 12}\ninstructions: {text: SEED-INSTRUCTION-MARKER check twice.}\n")
+        "limits: {max_turns: 12}\ninstructions: {mode: replace, text: SEED-INSTRUCTION-MARKER check twice. 🦅 café.}\n")
     (agents / "broken.yaml").write_text("version: 1\nlimits: {max_turns: lots}\n")
     careful = AgentSpec.load("careful", workspace)
     store.update_meta(OBS["native"], {"agent": "careful", "agent_digest": careful.digest})

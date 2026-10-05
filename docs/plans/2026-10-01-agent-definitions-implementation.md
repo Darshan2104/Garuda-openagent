@@ -381,8 +381,10 @@ sizes; conversations show the agent and prompt digest per session. Read-only.
 Agent HTTP errors/warnings use source-free fixed messages and registry-validated
 codes. Exercise malformed YAML/Markdown and legacy warnings through the
 production Setup route, plus static-prompt and outer inspector failures. Local
-inspection keeps detailed diagnostics. Character counts, segment attribution and
-the complete browser acceptance remain separate #173 work.
+inspection keeps detailed diagnostics. Section metadata and the existing table
+include labeled UTF-8 bytes, Unicode chars and estimated tokens from the same
+static inspector. Unicode unit/browser fixtures distinguish bytes from chars.
+Segment attribution and the complete parent acceptance remain separate #173 work.
 
 **Acceptance:** production-written fixtures render; live Chrome remains the
 browser gate.

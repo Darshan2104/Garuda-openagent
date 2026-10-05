@@ -348,6 +348,8 @@ print authorized source text without persisting it. Report UTF-8 bytes,
 characters and estimated tokens with the estimator named. HTTP agent errors
 and warnings use source-free fixed messages and registry-validated codes,
 including malformed YAML/Markdown, prompt inspection and setup fallback failures.
+Setup consumes the inspector's existing byte/character/token counts and labels
+all three metrics; it does not recompute prompts or expose their bodies.
 Detailed source diagnostics remain local; secret-pattern redaction alone cannot
 protect ordinary instruction or memory text in an exception.
 
