@@ -266,7 +266,7 @@ def test_live_lease_holder_refuses_recovery(tmp_path):
     store.record_handoff("s1", state="prepared", attempts=1)
     leases = LeaseStore(tmp_path / "leases")
     leases.acquire(tmp_path / "elsewhere", "s1", mode="mutating")
-    with pytest.raises(RecoveryError, match="live mutating workspace lease"):
+    with pytest.raises(RecoveryError, match="retained mutating workspace lease"):
         recover(store, "s1", leases=leases)
     # Refused before anything is touched: the prepared switch is not rolled back.
     assert store.load_unified("s1").handoff["state"] == "prepared"
@@ -820,7 +820,7 @@ async def test_resume_refuses_while_another_garuda_owns_the_session(tmp_path):
     store.update_meta("owned", {"runtime_children": []})
     leases = LeaseStore()
     leases.acquire(tmp_path / "other-ws", "owned", mode="mutating")
-    with pytest.raises(RecoveryError, match="live mutating workspace lease"):
+    with pytest.raises(RecoveryError, match="retained mutating workspace lease"):
         await run_agent_task(
             task="third", resume="owned", **_runner_kwargs(tmp_path, "resumer-2", _script())
         )

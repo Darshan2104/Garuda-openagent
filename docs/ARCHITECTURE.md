@@ -121,7 +121,9 @@ fastest way to learn the system.
   identity refuses acquisition; forked and ambiguous handles refuse mutation.
   Ordinary workspace holders remain recorded after parent death/expiry without
   descendant-cleanup receipts. Read-only registration preserves those bindings;
-  expired mutating holders continue to block new mutation. Borrowed capability
+  expired mutating holders continue to block new mutation. Recovery-facing
+  inspection also includes expired/dead-parent holders, so session and project-key
+  recovery refuse before changes while descendant cleanup is unproved. Borrowed capability
   creation/use revalidates the parent's complete issuing-store authority under
   the lease lock without renewal; copied flags cannot authorize released,
   missing, changed, unknown or fork-inherited parent bindings.

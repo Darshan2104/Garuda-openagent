@@ -427,6 +427,14 @@ workspace.
 
 ### B.4 Apply leases and baselines to every mutating entry point
 
+Recovery-facing global/session lease inspection includes every retained holder,
+including an expired lease with a confirmed dead parent. Ordinary records have
+no complete descendant-cleanup receipt. Runtime recovery refuses before session
+changes, and project-key recovery refuses before staging or publishing a new
+key. `garuda doctor` continues to show the retained stale ownership. Parent death
+or waiting out the TTL does not remove this refusal; complete supervised cleanup
+and recovery receipts remain separate work.
+
 Borrowed delegation/guard creation and cached acquisition/start/race revalidate
 the parent's current issued binding under the lease lock without renewal.
 Exercise release followed by a replacement editor, missing/changed records,

@@ -394,42 +394,29 @@ class LeaseStore:
         return self._read_all(self._path_for(workspace_key(workspace)))
 
     def possibly_live_holders(self, *, now: float | None = None) -> list[Lease]:
-        """Every lease, in any workspace, whose owner may still be running.
+        """Every retained lease whose descendants may still be running.
 
-        Unexpired leases, and expired ones whose owner is not confirmed dead.
-        Never mutates; a corrupt lease file raises (fail closed).
+        Ordinary records contain no complete cleanup receipt, so parent death
+        and expiry cannot remove a holder from recovery admission checks.
+        ``now`` remains accepted for compatibility. Never mutates; corrupt
+        records raise (fail closed).
         """
         if not self.root.is_dir():
             return []
-        moment = now if now is not None else time.time()
-        live: list[Lease] = []
-        for path in sorted(self.root.glob("*.json")):
-            for holder in self._read_all(path):
-                if not holder.is_stale(moment) or self._owner_state(holder) is not False:
-                    live.append(holder)
-        return live
+        return [holder for path in sorted(self.root.glob("*.json"))
+                for holder in self._read_all(path)]
 
     def live_holders_for_session(
         self, session_id: str, *, now: float | None = None
     ) -> list[Lease]:
-        """Every lease of `session_id` whose owner may still be running.
+        """Retained leases of a session, including unproved descendants.
 
-        Restart recovery asks this before touching a session. A lease counts
-        while it is unexpired, or expired but its owner is not confirmed dead.
-        Never mutates; a corrupt lease file raises (fail closed), exactly as
-        acquisition does.
+        Recovery must refuse until ownership is explicitly removed; ordinary
+        lease expiry or confirmed parent death is not a cleanup receipt.
+        Never mutates; corrupt records raise (fail closed).
         """
-        if not self.root.is_dir():
-            return []
-        moment = now if now is not None else time.time()
-        live: list[Lease] = []
-        for path in sorted(self.root.glob("*.json")):
-            for holder in self._read_all(path):
-                if holder.session_id != session_id:
-                    continue
-                if not holder.is_stale(moment) or self._owner_state(holder) is not False:
-                    live.append(holder)
-        return live
+        return [holder for holder in self.possibly_live_holders(now=now)
+                if holder.session_id == session_id]
 
 
 def is_worktree(path: str | Path) -> bool:

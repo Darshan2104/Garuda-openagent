@@ -765,7 +765,7 @@ def classify(store, session_id: str) -> RecoveryReport:
 
 
 def _refuse_live_lease(session_id: str, leases) -> None:
-    """Refuse while any unexpired workspace lease still names this session."""
+    """Refuse while retained workspace ownership still names this session."""
     from garuda.workspace.lease import LeaseError, LeaseStore
 
     lease_store = leases if leases is not None else LeaseStore()
@@ -776,9 +776,9 @@ def _refuse_live_lease(session_id: str, leases) -> None:
     if holders:
         holder = holders[0]
         raise RecoveryError(
-            f"session {session_id} still holds a live {holder.mode} workspace lease "
-            f"(pid {holder.pid}); another Garuda process may own it — refusing until "
-            "it exits or the lease expires"
+            f"session {session_id} still holds a retained {holder.mode} workspace lease "
+            f"(pid {holder.pid}); descendant cleanup is not proved — refusing until "
+            "ownership is explicitly released"
         )
 
 
@@ -812,7 +812,7 @@ def recover(
     """Audit, classify, reap identity-matched orphans, and mark rolled-back
     switches. Returns the session to resume; never invents success.
 
-    Order: refuse while a live workspace lease or a live owning Garuda
+    Order: refuse while a retained workspace lease or a live owning Garuda
     process names the session; audit the persisted trail and classify (both
     read-only); only then signal. A recorded child is signalled only when it
     is still alive and its start-time/command identity equals the recorded

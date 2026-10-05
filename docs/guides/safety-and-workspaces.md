@@ -87,6 +87,14 @@ under the store lock without heartbeat renewal or new authority. Ordinary
 borrowing leaves parent lease bytes unchanged. Checks before use do not replace
 supervision of already-running descendants or supervised cleanup receipts.
 
+Recovery-facing global/session lease inspection includes every retained holder,
+including an expired lease with a confirmed dead parent. Ordinary records have
+no complete descendant-cleanup receipt. Runtime recovery refuses before session
+changes, and project-key recovery refuses before staging or publishing a new
+key. `garuda doctor` continues to show the retained stale ownership. Parent death
+or waiting out the TTL does not remove this refusal; complete supervised cleanup
+and recovery receipts remain separate work.
+
 Lease TTL and parent death do not authorize automatic workspace takeover:
 ordinary records contain no complete descendant-cleanup receipt. A mutating
 holder remains recorded and blocks another editor until explicit issuing-owner
