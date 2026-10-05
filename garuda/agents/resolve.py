@@ -79,6 +79,7 @@ class ResolvedAgent:
     versioned: bool = False  # the requested file itself is version 1
     removed: set[str] = field(default_factory=set)  # tools any level removed
     output_schema: dict | None = None  # the compiled final-output JSON Schema (H.12b)
+    instructions_replaced: bool = False  # declared/inherited intent, independent of text
 
     @property
     def source(self) -> Source:
@@ -464,6 +465,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         parent = resolve_agent(parent_ref, dirs, _stack=(*_stack, source))
         merged, prov = dict(parent.leaves), dict(parent.provenance)
         instructions, tools = parent.instructions, parent.tools
+        instructions_replaced = parent.instructions_replaced
         removed = set(parent.removed)
         output_schema = parent.output_schema
         declared = set(parent.declared) | declared
@@ -473,6 +475,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         merged, prov, instructions, tools, chain = {}, {}, None, None, [source]
         removed = set()
         output_schema = None
+        instructions_replaced = False
     own = {k: v for k, v in leaves.items() if not k.startswith(("instructions.",))
            and k not in ("tools.preset", "tools.add", "tools.remove")}
     _merge(merged, prov, own, source)
@@ -483,8 +486,10 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         for rel in files:
             parts.append(_instruction_file(source, rel))
         text = "\n\n".join(parts)
+    mode = leaves.get("instructions.mode", "append" if is_v1 else "replace")
+    if leaves.get("instructions.mode") == "replace" or (text is not None and mode == "replace"):
+        instructions_replaced = True
     if text is not None:
-        mode = leaves.get("instructions.mode", "append" if is_v1 else "replace")
         instructions = text if mode == "replace" else (
             (instructions or DEFAULT_SYSTEM_PROMPT).rstrip() + "\n\n" + text)
         prov["instructions"] = source
@@ -514,6 +519,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         leaves=merged, provenance=prov, instructions=instructions, tools=tools,
         chain=chain, declared=declared, warnings=warnings, versioned=is_v1,
         removed=removed, output_schema=output_schema,
+        instructions_replaced=instructions_replaced,
     )
 
 

@@ -355,7 +355,11 @@ instructions on ACP roles; teams G.1 for `tools.mcp` on ACP roles.
   skills with the consult profile's tools and limits.
 - Native and ACP projections are distinct. Do not expand native defaults and
   then reject every ACP role for implicit memory/hooks; reject explicit or
-  inherited unsupported requests field by field. ACP model ids use the role,
+  inherited unsupported requests field by field. Retain instruction replacement
+  intent through resolution/inheritance; refuse it even for empty or native-base
+  text, including mode-only declarations and instruction files. CLI refusal
+  precedes child launch/session creation; real wire captures protect appended
+  context and implicit defaults. ACP model ids use the role,
   not native binding aliases. Conflicting model/effort selectors refuse.
 - G.2 consult profiles deny hooks, MCP, network, tags and further delegation
   even when the selected agent grants them. Preserve user memory privacy and

@@ -1,6 +1,7 @@
 """Exact role resolution: native flags and proven ACP options (#158, plan task C.3)."""
 
 import argparse
+import json
 import os
 import shlex
 import stat
@@ -8,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from garuda.config import garuda_yaml as gy
 from garuda.core.sessions import SessionStore
@@ -157,3 +159,74 @@ def test_check_offered():
     with pytest.raises(RoleRefused) as caught:
         roles.check_offered({"effort": "high"}, offered)
     assert caught.value.code == "role.option_missing"
+
+
+@pytest.mark.parametrize("shape,inherited", [
+    ("empty", False), ("default", False), ("prefix", False),
+    ("empty", True), ("default", True), ("prefix", True),
+    ("mode-only", False), ("file", False), ("legacy", False),
+])
+def test_acp_cli_refuses_replacement_intent_before_launch(
+        fake_acp, monkeypatch, capsys, shape, inherited):
+    from garuda.types import DEFAULT_SYSTEM_PROMPT
+    from tests.test_runtime_cli import _install_shim
+
+    marker = fake_acp.parent / "launched"
+    _install_shim(fake_acp.parent / "bin", "config-options", marker=marker)
+    definitions = fake_acp / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    text = {"empty": "", "default": DEFAULT_SYSTEM_PROMPT,
+            "prefix": DEFAULT_SYSTEM_PROMPT + "\nPRIVATE-REPLACEMENT-SUFFIX"}.get(shape)
+    instructions = {"mode": "replace"}
+    if shape == "file":
+        (definitions / "prompt.txt").write_text(DEFAULT_SYSTEM_PROMPT)
+        instructions["files"] = ["prompt.txt"]
+    elif text is not None:
+        instructions["text"] = text
+    document = {"system_prompt": DEFAULT_SYSTEM_PROMPT} if shape == "legacy" else {
+        "version": 1, "instructions": instructions}
+    (definitions / "replacement.yaml").write_text(yaml.safe_dump(document))
+    selected = "replacement"
+    if inherited:
+        selected = "child"
+        (definitions / "child.yaml").write_text(yaml.safe_dump({
+            "version": 1, "extends": "replacement",
+            "instructions": {"mode": "append", "text": "Child appendix"}}))
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, agent: " + selected + "}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 2 and "agent.field_unsupported" in out, out
+    assert "instructions.mode" in out and "fakecfg" in out
+    assert not marker.exists()
+    assert SessionStore().list_sessions() == []
+
+
+@pytest.mark.parametrize("text", [None, "", "Appended context", "native-base-literal"])
+def test_acp_cli_preserves_appended_context_in_the_real_child(
+        fake_acp, monkeypatch, capsys, text):
+    from garuda.types import DEFAULT_SYSTEM_PROMPT
+    from tests.test_runtime_cli import _install_shim
+
+    if text == "native-base-literal":
+        text = DEFAULT_SYSTEM_PROMPT + "\nLITERAL-APPEND-SUFFIX"
+    capture = fake_acp.parent / "wire.json"
+    _install_shim(fake_acp.parent / "bin", "resume", state_file=capture)
+    definitions = fake_acp / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    document = {"version": 1}
+    if text is not None:
+        document["instructions"] = {"mode": "append", "text": text}
+    (definitions / "appended.yaml").write_text(yaml.safe_dump(document))
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, agent: appended}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 0, out
+    (received,) = json.loads(capture.read_text())["prompts"]
+    expected = ("[garuda] The following are user-supplied role instructions for this task "
+                "(context, not a system prompt):\n" + text +
+                "\n[end of role instructions]\n\nhello") if text else "hello"
+    assert received == expected
+    (meta,) = SessionStore().list_sessions()
+    assert meta["role"]["agent"]["name"] == "appended"

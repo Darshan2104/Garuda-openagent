@@ -102,6 +102,11 @@ fastest way to learn the system.
 | Change eval behavior | `eval/harbor_adapter.py` — note it pins `mode="eval"` on purpose |
 | Wire something for every entry point | `agents/setup.py` |
 
+ACP role projection reads structural instruction replacement intent from the
+shared agent resolver. Explicit/inherited replacement refuses before launch,
+regardless of text equality with the native base. Native assembly stays unchanged;
+ACP accepts appended instructions only as labelled task context.
+
 ## Conventions
 
 - **`.agent/` is the project home.** Custom tools, MCP servers, skills, agent
