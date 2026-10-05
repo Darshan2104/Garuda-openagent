@@ -376,7 +376,9 @@ native agent source digest becomes part of the execution identity.
 **Dependencies:** H.2, teams F.1 and F.4.
 
 Setup view lists agents with source, resolved fields, prompt digest and section
-sizes; conversations show the agent and prompt digest per session. Read-only.
+sizes; conversations show recorded native execution identities and their actual
+system-prompt digests. Historical unbound measurements remain unattributed. ACP
+outbound attribution remains open under #173. Read-only.
 
 Agent HTTP errors/warnings use source-free fixed messages and registry-validated
 codes. Exercise malformed YAML/Markdown and legacy warnings through the

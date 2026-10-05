@@ -956,6 +956,7 @@ def static_agent_config(profile, workspace, *, mode=None, permission_mode=None,
         profile, workspace, diagnostics=config.prompt_diagnostics
     )
     config.agent_digest = getattr(profile, 'spec_digest', None)
+    config.agent_name = profile.name
     return config
 
 

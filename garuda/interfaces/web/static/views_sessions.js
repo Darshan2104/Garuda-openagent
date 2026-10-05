@@ -344,17 +344,30 @@ function consultsHtml(c) {
 }
 
 /* Which definition ran and the system prompt it actually sent: digests and lengths only. */
+function agentPromptsHtml(prompts) {
+  return (prompts || []).map(function (p) {
+    return '<code class="prompt-digest" data-digest="' + esc(p.digest) + '">' + esc(String(p.digest).slice(0, 12)) + "</code>" +
+      (p.chars !== null && p.chars !== undefined ? " (" + esc(fmt.tokens(p.chars)) + " chars)" : "");
+  }).join(", ");
+}
+
 function agentLineHtml(a) {
   if (!a || (!a.name && !a.digest && !(a.prompts || []).length)) return "";
-  var prompts = (a.prompts || []).map(function (p) {
-    return '<code class="prompt-digest" data-digest="' + esc(p.digest) + '">' + esc(String(p.digest).slice(0, 12)) + "</code>" +
-      (p.chars ? " (" + esc(fmt.tokens(p.chars)) + " chars)" : "");
-  }).join(", ");
-  return '<p class="stat-sub" id="agent-line">Agent: <strong>' + esc(a.name || "—") + "</strong>" +
+  var segments = (a.segments || []).map(function (s) {
+    return '<li class="agent-execution" data-segment="' + esc(s.id) + '" data-agent="' + esc(s.name) + '">' +
+      '<strong>' + esc(s.name) + '</strong> · native run · ' +
+      (s.digest ? 'definition <code>' + esc(String(s.digest).slice(0, 12)) + '</code>' : 'definition unknown') +
+      ' · system prompt ' + agentPromptsHtml(s.prompts) +
+      (s.prompt_changes > 1 ? ' · changed ' + esc(s.prompt_changes - 1) + '×' : '') + '</li>';
+  }).join("");
+  var unknown = a.unattributed || [];
+  if (unknown.length) {
+    segments += '<li class="agent-unattributed">Unattributed historical prompts · ' + agentPromptsHtml(unknown) + '</li>';
+  }
+  return '<div id="agent-line"><p class="stat-sub">Agent: <strong>' + esc(a.name || "—") + "</strong>" +
     (a.digest ? ' · definition <code id="agent-digest">' + esc(String(a.digest).slice(0, 12)) + "</code>" : "") +
-    (prompts ? " · system prompt " + prompts : " · no system prompt recorded") +
-    (a.prompt_changes > 1 ? " · changed " + esc(a.prompt_changes - 1) + "×" : "") +
-    (a.segment ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + "</p>";
+    (a.segment ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + '</p>' +
+    (segments ? '<ul class="stat-sub">' + segments + '</ul>' : '<p class="stat-sub">No system prompt recorded</p>') + '</div>';
 }
 
 function conversationPanelHtml(c) {

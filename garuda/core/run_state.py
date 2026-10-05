@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from garuda.context.manager import ContextManager
 from garuda.context.state_card import WorkingState
@@ -66,6 +67,8 @@ class RunState:
     memo: ActionMemo
     ledger: SideEffectLedger
     emit_session_events: bool
+    # Snapshot of the compiled native execution that owns prompt measurements.
+    agent_segment: dict = field(default_factory=dict)
     checkpoint: object | None = None
     # Persists the working state next to the messages. Separate from ``checkpoint``
     # because the transcript is not a superset of it: after a compaction the card is
@@ -906,6 +909,9 @@ async def prepare_run(
         )
 
     run_state = RunState(
+        agent_segment={"id": str(uuid4()), "name": config.agent_name or profile_name,
+                       "digest": config.agent_digest, "runtime": "native",
+                       "kind": "native_execution"},
         task=task,
         config=config,
         events=events,

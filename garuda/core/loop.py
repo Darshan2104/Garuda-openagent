@@ -803,6 +803,7 @@ def _record_system_digest(state, messages) -> None:
     state._system_digest = digest
     try:
         state.events.append(EventType.SYSTEM_PROMPT, {
-            "digest": digest, "chars": len(system), "kind": "actual"})
+            "digest": digest, "chars": len(system), "kind": "actual",
+            "agent_segment": dict(state.agent_segment)})
     except Exception:
         pass

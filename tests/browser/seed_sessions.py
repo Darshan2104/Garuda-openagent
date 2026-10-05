@@ -286,9 +286,21 @@ def seed_observability(root: Path, workspace: str) -> dict:
     careful = AgentSpec.load("careful", workspace)
     store.update_meta(OBS["native"], {"agent": "careful", "agent_digest": careful.digest})
     native_events = EventStore(OBS["native"], persist_path=store.events_path(OBS["native"]))
+    earlier = AgentSpec.from_dict({"instructions": {"mode": "replace", "text": "earlier private"}},
+                                  workspace=workspace, name="earlier")
+    native_events.append(EventType.SYSTEM_PROMPT, {
+        "digest": "a1" * 32, "chars": 4100, "kind": "actual",
+        "agent_segment": {"id": "seed-earlier", "name": "earlier", "digest": earlier.digest,
+                          "runtime": "native", "kind": "native_execution"},
+    })
     for digest, chars in (("a1" * 32, 4100), ("b2" * 32, 4320)):
-        native_events.append(EventType.SYSTEM_PROMPT, {"digest": digest, "chars": chars,
-                                                       "kind": "actual"})
+        native_events.append(EventType.SYSTEM_PROMPT, {
+            "digest": digest, "chars": chars, "kind": "actual",
+            "agent_segment": {"id": "seed-current", "name": "careful", "digest": careful.digest,
+                              "runtime": "native", "kind": "native_execution"},
+        })
+    native_events.append(EventType.SYSTEM_PROMPT, {"digest": "c3" * 32, "chars": 500,
+                                                   "kind": "actual"})
     # usage at three ages, one per range boundary region
     for key, age_h in (("age-2h", 2), ("age-3d", 72), ("age-20d", 480)):
         ledger.append({"kind": "native_model_call", "key": key, "time": now - age_h * 3600,
