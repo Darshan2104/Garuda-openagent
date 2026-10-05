@@ -548,6 +548,7 @@ def adapter_for_manifest(
     approval_handler=None,
     persist_dir: str | None = None,
     metrics=None,
+    agent_definition: dict | None = None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -575,6 +576,7 @@ def adapter_for_manifest(
         approval_handler=approval_handler,
         persist_dir=persist_dir,
         metrics=metrics,
+        agent_definition=agent_definition,
     )
 
 
@@ -618,6 +620,7 @@ def adapter_for_discovered(
     approval_handler=None,
     persist_dir: str | None = None,
     metrics=None,
+    agent_definition: dict | None = None,
 ) -> AcpRuntime:
     """Launch exactly what a discovery record accepted — the production factory.
 
@@ -642,6 +645,7 @@ def adapter_for_discovered(
         approval_handler=approval_handler,
         persist_dir=persist_dir,
         metrics=metrics,
+        agent_definition=agent_definition,
     )
 
 

@@ -58,6 +58,7 @@ def _install_shim(
     *,
     marker: Path | None = None,
     report_cwd: bool = False,
+    state_file: Path | None = None,
 ) -> Path:
     """Install `fake-acp-shim` in `bin_dir`: a real executable on PATH.
 
@@ -73,6 +74,7 @@ def _install_shim(
         f"PYTHONPATH={shlex.quote(str(REPO))} exec {shlex.quote(sys.executable)} "
         f"-m garuda.acp.fake_agent --profile {profile}"
         + (" --report-cwd" if report_cwd else "")
+        + (" --state-file " + shlex.quote(str(state_file)) if state_file else "")
         + ' "$@"'
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -744,3 +746,41 @@ def test_reclaim_rechecks_live_children_inside_the_write(tmp_path, monkeypatch):
     with pytest.raises(recovery.RecoveryError, match="still has a live recorded child"):
         recovery.reclaim_native(store, "r1")
     assert store.load_unified("r1").active.runtime_id == "ext"
+
+
+async def test_shared_acp_launch_binds_the_compiled_role_and_complete_wire_request(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    from garuda.agents import role_agent
+    from garuda.interfaces.runtime_cli import run_acp_task
+    from garuda.runtime.roles import RolePlan
+    from tests.test_acp_prompt_views import CANARY, conversation_http
+
+    ws = _git_workspace(tmp_path)
+    definitions = ws / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    (definitions / "lean.yaml").write_text(
+        "version: 1\ninstructions: {text: '" + CANARY + " café 🦅'}\n", encoding="utf-8"
+    )
+    bound = role_agent.bind(RolePlan(role="coder", runtime_id="fakeacp", kind="acp",
+                                     profile="lean", permissions="auto"), str(ws))
+    capture = tmp_path / "wire.json"
+    _install_shim(tmp_path / "bin", profile="resume", state_file=capture)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _trusted_settings(tmp_path, monkeypatch)
+    store = SessionStore()
+    result = await run_acp_task("Fix the fixture", runtime_id="fakeacp", workspace=str(ws),
+                                store=store, role_plan=bound, emit=lambda _line: None)
+    assert result["status"] == "completed"
+    (wire_text,) = json.loads(capture.read_text())["prompts"]
+    assert CANARY in wire_text and wire_text.endswith("Fix the fixture")
+    assert wire_text.startswith("[garuda] The following are user-supplied role instructions")
+    sid = result["session_id"]
+    store.update_meta(sid, {"agent": "later", "agent_digest": "f" * 64})
+    (segment,) = conversation_http(store, ws, sid)["agent"]["segments"]
+    assert segment["name"] == "lean" and segment["digest"] == bound.agent_digest
+    assert segment["runtime"] == "fakeacp" and segment["kind"] == "acp_execution"
+    assert segment["prompts"] == [{"digest": hashlib.sha256(wire_text.encode()).hexdigest(),
+                                    "chars": len(wire_text)}]

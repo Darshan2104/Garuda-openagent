@@ -1310,3 +1310,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   total counts and compatibility aggregate fields.
 - Native execution ids are separate from runtime handoff segments. External ACP
   outbound attribution and full #173 acceptance remain open.
+
+## 2026-10-05 — ACP request measurements identify their sending execution (#272)
+
+- Common ACP factories carry the selected role's existing definition name/digest
+  into the adapter. Each adapter snapshots a fresh sending execution id, the
+  runtime and optional definition; current session metadata never supplies a
+  missing definition. External session ids can repeat across separate executions.
+- The shared prompt boundary emits/persists an `outbound_prompt` measurement with
+  UTF-8 request-text SHA-256, character count and source-free execution binding.
+  It records an attempt before the protocol call, not proof of delivery or the
+  external agent's internal system prompt. No request body enters this event.
+- Conversation rows distinguish native system messages from ACP request attempts
+  and explicitly report unknown external internal system prompts. Native aggregate
+  fields retain their meaning. Execution ids do not replace runtime handoff
+  segments; complete per-tenure provenance remains separate #173 acceptance work.

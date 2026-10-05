@@ -352,13 +352,15 @@ function agentPromptsHtml(prompts) {
 }
 
 function agentLineHtml(a) {
-  if (!a || (!a.name && !a.digest && !(a.prompts || []).length)) return "";
+  if (!a || (!a.name && !a.digest && !(a.prompts || []).length && !(a.segments || []).length)) return "";
   var segments = (a.segments || []).map(function (s) {
-    return '<li class="agent-execution" data-segment="' + esc(s.id) + '" data-agent="' + esc(s.name) + '">' +
-      '<strong>' + esc(s.name) + '</strong> · native run · ' +
+    var external = s.kind === "acp_execution";
+    return '<li class="agent-execution' + (external ? ' agent-acp-execution' : '') + '" data-segment="' + esc(s.id) + '" data-agent="' + esc(s.name) + '">' +
+      '<strong>' + esc(s.name) + '</strong> · ' + (external ? esc(s.runtime) : 'native run') + ' · ' +
       (s.digest ? 'definition <code>' + esc(String(s.digest).slice(0, 12)) + '</code>' : 'definition unknown') +
-      ' · system prompt ' + agentPromptsHtml(s.prompts) +
-      (s.prompt_changes > 1 ? ' · changed ' + esc(s.prompt_changes - 1) + '×' : '') + '</li>';
+      ' · ' + (external ? 'ACP request (attempted) ' : 'system prompt ') + agentPromptsHtml(s.prompts) +
+      (external ? ' · ' + esc(s.prompt_changes) + ' request attempts · internal system prompt unknown' :
+        (s.prompt_changes > 1 ? ' · changed ' + esc(s.prompt_changes - 1) + '×' : '')) + '</li>';
   }).join("");
   var unknown = a.unattributed || [];
   if (unknown.length) {

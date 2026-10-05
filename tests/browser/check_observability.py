@@ -79,6 +79,20 @@ with sync_playwright() as p:
     check("context snapshots are separate", page.locator("#snapshots-note").count() == 1
           and "900/4000" in page.locator("#snapshots-note").inner_text())
     check("lanes are shown", "claude (acp)" in page.locator("#lanes-note").inner_text())
+    acp_line = page.locator("#agent-line")
+    acp_text = acp_line.inner_text() if acp_line.count() else ""
+    acp_executions = page.locator("#agent-line .agent-acp-execution")
+    check("ACP request attempts have separate sending executions",
+          acp_executions.count() == 2 and len(set(acp_executions.evaluate_all(
+              "rows => rows.map(row => row.dataset.segment)"))) == 2, acp_text)
+    hashes = page.locator("#agent-line code.prompt-digest")
+    check("identical ACP requests retain their hashes under both executions",
+          hashes.count() == 2 and len(set(hashes.evaluate_all(
+              "rows => rows.map(row => row.dataset.digest)"))) == 1, acp_text)
+    check("ACP requests are labelled without claiming the internal system prompt",
+          "ACP request (attempted)" in acp_text and "internal system prompt unknown" in acp_text
+          and "lean" in acp_text and "SEED-ACP-INSTRUCTION-MARKER" not in page.content(), acp_text)
+    page.screenshot(path=str(SHOTS / "obs-acp-prompts.png"))
     page.goto(f"{BASE}#/runs/{N['acp_turns']}", wait_until="load")
     page.wait_for_selector("#models-table")
     (turns,) = rows(page).values()

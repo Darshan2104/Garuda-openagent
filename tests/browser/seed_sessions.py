@@ -301,6 +301,34 @@ def seed_observability(root: Path, workspace: str) -> dict:
         })
     native_events.append(EventType.SYSTEM_PROMPT, {"digest": "c3" * 32, "chars": 500,
                                                    "kind": "actual"})
+    # ACP attribution comes from the actual adapter writer and a real local child.
+    import asyncio
+    import sys
+
+    from garuda.acp.adapter import AcpRuntime
+    from garuda.agents import role_agent
+    from garuda.runtime.roles import RolePlan
+
+    (agents / "lean.yaml").write_text(
+        "version: 1\ninstructions: {text: SEED-ACP-INSTRUCTION-MARKER}\n"
+    )
+    bound = role_agent.bind(RolePlan(role="coder", runtime_id="claude", kind="acp",
+                                     profile="lean"), workspace)
+    async def measured_requests():
+        for _ in range(2):
+            runtime = AcpRuntime(
+                [sys.executable, str(Path(__file__).resolve().parents[2] / "garuda/acp/fake_agent.py"),
+                 "--profile", "streaming"], runtime_id="claude", cwd=workspace, store=store,
+                persist_dir=str(store.session_dir(OBS["acp"])),
+                agent_definition=bound.record()["agent"],
+            )
+            try:
+                await runtime.start(task="fixture", session_id=OBS["acp"])
+                await runtime.prompt(role_agent.with_instructions(bound, "fixture"))
+            finally:
+                await runtime.close()
+    asyncio.run(measured_requests())
+    store.update_meta(OBS["acp"], {"agent": None, "agent_digest": None})
     # usage at three ages, one per range boundary region
     for key, age_h in (("age-2h", 2), ("age-3d", 72), ("age-20d", 480)):
         ledger.append({"kind": "native_model_call", "key": key, "time": now - age_h * 3600,

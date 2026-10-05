@@ -133,49 +133,73 @@ def _distinct_prompts(prompts: list[dict]) -> list[dict]:
     return distinct[:5]
 
 
-def agent_info(store, session_id: str, meta: dict) -> dict:
-    """Recorded native execution bindings and actual outbound measurements.
-
-    Historical records without bindings remain explicitly unattributed. Current
-    session metadata describes the session, never a historical prompt's owner.
-    Compatibility aggregate fields still cover the complete session.
-    """
+def _agent_measurements(store, session_id):
+    """Read only the two owned measurement records; other ACP payloads stay out."""
     import json
 
+    paths = [(store.events_path(session_id), "system_prompt", "type"),
+             (store.session_dir(session_id) / "acp-events.jsonl", "outbound_prompt", "kind")]
+    for path, expected, discriminator in paths:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if len(line) > 128_000:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(event, dict) and event.get(discriminator) == expected:
+                        payload = event.get("payload")
+                        if isinstance(payload, dict):
+                            yield expected, payload
+        except OSError:
+            continue
+
+
+def agent_info(store, session_id: str, meta: dict) -> dict:
+    """Recorded sending executions and outbound measurements, without source text.
+
+    Native compatibility aggregates cover system messages only. ACP measurements
+    describe attempted request text; the external internal system prompt is unknown.
+    Historical native records without bindings remain explicitly unattributed.
+    """
     prompts: list[dict] = []
     unattributed: list[dict] = []
     segments: dict[tuple, dict] = {}
-    try:
-        with store.events_path(session_id).open(encoding="utf-8") as handle:
-            for line in handle:
-                if '"system_prompt"' not in line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                payload = event.get("payload") or {}
-                if event.get("type") != "system_prompt" or not payload.get("digest"):
-                    continue
-                prompt = {"digest": payload["digest"], "chars": payload.get("chars")}
-                prompts.append(prompt)
-                binding = payload.get("agent_segment")
-                if (not isinstance(binding, dict) or not isinstance(binding.get("id"), str)
-                        or not binding["id"] or binding.get("runtime") != "native"
-                        or binding.get("kind") != "native_execution"
-                        or not isinstance(binding.get("name"), str) or not binding["name"]
-                        or (binding.get("digest") is not None
-                            and not _prompt_digest(binding["digest"]))):
-                    unattributed.append(prompt)
-                    continue
-                key = (binding["id"], binding["name"], binding.get("digest"))
-                segment = segments.setdefault(key, {
-                    "id": binding["id"], "name": binding["name"], "digest": binding.get("digest"),
-                    "runtime": "native", "kind": "native_execution", "prompts": [],
-                })
-                segment["prompts"].append(prompt)
-    except OSError:
-        pass
+    for event_type, payload in _agent_measurements(store, session_id):
+        if not payload.get("digest"):
+            continue
+        external = event_type == "outbound_prompt"
+        if external and (not _prompt_digest(payload["digest"])
+                         or payload.get("kind") != "request_text"
+                         or payload.get("status") != "attempted"):
+            continue
+        prompt = {"digest": payload["digest"], "chars": payload.get("chars")}
+        if not external:
+            prompts.append(prompt)
+        binding = payload.get("agent_segment")
+        expected_kind = "acp_execution" if external else "native_execution"
+        if (not isinstance(binding, dict) or not isinstance(binding.get("id"), str)
+                or not binding["id"] or binding.get("kind") != expected_kind
+                or not isinstance(binding.get("runtime"), str) or not binding["runtime"]
+                or (not external and binding["runtime"] != "native")
+                or not isinstance(binding.get("name"), str) or not binding["name"]
+                or (binding.get("digest") is not None
+                    and not _prompt_digest(binding["digest"]))):
+            if not external:
+                unattributed.append(prompt)
+            continue
+        key = (binding["kind"], binding["runtime"], binding["id"],
+               binding["name"], binding.get("digest"))
+        segment = segments.setdefault(key, {
+            "id": binding["id"], "name": binding["name"], "digest": binding.get("digest"),
+            "runtime": binding["runtime"], "kind": expected_kind, "prompts": [],
+            **({"native_session_id": binding.get("native_session_id"),
+                "prompt_kind": "request_text", "request_status": "attempted",
+                "internal_system_prompt": "unknown"} if external else {}),
+        })
+        segment["prompts"].append(prompt)
     recorded = []
     for segment in reversed(list(segments.values())):
         recorded.append({**segment, "prompt_changes": len(segment["prompts"]),

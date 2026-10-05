@@ -655,7 +655,9 @@ The dashboard setup view (teams F.4) lists agents with source, resolved fields,
 prompt digest and section sizes, and the conversation view shows which agent and
 prompt digests each native execution used. Recorded execution bindings preserve compiled
 agent identities across session metadata changes and inner runs; historical unbound
-measurements remain unattributed. ACP outbound attribution remains open under #173.
+measurements remain unattributed. ACP execution rows show attempted host request digests, recorded runtime/role
+definition identity and unknown internal system prompts. Complete runtime-tenure
+provenance remains open under #173.
 The dashboard does not edit definitions.
 
 ## Diagnostics

@@ -13,6 +13,7 @@ from typing import Any
 
 
 class RuntimeEventKind(str, Enum):
+    OUTBOUND_PROMPT = "outbound_prompt"
     MESSAGE = "message"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"

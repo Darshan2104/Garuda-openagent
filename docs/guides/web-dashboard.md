@@ -59,15 +59,20 @@ this one resumed from or was continued by, the sessions it tagged, and those tha
 `GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
 
 **Agent.** A run's page shows the current session definition and separate native
-execution rows. Each row carries the compiled agent name and definition digest
+execution rows. Each native row carries the compiled agent name and definition digest
 captured when that execution started, plus the system-message digests and character
 counts actually sent by it. Identical prompts in different executions remain in
 both rows. Runtime blocks can change the actual prompt digest from the static one
 in Setup. Historical measurements without a valid execution binding are labelled
 **Unattributed historical prompts**; the current session definition does not supply
 their missing identity. The API returns at most 20 execution rows and five distinct
-prompt digests per row, with total counts. ACP outbound attribution remains open
-under #173; native execution rows are separate from runtime handoff segments.
+prompt digests per row, with total counts. ACP execution rows show the sending runtime, recorded role definition when present,
+and the digest/character count of each **ACP request (attempted)**. These measure
+the complete host request text, including role instructions and attached context;
+they do not prove delivery. The external agent's **internal system prompt remains
+unknown**. Repeated external session ids do not collapse separate executions.
+Execution rows are separate from runtime handoff segments; complete per-tenure
+provenance remains under #173.
 
 **Consults.** When the session asked other roles questions, a **Consults** panel lists each as
 a lane under it: who asked whom, the identity that ran, its admission, outcome (`answered`,
