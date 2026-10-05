@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-10-05 — Borrowed capabilities revalidate issued parent authority (#262)
+
+- `LeaseStore.validate_issued` uses the same complete retained owner/binding
+  check as heartbeat/release under the store lock, without renewing or minting
+  a lease. It validates existing authority, not unowned inspection.
+- Shared guard delegation, capability guard creation and cached borrowed
+  acquisition/start/race validate the current parent binding. Revocation and
+  quarantine still refuse; ordinary release, missing/disagreeing records,
+  unknown owner identity and fork inheritance cannot grant new borrowed work.
+- Legitimate borrowing preserves parent lease bytes and releases child capacity
+  normally. These checks happen before capability creation/use; already-running
+  descendant supervision and cleanup/recovery receipts remain #157/#167 work.
+  Ordinary matched capacity-release coordinator authority is unchanged. No
+  physical confinement is claimed.
+
 ## 2026-10-05 — Lease expiry and parent death do not prove cleanup (#260)
 
 - Ordinary lease records contain no complete descendant-cleanup receipt.

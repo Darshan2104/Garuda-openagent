@@ -121,7 +121,10 @@ fastest way to learn the system.
   identity refuses acquisition; forked and ambiguous handles refuse mutation.
   Ordinary workspace holders remain recorded after parent death/expiry without
   descendant-cleanup receipts. Read-only registration preserves those bindings;
-  expired mutating holders continue to block new mutation.
+  expired mutating holders continue to block new mutation. Borrowed capability
+  creation/use revalidates the parent's complete issuing-store authority under
+  the lease lock without renewal; copied flags cannot authorize released,
+  missing, changed, unknown or fork-inherited parent bindings.
 - **Quarantine retains ownership through teardown.** The shared run guard
   stops renewal but retains its workspace lease and runtime reservation. Later
   release/finalizer calls cannot undo quarantine. A borrowed flow step also

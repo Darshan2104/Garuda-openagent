@@ -319,6 +319,21 @@ class LeaseStore:
                 )
         return current
 
+    def validate_issued(
+        self, workspace: str | Path, session_id: str, *, epoch: str | None = None
+    ) -> Lease:
+        """Validate retained authority without renewing or minting a lease.
+
+        Admission/delegation callers use the same full issuing-owner check as
+        mutation. This is authority validation, not unowned record inspection.
+        """
+        key = workspace_key(workspace)
+        with self._locked():
+            current = self._own_entry(self._read_all(self._path_for(key)), session_id, epoch, key)
+            if current is None:
+                raise LeaseError(f"no issued lease for workspace {key}")
+            return current
+
     def heartbeat(
         self, workspace: str | Path, session_id: str, *, epoch: str | None = None
     ) -> Lease:

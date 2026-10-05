@@ -427,6 +427,13 @@ workspace.
 
 ### B.4 Apply leases and baselines to every mutating entry point
 
+Borrowed delegation/guard creation and cached acquisition/start/race revalidate
+the parent's current issued binding under the lease lock without renewal.
+Exercise release followed by a replacement editor, missing/changed records,
+unknown identity and real fork inheritance, with an issuer-positive control
+that leaves parent lease bytes unchanged. This pre-use admission check adds no
+already-running descendant supervision or cleanup/recovery receipts.
+
 Ordinary workspace holders remain recorded after parent death/TTL expiry: the
 lease has no complete descendant-cleanup receipt. Read-only registration must
 preserve prior bindings. Prove this with a real surviving writer in another

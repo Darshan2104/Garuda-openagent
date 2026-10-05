@@ -79,6 +79,14 @@ inherit the parent's authority. Mutation also refuses changed owner/workspace/
 mode bindings and duplicate holders. Unknown creator identity refuses before
 publication. This ownership check adds no descendant cleanup or recovery receipts.
 
+Borrowed capabilities validate the parent's current issuing-store/process
+binding before creation and each acquisition/start/race call. A cached guard
+refuses after parent release, source disappearance or disagreement, unknown
+identity, and fork inheritance. `LeaseStore.validate_issued` performs that check
+under the store lock without heartbeat renewal or new authority. Ordinary
+borrowing leaves parent lease bytes unchanged. Checks before use do not replace
+supervision of already-running descendants or supervised cleanup receipts.
+
 Lease TTL and parent death do not authorize automatic workspace takeover:
 ordinary records contain no complete descendant-cleanup receipt. A mutating
 holder remains recorded and blocks another editor until explicit issuing-owner

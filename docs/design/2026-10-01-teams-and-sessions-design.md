@@ -424,6 +424,12 @@ registration preserves existing bindings and an expired mutating holder blocks
 new mutation. Issuing-owner release is the ordinary removal path; supervised
 recovery admission/cleanup receipts remain separate work.
 
+Borrowed capability creation/use validates the parent's complete issuing-store
+binding under the lease lock without renewal or minting. Delegation, guard
+creation and cached acquisition/start/race refuse released, missing, changed,
+unknown and fork-inherited parent authority. This pre-use check does not replace
+supervision of already-running descendants or cleanup/recovery receipts.
+
 Quarantine is sticky in the shared lease guard: stop renewal and retain
 workspace/capacity through later release/finalizer calls. A borrowed step
 quarantines its parent and retains its own reservation; parent quarantine also
