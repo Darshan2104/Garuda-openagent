@@ -24,6 +24,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from garuda.agents.spec_api import AgentSpec
 
 #: (runtime id, adapter version) -> {role field: ACP config option id}, from
 #: the A.3 captures in tests/fixtures/acp/ where `session/set_config_option`
@@ -62,6 +66,8 @@ class RolePlan:
     #: An ACP role's agent instructions, sent as a labelled context block with the first
     #: task. Never recorded on the session (only its digest is).
     instructions: str | None = None
+    #: Native resolved source held for execution only; never serialized in record().
+    agent_spec: AgentSpec | None = field(default=None, repr=False, compare=False)
 
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,

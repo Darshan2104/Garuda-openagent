@@ -1362,3 +1362,16 @@ agent.unsupported_field diagnostic, not field values or detailed exceptions.
 Unsupported definitions are not activated or assigned invented prompt digests.
 The renderer escapes names/provenance/code. Actual HTTP and Chrome fixtures own
 direct/inherited and private-body regression checks; local diagnostics stay detailed.
+
+
+### Native roles execute their bound AgentSpec (#280, child of #172)
+
+Native role binding retains the immutable definition it resolved after fallback.
+CLI execution and consulted native narrowing consume the same source snapshot;
+named/inherited/instruction-file changes after admission cannot replace it while
+the role record retains an old digest. Conflicting explicit agent-file selection
+refuses config.conflict before activation. The held AgentSpec is runtime-only,
+excluded from role records/repr; ACP retains its separate projected instructions.
+Native authority/activation and consult read-only narrowing remain in their
+existing owners. Actual CLI/model capture and quiescence-time consult changes
+own the regression evidence; no raw source body is persisted for this binding.

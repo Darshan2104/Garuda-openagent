@@ -2234,6 +2234,12 @@ def _acp_consult_host(args):
 def agent_selection(args):
     """The agent a command runs: ``--agent-file`` (resolved, not trusted) or ``--agent``."""
     path = getattr(args, "agent_file", None)
+    plan = getattr(args, "_role_plan", None)
+    if plan is not None and plan.kind == "native" and plan.profile:
+        from garuda.agents import role_agent
+
+        return role_agent.native_spec(plan, args.workspace, getattr(args, "agents_dir", None),
+                                      agent_file=path)
     if not path:
         return args.agent
     from garuda.agents.spec_api import AgentSpec

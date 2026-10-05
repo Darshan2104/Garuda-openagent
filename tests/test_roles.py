@@ -1,6 +1,7 @@
 """Exact role resolution: native flags and proven ACP options (#158, plan task C.3)."""
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -13,6 +14,8 @@ import yaml
 
 from garuda.config import garuda_yaml as gy
 from garuda.core.sessions import SessionStore
+from garuda.model.protocol import ModelResponse
+from garuda.model.script_model import ScriptModel
 from garuda.runtime import roles
 from garuda.runtime.roles import RoleRefused
 
@@ -230,3 +233,110 @@ def test_acp_cli_preserves_appended_context_in_the_real_child(
     assert received == expected
     (meta,) = SessionStore().list_sessions()
     assert meta["role"]["agent"]["name"] == "appended"
+
+
+class NativeRoleCapture(ScriptModel):
+    """Observe actual native model requests without retaining source bodies."""
+    def __init__(self):
+        super().__init__([ModelResponse(content="fixture answer", tool_calls=[])])
+        self.observed = []
+
+    def capture(self, messages):
+        text = next(m.content for m in messages if m.role.value == "system")
+        self.observed.append({"digest": hashlib.sha256(text.encode()).hexdigest(),
+                              "chars": len(text), "source_a": "BOUND-SOURCE-A" in text,
+                              "source_b": "CHANGED-SOURCE-B" in text})
+
+    async def complete(self, messages, *args, **kwargs):
+        self.capture(messages)
+        return await super().complete(messages, *args, **kwargs)
+
+    async def stream(self, messages, *args, **kwargs):
+        self.capture(messages)
+        async for delta in super().stream(messages, *args, **kwargs):
+            yield delta
+
+
+@pytest.mark.parametrize("shape", ["unchanged", "named", "inherited", "file"])
+def test_native_role_cli_executes_its_bound_source_snapshot(tmp_path, monkeypatch, capsys, shape):
+    import garuda.model.factory as factory
+    from garuda.agents import role_agent
+
+    ws = _repo(tmp_path / "ws")
+    definitions = ws / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    definition = definitions / "careful.yaml"
+    document = {"version": 1, "instructions": {"mode": "replace", "text": "BOUND-SOURCE-A"},
+                "memory": {"user": False, "context_pack": False}, "tools": {"preset": "none"}}
+    changed = definition
+    if shape == "inherited":
+        changed = definitions / "parent.yaml"
+        changed.write_text(yaml.safe_dump(document))
+        document = {"version": 1, "extends": "parent", "instructions": {"text": "Child appendix"}}
+    elif shape == "file":
+        changed = definitions / "instructions.txt"
+        changed.write_text("BOUND-SOURCE-A")
+        document["instructions"] = {"mode": "replace", "files": ["instructions.txt"]}
+    definition.write_text(yaml.safe_dump(document))
+    _user_file("version: 1\nroles: {coder: {harness: native, agent: careful}}\n")
+    original = role_agent.bind
+    admitted = []
+
+    def bind_then_change(*args, **kwargs):
+        plan = original(*args, **kwargs)
+        admitted.append(plan.agent_digest)
+        if shape != "unchanged":
+            changed.write_text(changed.read_text().replace("BOUND-SOURCE-A", "CHANGED-SOURCE-B"))
+        return plan
+
+    model = NativeRoleCapture()
+    monkeypatch.setattr(role_agent, "bind", bind_then_change)
+    monkeypatch.setitem(factory._registry, "litellm", lambda *_a, **_kw: model)
+    code, out = _run(monkeypatch, capsys, ws, "--role", "coder", "--model", "fixture/model",
+                     "--no-bootstrap", "--no-verifier", "--no-collection", "--max-turns", "1",
+                     "--permission-mode", "readonly")
+    assert code == 0, out
+    assert len(model.observed) == 1 and model.observed[0]["source_a"]
+    assert not model.observed[0]["source_b"]
+    (meta,) = SessionStore().list_sessions()
+    events = [json.loads(line) for line in SessionStore().events_path(meta["session_id"]).read_text().splitlines()]
+    (prompt,) = [e["payload"] for e in events if e["type"] == "system_prompt"]
+    assert prompt["digest"] == model.observed[0]["digest"]
+    assert prompt["chars"] == model.observed[0]["chars"]
+    assert meta["role"]["agent"]["digest"] == admitted[0] == prompt["agent_segment"]["digest"]
+    assert "BOUND-SOURCE-A" not in json.dumps(meta) and "CHANGED-SOURCE-B" not in json.dumps(meta)
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_native_role_cli_checks_explicit_agent_file_identity(tmp_path, monkeypatch, capsys, matching):
+    import garuda.model.factory as factory
+
+    ws = _repo(tmp_path / "ws")
+    definitions = ws / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    document = {"version": 1, "instructions": {"mode": "replace", "text": "BOUND-SOURCE-A"},
+                "memory": {"user": False, "context_pack": False}, "tools": {"preset": "none"}}
+    (definitions / "careful.yaml").write_text(yaml.safe_dump(document))
+    if not matching:
+        document["instructions"]["text"] = "CHANGED-SOURCE-B"
+    override = definitions / "override.yaml"
+    override.write_text(yaml.safe_dump(document))
+    _user_file("version: 1\nroles: {coder: {harness: native, agent: careful}}\n")
+    model = NativeRoleCapture()
+    built = []
+
+    def build(*args, **kwargs):
+        built.append(True)
+        return model
+
+    monkeypatch.setitem(factory._registry, "litellm", build)
+    code, out = _run(monkeypatch, capsys, ws, "--role", "coder", "--agent-file", str(override),
+                     "--model", "fixture/model", "--no-bootstrap", "--no-verifier", "--no-collection",
+                     "--max-turns", "1", "--permission-mode", "readonly")
+    if not matching:
+        assert code == 2 and "config.conflict" in out, out
+        assert not built and not model.observed and SessionStore().list_sessions() == []
+    else:
+        assert code == 0 and built and model.observed[0]["source_a"], out
+        (meta,) = SessionStore().list_sessions()
+        assert meta["agent"] == "careful" and meta["role"]["agent"]["name"] == "careful"
