@@ -1423,3 +1423,17 @@ Actual CLI cases and observed model factory requests own the regression proof.
   completion documentation remains gated on the corrected flow acceptance.
 - Existing model/effort, lease, readonly/no-edits, tool and completion owners
   remain unchanged. Source bodies stay out of role/execution identity records.
+
+
+## 2026-10-05 — Configurable agent definitions acceptance is complete (#141)
+
+- All Set H children are closed, including the teams bridge (#172) and
+  source-free dashboard (#173). Their linked issue audits record the actual
+  owner-boundary, prompt/source identity, subprocess, HTTP and Chrome evidence.
+- The published design and roadmap now distinguish completed Set H from the
+  separate teams-and-sessions epic. Prior entries describe their historical
+  stage; they do not imply those child acceptance gaps remain open today.
+- Existing limits remain: proved ACP subset only, unknown historical or vendor
+  prompt provenance stays unknown, inspection excludes source bodies, and
+  permission guardrails are not physical confinement. No new authority or
+  runtime capability is introduced by this completion record.

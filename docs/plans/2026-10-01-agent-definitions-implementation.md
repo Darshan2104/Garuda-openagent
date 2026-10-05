@@ -1,6 +1,6 @@
 # Agent definitions implementation roadmap
 
-**Status:** Reviewed roadmap — security defaults await approval; no code PRs started
+**Status:** Set H complete — acceptance recorded on 2026-10-05
 
 **Date:** 2026-10-01
 
@@ -8,12 +8,19 @@
 
 **Related roadmap:** [Teams and sessions](2026-10-01-teams-and-sessions-implementation.md)
 
-**Target base:** `origin/main` at `3456f25`
+**Initial target base:** `origin/main` at `3456f25`
 
 **Tracking:** epic [#141](https://github.com/Darshan2104/Garuda-openagent/issues/141).
 Task issues: H.0a #146, H.0b #142, H.0c #150, H.1 #159, H.2 #161, H.3 #143,
 H.4 #162, H.5 #163, H.6 #164, H.7 #144, H.8 #166, H.9 #171, H.10 #172,
 H.11 #173, H.12a #160, H.12b #165.
+
+All planned children are closed. The [final acceptance audit](https://github.com/Darshan2104/Garuda-openagent/issues/141)
+records the shared owner tests, exact tested main revision and hosted checks.
+The [teams bridge audit](https://github.com/Darshan2104/Garuda-openagent/issues/172)
+and [dashboard audit](https://github.com/Darshan2104/Garuda-openagent/issues/173#issuecomment-5999278111)
+record their actual CLI/consult/subprocess/HTTP and live-Chrome evidence.
+The separate teams-and-sessions epic retains its open gates.
 
 ## Objective
 
@@ -397,8 +404,8 @@ sizes; conversations show recorded native execution identities and their actual
 system-prompt digests. Historical unbound measurements remain unattributed. ACP execution rows show attempted host request digests, recorded runtime/role
 definition identity and unknown internal system prompts. Recorded matching runtime-tenure references connect sending executions to
 segments; historical or inconsistent references stay unassociated and tenures
-without measurement evidence remain unknown. Full #173 acceptance requires its
-fixture, HTTP privacy and live-Chrome audit. Read-only.
+without measurement evidence remain unknown. The completed #173 audit records
+production fixtures, HTTP privacy and live-Chrome acceptance. Read-only.
 
 Agent HTTP errors/warnings use source-free fixed messages and registry-validated
 codes. Exercise malformed YAML/Markdown and legacy warnings through the
@@ -406,7 +413,8 @@ production Setup route, plus static-prompt and outer inspector failures. Local
 inspection keeps detailed diagnostics. Section metadata and the existing table
 include labeled UTF-8 bytes, Unicode chars and estimated tokens from the same
 static inspector. Unicode unit/browser fixtures distinguish bytes from chars.
-Segment attribution and the complete parent acceptance remain separate #173 work.
+Segment attribution and complete parent acceptance are recorded in the linked
+#173 audit; unsupported or historical provenance remains explicitly unknown.
 
 **Acceptance:** production-written fixtures render; live Chrome remains the
 browser gate.
