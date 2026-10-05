@@ -365,6 +365,10 @@ instructions on ACP roles; teams G.1 for `tools.mcp` on ACP roles.
   precedes child launch/session creation; real wire captures protect appended
   context and implicit defaults. ACP model ids use the role,
   not native binding aliases. Conflicting model/effort selectors refuse.
+  Native admission compares an explicit/inherited agent binding’s trusted
+  reasoning model id with the role’s exact id before activation; mismatch or
+  missing alias refuses config.conflict. Matching ids and agent-only selection
+  remain usable; ordinary model-factory precedence is unchanged.
 - G.2 consult profiles deny hooks, MCP, network, tags and further delegation
   even when the selected agent grants them. Preserve user memory privacy and
   explicit project-instruction trust under the teams contracts.
