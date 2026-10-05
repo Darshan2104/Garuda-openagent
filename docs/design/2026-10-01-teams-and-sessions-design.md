@@ -418,6 +418,12 @@ without writing. Renewal and explicit delegation reuse authority; legitimate
 release precedes new acquisition. Descendant cleanup receipts remain separate.
 
 
+Ordinary workspace lease records carry no complete descendant-cleanup receipt.
+Acquisition retains expired holders even after parent death; read-only
+registration preserves existing bindings and an expired mutating holder blocks
+new mutation. Issuing-owner release is the ordinary removal path; supervised
+recovery admission/cleanup receipts remain separate work.
+
 Quarantine is sticky in the shared lease guard: stop renewal and retain
 workspace/capacity through later release/finalizer calls. A borrowed step
 quarantines its parent and retains its own reservation; parent quarantine also

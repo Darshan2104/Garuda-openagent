@@ -1,6 +1,6 @@
 """Lease tests for issue #26 (P0.16).
 
-Concurrent acquisition, heartbeat loss, stale recovery across owners, corrupt
+Concurrent acquisition, heartbeat loss, expired ownership retention, corrupt
 leases failing closed, user files untouched throughout, and worktree
 isolation keys.
 """
@@ -82,7 +82,7 @@ def _acquire_in_subprocess(store_root, workspace, session_id, ttl_sec):
     )
 
 
-def test_heartbeat_loss_and_stale_recovery(tmp_path):
+def test_dead_parent_expiry_keeps_ownership_without_a_cleanup_receipt(tmp_path):
     store = _store(tmp_path)
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -93,12 +93,15 @@ def test_heartbeat_loss_and_stale_recovery(tmp_path):
     # Another session cannot steal a live (unexpired) lease...
     with pytest.raises(LeaseConflictError, match="mutably held"):
         store.acquire(workspace, "new", "mutating")
-    # ...but past its TTL, with its owner process confirmed gone, it is taken
-    # over safely and the takeover is recorded.
-    recovered = store.acquire(workspace, "new", "mutating", now=lease.heartbeat_at + 1001)
-    assert recovered.stolen_from == "old"
-    assert [h.session_id for h in store.holders_of(workspace)] == ["new"]
-    # The old owner's heartbeat now fails closed instead of clobbering.
+    # Parent death and TTL supply no descendant-cleanup receipt. Even a
+    # controlled process with no child cannot authorize automatic reclamation.
+    source, = store.root.glob("*.json")
+    before = source.read_bytes()
+    with pytest.raises(LeaseConflictError, match="descendant cleanup"):
+        store.acquire(workspace, "new", "mutating", now=lease.heartbeat_at + 1001)
+    assert source.read_bytes() == before
+    assert [h.session_id for h in store.holders_of(workspace)] == ["old"]
+    # A new instance cannot recreate the dead issuer's mutation authority.
     with pytest.raises(LeaseConflictError):
         store.heartbeat(workspace, "old")
 
@@ -191,8 +194,11 @@ def test_a_legacy_lease_without_identity_is_still_read(tmp_path):
 
     (holder,) = store.holders_of(workspace)
     assert holder.session_id == "old" and holder.identity == ""
-    recovered = store.acquire(workspace, "new", "mutating")  # pid 999999 is not running
-    assert recovered.stolen_from == "old"
+    before = path.read_bytes()
+    with pytest.raises(LeaseConflictError):
+        store.acquire(workspace, "new", "mutating")
+    assert path.read_bytes() == before
+    assert store.holders_of(workspace) == [holder]
 
 
 def test_corrupt_lease_fails_closed(tmp_path):
