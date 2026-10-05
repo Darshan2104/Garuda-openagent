@@ -1387,3 +1387,15 @@ is not a model id. Matching ids, agent-only selection and ordinary factory
 precedence remain unchanged; ACP still refuses native-only model bindings.
 This is selector validation, not new transport/credential/capability policy.
 Actual CLI cases and observed model factory requests own the regression proof.
+
+
+### Native consult denial counts use structured evidence (#284)
+
+- Count recorded permission refusals and explicit file-access denial results,
+  never words in error bodies. `ReadFileTool` marks caught `PermissionError`
+  through existing result metadata; `ToolRunner` persists only the boolean.
+- Denied file accesses bypass memo storage so repeated attempts retain their
+  own denial evidence. Screened permission refusals have no tool result and
+  therefore are counted once. Ordinary missing-file errors contribute zero.
+- This is receipt evidence, not a new policy or isolation boundary; existing
+  receipts are not rewritten or reinterpreted. ACP retains its existing owner.

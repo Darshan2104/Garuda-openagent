@@ -946,7 +946,11 @@ normal permissions, never less restricted.
 A `ConsultReceipt` records request/asker/root/child ids, source turn, role and
 actual identity (including fallback), snapshot manifest/tree, admission result,
 policy, outcome, diagnostic, answer size, elapsed time, denied operations,
-observed changes and references to unique usage events. Raw questions/answers
+observed changes and references to unique usage events. Native denial counts use
+structured permission refusals and file-access denial results, never error-body
+word matching. File-access denials are evaluated on each attempt rather than
+served from the action memo; ordinary missing-file errors are not denials.
+Raw questions/answers
 remain in the child transcript, never the ledger, durable context or receipt.
 
 The caller timeline links the child; flow step receipts list its consults.

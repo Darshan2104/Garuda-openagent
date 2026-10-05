@@ -238,6 +238,8 @@ class ToolRunner:
             "is_error": tool_result.is_error,
             "turn": turn,
         }
+        if tool_result.is_error and tool_result.metadata.get("permission_denied") is True:
+            payload["permission_denied"] = True
         # Consumers previously had to difference the tool_call/tool_result event
         # timestamps to get a duration, which is ~ms-resolution and wrong for a
         # concurrent batch (all its calls are dispatched at the same instant).
@@ -309,7 +311,9 @@ class ToolRunner:
             result = await tool.execute(call.arguments, self.env, self.ctx)
             content = result.content if isinstance(result.content, str) else str(result.content)
             result.content = self._shape_or_buffer(content, call, result.is_error)
-            if self.memo is not None and signature is not None:
+            # Access refusals must be evaluated and recorded on each attempt.
+            if (self.memo is not None and signature is not None
+                    and result.metadata.get("permission_denied") is not True):
                 self.memo.record(
                     call, signature, result.content, result.is_error, result.metadata
                 )

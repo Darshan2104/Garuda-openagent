@@ -53,6 +53,7 @@ class ReadFileTool:
                 tool_call_id="",
                 content=f"Cannot read {path}: {exc}",
                 is_error=True,
+                metadata={"permission_denied": True} if isinstance(exc, PermissionError) else {},
             )
 
         lines = content.splitlines()
