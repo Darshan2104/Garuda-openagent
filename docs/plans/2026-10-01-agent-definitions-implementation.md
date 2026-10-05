@@ -378,6 +378,12 @@ native agent source digest becomes part of the execution identity.
 Setup view lists agents with source, resolved fields, prompt digest and section
 sizes; conversations show the agent and prompt digest per session. Read-only.
 
+Agent HTTP errors/warnings use source-free fixed messages and registry-validated
+codes. Exercise malformed YAML/Markdown and legacy warnings through the
+production Setup route, plus static-prompt and outer inspector failures. Local
+inspection keeps detailed diagnostics. Character counts, segment attribution and
+the complete browser acceptance remain separate #173 work.
+
 **Acceptance:** production-written fixtures render; live Chrome remains the
 browser gate.
 

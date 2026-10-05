@@ -124,7 +124,10 @@ definition: its source (packaged, yours or the project's) and `extends`, a shado
 settings it declares with the layer each came from, its definition digest, its static prompt
 digest and the estimated size of each prompt section. It never shows instruction or prompt
 text (use `garuda agent show NAME` for that) and a definition that cannot resolve is listed
-with its problem beside the others. The digests are the ones `garuda agent show` and
+with a source-free message and a stable diagnostic code beside the others. Legacy
+warning messages and prompt-inspection failures also exclude source text. Use
+`garuda agent check NAME` locally for detailed diagnostics; HTTP responses do not
+copy exception snippets, even when definitions are malformed. The digests are the ones `garuda agent show` and
 `garuda agent prompt` print. To change anything, edit your `garuda.yaml` or run `garuda init`.
 `GET /api/setup` serves it.
 

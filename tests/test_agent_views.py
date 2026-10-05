@@ -5,7 +5,7 @@ import json
 import pytest
 
 from garuda.agents import inspect
-from garuda.core import conversation, setup_view
+from garuda.core import conversation
 from garuda.core.events import EventStore, EventType
 from garuda.core.sessions import SessionStore
 
@@ -80,14 +80,6 @@ def test_a_shadowing_project_agent_is_marked(ws):
     rows = inspect.dashboard_rows(ws)
     assert {r["qualified"]: r["shadowed_by"] for r in rows if r["name"] == "build"} == {
         "project/build": None, "garuda/build": "project/build"}
-
-
-def test_setup_includes_the_agents_and_survives_a_failure(ws, monkeypatch):
-    define(ws, "careful", "version: 1\ninstructions: {text: ok}\n")
-    assert "project/careful" in by_name(setup_view._agents(str(ws)))
-    monkeypatch.setattr(inspect, "dashboard_rows", lambda w: (_ for _ in ()).throw(OSError("boom")))
-    (only,) = setup_view._agents(str(ws))
-    assert only["error"] == "boom"
 
 
 def test_a_conversation_shows_the_agent_and_the_system_prompts_it_actually_sent(tmp_path):

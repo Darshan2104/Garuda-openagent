@@ -107,7 +107,8 @@ def _agents(workspace: str) -> list[dict]:
     try:
         return inspect.dashboard_rows(workspace)
     except Exception as exc:  # the rest of Setup still loads
-        return [{"name": "(agents)", "source": "unknown", "error": str(exc)[:300]}]
+        return [{"name": "(agents)", "source": "unknown",
+                 **inspect.dashboard_problem(code=getattr(exc, "code", None))}]
 
 
 def _flows(resolved) -> list[dict]:

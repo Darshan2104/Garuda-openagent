@@ -80,6 +80,7 @@ def list_agents(workspace) -> list[dict]:
                 row["extends"] = (agent.chain[-2].qualified if len(agent.chain) > 1 else None)
             except Exception as exc:  # a broken file is listed, with its problem
                 row["error"] = str(exc)
+                row["error_code"] = dashboard_problem(code=getattr(exc, "code", None))["error_code"]
             seen.setdefault(name, f"{qualified}/{name}")
             rows.append(row)
     return rows
@@ -179,12 +180,21 @@ def _brief(value, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
+def dashboard_problem(*, code: object = None) -> dict:
+    """Project an inspection failure without its private source diagnostic."""
+    if not isinstance(code, str) or code not in REGISTRY or not code.startswith(("agent.", "memory.")):
+        code = "agent.invalid_value"
+    return {"error_code": code,
+            "error": "Agent inspection failed. Run garuda agent check locally for details."}
+
+
 def dashboard_rows(workspace) -> list[dict]:
     """Every agent for the Setup view: source, the settings it declares (with where each came
     from), its definition digest, the static prompt digest and the size of each prompt section.
 
     Read-only and bounded: no instruction or prompt text is returned (only its size and digest),
-    values are redacted, and a definition that fails to resolve is listed with its problem
+    values are redacted, and a definition that fails to resolve is listed with a source-free
+    diagnostic code/message (detailed errors and warnings remain local)
     instead of hiding the others. Nothing is started."""
     rows = []
     for listed in list_agents(workspace):
@@ -192,7 +202,7 @@ def dashboard_rows(workspace) -> list[dict]:
                                           "description", "shadowed_by")}
         row["description"] = _redact(row["description"], False)
         if listed.get("error"):
-            row["error"] = str(listed["error"])[:300]
+            row.update(dashboard_problem(code=listed.get("error_code")))
             rows.append(row)
             continue
         try:
@@ -201,13 +211,15 @@ def dashboard_rows(workspace) -> list[dict]:
             agent = resolve.resolve_agent(listed["qualified"], dirs)
             sections = prompt_agent(agent, workspace)
         except Exception as exc:  # one broken definition does not hide the rest
-            row["error"] = str(exc)[:300]
+            row.update(dashboard_problem(code=getattr(exc, "code", None)))
             rows.append(row)
             continue
         declared = set(agent.leaves) | {"tools"}
         row.update(
             digest=info["digest"], prompt_digest=sections["digest"], estimator=ESTIMATOR,
-            versioned=agent.versioned, warnings=info["warnings"],
+            versioned=agent.versioned,
+            warnings=(["Legacy definition has warnings. Run garuda agent check locally for details."]
+                      if info["warnings"] else []),
             instructions_chars=len(agent.instructions or ""),
             sections=[{k: s[k] for k in ("section", "source", "bytes", "tokens")}
                       for s in sections["sections"]],

@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-10-05 — Agent HTTP diagnostics exclude source snippets (#266)
+
+- Setup agent resolution/prompt-inspection errors and the outer inspection
+  fallback project a fixed source-free message and registry-validated agent or
+  memory code. Legacy warnings use a fixed source-free message. Arbitrary
+  exception text/codes and warning source snippets never enter this projection.
+- Authorized local list/check/show retain detailed errors and warnings. Secret
+  pattern redaction is insufficient for ordinary instruction/memory text.
+- Production HTTP regression coverage owns this boundary, replacing the weaker
+  private setup-helper exception-message assertion. #173 remains open for
+  character counts, per-segment attribution and complete browser acceptance.
+
 ## 2026-10-05 — Recovery inspection retains unproved descendant ownership (#264)
 
 - Global/session recovery-facing lease inspections include every retained ordinary
