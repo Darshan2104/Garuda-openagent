@@ -1325,3 +1325,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   and explicitly report unknown external internal system prompts. Native aggregate
   fields retain their meaning. Execution ids do not replace runtime handoff
   segments; complete per-tenure provenance remains separate #173 acceptance work.
+
+## 2026-10-05 — Prompt executions carry observed runtime-tenure references (#274)
+
+- Shared observability helpers snapshot an active tenure's index, runtime id/kind
+  and native session id only when all fields match the sending adapter. Native
+  runtime annotates its EventStore before the driver; RunState copies that flat
+  reference into the execution binding. ACP snapshots after identity publication,
+  including bind_session following handoff. Execution UUIDs remain separate.
+- The read model checks the complete recorded reference against that exact saved
+  tenure. Missing or inconsistent references stay unassociated while preserving
+  known execution definitions and prompt hashes. Current metadata, timestamps,
+  normalized-event cursors and session ids alone do not reconstruct history.
+- Tenure summaries distinguish unknown measurement/source evidence from omitted
+  records outside the bounded execution window. This is observational metadata;
+  it does not grant launch/ownership authority or attest log integrity.

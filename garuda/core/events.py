@@ -53,6 +53,8 @@ class EventStore:
         self.session_id = session_id or str(uuid.uuid4())
         self._events: list[dict[str, Any]] = []
         self._persist_path: Path | None = None
+        # Set by the native runtime before its driver; copied at run preparation.
+        self.runtime_tenure: dict | None = None
         # Optional subscriber invoked after each append. Lets a live tracer (or
         # any observer) react to events without the agent loop knowing. It is
         # always wrapped in try/except and can never break appends.

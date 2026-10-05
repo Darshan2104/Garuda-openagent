@@ -352,15 +352,23 @@ function agentPromptsHtml(prompts) {
 }
 
 function agentLineHtml(a) {
-  if (!a || (!a.name && !a.digest && !(a.prompts || []).length && !(a.segments || []).length)) return "";
+  if (!a || (!a.name && !a.digest && !(a.prompts || []).length && !(a.segments || []).length && !(a.tenures || []).length)) return "";
   var segments = (a.segments || []).map(function (s) {
     var external = s.kind === "acp_execution";
+    var tenure = s.runtime_tenure;
     return '<li class="agent-execution' + (external ? ' agent-acp-execution' : '') + '" data-segment="' + esc(s.id) + '" data-agent="' + esc(s.name) + '">' +
       '<strong>' + esc(s.name) + '</strong> · ' + (external ? esc(s.runtime) : 'native run') + ' · ' +
       (s.digest ? 'definition <code>' + esc(String(s.digest).slice(0, 12)) + '</code>' : 'definition unknown') +
+      (tenure ? ' · runtime tenure ' + esc(tenure.index + 1) : ' · runtime tenure unknown') +
       ' · ' + (external ? 'ACP request (attempted) ' : 'system prompt ') + agentPromptsHtml(s.prompts) +
       (external ? ' · ' + esc(s.prompt_changes) + ' request attempts · internal system prompt unknown' :
         (s.prompt_changes > 1 ? ' · changed ' + esc(s.prompt_changes - 1) + '×' : '')) + '</li>';
+  }).join("");
+  var tenures = (a.tenures || []).map(function (t) {
+    return '<li class="agent-tenure" data-tenure="' + esc(t.index) + '">Runtime tenure ' + esc(t.index + 1) +
+      ' · ' + esc(t.runtime_id) + ' (' + esc(t.kind) + ') · ' + esc(t.execution_count) + ' recorded executions' +
+      ' · agent definition ' + esc(t.agent_status) + ' · prompt ' + esc(t.prompt_status) +
+      (t.omitted_executions ? ' · ' + esc(t.omitted_executions) + ' additional executions omitted' : '') + '</li>';
   }).join("");
   var unknown = a.unattributed || [];
   if (unknown.length) {
@@ -369,6 +377,7 @@ function agentLineHtml(a) {
   return '<div id="agent-line"><p class="stat-sub">Agent: <strong>' + esc(a.name || "—") + "</strong>" +
     (a.digest ? ' · definition <code id="agent-digest">' + esc(String(a.digest).slice(0, 12)) + "</code>" : "") +
     (a.segment ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + '</p>' +
+    (tenures ? '<ul class="stat-sub" id="agent-tenures">' + tenures + '</ul>' : '') +
     (segments ? '<ul class="stat-sub">' + segments + '</ul>' : '<p class="stat-sub">No system prompt recorded</p>') + '</div>';
 }
 
