@@ -605,6 +605,11 @@ token budgets, and broker ceilings do not imply filesystem prevention.
 External `readonly`, MCP/network and consulted-child isolation gates remain
 the teams contracts. Any explicitly requested unsupported field refuses with
 `agent.field_unsupported`, including unsupported inherited fields; never ignore it.
+Instruction replacement is retained as structural intent during resolution and
+inheritance. ACP refuses explicit/inherited `instructions.mode: replace` even
+when the resulting text is empty, equals the native base, or starts with it.
+Appending a child block does not erase an ancestor’s replacement request.
+Native prompt assembly is unchanged; only appended context is projected to ACP.
 
 ## Compilation, completion and output
 

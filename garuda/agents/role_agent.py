@@ -69,12 +69,14 @@ def own_instructions(resolved) -> tuple[str | None, bool]:
     from garuda.types import DEFAULT_SYSTEM_PROMPT
 
     text = (resolved.instructions or "").strip()
+    if resolved.instructions_replaced:
+        return text or None, True
     base = DEFAULT_SYSTEM_PROMPT.strip()
     if not text or text == base:
         return None, False
     if text.startswith(base):
         return text[len(base):].strip() or None, False
-    return text, True
+    return text, False
 
 
 def _check_effort(plan: RolePlan, agent_effort):

@@ -1340,3 +1340,15 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Tenure summaries distinguish unknown measurement/source evidence from omitted
   records outside the bounded execution window. This is observational metadata;
   it does not grant launch/ownership authority or attest log integrity.
+
+
+### ACP replacement intent survives resolution (#276, child of #172)
+
+The resolver retains whether an instruction replacement was declared at any
+level. Text equality or prefix matching cannot establish append intent: explicit
+replacement with an empty/default/native-prefixed body is still unsupported on
+an ACP role. A child append and AgentSpec narrowing preserve inherited intent.
+ACP refuses with agent.field_unsupported before launch/session creation. Native
+prompt assembly and existing source-chain digest material remain unchanged.
+Only appended instructions are projected as labelled task context. Actual CLI
+refusal cases and child wire captures own the regression proof.
