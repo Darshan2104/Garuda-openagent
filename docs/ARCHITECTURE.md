@@ -127,6 +127,10 @@ fastest way to learn the system.
   cannot resurrect an old claimant handle. Ordinary capacity activation checks
   adoption under its lock and after publication before granting launch authority,
   retaining the protected slot if adoption was revoked during publication.
+  Ordinary reservations also remain counted after owner death: their records
+  lack descendant cleanup evidence. Neither foreground callers nor queue
+  selection delete them to admit replacement work. Explicit matched releases
+  remain coordinator cleanup assertions; receipt-based recovery is separate work.
   Background admission resolves runtime aliases through the shared trusted
   catalog and queues under the canonical runtime id, retaining the original
   launch reference for downstream capability resolution. A worker verifies the lane,

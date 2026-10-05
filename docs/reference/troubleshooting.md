@@ -141,8 +141,11 @@ Click a problem to see the fix.
     Its worker is waiting for a slot: the harness is at its `max_parallel`
     (`capacity` in `settings.yaml`), shared with foreground runs. See what holds
     the slot with `garuda sessions`; a session that reads `crashed` lost its
-    worker, and its slot is reclaimed automatically once the process is
-    confirmed dead. `garuda sessions cancel SESSION` removes a queued session
+    worker. Confirmed-dead pre-activation queue work can reconcile, but activated
+    or ambiguous dispatch stays quarantined. Ordinary foreground reservations
+    also remain counted after parent death because runtime descendants may
+    survive in another process group; no automatic cleanup receipt is available.
+    `garuda sessions cancel SESSION` removes a queued session
     or stops a running one. The worker's output is in
     `<sessions dir>/<id>/worker.log`, cut at 1 MB.
 

@@ -115,7 +115,7 @@ async def test_release_returns_the_slot(tmp_path):
     assert caps.holders("claude") == []
 
 
-def test_a_dead_owners_slot_is_reclaimed(tmp_path):
+def test_parent_death_without_cleanup_evidence_keeps_the_slot(tmp_path):
     code = (
         "import sys; from garuda.runtime.capacity import CapacityStore; "
         "CapacityStore(sys.argv[1]).reserve('codex', 'gone', 1)"
@@ -125,8 +125,12 @@ def test_a_dead_owners_slot_is_reclaimed(tmp_path):
     caps = CapacityStore(tmp_path / "cap")
     assert caps.holders("codex") == ["gone"]
 
-    caps.reserve("codex", "next", 1)
-    assert caps.holders("codex") == ["next"]
+    source, = caps.root.glob("*.json")
+    before = source.read_bytes()
+    with pytest.raises(CapacityUnavailable):
+        caps.reserve("codex", "next", 1)
+    assert caps.holders("codex") == ["gone"]
+    assert source.read_bytes() == before
 
 
 @pytest.mark.parametrize("liveness", [lambda owner: True, lambda owner: None], ids=["alive", "unknown"])
@@ -235,7 +239,10 @@ def test_a_superseded_reservation_does_not_free_the_new_one(tmp_path):
     from garuda.runtime.capacity import Reservation
 
     old = Reservation("codex", "s", Owner(**json.loads(result.stdout)))
-    new = caps.reserve("codex", "s", 1)  # the original process is confirmed dead
+    # This controlled parent started no runtime children. Its coordinator
+    # explicitly releases the old receipt; parent death alone cannot do that.
+    caps.release(old)
+    new = caps.reserve("codex", "s", 1)
     caps.release(old)
     assert caps.holders("codex") == ["s"]
     caps.release(new)

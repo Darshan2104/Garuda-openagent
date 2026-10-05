@@ -369,6 +369,13 @@ and an ordinary capacity call that captured the ticket must recheck adoption
 before returning launch authority. The protected slot remains allocated; a
 partially published activation stays quarantined rather than being replayed.
 
+An ordinary foreground reservation remains counted after its owner dies.
+Parent death does not prove that runtime descendants, including processes in
+another group, stopped. Both foreground and queue admission retain such slots;
+a matched dead/unknown ordinary owner also cannot retry activation. Explicit
+matched release remains a coordinator cleanup assertion. Automatic recovery
+needs descendant cleanup receipts, which are not implemented by this change.
+
 Queue heartbeat and release accept an explicit owner matching the complete
 claim record. Without an explicit owner, they use only the owner retained by
 the instance that successfully claimed the item in the current process.
