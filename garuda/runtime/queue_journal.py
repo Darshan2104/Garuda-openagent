@@ -55,7 +55,10 @@ class QueueJournal:
             raise JournalError(f"queue journal is malformed: {exc}; refusing") from exc
 
     def claim(self, state: dict, scope: str, entry: dict, owner: Owner) -> QueueTicket | None:
-        ticket = QueueTicket.create(self.root, scope, entry, owner, uuid.uuid4().hex)
+        try:
+            ticket = QueueTicket.create(self.root, scope, entry, owner, uuid.uuid4().hex)
+        except (TypeError, ValueError) as exc:
+            raise JournalError(f"queue admission binding is malformed: {exc}") from exc
         journal = state["pending"]
         journal[ticket.transaction] = self._record("claim", scope, entry, ticket)
         self.queue._publish(state)

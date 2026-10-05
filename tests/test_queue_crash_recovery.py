@@ -498,7 +498,7 @@ def test_concurrent_workspace_requeues_keep_the_original_durable_fifo(tmp_path):
     first = QueueStore(tmp_path / "queue", capacity=capacity, ceiling=lambda _: 2)
     second = QueueStore(tmp_path / "queue", capacity=capacity, ceiling=lambda _: 2)
     for item in ("first", "second", "third"):
-        first.enqueue("u:native", item, session_id=item, config_digest="frozen")
+        first.enqueue("u:native", item, user="u", session_id=item, config_digest="frozen")
     first_claimed, second_claimed, first_returned = Event(), Event(), Event()
 
     def unavailable_first():

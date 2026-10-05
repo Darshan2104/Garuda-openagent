@@ -24,6 +24,18 @@ PHASES = {"pending", "selected", "activated", "releasing_selected", "releasing_a
 ACTIVATED_PHASES = {"activated", "releasing_activated"}
 
 
+def check_scope_binding(scope: str, entry: dict) -> None:
+    """Dispatch-ready work has one lane for its declared user and harness.
+
+    Incomplete low-level allocations cannot activate. Do not turn them into
+    dispatch-ready sessions by inferring missing admission fields.
+    """
+    ready = all(isinstance(entry.get(k), str) and entry[k]
+                for k in ("user", "harness", "session_id", "config_digest"))
+    if ready and scope != f'{entry["user"]}:{entry["harness"]}':
+        raise ValueError("dispatch-ready binding disagrees with its user/harness scope")
+
+
 @dataclass(frozen=True)
 class QueueTicket:
     key: str
@@ -37,6 +49,7 @@ class QueueTicket:
     @classmethod
     def create(cls, queue_root: str, scope: str, entry: dict, owner: Owner,
                transaction: str) -> QueueTicket:
+        check_scope_binding(scope, entry)
         if (not all(isinstance(value, str) and value for value in (
                 queue_root, scope, transaction, entry.get("id"), entry.get("harness"), entry.get("user")))
                 or type(entry.get("seq")) is not int or entry["seq"] < 1):

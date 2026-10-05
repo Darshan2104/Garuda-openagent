@@ -64,6 +64,7 @@ from garuda.runtime.capacity import (
 )
 from garuda.runtime.ownership import Liveness, Owner, current_owner, owner_liveness
 from garuda.runtime.queue_journal import JournalError, QueueJournal
+from garuda.runtime.queue_slots import check_scope_binding
 
 STATE_VERSION = 3
 READABLE_VERSIONS = (1, 2, 3)
@@ -262,6 +263,10 @@ class QueueStore:
         item_id = item_id if item_id is not None else uuid.uuid4().hex
         binding = {"user": user or current_user(), "harness": harness or _harness_of(scope),
                    "session_id": session_id, "config_digest": config_digest}
+        try:
+            check_scope_binding(scope, binding)
+        except ValueError as exc:
+            raise QueueError(str(exc)) from exc
         with self._locked() as state:
             if any(record["entry"]["id"] == item_id for record in state["pending"].values()):
                 raise QueueError(f"queue item {item_id!r} has an unresolved transaction")

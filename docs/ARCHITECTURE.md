@@ -119,6 +119,10 @@ fastest way to learn the system.
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the
   queue lock before any write.
+  Dispatch-ready entries also match the scope formed from their declared user
+  and harness. Enqueue and ticket creation both enforce this, so a scope alias
+  cannot create another FIFO lane for the same pair. Preexisting mismatches
+  refuse selection without rebinding or reserving capacity.
 - **Queue mutations require claimant authority.** Heartbeat, release and
   workspace requeue compare the complete persisted process identity and epoch.
   Implicit mutations use only the claiming instance's retained owner in the

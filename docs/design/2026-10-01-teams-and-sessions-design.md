@@ -591,6 +591,13 @@ durable sequence or FIFO position, including after a claim. A conflicting
 retry refuses under the queue lock. Duplicate records for an id refuse retry
 and stay available for diagnosis; this does not authorize migration or recovery.
 
+For dispatch-ready work, the scope must match the declared user/harness pair.
+Enqueue and ticket construction both check this. A mismatched scope label cannot
+give the same pair a second FIFO lane, including through preexisting waiting
+records; selection refuses before intent or capacity publication and preserves
+the source. Missing session/configuration evidence is never inferred to make
+an incomplete allocation dispatch-ready.
+
 Queue mutations match the complete owner (pid, process start identity, process
 group and epoch). An omitted owner on heartbeat or release uses only a successful
 claim retained by that instance in the claiming process; opening another store
