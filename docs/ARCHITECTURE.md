@@ -119,6 +119,9 @@ fastest way to learn the system.
   requires the issuing store instance/process and complete retained owner,
   workspace and mode, not a copied epoch or an inspected record. Unknown creator
   identity refuses acquisition; forked and ambiguous handles refuse mutation.
+  Ordinary workspace holders remain recorded after parent death/expiry without
+  descendant-cleanup receipts. Read-only registration preserves those bindings;
+  expired mutating holders continue to block new mutation.
 - **Quarantine retains ownership through teardown.** The shared run guard
   stops renewal but retains its workspace lease and runtime reservation. Later
   release/finalizer calls cannot undo quarantine. A borrowed flow step also

@@ -79,6 +79,13 @@ inherit the parent's authority. Mutation also refuses changed owner/workspace/
 mode bindings and duplicate holders. Unknown creator identity refuses before
 publication. This ownership check adds no descendant cleanup or recovery receipts.
 
+Lease TTL and parent death do not authorize automatic workspace takeover:
+ordinary records contain no complete descendant-cleanup receipt. A mutating
+holder remains recorded and blocks another editor until explicit issuing-owner
+release. Read-only registration preserves existing holders. Historical records
+remain inspectable; supervised recovery/removal of a dead issuer's lease is
+separate work. Do not delete records to force a new run.
+
 When descendant death cannot be proved, the shared guard quarantines the run:
 renewal stops, but the workspace lease and runtime slot stay reserved through
 later close/release calls. A borrowed flow step also quarantines its parent and

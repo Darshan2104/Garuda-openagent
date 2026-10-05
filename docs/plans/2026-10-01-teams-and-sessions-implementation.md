@@ -427,6 +427,13 @@ workspace.
 
 ### B.4 Apply leases and baselines to every mutating entry point
 
+Ordinary workspace holders remain recorded after parent death/TTL expiry: the
+lease has no complete descendant-cleanup receipt. Read-only registration must
+preserve prior bindings. Prove this with a real surviving writer in another
+process group; new mutators refuse and read-only registration cannot enable a
+later takeover. Keep historical reads and legitimate issuing-owner release/new
+acquisition, with no automatic stale takeover or invented recovery override.
+
 Workspace ownership also requires the successful issuing store/process's full
 PID/start identity/group/epoch, workspace and mode. Prove the current creator
 before publication; refuse existing-session acquisition, copied epochs, unowned

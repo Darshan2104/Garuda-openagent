@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-10-05 — Lease expiry and parent death do not prove cleanup (#260)
+
+- Ordinary lease records contain no complete descendant-cleanup receipt.
+  Acquisition retains them even after parent death and TTL expiry; an expired
+  mutating holder continues to block new mutation. Read-only registration
+  preserves prior owner bindings instead of erasing expired records.
+- Issuing-owner release remains the ordinary removal path. Historical v1/v2
+  reads and `stolen_from` fields remain compatible, but new acquisition performs
+  no automatic stale takeover. Existing parent-death takeover policies are
+  superseded by this retention rule.
+- Persisted descendant supervision, inspection-based recovery admission and
+  cleanup/recovery receipts remain #157/#167 work. Retention adds no physical
+  confinement or proof that arbitrary descendants have stopped.
+
 ## 2026-10-05 — Quarantine retains workspace and runtime capacity (#258)
 
 - `WorkspaceLeaseGuard.stop_heartbeat` latches quarantine before stopping
@@ -761,8 +775,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - A session is recorded only once its workspace is leased: a refused lease
   leaves no record on any entry point.
 - A background process that cannot be proven dead quarantines the session:
-  the workspace lease stays held (heartbeat stopped, so it is taken over only
-  once this process is confirmed dead), the session records the pids. Capacity is retained under the later #258
+  the workspace lease stays held (heartbeat stopped; parent death does not
+  authorize takeover under the later #260 decision), the session records the pids. Capacity is retained under the later #258
   decision; the original slot-return policy is superseded. Fail closed rather than let a second editor in
   beside a possible stray writer.
 

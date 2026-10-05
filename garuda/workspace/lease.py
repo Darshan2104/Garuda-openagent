@@ -3,10 +3,10 @@
 One workspace has at most one live mutating owner; read-only holders share
 freely. A lease is a small JSON document in the agent-home leases dir (never
 in the workspace itself), published atomically and refreshed by heartbeat.
-A heartbeat TTL marks a lease expired, but expiry alone never permits takeover:
-the owner (pid, start identity, process group) must be confirmed dead.
-Takeover replaces the lease file and nothing else, so user changes are never
-removed to resolve a conflict. A corrupt lease
+A heartbeat TTL marks a lease expired but cannot prove descendant cleanup.
+Ordinary holders remain recorded even after parent death; only explicit
+issuing-owner release removes them. User files are never removed to resolve
+a conflict. A corrupt lease
 file fails closed: acquisition is refused until a human clears it.
 
 Parallel worktrees are separate workspaces by real path: `workspace_key`
@@ -144,9 +144,10 @@ class LeaseStore:
     successful issuing instance/process retains full owner authority after
     durable publication. Heartbeat/release cannot recreate it from a session id
     or copied epoch; existing-session reacquisition refuses. An expired lease
-    for another session is taken over only when its owner is *confirmed* dead — a
-    live owner past its TTL keeps it, and an owner whose liveness cannot be
-    determined blocks takeover until a person clears it.
+    for another session remains recorded even after confirmed parent death:
+    these records contain no complete descendant-cleanup receipt. Mutating
+    holders block new mutation until explicit owner release; read-only
+    registration preserves all prior holders.
     """
 
     def __init__(self, root: str | Path | None = None, *, liveness=None, owner_factory=None):
@@ -216,9 +217,11 @@ class LeaseStore:
         ttl_sec: float = DEFAULT_TTL_SEC,
         now: float | None = None,
     ) -> Lease:
-        """Take a lease. A live foreign mutating holder refuses; an expired one
-        is taken over only when its owner is confirmed dead (recorded in
-        `stolen_from`); read-only holders never block."""
+        """Take a lease without pruning unproved descendants' ownership.
+
+        A foreign mutating holder blocks mutation regardless of expiry/parent
+        death. Read-only holders share; registration preserves prior holders.
+        """
         if mode not in ("mutating", "read-only"):
             raise LeaseError(f"mode must be mutating|read-only, got {mode!r}")
         if not session_id:
@@ -238,7 +241,6 @@ class LeaseStore:
         with self._locked():
             holders = self._read_all(path)
             kept: list[Lease] = []
-            stolen: list[str] = []
             for holder in holders:
                 if holder.session_id == session_id:
                     raise LeaseConflictError(
@@ -250,15 +252,14 @@ class LeaseStore:
                     kept.append(holder)
                     continue
                 state = self._owner_state(holder)
-                if state is False:
-                    stolen.append(holder.session_id)
-                    continue
                 if holder.mode == "mutating" and mode == "mutating":
                     reason = (
+                        "its parent is dead but descendant cleanup is not proved"
+                        if state is False else
                         "its owner is still running past the lease TTL"
-                        if state
-                        else "its owner's liveness cannot be determined; clear it once "
-                        "you have confirmed the owner is gone"
+                        if state is True else
+                        "its owner's liveness cannot be determined; retain ownership "
+                        "until supervised cleanup is proved"
                     )
                     raise LeaseConflictError(
                         f"workspace {key} is mutably held by session {holder.session_id}: "
@@ -280,7 +281,6 @@ class LeaseStore:
                 heartbeat_at=moment,
                 ttl_sec=ttl_sec,
                 pid=owner.pid,
-                stolen_from=",".join(sorted(set(stolen))),
                 identity=owner.identity,
                 pgid=owner.pgid,
                 epoch=owner.epoch,

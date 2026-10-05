@@ -77,8 +77,9 @@ Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it
 records which confinement actually holds. `shell.py` is the opt-in persistent
 shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
-an expired lease taken over only when its owner — pid, start identity and
-process group, `runtime/ownership.py` — is confirmed dead, audited takeover,
+expired holders retained after parent death without descendant-cleanup receipts,
+read-only registration preserving prior bindings, issuing-owner release removing
+ordinary holders, pid/start identity/process group/epoch via `runtime/ownership.py`,
 creator identity proved before publication, existing-session reacquisition refused,
 heartbeat/release bound to the issuing instance/process and full retained owner,
 workspace and mode (copied epochs and forked/ambiguous handles refuse),
