@@ -70,7 +70,7 @@ every project. A full ID always resolves.
     | `--all-projects` | With `--resume latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
-    | `--bg` | Queue the run and return at once; a detached worker waits for its turn (no workspace lease held), runs it, and releases its slot on every way out. Prints the session id |
+    | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |
     | `--no-edits` | Refuse edits and commands, and withhold the output if the workspace changed anyway (exit 3); a guardrail, not confinement |
     | `--check COMMAND` | An acceptance check run after the session (repeatable); its result is the session's verification |
     | `--role NAME` | Run as a `garuda.yaml` role: its harness, exact model, effort and permission ceiling |

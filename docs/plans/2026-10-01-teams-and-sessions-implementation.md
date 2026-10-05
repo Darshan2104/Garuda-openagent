@@ -886,6 +886,13 @@ binding across waiting entries and claims, and preserve durable FIFO sequence.
 Conflicting retries refuse before writing. Cover exact and conflicting retries
 from real subprocess contenders and leave preexisting duplicate records intact.
 
+Background admission resolves effective `garuda.yaml` roles through shared
+agent setup before creating launch state, retaining the selected role and
+original harness reference. The worker compares the effective configuration
+digest before selection. Dynamic role fallback refuses until a persisted
+selection decision is available. Referenced agent/MCP files and later concurrent
+configuration edits remain outside this pre-selection check.
+
 Ordinary reservations lack descendant cleanup receipts, so both ordinary and
 queue admission retain them after parent death. Prove this with a real parent
 that reserves capacity, spawns a writer in another group and exits: same-holder,

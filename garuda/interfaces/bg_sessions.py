@@ -124,15 +124,25 @@ def _write_private(path: Path, data: dict) -> None:
     write_document(path, data)
 
 
-def harness_of(args) -> str:
-    from garuda.agents.setup import prepare_runtime_catalog
+def _runtime_binding(args):
+    from garuda.agents.setup import prepare_background_runtime
+    from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.runtime.registry import RegistryError
+    from garuda.runtime.roles import RoleRefused
 
     try:
-        return prepare_runtime_catalog(args.workspace).registry.get(
-            getattr(args, "runtime", None) or "native").runtime_id
-    except RegistryError as exc:
+        return prepare_background_runtime(args)
+    except (RegistryError, GarudaConfigError, RoleRefused) as exc:
         raise BackgroundRefused(f"background runtime refused: {exc}") from exc
+
+
+def harness_of(args) -> str:
+    return _runtime_binding(args).runtime_id
+
+
+def _admission_digest(description: dict, binding) -> str:
+    return (_digest(description) if binding.config_digest is None else
+            _digest({"args": description, "configuration": binding.config_digest}))
 
 
 def scope_of(args) -> str:
@@ -157,18 +167,23 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
     for flag in ("resume", "trajectory"):
         if getattr(args, flag, None):
             raise BackgroundRefused(f"--bg does not combine with --{flag.replace('_', '-')}")
-    harness = harness_of(args)
+    binding = _runtime_binding(args)
+    harness = binding.runtime_id
     store = store or SessionStore()
     queue = queue or QueueStore()
     description = _jsonable(args)
     description.update({"task": task, "file": None, "json": False})
+    if binding.role is not None:
+        # Naming the admitted role keeps its permissions/model/profile when
+        # the original default is later bypassed by the frozen runtime flag.
+        description.update({"role": binding.role, "runtime": binding.runtime_reference})
     session_id = str(uuid.uuid4())
     store.begin(session_id, task=task, model=str(getattr(args, "model", None) or ""),
                 agent=str(getattr(args, "agent", "build")),
                 workspace=os.path.realpath(args.workspace),
                 name=getattr(args, "name", None))
     directory = store.session_dir(session_id)
-    digest = _digest(description)
+    digest = _admission_digest(description, binding)
     _write_private(directory / LAUNCH_FILE, {"version": 1, "args": description,
                                              "config_digest": digest})
     store.update_meta(session_id, {"status": "queued", "state": session_state.queued(),
@@ -259,9 +274,12 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
     admission = next((entry for entry in queue.entries() if entry["id"] == session_id), None)
     if admission is None:
         return 0  # A queued cancellation removed the admission before this worker started.
-    scope = scope_of(args)
+    from garuda.runtime.queue import scope_for
+
+    binding = _runtime_binding(args)
+    scope = scope_for(binding.runtime_id)
     if (admission["scope"] != scope or admission.get("session_id") != session_id
-            or admission.get("config_digest") != _digest(document["args"])
+            or admission.get("config_digest") != _admission_digest(document["args"], binding)
             or document.get("config_digest") != admission.get("config_digest")):
         raise BackgroundRefused("background launch disagrees with its frozen queue admission")
     owner = current_owner()

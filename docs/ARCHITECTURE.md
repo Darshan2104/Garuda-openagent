@@ -133,7 +133,12 @@ fastest way to learn the system.
   remain coordinator cleanup assertions; receipt-based recovery is separate work.
   Background admission resolves runtime aliases through the shared trusted
   catalog and queues under the canonical runtime id, retaining the original
-  launch reference for downstream capability resolution. A worker verifies the lane,
+  launch reference for downstream capability resolution. Shared setup resolves
+  effective roles before admission and preserves default roles explicitly in
+  launch arguments. Workers recheck the effective garuda.yaml digest before
+  selection; background dynamic role fallback refuses until its runtime
+  decision can be persisted. Referenced agent/MCP files and later concurrent
+  configuration changes are outside this check. A worker verifies the lane,
   session and serialized launch digest before publishing identity or selecting
   work; alias retargeting or changed launch arguments refuse without rebinding.
 - **Queue mutations require claimant authority.** Heartbeat, release and
