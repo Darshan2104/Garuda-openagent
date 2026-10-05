@@ -91,7 +91,8 @@ fastest way to learn the system.
    Native consult receipts count structured permission refusals and explicit
    file-access denial results, not error prose. Tool results persist only the
    denial boolean from metadata, and denied file accesses bypass memo storage
-   so each attempt retains its own evidence.
+   so each attempt retains its own evidence. ACP consult receipts count persisted
+   broker `deny` outcomes; child failure or answer prose alone never counts.
 5. **Tools** — `tools/` registered through `tools/registry.py` and assembled by
    `build_toolkit`. Every tool takes a `ToolContext` and returns a `ToolResult`.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps

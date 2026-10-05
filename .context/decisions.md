@@ -1466,3 +1466,11 @@ Pending recovery journals require an explicit epoch, key digest and alias map.
 The staged or published key must match before applying session changes.
 Historical unbound journals refuse mutation and remain available for operator
 inspection; no epoch or alias authority is inferred from a path or existing key.
+
+### 2026-10-06: ACP consult denial receipt authority
+
+ACP consult children count persisted per-operation broker `deny` records in
+their receipts, beside native structured permission evidence. Child failure
+and answer/error prose alone do not count. The existing Docker-only boundary,
+receipt schema and unchanged source snapshot remain the owners of isolation
+and evidence; no vendor self-report or new inference transport is introduced.
