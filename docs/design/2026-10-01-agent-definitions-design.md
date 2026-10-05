@@ -1,6 +1,6 @@
 # Agent definitions: a configurable Garuda harness
 
-**Status:** Reviewed implementation contract — security-default decisions require approval
+**Status:** Implemented — Set H acceptance recorded on 2026-10-05
 
 **Date:** 2026-10-01
 
@@ -9,10 +9,13 @@
 **Related:** [Teams and sessions](2026-10-01-teams-and-sessions-design.md) — the
 orchestration layer that runs these agents as roles, flow steps and consults.
 
-**Target base:** `origin/main` at `3456f25`; re-audit against the then-current
-main before each PR.
+**Initial target base:** `origin/main` at `3456f25`; each implementation was
+reviewed against its then-current base.
 
-**Tracking:** epic [#141](https://github.com/Darshan2104/Garuda-openagent/issues/141).
+**Tracking:** completed epic [#141](https://github.com/Darshan2104/Garuda-openagent/issues/141).
+The [final acceptance audit](https://github.com/Darshan2104/Garuda-openagent/issues/141)
+links field behavior, authority controls, shared activation and dashboard evidence;
+the separate orchestration epic retains its open acceptance gates.
 
 ## Scope
 
@@ -681,8 +684,8 @@ agent identities across session metadata changes and inner runs; historical unbo
 measurements remain unattributed. ACP execution rows show attempted host request digests, recorded runtime/role
 definition identity and unknown internal system prompts. Recorded matching runtime-tenure references connect sending executions to
 segments; historical or inconsistent references stay unassociated and tenures
-without measurement evidence remain unknown. Full #173 acceptance requires its
-fixture, HTTP privacy and live-Chrome audit.
+without measurement evidence remain unknown. The completed #173 audit records
+production fixtures, HTTP privacy and live-Chrome acceptance.
 The dashboard does not edit definitions.
 
 Native flow steps consume the admitted immutable AgentSpec through the same
