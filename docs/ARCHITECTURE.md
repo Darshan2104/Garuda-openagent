@@ -110,6 +110,10 @@ fastest way to learn the system.
 - **Fail closed on anything security-shaped.** An unresolvable host, an
   unparseable address, an unclear verifier verdict: refuse. Several existing
   comments explain a specific fail-closed choice; keep that habit.
+- **Agent HTTP diagnostics exclude source text.** Setup projects definition and
+  prompt-inspection failures to fixed messages and registry-validated codes.
+  Legacy warnings also use source-free messages. Detailed errors/warnings remain
+  available through authorized local agent inspection.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact live-owner retries are idempotent. Ordinary
