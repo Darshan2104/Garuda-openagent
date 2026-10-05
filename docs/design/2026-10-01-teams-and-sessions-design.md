@@ -639,6 +639,13 @@ that lock, workers:
 4. acquire the workspace lease and start the runtime;
 5. release the claim only after the runtime and its descendants are reaped.
 
+Background admission resolves effective `garuda.yaml` roles through shared
+agent setup before creating launch state, retaining the selected role and
+original harness reference. The worker compares the effective configuration
+digest before selection. Dynamic role fallback refuses until a persisted
+selection decision is available. Referenced runtime/agent/MCP files and later concurrent
+configuration edits remain outside this pre-selection check.
+
 The implemented queue journal orders durable publications across separate files;
 it does not make them one atomic transaction. Ordinary capacity callers retain
 all queue slots regardless of owner liveness. Ordinary reservations also stay

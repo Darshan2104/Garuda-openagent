@@ -355,6 +355,17 @@ when using a synthetic user scope. A mismatched historical entry stays intact
 for diagnosis and is not rebound automatically. Incomplete allocations still
 cannot activate without frozen session/configuration bindings.
 
+Background runs resolve their effective `garuda.yaml` role before joining the
+queue. A default role keeps its permissions, model and profile when the worker
+starts; its original harness reference remains available for downstream
+capability resolution.
+Workers recheck the effective `garuda.yaml` configuration before selecting
+work. A changed role runtime or model refuses. This check does not snapshot
+referenced runtime/agent/MCP files or prevent later concurrent configuration edits.
+Roles with a dynamic `fallback` chain refuse in background mode until the
+chosen runtime can be persisted; use a role without fallback or run it in the
+foreground. Admission performs no probes or model calls.
+
 A background runtime alias shares its target's capacity and FIFO lane. Its
 original reference stays in the launch arguments for downstream capability
 resolution. If the alias is retargeted while waiting, or launch

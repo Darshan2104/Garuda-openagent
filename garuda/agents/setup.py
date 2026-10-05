@@ -369,6 +369,49 @@ def prepare_runtime_catalog(workspace: str | Path) -> RuntimeCatalog:
     )
 
 
+@dataclass(frozen=True)
+class BackgroundRuntimeBinding:
+    runtime_id: str
+    runtime_reference: str | None
+    role: str | None
+    config_digest: str | None
+
+
+def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
+    """Resolve static role admission without probes, models or launch state.
+
+    A fallback requires a persisted selection decision, which background
+    admission does not yet have. Refuse it rather than allocate one runtime's
+    lane and later launch another runtime.
+    """
+    import hashlib
+    import json
+
+    from garuda.config.garuda_yaml import load_effective
+    from garuda.runtime.roles import RoleRefused, plan_role
+
+    reference = getattr(args, "runtime", None)
+    resolved = load_effective(
+        args.workspace, cli_role=getattr(args, "role", None), cli_runtime=reference,
+        cli_model=getattr(args, "model", None) or getattr(args, "reasoning_model", None),
+        cli_checks=getattr(args, "checks", None) or (),
+    )
+    catalog = prepare_runtime_catalog(args.workspace)
+    plan = plan_role(resolved, catalog) if resolved is not None else None
+    if plan is not None:
+        if resolved.selected_role().get("fallback"):
+            raise RoleRefused("background.fallback_unbound",
+                              "background roles with dynamic fallback need a persisted runtime "
+                              "decision; use a role without fallback or run in the foreground")
+        reference = reference or resolved.selected_role()["harness"]
+    digest = (hashlib.sha256(json.dumps(resolved.config, sort_keys=True).encode()).hexdigest()
+              if resolved is not None else None)
+    return BackgroundRuntimeBinding(
+        catalog.registry.get(reference or "native").runtime_id, reference,
+        plan.role if plan is not None else None, digest,
+    )
+
+
 #: How long initial selection may reuse a runtime's probe result (seconds).
 SELECTION_PROBE_CACHE_SECONDS = 60.0
 
