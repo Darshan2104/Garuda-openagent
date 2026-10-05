@@ -449,9 +449,14 @@ async def native_child(child: ChildRequest) -> ChildOutcome:
             "asker_session": child.asker_session, "root_session": child.root_session,
             "request_id": child.request_id},
             "role": plan.record()})
-    denied = sum(1 for e in events.get_all() if e["type"] == "tool_result"
-                 and (e.get("payload") or {}).get("is_error")
-                 and "denied" in str((e.get("payload") or {}).get("content", "")).lower())
+    # Screened refusals have no tool result; file-access refusals happen during
+    # execution. Count their structured evidence, never words in an error body.
+    denied = sum(1 for e in events.get_all()
+                 if (e["type"] == "permission_ask"
+                     and (e.get("payload") or {}).get("approved") is False)
+                 or (e["type"] == "tool_result"
+                     and (e.get("payload") or {}).get("is_error")
+                     and (e.get("payload") or {}).get("permission_denied") is True))
     return ChildOutcome(events.session_id, bool(result.success), result.final_message or "", denied)
 
 

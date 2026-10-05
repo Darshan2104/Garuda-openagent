@@ -92,6 +92,11 @@ or as a role it consulted.
 
 ## Consults
 
+Native denied-operation counts come from recorded permission refusals and
+file-access denial results. Ordinary file errors do not count as denials, even
+when their messages contain “denied”. Each repeated denied file access is
+evaluated again; these counts are evidence of refusals, not an isolation guarantee.
+
 A role can ask another role one question mid-task. In `garuda.yaml` (user file
 only) a role lists the roles it may ask:
 

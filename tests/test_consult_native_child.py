@@ -107,3 +107,54 @@ async def test_the_childs_calls_are_recorded_as_origin_consult(consult_world, sc
     records = [r for r in Ledger().records() if r["kind"] == "native_model_call"]
     assert records and {r["origin"] for r in records} == {"consult"}
     assert ledger_module.totals(records)["native_calls"] >= 1
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    ("ordinary-error", 0), ("permission", 1), ("repeated-escape", 2),
+    ("mixed-sequential", 5), ("mixed-parallel", 5),
+])
+async def test_receipt_counts_observed_denials_not_error_words(consult_world, script,
+                                                              scenario, expected):
+    outside = consult_world.tmp / "outside.txt"
+    outside.write_text("PRIVATE-OUTSIDE-CANARY")
+    sentinel = consult_world.tmp / "shell-ran"
+    missing = ToolCall(id="missing", name="read_file", arguments={"path": "denied.txt"})
+    write = ToolCall(id="write", name="write_file", arguments={"path": "blocked.txt",
+                                                                    "content": "blocked"})
+    escape = ToolCall(id="escape", name="read_file", arguments={"path": str(outside)})
+    repeat = ToolCall(id="repeat", name="read_file", arguments={"path": str(outside)})
+    relative = ToolCall(id="relative", name="read_file", arguments={"path": "../../outside.txt"})
+    shell = ToolCall(id="shell", name="bash", arguments={"command": f"touch {sentinel}"})
+    good = ToolCall(id="good", name="read_file", arguments={"path": "notes.txt"})
+    calls = {"ordinary-error": [missing], "permission": [write],
+             "repeated-escape": [escape, repeat]}.get(
+                 scenario, [missing, write, escape, repeat, relative, shell, good])
+    responses = ([ModelResponse(content=None, tool_calls=calls)] if scenario == "mixed-parallel"
+                 else [ModelResponse(content=None, tool_calls=[c]) for c in calls])
+    responses.append(call("task_complete", "done", summary="The bounded review is complete."))
+    script(responses)
+    resolved = make_resolved({"version": 1, "roles": {
+        "coder": {"harness": "native", "model_id": "m1", "consult": ["reviewer"]},
+        "reviewer": {"harness": "native", "model_id": "m2"}},
+        "consults": {"max_turns": 10}})
+    result = await ConsultService(consult_world.store, resolved).consult(ConsultRequest(
+        asker_session=consult_world.asker, root_session=consult_world.asker, target="reviewer",
+        question="Review the notes safely.", workspace=str(consult_world.ws)))
+    assert result.outcome == "answered", result.tool_text()
+    events_text = consult_world.store.events_path(result.receipt["child_session"]).read_text()
+    events = [json.loads(line) for line in events_text.splitlines()]
+    assert "PRIVATE-OUTSIDE-CANARY" not in events_text
+    assert not sentinel.exists() and not (consult_world.ws / "blocked.txt").exists()
+    assert outside.read_text() == "PRIVATE-OUTSIDE-CANARY"
+    assert result.receipt["denied_operations"] == expected
+    permissions = [e["payload"]["id"] for e in events
+                   if e["type"] == "permission_ask" and e["payload"].get("approved") is False]
+    denied_reads = [e["payload"]["tool_call_id"] for e in events
+                    if e["type"] == "tool_result"
+                    and e["payload"].get("permission_denied") is True]
+    assert set(permissions) == {c.id for c in calls if c.name in {"write_file", "bash"}}
+    assert set(denied_reads) == {c.id for c in calls if c.id in {"escape", "repeat", "relative"}}
+    ordinary = [e["payload"] for e in events if e["type"] == "tool_result"
+                and e["payload"].get("tool_call_id") == "missing"]
+    if ordinary:
+        assert ordinary[0]["is_error"] is True and not ordinary[0].get("permission_denied")

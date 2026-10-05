@@ -1321,7 +1321,10 @@ Implement the design's contracts in this order:
 - Question/brief/answer limits are finite. Envelope-breakout payloads remain
   labelled data; no test asserts semantic prompt-injection immunity.
 - Receipts contain identities/digests/evidence references, not question/answer
-  text. Consultation never sets task verification to passed.
+  text. Native denied-operation counts consume structured permission refusals
+  and file-access denial results, including repeated/sequential/parallel attempts;
+  an ordinary missing file with “denied” in its name contributes zero.
+  Consultation never sets task verification to passed.
 
 ### G.3 MCP consult tool for ACP askers
 
