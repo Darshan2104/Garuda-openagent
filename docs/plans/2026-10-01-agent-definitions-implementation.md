@@ -349,8 +349,8 @@ not claimed. Redaction is best-effort, with rejected content absent from logs.
 instructions on ACP roles; teams G.1 for `tools.mcp` on ACP roles.
 
 - Teams `roles.<name>.agent` for native roles.
-  Hold the resolved immutable AgentSpec on the native plan for execution and
-  consult narrowing. Named/inherited/instruction-file changes after admission
+  Hold the resolved immutable AgentSpec on the native plan for CLI execution,
+  sequential/parallel native flow activation and consult narrowing. Named/inherited/instruction-file changes after admission
   cannot replace its source; conflicting explicit agent files refuse before
   activation. Keep source bodies out of serialized role records.
 - The ACP subset table from the design; other sections refuse with
