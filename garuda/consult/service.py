@@ -6,7 +6,7 @@ labelled data. It is not a connection to a live session: it cannot steer, stop, 
 or control anyone.
 
 Order, each step before the next and all of it inside one wall-clock deadline that runs from
-admission through cleanup:
+admission through preparation and child work (bounded reap grace follows expiration):
 
 1. **Authorize and bound** — the asker is an authenticated session of this root task (never
    itself a consult); the target is granted to the asker's role *in the user's file* (a
@@ -21,8 +21,8 @@ admission through cleanup:
    into an independent repository (own Git metadata); the asker then continues independently.
 5. **Launch** the child: a native read-only profile (file and search tools only) or the
    Docker-confined external runtime — an external child never runs on the host.
-6. **Enforce** the deadline; on timeout or cancellation the child is closed and reaped
-   *before* anything is released (a child that cannot be reaped is quarantined and keeps its
+6. **Enforce** the deadline; on timeout or cancellation asynchronous work is cancelled and reaped
+   *before* anything is released (work that cannot be reaped is quarantined and keeps its
    slot).
 7. **Validate** that the snapshot did not change, **persist** the text-free receipt and
    result, and only then release capacity and remove the scratch snapshot.
@@ -212,12 +212,13 @@ class ConsultService:
             try:
                 paused = held.quiesce()
                 if inspect.isawaitable(paused):
-                    await paused
+                    await self._wait_task(asyncio.ensure_future(paused), deadline, held)
             except ConsultRefused:
                 raise
             except Exception as exc:
                 raise ConsultRefused("consult.snapshot_unstable",
                                      "workspace quiescence failed; no snapshot was captured") from exc
+        self._check_deadline(deadline)
         scratch = Path(self.store.root) / ".consult" / req.root_session / "scratch" / child_id
         held.scratch = scratch
         snapshot = self._snapshot(req.workspace, scratch / "snapshot")
@@ -233,6 +234,7 @@ class ConsultService:
             asker_session=req.asker_session, root_session=req.root_session,
             request_id=request_id, store=self.store, source_workspace=req.workspace)
         # 5-6. dispatch is recorded first; from here a failure counts
+        self._check_deadline(deadline)
         state.mark_dispatched(request_id)
         held.dispatched = True
         outcome = await self._launch(child, deadline, held)
@@ -307,9 +309,21 @@ class ConsultService:
                     else "consult.snapshot_unsupported")
             raise ConsultRefused(code, str(exc)) from exc
 
+    def _check_deadline(self, deadline: float) -> None:
+        if self._clock() >= deadline:
+            raise ConsultRefused("consult.timeout", f"no answer within {self.limits.timeout_sec}s")
+
     async def _launch(self, child: ChildRequest, deadline: float, held: _Held) -> ChildOutcome:
         runner = self._runner or default_runner
-        task = asyncio.ensure_future(runner(child))
+        try:
+            return await self._wait_task(asyncio.ensure_future(runner(child)), deadline, held)
+        except ConsultRefused:
+            raise
+        except Exception as exc:  # the child crashed: it is no longer running, and it counted
+            raise ConsultRefused("consult.failed",
+                                 f"the consulted role failed ({type(exc).__name__})") from exc
+
+    async def _wait_task(self, task: asyncio.Future, deadline: float, held: _Held):
         held.task = task
         remaining = max(0.0, deadline - self._clock())
         try:
@@ -321,14 +335,9 @@ class ConsultService:
         except asyncio.CancelledError:
             await self._reap(task, held)
             raise
-        except ConsultRefused:
-            raise
-        except Exception as exc:  # the child crashed: it is no longer running, and it counted
-            raise ConsultRefused("consult.failed",
-                                 f"the consulted role failed ({type(exc).__name__})") from exc
 
     async def _reap(self, task: asyncio.Future, held: _Held) -> None:
-        """Close the child and wait for it to be gone; if it will not go, quarantine."""
+        """Cancel asynchronous work and confirm it stopped; otherwise quarantine."""
         task.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=REAP_GRACE)
@@ -336,7 +345,7 @@ class ConsultService:
             pass
         except asyncio.TimeoutError:
             held.quarantined = True
-        except Exception:  # the child failed while closing: it is no longer running
+        except Exception:  # the work failed while closing: it is no longer running
             pass
         if not task.done():
             held.quarantined = True
@@ -369,10 +378,10 @@ class ConsultService:
 
     async def _settle_failure(self, req, role, request_id, child_id, state, started, held,
                               exc: ConsultRefused) -> None:
-        """Record a failure and release what was held - unless a child may still run."""
+        """Record a failure and release what was held - unless consult work may still run."""
         if held.quarantined:
             state.quarantine(request_id, {"outcome": "refused", "code": "consult.quarantined",
-                                          "message": "the child could not be confirmed stopped; "
+                                          "message": "the consult work could not be confirmed stopped; "
                                                      "its slot is held until an operator clears it"})
             return  # capacity and scratch stay held
         if held.dispatched:

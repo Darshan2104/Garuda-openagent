@@ -1294,6 +1294,10 @@ Implement the design's contracts in this order:
    Ordinary synchronous/asynchronous quiescence failures become the existing
    snapshot-unstable refusal before dispatch; refund that admission and release
    its capacity slot. Preserve typed refusals and cancellation.
+   Supervise asynchronous quiescence with the existing deadline/reap grace;
+   retain admission and capacity if it cannot be confirmed stopped. Check
+   expiration before capture and again before dispatch; synchronous trusted
+   preparation has phase checks rather than physical interruption.
    Create an independent repository with no shared Git metadata/alternates.
 5. Launch the dedicated native scoped read-tools profile, or the C.8a confined
    external runtime. Disable shell, custom hooks/tools, network, approvals,

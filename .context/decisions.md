@@ -1437,3 +1437,15 @@ Actual CLI cases and observed model factory requests own the regression proof.
   prompt provenance stays unknown, inspection excludes source bodies, and
   permission guardrails are not physical confinement. No new authority or
   runtime capability is introduced by this completion record.
+
+
+## 2026-10-06 — Consult quiescence shares deadline supervision (#291)
+
+Async quiescence and child futures use the same deadline, cancellation and
+bounded reap-grace owner. Known stopped predispatch timeouts refund admission
+and release capacity; callbacks resisting cancellation retain the active
+request and slot in quarantine even before child dispatch. Expiration checks
+before capture and dispatch refuse further work after synchronous preparation
+consumes the budget. These checks do not physically interrupt synchronous
+Python/preflight, and reap grace is additional bounded cleanup time. Existing
+typed quiescence errors and child crash/publication owners stay unchanged.
