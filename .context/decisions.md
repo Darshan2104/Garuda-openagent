@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-10-05 — Dispatch-ready queue bindings name their FIFO scope (#216)
+
+- A fully bound queued session must use the scope formed from its declared user
+  and harness. A different label cannot create a second FIFO lane for the same
+  user/harness pair. Enqueue checks before storage initialization; ticket creation
+  checks again before selection, so preexisting mismatched waiting records cannot
+  bypass the admission check. Refusal preserves the source and does not reserve
+  capacity or infer replacement bindings.
+- Incomplete low-level allocations remain nonactivatable; this check does not
+  invent missing session/configuration evidence. The default user remains the
+  local uid, and `scope_for()` constructs its corresponding scope. Synthetic
+  user scopes must supply their matching user explicitly.
+
 ## 2026-10-05 — Journal queue selection separately from activation (#216)
 
 - Queue version 3 records intent before protected shared-capacity reservation

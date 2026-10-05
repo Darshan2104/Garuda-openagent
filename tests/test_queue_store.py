@@ -400,12 +400,12 @@ def test_workspace_requeue_cannot_release_a_replacement_claim(tmp_path, raises):
     capacity = CapacityStore(tmp_path / "capacity")
     previous = _store(tmp_path, capacity=capacity, ceiling=lambda _: 1)
     replacement = _store(tmp_path, capacity=capacity, ceiling=lambda _: 1)
-    previous.enqueue("u:native", "x", session_id="session-a", config_digest="aaa")
+    previous.enqueue("u:native", "x", user="u", session_id="session-a", config_digest="aaa")
     replacement_bytes = []
 
     def unavailable():
         assert previous.release("u:native", "x")
-        replacement.enqueue("u:native", "x", session_id="session-a", config_digest="aaa")
+        replacement.enqueue("u:native", "x", user="u", session_id="session-a", config_digest="aaa")
         assert replacement.try_claim("u:native", "x")
         replacement_bytes.append((tmp_path / "q" / "state.json").read_bytes())
         if raises:
@@ -430,7 +430,7 @@ def test_enqueue_retry_preserves_the_existing_binding_and_fifo(tmp_path, claimed
     store = _store(tmp_path)
     binding = dict(user="u", harness="native", session_id="session-a", config_digest="aaa")
     store.enqueue("u:native", "same", **binding)
-    store.enqueue("u:native", "next", session_id="session-next", config_digest="next")
+    store.enqueue("u:native", "next", user="u", session_id="session-next", config_digest="next")
     if claimed:
         assert store.try_claim("u:native", "same")
     path = tmp_path / "q" / "state.json"
@@ -491,7 +491,7 @@ def test_concurrent_enqueue_retries_admit_only_one_binding(tmp_path, conflicting
 
 def test_enqueue_refuses_preexisting_duplicates_without_repairing_them(tmp_path):
     store = _store(tmp_path)
-    store.enqueue("u:native", "same", session_id="session-a", config_digest="aaa")
+    store.enqueue("u:native", "same", user="u", session_id="session-a", config_digest="aaa")
     path = tmp_path / "q" / "state.json"
     state = json.loads(path.read_bytes())
     state["scopes"]["u:native"]["waiting"].append(
@@ -500,7 +500,7 @@ def test_enqueue_refuses_preexisting_duplicates_without_repairing_them(tmp_path)
     before = path.read_bytes()
 
     with pytest.raises(CorruptState, match="duplicate binding"):
-        store.enqueue("u:native", "same", session_id="session-a", config_digest="aaa")
+        store.enqueue("u:native", "same", user="u", session_id="session-a", config_digest="aaa")
 
     assert path.read_bytes() == before
 
@@ -712,7 +712,7 @@ def test_empty_legacy_migration_survives_process_death_and_exact_retry(tmp_path,
             if boundary == 'replace':
                 os._exit(73)
         os.fsync, os.replace = interrupted_sync, interrupted_replace
-        QueueStore(sys.argv[1]).enqueue('u:native', 'new', session_id='session', config_digest='cfg')
+        QueueStore(sys.argv[1]).enqueue('u:native', 'new', user='u', session_id='session', config_digest='cfg')
     """, str(root), boundary)
     stdout, stderr = worker.communicate(timeout=30)
     assert worker.returncode == 73, (stdout, stderr)
@@ -725,7 +725,7 @@ def test_empty_legacy_migration_survives_process_death_and_exact_retry(tmp_path,
         assert json.loads(source.read_bytes())["version"] == 3
 
     store = _store(tmp_path)
-    store.enqueue("u:native", "new", session_id="session", config_digest="cfg")
+    store.enqueue("u:native", "new", user="u", session_id="session", config_digest="cfg")
     (entry,) = store.entries()
     assert (entry["id"], entry["seq"], entry["session_id"], entry["config_digest"]) == (
         "new", 1, "session", "cfg")
@@ -855,7 +855,7 @@ def test_the_run_a_claim_starts_reserves_the_same_slot_not_a_second_one(tmp_path
     ceilings(claude=1)
     capacity = CapacityStore()
     store = _store(tmp_path)
-    store.enqueue("u:claude", "sess", harness="claude", session_id="sess", config_digest="frozen-cfg")
+    store.enqueue("u:claude", "sess", user="u", harness="claude", session_id="sess", config_digest="frozen-cfg")
     assert store.try_claim("u:claude", "sess")
     # What the run guard does at the start of the run it was claimed for: same holder,
     # no owner given. It must find the claim's reservation, not collide with it.

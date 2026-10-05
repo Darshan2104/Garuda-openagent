@@ -346,6 +346,15 @@ when the item id, scope, user, harness, session and configuration digest match
 exactly. This also applies after the entry is claimed. A conflicting retry
 refuses instead of replacing admitted work or adding a duplicate.
 
+A dispatch-ready entry uses exactly `<user>:<harness>` for its declared user
+and harness. Changing only the scope label cannot bypass an older entry in
+that lane. Enqueue rejects mismatches before touching storage, and selection
+also checks preexisting records. The default user is the local uid; use
+`scope_for(harness)` for that scope, or provide the matching user explicitly
+when using a synthetic user scope. A mismatched historical entry stays intact
+for diagnosis and is not rebound automatically. Incomplete allocations still
+cannot activate without frozen session/configuration bindings.
+
 Queue heartbeat and release accept an explicit owner matching the complete
 claim record. Without an explicit owner, they use only the owner retained by
 the instance that successfully claimed the item in the current process.

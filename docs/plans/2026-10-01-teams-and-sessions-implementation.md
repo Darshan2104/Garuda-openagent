@@ -886,6 +886,12 @@ binding across waiting entries and claims, and preserve durable FIFO sequence.
 Conflicting retries refuse before writing. Cover exact and conflicting retries
 from real subprocess contenders and leave preexisting duplicate records intact.
 
+Enforce user/harness scope consistency for dispatch-ready admissions at both
+enqueue and ticket creation. Exercise a fully bound second job that tries to
+jump an older job's lane with a different scope label, and a preexisting record
+that bypasses enqueue. Refuse before intent/capacity publication without
+rewriting its bindings or manufacturing missing dispatch evidence.
+
 Check complete owner identity on heartbeat, release and workspace requeue.
 Implicit calls must use this instance's retained successful claim in the
 claiming process, never owner data read from the store. Test unowned and stale
