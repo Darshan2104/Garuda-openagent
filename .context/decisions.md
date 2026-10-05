@@ -1411,3 +1411,15 @@ Actual CLI cases and observed model factory requests own the regression proof.
 - Typed refusals and cancellation keep their existing paths. This is not a
   generic exception cleanup over dispatch, receipt publication or unknown
   child liveness; those retain their fail-closed owners.
+
+
+### Native flow activation consumes the admitted AgentSpec (#289)
+
+- Native sequential and parallel flow steps consume the same immutable bound
+  AgentSpec as CLI and consult execution through `role_agent.native_spec`.
+  They do not reload the profile name from a live workspace or review snapshot.
+- Actual native flow/model/record evidence exposed this missed consumer after
+  the earlier bridge audit. #172 and #141 were reopened while it was repaired;
+  completion documentation remains gated on the corrected flow acceptance.
+- Existing model/effort, lease, readonly/no-edits, tool and completion owners
+  remain unchanged. Source bodies stay out of role/execution identity records.

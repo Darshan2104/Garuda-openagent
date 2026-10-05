@@ -685,6 +685,12 @@ without measurement evidence remain unknown. Full #173 acceptance requires its
 fixture, HTTP privacy and live-Chrome audit.
 The dashboard does not edit definitions.
 
+Native flow steps consume the admitted immutable AgentSpec through the same
+shared source-selection helper as CLI and consult execution. Sequential
+workspace execution and parallel snapshot execution retain the bound definition
+even when its named source changes after admission. Existing model, lease,
+readonly/no-edits and completion owners still control activation.
+
 ## Diagnostics
 
 Codes join the teams diagnostic registry (C.4): `agent.unknown_field`,

@@ -344,3 +344,102 @@ async def test_resuming_after_a_failed_step_runs_a_new_attempt(repo):
     assert attempts == [("plan", 1, "done"), ("build", 1, "stopped"), ("build", 2, "done")]
     sessions = {r["session_id"] for r in resumed.receipts}
     assert len(sessions) == 3  # every attempt is its own session
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("change_source", [False, True])
+async def test_native_flow_executes_its_admitted_agent_source(repo, monkeypatch,
+                                                            parallel, change_source):
+    import hashlib
+
+    import garuda.model.factory as factory
+    from garuda.agents import role_agent
+    from garuda.flows.launch import launch_step
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.types import ToolCall
+
+    captures = []
+
+    class Capture(ScriptModel):
+        def __init__(self):
+            super().__init__([
+                ModelResponse(content=None, tool_calls=[ToolCall(id="blocked", name="write_file",
+                    arguments={"path": "must-not-write.txt", "content": "blocked"})]),
+                ModelResponse(content=None, tool_calls=[ToolCall(id="done", name="task_complete",
+                    arguments={"summary": "A complete bounded review of the fixture source."})]),
+            ])
+            self.observed = []
+
+        def observe(self, messages):
+            text = next(m.content for m in messages if m.role.value == "system")
+            self.observed.append({"sha256": hashlib.sha256(text.encode()).hexdigest(),
+                                  "chars": len(text), "a": "FLOW-PRIVATE-SOURCE-A" in text,
+                                  "b": "FLOW-PRIVATE-SOURCE-B" in text})
+
+        async def complete(self, messages, *args, **kwargs):
+            self.observe(messages)
+            return await super().complete(messages, *args, **kwargs)
+
+        async def stream(self, messages, *args, **kwargs):
+            self.observe(messages)
+            async for item in super().stream(messages, *args, **kwargs):
+                yield item
+
+    def build(*args, **kwargs):
+        model = Capture()
+        captures.append(model)
+        return model
+
+    monkeypatch.setitem(factory._registry, "litellm", build)
+    roles = ["first", "second"] if parallel else ["first"]
+    definitions = repo / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    source = ("version: 1\ninstructions: {mode: replace, text: FLOW-PRIVATE-SOURCE-A}\n"
+              "memory: {user: false, project: [], context_pack: false}\n"
+              "tools: {preset: none, add: [write_file, task_complete]}\n")
+    for role in roles:
+        (definitions / f"{role}.yaml").write_text(source)
+    admitted = {}
+    bind = role_agent.bind
+
+    def change_after_binding(plan, *args, **kwargs):
+        bound = bind(plan, *args, **kwargs)
+        admitted[bound.role] = bound.agent_digest
+        if change_source:
+            (definitions / f"{bound.role}.yaml").write_text(
+                source.replace("FLOW-PRIVATE-SOURCE-A", "FLOW-PRIVATE-SOURCE-B"))
+        return bound
+
+    monkeypatch.setattr(role_agent, "bind", change_after_binding)
+    step = ({"id": "review", "parallel": roles} if parallel else
+            {"id": "review", "role": "first"})
+    config = {"version": 1, "roles": {r: {"harness": "native", "agent": r,
+              "model_id": f"fixture/{r}", "write_policy": "no-edits"} for r in roles},
+              "flows": {"one": {"steps": [step]}}}
+    result = await _runner(repo, launch_step, flow="one", config=config).run()
+    assert result.completed, result.stopped
+    receipt, = result.receipts
+    members = receipt["members"] if parallel else [receipt]
+    assert len(members) == len(roles)
+    for member in members:
+        role = member["role"]
+        meta = SessionStore().load_meta(member["session_id"])
+        events = [json.loads(line) for line in SessionStore().events_path(
+            member["session_id"]).read_text().splitlines()]
+        prompt, = [e["payload"] for e in events if e["type"] == "system_prompt"]
+        assert meta["role"]["agent"]["digest"] == admitted[role]
+        if not parallel:
+            assert member["role_plan"]["agent"]["digest"] == admitted[role]
+        assert meta["role"]["name"] == role
+        assert prompt["agent_segment"]["digest"] == admitted[role]
+        assert any(e["type"] == "permission_ask" and e["payload"].get("id") == "blocked"
+                   and e["payload"].get("approved") is False for e in events)
+        assert not (Path(meta["workspace"]) / "must-not-write.txt").exists()
+        observed = [o for m in captures for o in m.observed if o["sha256"] == prompt["digest"]]
+        assert observed and all(o["a"] and not o["b"] and o["chars"] == prompt["chars"]
+                                for o in observed)
+        identity = json.dumps([meta["role"], member.get("role_plan"), prompt])
+        assert "FLOW-PRIVATE-SOURCE-A" not in identity and "FLOW-PRIVATE-SOURCE-B" not in identity
+    assert not (repo / "must-not-write.txt").exists()
+    assert LeaseStore().holders_of(repo) == []

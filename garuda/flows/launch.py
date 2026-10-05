@@ -36,6 +36,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
 
 
 async def _native(launch: StepLaunch) -> StepResult:
+    from garuda.agents import role_agent
     from garuda.agents.setup import prepare_agent_run
     from garuda.core.events import EventStore
     from garuda.interfaces.runner import run_agent_task
@@ -43,7 +44,7 @@ async def _native(launch: StepLaunch) -> StepResult:
     plan = launch.role_plan
     permissions = "readonly" if launch.no_edits else (plan.permissions if plan else None)
     prepared = await prepare_agent_run(
-        (plan.profile if plan and plan.profile else "build"),
+        (role_agent.native_spec(plan, launch.workspace) if plan and plan.profile else "build"),
         workspace=launch.workspace,
         model=plan.model_id if plan else None,
         permission_mode=permissions,

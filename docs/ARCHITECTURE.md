@@ -76,6 +76,10 @@ fastest way to learn the system.
    separate model context, read-only toolkit, sibling trace, and
    `submit_collection` terminal strategy; that terminal can never complete the
    parent run.
+   Native sequential and parallel flow activation consumes the role’s admitted
+   immutable AgentSpec through the shared role source selector, retaining source
+   identity across named definition changes and snapshot workspace execution.
+   Existing flow lease, no-edits, model and completion owners remain in control.
    Native consult quiescence normalizes ordinary synchronous/asynchronous
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,
