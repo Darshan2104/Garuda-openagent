@@ -180,6 +180,9 @@ Click a problem to see the fix.
       is still in progress; consults run one at a time per asker.
     - `consult.capacity_unavailable`: the target's harness is at its
       `max_parallel`; consults never wait for a slot.
+    - Ordinary synchronous/asynchronous quiescence errors also return
+      `consult.snapshot_unstable` before capture, refunding the unlaunched
+      admission and its capacity slot without exposing the raw error body.
     - `consult.snapshot_unsupported`, `consult.snapshot_unstable`: the workspace
       is not a git checkout Garuda can snapshot, or it changed (or background
       processes ran) while the snapshot was taken. Retry when it is quiet.

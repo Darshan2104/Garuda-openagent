@@ -209,9 +209,15 @@ class ConsultService:
                 raise ConsultRefused("consult.capacity_unavailable", str(exc)) from exc
         # 4. quiesce, snapshot
         if held.quiesce is not None:
-            paused = held.quiesce()
-            if inspect.isawaitable(paused):
-                await paused
+            try:
+                paused = held.quiesce()
+                if inspect.isawaitable(paused):
+                    await paused
+            except ConsultRefused:
+                raise
+            except Exception as exc:
+                raise ConsultRefused("consult.snapshot_unstable",
+                                     "workspace quiescence failed; no snapshot was captured") from exc
         scratch = Path(self.store.root) / ".consult" / req.root_session / "scratch" / child_id
         held.scratch = scratch
         snapshot = self._snapshot(req.workspace, scratch / "snapshot")

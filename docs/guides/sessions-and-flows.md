@@ -92,6 +92,11 @@ or as a role it consulted.
 
 ## Consults
 
+If workspace quiescence fails before capture, Garuda refuses with
+`consult.snapshot_unstable` and returns that unlaunched request’s admission and
+capacity slot. A later request can proceed; this does not release a child whose
+liveness is unknown.
+
 Native denied-operation counts come from recorded permission refusals and
 file-access denial results. Ordinary file errors do not count as denials, even
 when their messages contain “denied”. Each repeated denied file access is

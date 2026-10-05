@@ -76,6 +76,10 @@ fastest way to learn the system.
    separate model context, read-only toolkit, sibling trace, and
    `submit_collection` terminal strategy; that terminal can never complete the
    parent run.
+   Native consult quiescence normalizes ordinary synchronous/asynchronous
+   failures to a typed snapshot refusal before capture; existing predispatch
+   settlement refunds admission and releases that reservation. Typed refusals,
+   cancellation and unknown-live-child retention keep their existing owners.
    Native consult receipts count structured permission refusals and explicit
    file-access denial results, not error prose. Tool results persist only the
    denial boolean from metadata, and denied file accesses bypass memo storage
