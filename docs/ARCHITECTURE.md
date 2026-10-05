@@ -84,6 +84,10 @@ fastest way to learn the system.
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,
    cancellation and unknown-live-child retention keep their existing owners.
+   Asynchronous quiescence shares child deadline/cancellation supervision and
+   bounded reap grace. Expiration refuses capture and dispatch; a callback that
+   cannot be confirmed stopped retains admission and capacity in quarantine.
+   Synchronous preparation is checked between phases, not physically interrupted.
    Native consult receipts count structured permission refusals and explicit
    file-access denial results, not error prose. Tool results persist only the
    denial boolean from metadata, and denied file accesses bypass memo storage

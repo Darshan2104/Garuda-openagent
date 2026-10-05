@@ -270,6 +270,111 @@ async def test_a_background_process_or_unstable_tree_blocks_the_snapshot(world, 
     assert CapacityStore().holders("native") == []
 
 
+@pytest.mark.parametrize("stubborn", [False, True], ids=["cooperative", "stubborn"])
+async def test_quiescence_timeout_stops_or_retains_the_actual_work(world, monkeypatch, stubborn):
+    from garuda.runtime.capacity import CapacityStore
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("capacity: {native: 1}\n")
+    monkeypatch.setattr(svc, "REAP_GRACE", 0.2)
+    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
+    runner = Recorder()
+    stop, entered, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    callback_tasks = []
+    marker = world.tmp / "quiescence-marker"
+
+    async def quiesce():
+        callback_tasks.append(asyncio.current_task())
+        entered.set()
+        ticks = 0
+        try:
+            while not stop.is_set():
+                ticks += 1
+                marker.write_text(str(ticks))
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    if not stubborn:
+                        raise
+        finally:
+            exited.set()
+
+    consult = asyncio.create_task(ConsultService(world.store, resolved, runner=runner).consult(
+        request(world, request_id="quiescence-timeout"), quiesce=quiesce))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        done, _ = await asyncio.wait({consult}, timeout=1.8)
+        assert consult in done, "quiescence exceeded the deadline and reap grace"
+        with pytest.raises(ConsultRefused) as caught:
+            await consult
+        assert caught.value.code == "consult.timeout"
+        assert runner.calls == []
+        assert not (Path(world.store.root) / ".consult" / world.asker / "scratch").exists()
+        state = ConsultState(world.store, world.asker).snapshot()
+        if stubborn:
+            assert not exited.is_set() and not callback_tasks[0].done()
+            before = int(marker.read_text())
+            await asyncio.sleep(0.05)
+            assert int(marker.read_text()) > before  # work is still physically advancing
+            assert state["active"] == "quiescence-timeout" and state["count"] == 1
+            assert state["requests"]["quiescence-timeout"]["state"] == "quarantined"
+            assert len(CapacityStore().holders("native")) == 1
+            with pytest.raises(ConsultRefused) as busy:
+                await service(world, runner).consult(request(world, request_id="more"))
+            assert busy.value.code == "consult.busy" and runner.calls == []
+        else:
+            assert exited.is_set() and callback_tasks[0].done()
+            assert state["active"] is None and state["count"] == 0 and state["requests"] == {}
+            assert CapacityStore().holders("native") == []
+            assert (await service(world, runner).consult(request(world, request_id="more"))).outcome \
+                == "answered"
+    finally:
+        stop.set()  # stop only this test's callback, even on the unfixed baseline
+        if not consult.done():
+            consult.cancel()
+        await asyncio.gather(consult, *callback_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("phase", ["quiescence", "snapshot"])
+async def test_expired_preparation_never_captures_or_dispatches_more_work(world, monkeypatch, phase):
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.workspace import snapshot_proto as snap
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("capacity: {native: 1}\n")
+    now = [100.0]
+    captures = []
+    original = snap.detached_repository
+
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)  # the actual detached repository, never a fake receipt
+        captures.append(result)
+        if phase == "snapshot":
+            now[0] += 2
+        return result
+
+    def quiesce():
+        if phase == "quiescence":
+            now[0] += 2
+
+    monkeypatch.setattr(snap, "detached_repository", capture)
+    runner = Recorder()
+    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
+    with pytest.raises(ConsultRefused) as caught:
+        await ConsultService(world.store, resolved, runner=runner, clock=lambda: now[0]).consult(
+            request(world, request_id="expired-preparation"), quiesce=quiesce)
+    assert caught.value.code == "consult.timeout"
+    assert len(captures) == (1 if phase == "snapshot" else 0)
+    assert runner.calls == []
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 0 and state["requests"] == {}
+    assert CapacityStore().holders("native") == []
+    scratch = Path(world.store.root) / ".consult" / world.asker / "scratch"
+    assert not scratch.exists() or not any(scratch.iterdir())
+
+
 async def test_a_full_harness_refuses_at_once_and_gives_the_reservation_back(world):
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
     settings.parent.mkdir(parents=True, exist_ok=True)

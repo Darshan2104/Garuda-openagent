@@ -925,8 +925,8 @@ normal permissions, never less restricted.
 - Capacity uses the same store as all foreground/background runtimes. A consult
   does not wait for a slot its parent or flow holds; no slot means
   `consult.capacity_unavailable` immediately, before dispatch.
-- `timeout_sec` is a wall-clock deadline from admission through cleanup, not
-  just prompt execution. Native children also have finite turn/output-token
+- `timeout_sec` is the wall-clock budget from admission through preparation
+  and child work; bounded reap grace may follow expiration. Native children also have finite turn/output-token
   caps. Answer clipping bounds returned text, not generation cost. ACP token
   budgets are enforced only when exercised adapter support exists; otherwise
   request count and runtime deadline are the available bounds and preflight
@@ -946,6 +946,13 @@ Ordinary synchronous or asynchronous quiescence failures refuse with
 predispatch settlement refunds the admission and releases its capacity slot;
 typed refusals and cancellation retain their existing handling. This phase
 does not settle unknown child liveness or bypass receipt-publication gates.
+
+Asynchronous quiescence uses the same supervised deadline and reap grace as
+the child. Expiration before capture or dispatch refuses further work. A
+callback that resists cancellation retains its active request and capacity in
+quarantine, even when no child was launched. Synchronous trusted preparation
+is checked between phases; this does not physically interrupt synchronous
+Python or preflight.
 
 ### Receipts and accounting
 
