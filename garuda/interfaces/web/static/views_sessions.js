@@ -448,7 +448,11 @@ function setupAgentsHtml(agents) {
   var rows = agents.map(function (a) {
     if (a.error) {
       return '<tr class="agent-row" data-agent="' + esc(a.qualified || a.name) + '"><td>' + esc(a.qualified || a.name) +
-        '</td><td colspan="5"><span class="pill failed">cannot resolve</span> ' + esc(a.error) + "</td></tr>";
+        '</td><td colspan="5"><span class="pill failed">cannot resolve</span> ' +
+        '<code class="agent-diagnostic">' + esc(a.error_code || "agent.invalid_value") + '</code> ' + esc(a.error) +
+        ((a.unsupported || []).length ? '<ul class="agent-unsupported">' + a.unsupported.map(function (f) {
+          return '<li><code>' + esc(f.path) + '</code> <span class="stat-sub">(' + esc(f.source) + ')</span></li>';
+        }).join("") + '</ul>' : '') + "</td></tr>";
     }
     var sections = (a.sections || []).map(function (s) {
       return esc(s.section) + " " + esc(fmt.tokens(s.bytes)) + " bytes / " + esc(fmt.tokens(s.chars)) +

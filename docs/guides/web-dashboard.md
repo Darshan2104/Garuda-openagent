@@ -220,6 +220,10 @@ Uploaded or fetched content is still untrusted input. It can't grant itself
 tool authority, but its contents can reach the selected model when the agent
 reads it.
 
+Recognized unsupported agent fields appear in Setup as structural names with
+resolved provenance and a safe diagnostic code. Their values and source bodies
+remain local; unsupported definitions have no synthesized static prompt digest.
+
 ## Runtimes board
 
 The Runtimes board at `#/runtimes` works with the trusted runtime catalog and

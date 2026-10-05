@@ -102,6 +102,10 @@ fastest way to learn the system.
 | Change eval behavior | `eval/harbor_adapter.py` — note it pins `mode="eval"` on purpose |
 | Wire something for every entry point | `agents/setup.py` |
 
+Setup resolves unsupported definitions for structural field names/provenance
+only. It serves fixed diagnostic codes/messages and omits values and prompt
+measurements; unsupported definitions are never activated for inspection.
+
 ACP role projection reads structural instruction replacement intent from the
 shared agent resolver. Explicit/inherited replacement refuses before launch,
 regardless of text equality with the native base. Native assembly stays unchanged;

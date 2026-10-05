@@ -1352,3 +1352,13 @@ ACP refuses with agent.field_unsupported before launch/session creation. Native
 prompt assembly and existing source-chain digest material remain unchanged.
 Only appended instructions are projected as labelled task context. Actual CLI
 refusal cases and child wire captures own the regression proof.
+
+
+### Structural unsupported-field diagnostics in Setup (#278, child of #173)
+
+After resolving a definition, Setup enumerates only registry-known unsupported
+field names with existing provenance labels. It serves the fixed source-free
+agent.unsupported_field diagnostic, not field values or detailed exceptions.
+Unsupported definitions are not activated or assigned invented prompt digests.
+The renderer escapes names/provenance/code. Actual HTTP and Chrome fixtures own
+direct/inherited and private-body regression checks; local diagnostics stay detailed.

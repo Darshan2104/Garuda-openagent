@@ -207,8 +207,16 @@ def dashboard_rows(workspace) -> list[dict]:
             continue
         try:
             dirs = _dirs(workspace)
-            info = show_agent(resolve.resolve_agent(listed["qualified"], dirs), workspace)
             agent = resolve.resolve_agent(listed["qualified"], dirs)
+            unsupported = [{"path": path, "source": _label(agent, agent.provenance.get(path))}
+                           for path in sorted(agent.leaves)
+                           if path in spec.FIELDS and not spec.FIELDS[path].supported]
+            if unsupported:
+                row.update(dashboard_problem(code="agent.unsupported_field"),
+                           unsupported=unsupported)
+                rows.append(row)
+                continue
+            info = show_agent(agent, workspace)
             sections = prompt_agent(agent, workspace)
         except Exception as exc:  # one broken definition does not hide the rest
             row.update(dashboard_problem(code=getattr(exc, "code", None)))
