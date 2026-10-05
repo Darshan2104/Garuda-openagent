@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-10-05 — Background admissions resolve canonical runtime capacity (#216)
+
+- Background launch resolves an explicit runtime reference through the existing
+  shared trusted runtime catalog before creating a session, queue record or
+  worker. The queue uses the canonical runtime id and its user/harness lane;
+  launch arguments retain the original reference for downstream capability
+  resolution instead of being rewritten to the canonical id. This resolution runs no discovery probes.
+- Before worker identity publication or selection, the worker checks that its
+  current reference resolves to the admitted lane, its session matches, and
+  serialized launch arguments and the launch receipt match the queued digest.
+  Retargeted aliases and changed argument/receipt records refuse without
+  rewriting the admission or reserving capacity. Removed admissions start no
+  work. This receipt covers serialized arguments; freezing every resolved
+  configuration file and proving descendant cleanup remain separate work.
+
 ## 2026-10-05 — Dispatch-ready queue bindings name their FIFO scope (#216)
 
 - A fully bound queued session must use the scope formed from its declared user

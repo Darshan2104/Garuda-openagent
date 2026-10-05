@@ -123,6 +123,11 @@ fastest way to learn the system.
   and harness. Enqueue and ticket creation both enforce this, so a scope alias
   cannot create another FIFO lane for the same pair. Preexisting mismatches
   refuse selection without rebinding or reserving capacity.
+  Background admission resolves runtime aliases through the shared trusted
+  catalog and queues under the canonical runtime id, retaining the original
+  launch reference for downstream capability resolution. A worker verifies the lane,
+  session and serialized launch digest before publishing identity or selecting
+  work; alias retargeting or changed launch arguments refuse without rebinding.
 - **Queue mutations require claimant authority.** Heartbeat, release and
   workspace requeue compare the complete persisted process identity and epoch.
   Implicit mutations use only the claiming instance's retained owner in the

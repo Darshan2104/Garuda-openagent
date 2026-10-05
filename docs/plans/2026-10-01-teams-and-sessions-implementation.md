@@ -933,6 +933,14 @@ record and clock-skew cases.
 
 ### D.2 Detached workers and lifecycle
 
+`--bg` resolves the runtime reference through the shared trusted catalog before
+session or queue creation, using the canonical capacity key and retaining the
+original alias reference for downstream capability resolution. Before worker identity publication or
+selection, match its resolved lane/session and serialized argument receipt to
+the admitted queue record. Refuse retargeted aliases and changed argument/receipt
+records without rewriting them; an absent admission starts no work. This receipt
+covers arguments, not every referenced configuration file or cleanup evidence.
+
 `--bg` creates the session and queue entry, then re-executes a hidden worker with
 an explicit session id. The worker either claims capacity or waits without a
 workspace lease. Record PID/start-time/command identity before it can mutate.

@@ -7,19 +7,21 @@ session id. Nothing else about the run happens in the caller.
 
 The **worker** (``garuda __worker SESSION``):
 
-1. records its pid, process start identity and command identity — before it
-   claims anything or can change the workspace;
+1. verifies the canonical lane, session and serialized launch receipt against
+   its queued admission, then records its pid, process start identity and command
+   identity — before it claims anything or can change the workspace;
 2. waits for its turn in the queue **without holding a workspace lease** (so a
    waiting worker never blocks the workspace it will use), polling with bounded
    backoff, and noticing a queued cancellation;
 3. claims capacity (the queue takes the slot from the shared capacity store),
    marks the session working, and runs the ordinary ``garuda run`` path with the
    preassigned session id;
-4. on every way out — completion, failure, cancellation, an exception — releases
-   its queue claim (and with it the capacity slot), stops its heartbeat and leaves
-   the session in a terminal state. A worker killed outright cannot do that;
-   its claim is reclaimed on proof of death and the session reads ``crashed``
-   (derived, never stored).
+4. on ordinary owner-controlled exits releases its queue claim and capacity
+   slot, stops its heartbeat and leaves the session in a terminal state. A worker
+   killed outright cannot do that. Confirmed-dead pre-activation work can reconcile;
+   activated or ambiguous dispatch stays quarantined, and a dead session reads
+   ``crashed`` (derived, never stored). Full supervision and descendant cleanup
+   receipts remain separate D.2 requirements.
 
 **Cancellation.** A queued session is removed from the queue and marked cancelled.
 A running one is sent SIGTERM through its process group — but only after its
@@ -123,7 +125,14 @@ def _write_private(path: Path, data: dict) -> None:
 
 
 def harness_of(args) -> str:
-    return getattr(args, "runtime", None) or "native"
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return prepare_runtime_catalog(args.workspace).registry.get(
+            getattr(args, "runtime", None) or "native").runtime_id
+    except RegistryError as exc:
+        raise BackgroundRefused(f"background runtime refused: {exc}") from exc
 
 
 def scope_of(args) -> str:
@@ -138,7 +147,7 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
 
     from garuda.core.sessions import SessionStore
     from garuda.runtime import session_state
-    from garuda.runtime.queue import QueueStore
+    from garuda.runtime.queue import QueueStore, scope_for
 
     task = args.task
     if getattr(args, "file", None):
@@ -148,6 +157,7 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
     for flag in ("resume", "trajectory"):
         if getattr(args, flag, None):
             raise BackgroundRefused(f"--bg does not combine with --{flag.replace('_', '-')}")
+    harness = harness_of(args)
     store = store or SessionStore()
     queue = queue or QueueStore()
     description = _jsonable(args)
@@ -163,8 +173,8 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
                                              "config_digest": digest})
     store.update_meta(session_id, {"status": "queued", "state": session_state.queued(),
                                    "background": True, "config_digest": digest})
-    scope = scope_of(args)
-    queue.enqueue(scope, session_id, harness=harness_of(args), session_id=session_id,
+    scope = scope_for(harness)
+    queue.enqueue(scope, session_id, harness=harness, session_id=session_id,
                   config_digest=digest)
     try:
         process = (spawn or _spawn_worker)(session_id)
@@ -246,7 +256,14 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
     args.bg = False
     args._session_id = session_id
     args._queue_claim = True
+    admission = next((entry for entry in queue.entries() if entry["id"] == session_id), None)
+    if admission is None:
+        return 0  # A queued cancellation removed the admission before this worker started.
     scope = scope_of(args)
+    if (admission["scope"] != scope or admission.get("session_id") != session_id
+            or admission.get("config_digest") != _digest(document["args"])
+            or document.get("config_digest") != admission.get("config_digest")):
+        raise BackgroundRefused("background launch disagrees with its frozen queue admission")
     owner = current_owner()
 
     # 1. Identity first: before the queue, a lease, or any change to the workspace.

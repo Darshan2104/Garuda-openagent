@@ -598,6 +598,16 @@ records; selection refuses before intent or capacity publication and preserves
 the source. Missing session/configuration evidence is never inferred to make
 an incomplete allocation dispatch-ready.
 
+Background admission resolves the launch reference through the shared trusted
+runtime catalog before storage or spawn, using the canonical runtime id for
+capacity and scope while retaining the original reference for downstream
+capability resolution.
+Workers compare the resolved lane and session with the queued admission and
+verify the serialized launch arguments and receipt against its digest before
+identity publication or selection. Alias retargeting and changed argument/receipt
+records refuse without rebinding. This argument receipt does not freeze all
+referenced configuration files or prove runtime descendant cleanup.
+
 Queue mutations match the complete owner (pid, process start identity, process
 group and epoch). An omitted owner on heartbeat or release uses only a successful
 claim retained by that instance in the claiming process; opening another store

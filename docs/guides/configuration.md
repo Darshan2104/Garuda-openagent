@@ -355,6 +355,14 @@ when using a synthetic user scope. A mismatched historical entry stays intact
 for diagnosis and is not rebound automatically. Incomplete allocations still
 cannot activate without frozen session/configuration bindings.
 
+A background runtime alias shares its target's capacity and FIFO lane. Its
+original reference stays in the launch arguments for downstream capability
+resolution. If the alias is retargeted while waiting, or launch
+arguments or their digest receipt disagree with the queued admission, the
+worker refuses before selection. The admission remains available for diagnosis;
+Garuda does not silently rebind it. The receipt covers serialized arguments,
+not a snapshot of every referenced configuration file.
+
 Queue heartbeat and release accept an explicit owner matching the complete
 claim record. Without an explicit owner, they use only the owner retained by
 the instance that successfully claimed the item in the current process.
