@@ -80,3 +80,34 @@ def test_setup_agent_diagnostics_never_serve_private_source(
         assert row["error"] and row["error_code"] in REGISTRY
     if failure != "setup":
         assert rows["fine"]["prompt_digest"] and not rows["fine"].get("error")
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+def test_setup_lists_unsupported_structural_fields_without_private_values(
+        tmp_path, private_workspace, inherited):
+    workspace = private_workspace / "workspace"
+    directory = workspace / ".agent" / "agents"
+    directory.mkdir(parents=True)
+    (directory / "fine.yaml").write_text("version: 1\ninstructions: {text: fine}\n")
+    (directory / "parent.yaml").write_text(
+        "version: 1\nhooks: {before_tool: " + CANARY + "}\n"
+        "instructions: {text: " + CANARY + "}\n")
+    name = "child" if inherited else "parent"
+    if inherited:
+        (directory / "child.yaml").write_text(
+            "version: 1\nextends: parent\nhooks: {after_tool: " + CANARY + "}\n")
+    ctx = DashboardContext(port=8787, token="test-token", store=SessionStore(tmp_path / "sessions"),
+                           workspace=workspace)
+    response = dispatch(Request(method="GET", path="/api/setup", query={},
+                                headers={"host": "127.0.0.1:8787", TOKEN_HEADER: "test-token"}), ctx)
+    assert response.status == 200 and CANARY not in response.body.decode()
+    rows = {row["name"]: row for row in json.loads(response.body)["agents"]}
+    row = rows[name]
+    expected = [{"path": "hooks.before_tool", "source": "project"}]
+    if inherited:
+        expected = [{"path": "hooks.after_tool", "source": "project"},
+                    {"path": "hooks.before_tool", "source": "extends:project/parent"}]
+    assert row["unsupported"] == expected
+    assert row["error_code"] == "agent.unsupported_field" and row["error"]
+    assert "prompt_digest" not in row and "digest" not in row
+    assert rows["fine"]["prompt_digest"] and not rows["fine"].get("error")

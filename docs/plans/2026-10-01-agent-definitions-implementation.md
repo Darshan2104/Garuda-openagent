@@ -377,6 +377,11 @@ native agent source digest becomes part of the execution identity.
 
 ### H.11 Dashboard
 
+Unsupported definitions show registry-known field names with resolved provenance
+and safe diagnostic codes, without values, activation or invented prompt digests.
+Actual secured HTTP and live Chrome fixtures cover direct/inherited fields and
+private source canaries alongside valid neighboring definitions.
+
 **Dependencies:** H.2, teams F.1 and F.4.
 
 Setup view lists agents with source, resolved fields, prompt digest and section

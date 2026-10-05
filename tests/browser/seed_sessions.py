@@ -283,6 +283,11 @@ def seed_observability(root: Path, workspace: str) -> dict:
         "version: 1\nextends: garuda/explore\ndescription: Checks twice\n"
         "limits: {max_turns: 12}\ninstructions: {mode: replace, text: SEED-INSTRUCTION-MARKER check twice. 🦅 café.}\n")
     (agents / "broken.yaml").write_text("version: 1\nlimits: {max_turns: lots}\n")
+    (agents / "hook-parent.yaml").write_text(
+        "version: 1\nhooks: {before_tool: SEED-UNSUPPORTED-BODY}\n"
+        "instructions: {text: SEED-UNSUPPORTED-INSTRUCTION}\n")
+    (agents / "hook-child.yaml").write_text(
+        "version: 1\nextends: hook-parent\nhooks: {after_tool: SEED-UNSUPPORTED-BODY}\n")
     careful = AgentSpec.load("careful", workspace)
     store.update_meta(OBS["native"], {"agent": "careful", "agent_digest": careful.digest})
     native_events = EventStore(OBS["native"], persist_path=store.events_path(OBS["native"]))

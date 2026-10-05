@@ -579,6 +579,11 @@ Freeze each run's inputs, not process-global mutable configuration; changing a
 definition during chat/resume creates a new identified segment or refuses,
 never silently changes the existing run.
 
+Setup lists registry-known unsupported field names and their resolved
+provenance next to source-free diagnostics. Unsupported values, raw source
+errors and prompt bodies remain local. It does not activate unsupported
+definitions or synthesize a static prompt digest for them.
+
 ## External harnesses
 
 Claude Code and Codex are separate harnesses with their own instructions,

@@ -179,6 +179,17 @@ with sync_playwright() as p:
     check("an agent that cannot resolve is shown with its problem",
           "cannot resolve" in page.locator('tr.agent-row[data-agent="project/broken"]').inner_text())
     check("no instruction text on the page", "SEED-INSTRUCTION-MARKER" not in page.locator("body").inner_text())
+    unsupported = page.locator('tr.agent-row[data-agent="project/hook-child"]')
+    details = unsupported.inner_text()
+    check("unsupported fields show direct and inherited provenance",
+          "hooks.after_tool" in details and "project" in details
+          and "hooks.before_tool" in details and "extends:project/hook-parent" in details, details)
+    check("unsupported fields show the safe diagnostic code",
+          unsupported.locator("code.agent-diagnostic").count() == 1
+          and unsupported.locator("code.agent-diagnostic").inner_text() == "agent.unsupported_field")
+    check("unsupported field values and instructions stay off the page",
+          "SEED-UNSUPPORTED-BODY" not in page.locator("body").inner_text()
+          and "SEED-UNSUPPORTED-INSTRUCTION" not in page.locator("body").inner_text())
     page.screenshot(path=str(SHOTS / "obs-agents.png"))
     browser.close()
 
