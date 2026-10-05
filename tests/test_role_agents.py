@@ -200,7 +200,8 @@ def test_an_agent_with_a_required_contract_refuses_consult_admission(ws, body, f
     assert caught.value.code == "consult.target_unavailable" and field in caught.value.message
 
 
-async def test_the_real_child_cannot_use_a_tool_its_agent_grants(world, monkeypatch):
+@pytest.mark.parametrize("change_source", [False, True])
+async def test_the_real_child_cannot_use_a_tool_its_agent_grants(world, monkeypatch, change_source):
     agent(world.ws, "greedy", "instructions: {text: Review like a security auditor.}\n"
                               "tools: {preset: all}\npermissions: {mode: yolo}\n")
     sentinel = world.tmp / "bash-ran"
@@ -216,10 +217,14 @@ async def test_the_real_child_cannot_use_a_tool_its_agent_grants(world, monkeypa
         **DOC["roles"]["reviewer"], "agent": "greedy"}}})
     result = await ConsultService(world.store, resolved).consult(ConsultRequest(
         asker_session=world.asker, root_session=world.asker, target="reviewer",
-        question="Is this safe?", workspace=str(world.ws), request_id="agent-1"))
+        question="Is this safe?", workspace=str(world.ws), request_id="agent-1"),
+        quiesce=(lambda: agent(world.ws, "greedy", "instructions: {text: CHANGED-CONSULT-VOICE}\n"
+                                                  "tools: {preset: all}\npermissions: {mode: yolo}\n"))
+                if change_source else None)
     assert result.outcome == "answered", result.tool_text()
     assert not sentinel.exists() and not (world.ws / "x.txt").exists()
     messages, tools = model.seen[0]
     assert "bash" not in tools and "write_file" not in tools and "read_file" in tools
-    assert any("security auditor" in str(m) for m in messages)       # the agent's instructions
+    assert any("security auditor" in str(m) for m in messages)       # the admitted agent's instructions
+    assert all("CHANGED-CONSULT-VOICE" not in str(m) for m in messages)
     assert result.receipt["identity"]["model_id"] == "m2"            # the role's exact model

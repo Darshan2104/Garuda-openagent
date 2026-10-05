@@ -584,6 +584,13 @@ provenance next to source-free diagnostics. Unsupported values, raw source
 errors and prompt bodies remain local. It does not activate unsupported
 definitions or synthesize a static prompt digest for them.
 
+Native role binding holds its existing immutable AgentSpec until execution.
+The CLI and consulted native child consume that snapshot, including inherited
+and instruction-file text; source changes after binding do not replace it.
+An explicit agent file must agree with the bound definition digest or refuse
+`config.conflict` before activation. The held spec is runtime-only and absent
+from role records/repr; native consulted children still narrow to consult tools.
+
 ## External harnesses
 
 Claude Code and Codex are separate harnesses with their own instructions,

@@ -112,7 +112,7 @@ def bind(plan: RolePlan | None, workspace: str, agents_dir=None) -> RolePlan | N
     digest = hashlib.sha256((plan.digest + ":" + agent.digest).encode()).hexdigest()
     if plan.kind == "native":
         _check_effort(plan, resolved.leaves.get("model.effort"))
-        return replace(plan, agent_digest=agent.digest, digest=digest)
+        return replace(plan, agent_digest=agent.digest, digest=digest, agent_spec=agent)
     problems = acp_unsupported(resolved)
     if problems:
         shown = "; ".join(f"{field} ({why})" for field, why in problems[:8])
@@ -121,9 +121,24 @@ def bind(plan: RolePlan | None, workspace: str, agents_dir=None) -> RolePlan | N
                        f"{plan.profile!r}: {shown}")
     effort = _check_effort(plan, resolved.leaves.get("model.effort"))
     mode = resolved.leaves.get("permissions.mode")
-    return replace(plan, agent_digest=agent.digest, digest=digest, effort=effort,
+    return replace(plan, agent_digest=agent.digest, digest=digest, effort=effort, agent_spec=None,
                    permissions=_stricter(plan.permissions, mode),
                    instructions=own_instructions(resolved)[0])
+
+
+def native_spec(plan: RolePlan, workspace: str, agents_dir=None, *, agent_file=None):
+    """Consume the native source bound at admission, checking explicit file agreement."""
+    from garuda.agents.spec_api import AgentSpec
+
+    agent = plan.agent_spec
+    if agent is None or agent.digest != plan.agent_digest:
+        raise _refused("config.conflict", f"role {plan.role}: native agent source is not bound")
+    if agent_file is not None:
+        selected = AgentSpec.from_file(agent_file, workspace, agents_dir)
+        if selected.digest != agent.digest:
+            raise _refused("config.conflict",
+                           f"role {plan.role}: --agent-file disagrees with agent {plan.profile!r}")
+    return agent
 
 
 def with_instructions(plan: RolePlan | None, task: str) -> str:
@@ -145,7 +160,7 @@ def consult_spec(name: str, workspace: str, agents_dir=None):
     from garuda.agents.spec_api import AgentSpec
     from garuda.consult.errors import ConsultRefused
 
-    agent = AgentSpec.load(name, workspace, agents_dir)
+    agent = name if isinstance(name, AgentSpec) else AgentSpec.load(name, workspace, agents_dir)
     resolved = agent.resolved()
     required = [p for p in ("completion.verifier", "completion.acceptance_contract")
                 if resolved.leaves.get(p) is True]
@@ -154,7 +169,7 @@ def consult_spec(name: str, workspace: str, agents_dir=None):
     if required:
         raise ConsultRefused(
             "consult.target_unavailable",
-            f"agent {name!r} requires {', '.join(required)}, which a read-only question-and-answer "
+            f"agent {agent.name!r} requires {', '.join(required)}, which a read-only question-and-answer "
             "child cannot satisfy")
     profile = AgentSpec.load("garuda/consult", workspace, agents_dir).resolved()
     allowed = set(profile.tools or [])

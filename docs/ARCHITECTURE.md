@@ -106,6 +106,11 @@ Setup resolves unsupported definitions for structural field names/provenance
 only. It serves fixed diagnostic codes/messages and omits values and prompt
 measurements; unsupported definitions are never activated for inspection.
 
+Native role binding retains the immutable AgentSpec it resolved after fallback.
+Shared role selection returns that snapshot to CLI execution and consult
+narrowing; conflicting explicit agent files refuse before activation. The spec
+is runtime-only, excluded from role records/repr. Consult tool ceilings remain.
+
 ACP role projection reads structural instruction replacement intent from the
 shared agent resolver. Explicit/inherited replacement refuses before launch,
 regardless of text equality with the native base. Native assembly stays unchanged;

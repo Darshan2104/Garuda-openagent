@@ -428,7 +428,8 @@ async def native_child(child: ChildRequest) -> ChildOutcome:
     if plan.profile:  # the role's agent: its model, instructions, memory and skills (H.10)
         from garuda.agents import role_agent
 
-        agent = role_agent.consult_spec(plan.profile, child.source_workspace)
+        agent = role_agent.consult_spec(
+            role_agent.native_spec(plan, child.source_workspace), child.source_workspace)
     prepared = await prepare_agent_run(
         agent, workspace=child.workspace, model=plan.model_id,
         permission_mode="readonly", reasoning_effort=plan.effort, no_collection=True,
