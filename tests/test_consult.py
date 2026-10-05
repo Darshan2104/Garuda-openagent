@@ -213,26 +213,61 @@ async def test_the_child_sees_the_snapshot_while_the_caller_carries_on(world):
     assert (world.ws / "notes.txt").read_text().startswith("changed by")
 
 
-async def test_a_background_process_or_unstable_tree_blocks_the_snapshot(world, monkeypatch):
+@pytest.mark.parametrize("failure", ["typed", "sync-io", "async-io", "cancelled"])
+async def test_a_background_process_or_unstable_tree_blocks_the_snapshot(world, monkeypatch,
+                                                                        failure):
+    from garuda.runtime.capacity import CapacityStore
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("capacity: {native: 1}\n")
     runner = Recorder()
+    error_text = "QUIESCENCE-PRIVATE-ERROR"
+
+    async def not_quiet_async():
+        if failure == "cancelled":
+            raise asyncio.CancelledError()
+        raise OSError(error_text)
 
     def not_quiet():
+        if failure in {"async-io", "cancelled"}:
+            return not_quiet_async()
+        if failure == "sync-io":
+            raise OSError(error_text)
         raise ConsultRefused("consult.snapshot_unstable", "a background process may still write")
 
-    with pytest.raises(ConsultRefused) as caught:
-        await service(world, runner).consult(request(world), quiesce=not_quiet)
-    assert caught.value.code == "consult.snapshot_unstable" and runner.calls == []
+    expected = asyncio.CancelledError if failure == "cancelled" else ConsultRefused
+    with pytest.raises(expected) as caught:
+        await service(world, runner).consult(request(world, request_id="quiesce-failed"),
+                                              quiesce=not_quiet)
+    if failure != "cancelled":
+        assert caught.value.code == "consult.snapshot_unstable"
+        assert error_text not in str(caught.value)
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 0 and not state["requests"]
+    assert CapacityStore().holders("native") == []
+    assert runner.calls == []
+    assert not (Path(world.store.root) / ".consult" / world.asker / "scratch").exists()
 
     from garuda.workspace import snapshot_proto as snap
 
     def changing(*args, **kwargs):
         raise snap.SnapshotRefused("snapshot.changed", "the work tree changed while captured")
 
-    monkeypatch.setattr(snap, "detached_repository", changing)
-    with pytest.raises(ConsultRefused) as caught:
-        await service(world, runner).consult(request(world, request_id="again"))
+    with monkeypatch.context() as patch:
+        patch.setattr(snap, "detached_repository", changing)
+        with pytest.raises(ConsultRefused) as caught:
+            await service(world, runner).consult(request(world, request_id="again"))
     assert caught.value.code == "consult.snapshot_unstable" and runner.calls == []
-    assert ConsultState(world.store, world.asker).snapshot()["count"] == 0  # both refunded
+    assert ConsultState(world.store, world.asker).snapshot()["count"] == 0
+    assert CapacityStore().holders("native") == []
+    # The same live owner can make a new request with the single slot.
+    result = await service(world, runner).consult(request(world, request_id="follow-up"))
+    assert result.outcome == "answered" and len(runner.calls) == 1
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 1
+    assert state["requests"]["follow-up"]["state"] == "done"
+    assert CapacityStore().holders("native") == []
 
 
 async def test_a_full_harness_refuses_at_once_and_gives_the_reservation_back(world):

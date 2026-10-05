@@ -941,6 +941,12 @@ normal permissions, never less restricted.
   allowed only when dispatch provably never occurred. This is at-most-once
   dispatch, not a promise of exactly-once model completion.
 
+Ordinary synchronous or asynchronous quiescence failures refuse with
+`consult.snapshot_unstable` before capture or dispatch. The existing
+predispatch settlement refunds the admission and releases its capacity slot;
+typed refusals and cancellation retain their existing handling. This phase
+does not settle unknown child liveness or bypass receipt-publication gates.
+
 ### Receipts and accounting
 
 A `ConsultReceipt` records request/asker/root/child ids, source turn, role and

@@ -1291,6 +1291,9 @@ Implement the design's contracts in this order:
 3. Resolve the exact trusted target/fallback, isolation and shared capacity.
    Refuse unavailable capacity immediately, without waiting on the parent.
 4. Quiesce native workspace operations and capture the bounded stable snapshot.
+   Ordinary synchronous/asynchronous quiescence failures become the existing
+   snapshot-unstable refusal before dispatch; refund that admission and release
+   its capacity slot. Preserve typed refusals and cancellation.
    Create an independent repository with no shared Git metadata/alternates.
 5. Launch the dedicated native scoped read-tools profile, or the C.8a confined
    external runtime. Disable shell, custom hooks/tools, network, approvals,

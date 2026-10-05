@@ -1399,3 +1399,15 @@ Actual CLI cases and observed model factory requests own the regression proof.
   therefore are counted once. Ordinary missing-file errors contribute zero.
 - This is receipt evidence, not a new policy or isolation boundary; existing
   receipts are not rewritten or reinterpreted. ACP retains its existing owner.
+
+
+### Quiescence errors settle only the known predispatch consult (#286)
+
+- Shared ConsultService maps ordinary synchronous/asynchronous quiescence
+  failures to the existing source-free `consult.snapshot_unstable` refusal,
+  preserving the original exception as a local cause.
+- Existing predispatch settlement refunds admission and releases only that
+  reservation. No snapshot or child is launched after failed quiescence.
+- Typed refusals and cancellation keep their existing paths. This is not a
+  generic exception cleanup over dispatch, receipt publication or unknown
+  child liveness; those retain their fail-closed owners.
