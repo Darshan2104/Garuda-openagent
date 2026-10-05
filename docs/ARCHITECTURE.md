@@ -137,7 +137,7 @@ fastest way to learn the system.
   effective roles before admission and preserves default roles explicitly in
   launch arguments. Workers recheck the effective garuda.yaml digest before
   selection; background dynamic role fallback refuses until its runtime
-  decision can be persisted. Referenced agent/MCP files and later concurrent
+  decision can be persisted. Referenced runtime/agent/MCP files and later concurrent
   configuration changes are outside this check. A worker verifies the lane,
   session and serialized launch digest before publishing identity or selecting
   work; alias retargeting or changed launch arguments refuse without rebinding.

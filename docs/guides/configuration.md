@@ -357,10 +357,11 @@ cannot activate without frozen session/configuration bindings.
 
 Background runs resolve their effective `garuda.yaml` role before joining the
 queue. A default role keeps its permissions, model and profile when the worker
-starts; its original harness reference preserves runtime-alias restrictions.
+starts; its original harness reference remains available for downstream
+capability resolution.
 Workers recheck the effective `garuda.yaml` configuration before selecting
 work. A changed role runtime or model refuses. This check does not snapshot
-referenced agent/MCP files or prevent later concurrent configuration edits.
+referenced runtime/agent/MCP files or prevent later concurrent configuration edits.
 Roles with a dynamic `fallback` chain refuse in background mode until the
 chosen runtime can be persisted; use a role without fallback or run it in the
 foreground. Admission performs no probes or model calls.

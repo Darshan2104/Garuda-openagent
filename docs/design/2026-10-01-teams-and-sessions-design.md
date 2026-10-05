@@ -643,7 +643,7 @@ Background admission resolves effective `garuda.yaml` roles through shared
 agent setup before creating launch state, retaining the selected role and
 original harness reference. The worker compares the effective configuration
 digest before selection. Dynamic role fallback refuses until a persisted
-selection decision is available. Referenced agent/MCP files and later concurrent
+selection decision is available. Referenced runtime/agent/MCP files and later concurrent
 configuration edits remain outside this pre-selection check.
 
 The implemented queue journal orders durable publications across separate files;

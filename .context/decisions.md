@@ -5,12 +5,12 @@
 - Shared agent setup resolves effective garuda.yaml roles and trusted runtime
   references before background session/queue/worker creation. A default role
   becomes an explicit role in the private launch arguments together with its
-  original harness reference, preserving role permissions and alias narrowing.
+  original harness reference, preserving role permissions and the alias for downstream capability resolution.
 - Admission hashes the serialized launch arguments and effective garuda.yaml
   configuration; workers recompute the binding before identity publication or
   selection. Role runtime/model changes refuse without changing queue bytes.
   This is a pre-selection configuration check, not a snapshot of all referenced
-  agent/MCP files or protection against later concurrent configuration edits.
+  runtime/agent/MCP files or protection against later concurrent configuration edits.
 - Dynamic role fallback is refused for background admission until its selected
   runtime decision can be persisted and reused. No probes or model calls occur
   during this static preparation; foreground fallback behavior is unchanged.
