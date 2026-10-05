@@ -58,10 +58,16 @@ carries its model and purpose badge. The panel also lists the runtime lanes, the
 this one resumed from or was continued by, the sessions it tagged, and those that tagged it.
 `GET /api/sessions/<id>/conversation` serves the same data. Names and tasks are escaped.
 
-**Agent.** A run's page also says which agent definition the session ran under (its digest,
-and a note when the definition changed on resume) and the digests of the system prompts it
-actually sent, with their lengths: the prompt digest changes when runtime blocks such as the
-environment snapshot do, so it can differ from the static one in Setup.
+**Agent.** A run's page shows the current session definition and separate native
+execution rows. Each row carries the compiled agent name and definition digest
+captured when that execution started, plus the system-message digests and character
+counts actually sent by it. Identical prompts in different executions remain in
+both rows. Runtime blocks can change the actual prompt digest from the static one
+in Setup. Historical measurements without a valid execution binding are labelled
+**Unattributed historical prompts**; the current session definition does not supply
+their missing identity. The API returns at most 20 execution rows and five distinct
+prompt digests per row, with total counts. ACP outbound attribution remains open
+under #173; native execution rows are separate from runtime handoff segments.
 
 **Consults.** When the session asked other roles questions, a **Consults** panel lists each as
 a lane under it: who asked whom, the identity that ran, its admission, outcome (`answered`,

@@ -118,15 +118,33 @@ def _row(work_type, harness, model, selected) -> dict:
             "cost_usd": 0.0, "cost_unknown": 0, "snapshots": 0}
 
 
-def agent_info(store, session_id: str, meta: dict) -> dict:
-    """Which agent definition ran, and the system prompt digests it actually sent.
+def _prompt_digest(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value))
 
-    The definition digest and name come from the session record; the prompt digests are the
-    ``system_prompt`` events a run appends when the outbound system message changes. Only
-    digests and lengths are kept, never text."""
+
+def _distinct_prompts(prompts: list[dict]) -> list[dict]:
+    """Newest measurements first; deduplication is scoped by the caller."""
+    seen, distinct = set(), []
+    for prompt in reversed(prompts):
+        if prompt["digest"] not in seen:
+            seen.add(prompt["digest"])
+            distinct.append(prompt)
+    return distinct[:5]
+
+
+def agent_info(store, session_id: str, meta: dict) -> dict:
+    """Recorded native execution bindings and actual outbound measurements.
+
+    Historical records without bindings remain explicitly unattributed. Current
+    session metadata describes the session, never a historical prompt's owner.
+    Compatibility aggregate fields still cover the complete session.
+    """
     import json
 
     prompts: list[dict] = []
+    unattributed: list[dict] = []
+    segments: dict[tuple, dict] = {}
     try:
         with store.events_path(session_id).open(encoding="utf-8") as handle:
             for line in handle:
@@ -137,19 +155,38 @@ def agent_info(store, session_id: str, meta: dict) -> dict:
                 except ValueError:
                     continue
                 payload = event.get("payload") or {}
-                if event.get("type") == "system_prompt" and payload.get("digest"):
-                    prompts.append({"digest": payload["digest"], "chars": payload.get("chars")})
+                if event.get("type") != "system_prompt" or not payload.get("digest"):
+                    continue
+                prompt = {"digest": payload["digest"], "chars": payload.get("chars")}
+                prompts.append(prompt)
+                binding = payload.get("agent_segment")
+                if (not isinstance(binding, dict) or not isinstance(binding.get("id"), str)
+                        or not binding["id"] or binding.get("runtime") != "native"
+                        or binding.get("kind") != "native_execution"
+                        or not isinstance(binding.get("name"), str) or not binding["name"]
+                        or (binding.get("digest") is not None
+                            and not _prompt_digest(binding["digest"]))):
+                    unattributed.append(prompt)
+                    continue
+                key = (binding["id"], binding["name"], binding.get("digest"))
+                segment = segments.setdefault(key, {
+                    "id": binding["id"], "name": binding["name"], "digest": binding.get("digest"),
+                    "runtime": "native", "kind": "native_execution", "prompts": [],
+                })
+                segment["prompts"].append(prompt)
     except OSError:
         pass
-    seen, distinct = set(), []
-    for prompt in reversed(prompts):  # newest first, each once
-        if prompt["digest"] not in seen:
-            seen.add(prompt["digest"])
-            distinct.append(prompt)
+    recorded = []
+    for segment in reversed(list(segments.values())):
+        recorded.append({**segment, "prompt_changes": len(segment["prompts"]),
+                         "prompts": _distinct_prompts(segment["prompts"])})
     role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
     return {"name": meta.get("agent"), "digest": meta.get("agent_digest"),
             "role_agent": role.get("agent"), "segment": meta.get("agent_segment"),
-            "prompts": distinct[:5], "prompt_changes": len(prompts)}
+            "prompts": _distinct_prompts(prompts), "prompt_changes": len(prompts),
+            "segments": recorded[:20], "segment_count": len(recorded),
+            "unattributed": _distinct_prompts(unattributed),
+            "unattributed_changes": len(unattributed)}
 
 
 def consult_rows(store, session_id: str, meta: dict) -> list[dict]:

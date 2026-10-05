@@ -1295,3 +1295,18 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   cannot resolve is listed with its problem.
 - A qualified agent name (`garuda/build`, `project/x`) is a name, not a path, in
   `garuda agent show|prompt`; only an existing file or a definition extension selects a file.
+
+## 2026-10-05 — Native prompt measurements bind to their sending execution (#270)
+
+- Shared agent compilation carries the compiled name and definition digest into
+  runtime configuration. Native run preparation snapshots those fields with a
+  fresh execution id; each actual outbound system-message measurement records
+  that binding, including inner runs without session-start events. Only hashes
+  and character counts are recorded, never prompt text.
+- Conversation grouping uses these recorded identities, preserving identical
+  prompt hashes across executions. Missing or invalid historical bindings remain
+  unattributed rather than inheriting current session metadata. The API bounds
+  output to 20 execution rows and five distinct prompt digests per row, retaining
+  total counts and compatibility aggregate fields.
+- Native execution ids are separate from runtime handoff segments. External ACP
+  outbound attribution and full #173 acceptance remain open.

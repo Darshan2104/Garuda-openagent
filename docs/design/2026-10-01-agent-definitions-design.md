@@ -653,7 +653,10 @@ earlier PR just because a future field exists in the schema.
 
 The dashboard setup view (teams F.4) lists agents with source, resolved fields,
 prompt digest and section sizes, and the conversation view shows which agent and
-prompt digest each session used. The dashboard does not edit definitions.
+prompt digests each native execution used. Recorded execution bindings preserve compiled
+agent identities across session metadata changes and inner runs; historical unbound
+measurements remain unattributed. ACP outbound attribution remains open under #173.
+The dashboard does not edit definitions.
 
 ## Diagnostics
 

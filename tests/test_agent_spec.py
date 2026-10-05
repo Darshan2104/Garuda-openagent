@@ -41,7 +41,7 @@ def _main(monkeypatch, capsys, *argv):
 
 
 def _config(show):
-    return {k: v for k, v in show["config"].items() if k != "agent_digest"}
+    return {k: v for k, v in show["config"].items() if k not in ("agent_digest", "agent_name")}
 
 
 # --- one definition, every entry point -------------------------------------------------
@@ -63,6 +63,8 @@ def test_every_route_shows_and_prompts_identically(ws, monkeypatch, capsys):
                       "--workspace", str(ws))
     cli_file = json.loads(out)
 
+    assert by_name["config"]["agent_name"] == "careful"
+    assert inline["config"]["agent_name"] == "inline"
     assert cli == json.loads(json.dumps(by_name, default=str))
     assert by_name["digest"] == by_spec["digest"] == by_path["digest"] == cli_file["digest"]
     for other in (by_spec, by_path, inline, cli_file):

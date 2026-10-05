@@ -99,10 +99,19 @@ def test_a_conversation_shows_the_agent_and_the_system_prompts_it_actually_sent(
     events.append(EventType.SESSION_START, {"task": "t"})
     for digest, chars in (("1" * 64, 900), ("2" * 64, 950), ("1" * 64, 900)):
         events.append(EventType.SYSTEM_PROMPT, {"digest": digest, "chars": chars, "kind": "actual"})
+    events.append(EventType.SYSTEM_PROMPT, {
+        "digest": "1" * 64, "chars": 900, "kind": "actual",
+        "agent_segment": {"id": "incomplete-legacy-binding", "name": "older",
+                          "digest": "PRIVATE-SOURCE-CANARY", "runtime": "native",
+                          "kind": "native_execution"},
+    })
     info = conversation.agent_info(store, sid, store.load_meta(sid))
     assert info["name"] == "careful" and info["digest"] == "a" * 64
     assert [p["digest"][:1] for p in info["prompts"]] == ["1", "2"]       # newest first, once each
-    assert info["prompt_changes"] == 3 and info["segment"]["previous_digest"] == "b" * 64
+    assert info["prompt_changes"] == 4 and info["segment"]["previous_digest"] == "b" * 64
+    assert info["segments"] == [] and info["segment_count"] == 0
+    assert info["unattributed"] == info["prompts"] and info["unattributed_changes"] == 4
+    assert "PRIVATE-SOURCE-CANARY" not in json.dumps(info)
     assert conversation.conversation(store, sid)["agent"] == info
     quiet = "00000000-0000-0000-0000-0000000000e2"
     store.begin(quiet, task="t", model="m", agent="build", workspace=str(tmp_path))

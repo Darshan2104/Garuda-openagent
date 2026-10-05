@@ -58,8 +58,15 @@ with sync_playwright() as p:
     agent_line = page.locator("#agent-line").inner_text()
     check("the conversation names its agent and definition digest",
           "careful" in agent_line and len(page.locator("#agent-digest").inner_text()) == 12, agent_line)
-    check("it shows each system prompt actually sent, as digests", page.locator("code.prompt-digest").count() == 2
-          and "changed 1" in agent_line, agent_line)
+    check("it shows each bound and unattributed system prompt, as digests",
+          page.locator("code.prompt-digest").count() == 4 and "changed 1" in agent_line, agent_line)
+    executions = page.locator("#agent-line .agent-execution")
+    check("native executions retain their recorded agents",
+          executions.count() == 2 and set(executions.evaluate_all(
+              "rows => rows.map(row => row.dataset.agent)")) == {"careful", "earlier"}, agent_line)
+    check("historical unbound prompts are explicitly unattributed",
+          page.locator("#agent-line .agent-unattributed").count() == 1
+          and "Unattributed historical prompts" in agent_line, agent_line)
 
     # --- ACP, cumulative reports with a replay: two deltas, models not reported ---------------
     page.goto(f"{BASE}#/runs/{N['acp']}", wait_until="load")

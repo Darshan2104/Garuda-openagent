@@ -114,6 +114,12 @@ fastest way to learn the system.
   prompt-inspection failures to fixed messages and registry-validated codes.
   Legacy warnings also use source-free messages. Detailed errors/warnings remain
   available through authorized local agent inspection.
+- **Prompt attribution follows recorded executions.** Native run preparation
+  snapshots the compiled agent identity and a fresh execution id; the actual
+  outbound system-message measurement includes that binding. Dashboard grouping
+  uses recorded bindings, including inner runs, and leaves historical unbound
+  measurements unattributed. Current session metadata is not historical evidence.
+  These native execution ids do not replace runtime handoff segments.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact live-owner retries are idempotent. Ordinary
