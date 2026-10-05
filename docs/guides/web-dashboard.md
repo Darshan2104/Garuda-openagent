@@ -264,3 +264,9 @@ guidance.
 Run the opt-in real-browser checks in
 [Browser checks](../development/browser-checks.md) after changing dashboard
 behavior or presentation.
+
+
+After project-key recovery, usage groups historical ids through verified recovery
+aliases. Raw exports preserve each event's original opaque project id. An
+unfinished or unverifiable recovery refuses grouped reporting; finish the
+recovery through `garuda doctor --recover-project-ids` before viewing usage.

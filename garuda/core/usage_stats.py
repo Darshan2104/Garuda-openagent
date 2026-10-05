@@ -91,7 +91,8 @@ def _group(records: list[dict], key) -> dict:
     return out
 
 
-def stats(records, range_name: str, now: float) -> dict[str, Any]:
+def stats(records, range_name: str, now: float, *, project_aliases=None) -> dict[str, Any]:
+    project_aliases = project_aliases or {}
     start, end = window(range_name, now)
     rows = in_range(records, range_name, now)
     snapshots = [r for r in rows if r["kind"] == "acp_usage_snapshot"]
@@ -145,7 +146,8 @@ def stats(records, range_name: str, now: float) -> dict[str, Any]:
         # Original events grouped by who made them (run, subagent, flow, consult). The groups
         # partition the records, so they add up to ``measures`` with no parent rollups in them.
         "by_origin": table("origin", lambda r: r.get("origin") or "run"),
-        "by_project": table("project_id", lambda r: r.get("project_id") or "unknown"),
+        "by_project": table("project_id", lambda r: project_aliases.get(
+            r.get("project_id"), r.get("project_id")) or "unknown"),
         "median": {
             "tokens_per_native_call": statistics.median(tokens_per_call) if tokens_per_call else None,
             "native_call_duration_ms": statistics.median(durations) if durations else None,

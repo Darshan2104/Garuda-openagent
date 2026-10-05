@@ -467,7 +467,12 @@ identity digest.
   than mixing keys. Missing or replaced repositories stay explicitly unmapped;
   a path alone is not proof of identity. Ledger rows are never rewritten, and
   grouping resolves verified aliases without losing totals. A recovery receipt
-  records mapped, unmapped and conflicting ids; conflicts refuse publication.
+  records mapped, unmapped and conflicting ids; conflicts refuse publication. The
+  source-free `project-aliases.json` manifest is bound to the committed key epoch;
+  usage reporting consumes it through the shared identity reader. A retained
+  recovery journal, mismatched key, malformed schema or alias chain/cycle
+  refuses grouped reporting. Repeated epochs carry aliases only through newly
+  verified projects. Raw ledger/export ids and all arithmetic stay unchanged.
 - The user-facing project path is stored separately in local session metadata.
   Ledgers and aggregate exports contain only the opaque id, never a path,
   user-assigned project label, remote URL or the identity key.
@@ -1409,3 +1414,8 @@ metrics, ACP accounting to match independent source fixtures, and every limit
 value to carry a proved source or render `unknown`. Filesystem confinement claims
 require the live Docker gate; unavailable integrations leave those capabilities
 disabled rather than counting a fake test as proof.
+
+Pending recovery journals require an explicit epoch, key digest and alias map.
+The staged or published key must match before applying session changes.
+Historical unbound journals refuse mutation and remain available for operator
+inspection; no epoch or alias authority is inferred from a path or existing key.

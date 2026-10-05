@@ -1449,3 +1449,20 @@ before capture and dispatch refuse further work after synchronous preparation
 consumes the budget. These checks do not physically interrupt synchronous
 Python/preflight, and reap grace is additional bounded cleanup time. Existing
 typed quiescence errors and child crash/publication owners stay unchanged.
+
+
+## 2026-10-06 — Verified recovery aliases group project usage (#293)
+
+Project recovery owns one atomic source-free alias manifest bound to the
+committed private key epoch; the key and its digest never enter public reports.
+Readers hold the identity lock and refuse pending journals, mismatched keys or
+malformed/ambiguous aliases. Repeated epochs carry prior aliases only through
+projects verified by the current recovery plan. The public usage route uses
+that shared reader; pure arithmetic accepts the verified map only for project
+grouping. Ledger and raw export rows retain original ids, bytes and totals.
+No arbitrary previous_project_ids scan or path matching grants report identity.
+
+Pending recovery journals require an explicit epoch, key digest and alias map.
+The staged or published key must match before applying session changes.
+Historical unbound journals refuse mutation and remain available for operator
+inspection; no epoch or alias authority is inferred from a path or existing key.
