@@ -418,6 +418,12 @@ without writing. Renewal and explicit delegation reuse authority; legitimate
 release precedes new acquisition. Descendant cleanup receipts remain separate.
 
 
+Quarantine is sticky in the shared lease guard: stop renewal and retain
+workspace/capacity through later release/finalizer calls. A borrowed step
+quarantines its parent and retains its own reservation; parent quarantine also
+retains child slots on teardown after revocation. Normal reaped completion
+releases normally. This introduces no cleanup override or recovery receipt.
+
 ### Identity and project scope
 
 Session metadata adds `name`, opaque `project_id`, role, harness, exact

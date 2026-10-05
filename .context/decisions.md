@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-10-05 — Quarantine retains workspace and runtime capacity (#258)
+
+- `WorkspaceLeaseGuard.stop_heartbeat` latches quarantine before stopping
+  renewal. Quarantined workspace/capacity ownership survives later `release`
+  and finalizer calls; acquisition and delegation through that guard refuse.
+- A borrowed child's quarantine also latches the parent and retains the child's
+  reservation. Parent quarantine retains borrowed reservations when children
+  close, even after capability revocation and in either cleanup order.
+- Ordinary completion after reaping still releases normally. There is no guard
+  override without supervised cleanup receipts. Parent-death workspace expiry,
+  persistent descendant supervision and recovery admission remain #157/#167
+  work; this process-local lifecycle guardrail adds no OS confinement.
+
 ## 2026-10-05 — Workspace lease mutation needs the issuing owner (#256)
 
 - Acquisition proves the current creator's PID, start identity, process group
@@ -749,8 +762,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   leaves no record on any entry point.
 - A background process that cannot be proven dead quarantines the session:
   the workspace lease stays held (heartbeat stopped, so it is taken over only
-  once this process is confirmed dead), the capacity slot is returned, and
-  the session records the pids. Fail closed rather than let a second editor in
+  once this process is confirmed dead), the session records the pids. Capacity is retained under the later #258
+  decision; the original slot-return policy is superseded. Fail closed rather than let a second editor in
   beside a possible stray writer.
 
 ## 2026-10-02 — Session tags carry bounded briefs, never transcripts (issue #157, B.7)

@@ -56,6 +56,7 @@ class WorkspaceLeaseGuard:
         self._ttl = DEFAULT_TTL_SEC if ttl_sec is None else ttl_sec
         self._heartbeat: asyncio.Future | None = None
         self._held = False
+        self._quarantined = False
         self._epoch: str | None = None
         # The runtime/provider this launch draws capacity from (B.0). The
         # ceiling comes from the user's global settings unless passed in.
@@ -75,6 +76,8 @@ class WorkspaceLeaseGuard:
         workspace is held the slot is given back before the conflict
         propagates. `LeaseConflictError`/`LeaseError` never degrade to unlocked.
         """
+        if self._quarantined:
+            raise LeaseError("cannot acquire a quarantined guard")
         self._reserve_capacity()
         try:
             lease = self.leases.acquire(self.workspace, self.session_id, mode=self._mode)
@@ -148,8 +151,8 @@ class WorkspaceLeaseGuard:
 
     def delegate(self, session_id: str) -> LeaseCapability:
         """Lend this lease to one child step; revoke it when the step ends."""
-        if not self._held:
-            raise LeaseError("cannot delegate a lease that is not held")
+        if not self._held or self._quarantined:
+            raise LeaseError("cannot delegate a lease that is not held or is quarantined")
         return LeaseCapability(self, session_id, _issuer=_ISSUER)
 
     @staticmethod
@@ -166,17 +169,19 @@ class WorkspaceLeaseGuard:
                 pass
 
     async def stop_heartbeat(self) -> None:
-        """Quarantine (B.6): keep the lease, stop renewing it, give the slot back.
+        """Quarantine (B.6): stop renewal and retain workspace and capacity.
 
-        The expired lease is taken over only once this process is confirmed
-        dead, so the workspace stays held while possible stray writers remain.
+        Later finalizers cannot release quarantined ownership. This guard has
+        no override: supervised cleanup/recovery receipts are separate work.
         """
+        self._quarantined = True
         await self._stop_beating()
-        self._release_capacity()
 
     async def release(self) -> None:
-        """Stop the heartbeat and release. Best-effort; never masks an error."""
+        """Release ordinary ownership; quarantined ownership remains held."""
         await self._stop_beating()
+        if self._quarantined:
+            return
         try:
             if not self._held:
                 return
@@ -214,7 +219,7 @@ class LeaseCapability:
         return self._parent.workspace
 
     def guard(self, *, capacity_key: str | None = None) -> "BorrowedLease":
-        if self.revoked or not self._parent._held:
+        if self.revoked or not self._parent._held or self._parent._quarantined:
             raise LeaseError("this lease capability was revoked")
         return BorrowedLease(self, capacity_key=capacity_key)
 
@@ -231,8 +236,8 @@ class BorrowedLease:
                                              capacity_key=capacity_key)
 
     def _check(self) -> None:
-        if self._capability.revoked:
-            raise LeaseError("this lease capability was revoked")
+        if self._capability.revoked or self._capability._parent._quarantined:
+            raise LeaseError("this lease capability was revoked or quarantined")
 
     def acquire(self) -> None:
         self._check()
@@ -246,10 +251,15 @@ class BorrowedLease:
         return await self._capability._parent.race(work)
 
     async def stop_heartbeat(self) -> None:
-        self._capacity._release_capacity()
+        # Mark both before awaiting cancellation so cleanup in either order
+        # retains the child slot and the parent's workspace/capacity.
+        self._capacity._quarantined = True
+        await self._capability._parent.stop_heartbeat()
 
     async def release(self) -> None:
-        self._capacity._release_capacity()
+        if self._capability._parent._quarantined:
+            await self._capacity.stop_heartbeat()
+        await self._capacity.release()
 
 
 async def _cancel_quietly(task: asyncio.Future) -> None:

@@ -469,6 +469,14 @@ host confinement.
 
 ### B.6 Shared session service
 
+Quarantine must retain both workspace and runtime reservations through later
+release/finalizer calls. Latch it before stopping renewal; propagate borrowed
+step quarantine to the parent and retain child slots on parent quarantine,
+including cleanup after revocation. Prove retention with real separately grouped
+writers and capacity/workspace contenders, plus ordinary reaped completion.
+Supervised cleanup/recovery receipts and parent-death workspace expiry remain
+separate work.
+
 **Files:** new `garuda/interfaces/session_service.py`, existing entry points and
 contract tests.
 

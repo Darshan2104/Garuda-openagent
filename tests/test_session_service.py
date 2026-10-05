@@ -227,6 +227,6 @@ async def test_a_process_not_proven_dead_quarantines_the_workspace(repo, monkeyp
     meta = SessionStore().load_meta(session_id)
     assert meta["quarantine"]["pids"]
     assert [h.session_id for h in LeaseStore().holders_of(repo)] == [session_id]
-    assert CapacityStore().holders("native") == []  # the runtime slot is given back
+    assert CapacityStore().holders("native") == [session_id]  # uncertain descendants remain counted
     with pytest.raises(LeaseConflictError):
         LeaseStore().acquire(repo, "next-editor", "mutating")
