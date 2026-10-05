@@ -83,6 +83,8 @@ ordinary holders, pid/start identity/process group/epoch via `runtime/ownership.
 creator identity proved before publication, existing-session reacquisition refused,
 heartbeat/release bound to the issuing instance/process and full retained owner,
 workspace and mode (copied epochs and forked/ambiguous handles refuse),
+`validate_issued` checking existing authority under the lock without renewal
+for delegation/borrowed admission,
 corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
 owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
@@ -327,7 +329,8 @@ with `router.py` (P2 #49) and exposes no handoff API.
 (interactive chat), `runtime_cli.py` (`garuda runtime list|inspect|handoff|recover`
 plus the `run --runtime <acp>` launch path), `run_guard.py` (run invariants shared
 by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat and
-race, and the P0.17 broker approval path), `server.py` + `jobs.py` (job-queue server: submit/status/
+race, complete issuing-parent validation before delegation and borrowed
+capability creation/acquisition/start/race, and the P0.17 broker approval path), `server.py` + `jobs.py` (job-queue server: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
 `runner.py` (assembles a run and owns workspace teardown), `onboarding.py` (C.4: `garuda doctor` — config with provenance, only the harnesses roles use, executable/version/login/capabilities, leases, worktrees — `garuda init` / `init --project` proposals that write only after confirmation, `config show`), `session_service.py`
 (B.6: the one session lifecycle every native entry point follows — workspace,

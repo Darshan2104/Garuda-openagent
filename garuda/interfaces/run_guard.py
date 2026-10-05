@@ -150,10 +150,15 @@ class WorkspaceLeaseGuard:
             raise error
         return await task
 
+    def _check_authority(self) -> None:
+        """Prove the current parent binding without renewing its lease."""
+        if not self._held or self._quarantined:
+            raise LeaseError("lease authority is not held or is quarantined")
+        self.leases.validate_issued(self.workspace, self.session_id, epoch=self._epoch)
+
     def delegate(self, session_id: str) -> LeaseCapability:
         """Lend this lease to one child step; revoke it when the step ends."""
-        if not self._held or self._quarantined:
-            raise LeaseError("cannot delegate a lease that is not held or is quarantined")
+        self._check_authority()
         return LeaseCapability(self, session_id, _issuer=_ISSUER)
 
     @staticmethod
@@ -222,6 +227,7 @@ class LeaseCapability:
     def guard(self, *, capacity_key: str | None = None) -> "BorrowedLease":
         if self.revoked or not self._parent._held or self._parent._quarantined:
             raise LeaseError("this lease capability was revoked")
+        self._parent._check_authority()
         return BorrowedLease(self, capacity_key=capacity_key)
 
 
@@ -239,6 +245,7 @@ class BorrowedLease:
     def _check(self) -> None:
         if self._capability.revoked or self._capability._parent._quarantined:
             raise LeaseError("this lease capability was revoked or quarantined")
+        self._capability._parent._check_authority()
 
     def acquire(self) -> None:
         self._check()
