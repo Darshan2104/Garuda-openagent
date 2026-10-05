@@ -424,6 +424,14 @@ registration preserves existing bindings and an expired mutating holder blocks
 new mutation. Issuing-owner release is the ordinary removal path; supervised
 recovery admission/cleanup receipts remain separate work.
 
+Recovery-facing global/session lease inspection includes every retained holder,
+including an expired lease with a confirmed dead parent. Ordinary records have
+no complete descendant-cleanup receipt. Runtime recovery refuses before session
+changes, and project-key recovery refuses before staging or publishing a new
+key. `garuda doctor` continues to show the retained stale ownership. Parent death
+or waiting out the TTL does not remove this refusal; complete supervised cleanup
+and recovery receipts remain separate work.
+
 Borrowed capability creation/use validates the parent's complete issuing-store
 binding under the lease lock without renewal or minting. Delegation, guard
 creation and cached acquisition/start/race refuse released, missing, changed,

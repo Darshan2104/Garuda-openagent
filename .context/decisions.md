@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-10-05 — Recovery inspection retains unproved descendant ownership (#264)
+
+- Global/session recovery-facing lease inspections include every retained ordinary
+  holder. Parent death and expiry provide no complete descendant-cleanup receipt.
+  Inspections remain read-only; historical records and the `now` argument remain
+  compatible. Session filtering selects identity, not parent liveness.
+- Runtime recovery refuses before session changes; project-key recovery refuses
+  before staging/publishing a replacement key. Doctor reports retained stale
+  ownership. Refusal no longer recommends waiting out the TTL.
+- Explicit issuing-owner release remains supported. This conservative admission
+  policy adds no cleanup override or OS confinement. Complete supervised cleanup
+  and recovery receipts remain #157/#167 work.
+
 ## 2026-10-05 — Borrowed capabilities revalidate issued parent authority (#262)
 
 - `LeaseStore.validate_issued` uses the same complete retained owner/binding

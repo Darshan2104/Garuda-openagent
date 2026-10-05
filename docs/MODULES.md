@@ -85,6 +85,8 @@ heartbeat/release bound to the issuing instance/process and full retained owner,
 workspace and mode (copied epochs and forked/ambiguous handles refuse),
 `validate_issued` checking existing authority under the lock without renewal
 for delegation/borrowed admission,
+recovery-facing inspection retaining expired/dead-parent ownership until explicit
+removal (runtime and project-key recovery refuse before changes),
 corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
 owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
@@ -275,7 +277,8 @@ prepared handoff's `target_runtime`, kept in the append-only `prepared_targets`)
 identities (boot id plus start time from `/proc/<pid>/stat` on Linux; `ps -o
 lstart= -o ucomm=` elsewhere — never a name the process can rewrite, such as
 Node's `process.title`): the child's and its owning Garuda process's.
-Recovery refuses while a live workspace lease names the session or the
+Recovery refuses while a retained workspace lease names the session (including
+expired/dead-parent ownership without cleanup receipts), or the
 recorded owner is still alive, audits the trail and classifies before any
 signal, then SIGKILLs the group only if the pid's current identity still
 matches and polls (bounded, `REAP_TIMEOUT_SEC`) until it is dead or a zombie.

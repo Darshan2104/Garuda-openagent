@@ -104,10 +104,13 @@ Click a problem to see the fix.
 
 ??? question "Garuda refuses because the workspace is in use"
 
-    Another live session holds a lease that allows changes to that workspace.
+    Another session retains a lease that allows changes to that workspace.
     Garuda refuses overlapping sessions so their changes can't be mixed up.
-    Wait for the other run to finish. If that run crashed, its lease stops being
-    renewed and a later run can take it over once it goes stale.
+    An ordinary run releases ownership after cleanup. If its parent crashed
+    or cleanup is uncertain, the lease stays reserved: expiry and parent death
+    do not prove that descendants stopped. `garuda doctor` reports retained
+    stale ownership. Recovery refuses while that ownership remains; supervised
+    removal using complete cleanup receipts is not yet implemented.
 
 ## Sessions and runtimes
 
@@ -214,7 +217,10 @@ Click a problem to see the fix.
     The key that names your projects (`.identity/key` in the session store) is
     gone, but saved sessions already use it. Garuda won't make a new one on its
     own, because that would split every project in two. Stop any running
-    sessions, then run `garuda doctor --recover-project-ids`. Sessions whose
+    sessions, then run `garuda doctor --recover-project-ids`. Retained workspace
+    leases block recovery even after expiry or parent death, because descendant
+    cleanup remains unproved; the key is not staged or replaced on refusal.
+    Sessions whose
     repository is still where it was (same path and filesystem identity) move
     to the new key with their names; any others keep their old id and still
     resolve by full ID.

@@ -85,3 +85,49 @@ def test_parent_death_and_expiry_cannot_remove_a_live_writers_lease(orphan_write
         time.sleep(.02)
     assert marker.stat().st_size > written
     assert owner_liveness(child.to_dict()) is True
+
+
+@pytest.mark.parametrize("operation", ["inspect", "session-recovery", "project-recovery"])
+def test_recovery_preserves_expired_ownership_with_a_live_descendant(
+    orphan_writer, tmp_path, operation
+):
+    from garuda.core.project_recovery import RecoveryRefused, recover_project_ids
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.recovery import RecoveryError, recover
+
+    workspace, leases, original, source, marker, child = orphan_writer
+    # These recovery APIs use the wall clock. Wait for actual expiry rather
+    # than changing a record whose issuing owner has already exited.
+    time.sleep(max(0, original.heartbeat_at + original.ttl_sec + .05 - time.time()))
+    before = source.read_bytes()
+    written = marker.stat().st_size
+    if operation == "inspect":
+        assert leases.possibly_live_holders() == [original]
+        assert leases.live_holders_for_session("original") == [original]
+        assert leases.live_holders_for_session("unrelated") == []
+    else:
+        sessions = SessionStore(tmp_path / "sessions")
+        sessions.begin("original", task="private", model="m", agent="a", workspace=str(workspace))
+        sessions.checkpoint_messages("original", [])
+        sessions.ensure_unified("original")
+        key = sessions.root / ".identity" / "key"
+        if operation == "project-recovery":
+            key.unlink()
+        snapshot = {str(p.relative_to(sessions.root)): p.read_bytes()
+                    for p in sessions.root.rglob("*") if p.is_file()}
+        if operation == "session-recovery":
+            with pytest.raises(RecoveryError, match="workspace lease"):
+                recover(sessions, "original", leases=leases)
+        else:
+            with pytest.raises(RecoveryRefused, match="may still be running"):
+                recover_project_ids(sessions.root, leases=leases)
+            assert not key.exists()
+        after = {str(p.relative_to(sessions.root)): p.read_bytes()
+                 for p in sessions.root.rglob("*") if p.is_file()}
+        assert after == snapshot
+    assert source.read_bytes() == before
+    deadline = time.monotonic() + 5
+    while marker.stat().st_size == written and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert marker.stat().st_size > written
+    assert owner_liveness(child.to_dict()) is True
