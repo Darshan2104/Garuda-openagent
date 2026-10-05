@@ -112,9 +112,13 @@ fastest way to learn the system.
   comments explain a specific fail-closed choice; keep that habit.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
-  live or unknown owner; exact-owner retries are idempotent, and a different
-  owner can take over ordinary slots only after confirmed death. Queue-bound
-  slots stay protected until the queue coordinator durably releases them.
+  live or unknown owner; exact live-owner retries are idempotent. Ordinary
+  slots remain allocated after parent death until explicit matched release.
+  Queue-bound slots stay protected until the coordinator durably releases them.
+  Workspace lease acquisition also refuses an existing session id. Mutation
+  requires the issuing store instance/process and complete retained owner,
+  workspace and mode, not a copied epoch or an inspected record. Unknown creator
+  identity refuses acquisition; forked and ambiguous handles refuse mutation.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the

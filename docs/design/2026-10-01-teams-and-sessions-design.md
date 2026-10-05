@@ -410,6 +410,14 @@ that transaction; code never waits on a workspace while holding a store lock.
 Owner epochs fence late writes from superseded workers. Expiry is advisory:
 only confirmed process/descendant death permits ownership reclamation.
 
+Workspace lease acquisition proves the current creator and refuses an existing
+session id. Only its successful issuing store/process may heartbeat or release
+the full retained owner/workspace/mode binding; a copied epoch or an inspected
+record gives no authority. Forked, changed and duplicate-holder bindings refuse
+without writing. Renewal and explicit delegation reuse authority; legitimate
+release precedes new acquisition. Descendant cleanup receipts remain separate.
+
+
 ### Identity and project scope
 
 Session metadata adds `name`, opaque `project_id`, role, harness, exact

@@ -79,7 +79,10 @@ shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 an expired lease taken over only when its owner — pid, start identity and
 process group, `runtime/ownership.py` — is confirmed dead, audited takeover,
-epoch-checked heartbeat/release, corrupt/symlinked/future-version leases fail
+creator identity proved before publication, existing-session reacquisition refused,
+heartbeat/release bound to the issuing instance/process and full retained owner,
+workspace and mode (copied epochs and forked/ambiguous handles refuse),
+corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
 owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
 keys. `confined_acp.py` (C.8a) — read-only ACP roles run only in Docker: a preflight proves the source and `.git` are unwritable, scratch is writable, the user is unprivileged and no socket, home or credential store is mounted; the adapter then runs in the user's image with the workspace mounted read-only at `/workspace`. No proof means `workspace.readonly_unenforced`, never a host substitute. `no_edits.py` (C.10) — the no-edits guardrail: a bounded, no-follow manifest of the workspace (ignored files, modes, symlinks, change times) and of the repository's refs, HEAD, hooks, config and staged entries by content, taken before a run and compared after every descendant exits; any difference or an incomplete manifest withholds outputs. `worktrees.py` (B.5) decides where a session edits — `shared`, its own

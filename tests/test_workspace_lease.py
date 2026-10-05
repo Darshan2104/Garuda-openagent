@@ -130,7 +130,10 @@ def test_a_superseded_owner_cannot_heartbeat_or_release(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     first = store.acquire(workspace, "s", "mutating")
-    second = store.acquire(workspace, "s", "mutating")  # same session re-acquired
+    with pytest.raises(LeaseConflictError):
+        store.acquire(workspace, "s", "mutating")
+    store.release(workspace, "s", epoch=first.epoch)
+    second = store.acquire(workspace, "s", "mutating")
 
     with pytest.raises(LeaseConflictError, match="superseded"):
         store.heartbeat(workspace, "s", epoch=first.epoch)
