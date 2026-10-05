@@ -427,6 +427,14 @@ workspace.
 
 ### B.4 Apply leases and baselines to every mutating entry point
 
+Workspace ownership also requires the successful issuing store/process's full
+PID/start identity/group/epoch, workspace and mode. Prove the current creator
+before publication; refuse existing-session acquisition, copied epochs, unowned
+instances, fork inheritance, mismatched bindings and duplicate holders without
+changing bytes. Use real live writers and real fork inheritance, plus successful
+issuer renewal/release and release-before-reacquisition controls. These checks
+add no descendant-cleanup receipt or automatic recovery protocol.
+
 **Files:** CLI chat, web live chat, SDK conversation, recipe runner and shared
 run guard.
 

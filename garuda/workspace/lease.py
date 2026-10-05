@@ -141,7 +141,10 @@ class LeaseStore:
     Storage is strict (``garuda.runtime.strict_store``): an owner-only
     directory, an exclusive no-follow lock, and atomic fsynced writes. A lease
     records its owner's pid, start identity, process group and an epoch. An
-    expired lease is taken over only when its owner is *confirmed* dead — a
+    successful issuing instance/process retains full owner authority after
+    durable publication. Heartbeat/release cannot recreate it from a session id
+    or copied epoch; existing-session reacquisition refuses. An expired lease
+    for another session is taken over only when its owner is *confirmed* dead — a
     live owner past its TTL keeps it, and an owner whose liveness cannot be
     determined blocks takeover until a person clears it.
     """
@@ -152,6 +155,7 @@ class LeaseStore:
         self.root = Path(root) if root else default_leases_root()
         self._liveness = liveness or owner_liveness
         self._owner_factory = owner_factory or current_owner
+        self._issued: dict[tuple[str, str], Lease] = {}
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -169,7 +173,7 @@ class LeaseStore:
         try:
             with exclusive_lock(self.root):
                 yield
-        except StorageError as exc:
+        except (StorageError, OSError) as exc:
             raise LeaseError(f"lease storage unavailable: {exc}") from exc
 
     def _path_for(self, key: str) -> Path:
@@ -224,13 +228,24 @@ class LeaseStore:
         moment = now if now is not None else time.time()
         path = self._path_for(key)
         owner = self._owner_factory()
+        from garuda.runtime.ownership import Owner, owner_liveness
+
+        if (not isinstance(owner, Owner) or type(owner.pid) is not int
+                or type(owner.pgid) is not int or owner.pid != os.getpid()
+                or owner.pgid != os.getpgid(0) or not isinstance(owner.epoch, str)
+                or not owner.epoch or owner_liveness(owner.to_dict()) is not True):
+            raise LeaseError("current lease owner identity cannot be proved; refusing acquisition")
         with self._locked():
             holders = self._read_all(path)
             kept: list[Lease] = []
             stolen: list[str] = []
             for holder in holders:
                 if holder.session_id == session_id:
-                    continue
+                    raise LeaseConflictError(
+                        f"workspace {key}: session {session_id} already has a lease; "
+                        "renew or explicitly borrow the issued lease instead of replacing it",
+                        holder=holder.to_dict(),
+                    )
                 if not holder.is_stale(moment):
                     kept.append(holder)
                     continue
@@ -271,21 +286,43 @@ class LeaseStore:
                 epoch=owner.epoch,
             )
             self._publish_all(path, [*kept, lease])
+            self._issued[(key, session_id)] = lease
             return lease
 
     def _own_entry(self, holders: list[Lease], session_id: str, epoch: str | None, key: str):
-        current = next((h for h in holders if h.session_id == session_id), None)
+        matches = [h for h in holders if h.session_id == session_id]
+        if len(matches) > 1:
+            raise LeaseConflictError(f"workspace {key}: duplicate session lease ownership is ambiguous")
+        current = matches[0] if matches else None
         if current is not None and epoch is not None and current.epoch and current.epoch != epoch:
             raise LeaseConflictError(
                 f"workspace {key}: this lease was superseded (owner epoch changed)",
                 holder=current.to_dict(),
             )
+        if current is not None:
+            from garuda.runtime.ownership import Owner, owner_liveness
+
+            issued = self._issued.get((key, session_id))
+            if issued is None or issued.pid != os.getpid() or issued.pgid != os.getpgid(0):
+                raise LeaseConflictError(
+                    f"workspace {key}: lease authority was not issued to this instance/process",
+                    holder=current.to_dict(),
+                )
+            retained = Owner(issued.pid, issued.identity, issued.pgid, issued.epoch)
+            recorded = Owner(current.pid, current.identity, current.pgid, current.epoch)
+            if (retained != recorded or issued.workspace != current.workspace
+                    or current.workspace != key or issued.mode != current.mode
+                    or owner_liveness(retained.to_dict()) is not True):
+                raise LeaseConflictError(
+                    f"workspace {key}: this lease was superseded or its owner/binding cannot be proved",
+                    holder=current.to_dict(),
+                )
         return current
 
     def heartbeat(
         self, workspace: str | Path, session_id: str, *, epoch: str | None = None
     ) -> Lease:
-        """Refresh our lease. Foreign, missing or superseded leases fail closed."""
+        """Refresh this instance's issued lease; foreign or ambiguous authority refuses."""
         key = workspace_key(workspace)
         path = self._path_for(key)
         with self._locked():
@@ -319,8 +356,7 @@ class LeaseStore:
     def release(
         self, workspace: str | Path, session_id: str, *, epoch: str | None = None
     ) -> None:
-        """Release our holder entry. Releasing another session's (or a
-        superseded owner's) entry is refused."""
+        """Release this instance's issued holder; foreign/superseded authority refuses."""
         key = workspace_key(workspace)
         path = self._path_for(key)
         with self._locked():
@@ -335,6 +371,7 @@ class LeaseStore:
                     )
                 return
             self._publish_all(path, [h for h in holders if h.session_id != session_id])
+            self._issued.pop((key, session_id), None)
 
     def holders_of(self, workspace: str | Path) -> list[Lease]:
         """Inspect current holders, if any. Never mutates."""

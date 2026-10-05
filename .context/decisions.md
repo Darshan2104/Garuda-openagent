@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-10-05 — Workspace lease mutation needs the issuing owner (#256)
+
+- Acquisition proves the current creator's PID, start identity, process group
+  and nonempty epoch before publication. An existing session id refuses
+  reacquisition; the owner renews its lease or explicitly delegates it.
+- Only the successful issuing LeaseStore instance in the issuing process keeps
+  mutation authority, after durable publication. Heartbeat/release compare the
+  full retained owner, workspace and mode to exactly one source holder; copied
+  epochs, new instances, fork inheritance, tampered bindings and duplicate
+  holders refuse without writing. Inspection never creates authority.
+- Callers retain the issuing instance for renewal/release. Explicit owner
+  release followed by new acquisition retains stale-epoch protection. No new
+  recovery/cleanup receipt API is invented here; descendant cleanup and
+  quarantine release remain separate #157/#167 work.
+
 ## 2026-10-05 — Bind background roles before queue admission (#216)
 
 - Shared agent setup resolves effective garuda.yaml roles and trusted runtime

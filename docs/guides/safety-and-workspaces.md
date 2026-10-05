@@ -70,6 +70,15 @@ Garuda refuses a live or unknown owner rather than replacing its reservation.
 Do not delete ownership records to force a new run; close the original run or
 use the documented recovery path when its owner has ended.
 
+Workspace lease acquisition refuses an existing session id, even for a
+read-only request. Renew or explicitly delegate the issued lease instead of
+reacquiring it. Library callers keep the successful issuing `LeaseStore`
+instance for heartbeat and release: a new instance can inspect records but
+cannot recreate authority from a session id or copied epoch, and a fork cannot
+inherit the parent's authority. Mutation also refuses changed owner/workspace/
+mode bindings and duplicate holders. Unknown creator identity refuses before
+publication. This ownership check adds no descendant cleanup or recovery receipts.
+
 ## Local and tmux workspaces
 
 `local` runs tools as you, in the selected directory. `tmux` does the same
