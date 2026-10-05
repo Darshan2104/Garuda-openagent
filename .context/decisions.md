@@ -1,5 +1,15 @@
 # Durable decisions
 
+## 2026-10-05 — Setup exposes all existing prompt section metrics (#268)
+
+- Dashboard section metadata includes the static inspector's existing UTF-8
+  byte, Unicode character and estimated-token counts; the existing Setup table
+  labels all three metrics. The estimator remains `chars/4`. No prompt body is
+  added and no second prompt/estimator implementation is introduced.
+- Unicode source fixtures and the actual Chrome DOM distinguish bytes from
+  characters. This repairs the section-size gap cited in #266; #173's segment
+  attribution and complete parent acceptance remain separate work.
+
 ## 2026-10-05 — Agent HTTP diagnostics exclude source snippets (#266)
 
 - Setup agent resolution/prompt-inspection errors and the outer inspection

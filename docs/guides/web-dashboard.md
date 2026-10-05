@@ -122,7 +122,8 @@ defined; and **where each value came from** lists the layer behind every effecti
 file asked for that is withheld until you trust it. The **Agents** card lists every agent
 definition: its source (packaged, yours or the project's) and `extends`, a shadowing note, the
 settings it declares with the layer each came from, its definition digest, its static prompt
-digest and the estimated size of each prompt section. It never shows instruction or prompt
+digest and each prompt section's UTF-8 bytes, characters and estimated tokens
+(`chars/4`). It never shows instruction or prompt
 text (use `garuda agent show NAME` for that) and a definition that cannot resolve is listed
 with a source-free message and a stable diagnostic code beside the others. Legacy
 warning messages and prompt-inspection failures also exclude source text. Use

@@ -134,6 +134,11 @@ with sync_playwright() as p:
     check("with a definition digest and a prompt digest",
           len(careful.locator("code.agent-digest").inner_text()) == 12
           and len(careful.locator("code.agent-prompt-digest").inner_text()) == 12)
+    size = careful.locator("td.num").inner_text()
+    text = "SEED-INSTRUCTION-MARKER check twice. 🦅 café."
+    check("instruction section labels UTF-8 bytes, chars and estimated tokens",
+          f"instructions {len(text.encode('utf-8'))} bytes / {len(text)} chars / "
+          f"{len(text) // 4} estimated tokens" in size, size)
     careful.locator("summary").click()
     declared = careful.locator("ul.agent-fields").inner_text()
     check("its declared settings say where each came from", "limits.max_turns" in declared and "project" in declared, declared)

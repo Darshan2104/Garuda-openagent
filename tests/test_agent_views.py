@@ -27,7 +27,7 @@ def by_name(rows):
 
 def test_every_agent_is_listed_with_source_digests_and_section_sizes(ws):
     define(ws, "careful", "version: 1\nextends: garuda/explore\ndescription: Checks twice\n"
-                          "limits: {max_turns: 12}\ninstructions: {text: Check everything twice.}\n")
+                          "limits: {max_turns: 12}\ninstructions: {mode: replace, text: Check everything twice. 🦅 café.}\n")
     rows = by_name(inspect.dashboard_rows(ws))
     assert {"garuda/build", "garuda/explore", "garuda/consult", "project/careful"} <= set(rows)
     careful = rows["project/careful"]
@@ -39,7 +39,14 @@ def test_every_agent_is_listed_with_source_digests_and_section_sizes(ws):
     assert declared["limits.max_turns"]["source"] == "project"           # where it came from
     assert declared["permissions.mode"]["source"] == "extends:garuda/explore"
     assert careful["tokens"] == sum(s["tokens"] for s in careful["sections"]) > 0
-    assert all(set(s) == {"section", "source", "bytes", "tokens"} for s in careful["sections"])
+    assert all(set(s) == {"section", "source", "bytes", "chars", "tokens"} for s in careful["sections"])
+    instructions = next(s for s in careful["sections"] if s["section"] == "instructions")
+    text = "Check everything twice. 🦅 café."
+    assert instructions["bytes"] == len(text.encode("utf-8"))
+    assert instructions["chars"] == len(text)
+    assert instructions["tokens"] == len(text) // 4
+    assert careful["estimator"] == "chars/4"
+    assert text not in json.dumps(careful)
     assert rows["garuda/build"]["source"] == "packaged"
 
 

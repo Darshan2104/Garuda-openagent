@@ -221,7 +221,7 @@ def dashboard_rows(workspace) -> list[dict]:
             warnings=(["Legacy definition has warnings. Run garuda agent check locally for details."]
                       if info["warnings"] else []),
             instructions_chars=len(agent.instructions or ""),
-            sections=[{k: s[k] for k in ("section", "source", "bytes", "tokens")}
+            sections=[{k: s[k] for k in ("section", "source", "bytes", "chars", "tokens")}
                       for s in sections["sections"]],
             tokens=sum(s["tokens"] for s in sections["sections"]),
             fields=[{"path": path, "value": _brief(field["value"]), "source": field["source"]}

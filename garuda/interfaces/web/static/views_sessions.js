@@ -426,7 +426,10 @@ function setupAgentsHtml(agents) {
       return '<tr class="agent-row" data-agent="' + esc(a.qualified || a.name) + '"><td>' + esc(a.qualified || a.name) +
         '</td><td colspan="5"><span class="pill failed">cannot resolve</span> ' + esc(a.error) + "</td></tr>";
     }
-    var sections = (a.sections || []).map(function (s) { return esc(s.section) + " " + esc(fmt.tokens(s.tokens)); }).join(", ");
+    var sections = (a.sections || []).map(function (s) {
+      return esc(s.section) + " " + esc(fmt.tokens(s.bytes)) + " bytes / " + esc(fmt.tokens(s.chars)) +
+        " chars / " + esc(fmt.tokens(s.tokens)) + " estimated tokens";
+    }).join(", ");
     var fields = (a.fields || []).map(function (f) {
       return "<li><code>" + esc(f.path) + "</code> = " + esc(f.value) + ' <span class="stat-sub">(' + esc(f.source) + ")</span></li>";
     }).join("");
