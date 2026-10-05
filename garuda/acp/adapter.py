@@ -88,6 +88,7 @@ class AcpRuntime:
         store=None,
         persist_dir: str | None = None,
         metrics=None,
+        agent_definition: dict | None = None,
     ):
         from garuda.observability.runtime_metrics import RuntimeMetrics
 
@@ -99,6 +100,12 @@ class AcpRuntime:
         self._cwd = cwd
         self._approval_handler = approval_handler
         self._runtime_id = runtime_id
+        definition = agent_definition or {}
+        self._agent_segment = {
+            "id": str(uuid.uuid4()), "name": definition.get("name") or runtime_id,
+            "digest": definition.get("digest"), "runtime": runtime_id,
+            "kind": "acp_execution",
+        }
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._setup_hint = setup_hint
@@ -252,6 +259,8 @@ class AcpRuntime:
                             "session_id": event.session_id,
                             "turn": event.turn,
                             "seq": event.seq,
+                            **({"payload": event.payload}
+                               if event.kind is RuntimeEventKind.OUTBOUND_PROMPT else {}),
                         },
                         default=str,
                     )
@@ -515,6 +524,18 @@ class AcpRuntime:
             applied[config_id] = value
         return applied
 
+    def _record_outbound_prompt(self, text: str) -> None:
+        """Measure the attempted ACP request text, not the agent's system prompt."""
+        import hashlib
+
+        self._emit(RuntimeEventKind.OUTBOUND_PROMPT, {
+            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(), "chars": len(text),
+            "kind": "request_text", "status": "attempted",
+            "agent_segment": {**self._agent_segment,
+                              "native_session_id": self._agent_session_id},
+        })
+        self._persist(self._events[-1])
+
     async def prompt(self, text: str, *, timeout: float | None = None) -> int:
         if self._process is None or self._normalizer is None:
             raise RuntimeStartError("runtime is not started")
@@ -529,6 +550,7 @@ class AcpRuntime:
         self._normalizer.new_turn()
         self._move(LifecycleState.RUNNING)
         self._turn += 1
+        self._record_outbound_prompt(text)
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
         )

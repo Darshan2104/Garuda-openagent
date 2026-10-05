@@ -732,6 +732,7 @@ async def run_acp_task(
             return runtime
 
         def build_runtime():
+            definition = role_plan.record().get("agent") if role_plan is not None else None
             if confinement is not None:
                 from garuda.acp.catalog import adapter_for_manifest
                 from garuda.workspace.confined_acp import CONTAINER_WORKSPACE, docker_argv
@@ -741,6 +742,7 @@ async def run_acp_task(
                     manifest, argv_override=docker_argv(workspace, confinement, command),
                     cwd=CONTAINER_WORKSPACE, store=store, approval_handler=handler,
                     persist_dir=str(store.session_dir(session_id)),
+                    agent_definition=definition,
                 )
             return adapter_for_discovered(
                 manifest,
@@ -749,6 +751,7 @@ async def run_acp_task(
                 store=store,
                 approval_handler=handler,
                 persist_dir=str(store.session_dir(session_id)),
+                agent_definition=definition,
             )
 
         runtime = make_runtime()

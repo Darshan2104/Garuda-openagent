@@ -377,8 +377,9 @@ native agent source digest becomes part of the execution identity.
 
 Setup view lists agents with source, resolved fields, prompt digest and section
 sizes; conversations show recorded native execution identities and their actual
-system-prompt digests. Historical unbound measurements remain unattributed. ACP
-outbound attribution remains open under #173. Read-only.
+system-prompt digests. Historical unbound measurements remain unattributed. ACP execution rows show attempted host request digests, recorded runtime/role
+definition identity and unknown internal system prompts. Complete runtime-tenure
+provenance remains open under #173. Read-only.
 
 Agent HTTP errors/warnings use source-free fixed messages and registry-validated
 codes. Exercise malformed YAML/Markdown and legacy warnings through the

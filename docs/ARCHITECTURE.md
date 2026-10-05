@@ -119,7 +119,11 @@ fastest way to learn the system.
   outbound system-message measurement includes that binding. Dashboard grouping
   uses recorded bindings, including inner runs, and leaves historical unbound
   measurements unattributed. Current session metadata is not historical evidence.
-  These native execution ids do not replace runtime handoff segments.
+  ACP adapters similarly record a sending execution id and the optional bound
+  role definition passed through the common catalog factories. ACP measurements
+  cover attempted host request text, while the external internal system prompt
+  remains unknown. Both kinds use source-free metadata; their execution ids do
+  not replace runtime handoff segments.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact live-owner retries are idempotent. Ordinary
