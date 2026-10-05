@@ -328,6 +328,17 @@ def seed_observability(root: Path, workspace: str) -> dict:
             finally:
                 await runtime.close()
     asyncio.run(measured_requests())
+    async def empty_tenure():
+        runtime = AcpRuntime(
+            [sys.executable, str(Path(__file__).resolve().parents[2] / "garuda/acp/fake_agent.py"),
+             "--profile", "streaming"], runtime_id="claude", cwd=workspace, store=store,
+            persist_dir=str(store.session_dir(OBS["acp_turns"])),
+        )
+        try:
+            await runtime.start(task="fixture", session_id=OBS["acp_turns"])
+        finally:
+            await runtime.close()
+    asyncio.run(empty_tenure())
     store.update_meta(OBS["acp"], {"agent": None, "agent_digest": None})
     # usage at three ages, one per range boundary region
     for key, age_h in (("age-2h", 2), ("age-3d", 72), ("age-20d", 480)):

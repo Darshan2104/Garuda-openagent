@@ -656,8 +656,10 @@ prompt digest and section sizes, and the conversation view shows which agent and
 prompt digests each native execution used. Recorded execution bindings preserve compiled
 agent identities across session metadata changes and inner runs; historical unbound
 measurements remain unattributed. ACP execution rows show attempted host request digests, recorded runtime/role
-definition identity and unknown internal system prompts. Complete runtime-tenure
-provenance remains open under #173.
+definition identity and unknown internal system prompts. Recorded matching runtime-tenure references connect sending executions to
+segments; historical or inconsistent references stay unassociated and tenures
+without measurement evidence remain unknown. Full #173 acceptance requires its
+fixture, HTTP privacy and live-Chrome audit.
 The dashboard does not edit definitions.
 
 ## Diagnostics

@@ -271,6 +271,12 @@ class NativeGarudaRuntime:
         self._move(LifecycleState.RUNNING)
         self._turn += 1
         assert self._trail is not None
+        from garuda.observability.agent_binding import active_runtime_tenure
+
+        self._trail.runtime_tenure = active_runtime_tenure(
+            self._store, self._session_id, runtime_id=self.runtime_id,
+            kind=self.kind.value, native_session_id=self.native_session_id,
+        )
         seen = len(self._trail.get_all())
         try:
             result = await self._run(task=text, turn=self._turn, trail=self._trail)

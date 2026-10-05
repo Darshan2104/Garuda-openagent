@@ -65,3 +65,5 @@ async def test_acp_executions_keep_wire_requests_even_with_repeated_agent_sessio
     assert sorted((p["digest"], p["chars"]) for s in segments for p in s["prompts"]) == sorted(
         (p["digest"], p["chars"]) for p in expected)
     assert info["prompts"] == []  # Native compatibility aggregate excludes ACP request text.
+    assert info["tenures"][-1]["agent_status"] == "unknown"
+    assert info["tenures"][-1]["prompt_status"] == "recorded"

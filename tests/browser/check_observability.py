@@ -67,6 +67,8 @@ with sync_playwright() as p:
     check("historical unbound prompts are explicitly unattributed",
           page.locator("#agent-line .agent-unattributed").count() == 1
           and "Unattributed historical prompts" in agent_line, agent_line)
+    check("historical execution bindings do not invent runtime tenure association",
+          all("runtime tenure unknown" in text for text in executions.all_inner_texts()), agent_line)
 
     # --- ACP, cumulative reports with a replay: two deltas, models not reported ---------------
     page.goto(f"{BASE}#/runs/{N['acp']}", wait_until="load")
@@ -92,11 +94,21 @@ with sync_playwright() as p:
     check("ACP requests are labelled without claiming the internal system prompt",
           "ACP request (attempted)" in acp_text and "internal system prompt unknown" in acp_text
           and "lean" in acp_text and "SEED-ACP-INSTRUCTION-MARKER" not in page.content(), acp_text)
+    tenure_rows = page.locator("#agent-tenures .agent-tenure")
+    tenure_text = tenure_rows.inner_text() if tenure_rows.count() == 1 else ""
+    check("ACP executions link to their recorded runtime tenure",
+          tenure_rows.count() == 1 and "2 recorded executions" in tenure_text
+          and all("runtime tenure 1" in text for text in acp_executions.all_inner_texts()), tenure_text)
     page.screenshot(path=str(SHOTS / "obs-acp-prompts.png"))
     page.goto(f"{BASE}#/runs/{N['acp_turns']}", wait_until="load")
     page.wait_for_selector("#models-table")
     (turns,) = rows(page).values()
     check("a duplicated per-turn report counts once", turns[4] == "2", str(turns))
+    unknown_tenure = page.locator("#agent-tenures .agent-tenure")
+    unknown_text = unknown_tenure.inner_text() if unknown_tenure.count() == 1 else ""
+    check("a tenure without prompt evidence keeps agent and prompt unknown",
+          unknown_tenure.count() == 1 and "agent definition unknown" in unknown_text
+          and "prompt unknown" in unknown_text, unknown_text)
 
     # --- fallback: one story ----------------------------------------------------------------------
     page.goto(f"{BASE}#/runs/{N['fallback']}", wait_until="load")

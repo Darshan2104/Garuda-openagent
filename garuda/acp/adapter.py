@@ -378,6 +378,12 @@ class AcpRuntime:
         self._recorded_child_pid = process.pid
         if self._prepared_child_pid == process.pid:
             self._prepared_child_pid = None
+        from garuda.observability.agent_binding import active_runtime_tenure
+
+        self._agent_segment["runtime_tenure"] = active_runtime_tenure(
+            self._store, self._garuda_session_id, runtime_id=self.runtime_id,
+            kind=self.kind.value, native_session_id=self.native_session_id,
+        )
 
     def record_launch_with(self, recorder) -> None:
         """Record this handoff target's child as soon as it is launched.

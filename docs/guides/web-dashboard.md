@@ -71,8 +71,14 @@ and the digest/character count of each **ACP request (attempted)**. These measur
 the complete host request text, including role instructions and attached context;
 they do not prove delivery. The external agent's **internal system prompt remains
 unknown**. Repeated external session ids do not collapse separate executions.
-Execution rows are separate from runtime handoff segments; complete per-tenure
-provenance remains under #173.
+Execution ids remain separate from runtime handoff segments. Each row displays its
+recorded runtime-tenure number when the full reference matches that persisted
+tenure; missing or inconsistent references display **runtime tenure unknown**.
+The tenure list reports recorded execution counts and explicitly unknown agent
+or prompt provenance when measurement evidence is absent. Current metadata,
+repeated external session ids and event cursors do not fill historical gaps.
+If the bounded execution window omits recorded history, its tenure reports the
+omitted count rather than calling that history unknown.
 
 **Consults.** When the session asked other roles questions, a **Consults** panel lists each as
 a lane under it: who asked whom, the identity that ran, its admission, outcome (`answered`,

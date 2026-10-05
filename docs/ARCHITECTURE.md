@@ -123,7 +123,11 @@ fastest way to learn the system.
   role definition passed through the common catalog factories. ACP measurements
   cover attempted host request text, while the external internal system prompt
   remains unknown. Both kinds use source-free metadata; their execution ids do
-  not replace runtime handoff segments.
+  not replace runtime handoff segments. Shared observability helpers snapshot the
+  active neutral tenure only when it matches the sender, then validate the full
+  recorded index/reference during projection. Missing or inconsistent references
+  stay unassociated; a tenure without measurements has unknown prompt provenance.
+  This metadata is observational evidence, not launch or ownership authority.
 - **Session names do not confer ownership.** Shared capacity reservations are
   bound to process identity and epoch. Reusing a holder id cannot replace a
   live or unknown owner; exact live-owner retries are idempotent. Ordinary

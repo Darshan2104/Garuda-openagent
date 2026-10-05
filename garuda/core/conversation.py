@@ -34,6 +34,7 @@ from typing import Any
 from garuda.consult.view import summary as consult_summary
 from garuda.core import read_model
 from garuda.observability import ledger as ledger_module
+from garuda.observability.agent_binding import recorded_runtime_tenure
 
 NOT_REPORTED = "not reported"
 FROM_METRICS = "from session metrics"
@@ -190,11 +191,13 @@ def agent_info(store, session_id: str, meta: dict) -> dict:
             if not external:
                 unattributed.append(prompt)
             continue
+        tenure = recorded_runtime_tenure(binding, meta)
         key = (binding["kind"], binding["runtime"], binding["id"],
-               binding["name"], binding.get("digest"))
+               binding["name"], binding.get("digest"), tenure["index"] if tenure else None)
         segment = segments.setdefault(key, {
             "id": binding["id"], "name": binding["name"], "digest": binding.get("digest"),
             "runtime": binding["runtime"], "kind": expected_kind, "prompts": [],
+            "runtime_tenure": tenure,
             **({"native_session_id": binding.get("native_session_id"),
                 "prompt_kind": "request_text", "request_status": "attempted",
                 "internal_system_prompt": "unknown"} if external else {}),
@@ -204,11 +207,25 @@ def agent_info(store, session_id: str, meta: dict) -> dict:
     for segment in reversed(list(segments.values())):
         recorded.append({**segment, "prompt_changes": len(segment["prompts"]),
                          "prompts": _distinct_prompts(segment["prompts"])})
+    tenures = []
+    for index, tenure in enumerate(meta.get("runtime_segments") or []):
+        if not isinstance(tenure, dict):
+            continue
+        bound = [s for s in recorded if s["runtime_tenure"]
+                 and s["runtime_tenure"]["index"] == index]
+        shown = sum(s in recorded[:20] for s in bound)
+        tenures.append({"index": index, "runtime_id": tenure.get("runtime_id"),
+                        "kind": tenure.get("kind"), "execution_count": len(bound),
+                        "omitted_executions": len(bound) - shown,
+                        "agent_status": "recorded" if bound and all(s["digest"] for s in bound)
+                                        else "unknown",
+                        "prompt_status": "recorded" if bound else "unknown"})
     role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
     return {"name": meta.get("agent"), "digest": meta.get("agent_digest"),
             "role_agent": role.get("agent"), "segment": meta.get("agent_segment"),
             "prompts": _distinct_prompts(prompts), "prompt_changes": len(prompts),
-            "segments": recorded[:20], "segment_count": len(recorded),
+            "segments": recorded[:20], "segment_count": len(recorded), "tenures": tenures,
+            "unassociated_count": sum(s["runtime_tenure"] is None for s in recorded),
             "unattributed": _distinct_prompts(unattributed),
             "unattributed_changes": len(unattributed)}
 

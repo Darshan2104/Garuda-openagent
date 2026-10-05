@@ -911,7 +911,9 @@ async def prepare_run(
     run_state = RunState(
         agent_segment={"id": str(uuid4()), "name": config.agent_name or profile_name,
                        "digest": config.agent_digest, "runtime": "native",
-                       "kind": "native_execution"},
+                       "kind": "native_execution",
+                       "runtime_tenure": (dict(events.runtime_tenure)
+                                          if isinstance(events.runtime_tenure, dict) else None)},
         task=task,
         config=config,
         events=events,
