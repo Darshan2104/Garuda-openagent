@@ -316,3 +316,29 @@ def test_a_worker_that_reexecs_keeps_its_identity():
     assert same_process("linux:b:123", "linux:b:123")
     assert not same_process("linux:b:123", "linux:b:124")                    # Linux is exact
     assert not same_process("linux:b:123", "ps:Fri Oct 2 19:08:41 2026 Python")
+
+
+def test_a_background_runtime_alias_waits_for_the_canonical_lane_before_launch(env):
+    settings = env.workspace / ".agent" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text(yaml.safe_dump({"runtime_refs": [{"alias": "quick", "runtime_id": "native"}]}))
+    queue, scope = _blocker()
+    result = _garuda("run", "--bg", "--runtime", "quick", "-t", "do it",
+                     "--workspace", str(env.workspace), "--agent-file", str(env.agent),
+                     "--model", "script/x", script=QUICK)
+    assert result.returncode == 0, result.stderr
+    session_id = result.stdout.strip().splitlines()[-1]
+    worker = _wait(lambda: _meta(session_id).get("worker", {}).get("identity")
+                   and _meta(session_id)["worker"], "the aliased worker to record itself")
+    try:
+        row = next(entry for entry in queue.entries() if entry["id"] == session_id)
+        assert (row["harness"], row["scope"], row["state"]) == ("native", scope, "queued")
+        assert _state(session_id)["work"] == "queued"
+        assert CapacityStore().holders("native") == ["blocker"]
+        events = SessionStore().session_dir(session_id) / "events.jsonl"
+        assert not events.exists() or '"tool_call"' not in events.read_text()
+    finally:
+        queue.release(scope, "blocker")
+        _wait(lambda: not _alive(worker["pid"]), "the aliased worker to exit")
+    assert _state(session_id)["outcome"] == "completed"
+    assert _idle()

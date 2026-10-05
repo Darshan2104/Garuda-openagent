@@ -886,6 +886,13 @@ binding across waiting entries and claims, and preserve durable FIFO sequence.
 Conflicting retries refuse before writing. Cover exact and conflicting retries
 from real subprocess contenders and leave preexisting duplicate records intact.
 
+Check complete committed adoption at direct dispatch, and recheck ordinary
+capacity activation under its file lock and after publication before returning
+launch authority. Exercise failed release intent from the claimant and another
+store instance, workspace refusal, and real threads that capture a ticket before
+the lock or revoke it during activation publication. Retain protected capacity
+and source records on refusal; partial activation remains quarantined.
+
 Enforce user/harness scope consistency for dispatch-ready admissions at both
 enqueue and ticket creation. Exercise a fully bound second job that tries to
 jump an older job's lane with a different scope label, and a preexisting record
@@ -932,6 +939,14 @@ exact bytes before upgrading. Preserve unrelated archives in every case.
 record and clock-skew cases.
 
 ### D.2 Detached workers and lifecycle
+
+`--bg` resolves the runtime reference through the shared trusted catalog before
+session or queue creation, using the canonical capacity key and retaining the
+original alias reference for downstream capability resolution. Before worker identity publication or
+selection, match its resolved lane/session and serialized argument receipt to
+the admitted queue record. Refuse retargeted aliases and changed argument/receipt
+records without rewriting them; an absent admission starts no work. This receipt
+covers arguments, not every referenced configuration file or cleanup evidence.
 
 `--bg` creates the session and queue entry, then re-executes a hidden worker with
 an explicit session id. The worker either claims capacity or waits without a

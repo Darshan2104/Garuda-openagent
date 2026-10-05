@@ -598,6 +598,16 @@ records; selection refuses before intent or capacity publication and preserves
 the source. Missing session/configuration evidence is never inferred to make
 an incomplete allocation dispatch-ready.
 
+Background admission resolves the launch reference through the shared trusted
+runtime catalog before storage or spawn, using the canonical runtime id for
+capacity and scope while retaining the original reference for downstream
+capability resolution.
+Workers compare the resolved lane and session with the queued admission and
+verify the serialized launch arguments and receipt against its digest before
+identity publication or selection. Alias retargeting and changed argument/receipt
+records refuse without rebinding. This argument receipt does not freeze all
+referenced configuration files or prove runtime descendant cleanup.
+
 Queue mutations match the complete owner (pid, process start identity, process
 group and epoch). An omitted owner on heartbeat or release uses only a successful
 claim retained by that instance in the claiming process; opening another store
@@ -638,8 +648,14 @@ harnesses. Recovery reconciles confirmed-dead pre-activation transactions,
 fencing captured activation tickets before publishing claim removal and slot
 release. The fence retains activation history. Activated or ambiguous dispatch
 stays quarantined and is never automatically replayed. Workspace refusal
-restores waiting order by the original durable sequence. Full descendant
-supervision and proof of cleanup on every terminal path remain D.2 work.
+restores waiting order by the original durable sequence. Direct dispatch also requires the complete unrevoked process-local ticket,
+in addition to the claiming instance's owner. Ordinary capacity activation
+rechecks adoption under its file lock and after publication before returning
+launch authority. Failed release intent cannot resurrect retained claimant
+handles or captured tickets; a partially published activation with revoked
+authority retains its protected slot for quarantine. The adoption mutex is
+never held over filesystem I/O. Full descendant supervision and proof of
+cleanup on every terminal path remain D.2 work.
 
 One strict `CapacityStore` owns slots for every entry point. Admission attempts
 capacity before workspace ownership, but releases the slot immediately if the

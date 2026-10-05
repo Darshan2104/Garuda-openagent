@@ -61,6 +61,7 @@ from garuda.runtime import queue_legacy
 from garuda.runtime.capacity import (
     CapacityStore,
     adopt,
+    is_adopted,
 )
 from garuda.runtime.ownership import Liveness, Owner, current_owner, owner_liveness
 from garuda.runtime.queue_journal import JournalError, QueueJournal
@@ -337,6 +338,8 @@ class QueueStore:
             ticket = journal.ticket(scope, item_id, claim)
             if not ticket.activation_ready:
                 raise QueueError("dispatch requires frozen user/session/configuration bindings")
+            if not is_adopted(self.capacity.root, ticket):
+                raise QueueError("dispatch requires an unrevoked committed queue ticket")
             journal.slots.transition(ticket, "activated")
 
     def claim(self, scope: str, item_id: str, *, timeout: float = 30.0,
