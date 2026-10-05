@@ -389,7 +389,11 @@ allocation and offers recovery instead of silently changing project scope.
 epoch/alias migration. Test crashes before and after manifest publication,
 missing/replaced paths, name collisions and live/unknown owners. Repeated
 recovery is idempotent; ledger bytes and totals remain unchanged, verified alias
-grouping is restored and unverifiable projects are explicitly unmapped.
+grouping is restored and unverifiable projects are explicitly unmapped. The
+shared alias reader consumes only the source-free key-bound manifest after
+journal completion; the public usage route refuses unverifiable publication.
+Actual recovery→ledger→HTTP tests cover repeated epochs, unmapped projects,
+unchanged ledger/export rows, interrupted publication and invalid aliases.
 
 ### B.2 Separate process, work, outcome and verification state
 
@@ -1497,3 +1501,8 @@ capability, model verdict, worktree guardrail or implementation-coupled spy.
 An explicitly disabled capability is safe to release without, but is not a
 completed implementation task. Record its deferred status and missing proof;
 never label the entire epic complete while claiming that capability ships.
+
+Pending recovery journals require an explicit epoch, key digest and alias map.
+The staged or published key must match before applying session changes.
+Historical unbound journals refuse mutation and remain available for operator
+inspection; no epoch or alias authority is inferred from a path or existing key.

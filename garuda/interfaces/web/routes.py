@@ -790,7 +790,15 @@ def _usage(request: Request, ctx: DashboardContext, _match) -> Response:
     if name is None:
         return invalid("`range` must be 24h, 7d or 30d.")
     now = _time.time()
-    return ok(usage_stats.stats(list(Ledger().records(since=now - 31 * 86400)), name, now))
+    from garuda.core.project_aliases import verified_aliases
+    from garuda.core.project_identity import ProjectIdentityError
+
+    try:
+        aliases = verified_aliases(ctx.store.root)
+    except ProjectIdentityError:
+        return invalid("Project identity recovery cannot be verified; usage grouping is unavailable.")
+    return ok(usage_stats.stats(list(Ledger().records(since=now - 31 * 86400)), name, now,
+                               project_aliases=aliases))
 
 
 @route("GET", r"/api/usage/export")

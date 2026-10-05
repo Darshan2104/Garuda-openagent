@@ -212,6 +212,12 @@ ACP accepts appended instructions only as labelled task context.
   configuration changes are outside this check. A worker verifies the lane,
   session and serialized launch digest before publishing identity or selecting
   work; alias retargeting or changed launch arguments refuse without rebinding.
+- **Recovered project usage uses committed aliases.** Recovery publishes a
+  versioned source-free alias manifest bound to the committed local key epoch.
+  The shared identity reader locks publication and refuses unfinished,
+  mismatched or ambiguous evidence. Usage grouping merges only verified ids;
+  ledger and export rows retain their original opaque ids and totals. Repeated
+  recovery carries aliases only through projects verified in the current plan.
 - **Queue mutations require claimant authority.** Heartbeat, release and
   workspace requeue compare the complete persisted process identity and epoch.
   Implicit mutations use only the claiming instance's retained owner in the
