@@ -140,7 +140,7 @@ class LeaseStore:
 
     Storage is strict (``garuda.runtime.strict_store``): an owner-only
     directory, an exclusive no-follow lock, and atomic fsynced writes. A lease
-    records its owner's pid, start identity, process group and an epoch. An
+    records its owner's pid, start identity, process group and an epoch. A
     successful issuing instance/process retains full owner authority after
     durable publication. Heartbeat/release cannot recreate it from a session id
     or copied epoch; existing-session reacquisition refuses. An expired lease
@@ -369,6 +369,7 @@ class LeaseStore:
                         f"cannot release workspace {key} held by session {live_holder.session_id}",
                         holder=live_holder.to_dict(),
                     )
+                self._issued.pop((key, session_id), None)
                 return
             self._publish_all(path, [h for h in holders if h.session_id != session_id])
             self._issued.pop((key, session_id), None)

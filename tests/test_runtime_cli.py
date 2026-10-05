@@ -496,10 +496,11 @@ def test_handoff_confirm_then_recover_end_to_end(tmp_path, monkeypatch, capsys):
     assert code == 1 and "cannot prove it stopped" in out
     store.update_meta("src-1", {"handoff": handoff, "runtime_children": children})
     # A live lease naming the session: refused by the recovery pass.
-    LeaseStore().acquire(ws, "src-1", mode="mutating")
+    issuer = LeaseStore()
+    held = issuer.acquire(ws, "src-1", mode="mutating")
     code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
     assert code == 1 and "reclaim refused" in out
-    LeaseStore().release(ws, "src-1")
+    issuer.release(ws, "src-1", epoch=held.epoch)
     assert store.load_unified("src-1").active.runtime_id == "fakeacp"
     code, out = _main(monkeypatch, capsys, "runtime", "reclaim", "--session", "src-1")
     assert code == 0 and "ownership reclaimed by native" in out, out

@@ -200,13 +200,17 @@ def test_a_retained_handle_cannot_mutate_a_disagreeing_owner_record(tmp_path, op
 
 
 @pytest.mark.parametrize("operation", ["heartbeat", "release"])
-def test_a_released_handle_cannot_regain_authority_from_restored_bytes(tmp_path, operation):
+@pytest.mark.parametrize("missing_record", [False, True])
+def test_a_released_handle_cannot_regain_authority_from_restored_bytes(tmp_path, operation,
+                                                                     missing_record):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     issuer = LeaseStore(tmp_path / "leases")
     holder = issuer.acquire(workspace, "same")
     source, = issuer.root.glob("*.json")
     previous = source.read_bytes()
+    if missing_record:
+        source.unlink()
     issuer.release(workspace, "same", epoch=holder.epoch)
     source.write_bytes(previous)
     with pytest.raises(LeaseConflictError):
