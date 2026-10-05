@@ -335,7 +335,11 @@ then reap, teardown, persist and release last; `garuda chat`, dashboard chats an
 the SDK `Conversation` open through `open_session`, and `run_agent_task` uses the
 same workspace, lease and quarantine steps around its resume recovery. Background
 processes that cannot be proven dead quarantine the session: the lease stays
-held with its heartbeat stopped and the pids are recorded).
+held with its heartbeat stopped, runtime capacity remains reserved, and the pids
+are recorded. Quarantine is sticky across subsequent release/finalizer calls;
+a borrowed step propagates it to its parent and retains its own reservation,
+including cleanup after revocation. Ordinary reaped completion releases as
+before; supervised recovery receipts remain separate work).
 
 ## `flows/` — sequential role steps (C.6a)
 

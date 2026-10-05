@@ -119,6 +119,12 @@ fastest way to learn the system.
   requires the issuing store instance/process and complete retained owner,
   workspace and mode, not a copied epoch or an inspected record. Unknown creator
   identity refuses acquisition; forked and ambiguous handles refuse mutation.
+- **Quarantine retains ownership through teardown.** The shared run guard
+  stops renewal but retains its workspace lease and runtime reservation. Later
+  release/finalizer calls cannot undo quarantine. A borrowed flow step also
+  quarantines its parent and retains its own slot; revocation gives no cleanup
+  authority. Ordinary reaped completion still releases normally. Persisted
+  descendant supervision and recovery receipts remain separate work.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the

@@ -79,6 +79,14 @@ inherit the parent's authority. Mutation also refuses changed owner/workspace/
 mode bindings and duplicate holders. Unknown creator identity refuses before
 publication. This ownership check adds no descendant cleanup or recovery receipts.
 
+When descendant death cannot be proved, the shared guard quarantines the run:
+renewal stops, but the workspace lease and runtime slot stay reserved through
+later close/release calls. A borrowed flow step also quarantines its parent and
+retains its own slot. Capability revocation does not clear quarantine. Do not
+remove records to force reuse; supervised cleanup and recovery receipts remain
+separate work. This guardrail does not provide OS confinement or prove that
+arbitrary descendants have exited.
+
 ## Local and tmux workspaces
 
 `local` runs tools as you, in the selected directory. `tmux` does the same
