@@ -111,6 +111,11 @@ Shared role selection returns that snapshot to CLI execution and consult
 narrowing; conflicting explicit agent files refuse before activation. The spec
 is runtime-only, excluded from role records/repr. Consult tool ceilings remain.
 
+Native role admission compares an explicitly selected model id with the
+agent’s declared/inherited binding through the trusted global alias table.
+Contradictory reasoning model ids or missing aliases refuse before activation;
+ordinary model-factory precedence and ACP native-only refusals are unchanged.
+
 ACP role projection reads structural instruction replacement intent from the
 shared agent resolver. Explicit/inherited replacement refuses before launch,
 regardless of text equality with the native base. Native assembly stays unchanged;

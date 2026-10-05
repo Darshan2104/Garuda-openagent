@@ -340,3 +340,48 @@ def test_native_role_cli_checks_explicit_agent_file_identity(tmp_path, monkeypat
         assert code == 0 and built and model.observed[0]["source_a"], out
         (meta,) = SessionStore().list_sessions()
         assert meta["agent"] == "careful" and meta["role"]["agent"]["name"] == "careful"
+
+
+@pytest.mark.parametrize("case,inherited,role_model", [
+    ("mismatch", False, "fixture/second"), ("mismatch", True, "fixture/second"),
+    ("matching", False, "fixture/first"), ("matching", True, "fixture/first"),
+    ("agent-only", False, None), ("unknown", False, "fixture/first"),
+])
+def test_native_role_cli_validates_agent_binding_against_exact_model(
+        tmp_path, monkeypatch, capsys, case, inherited, role_model):
+    import garuda.model.factory as factory
+
+    ws = _repo(tmp_path / "ws")
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.write_text(yaml.safe_dump({
+        "models": {"first": {"model": "fixture/first"}, "second": {"model": "fixture/second"}},
+        "model_bindings": {"fast-alias": {"reasoning": "first", "collection": "second"}}}))
+    definitions = ws / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    document = {"version": 1, "model": {"binding": "missing" if case == "unknown" else "fast-alias"},
+                "instructions": {"mode": "replace", "text": "BOUND-SOURCE-A"},
+                "memory": {"user": False, "context_pack": False}, "tools": {"preset": "none"}}
+    if inherited:
+        (definitions / "parent.yaml").write_text(yaml.safe_dump(document))
+        document = {"version": 1, "extends": "parent"}
+    (definitions / "careful.yaml").write_text(yaml.safe_dump(document))
+    role = {"harness": "native", "agent": "careful"}
+    if role_model is not None:
+        role["model_id"] = role_model
+    _user_file(yaml.safe_dump({"version": 1, "roles": {"coder": role}}))
+    model, built = NativeRoleCapture(), []
+
+    def build(spec):
+        built.append(spec.model)
+        return model
+
+    monkeypatch.setitem(factory._registry, "litellm", build)
+    code, out = _run(monkeypatch, capsys, ws, "--role", "coder", "--no-bootstrap", "--no-verifier",
+                     "--no-collection", "--max-turns", "1", "--permission-mode", "readonly")
+    if case in ("mismatch", "unknown"):
+        assert code == 2 and "config.conflict" in out, out
+        assert not built and not model.observed and SessionStore().list_sessions() == []
+    else:
+        assert code == 0 and built == ["fixture/first"] and model.observed[0]["source_a"], out
+        (meta,) = SessionStore().list_sessions()
+        assert meta["role"]["model_id"] == role_model

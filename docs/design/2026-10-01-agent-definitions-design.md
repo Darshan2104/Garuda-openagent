@@ -591,6 +591,12 @@ An explicit agent file must agree with the bound definition digest or refuse
 `config.conflict` before activation. The held spec is runtime-only and absent
 from role records/repr; native consulted children still narrow to consult tools.
 
+When a native role names an exact model id and its agent declares/inherits a
+model binding, admission compares that binding’s trusted reasoning model id
+with the role id. Contradiction or missing alias refuses `config.conflict` before
+activation. Alias spelling is not a model id; agent-only selectors and ordinary
+model-factory precedence remain unchanged. ACP still refuses native bindings.
+
 ## External harnesses
 
 Claude Code and Codex are separate harnesses with their own instructions,

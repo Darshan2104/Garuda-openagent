@@ -1375,3 +1375,15 @@ excluded from role records/repr; ACP retains its separate projected instructions
 Native authority/activation and consult read-only narrowing remain in their
 existing owners. Actual CLI/model capture and quiescence-time consult changes
 own the regression evidence; no raw source body is persisted for this binding.
+
+
+### Native role model selectors agree before activation (#282, child of #172)
+
+When a native role supplies an exact model id and its agent declares/inherits a
+model binding, shared admission resolves the existing trusted global alias table
+and compares reasoning model ids. Contradiction or missing alias refuses
+config.conflict before inference construction/session creation. Alias spelling
+is not a model id. Matching ids, agent-only selection and ordinary factory
+precedence remain unchanged; ACP still refuses native-only model bindings.
+This is selector validation, not new transport/credential/capability policy.
+Actual CLI cases and observed model factory requests own the regression proof.

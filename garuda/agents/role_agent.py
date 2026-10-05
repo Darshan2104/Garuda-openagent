@@ -87,6 +87,21 @@ def _check_effort(plan: RolePlan, agent_effort):
     return plan.effort or agent_effort
 
 
+def _check_native_model(plan: RolePlan, resolved):
+    alias = resolved.leaves.get("model.binding")
+    if not alias or not plan.model_id:
+        return
+    from garuda.config.routing import load_global_orchestration
+
+    binding = load_global_orchestration().model_bindings.get(alias)
+    if binding is None:
+        raise _refused("config.conflict", f"role {plan.role}: unknown agent model binding {alias!r}")
+    if binding.reasoning.model != plan.model_id:
+        raise _refused("config.conflict",
+                       f"role {plan.role} names model {plan.model_id!r} but agent {plan.profile!r} "
+                       f"binding {alias!r} names {binding.reasoning.model!r}")
+
+
 def acp_unsupported(resolved) -> list[tuple[str, str]]:
     """``[(field, why)]`` for every explicit or inherited request an ACP role cannot honour."""
     found: list[tuple[str, str]] = []
@@ -111,6 +126,7 @@ def bind(plan: RolePlan | None, workspace: str, agents_dir=None) -> RolePlan | N
     resolved = agent.resolved()
     digest = hashlib.sha256((plan.digest + ":" + agent.digest).encode()).hexdigest()
     if plan.kind == "native":
+        _check_native_model(plan, resolved)
         _check_effort(plan, resolved.leaves.get("model.effort"))
         return replace(plan, agent_digest=agent.digest, digest=digest, agent_spec=agent)
     problems = acp_unsupported(resolved)
