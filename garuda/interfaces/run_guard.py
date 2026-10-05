@@ -7,7 +7,8 @@ guarantees, so they share one implementation instead of copies:
 - `WorkspaceLeaseGuard` — the single mutating workspace lease (P0.16):
   acquire before any session state or process, heartbeat while work runs,
   race the work against the heartbeat so a lost lease stops it, and release
-  on every path including cancellation.
+  after proved cleanup, including cancellation; quarantine retains ownership
+  when descendant death is unproven.
 - `approval_answerer` / `install_session_broker` / `broker_approval_handler`
   — the P0.17 approval path: every ask parks in an `ApprovalBroker` and is
   audited; a caller-supplied interactive handler becomes the answerer, and

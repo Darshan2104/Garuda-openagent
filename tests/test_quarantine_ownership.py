@@ -82,6 +82,9 @@ async def test_quarantine_retains_ownership_through_later_release(tmp_path, writ
     _still_writes(process, marker)
     with pytest.raises(LeaseError):
         parent.acquire()
+    # A later lease refusal must not mask capacity being returned by cleanup.
+    assert capacity.holders("native") == ["parent"]
+    assert [h.session_id for h in LeaseStore().holders_of(workspace)] == ["parent"]
     with pytest.raises(LeaseError):
         parent.delegate("new-child")
     if capability:
