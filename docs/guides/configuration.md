@@ -363,6 +363,12 @@ worker refuses before selection. The admission remains available for diagnosis;
 Garuda does not silently rebind it. The receipt covers serialized arguments,
 not a snapshot of every referenced configuration file.
 
+A release attempt revokes the committed process-local ticket before publishing
+its intent. If publication fails, the retained claimant handle cannot dispatch,
+and an ordinary capacity call that captured the ticket must recheck adoption
+before returning launch authority. The protected slot remains allocated; a
+partially published activation stays quarantined rather than being replayed.
+
 Queue heartbeat and release accept an explicit owner matching the complete
 claim record. Without an explicit owner, they use only the owner retained by
 the instance that successfully claimed the item in the current process.

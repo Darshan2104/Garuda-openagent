@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-10-05 — Revoked queue adoption cannot grant dispatch (#216)
+
+- Direct dispatch requires the complete committed process-local ticket as well
+  as the claiming instance's retained owner. A release attempt revokes adoption
+  before publishing intent; failed publication cannot resurrect activation from
+  an old claimant handle, including a release made through another store instance
+  or a workspace refusal.
+- Ordinary capacity activation rechecks the complete adopted ticket under its
+  file lock and again after activation publication, before returning launch
+  authority. A ticket captured before release cannot grant authority after
+  revocation, including revocation while publication is in flight. A published
+  activation with revoked authority retains its protected slot; ambiguity is
+  quarantined instead of replayed. The adoption mutex is never held over I/O.
+
 ## 2026-10-05 — Background admissions resolve canonical runtime capacity (#216)
 
 - Background launch resolves an explicit runtime reference through the existing

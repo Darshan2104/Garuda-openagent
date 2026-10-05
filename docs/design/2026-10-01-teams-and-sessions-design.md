@@ -648,8 +648,14 @@ harnesses. Recovery reconciles confirmed-dead pre-activation transactions,
 fencing captured activation tickets before publishing claim removal and slot
 release. The fence retains activation history. Activated or ambiguous dispatch
 stays quarantined and is never automatically replayed. Workspace refusal
-restores waiting order by the original durable sequence. Full descendant
-supervision and proof of cleanup on every terminal path remain D.2 work.
+restores waiting order by the original durable sequence. Direct dispatch also requires the complete unrevoked process-local ticket,
+in addition to the claiming instance's owner. Ordinary capacity activation
+rechecks adoption under its file lock and after publication before returning
+launch authority. Failed release intent cannot resurrect retained claimant
+handles or captured tickets; a partially published activation with revoked
+authority retains its protected slot for quarantine. The adoption mutex is
+never held over filesystem I/O. Full descendant supervision and proof of
+cleanup on every terminal path remain D.2 work.
 
 One strict `CapacityStore` owns slots for every entry point. Admission attempts
 capacity before workspace ownership, but releases the slot immediately if the

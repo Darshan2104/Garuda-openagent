@@ -123,6 +123,10 @@ fastest way to learn the system.
   and harness. Enqueue and ticket creation both enforce this, so a scope alias
   cannot create another FIFO lane for the same pair. Preexisting mismatches
   refuse selection without rebinding or reserving capacity.
+  Direct dispatch also checks full committed adoption; a failed release intent
+  cannot resurrect an old claimant handle. Ordinary capacity activation checks
+  adoption under its lock and after publication before granting launch authority,
+  retaining the protected slot if adoption was revoked during publication.
   Background admission resolves runtime aliases through the shared trusted
   catalog and queues under the canonical runtime id, retaining the original
   launch reference for downstream capability resolution. A worker verifies the lane,

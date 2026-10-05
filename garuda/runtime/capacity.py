@@ -131,6 +131,13 @@ def unadopt(root: Path, ticket: QueueTicket) -> None:
             del _ADOPTED[key]
 
 
+def is_adopted(root: Path, ticket: QueueTicket) -> bool:
+    """Dispatch needs the full committed ticket, including after release failure."""
+    key = (str(root.resolve()), ticket.key, ticket.holder)
+    with _ADOPTION_LOCK:
+        return _ADOPTED.get(key) == ticket
+
+
 class CapacityStore:
     """Per-key slot reservations under one owner-only directory."""
 
@@ -192,6 +199,7 @@ class CapacityStore:
                 if existing is not None:
                     if "queue" in existing:
                         if (adopted is None or owner != adopted.owner
+                                or not is_adopted(self.root, adopted)
                                 or existing.get("owner") != owner.to_dict()
                                 or (existing["queue"] != adopted.marker("selected")
                                     and existing["queue"] != adopted.marker("activated"))
@@ -202,6 +210,8 @@ class CapacityStore:
                         # flush. Republish even an exact activation retry
                         # before returning authority to start a runtime.
                         write_locked_document(directory_fd, self._path(key), document)
+                        if not is_adopted(self.root, adopted):
+                            raise CapacityUnavailable("queue launch authority was revoked during activation")
                         return Reservation(key=key, holder=holder, owner=owner)
                     if existing.get("owner") == owner.to_dict():
                         return Reservation(key=key, holder=holder, owner=owner)
