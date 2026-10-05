@@ -886,6 +886,13 @@ binding across waiting entries and claims, and preserve durable FIFO sequence.
 Conflicting retries refuse before writing. Cover exact and conflicting retries
 from real subprocess contenders and leave preexisting duplicate records intact.
 
+Ordinary reservations lack descendant cleanup receipts, so both ordinary and
+queue admission retain them after parent death. Prove this with a real parent
+that reserves capacity, spawns a writer in another group and exits: same-holder,
+other-holder, matching-dead-owner retry and queue callers must refuse without
+changing capacity bytes. Explicit matched release remains a coordinator cleanup
+assertion; do not invent automatic recovery from a pid/TTL/group observation.
+
 Check complete committed adoption at direct dispatch, and recheck ordinary
 capacity activation under its file lock and after publication before returning
 launch authority. Exercise failed release intent from the claimant and another

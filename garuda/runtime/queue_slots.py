@@ -115,12 +115,7 @@ class QueueSlots:
                 if existing is not None:
                     if self._same(existing, ticket):
                         return
-                    if "queue" in existing or self.capacity._liveness(existing["owner"]) is not False:
-                        raise CapacityUnavailable("queue holder already has a different reservation")
-                    del slots[ticket.holder]
-                for holder, slot in list(slots.items()):
-                    if "queue" not in slot and self.capacity._liveness(slot["owner"]) is False:
-                        del slots[holder]
+                    raise CapacityUnavailable("queue holder already has a different reservation")
                 if ceiling is not None and len(slots) >= ceiling:
                     raise CapacityUnavailable(f"runtime {ticket.key!r} is at its capacity of {ceiling}")
                 slots[ticket.holder] = {"owner": ticket.owner.to_dict(),

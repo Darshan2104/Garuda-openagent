@@ -641,7 +641,12 @@ that lock, workers:
 
 The implemented queue journal orders durable publications across separate files;
 it does not make them one atomic transaction. Ordinary capacity callers retain
-all queue slots regardless of owner liveness. Selection grants activation only
+all queue slots regardless of owner liveness. Ordinary reservations also stay
+counted after parent death: their current records do not prove descendant
+cleanup. Neither ordinary nor queue admission deletes them to make room, and
+matching dead/unknown ordinary owner retries cannot activate. Explicit matched
+release remains a coordinator cleanup assertion; receipt-based recovery stays
+session-kernel work. Selection grants activation only
 to the successful claiming process with frozen user/session/configuration
 bindings. Activation is persisted before the runner, including unlimited
 harnesses. Recovery reconciles confirmed-dead pre-activation transactions,

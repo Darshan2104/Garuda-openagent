@@ -18,8 +18,9 @@ supply packaged per-harness defaults.
 
 A reservation that cannot be made now is refused immediately — no caller
 waits on a slot (the background queue, D.1, adds waiting on top). A slot whose
-ordinary owner is confirmed dead is reclaimed; a live or unknown owner keeps
-it. Queue-bound slots remain protected until journaled coordinator release,
+ordinary owner is confirmed dead still counts: parent death does not prove
+runtime descendants were reaped. Ordinary reservations need an explicit matched
+release; recovery receipts remain session-kernel work. Queue-bound slots remain protected until journaled coordinator release,
 including after owner death. Nonempty version 1 records refuse mutation because
 they do not record whether reservations came from a queue. Empty version 1
 records upgrade only after a durable byte-exact private backup.
@@ -214,6 +215,8 @@ class CapacityStore:
                             raise CapacityUnavailable("queue launch authority was revoked during activation")
                         return Reservation(key=key, holder=holder, owner=owner)
                     if existing.get("owner") == owner.to_dict():
+                        if self._liveness(existing["owner"]) is not True:
+                            raise CapacityUnavailable("ordinary capacity owner or descendant cleanup cannot be proved")
                         return Reservation(key=key, holder=holder, owner=owner)
                     # A session id is a lookup key, not authority to steal its
                     # slot. This includes same-process callers with a new epoch.
@@ -222,15 +225,14 @@ class CapacityStore:
                             f"runtime {key!r}: holder {holder!r} already has a live "
                             "or unknown owner; refusing replacement"
                         )
-                    del slots[holder]
-                for other, slot in list(slots.items()):
-                    if (other != holder and "queue" not in slot
-                            and self._liveness(slot.get("owner") or {}) is False):
-                        del slots[other]  # owner confirmed dead: reclaim
+                    raise CapacityUnavailable(
+                        f"runtime {key!r}: holder {holder!r} has a dead owner without "
+                        "descendant cleanup evidence; retaining its reservation"
+                    )
                 if holder not in slots and len(slots) >= ceiling:
                     raise CapacityUnavailable(
                         f"runtime {key!r} is at its capacity of {ceiling} "
-                        f"({', '.join(sorted(slots))} running)"
+                        f"({', '.join(sorted(slots))} reserved)"
                     )
                 slots[holder] = {"owner": owner.to_dict(), "reserved_at": time.time()}
                 write_locked_document(directory_fd, self._path(key), document)

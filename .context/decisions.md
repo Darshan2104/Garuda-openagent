@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-10-05 — Parent death cannot reclaim ordinary capacity (#216)
+
+- Ordinary reservations can authorize dispatch but version 2 records contain
+  no descendant cleanup receipt. Both ordinary callers and queue selection
+  retain those reservations after owner death instead of deleting them during
+  admission. A matching dead/unknown owner record also cannot grant an ordinary
+  activation retry. Parent liveness, TTL and an apparently empty process group
+  do not prove that a runtime in another group has stopped.
+- Explicit matched release remains a trusted coordinator cleanup assertion.
+  This change adds no automatic recovery or fabricated reap evidence; a proved
+  recovery/cleanup receipt protocol remains session-kernel and D.2 work.
+  Refused admissions preserve capacity bytes and holder identity. Tests use a
+  real parent that exits while its separately grouped child continues writing.
+
 ## 2026-10-05 — Revoked queue adoption cannot grant dispatch (#216)
 
 - Direct dispatch requires the complete committed process-local ticket as well
