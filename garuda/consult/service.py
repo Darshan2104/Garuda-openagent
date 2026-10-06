@@ -76,6 +76,7 @@ class ChildRequest:
     request_id: str
     store: object
     source_workspace: str = "."
+    capacity_loan: object = field(default=None, repr=False)
 
 
 @dataclass
@@ -228,16 +229,31 @@ class ConsultService:
         guard = NoEditsGuard(scratch / "snapshot")
         prompt = envelope.question_prompt(req.question, req.brief or "", asker=role or "asker",
                                           target=req.target)
+        loan = None
+        if held.reservation is not None:
+            from garuda.runtime.capacity import CapacityError
+            from garuda.runtime.capacity_loan import CapacityLoan
+
+            try:
+                loan = CapacityLoan(held.capacity, held.reservation,
+                                    quarantine=lambda: setattr(held, "quarantined", True))
+            except CapacityError as exc:
+                raise ConsultRefused("consult.capacity_unavailable",
+                                     "consult admission could not be delegated") from exc
+            held.capacity_loan = loan
         child = ChildRequest(
             prompt=prompt, workspace=str(scratch / "snapshot"), plan=plan, limits=self.limits,
             deadline_sec=max(1.0, deadline - self._clock()), child_id=child_id,
             asker_session=req.asker_session, root_session=req.root_session,
-            request_id=request_id, store=self.store, source_workspace=req.workspace)
+            request_id=request_id, store=self.store, source_workspace=req.workspace,
+            capacity_loan=loan)
         # 5-6. dispatch is recorded first; from here a failure counts
         self._check_deadline(deadline)
         state.mark_dispatched(request_id)
         held.dispatched = True
         outcome = await self._launch(child, deadline, held)
+        if held.quarantined:
+            raise ConsultRefused("consult.quarantined", "consult capacity cleanup is unconfirmed")
         # 7. validate, persist, then release
         check = guard.check()
         elapsed_ms = round((self._clock() - started) * 1000)
@@ -349,6 +365,8 @@ class ConsultService:
             pass
         if not task.done():
             held.quarantined = True
+            if held.capacity_loan is not None:
+                held.capacity_loan.quarantine()
 
     def _receipt(self, req, role, request_id, child_id, plan, snapshot, outcome, check,
                  elapsed_ms) -> dict:
@@ -381,7 +399,7 @@ class ConsultService:
         """Record a failure and release what was held - unless consult work may still run."""
         if held.quarantined:
             state.quarantine(request_id, {"outcome": "refused", "code": "consult.quarantined",
-                                          "message": "the consult work could not be confirmed stopped; "
+                                          "message": "the consult work or its capacity cleanup could not be confirmed; "
                                                      "its slot is held until an operator clears it"})
             return  # capacity and scratch stay held
         if held.dispatched:
@@ -403,6 +421,10 @@ class ConsultService:
 
     @staticmethod
     def _release(held: _Held) -> None:
+        if held.quarantined:
+            if held.capacity_loan is not None:
+                held.capacity_loan.quarantine()
+            return
         if held.reservation is not None and held.capacity is not None:
             with contextlib.suppress(Exception):
                 held.capacity.release(held.reservation)
@@ -415,6 +437,7 @@ class _Held:
     plan: object = None
     reservation: object = None
     capacity: object = None
+    capacity_loan: object = field(default=None, repr=False)
     scratch: Path | None = None
     task: asyncio.Future | None = None
     dispatched: bool = False
@@ -460,6 +483,7 @@ async def native_child(child: ChildRequest) -> ChildOutcome:
         task=child.prompt, model=prepared.reasoning, agent=prepared.agent, tools=prepared.tools,
         config=config, permissions=prepared.permissions, workspace=child.workspace, events=events,
         hooks=HookRegistry(), mcp_manager=prepared.mcp_manager, store=child.store,
+        capacity_loan=child.capacity_loan,
         session_record={"origin": "consult", "consult": {
             "asker_session": child.asker_session, "root_session": child.root_session,
             "request_id": child.request_id},
@@ -486,7 +510,8 @@ async def acp_child(child: ChildRequest) -> ChildOutcome:
     try:
         summary = await run_acp_task(
             child.prompt, runtime_id=plan.runtime_id, workspace=child.workspace,
-            approval=deny_all, emit=lambda *_a: None, role_plan=plan, store=child.store)
+            approval=deny_all, emit=lambda *_a: None, role_plan=plan, store=child.store,
+            session_id=child.child_id, capacity_loan=child.capacity_loan)
     except Exception as exc:
         if getattr(exc, "code", "") == "workspace.readonly_unenforced":
             raise ConsultRefused("consult.isolation_unavailable", str(exc)) from exc

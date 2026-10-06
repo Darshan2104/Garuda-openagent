@@ -959,6 +959,16 @@ quarantine, even when no child was launched. Synchronous trusted preparation
 is checked between phases; this does not physically interrupt synchronous
 Python or preflight.
 
+A native or confined ACP child uses its planned child session id and borrows the admission owner's
+already issued capacity slot through the shared capacity loan service. Its
+workspace guard still owns the detached snapshot lease. Borrow authority binds
+the issuing store/object, live process identity, exact owner epoch, runtime and
+child id. No second slot or release/reacquire gap is introduced. A durable loan
+marker stays until the live issuing owner completes receipt publication and
+releases admission; even a fresh store cannot release it. Unknown borrower
+cleanup quarantines the outer request and retains ownership. Abandoned loans
+require explicit operator cleanup; no automatic recovery is claimed.
+
 ### Receipts and accounting
 
 A `ConsultReceipt` records request/asker/root/child ids, source turn, role and

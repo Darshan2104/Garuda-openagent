@@ -1474,3 +1474,14 @@ their receipts, beside native structured permission evidence. Child failure
 and answer/error prose alone do not count. The existing Docker-only boundary,
 receipt schema and unchanged source snapshot remain the owners of isolation
 and evidence; no vendor self-report or new inference transport is introduced.
+
+### 2026-10-06: one admission capacity slot per native or confined ACP consult
+
+The consult service owns admission before capture and lends that issued slot
+to the native or confined ACP child, whose planned session id is the holder. The standard guard
+validates live issuing-store/object/process/epoch authority and takes the
+snapshot lease without reserving twice. A durable source-free loan marker
+blocks fresh-store and late cleanup release until the issuing owner finalizes
+a completed borrow after receipt publication. Unknown cleanup quarantines the
+root and retains ownership; abandoned loans require operator cleanup, with no
+automatic reclaim or hostile same-process Python protection claim.

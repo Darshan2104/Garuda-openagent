@@ -1341,6 +1341,15 @@ G.2 receipt acceptance includes the actual Docker-confined ACP default child:
 persisted broker denial counts, a denial-word success control and an unsuccessful
 child whose denial evidence stays unknown. Counts do not come from status or text.
 
+G.2's native child with a live parent and confined ACP child must succeed with
+one available slot while a real
+competitor refuses at the actual prompt boundary. It borrows authenticated
+admission capacity and uses its planned child session id, rather than allocating
+a second slot. Full pools refuse before capture. Owner/store/runtime/session/
+epoch/fork/copy controls and real advancing-writer quarantine prove that only
+the live issuing owner finalizes after known borrower cleanup and receipt
+publication. Abandoned loans retain their durable marker for operator cleanup.
+
 ### G.3 MCP consult tool for ACP askers
 
 **Dependencies:** G.1 and G.2, with all exact-version transport gates met.
