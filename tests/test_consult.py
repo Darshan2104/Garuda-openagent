@@ -484,37 +484,86 @@ async def test_parent_cancellation_propagates_and_reaps(world):
     assert ConsultState(world.store, world.asker).snapshot()["active"] is None
 
 
-async def test_a_child_that_cannot_be_reaped_is_quarantined_and_keeps_its_slot(world, monkeypatch):
+@pytest.mark.parametrize("delegated", [False, pytest.param(True, marks=needs_docker)])
+async def test_a_child_that_cannot_be_reaped_is_quarantined_and_keeps_its_slot(
+        world, monkeypatch, delegated):
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+    from garuda.runtime.capacity import CapacityStore
+    from tests.test_capacity_loans import wait_marker
+
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text("capacity: {native: 1}\n")
-    monkeypatch.setattr(svc, "REAP_GRACE", 0.2)
-    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
+    runtime = "fakeacp" if delegated else "native"
+    if delegated:
+        _settings()
+    settings.write_text((settings.read_text() if settings.exists() else "")
+                        + f"capacity: {{{runtime}: 1}}\n")
+    doc = {**DOC, "consults": {"timeout_sec": 2}}
+    if delegated:
+        harness = gy.load_text("version: 1\nharnesses:\n  fakeacp:\n    confinement:\n"
+                               + CONFINED)["harnesses"]["fakeacp"]
+        doc = {"version": 1, "harnesses": {"fakeacp": harness},
+               "roles": {"coder": {"harness": "native", "consult": ["reviewer"]},
+                         "reviewer": {"harness": "fakeacp", "permissions": "readonly"}},
+               "consults": {"timeout_sec": 2}}
+    monkeypatch.setattr(svc, "REAP_GRACE", 0.1)
+    resolved = make_resolved(doc)
+    admissions, tasks = [], []
+    reserve = CapacityStore.reserve
 
+    def observe_reservation(issuer, *args, **kwargs):
+        result = reserve(issuer, *args, **kwargs)
+        admissions.append((issuer, result))
+        return result
+
+    monkeypatch.setattr(CapacityStore, "reserve", observe_reservation)
     stop = asyncio.Event()
+    marker = world.tmp / "borrower-marker"
 
     async def stubborn(child):
-        while not stop.is_set():  # swallows cancellation: it will not stop until told to
-            try:
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                await asyncio.sleep(0)
+        tasks.append(asyncio.current_task())
+        guard = WorkspaceLeaseGuard(child.workspace, child.child_id, capacity_key=runtime,
+                                    capacity_loan=child.capacity_loan)
+        guard.acquire()
+        writer = subprocess.Popen([
+            os.sys.executable, "-c", "import os,sys,time\nfrom pathlib import Path\n"
+            "p=Path(sys.argv[1]);n=0\nwhile True:\n n+=1;t=p.with_suffix('.next');"
+            "t.write_text(str(n));os.replace(t,p);time.sleep(.03)\n", str(marker)])
+        try:
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), 0.1)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+        finally:
+            writer.terminate()
+            writer.wait(timeout=5)
+            if guard is not None:
+                await guard.release()
+        return ChildOutcome(child.child_id, True, "late advice")
 
-    from garuda.runtime.capacity import CapacityStore
-
-    with pytest.raises(ConsultRefused):
-        await ConsultService(world.store, resolved, runner=stubborn).consult(request(world))
-    assert CapacityStore().holders("native") != []  # the slot is still held
-    snapshot = ConsultState(world.store, world.asker).snapshot()
-    assert snapshot["requests"][snapshot["active"]]["state"] == "quarantined"
-    with pytest.raises(ConsultRefused) as caught:  # and the root stays busy
-        await service(world, Recorder()).consult(request(world, request_id="more"))
-    assert caught.value.code == "consult.busy"
-    stop.set()  # let the deliberately stuck child finish so the test loop can close
-    for task in asyncio.all_tasks():
-        if task is not asyncio.current_task() and "stubborn" in repr(task):
-            task.cancel()
-    await asyncio.sleep(0.1)
+    try:
+        with pytest.raises(ConsultRefused):
+            await ConsultService(world.store, resolved, runner=stubborn).consult(request(world))
+        before = await wait_marker(marker)
+        assert await wait_marker(marker, before) > before
+        assert len(admissions) == 1
+        issuer, reservation = admissions[0]
+        assert CapacityStore().holders(runtime) == [reservation.holder]
+        snapshot = ConsultState(world.store, world.asker).snapshot()
+        assert snapshot["requests"][snapshot["active"]]["state"] == "quarantined"
+        with pytest.raises(ConsultRefused) as caught:
+            await service(world, Recorder(), resolved=resolved).consult(
+                request(world, request_id="more"))
+        assert caught.value.code == "consult.busy"
+    finally:
+        stop.set()
+        for task in tasks:
+            await asyncio.wait_for(asyncio.shield(task), 5)
+    issuer.release(reservation)
+    CapacityStore().release(reservation)
+    assert CapacityStore().holders(runtime) == [reservation.holder]
+    assert ConsultState(world.store, world.asker).snapshot()["active"] is not None
 
 
 # --- the envelope and the receipt -----------------------------------------------------------------
@@ -600,19 +649,55 @@ async def test_an_external_child_never_runs_on_the_host(world, monkeypatch):
 
 
 @needs_docker
-@pytest.mark.parametrize("profile, expected_denials, outcome", [
-    ("approval", 1, "refused"),
-    ("success", 0, "answered"),
-    ("odd-stop", 0, "refused"),
+@pytest.mark.parametrize("profile, expected_denials, outcome, capacity", [
+    ("approval", 1, "refused", None),
+    ("success", 0, "answered", None),
+    ("odd-stop", 0, "refused", None),
+    ("success", 0, "answered", 1),
+    ("full", 0, "refused", 1),
 ])
-async def test_confined_acp_consult_receipts_count_broker_denials(world, profile,
-                                                                expected_denials, outcome):
+async def test_confined_acp_consult_receipts_and_capacity(world, profile, expected_denials,
+                                                        outcome, capacity, monkeypatch):
     from garuda.workspace.no_edits import manifest
 
     _settings()
+    from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
+
+    pool = CapacityStore()
+    observed, published = [], []
+    if capacity:
+        original_release = CapacityStore.release
+
+        def observing_release(issuer, reservation):
+            if reservation.key == "fakeacp" and reservation.holder != "occupied":
+                (record,) = ConsultState(world.store, world.asker).snapshot()["requests"].values()
+                receipt_path = (Path(world.store.root) / ".consult" / world.asker / "receipts"
+                                / f"{record['result']['receipt']['request_id']}.json")
+                published.append(record["state"] == "done"
+                                 and json.loads(receipt_path.read_text())["child_session"]
+                                 == reservation.holder)
+            return original_release(issuer, reservation)
+
+        monkeypatch.setattr(CapacityStore, "release", observing_release)
+        settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+        settings.write_text(settings.read_text() + "capacity: {fakeacp: 1}\n")
+        from garuda.acp.adapter import AcpRuntime
+
+        original_prompt = AcpRuntime.prompt
+
+        async def observing_prompt(runtime, *args, **kwargs):
+            holders = pool.holders("fakeacp")
+            assert len(holders) == 1
+            observed.append(holders[0])
+            with pytest.raises(CapacityUnavailable):
+                pool.reserve("fakeacp", "competitor", 1)
+            return await original_prompt(runtime, *args, **kwargs)
+
+        monkeypatch.setattr(AcpRuntime, "prompt", observing_prompt)
     world.ws.chmod(0o755)
     confinement = gy.load_text("version: 1\nharnesses:\n  fakeacp:\n    confinement:\n"
-                               + CONFINED.replace("probe-writes", profile))["harnesses"]["fakeacp"]
+                               + CONFINED.replace("probe-writes", "success" if profile == "full" else profile))[
+                                   "harnesses"]["fakeacp"]
     resolved = make_resolved({
         "version": 1, "harnesses": {"fakeacp": confinement},
         "roles": {"coder": {"harness": "native", "consult": ["reviewer"]},
@@ -620,6 +705,21 @@ async def test_confined_acp_consult_receipts_count_broker_denials(world, profile
     })
     before = manifest(world.ws)
     engine = ConsultService(world.store, resolved)
+    if profile == "full":
+        occupied = pool.reserve("fakeacp", "occupied", 1)
+        captures = []
+        try:
+            with pytest.raises(ConsultRefused) as exc:
+                await engine.consult(request(world), quiesce=lambda: captures.append(True))
+            assert exc.value.code == "consult.capacity_unavailable"
+            assert observed == captures == []
+            assert len(world.store.list_sessions()) == 1
+            assert ConsultState(world.store, world.asker).snapshot()["count"] == 0
+            assert pool.holders("fakeacp") == ["occupied"]
+            assert not (Path(world.store.root) / ".consult" / world.asker / "scratch").exists()
+        finally:
+            pool.release(occupied)
+        return
     if profile == "odd-stop":
         with pytest.raises(ConsultRefused) as exc:
             await engine.consult(request(world, question="permission denied"))
@@ -640,5 +740,10 @@ async def test_confined_acp_consult_receipts_count_broker_denials(world, profile
     assert result.receipt["observed_changes"] == {"unchanged": True, "changed": 0}
     assert manifest(world.ws) == before
     assert meta["confinement"] == {"kind": "docker", "image": IMAGE, "source": "read-only"}
+    if capacity:
+        assert observed == [result.receipt["child_session"]]
+        assert pool.holders("fakeacp") == [] and published == [True]
+        (record,) = ConsultState(world.store, world.asker).snapshot()["requests"].values()
+        assert record["state"] == "done" and record["result"]["receipt"] == result.receipt
     if profile == "success":
         assert "permission denied and denied operations" in result.text

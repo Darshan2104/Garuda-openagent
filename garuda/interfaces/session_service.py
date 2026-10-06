@@ -101,7 +101,7 @@ def plan_meta(plan: dict | None) -> dict:
 
 
 def acquire_lease(workspace, session_id, *, capacity_key="native", mode="mutating",
-                  worktree_plan=None, capability=None):
+                  worktree_plan=None, capability=None, capacity_loan=None):
     """Step 4a: capacity, then the lease. A refusal discards a new worktree.
 
     With a flow ``capability`` (C.6a) the step borrows its parent's lease for
@@ -112,13 +112,16 @@ def acquire_lease(workspace, session_id, *, capacity_key="native", mode="mutatin
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard
     from garuda.workspace.lease import LeaseError
 
+    if capacity_loan is not None and capability is not None:
+        raise LeaseError("capacity and workspace loans cannot be combined")
     if capability is not None:
         if os.path.realpath(str(workspace)) != os.path.realpath(capability.workspace):
             raise LeaseError("the lease capability is for another workspace")
         lease = capability.guard(capacity_key=capacity_key)
         lease.acquire()
         return lease
-    lease = WorkspaceLeaseGuard(str(workspace), session_id, capacity_key=capacity_key, mode=mode)
+    lease = WorkspaceLeaseGuard(str(workspace), session_id, capacity_key=capacity_key, mode=mode,
+                                capacity_loan=capacity_loan)
     try:
         lease.acquire()
     except BaseException:

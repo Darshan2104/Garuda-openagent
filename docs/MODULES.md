@@ -105,8 +105,16 @@ compare-and-swap. A worktree is a separate place to edit, not confinement. `runt
 runtime (`native`, `claude`, `codex`, …) shared by every launch through
 `WorkspaceLeaseGuard`; ceilings come from `capacity:` in the global settings,
 and a key without one is not limited. Reusing a capacity holder id refuses
-live/unknown ownership replacement; exact-owner retries are idempotent, and
-release validates the full owner identity and epoch. `run_agent_task` acquires the mutating lease for the workspace
+live/unknown ownership replacement; undelegated exact-owner retries are
+idempotent, and release validates the full owner identity and epoch.
+`runtime/capacity_loan.py` lends an actually issued live reservation to one
+planned native or confined ACP consult child. The standard workspace guard borrows that slot
+instead of reserving again. Private object origin, process identity, stored
+owner/epoch, runtime and child id must agree; foreign/forked/copied authority
+refuses. A source-free durable loan marker blocks every ordinary or fresh-store
+release until the live issuing owner finalizes the completed loan. Unknown
+cleanup retains the marker and quarantines the outer request. Abandoned loans
+remain for explicit operator cleanup; no automatic recovery/reclaim is claimed. `run_agent_task` acquires the mutating lease for the workspace
 before resolving the environment, heartbeats for the whole run, and releases
 last (also on cancellation) — concurrent `run_agent_task` runs on one workspace
 are refused, never interleaved. The interactive paths that call `agent.run`

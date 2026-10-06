@@ -47,6 +47,7 @@ class WorkspaceLeaseGuard:
         capacity_key: str | None = None,
         capacity_store=None,
         capacity_ceiling: int | None = None,
+        capacity_loan=None,
         mode: str = "mutating",
     ):
         from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
@@ -64,6 +65,7 @@ class WorkspaceLeaseGuard:
         self._capacity_key = capacity_key
         self._capacity_store = capacity_store
         self._capacity_ceiling = capacity_ceiling
+        self._capacity_loan = capacity_loan
         self._reservation = None
         # "read-only" work shares the workspace with other readers and never
         # blocks or is blocked by them; it still conflicts with nothing else.
@@ -89,6 +91,14 @@ class WorkspaceLeaseGuard:
         self._held = True
 
     def _reserve_capacity(self) -> None:
+        if self._capacity_loan is not None:
+            from garuda.runtime.capacity import CapacityError
+            from garuda.runtime.capacity_loan import CapacityLoan
+
+            if type(self._capacity_loan) is not CapacityLoan:
+                raise CapacityError("capacity delegation requires an issued loan")
+            self._capacity_loan.acquire(self._capacity_key, self.session_id)
+            return
         if not self._capacity_key:
             return
         from garuda.runtime.capacity import CapacityStore, configured_ceiling
@@ -103,6 +113,9 @@ class WorkspaceLeaseGuard:
         self._capacity_store = store
 
     def _release_capacity(self) -> None:
+        if self._capacity_loan is not None:
+            self._capacity_loan.release()
+            return
         reservation, self._reservation = self._reservation, None
         if reservation is None or self._capacity_store is None:
             return
@@ -181,6 +194,8 @@ class WorkspaceLeaseGuard:
         no override: supervised cleanup/recovery receipts are separate work.
         """
         self._quarantined = True
+        if self._capacity_loan is not None:
+            self._capacity_loan.quarantine()
         await self._stop_beating()
 
     async def release(self) -> None:

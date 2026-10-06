@@ -93,6 +93,12 @@ fastest way to learn the system.
    denial boolean from metadata, and denied file accesses bypass memo storage
    so each attempt retains its own evidence. ACP consult receipts count persisted
    broker `deny` outcomes; child failure or answer prose alone never counts.
+   Native and confined ACP children borrow the already issued admission capacity through
+   `runtime/capacity_loan.py`, using their planned child id. The workspace guard
+   validates that live owner/store/epoch and takes only the snapshot lease.
+   A durable loan marker remains until the issuing owner publishes the receipt
+   and releases admission; foreign/forked callers and fresh stores cannot drop
+   it. Unknown borrower cleanup quarantines the root and retains the slot.
 5. **Tools** — `tools/` registered through `tools/registry.py` and assembled by
    `build_toolkit`. Every tool takes a `ToolContext` and returns a `ToolResult`.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps

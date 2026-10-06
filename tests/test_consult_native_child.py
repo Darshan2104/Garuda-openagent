@@ -97,16 +97,53 @@ async def test_the_child_is_bounded_in_turns(consult_world, script):
     assert len([t for t in turns if t["payload"].get("tool_calls")]) <= 3
 
 
-async def test_the_childs_calls_are_recorded_as_origin_consult(consult_world, script):
-    script([call("task_complete", "d", summary="An answer with enough detail to count.")])
-    from garuda.observability import ledger as ledger_module
+@pytest.mark.parametrize("limited", [False, True])
+async def test_the_childs_calls_are_recorded_as_origin_consult(consult_world, script,
+                                                             monkeypatch, limited):
+    import os
 
-    await ConsultService(consult_world.store, make_resolved()).consult(ConsultRequest(
-        asker_session=consult_world.asker, root_session=consult_world.asker, target="reviewer",
-        question="q", workspace=str(consult_world.ws)))
-    records = [r for r in Ledger().records() if r["kind"] == "native_model_call"]
-    assert records and {r["origin"] for r in records} == {"consult"}
-    assert ledger_module.totals(records)["native_calls"] >= 1
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+    from garuda.observability import ledger as ledger_module
+    from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
+
+    parent = None
+    observed = []
+    if limited:
+        settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text("capacity: {native: 2}\n")
+        parent = WorkspaceLeaseGuard(str(consult_world.ws), consult_world.asker,
+                                     capacity_key="native")
+        parent.acquire()
+    script([call("task_complete", "d", summary="An answer with enough detail to count.")])
+    complete = ScriptModel.complete
+
+    async def observe(model, *args, **kwargs):
+        if limited:
+            holders = CapacityStore().holders("native")
+            assert len(holders) == 2 and consult_world.asker in holders
+            with pytest.raises(CapacityUnavailable):
+                CapacityStore().reserve("native", "another-session", 2)
+            observed.append(set(holders))
+        return await complete(model, *args, **kwargs)
+
+    monkeypatch.setattr(ScriptModel, "complete", observe)
+    try:
+        result = await ConsultService(consult_world.store, make_resolved()).consult(ConsultRequest(
+            asker_session=consult_world.asker, root_session=consult_world.asker, target="reviewer",
+            question="q", workspace=str(consult_world.ws)))
+        assert result.outcome == "answered", result.tool_text()
+        if limited:
+            assert observed == [{consult_world.asker, result.receipt["child_session"]}]
+            assert CapacityStore().holders("native") == [consult_world.asker]
+        records = [r for r in Ledger().records() if r["kind"] == "native_model_call"]
+        assert records and {r["origin"] for r in records} == {"consult"}
+        assert ledger_module.totals(records)["native_calls"] >= 1
+    finally:
+        if parent is not None:
+            await parent.release()
+    if limited:
+        assert CapacityStore().holders("native") == []
 
 
 @pytest.mark.parametrize("scenario, expected", [

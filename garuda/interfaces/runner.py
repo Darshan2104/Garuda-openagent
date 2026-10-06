@@ -166,6 +166,7 @@ async def run_agent_task(
     context_attached=None,
     session_record: dict | None = None,
     lease_capability=None,
+    capacity_loan=None,
     store: SessionStore | None = None,
     runtime_catalog=None,
     runtime_ref: str = "native",
@@ -223,7 +224,7 @@ async def run_agent_task(
     # user sets `capacity.native` in global settings.
     lease = session_service.acquire_lease(
         workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan,
-        capability=lease_capability,
+        capability=lease_capability, capacity_loan=capacity_loan,
         # A read-only posture shares the workspace with other readers (B.4).
         mode=lease_mode_for(getattr(config, "permission_mode", None)),
     )

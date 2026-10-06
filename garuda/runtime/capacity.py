@@ -145,6 +145,25 @@ class CapacityStore:
     def __init__(self, root: str | Path | None = None, *, liveness=owner_liveness):
         self.root = Path(root) if root else default_capacity_root()
         self._liveness = liveness
+        self._issued = {}
+        self._loans = {}
+
+    def _issue(self, key, holder, owner):
+        reservation = Reservation(key=key, holder=holder, owner=owner)
+        self._issued[key, holder] = reservation
+        self._loans.pop((key, holder), None)
+        return reservation
+
+    def _check_issued(self, reservation, slot):
+        owner = current_owner()
+        if (self._issued.get((reservation.key, reservation.holder)) is not reservation
+                or reservation.owner.pid != owner.pid
+                or reservation.owner.identity != owner.identity
+                or reservation.owner.pgid != owner.pgid
+                or not slot or "queue" in slot
+                or slot.get("owner") != reservation.owner.to_dict()
+                or self._liveness(slot["owner"]) is not True):
+            raise CapacityError("capacity delegation has no live issued reservation authority")
 
     def _path(self, key: str) -> Path:
         return self.root / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
@@ -198,6 +217,8 @@ class CapacityStore:
                 if existing is None and adopted is not None:
                     raise CapacityUnavailable("queued launch no longer has its committed reservation")
                 if existing is not None:
+                    if "loan" in existing:
+                        raise CapacityUnavailable("capacity is delegated; refusing another admission")
                     if "queue" in existing:
                         if (adopted is None or owner != adopted.owner
                                 or not is_adopted(self.root, adopted)
@@ -213,11 +234,11 @@ class CapacityStore:
                         write_locked_document(directory_fd, self._path(key), document)
                         if not is_adopted(self.root, adopted):
                             raise CapacityUnavailable("queue launch authority was revoked during activation")
-                        return Reservation(key=key, holder=holder, owner=owner)
+                        return self._issue(key, holder, owner)
                     if existing.get("owner") == owner.to_dict():
                         if self._liveness(existing["owner"]) is not True:
                             raise CapacityUnavailable("ordinary capacity owner or descendant cleanup cannot be proved")
-                        return Reservation(key=key, holder=holder, owner=owner)
+                        return self._issue(key, holder, owner)
                     # A session id is a lookup key, not authority to steal its
                     # slot. This includes same-process callers with a new epoch.
                     if self._liveness(existing.get("owner") or {}) is not False:
@@ -238,7 +259,7 @@ class CapacityStore:
                 write_locked_document(directory_fd, self._path(key), document)
         except StorageError as exc:
             raise CapacityError(f"capacity storage unavailable: {exc}") from exc
-        return Reservation(key=key, holder=holder, owner=owner)
+        return self._issue(key, holder, owner)
 
     def release(self, reservation: Reservation) -> None:
         """Give the slot back. A slot now held under another epoch is left alone."""
@@ -250,6 +271,11 @@ class CapacityStore:
                     return
                 if "queue" in slot:
                     return  # the queue coordinator releases after durable claim removal
+                if "loan" in slot:
+                    loan = self._loans.get((reservation.key, reservation.holder))
+                    if (self._issued.get((reservation.key, reservation.holder)) is not reservation
+                            or loan is None or not loan.owner_may_release(slot)):
+                        return  # only the issuing owner may end a completed loan
                 del document["slots"][reservation.holder]
                 write_locked_document(directory_fd, self._path(reservation.key), document)
         except StorageError as exc:

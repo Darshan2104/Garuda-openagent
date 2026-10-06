@@ -620,6 +620,8 @@ async def run_acp_task(
     role_plan=None,
     lease_capability=None,
     consult_host=None,
+    session_id: str | None = None,
+    capacity_loan=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -665,7 +667,9 @@ async def run_acp_task(
         role_options = acp_options(role_plan, getattr(record, "version", "unknown"))
 
     store = store or SessionStore()
-    events = EventStore()
+    if capacity_loan is not None and lease_capability is not None:
+        raise ValueError("capacity and workspace delegations cannot be combined")
+    events = EventStore(session_id)
     session_id = events.session_id
     if lease_capability is not None:
         from garuda.interfaces.session_service import acquire_lease
@@ -676,7 +680,8 @@ async def run_acp_task(
         # A read-only role shares the workspace with other readers.
         readonly = role_plan is not None and role_plan.permissions == "readonly"
         lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id,
-                                    mode="read-only" if readonly else "mutating")
+                                    mode="read-only" if readonly else "mutating",
+                                    capacity_loan=capacity_loan)
         lease.acquire()
     runtime = None
     began = False
