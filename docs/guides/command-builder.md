@@ -44,9 +44,13 @@ click, and the copy button copies it as shown.
 <div class="gb-options" data-group="extras" data-multi>
 <button data-args="--deadline-sec 900" data-native-only data-explain="--deadline-sec 900 gives the run a 15-minute wall-clock budget.">15-minute limit</button>
 <button data-args="--max-turns 30" data-native-only data-explain="--max-turns 30 stops the loop after 30 agent turns.">30-turn limit</button>
-<button data-args="--resume latest" data-native-only data-explain="--resume latest continues your most recent session as a new, linked session.">Continue last session</button>
+<button data-args="--check &quot;python -m pytest -q&quot;" data-explain="--check runs your test command after the session; its result becomes the session's verification (passed or failed). Repeat the flag for more checks." data-note="Replace python -m pytest -q with your own test command.">Verify with my tests</button>
+<button data-id="bg" data-conflicts="resume trajectory" data-args="--bg" data-explain="--bg queues the run and returns at once with the session ID; follow it with garuda sessions and stop it with garuda sessions cancel." data-note="A background run has nobody to approve risky actions, so they are denied.">Run in the background</button>
+<button data-args="--isolation worktree" data-native-only data-explain="--isolation worktree edits a separate Git worktree on its own garuda/&lt;session&gt; branch; merge it later with garuda sessions merge." data-note="The worktree starts from your last commit; uncommitted changes are not carried over.">Own Git worktree</button>
+<button data-args="--name my-task" data-explain="--name my-task names the session, so you can refer to it later as @my-task or with --resume my-task.">Name the session</button>
+<button data-id="resume" data-conflicts="bg" data-args="--resume latest" data-native-only data-explain="--resume latest continues your most recent session as a new, linked session.">Continue last session</button>
 <button data-args="--json" data-native-only data-explain="--json prints JSONL events instead of the human-readable result.">JSON output</button>
-<button data-args="--trajectory run.jsonl" data-native-only data-explain="--trajectory run.jsonl also saves the run's events to run.jsonl.">Save trajectory</button>
+<button data-id="trajectory" data-conflicts="bg" data-args="--trajectory run.jsonl" data-native-only data-explain="--trajectory run.jsonl also saves the run's events to run.jsonl.">Save trajectory</button>
 </div>
 </div>
 
@@ -84,7 +88,9 @@ The builder only produces `garuda run` commands. For everything else:
 | You want to… | Go to |
 |---|---|
 | Talk to the agent and approve risky actions yourself | [`garuda chat`](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
+| Run as a role, or a plan → build → review flow | [Level 5 · Build a team of roles](../use-cases/teams.md) |
+| Merge a worktree session after checks pass | [`garuda sessions merge`](../use-cases/parallel.md#check-and-merge-a-worktree-session) |
 | Browse past runs in a browser | [Web dashboard](../use-cases/explore.md#browse-past-runs-in-the-dashboard) |
 | Hand a session to Claude Code, Codex, … | [Hand off a session](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
-| Script Garuda from Python or HTTP | [Level 4 · Automate](../use-cases/automate.md) |
+| Script Garuda from Python or HTTP | [Level 6 · Automate](../use-cases/automate.md) |
 | See every flag | [CLI reference](../reference/cli.md) or `garuda run --help` |

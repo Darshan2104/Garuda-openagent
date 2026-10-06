@@ -1,12 +1,13 @@
-# Level 4 · Automate
+# Level 6 · Automate
 
-<span class="gd-level">Level 4</span> Run Garuda from files, shell scripts, CI
+<span class="gd-level">Level 6</span> Run Garuda from files, shell scripts, CI
 jobs, Python programs, and HTTP clients.
 
 | Approach | Best for | Starts with |
 |---|---|---|
 | Recipe | A fixed sequence of steps with parameters | `garuda recipe run file.yaml` |
 | Shell or CI | One task with an exit status and JSON output | `garuda run --json` |
+| Background queue | Many tasks started from a script, polled later | `garuda run --bg`, `garuda sessions show --json` |
 | Python SDK | Embedding the agent in your own program | `SoftwareAgent` |
 | HTTP service | Submitting and polling jobs from another process | `garuda serve` |
 
@@ -117,7 +118,28 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
     GitHub masks the secret in logs, and pull requests from forks don't receive
     it. Run this only on changes you are willing to send to your provider.
 
+=== "Background and poll"
+
+    ```bash
+    id=$(garuda run --bg --check "python -m pytest -q" -t "Fix the failing tests")
+    while garuda sessions show "$id" --json | jq -e '.label | IN("queued", "working", "waiting")' >/dev/null; do
+      sleep 10
+    done
+    garuda sessions show "$id" --json | jq '{label, verification}'
+    ```
+
+    `--bg` prints only the session ID on stdout. `sessions show --json`
+    returns the same record the dashboard uses: `label`, the four-part
+    `state`, `verification`, `self_check`, `queue`, `branch`, `approvals`,
+    `flow` and `consults`. `garuda sessions --json` lists every session.
+
 Add `--trajectory run.jsonl` to also save the events to a file after the run.
+
+!!! tip "JSON from the other commands"
+    `garuda doctor --json`, `garuda agent show NAME --json`,
+    `garuda agent check NAME --json`, `garuda memory list --json` and
+    `garuda runtime list --json` are all meant for scripts. `doctor` and
+    `agent check` exit `1` when they find an error.
 
 ## Call Garuda from Python
 
@@ -184,6 +206,29 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
     asyncio.run(main())
     ```
 
+=== "An agent definition"
+
+    ```python
+    import asyncio
+
+    from garuda import AgentSpec, SoftwareAgent
+
+
+    async def main():
+        spec = AgentSpec.load("api-summary", workspace=".")
+        agent = SoftwareAgent(workspace=".", agent=spec.narrow(limits={"max_turns": 12}))
+        result = await agent.run("List the public functions in src/calc")
+        print(result.output)  # the validated JSON, when the agent has an output schema
+
+
+    asyncio.run(main())
+    ```
+
+    `AgentSpec.load` resolves a name exactly as `garuda run --agent NAME` does.
+    `narrow(...)` returns a stricter copy (fewer turns, fewer tools, a tighter
+    permission mode); anything looser is refused with `agent.narrow_refused`.
+    See [structured JSON output](customize.md#get-structured-json-back).
+
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
@@ -232,12 +277,26 @@ Replace `JOB_ID` with the `job_id` returned by `submit`.
 | `cancel` | Stops a job |
 | `run` | Runs a task and waits; returns the result and all events |
 | `jobs`, `sessions`, `list_agents` | Lists jobs, saved sessions, and profiles |
-| `runtime_list`, `runtime_inspect`, `runtime_handoff`, `runtime_recover`, `runtime_support` | Runtime operations; see [Level 5](advanced.md) |
+| `runtime_list`, `runtime_inspect`, `runtime_handoff`, `runtime_recover`, `runtime_support` | Runtime operations; see [Level 7](advanced.md) |
 
 Requests that carry a browser `Origin` header are rejected, so a web page you
 visit can't drive the server. `--max-jobs` limits concurrent jobs (default 4).
 
+**Limit what a request can ask for.** A request names an agent; it can never
+send a definition. Pin down which names are allowed and how loose their
+permissions may be:
+
+```bash
+garuda serve --workspace . --agent build --allow-agent build --allow-agent reviewer --permission-ceiling smart
+```
+
+- `--allow-agent NAME` (repeatable) lists the agents a request may select;
+  anything else is refused with `agent.not_allowed`.
+- `--permission-ceiling` is the loosest mode a requested agent may run with
+  (default: that of `--agent`), so naming `garuda/harbor` can't raise the
+  server's authority.
+
 ---
 
 **Next:** use external harnesses, handoffs, and routing in
-[Level 5 · Advanced](advanced.md).
+[Level 7 · Advanced](advanced.md).

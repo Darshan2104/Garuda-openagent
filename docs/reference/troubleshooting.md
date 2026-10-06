@@ -62,7 +62,7 @@ Click a problem to see the fix.
     - run the task in `garuda chat` with a `smart` profile (such as the default
       `build`) and answer the `y/N` prompt; or
     - change the profile's `path_rules` or `bash_rules` if the action should be
-      allowed. See [custom profiles](../use-cases/customize.md#create-your-own-agent-profile).
+      allowed. See [your own agents](../use-cases/customize.md#create-your-own-agent).
 
 ??? question "A read-only run can't run tests, `git`, or `find`"
 
@@ -104,13 +104,46 @@ Click a problem to see the fix.
 
 ??? question "Garuda refuses because the workspace is in use"
 
-    Another session retains a lease that allows changes to that workspace.
-    Garuda refuses overlapping sessions so their changes can't be mixed up.
-    An ordinary run releases ownership after cleanup. If its parent crashed
-    or cleanup is uncertain, the lease stays reserved: expiry and parent death
-    do not prove that descendants stopped. `garuda doctor` reports retained
-    stale ownership. Recovery refuses while that ownership remains; supervised
-    removal using complete cleanup receipts is not yet implemented.
+    Another session holds a lease that lets it edit this workspace, and Garuda
+    won't let two sessions mix their changes. If that session is still running,
+    wait for it, or start yours in its own worktree:
+
+    ```bash
+    garuda run --isolation worktree -t "…"
+    ```
+
+    If the message says the holder's **parent is dead but descendant cleanup is
+    not proved**, the other session crashed (for example its terminal was
+    closed) and Garuda can't prove the commands it started have stopped. That
+    lease stays held: `garuda doctor` lists it as `lease.stale`, and
+    `garuda runtime recover` and `reclaim` refuse while it's there. There is no
+    command yet that releases it, so keep working with `--isolation worktree`
+    (or `--no-edits` for read-only work). Don't delete lease records by hand.
+
+??? question "`sessions merge` fails with `integration.check_failed`"
+
+    The check runs in Docker with your merged code mounted read-only, **no
+    network**, and a non-root user, using `python:3.12-slim` unless you pass
+    `--image`. That image has no pytest, and it can't install anything. Build
+    an image with your test tools and pass it:
+
+    ```bash
+    printf 'FROM python:3.12-slim\nRUN pip install --no-cache-dir pytest\n' | docker build -t my-checks -
+    garuda sessions merge NAME --image my-checks --check "python -m pytest -q -p no:cacheprovider"
+    ```
+
+    `-p no:cacheprovider` stops pytest from trying to write its cache to the
+    read-only mount. Other codes: `integration.no_confined_checker` (Docker
+    isn't available; a host check is never used instead), and a merge conflict
+    refuses before any check runs.
+
+??? question "A `--no-edits` run exits with status 3 and withholds its answer"
+
+    Garuda found a change in the workspace after the run (or couldn't finish
+    comparing), so it reports **changes detected** and records the changed
+    paths. Nothing was reverted: run `git status` to inspect them. `--no-edits`
+    can't be combined with `--isolation`, because it checks the workspace in
+    place.
 
 ## Sessions and runtimes
 
@@ -141,16 +174,26 @@ Click a problem to see the fix.
 
 ??? question "A `--bg` session stays `queued`"
 
-    Its worker is waiting for a slot: the harness is at its `max_parallel`
-    (`capacity` in `settings.yaml`), shared with foreground runs. See what holds
-    the slot with `garuda sessions`; a session that reads `crashed` lost its
-    worker. Confirmed-dead pre-activation queue work can reconcile, but activated
-    or ambiguous dispatch stays quarantined. Ordinary foreground reservations
-    also remain counted after parent death because runtime descendants may
-    survive in another process group; no automatic cleanup receipt is available.
-    `garuda sessions cancel SESSION` removes a queued session
-    or stops a running one. The worker's output is in
-    `<sessions dir>/<id>/worker.log`, cut at 1 MB.
+    It's waiting for a free slot: its runtime is at its `capacity` limit, which
+    foreground runs share. `garuda sessions` shows what holds the slots. A
+    session that reads `crashed` lost its worker; its slot stays held until
+    Garuda can prove its child processes are gone, so it isn't silently
+    replaced. `garuda sessions cancel SESSION` removes a queued session or stops
+    a running one. The worker's output is in
+    `~/.agent/sessions/<id>/worker.log` (cut at 1 MB).
+
+??? question "A run is refused: `runtime 'native' is at its capacity of N`"
+
+    A foreground run never waits for a slot. Wait for a running session to
+    finish, start this one with `--bg` so it queues, or raise `capacity` in
+    `~/.agent/settings.yaml`.
+
+??? question "A background run says its approvals were denied"
+
+    Background runs, like every `garuda run`, have nobody to answer an approval,
+    so the request is denied as soon as it's asked. Run the task in
+    `garuda chat` to approve actions yourself, or change the agent's rules if
+    the action should be allowed.
 
 ??? question "`sessions cancel` says the worker's pid was reused"
 
@@ -180,12 +223,13 @@ Click a problem to see the fix.
       is still in progress; consults run one at a time per asker.
     - `consult.capacity_unavailable`: the target's harness is at its
       `max_parallel`; consults never wait for a slot.
-    - Ordinary synchronous/asynchronous quiescence errors also return
-      `consult.snapshot_unstable` before capture, refunding the unlaunched
-      admission and its capacity slot without exposing the raw error body.
     - `consult.snapshot_unsupported`, `consult.snapshot_unstable`: the workspace
       is not a git checkout Garuda can snapshot, or it changed (or background
-      processes ran) while the snapshot was taken. Retry when it is quiet.
+      processes ran, or pausing the asker failed) while the snapshot was
+      taken. The unlaunched request's slot is returned; retry when it is quiet.
+    - `consult.target_unavailable`: the target role's agent requires a
+      final-output schema or a completion check, which a read-only question
+      can't satisfy.
     - `consult.isolation_unavailable`: an external target needs the Docker
       read-only confinement and it is not available.
     - `consult.transport_unsupported`: an ACP role asked to consult, but its
@@ -199,6 +243,82 @@ Click a problem to see the fix.
     - `consult.interrupted`, `consult.quarantined`: Garuda was killed mid-consult,
       or the consulted process could not be confirmed stopped. The slot stays held
       until you inspect it with `garuda sessions`.
+
+## Agents, roles and flows
+
+??? question "`garuda agent check` reports `agent.*` errors"
+
+    Version 1 definitions are strict, so mistakes are caught before a run. The
+    message names the field and a fix. The common ones:
+
+    - `agent.unknown_field`: a typo such as `limits.max_turn`; `garuda agent
+      show garuda/build` lists the real fields.
+    - `agent.unsupported_field`: a field that isn't supported yet, such as
+      `hooks:` (use settings hooks) or `write_policy:` (set it on a role).
+    - `agent.invalid_budget`: the context numbers don't add up, or a deadline
+      isn't positive.
+    - `agent.project_widening`, `agent.required_gate`: a project agent asked for
+      more permission than `agents.project_ceiling` allows, or tried to turn off
+      a required check.
+    - `agent.output_schema_*`: the output schema uses an unsupported keyword or
+      a reference outside the file.
+
+    See the [Agent definitions guide](../guides/agents.md#checks-before-a-run).
+
+??? question "A run says `verification: unavailable`"
+
+    No check ran, so nothing verified the result. Pass `--check COMMAND`, add
+    `checks:` to your `garuda.yaml`, or trust the project's checks with
+    `garuda config trust`. The agent's own completion gate is reported
+    separately as its self-check.
+
+??? question "`config.project_untrusted`: the project's checks are ignored"
+
+    The project's `garuda.yaml` asks Garuda to run something (checks, or a
+    `native` model), and you haven't trusted this exact file. Review and trust
+    it at a terminal with `garuda config trust`. Any edit to the file needs
+    trust again.
+
+??? question "`garuda doctor` reports `config.ok` but a role never runs"
+
+    Check the role's `harness`: it must be a runtime ID from
+    `garuda runtime list` (`native`, `claude`, `codex`, `cursor`, `opencode`,
+    `pi`, `goose`). `doctor` only checks the harnesses it recognises, so a
+    misspelled one is skipped rather than reported.
+
+??? question "A flow stops with `flow.output_missing`"
+
+    The step didn't end with the `<garuda-artifact type="…">` block the next
+    step needs. For a native role, the block must be in the summary it passes to
+    `task_complete`. Give the role an agent that says so; see
+    [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
+
+??? question "A read-only flow step runs until it hits its turn limit"
+
+    The native completion checker can ask a read-only step for evidence it
+    isn't allowed to collect. Give read-only roles an agent with
+    `completion: {verifier: false}`, as shown in
+    [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
+
+??? question "A flow stops with `flow.review_not_independent`"
+
+    The reviewer would run as the same harness and model as the role it
+    reviews, one of that role's fallbacks, or a role it may consult. Give the
+    reviewer a different model, or remove the reviewer from the reviewed role's
+    `consult:` list.
+
+??? question "`garuda flow show` says no such file"
+
+    `flow show` and `flow resume` need the full flow ID that `garuda flow run`
+    prints at the end (`"flow_session": "…"`), not a prefix or a name.
+
+??? question "A read-only external role refuses with `workspace.readonly_unenforced`"
+
+    A role on an external harness with `permissions: readonly` runs only in a
+    Docker container that Garuda proves is confined. Set
+    `harnesses.<id>.confinement.image` in your `garuda.yaml` to an image where
+    you installed and logged in to the harness, and make sure Docker is
+    running. Garuda never runs such a role on the host instead.
 
 ## Dashboard and MCP
 

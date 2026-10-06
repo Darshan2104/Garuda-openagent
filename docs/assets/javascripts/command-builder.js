@@ -9,6 +9,8 @@
 //   button[data-explain] / [data-note]    explanation line / caution shown below
 //   button[data-native-only]              unavailable when an external harness is chosen
 //   button[data-external]                 marks an external (ACP) runtime choice
+//   button[data-id] / [data-conflicts]    ids of choices this one can't combine with
+//                                         (space-separated); they are disabled while it is on
 //   input.gb-task, .gb-output code, ul.gb-explain, .gb-note
 (function () {
   "use strict";
@@ -54,6 +56,12 @@
           if (group.hasAttribute("data-multi")) {
             var pressed = button.getAttribute("aria-pressed") === "true";
             button.setAttribute("aria-pressed", pressed ? "false" : "true");
+            if (!pressed && button.dataset.conflicts) {
+              button.dataset.conflicts.split(/\s+/).forEach(function (id) {
+                var other = id && root.querySelector('button[data-id="' + id + '"]');
+                if (other) other.setAttribute("aria-pressed", "false");
+              });
+            }
           } else {
             group.querySelectorAll("button").forEach(function (other) {
               other.setAttribute("aria-pressed", other === button ? "true" : "false");
@@ -108,6 +116,20 @@
             buttons[0].setAttribute("aria-pressed", "true");
           }
         });
+      });
+
+      // A pressed choice disables the choices it can't be combined with.
+      var blocked = {};
+      root.querySelectorAll("button[data-conflicts]").forEach(function (button) {
+        if (button.disabled || button.getAttribute("aria-pressed") !== "true") return;
+        button.dataset.conflicts.split(/\s+/).forEach(function (id) {
+          if (id) blocked[id] = true;
+        });
+      });
+      root.querySelectorAll("button[data-id]").forEach(function (button) {
+        if (!blocked[button.dataset.id]) return;
+        button.disabled = true;
+        button.setAttribute("aria-pressed", "false");
       });
 
       var picks = [];

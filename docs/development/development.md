@@ -30,6 +30,10 @@ python scripts/check_docs.py --commands
 pytest tests/test_docs_commands.py -q
 ```
 
+It also fails when a public command (any subcommand not hidden from `--help`)
+is never run in a `docs/use-cases/` page or `docs/reference/cheat-sheet.md`:
+every new command needs a demonstration, not only a reference row.
+
 Command validation covers `README.md` and user-facing documentation under
 `docs/`, including any new documentation directory. It excludes the
 contributor architecture/module/backlog/changes pages plus archive, roadmap,

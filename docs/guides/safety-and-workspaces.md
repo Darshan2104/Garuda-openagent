@@ -64,51 +64,28 @@ disabled.
 Permission rules and OS sandbox policies are useful defense in depth. Don't
 describe or treat them as equivalent to containment.
 
-Configured runtime capacity is shared across launch paths. A second launch
-cannot bypass it by reusing an active session id, even in another workspace.
-Garuda refuses a live or unknown owner rather than replacing its reservation.
-Do not delete ownership records to force a new run; close the original run or
-use the documented recovery path when its owner has ended.
+### When a run dies: leases and slots stay held
 
-Workspace lease acquisition refuses an existing session id, even for a
-read-only request. Renew or explicitly delegate the issued lease instead of
-reacquiring it. Library callers keep the successful issuing `LeaseStore`
-instance for heartbeat and release: a new instance can inspect records but
-cannot recreate authority from a session id or copied epoch, and a fork cannot
-inherit the parent's authority. Mutation also refuses changed owner/workspace/
-mode bindings and duplicate holders. Unknown creator identity refuses before
-publication. This ownership check adds no descendant cleanup or recovery receipts.
+Each editing session holds a **lease** on its workspace, and each run holds a
+**slot** in its runtime's [capacity](configuration.md#runtime-capacity). If a
+run's process dies, Garuda can't prove that the commands it started have also
+stopped, so it keeps both held rather than let a second run edit alongside a
+possible leftover process:
 
-Borrowed capabilities validate the parent's current issuing-store/process
-binding before creation and each acquisition/start/race call. A cached guard
-refuses after parent release, source disappearance or disagreement, unknown
-identity, and fork inheritance. `LeaseStore.validate_issued` performs that check
-under the store lock without heartbeat renewal or new authority. Ordinary
-borrowing leaves parent lease bytes unchanged. Checks before use do not replace
-supervision of already-running descendants or supervised cleanup receipts.
+- `garuda sessions` shows the session as `crashed`, and `garuda doctor` lists
+  the held lease (`lease.stale`) and slot.
+- Later editing runs on that workspace are refused, and `garuda runtime
+  recover` and `reclaim` refuse too. Read-only and `--no-edits` runs still
+  work.
+- There is no command yet that releases such a lease. To keep working, run in
+  a separate worktree (`--isolation worktree`), which takes its own lease.
+- Don't delete lease or capacity records by hand to force a run.
 
-Recovery-facing global/session lease inspection includes every retained holder,
-including an expired lease with a confirmed dead parent. Ordinary records have
-no complete descendant-cleanup receipt. Runtime recovery refuses before session
-changes, and project-key recovery refuses before staging or publishing a new
-key. `garuda doctor` continues to show the retained stale ownership. Parent death
-or waiting out the TTL does not remove this refusal; complete supervised cleanup
-and recovery receipts remain separate work.
-
-Lease TTL and parent death do not authorize automatic workspace takeover:
-ordinary records contain no complete descendant-cleanup receipt. A mutating
-holder remains recorded and blocks another editor until explicit issuing-owner
-release. Read-only registration preserves existing holders. Historical records
-remain inspectable; supervised recovery/removal of a dead issuer's lease is
-separate work. Do not delete records to force a new run.
-
-When descendant death cannot be proved, the shared guard quarantines the run:
-renewal stops, but the workspace lease and runtime slot stay reserved through
-later close/release calls. A borrowed flow step also quarantines its parent and
-retains its own slot. Capability revocation does not clear quarantine. Do not
-remove records to force reuse; supervised cleanup and recovery receipts remain
-separate work. This guardrail does not provide OS confinement or prove that
-arbitrary descendants have exited.
+Stopping a run with ++ctrl+c++, `garuda sessions cancel` or the dashboard's
+Stop lets Garuda clean up and release both. A hard kill, or closing the
+terminal under a running `garuda chat`, may not. How ownership, borrowing and
+quarantine work is described for contributors in
+[Architecture → conventions](../ARCHITECTURE.md#conventions).
 
 ## Local and tmux workspaces
 
@@ -216,19 +193,21 @@ mount, a minimal copy of the workspace, or a container when that matters.
 `--mode readonly` and the `readonly` permission mode are guardrails with known
 gaps today:
 
-- **Subagents.** A subagent can't do more than the run that started it.
-  Every call it makes must pass both its own profile's rules and its parent's
-  effective permissions (including `--permission-mode`, the dashboard's
-  `--max-permission` ceiling and any ancestor's rules); the stricter decision
-  wins, and an approval is asked once through the parent. A subagent also uses
-  only tools its parent already has: it never opens its own MCP connections.
 - **MCP tools.** MCP tools are added to every profile and aren't treated as
   writes, so a write-capable MCP tool still runs.
 - **Environment variables.** `env` and `printenv` count as inspection
   commands, so environment variables, including API keys, can reach the model.
 
+Subagents are not a gap: a subagent can't do more than the run that started
+it. Every call it makes must pass both its own profile's rules and its
+parent's effective permissions (including `--permission-mode`, the dashboard's
+`--max-permission` ceiling and any ancestor's rules); the stricter decision
+wins, and an approval is asked once through the parent. A subagent also uses
+only tools its parent already has: it never opens its own MCP connections.
+
 When nothing may change, use `--agent explore` with an empty `--mcp-config`,
-work on a disposable copy of the project, and check `git status` afterwards.
+add [`--no-edits`](#no-edits-runs-a-guardrail-not-confinement) so Garuda checks
+the workspace afterwards, or work on a disposable copy of the project.
 
 ## Trusted configuration and executable extensions
 
@@ -242,7 +221,7 @@ trust_project_hooks: true
 load_project_tools: true
 ```
 
-Two more limits apply without any setting:
+Three more limits apply without any setting:
 
 - **Profile permissions.** A profile inside the project may not set a
   `permission_mode` above the user's ceiling (`smart` unless you raise it):
@@ -258,9 +237,14 @@ Two more limits apply without any setting:
   only after `garuda mcp trust` records your trust in that exact entry for that
   repository. Changing the entry, a script it runs, or a symlink it uses asks
   again. The grant selects configuration; it doesn't prove what the server does.
+- **Project `garuda.yaml`.** Its `checks` and any model it names for the
+  `native` harness are ignored (`config.project_untrusted`) until
+  `garuda config trust` records your trust in those exact bytes. Any edit
+  needs trust again, and a headless run can never create trust.
 
-Before enabling a cloned project, review `.agent/tools/`, hook commands, profile
-permissions, project MCP server commands, and root `AGENTS.md` or `GARUDA.md`.
+Before enabling a cloned project, review `.agent/tools/`, hook commands, agent
+permissions, project MCP server commands, `garuda.yaml` checks, and root
+`AGENTS.md` or `GARUDA.md`.
 
 Trusted global settings own runtime launch commands and routing policy. Project
 settings can refer to approved runtime IDs but can't define executable runtime
@@ -297,7 +281,10 @@ one with untrusted code.
 - [ ] Review project hooks, Python tools, MCP commands, and instructions. For an
       untrusted repository, pass an empty `--mcp-config`.
 - [ ] Confirm the native or ACP runtime and its credential boundary.
-- [ ] Afterwards, inspect the session, workspace changes, and verification status.
+- [ ] Add `--check COMMAND` (or trusted project checks) so the result is
+      verified by a command you chose, or `--no-edits` when nothing may change.
+- [ ] Afterwards, inspect the session (`garuda sessions show latest`), workspace
+      changes, and verification status.
 
 ## No-edits runs (a guardrail, not confinement)
 

@@ -98,17 +98,21 @@ nav:
       - "Level 1 · Explore safely": use-cases/explore.md
       - "Level 2 · Change code": use-cases/change-code.md
       - "Level 3 · Teach it your project": use-cases/customize.md
-      - "Level 4 · Automate": use-cases/automate.md
-      - "Level 5 · Advanced": use-cases/advanced.md
+      - "Level 4 · Run work in parallel": use-cases/parallel.md
+      - "Level 5 · Build a team of roles": use-cases/teams.md
+      - "Level 6 · Automate": use-cases/automate.md
+      - "Level 7 · Advanced": use-cases/advanced.md
   - Guides:
       - Safety and workspaces: guides/safety-and-workspaces.md
       - Configuration: guides/configuration.md
+      - Agent definitions: guides/agents.md
       - Sessions and flows: guides/sessions-and-flows.md
       - External harnesses: guides/external-harnesses.md
       - Web dashboard: guides/web-dashboard.md
   - Reference:
       - CLI reference: reference/cli.md
       - Cheat sheet: reference/cheat-sheet.md
+      - Feature index: reference/features.md
       - Troubleshooting: reference/troubleshooting.md
   - Evaluation:
       - evaluation/index.md

@@ -73,9 +73,9 @@ Every tool call passes through the **permission mode**:
 In `garuda run`, nobody is there to answer an "ask", so it is denied and
 recorded. `garuda chat` and the dashboard show you the prompt instead.
 
-A subagent started with `invoke_subagent` runs with **its own** profile's
-permission mode, not its parent's. See
-[read-only limits](safety-and-workspaces.md#read-only-mode-limits).
+A subagent started with `invoke_subagent` can never do more than its parent:
+each call must pass both its own profile's rules and the parent's, and the
+stricter decision wins. See [read-only limits](safety-and-workspaces.md#read-only-mode-limits).
 
 ## 3. Workspace: where commands run
 
@@ -137,16 +137,63 @@ event log. Use it to:
 Garuda also records the workspace's starting state, so the changes a session
 made can be told apart from changes that were already there.
 
+Four facts are kept apart for every session: whether its **process** is still
+running, where its **work** is (`queued`, `working`, `waiting`, `done`), its
+**outcome** (`completed`, `failed`, `refused`, `cancelled`), and its
+**verification** by a check you trust (`passed`, `failed`, `unavailable`).
+`garuda sessions show NAME` prints them all. Sessions can also run in the
+background (`--bg`) and in their own Git worktree (`--isolation worktree`);
+see [Level 4](../use-cases/parallel.md).
+
+## 6. Roles and flows: several agents on one task
+
+Once you use more than one model or harness, name **roles** in
+`~/.agent/garuda.yaml`: which harness and exact model a `planner`, `coder` or
+`reviewer` uses, with what permissions. A **flow** runs roles in order on one
+task (for example plan → build → independent review), each as its own session,
+passing only typed artifacts between them. A role can also **consult** another
+role with one read-only question. See [Level 5](../use-cases/teams.md) and the
+[Sessions and flows guide](sessions-and-flows.md).
+
 ## Glossary
 
 ACP
 :   Agent Client Protocol. How Garuda launches and talks to external coding
     harnesses.
 
+Agent (profile)
+:   A named bundle of instructions, tools, permission rules and limits, chosen
+    with `--agent`. Version 1 definitions `extend` a packaged agent; see
+    [Agent definitions](agents.md).
+
+Artifact
+:   A typed output (`plan`, `patch`, `review`, …) that one flow step hands to
+    the next.
+
+Brief
+:   A short summary of a session (task, state, changed files, checks, final
+    answer) that another run can attach with `@name` or `--with`.
+
+Capacity
+:   The most runs of one runtime allowed at once, set in `~/.agent/settings.yaml`.
+    Background runs queue for a free slot.
+
+Check
+:   A command you trust (`--check`, or `checks:` in `garuda.yaml`) that Garuda
+    runs after a session. Its result is the session's **verification**.
+
 Collection model
 :   An optional second, cheaper model that runs bounded, read-only
     investigation jobs for the main model. Off unless settings enable it and a
     collection model is bound.
+
+Consult
+:   One role asking another a question mid-task. The answer comes from a
+    read-only session on a snapshot of the workspace.
+
+Flow
+:   Roles run in order on one task, each as its own session, with an optional
+    independent review.
 
 Handoff
 :   Moving a saved native session to an external harness, as a reviewed,
@@ -154,21 +201,28 @@ Handoff
 
 Lease
 :   Garuda's lock on a workspace, so two sessions can't make overlapping
-    changes. Taken by `garuda run`, `serve` jobs, the SDK's
-    `SoftwareAgent.run`, and runtime commands. `garuda chat`, dashboard chats,
-    and recipes don't take one yet.
+    changes. Every editing session takes one: `garuda run`, `garuda chat`,
+    dashboard chats, recipes, `serve` jobs, the SDK and runtime commands.
 
 MCP
 :   Model Context Protocol. Lets Garuda use tools from external MCP servers.
 
-Profile
-:   A named bundle of tools, permission rules, and prompt, chosen with `--agent`.
-
 Recipe
-:   A YAML file of steps, each run by a profile, with parameters.
+:   A YAML file of steps, each run by an agent, with parameters.
+
+Role
+:   A name in `garuda.yaml` (`planner`, `coder`, …) for a harness, exact model,
+    effort and permission ceiling. Run one with `--role`.
+
+Self-check
+:   The agent's own completion gate. Recorded apart from verification.
 
 Skill
 :   A `SKILL.md` file of instructions that the agent can load when relevant.
 
 Trajectory
 :   A JSONL export of a run's events, used for evaluation.
+
+Worktree session
+:   A session that edits its own linked Git worktree on a `garuda/<session>`
+    branch, merged back with `garuda sessions merge`.

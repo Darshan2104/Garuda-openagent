@@ -106,11 +106,15 @@ Every `garuda run` is saved as a session. List the recent ones:
 
 ```bash
 garuda sessions
+garuda sessions show latest
 ```
 
-The table shows each session's ID prefix, status, turn count, update time, and
-task. The files live under `~/.agent/sessions/<id>/`; set `GARUDA_SESSIONS_DIR`
-to store them somewhere else.
+The table shows each session's ID prefix, name, state, queue position, update
+time, and task. `sessions show` prints one session in full, including its
+outcome and its **verification**, which stays `unavailable` until a check you
+trust runs (see [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check)).
+The files live under `~/.agent/sessions/<id>/`; set `GARUDA_SESSIONS_DIR` to
+store them somewhere else.
 
 ```text
 ~/.agent/sessions/<id>/
@@ -127,8 +131,8 @@ Ask a follow-up that builds on the last run:
 garuda run --mode readonly --resume latest -t "Now explain how the tests are organized"
 ```
 
-`--resume` takes `latest`, a full session ID, or a unique prefix from
-`garuda sessions`. Garuda starts a new session linked to the old one, so the
+`--resume` takes `latest` (this project's newest), a session name, a full
+session ID, or a unique prefix from `garuda sessions`. Garuda starts a new session linked to the old one, so the
 original record is never overwritten.
 
 ## 6. Optional: name your roles
