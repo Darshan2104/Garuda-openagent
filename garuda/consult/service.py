@@ -493,5 +493,10 @@ async def acp_child(child: ChildRequest) -> ChildOutcome:
         raise
     meta = child.store.load_meta(summary["session_id"])
     child.store.update_meta(summary["session_id"], {"origin": "consult"})
+    # The broker persists one outcome per permission request. Child status and
+    # answer/error text are not evidence of a denied operation.
+    denied = sum(1 for key, record in meta.items()
+                 if key.startswith("approval:") and isinstance(record, dict)
+                 and record.get("outcome") == "deny")
     return ChildOutcome(summary["session_id"], summary.get("status") == "completed",
-                        str(meta.get("final_message") or ""))
+                        str(meta.get("final_message") or ""), denied)

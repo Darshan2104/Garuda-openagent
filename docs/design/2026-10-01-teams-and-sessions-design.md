@@ -968,6 +968,8 @@ observed changes and references to unique usage events. Native denial counts use
 structured permission refusals and file-access denial results, never error-body
 word matching. File-access denials are evaluated on each attempt rather than
 served from the action memo; ordinary missing-file errors are not denials.
+ACP consulted-child denial counts come from persisted broker `deny` outcomes.
+Ordinary child failure and answer/error text are not denial evidence.
 Raw questions/answers
 remain in the child transcript, never the ledger, durable context or receipt.
 

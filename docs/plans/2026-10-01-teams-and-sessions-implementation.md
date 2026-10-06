@@ -1337,6 +1337,10 @@ Implement the design's contracts in this order:
   an ordinary missing file with “denied” in its name contributes zero.
   Consultation never sets task verification to passed.
 
+G.2 receipt acceptance includes the actual Docker-confined ACP default child:
+persisted broker denial counts, a denial-word success control and an unsuccessful
+child whose denial evidence stays unknown. Counts do not come from status or text.
+
 ### G.3 MCP consult tool for ACP askers
 
 **Dependencies:** G.1 and G.2, with all exact-version transport gates met.

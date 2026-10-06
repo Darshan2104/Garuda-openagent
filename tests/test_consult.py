@@ -16,6 +16,7 @@ from garuda.consult.service import ChildOutcome, ConsultRequest, ConsultService
 from garuda.consult.state import ConsultState
 from garuda.core.sessions import SessionStore
 from garuda.runtime.roles import RolePlan
+from tests.test_confined_acp import CONFINED, IMAGE, _settings, needs_docker
 
 DOC = {
     "version": 1,
@@ -596,3 +597,48 @@ async def test_an_external_child_never_runs_on_the_host(world, monkeypatch):
         # a proven Docker confinement image
         await ConsultService(world.store, resolved).consult(request(world))
     assert caught.value.code == "consult.isolation_unavailable" and started == []
+
+
+@needs_docker
+@pytest.mark.parametrize("profile, expected_denials, outcome", [
+    ("approval", 1, "refused"),
+    ("success", 0, "answered"),
+    ("odd-stop", 0, "refused"),
+])
+async def test_confined_acp_consult_receipts_count_broker_denials(world, profile,
+                                                                expected_denials, outcome):
+    from garuda.workspace.no_edits import manifest
+
+    _settings()
+    world.ws.chmod(0o755)
+    confinement = gy.load_text("version: 1\nharnesses:\n  fakeacp:\n    confinement:\n"
+                               + CONFINED.replace("probe-writes", profile))["harnesses"]["fakeacp"]
+    resolved = make_resolved({
+        "version": 1, "harnesses": {"fakeacp": confinement},
+        "roles": {"coder": {"harness": "native", "consult": ["reviewer"]},
+                  "reviewer": {"harness": "fakeacp", "permissions": "readonly"}},
+    })
+    before = manifest(world.ws)
+    engine = ConsultService(world.store, resolved)
+    if profile == "odd-stop":
+        with pytest.raises(ConsultRefused) as exc:
+            await engine.consult(request(world, question="permission denied"))
+        assert exc.value.code == "consult.failed"
+        (record,) = ConsultState(world.store, world.asker).snapshot()["requests"].values()
+        assert record["result"]["receipt"].get("denied_operations") is None
+        assert manifest(world.ws) == before
+        return  # failed before a child outcome; denial evidence remains unknown
+    result = await engine.consult(
+        request(world, question="Explain permission denied and denied operations."))
+    meta = world.store.load_meta(result.receipt["child_session"])
+    denials = [record for key, record in meta.items()
+               if key.startswith("approval:") and record["outcome"] == "deny"]
+
+    assert result.outcome == outcome
+    assert len(denials) == expected_denials
+    assert result.receipt["denied_operations"] == expected_denials
+    assert result.receipt["observed_changes"] == {"unchanged": True, "changed": 0}
+    assert manifest(world.ws) == before
+    assert meta["confinement"] == {"kind": "docker", "image": IMAGE, "source": "read-only"}
+    if profile == "success":
+        assert "permission denied and denied operations" in result.text
