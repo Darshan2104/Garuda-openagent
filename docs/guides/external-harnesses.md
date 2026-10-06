@@ -14,7 +14,7 @@ and `goose`.
     - Garuda records the session, approvals, lease, baseline, and workspace
       changes. "Completed" means the harness ended its turn, not that Garuda
       verified the result.
-    - Quick recipes: [Level 5 · Advanced](../use-cases/advanced.md).
+    - Quick recipes: [Level 7 · Advanced](../use-cases/advanced.md).
 
 ## Native and ACP behavior differ
 
@@ -173,12 +173,13 @@ garuda runtime support --session latest
   recover, and support methods through the same trusted catalog. Request
   payloads can't provide launch manifests.
 
-## Consult transport (planned)
+## Consult transport
 
-Consults between roles are planned, not shipped. For an external harness to
-*start* a consult, Garuda would give it one MCP tool through
-`session/new.mcpServers`. That is enabled only when all three of these are
-proven for the exact adapter version:
+[Consults](sessions-and-flows.md#consults) work today for native askers, and
+an external harness can be a consult **target** (inside the Docker read-only
+confinement). For an external harness to *ask*, Garuda gives it one MCP tool
+through `session/new.mcpServers`. That is enabled only when all three of these
+are proven for the exact adapter version:
 
 | Requirement | Claude adapter 0.85.0 | Codex adapter 2.1.1 |
 |---|---|---|

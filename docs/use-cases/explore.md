@@ -8,10 +8,11 @@ commands such as `ls`, `cat`, `grep`, `rg`, `head`, and `tree`.
     Read-only runs still execute on your machine and can read files your user
     can read. They can't run interpreters, build tools, test runners, `find`,
     or `git`. They also have [known gaps](../guides/safety-and-workspaces.md#read-only-mode-limits):
-    subagents and MCP tools aren't held to read-only, and environment variables
-    can be printed. Check `git status` afterwards, and use a
-    [Docker workspace](change-code.md#run-untrusted-code-in-docker) for code you
-    don't trust.
+    MCP tools aren't held to read-only, and environment variables can be
+    printed. Check `git status` afterwards, add
+    [`--no-edits`](#make-sure-a-run-changes-nothing) to have Garuda check for
+    you, and use a [Docker workspace](change-code.md#run-untrusted-code-in-docker)
+    for code you don't trust.
 
 ## Ask questions about a codebase
 
@@ -41,6 +42,37 @@ garuda run --mode readonly -t "Explain how this project is organized and where t
 
     `--agent explore` is a fast, read-only search profile with a smaller turn
     budget, good for "find where…" questions.
+
+## Make sure a run changes nothing
+
+<p class="gd-facts">Read-only · Checked afterwards · Works with external harnesses too</p>
+
+**Use it when** you need to know, not hope, that a run left the project
+exactly as it was.
+
+```bash
+garuda run --no-edits -t "Explain how errors are reported to the user"
+```
+
+```text
+[garuda] no-edits: no changes detected (guardrail, not confinement)
+```
+
+**What happens**
+
+- Requests to edit files or run commands that change things are refused. A
+  native run gets the `readonly` ceiling; an external harness's approval
+  requests are denied and recorded.
+- Before the run, Garuda records every file (ignored ones too) with its mode
+  and change time, plus the Git refs, `HEAD`, hooks, config and index. After
+  the run and everything it started have exited, it compares again.
+- If anything changed, or the comparison couldn't finish, you see **changes
+  detected**: the answer is withheld, the exit status is `3`, and the changed
+  paths are recorded. Nothing is reverted, so you can inspect them.
+
+`--no-edits` checks the workspace in place, so it can't be combined with
+`--isolation`. More in
+[Safety → no-edits runs](../guides/safety-and-workspaces.md#no-edits-runs-a-guardrail-not-confinement).
 
 ## Review your uncommitted changes
 
@@ -98,10 +130,16 @@ garuda run --mode readonly --resume latest -t "Now explain how errors are report
 
 **What happens**
 
-- `garuda sessions` lists recent sessions with an ID prefix, status, and task.
+- `garuda sessions` lists this project's recent sessions with an ID prefix,
+  name, state, queue position, and task.
 - `--resume` seeds the new run with the earlier conversation. It accepts
-  `latest`, a full ID, or a unique prefix such as `--resume 3f2a`.
+  `latest` (this project's newest), a session name, a full ID, or a unique
+  prefix such as `--resume 3f2a`. Add `--all-projects` to take the newest
+  session from any project.
 - Garuda saves a new session linked to the old one; nothing is overwritten.
+
+To see everything about one session (its state, verification, queue,
+approvals, and flow), run `garuda sessions show latest`.
 
 ## Read PDFs and spreadsheets
 

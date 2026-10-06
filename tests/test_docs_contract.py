@@ -132,6 +132,51 @@ def test_documented_command_validation_accepts_abbreviated_reference():
     assert errors == []
 
 
+def _demo_fixture_parser():
+    parser = _fixture_parser()
+    commands = checker._subparsers_action(parser)
+    commands.add_parser("worker", help=argparse.SUPPRESS)
+    commands.add_parser("web", aliases=["dashboard"])
+    return parser
+
+
+def test_public_command_paths_skip_hidden_commands_and_aliases():
+    paths = checker.public_command_paths(_demo_fixture_parser())
+    assert paths == [
+        ("garuda", "run"),
+        ("garuda", "runtime"),
+        ("garuda", "runtime", "handoff"),
+        ("garuda", "web"),
+    ]
+
+
+def test_command_missing_from_use_cases_and_cheat_sheet_is_reported(tmp_path):
+    use_cases = tmp_path / "docs" / "use-cases"
+    use_cases.mkdir(parents=True)
+    (use_cases / "explore.md").write_text("```bash\ngaruda run --mode readonly\n```\n")
+    reference = tmp_path / "docs" / "reference"
+    reference.mkdir()
+    (reference / "cli.md").write_text("```bash\ngaruda web\n```\n")
+    (reference / "cheat-sheet.md").write_text(
+        "```bash\ngaruda runtime handoff --session S --to R   # preview\n```\n"
+    )
+
+    missing = checker.find_undemonstrated_commands(tmp_path, _demo_fixture_parser())
+
+    # The CLI reference alone doesn't count as a demonstration.
+    assert missing == ["garuda web"]
+
+
+def test_documented_command_validation_ignores_trailing_shell_comment():
+    parser = _fixture_parser()
+    assert checker.validate_documented_command(
+        "garuda run --mode readonly   # what's this? a comment", parser
+    ) == []
+    assert "unknown option" in checker.validate_documented_command(
+        "garuda run --missing   # still checked before the comment", parser
+    )[0]
+
+
 def test_documented_command_validation_rejects_unknown_command_flag_and_choice():
     parser = _fixture_parser()
     assert "unknown subcommand" in checker.validate_documented_command(

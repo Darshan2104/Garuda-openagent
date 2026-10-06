@@ -78,6 +78,9 @@ USER_DOC_EXCLUDED_PREFIXES = (
 )
 COMMAND_FENCE_LANGUAGES = frozenset({"bash", "console", "sh", "shell", "text", "zsh"})
 COMMAND_IGNORE_MARKER = "docs-command-ignore"
+# Pages that must demonstrate every public command (see find_undemonstrated_commands).
+DEMO_DOC_PREFIXES = ("docs/use-cases/",)
+DEMO_DOC_FILES = frozenset({"docs/reference/cheat-sheet.md"})
 
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
@@ -440,7 +443,8 @@ def validate_documented_command(
 ) -> list[str]:
     normalized = _normalize_reference_syntax(command)
     try:
-        tokens = shlex.split(normalized)
+        # comments=True drops a trailing `# explanation`, as the shell would.
+        tokens = shlex.split(normalized, comments=True)
     except ValueError as exc:
         return [f"cannot parse shell syntax: {exc}"]
     if not tokens or tokens[0] != "garuda":
@@ -495,6 +499,43 @@ def find_invalid_documented_commands(
     return sorted(errors)
 
 
+def public_command_paths(
+    parser: argparse.ArgumentParser, prefix: tuple[str, ...] = ("garuda",)
+) -> list[tuple[str, ...]]:
+    """Every subcommand path, skipping aliases and hidden (help=SUPPRESS) ones."""
+    subparsers = _subparsers_action(parser)
+    if subparsers is None:
+        return []
+    hidden = {c.dest for c in subparsers._choices_actions if c.help == argparse.SUPPRESS}
+    seen: set[int] = set()  # an alias maps to the same parser object
+    paths = []
+    for name, child in subparsers.choices.items():
+        if name in hidden or id(child) in seen:
+            continue
+        seen.add(id(child))
+        path = prefix + (name,)
+        paths.append(path)
+        paths.extend(public_command_paths(child, path))
+    return paths
+
+
+def find_undemonstrated_commands(
+    root: pathlib.Path, parser: argparse.ArgumentParser
+) -> list[str]:
+    """Public commands that no use-case page or the cheat sheet shows being run."""
+    shown: set[tuple[str, ...]] = set()
+    for item in find_documented_commands(root):
+        if not (item.path.startswith(DEMO_DOC_PREFIXES) or item.path in DEMO_DOC_FILES):
+            continue
+        try:
+            tokens = shlex.split(_normalize_reference_syntax(item.command), comments=True)
+        except ValueError:
+            continue
+        for end in range(2, len(tokens) + 1):
+            shown.add(tuple(tokens[:end]))
+    return [" ".join(path) for path in public_command_paths(parser) if path not in shown]
+
+
 def check(root: pathlib.Path) -> list[str]:
     errors = []
     for rel in find_nested_readmes(root):
@@ -528,8 +569,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        for item in find_invalid_documented_commands(root, build_parser()):
+        garuda_parser = build_parser()
+        for item in find_invalid_documented_commands(root, garuda_parser):
             errors.append(f"invalid command: {item}")
+        for command in find_undemonstrated_commands(root, garuda_parser):
+            errors.append(
+                f"undemonstrated command: {command} (show it in docs/use-cases/ "
+                "or docs/reference/cheat-sheet.md)"
+            )
     if errors:
         for err in errors:
             print(err)

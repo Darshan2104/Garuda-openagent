@@ -1,6 +1,6 @@
-# Level 5 · Advanced
+# Level 7 · Advanced
 
-<span class="gd-level">Level 5</span> Use subscription-backed coding harnesses
+<span class="gd-level">Level 7</span> Use subscription-backed coding harnesses
 through ACP, move sessions between runtimes, choose runtimes automatically,
 and add a second model.
 
@@ -113,6 +113,12 @@ garuda run --runtime claude -t "Add type hints to src/utils.py"
 4. When the harness ends its turn, Garuda records the workspace changes and
    stops the process.
 
+`--check`, `--no-edits`, `--name`, `--bg` and `@name` briefs work the same way
+with a harness. `--isolation` and the workspace kinds don't apply: the harness
+works in your checkout. To pin the harness's model and effort, run it as a
+[role](teams.md#run-a-task-as-a-role); Garuda sets them before the first prompt
+on adapter versions where that was proven, and refuses otherwise.
+
 If an installed harness fails to **start** and the workspace is unchanged,
 Garuda moves the session once to `fallback_runtime` (native by default) and
 records why in the session. The native run then uses your model API key.
@@ -182,6 +188,19 @@ garuda runtime resume --session latest -t "Continue after the external run"
   harness's changes.
 - `resume` continues a native session with a new task.
 
+**Continue on a different runtime.** `--resume` with `--as` starts a new,
+linked session on another runtime, seeded with the old session's brief (its
+task, state, changed files, checks and final answer, never the transcript):
+
+```bash
+garuda run --resume latest --as claude -t "Finish the remaining TODOs"
+```
+
+Resuming a session that an external harness ran uses the harness's own
+session reload only on adapter versions where that was proven; otherwise it
+also starts a linked session from the brief. A session whose owner is still
+running refuses.
+
 Need help from someone else? `garuda runtime support --session latest` prints a
 redacted diagnostic bundle without raw event payloads.
 
@@ -217,6 +236,28 @@ the flag to let rules pick another runtime. Every condition in a rule must match
 classifier model can pick between approved candidates when no rule matches.
 Its answer is re-checked, and on any doubt the default is used. See
 [Configuration → initial runtime selection](../guides/configuration.md#initial-runtime-selection).
+
+## Skip a harness whose subscription limit is used up
+
+<p class="gd-facts">Needs: a role with a <code>fallback</code> · Reads: only documented status sources</p>
+
+**Use it when** a role's main harness sometimes hits its plan limit and you'd
+rather start on the fallback than fail.
+
+Open the dashboard's **Providers** page and press **Refresh**, or let a run
+read it. Garuda skips a harness as `harness.limit_reached` only when all of
+these hold at the moment it picks one:
+
+- the limit source is proven for that exact CLI version (today: Codex's
+  app-server rate-limit read; Claude Code has no documented non-interactive
+  source, so it always reads *unknown*);
+- the reading names the account you're logged in with now, and is at most a
+  minute old;
+- it says the limit is reached, with a reset time that hasn't passed.
+
+Anything else leaves the harness eligible: an unknown limit never blocks a
+harness. This happens once, before the first prompt. See
+[External harnesses → usage and limit sources](../guides/external-harnesses.md#usage-and-limit-sources).
 
 ## Add a cheaper model for investigation
 

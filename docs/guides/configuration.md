@@ -293,7 +293,7 @@ project's hooks always fail closed. If a guard rewrites a call, the rewritten
 call is permission-checked again before it runs.
 
 Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in
-[Create your own agent profile](../use-cases/customize.md#create-your-own-agent-profile).
+[Create your own agent](../use-cases/customize.md#create-your-own-agent).
 Read [Safety and workspaces](safety-and-workspaces.md) before enabling project
 code, permissive modes, network access, or host-backed execution.
 
@@ -330,112 +330,36 @@ capacity:
   codex: 1
 ```
 
-A run that finds its runtime full is refused right away rather than queued. A
-runtime with no entry isn't limited. Only the global settings file can set this.
+- A foreground run that finds its runtime full is refused at once
+  (`runtime 'native' is at its capacity of 1`).
+- Background runs (`garuda run --bg`) wait in a durable first-in, first-out
+  queue per user and runtime (`~/.agent/queue/`) and draw from the same limit;
+  there is no separate queue capacity.
+- A runtime with no entry isn't limited. Only the global settings file can set
+  this. The same ceiling can be written as `harnesses.<id>.max_parallel` in
+  your own `garuda.yaml`; `capacity` wins when both exist, and a project file
+  can set neither.
+- A runtime alias shares its target's limit and queue.
+- Background runs fix their effective `garuda.yaml` role before they queue. A
+  role with a dynamic `fallback` chain is refused in the background (run it in
+  the foreground), and a worker refuses if the role's runtime or model changed
+  while it waited.
+- A slot whose owner died stays counted until Garuda can prove its child
+  processes are gone, so a crashed run can't be silently replaced. `garuda
+  doctor` shows held slots and leases.
 
-The ceiling can also be written as `harnesses.<id>.max_parallel` in your own
-`garuda.yaml`; a `capacity` entry in `settings.yaml` wins when both exist, and
-a project file can't set either. Background sessions wait in a durable FIFO
-queue per user and harness (`~/.agent/queue/`) and draw from this same limit:
-there is no separate queue capacity. Queue reservations keep counting through
-interrupted selection, release and activated-worker death. Ordinary launches
-cannot reclaim those slots independently of the queue coordinator.
-
-Queue enqueue retries preserve the existing entry and its FIFO position only
-when the item id, scope, user, harness, session and configuration digest match
-exactly. This also applies after the entry is claimed. A conflicting retry
-refuses instead of replacing admitted work or adding a duplicate.
-
-A dispatch-ready entry uses exactly `<user>:<harness>` for its declared user
-and harness. Changing only the scope label cannot bypass an older entry in
-that lane. Enqueue rejects mismatches before touching storage, and selection
-also checks preexisting records. The default user is the local uid; use
-`scope_for(harness)` for that scope, or provide the matching user explicitly
-when using a synthetic user scope. A mismatched historical entry stays intact
-for diagnosis and is not rebound automatically. Incomplete allocations still
-cannot activate without frozen session/configuration bindings.
-
-Background runs resolve their effective `garuda.yaml` role before joining the
-queue. A default role keeps its permissions, model and profile when the worker
-starts; its original harness reference remains available for downstream
-capability resolution.
-Workers recheck the effective `garuda.yaml` configuration before selecting
-work. A changed role runtime or model refuses. This check does not snapshot
-referenced runtime/agent/MCP files or prevent later concurrent configuration edits.
-Roles with a dynamic `fallback` chain refuse in background mode until the
-chosen runtime can be persisted; use a role without fallback or run it in the
-foreground. Admission performs no probes or model calls.
-
-A background runtime alias shares its target's capacity and FIFO lane. Its
-original reference stays in the launch arguments for downstream capability
-resolution. If the alias is retargeted while waiting, or launch
-arguments or their digest receipt disagree with the queued admission, the
-worker refuses before selection. The admission remains available for diagnosis;
-Garuda does not silently rebind it. The receipt covers serialized arguments,
-not a snapshot of every referenced configuration file.
-
-A release attempt revokes the committed process-local ticket before publishing
-its intent. If publication fails, the retained claimant handle cannot dispatch,
-and an ordinary capacity call that captured the ticket must recheck adoption
-before returning launch authority. The protected slot remains allocated; a
-partially published activation stays quarantined rather than being replayed.
-
-An ordinary foreground reservation remains counted after its owner dies.
-Parent death does not prove that runtime descendants, including processes in
-another group, stopped. Both foreground and queue admission retain such slots;
-a matched dead/unknown ordinary owner also cannot retry activation. Explicit
-matched release remains a coordinator cleanup assertion. Automatic recovery
-needs descendant cleanup receipts, which are not implemented by this change.
-
-Queue heartbeat and release accept an explicit owner matching the complete
-claim record. Without an explicit owner, they use only the owner retained by
-the instance that successfully claimed the item in the current process.
-Another instance or an inherited fork cannot release the claim implicitly.
-If workspace acquisition fails, requeue also checks the original owner before
-returning capacity, so a replacement claim remains intact.
-
-Inspecting a queue through `entries()` or `snapshot()` reads its published
-document without waiting for a writer lock. Opening the store for inspection
-does not create directories, change permissions, migrate historical records
-or write backups. A missing queue remains absent; corrupt and future-version
-records refuse inspection and remain intact for diagnosis.
-
-Prototype version 1 queues containing jobs also refuse mutation: those jobs
-lack user, session and configuration bindings, even if their owners are dead.
-Inspect the original `state.json` and resolve historical work with the prior
-version. Valid empty queues and fully bound, ordered version 2 waiters migrate
-to version 3, after exact original bytes are durably preserved as `state.json.v1`
-or `state.json.v2`. Version 2 claims refuse because activation history is missing.
-An unrelated, partial, symlinked
-or nonregular backup refuses migration and is left intact; do not delete it
-without resolving that ambiguity. The old queue capacity cannot widen the
-configured shared limit.
-
-Selection publishes a queue intent, reserves a protected shared slot, then
-commits the claim before granting local activation authority. Dispatch records
-activation before invoking the runtime. A release fences activation in capacity,
-removes the claim durably, then returns its slot. A thread that captured its
-ticket before release cannot activate through that fence. The fence keeps prior
-activation history. `recover_pending()` reconciles only safe operations
-whose owners are confirmed dead; it never starts work. Activated or ambiguous
-dispatch remains quarantined because worker death does not prove descendant
-cleanup. Inspection exposes pending operations without repairing them.
-
-Capacity records now use version 2 to distinguish queue reservations. Nonempty
-version 1 capacity records stay readable but refuse mutation, even for dead
-owners: their reservation origin is unknown. Resolve them with the prior version
-before upgrading. Valid empty records preserve an exact private `.json.v1`
-backup before upgrade; backup ambiguity refuses. Full descendant supervision
-and cleanup receipts remain separate lifecycle requirements.
+How the queue and capacity records are kept consistent (claims, fences,
+migrations) is described for contributors in
+[Architecture → conventions](../ARCHITECTURE.md#conventions).
 
 ## Agent definitions
 
-An agent definition says how one Garuda agent behaves: its instructions,
-tools, permissions, limits and model. The smallest useful one changes one
-thing about a packaged agent:
+Agents live in `~/.agent/agents/` (yours) and `.agent/agents/` (the
+project's). A version 1 definition extends a packaged agent and changes only
+what it needs:
 
 ```yaml
-# ~/.agent/agents/careful-coder.yaml   (or .agent/agents/ in a project)
+# ~/.agent/agents/careful-coder.yaml
 version: 1
 extends: garuda/build
 instructions:
@@ -443,143 +367,15 @@ instructions:
     Make the smallest change that fixes the problem.
 ```
 
-`garuda run --agent careful-coder` then uses everything from the packaged
-`build` agent except the extra instructions, which are appended to its own.
+The format, every field, and the checks Garuda runs before an agent starts are
+in the [Agent definitions guide](agents.md). A project agent can't raise its
+permission mode above `agents.project_ceiling` (default `smart`):
 
-- A bare name is looked up in the project (`.agent/agents/`, then
-  `.garuda/agents/`), then in your user directory (`~/.agent/agents/`), then
-  among the packaged agents. `garuda/build` always means the packaged one;
-  `user/<name>` and `project/<name>` pick a location explicitly.
-- `extends` chains up to four levels. Settings merge key by key; lists
-  replace; `tools: {add: [...], remove: [...]}` edits the parent's tool list
-  and `preset: none` starts from an empty one; `instructions.mode: replace`
-  drops the parent's text. A definition that extends itself refuses —
-  extend `garuda/<name>` to change a packaged agent.
-- Version 1 is strict: unknown fields, unknown tools, a missing instruction
-  file and duplicate keys refuse, each with a code such as
-  `agent.unknown_field`. A field Garuda recognizes but does not support yet
-  (for example `hooks:`) refuses with `agent.unsupported_field`
-  rather than being ignored.
-- Numbers are checked before the agent starts: the output reserve plus the
-  safety margin must fit inside `context.max_tokens`, `summarize_after_tokens`
-  must be below it, and a deadline must be positive (`agent.invalid_budget`).
-  A project definition cannot turn off `completion.verifier`, nor the
-  acceptance contract in the `eval` or `rigorous` modes that require it
-  (`agent.required_gate`), and its
-  `workspace.docker` limits can only narrow what you granted.
-- `garuda agent show NAME` prints every effective value and where it came
-  from; `garuda agent prompt NAME` prints the system prompt the first request
-  will send, section by section, and its digest. Both redact secrets unless
-  you pass `--raw`, and neither starts an MCP server, a hook or a model. A run
-  records the digest of the system message it actually sent; it differs from
-  the static one once runtime blocks such as the environment snapshot are
-  added.
-- `memory:` chooses what else goes into the system prompt, after the agent's
-  own instructions and in this order: your `~/.agent/AGENTS.md` (`user`, on
-  by default for version 1 definitions), the skills index, the project's
-  memory files (`project: [AGENTS.md, GARUDA.md]`, `project_mode: first` or
-  `all`), and with `context_pack: true` the `.context/` architecture,
-  decisions, discoveries and conventions files. Each file is cut at
-  `max_chars` (8000) with a `memory.truncated` notice; the whole prompt is
-  capped at `max_total_chars` (32000) and must fit the model's token budget,
-  trimming the context pack first and then project memory. The agent's own
-  instructions are never cut — a definition whose instructions do not fit
-  refuses. Project memory must stay inside the repository.
-- `skills:` picks the agent's skills. Sources are this project's
-  `.agent/skills` (and `.garuda/skills`), your `~/.agent/skills`, then the
-  packaged ones; when two define the same name, the nearer wins and
-  `garuda agent show` lists the shadowed copies. `from: [project, user,
-  packaged]` limits the sources, `include` (`null`: all; `[]`: none) and
-  `exclude` filter by name, and `load: index` (the default: names and paths,
-  read on demand) or `full` puts every body in the prompt. A skill's
-  `allowed-tools` is advice to the model, not enforcement; `garuda agent
-  check` warns (`skill.tool_not_granted`) when it names a tool the agent
-  lacks. Project skills are project text and grant nothing.
-- `tools:` shapes what the agent can call. `preset: all` is every built-in
-  tool, `read-only` is the built-ins whose declared effect only reads (plus
-  `task_complete`), and `none` starts empty; `add` and `remove` edit the result,
-  and `remove` also drops a same-named tool an SDK caller supplied. Per-tool
-  settings go under `options`: `bash: {timeout_sec, max_output_bytes}` caps how
-  long a command may run and how much output returns, and `web_fetch` /
-  `web_search` take `allowed_domains` (a host or its subdomains, redirects
-  included). Unknown tools, options and bad values refuse
-  (`agent.unknown_tool_option`, `agent.invalid_value`). `allowed_domains` is a
-  guardrail on what the tool requests, not network confinement.
-- `tools.subagents` lists the agents `invoke_subagent` may start (version 1
-  default: `explore`, `plan`, `reviewer`; legacy profiles: any). The list is
-  the tool's schema and is enforced when the child starts, and it can only
-  narrow further down. A run's delegation is bounded: two levels deep, eight
-  launches across the whole tree, one child at a time, never past the
-  parent's remaining turns or deadline. Refusals say why
-  (`agent.subagent_not_allowed`, `agent.delegation_too_deep`,
-  `agent.delegation_exhausted`, `agent.delegation_busy`,
-  `agent.delegation_deadline`). Only the MCP servers you select in
-  `tools.mcp` are started.
-- `output: {schema: schemas/result.json}` makes `task_complete` carry a
-  structured `result` that must satisfy a JSON Schema (Draft 2020-12) before
-  the task is accepted. The file is relative to the definition that names it,
-  stays inside the agent's root, and is checked when the definition resolves:
-  at most 64 KiB, 32 levels deep, 64 references and a bounded expansion, with
-  `$ref` only to the same file (`#/$defs/...`; no remote or file references,
-  no cycles). A keyword Garuda does not support refuses rather than being
-  ignored: `format`, `pattern`, `patternProperties`, `content*`, `$id`,
-  `$anchor` and `$dynamic*`. Codes: `agent.output_schema_invalid`,
-  `_unsupported`, `_ref`, `_too_large`. A wrong `result` is sent back with the
-  reasons for at most two repair turns, which are ordinary turns from the run's
-  own turn and deadline budget; after that the run fails with
-  `agent.output_invalid` and returns no output. A valid shape is not task
-  verification: the usual completion and verification gates still apply. The
-  accepted value is `AgentResult.output`. A child inherits the schema, and
-  `schema: null` drops it. Native runs only.
-- `memory: {notes: propose}` gives the agent a `remember(text, scope)` tool
-  (`scope` is `user` or `project`). It records a **proposal** (at most 500
-  characters, ten per root task, shared with its subagents) and changes no
-  memory file. Secret-shaped text is refused, and scrubbed before it can reach
-  the event log or the saved transcript. `garuda memory review` lists the
-  proposals; you accept, edit or reject each one, at a terminal only (a headless
-  run can propose but never accept). Accepted user notes append to
-  `~/.agent/memory.md` and load after your `AGENTS.md`; accepted project notes
-  append to `.agent/memory.md` and load after the project's memory files, both
-  labelled as reviewed information, never instructions. Acceptance is
-  journaled so a replay can't append twice, and refuses symbolic links, another
-  project's proposals and a proposal that changed after you saw it. The
-  dashboard lists pending proposals read-only. If a needed safeguard is missing,
-  `notes: propose` refuses (`agent.notes_unavailable`) rather than running
-  without it.
-- **One definition everywhere.** `garuda run`, `garuda chat`, `garuda serve`,
-  the dashboard and the SDK resolve a definition through the same code, so
-  `garuda agent show NAME --json` and the prompt digest are the same whichever
-  entry point runs it. `--agent-file PATH` (run, chat; also `agent show`)
-  selects a file; it is a source, not trust, so a file inside the repository is
-  still project content under the project ceiling. In Python:
-
-  ```python
-  from garuda import AgentSpec, SoftwareAgent
-
-  spec = AgentSpec.load("careful-coder", workspace=".")
-  agent = SoftwareAgent(workspace=".", agent=spec.narrow(limits={"max_turns": 40}))
-  ```
-
-  `SoftwareAgent(agent=...)` also takes a name or a mapping (`AgentSpec.from_dict`;
-  an inline mapping can't reference instruction or schema files). A spec is frozen
-  and hands out copies, so concurrent runs never share one.
-- `AgentSpec.narrow(...)` returns a stricter copy and nothing else. A looser
-  permission mode, more tools, wider MCP, subagent or domain allowances, larger
-  budgets, a disabled check, and any setting not listed as narrowable refuse
-  with `agent.narrow_refused`.
-- `serve` and the dashboard take an agent **name** only. An inline definition,
-  `agent_file` or (with an allowlist) `agents_dir` over a request refuses
-  (`agent.inline_over_http`); `--allow-agent` limits which names (`agent.not_allowed`),
-  and the run never exceeds `--permission-ceiling` (`serve`; default the server's
-  own `--agent`) or `--max-permission` (dashboard), so naming `garuda/harbor`
-  cannot raise the server's authority.
-- Each run records the digest of the definition it started from
-  (`agent_digest` in the session). Resuming with a changed definition does not
-  alter the earlier session: the new session records an `agent_segment` with both
-  digests.
-- Files without `version` are legacy profiles and keep working unchanged.
-  `garuda agent migrate PATH` shows the version 1 form and confirms it
-  resolves to the same agent; `--write` replaces the file and keeps a backup.
+```yaml
+# ~/.agent/settings.yaml
+agents:
+  project_ceiling: smart   # readonly | smart | auto | yolo
+```
 
 ## Roles and flows: garuda.yaml
 
@@ -597,13 +393,14 @@ unchanged beside it.
 version: 1
 defaults: {role: coder}
 harnesses:
-  claude-code: {allowed_models: [<exact-id>], max_parallel: 2}
+  claude: {allowed_models: [<exact-id>], max_parallel: 2}
   codex: {allowed_models: [<exact-id>]}
 roles:
-  planner:  {harness: claude-code, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
+  planner:  {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
   coder:    {harness: codex, model_id: <exact-id>, effort: high,
-             fallback: [{harness: claude-code, model_id: <exact-id>}], consult: [reviewer]}
-  reviewer: {harness: claude-code, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
+             fallback: [{harness: claude, model_id: <exact-id>}],
+             consult: [planner]}   # not the reviewer: a role the coder consults can't review it
+  reviewer: {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
 consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
 sessions: {isolation: auto, keep_days: 30}
 ```
@@ -657,7 +454,7 @@ set and the adapter version are recorded on the session.
 
 ### A role's agent
 
-`roles.<name>.agent: careful-coder` runs the role under an [agent definition](#agent-definitions)
+`roles.<name>.agent: careful-coder` runs the role under an [agent definition](agents.md)
 (`profile:` is the older spelling of the same key; naming two different agents is
 `config.conflict`). The definition is resolved for the harness that will actually run, after any
 fallback was chosen, and its digest becomes part of the role's identity on the session, so

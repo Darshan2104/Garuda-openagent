@@ -61,6 +61,9 @@ garuda chat --workspace .
   The prompt appears when the profile's own permission mode is `smart`, as
   with the default `build` profile; other profiles deny asks.
 - Press ++enter++ on an empty line, or ++ctrl+d++, to finish.
+- Away from that terminal? While the prompt waits, you can answer it from
+  another one, or from the dashboard's Approvals page. See
+  [answer an approval from elsewhere](parallel.md#answer-an-approval-from-another-terminal-or-the-browser).
 
 Add `--mode readonly` for a read-only chat, or `--agent plan` to discuss a
 plan before building it.
@@ -89,11 +92,43 @@ garuda web --allow-workspace . --max-permission smart
 
 More in the [Web dashboard guide](../guides/web-dashboard.md).
 
+## Verify the result with your own check
+
+<p class="gd-facts">Changes files: yes · Works with external harnesses too</p>
+
+**Use it when** "done" should mean "your test command passes", not "the agent
+says so".
+
+```bash
+garuda run --name fix-tests -t "Fix the failing tests by changing src/ only" --check "python -m pytest -q"
+```
+
+```text
+[garuda] verification: passed (user-request)
+```
+
+**What happens**
+
+- After the session ends, Garuda runs each `--check` command (repeat the flag
+  for more) and records a receipt: who asked for it, the exact command, the
+  code it ran against, and the result.
+- The session's **verification** becomes `passed` or `failed`. It is kept
+  apart from the agent's own **self-check**, so `garuda sessions show
+  fix-tests` shows both.
+- Without a check, verification reads `unavailable`. Checks can also come
+  from your `garuda.yaml` or a project file you trusted; see
+  [Level 5](teams.md#require-checks-for-every-run-in-this-project).
+- A check can't pass if it changes the code it checks, or if the session
+  changed the test setup it relies on (for example `conftest.py` for pytest).
+
 ## Make Garuda prove the fix
 
 <p class="gd-facts">Changes files: yes · Costs: extra model calls</p>
 
-**Use it when** "it says it's done" isn't good enough and you want evidence.
+**Use it when** "it says it's done" isn't good enough and you want the agent
+to gather evidence before it stops. These modes make the agent check its own
+work; pair them with [`--check`](#verify-the-result-with-your-own-check) when
+you also want an independent result.
 
 ```bash
 garuda run --mode eval -t "Make tests/test_parser.py pass without changing the tests"
@@ -186,6 +221,44 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 - Start with the default mode. `eval` and `rigorous` add model calls.
 - Your provider's billing page is the authority on cost. Garuda does not guess
   missing prices.
+- To see what runs actually used, open the dashboard's
+  [Usage page](parallel.md#see-usage-cost-and-limits).
+
+## Name a session and build on it
+
+<p class="gd-facts">Changes files: depends on the task · Shares: a short brief, never the transcript</p>
+
+**Use it when** a later task should know what an earlier one did, without you
+re-explaining it.
+
+```bash
+garuda run --name fix-tests -t "Fix the failing tests"
+garuda run --no-edits -t "In two sentences, explain what @fix-tests changed and why"
+garuda run --with fix-tests --with add-docs -t "Write the release note for these changes"
+```
+
+```text
+[garuda] tagged: fix-tests (native · openrouter/deepseek/deepseek-v4-flash-0731)
+```
+
+**What happens**
+
+- `--name` gives the session a name that is unique in this project. Without
+  it, Garuda makes one from the task. Names work anywhere a session ID does:
+  `--resume fix-tests`, `garuda sessions show fix-tests`.
+- `@fix-tests` in the task, or `--with fix-tests`, attaches that session's
+  **brief**: its task, state, changed files, checks and final answer. The
+  transcript is never attached. The brief arrives as labelled data, not as
+  instructions.
+- A session from another project needs its full ID, `--with-id FULL_ID`, and
+  your permission: Garuda asks in a terminal, or you pass
+  `--allow-cross-project-context` in a script.
+- In `garuda chat`, `@name` works in any message.
+
+!!! tip "Brief or resume?"
+    `--resume` continues the conversation itself, with the full history.
+    `@name` and `--with` start fresh and hand over only the brief, which keeps
+    the new run's context small.
 
 ## Use a different model for one run
 

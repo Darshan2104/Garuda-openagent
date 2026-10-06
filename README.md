@@ -17,7 +17,14 @@ MCP, and observability.
   tmux, web access, MCP, skills, custom tools, and subagents.
 - Persists sessions, records event logs and trajectories, and requires useful
   completion evidence rather than accepting a bare claim of success.
-- Runs locally, in a sandbox, tmux, Docker, or a remote Docker environment.
+- Verifies results with checks you choose (`--check`, trusted project checks),
+  kept apart from the agent's own completion check.
+- Runs locally, in a sandbox, tmux, Docker, or a remote Docker environment, and
+  in per-session Git worktrees merged only after checks pass in Docker.
+- Queues background runs under per-runtime capacity, with approvals you can
+  answer from another terminal or the dashboard.
+- Lets you define agents (`garuda agent new`), name roles with exact models,
+  and run plan → build → review flows with independent reviews and consults.
 - Provides a CLI, SDK, JSON-RPC job service, and local web dashboard.
 - Launches subscription-backed coding harnesses through ACP and supports
   native-to-ACP handoff while preserving Garuda's native runtime. Garuda records
@@ -60,9 +67,12 @@ Read the searchable documentation at
 | [Quickstart](docs/guides/getting-started.md): install and run a safe first task | [Use cases](docs/use-cases/index.md): recipes from easy to hard |
 | [How Garuda works](docs/guides/how-garuda-works.md): runtimes, workspaces, modes, sessions | [Command builder](docs/guides/command-builder.md): click to build a command |
 | [Cheat sheet](docs/reference/cheat-sheet.md): everyday commands | [Troubleshooting](docs/reference/troubleshooting.md): common problems |
+| [Feature index](docs/reference/features.md): every feature and its demo | [Teams of roles](docs/use-cases/teams.md): roles, flows, reviews |
 
 Guides: [Safety and workspaces](docs/guides/safety-and-workspaces.md) ·
 [Configuration](docs/guides/configuration.md) ·
+[Agent definitions](docs/guides/agents.md) ·
+[Sessions and flows](docs/guides/sessions-and-flows.md) ·
 [External harnesses](docs/guides/external-harnesses.md) ·
 [Web dashboard](docs/guides/web-dashboard.md) ·
 [CLI reference](docs/reference/cli.md) ·

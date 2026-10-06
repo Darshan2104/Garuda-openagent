@@ -9,9 +9,10 @@ hide:
 # Garuda
 
 A safe, inspectable runtime for AI coding agents. Give it a task and it runs a
-model in a workspace you choose, screens every action, and checks the result
-before accepting it. It can also drive external agents such as Claude Code or
-Codex. Every run is recorded so you can inspect or continue it.
+model in a workspace you choose, screens every action, and verifies the result
+with checks you trust. Run tasks in the background and in parallel, give each
+job its own model as a team of roles, or drive external agents such as Claude
+Code or Codex. Every run is recorded so you can inspect or continue it.
 
 [Get started in 5 minutes](guides/getting-started.md){ .md-button .md-button--primary }
 [Browse use cases](use-cases/index.md){ .md-button }
@@ -68,8 +69,8 @@ result but does not verify it.
 
     ---
 
-    "I want to… → run this" recipes in five levels, from reading code to
-    handing sessions to Claude Code.
+    "I want to… → run this" recipes in seven levels, from reading code to
+    teams of roles and handing sessions to Claude Code.
 
     [:octicons-arrow-right-24: Use cases](use-cases/index.md)
 
@@ -106,6 +107,22 @@ result but does not verify it.
 
     [:octicons-arrow-right-24: Cheat sheet](reference/cheat-sheet.md)
 
+-   :material-format-list-checks: **Feature index**
+
+    ---
+
+    Every feature, what it gives you, and where it is demonstrated.
+
+    [:octicons-arrow-right-24: All features](reference/features.md)
+
+-   :material-account-group: **Teams of roles**
+
+    ---
+
+    A planner, coder and independent reviewer, each on the model you choose.
+
+    [:octicons-arrow-right-24: Level 5](use-cases/teams.md)
+
 </div>
 
 ## What you get
@@ -113,11 +130,14 @@ result but does not verify it.
 | Capability | Details |
 |---|---|
 | **Any model** | Any LiteLLM provider, with retries, streaming, reasoning settings, prompt caching, and cost accounting |
-| **Real tools** | Shell, files, edits, search, PDFs and spreadsheets, web fetch, MCP servers, skills, subagents, and your own Python tools |
-| **Guardrails** | Profiles, permission rules, read-only mode, and approvals for risky actions |
-| **Isolation** | Docker or remote Docker workspaces for untrusted code, or an OS sandbox that limits writes and network |
-| **Evidence, not claims** | Completion checks that require proof before a native result counts as done |
-| **Sessions** | Every run saved, resumable, and viewable in a local dashboard |
+| **Real tools** | Shell, files, edits, search, PDFs and spreadsheets, web fetch, MCP servers, skills, subagents, hooks, and your own Python tools |
+| **Your own agents** | Version 1 agent definitions that extend packaged ones, inspected with `garuda agent show`, with structured JSON output and reviewed memory notes |
+| **Guardrails** | Permission rules, read-only and no-edits runs, approvals for risky actions (answerable from anywhere), and trust prompts for project-supplied code |
+| **Isolation** | Docker or remote Docker workspaces for untrusted code, an OS sandbox that limits writes and network, and Git worktrees per session |
+| **Verified, not claimed** | Acceptance checks you choose decide whether work is verified; the agent's own completion check is recorded separately |
+| **Parallel work** | Background runs with a queue, per-runtime capacity, worktree sessions, and merges checked in Docker |
+| **Teams of roles** | Roles with an exact harness and model, fallbacks, plan → build → review flows, independent reviews, and consults |
+| **Observability** | A dashboard with sessions, approvals, usage and cost by model, provider limits, and setup diagnostics |
 | **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, and Goose through ACP, with handoff and recovery |
 | **Many interfaces** | CLI, interactive chat, web dashboard, YAML recipes, Python SDK, and a JSON-RPC service |
 
