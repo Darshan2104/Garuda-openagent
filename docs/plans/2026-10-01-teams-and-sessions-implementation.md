@@ -1378,6 +1378,11 @@ must be absent everywhere, including the initial handshake. Verify owner-only
 socket permissions; do not claim protection from hostile same-UID processes.
 Removed targets/unsupported versions expose no MCP tool. A live adapter claim
 requires G.1 evidence with exact versions and separately authorized spend.
+The canonical transport test starts the advertised MCP executable from a fake
+ACP prompt, completes initialize/list/call and replay over real stdio/socket,
+and reaches the default native child with scripted inference. This proves the
+Garuda infrastructure; shipped adapter provenance/quiescence gates stay unknown
+and disabled until separately exercised.
 
 ### G.4 Consult visibility
 

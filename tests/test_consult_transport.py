@@ -258,13 +258,34 @@ async def test_a_role_without_targets_gets_no_tool_even_on_a_proved_adapter(cons
     assert recorded(record)[0]["mcpServers"] == [] and "no consult targets" in host.unavailable
 
 
-async def test_a_proved_adapter_gets_exactly_one_scoped_tool_and_no_token_leaks(
-        consult_world, tmp_path, caplog):
+async def test_a_fake_acp_asker_forwards_through_the_advertised_stdio_without_token_leaks(
+        consult_world, tmp_path, caplog, monkeypatch):
     caplog.set_level(logging.DEBUG)
-    recorder = Recorder()
-    host = AcpConsultHost(service(consult_world, recorder), targets=["reviewer"],
+    import garuda.model.factory as factory
+    from garuda.consult.service import ConsultService
+    from garuda.model.script_model import ScriptModel
+    from garuda.observability.ledger import Ledger
+    from garuda.runtime.events import RuntimeEventKind
+    from tests.test_consult import make_resolved
+    from tests.test_consult_native_child import call
+
+    monkeypatch.setitem(factory._registry, "litellm", lambda *_a, **_kw: ScriptModel([
+        call("task_complete", "done", summary="The native review reached the real MCP asker.")]))
+    host = AcpConsultHost(ConsultService(consult_world.store, make_resolved()), targets=["reviewer"],
                           workspace=str(consult_world.ws), policy=proved_policy())
-    runtime, record = adapter(consult_world, host, tmp_path)
+    record = tmp_path / "mcp.jsonl"
+    prompts = []
+
+    async def unexpected_approval(action):
+        prompts.append(action)
+        return False
+
+    runtime = AcpRuntime([sys.executable,
+        str(ROOT / "tests" / "fixtures" / "consult" / "forwarding-agent.py"),
+        "--agent-info", json.dumps(INFO), "--record-mcp", str(record)],
+        runtime_id="fake-adapter", cwd=str(consult_world.ws),
+        extra_env={"PYTHONPATH": str(ROOT)}, approval_handler=unexpected_approval)
+    runtime.attach_consult(host)
     await runtime.start(task="t", session_id=consult_world.asker)
     try:
         (entry,) = recorded(record)[0]["mcpServers"]
@@ -272,10 +293,18 @@ async def test_a_proved_adapter_gets_exactly_one_scoped_tool_and_no_token_leaks(
         assert entry["name"] == "garuda-consult" and os.path.isabs(entry["command"])
         token = env["GARUDA_CONSULT_TOKEN"]
 
-        ok, text = await ask(env["GARUDA_CONSULT_ENDPOINT"], token, target="reviewer",
-                             question="Is it safe?", request_id="acp-1")
-        assert ok and "Looks fine." in text and len(recorder.calls) == 1
-        assert token not in repr(recorder.calls[0])  # the consulted child never sees it
+        await runtime.prompt("Is it safe?", timeout=30)
+        events, _ = await runtime.poll_events(0)
+        text = "".join(e.payload.get("chunk", "") for e in events
+                       if e.kind is RuntimeEventKind.MESSAGE)
+        assert "The native review reached the real MCP asker." in text
+        assert prompts == []  # structured ACP permission auto-allowed at the real handler
+        records = [r for r in Ledger().records() if r["kind"] == "native_model_call"]
+        assert len(records) == 1 and records[0]["origin"] == "consult"
+        children = [p for p in consult_world.store.root.iterdir()
+                    if p.is_dir() and p.name != consult_world.asker and not p.name.startswith(".")]
+        assert len(children) == 1  # duplicate MCP request launched once
+
 
         # logs, exports and persisted state never hold it
         assert token not in json.dumps(describe(entry))
