@@ -1,7 +1,6 @@
 """The retry contract stays stable while the agent adds visible status."""
 
 import pytest
-
 from client import RetryClient
 
 
