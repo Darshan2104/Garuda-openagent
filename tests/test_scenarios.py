@@ -347,15 +347,16 @@ def test_compiled_fields_reach_the_actual_existing_runtime(tmp_path, monkeypatch
     ("different-runtime", "ready", "independent"),
     ("fallback", "needs-setup", "not_independent"),
     ("consulted", "needs-setup", "not_independent"),
-    ("fallback-alias-gap", "ready", "independent"),
-    ("consulted-alias-gap", "ready", "independent"),
+    ("fallback-alias", "needs-setup", "not_independent"),
+    ("consulted-alias", "needs-setup", "not_independent"),
+    ("consulted-unknown", "needs-setup", "not_independent"),
 ])
 def test_readiness_uses_the_existing_configured_identity_rule(configured, case, status, decision):
     doc = gy.load_file(gy.user_path())
     roles = doc["roles"]
     for role in roles.values():
         role.pop("model_id")
-    if case in {"different-model", "fallback", "consulted", "fallback-alias-gap", "consulted-alias-gap"}:
+    if case in {"different-model", "fallback", "consulted", "fallback-alias", "consulted-alias", "consulted-unknown"}:
         roles["coder"]["model_id"] = "coder/model"
         roles["reviewer"]["model_id"] = "reviewer/model"
     if "alias" in case:
@@ -373,14 +374,14 @@ def test_readiness_uses_the_existing_configured_identity_rule(configured, case, 
         roles["coder"]["fallback"] = [{"harness": "builder" if "alias" in case else "native", "model_id": "reviewer/model"}]
     elif case.startswith("consulted"):
         roles["coder"]["consult"] = ["scout"]
-        roles["scout"].update(harness="builder" if "alias" in case else "native", model_id="reviewer/model")
+        roles["scout"].update(harness="builder" if "alias" in case else "missing" if "unknown" in case else "native", model_id="reviewer/model")
     gy.user_path().write_text(gy.dump(doc))
     result = StarterService().preview("build-review", {"goal": "Add status"}, configured)
     state = result["readiness"]
     assert state["status"] == status and state["can_run"] == (status == "ready")
     assert state["reviews"][0]["decision"] == decision
     assert state["reviews"][0]["policy"] == "required"
-    assert "fallback and consulted harness aliases" in state["reviews"][0]["scope"]
+    assert (state["reviews"][0]["reason"] is not None) == (status == "needs-setup")
     assert state["runtime_evidence"]["reviewer"]["model_label"] == roles["reviewer"].get("model_id", "harness default")
     assert state["verification"] == "unavailable"
     if status == "needs-setup":

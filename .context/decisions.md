@@ -1571,3 +1571,21 @@ confinement image or Docker executable without a probe; runtime preflight still
 proves confinement. Host no-edits detection never silently replaces a read-only
 ACP boundary. Starter naming and the five journeys reuse role/flow owners;
 recipes remain custom prompt sequences with their existing whole-recipe lease.
+
+
+## 2026-10-08 — Review aliases use the admitted trusted registry (#310)
+
+Role resolution retains its non-executing trusted runtime registry as transient
+`RolePlan.identity_registry` evidence, excluded from persisted record, repr and
+equality. Fallback selection and bound agent replacement preserve that evidence.
+The shared review owner resolves configured primary, fallback and consult
+references to canonical runtime IDs, retaining the active selected plan and
+actual launched/consulted evidence. Exact runtime/model pair comparison and
+harness-default model semantics are unchanged.
+
+Unknown or disabled references cannot prove required independence and produce
+the existing `flow.review_not_independent` refusal with a resolution reason.
+Explicit waivers stay `policy: waived`; an unresolved configured set is null
+with decision unknown and a diagnostic, while actual identity evidence remains
+visible. Readiness consumes this same owner through its resolved role plans;
+no second starter algorithm, discovery, login or model call is introduced.

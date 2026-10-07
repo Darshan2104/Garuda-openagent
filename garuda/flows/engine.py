@@ -469,7 +469,11 @@ class FlowRunner:
             if attempt.get("session_id"):
                 consults.extend(view.entries(self.store, attempt["session_id"]))
         consulted = view.identities(consults)
-        configured = rv.identities(config, step["role"], reviewed_plan)
+        identity_error = None
+        try:
+            configured = rv.identities(config, step["role"], reviewed_plan)
+        except rv.IdentityUnresolved as exc:
+            configured, identity_error = set(), str(exc)
         shared = mine in configured or mine in launched or mine in consulted
 
         def ident(pair):
@@ -479,9 +483,10 @@ class FlowRunner:
             return [ident(p) for p in sorted(pairs, key=lambda p: (str(p[0]), str(p[1])))]
 
         return {"policy": "required" if spec.get("independent", True) else "waived",
-                "decision": "not_independent" if shared else "independent",
+                "decision": "not_independent" if shared else "unknown" if identity_error else "independent",
+                **({"identity_error": identity_error} if identity_error else {}),
                 "reviewer": {"role": terminal["role"], **ident(mine)},
-                "reviewed": {"role": step["role"], "configured": ordered(configured),
+                "reviewed": {"role": step["role"], "configured": None if identity_error else ordered(configured),
                              "launched": ordered(launched), "consulted": ordered(consulted)},
                 "consults": len(consults)}
 

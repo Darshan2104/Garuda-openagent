@@ -73,25 +73,51 @@ def parse(text: str) -> Review:
     return Review(verdict, findings)
 
 
+class IdentityUnresolved(Exception):
+    """Configured independence lacks trusted canonical runtime evidence."""
+
+
+def _registry(plan):
+    from garuda.runtime.registry import RuntimeRegistry
+
+    # Legacy manually constructed native plans have no alias evidence. Never
+    # guess that an unknown reference is a distinct external runtime.
+    return getattr(plan, "identity_registry", None) or RuntimeRegistry()
+
+
+def _identity(registry, spec):
+    from garuda.runtime.registry import RegistryError
+
+    try:
+        return registry.get(spec.get("harness")).runtime_id, spec.get("model_id")
+    except RegistryError as exc:
+        raise IdentityUnresolved(f"cannot prove review independence: {exc}") from exc
+
+
 def identities(config: dict, role: str, plan) -> set[tuple[str, str | None]]:
-    """Every (runtime, model) identity ``role`` acts as, its fallbacks and consults."""
+    """Canonical primary/active, configured fallback and consulted identities."""
+    registry = _registry(plan)
     spec = config.get("roles", {}).get(role, {})
-    found = {(plan.runtime_id, plan.model_id)} if plan is not None else {
-        (spec.get("harness"), spec.get("model_id"))}
+    found = {_identity(registry, spec)}
+    if plan is not None:
+        found.add((plan.runtime_id, plan.model_id))
     for entry in spec.get("fallback", []):
-        found.add((entry.get("harness"), entry.get("model_id")))
+        found.add(_identity(registry, entry))
     for consulted in spec.get("consult", []):
         other = config.get("roles", {}).get(consulted, {})
-        found.add((other.get("harness"), other.get("model_id")))
+        found.add(_identity(registry, other))
     return found
 
 
 def check_independent(config: dict, reviewed: str, reviewed_plan, reviewer: str,
                       reviewer_plan) -> str | None:
-    """``None`` when independent, else why not."""
-    mine = (reviewer_plan.runtime_id, reviewer_plan.model_id) if reviewer_plan else (
-        config["roles"][reviewer]["harness"], config["roles"][reviewer].get("model_id"))
-    theirs = identities(config, reviewed, reviewed_plan)
+    """``None`` when independent, else a collision or unresolved-evidence reason."""
+    try:
+        mine = (reviewer_plan.runtime_id, reviewer_plan.model_id) if reviewer_plan else (
+            _identity(_registry(reviewed_plan), config["roles"][reviewer]))
+        theirs = identities(config, reviewed, reviewed_plan)
+    except IdentityUnresolved as exc:
+        return str(exc)
     if mine in theirs:
         return (f"reviewer {reviewer} would run as {mine[0]}"
                 + (f" · {mine[1]}" if mine[1] else "")

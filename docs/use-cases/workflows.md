@@ -132,8 +132,10 @@ garuda flow run plan-build-review --task "Add reconnect status with deterministi
 A validated `--variant pair --plan-artifact FLOW_ID:plan:1` uses the existing
 `pair` flow instead. Both require configured independent coder/reviewer
 identities under Garuda's existing review rule. Preflight is configured evidence;
-the engine rechecks identities actually launched or consulted. Fallback/consult
-alias comparisons retain the documented limitation until #310.
+the engine rechecks identities actually launched or consulted. Primary, fallback
+and configured consult runtime aliases resolve through the same trusted registry;
+unknown or disabled references cannot prove required independence. Exact model
+IDs retain the existing pair comparison; an absent ID means harness default.
 
 A single-harness setup often binds coder and reviewer to the same identity.
 Readiness reports `needs-setup` and offers three explicit remedies:

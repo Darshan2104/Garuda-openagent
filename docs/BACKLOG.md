@@ -230,16 +230,6 @@ The same config gave 49 and then 37 turns on the same task. Do not tune on one t
 
 ## Open work
 
-**Review fallback and consult identities compare raw harness aliases.**
-`flows/review.py::identities` uses the role plan's canonical runtime ID for the
-primary identity, but configured fallback and consulted roles contribute raw
-`harness` strings. A different alias of the reviewer's runtime/model can evade
-that configured comparison. Canonicalize these identities at the review-engine
-boundary, with regression coverage there; starter readiness must use the
-existing predicate and disclose this limit until it is fixed. Tracked in
-[issue #310](https://github.com/Darshan2104/Garuda-openagent/issues/310). This is
-separate from the P1a starter launch gate.
-
 **ACP authority is recorded, not enforced.** `acp/authority.py` negotiates one
 owner per tool family from `families`/`mediated`/`sandbox`, which are Garuda
 extension fields in `agentCapabilities` — standard ACP v1 agents send none, and

@@ -163,3 +163,100 @@ def test_review_by_must_be_the_terminal_reviewer():
     config["flows"]["pbr"]["steps"][1]["review"]["by"] = "planner"
     with pytest.raises(gy.GarudaConfigError, match="terminal reviewer"):
         gy.parse(config)
+
+
+@pytest.mark.parametrize('origin,model', [('fallback', 'r/1'), ('consult', 'r/1'),
+                                         ('fallback', None), ('consult', None), ('unresolved', 'r/1')])
+async def test_unprovable_review_identity_refuses_before_reviewed_runtime(repo, origin, model):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import plan_role
+
+    home = repo / '.agent'
+    home.mkdir()
+    (home / 'settings.yaml').write_text('runtime_refs:\n- {alias: reviewer-alias, runtime_id: native}\n')
+    config = _config()
+    config['roles']['reviewer'].pop('model_id')
+    if model is not None:
+        config['roles']['reviewer']['model_id'] = model
+    if origin == 'fallback':
+        config['roles']['coder']['fallback'] = [{'harness': 'reviewer-alias', **({'model_id': model} if model else {})}]
+    else:
+        config['roles']['advisor'] = {'harness': 'missing' if origin == 'unresolved' else 'reviewer-alias', **({'model_id': model} if model else {})}
+        config['roles']['coder']['consult'] = ['advisor']
+    # No upstream fixture session: the engine must refuse before either role starts.
+    config['flows']['pbr']['steps'] = config['flows']['pbr']['steps'][1:]
+    config['flows']['pbr']['steps'][0]['inputs'] = []
+    resolved = gy.resolve(gy.parse(config), None)
+    catalog = prepare_runtime_catalog(repo)
+    primary = plan_role(gy.Resolved(resolved.config, resolved.provenance, role='coder'), catalog)
+    reviewer = plan_role(gy.Resolved(resolved.config, resolved.provenance, role='reviewer'), catalog)
+    assert primary.runtime_id == reviewer.runtime_id == 'native'
+    assert primary.model_id == 'c/1' and reviewer.model_id == model
+
+    async def forbidden(_launch):
+        pytest.fail('alias collision reached the reviewed runtime')
+
+    store = SessionStore()
+    result = await FlowRunner(store, repo, 'pbr', resolved.config['flows']['pbr'], resolved,
+                              task='t', launcher=forbidden).run()
+    assert result.stopped.code == 'flow.review_not_independent'
+    assert result.receipts == []
+    assert store.load_meta(result.flow_session)['state']['outcome'] == 'failed'
+
+
+@pytest.mark.parametrize('reviewer_model,auxiliary_model,independent', [
+    ('r/1', 'other/1', True), (None, 'other/1', True), ('r/1', None, True),
+    (None, None, False),
+])
+def test_configured_canonical_pairs_preserve_exact_model_semantics(repo, monkeypatch, reviewer_model, auxiliary_model, independent):
+    import socket
+    import subprocess
+
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import plan_role
+
+    home = repo / '.agent'
+    home.mkdir()
+    (home / 'settings.yaml').write_text('runtime_refs: [{alias: alternative, runtime_id: native}]\n')
+    config = _config()
+    config['roles']['reviewer'].pop('model_id')
+    if reviewer_model is not None:
+        config['roles']['reviewer']['model_id'] = reviewer_model
+    config['roles']['coder']['fallback'] = [{'harness': 'alternative', **({'model_id': auxiliary_model} if auxiliary_model else {})}]
+    resolved = gy.resolve(gy.parse(config), None)
+    catalog = prepare_runtime_catalog(repo)
+    plans = {role: plan_role(gy.Resolved(resolved.config, resolved.provenance, role=role), catalog)
+             for role in ['coder', 'reviewer']}
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('configured identity resolution executed a process/model/network call')
+
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build_spec', forbidden)
+    assert rv.identities(resolved.config, 'coder', plans['coder']) == {('native', 'c/1'), ('native', auxiliary_model)}
+    reason = rv.check_independent(resolved.config, 'coder', plans['coder'], 'reviewer', plans['reviewer'])
+    assert (reason is None) == independent
+
+
+@pytest.mark.parametrize('unresolved', [False, True])
+async def test_waiver_preserves_canonical_or_unknown_identity_evidence(repo, unresolved):
+    home = repo / '.agent'
+    home.mkdir()
+    (home / 'settings.yaml').write_text('runtime_refs: [{alias: alternative, runtime_id: native}]\n')
+    config = _config(independent=False)
+    config['roles']['advisor'] = {'harness': 'missing' if unresolved else 'alternative', 'model_id': 'r/1'}
+    config['roles']['coder']['consult'] = ['advisor']
+    script = Script([APPROVE])
+    result = await _run(repo, script, config).run()
+    assert result.completed
+    evidence = SessionStore().load_meta(result.flow_session)['review']['independence']
+    assert evidence['policy'] == 'waived'
+    assert evidence['decision'] == ('unknown' if unresolved else 'not_independent')
+    assert evidence['reviewed']['launched'] == [{'runtime': 'native', 'model_id': 'c/1'}]
+    assert evidence['reviewed']['consulted'] == []
+    if unresolved:
+        assert evidence['reviewed']['configured'] is None and 'missing' in evidence['identity_error']
+    else:
+        assert evidence['reviewed']['configured'] == [{'runtime': 'native', 'model_id': 'c/1'}, {'runtime': 'native', 'model_id': 'r/1'}]

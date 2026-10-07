@@ -23,8 +23,8 @@ from garuda.scenarios.types import LaunchPlan, StarterError
 RESOLUTION_ERRORS = (StarterError, gy.GarudaConfigError, RegistryError, RoleRefused, RuntimeSettingsError)
 INDEPENDENCE_LIMIT = (
     "Configured preflight only: execution rechecks identities actually launched or consulted. "
-    "Primary runtime aliases are canonical; fallback and consulted harness aliases are compared "
-    "as configured strings until the review-engine follow-up (#310).")
+    "Primary, fallback and consulted runtime aliases use the role's trusted canonical registry. "
+    "Unresolved identity evidence cannot prove required independence.")
 
 
 def _diagnostic(code, message, fix, *, level="warning"):
