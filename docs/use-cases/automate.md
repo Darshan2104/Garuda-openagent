@@ -51,11 +51,17 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
 - `{{name}}` placeholders are filled from `--param KEY=VALUE`, then from
   defaults. A missing required parameter stops the recipe with an error before
   any step runs.
-- Recipe steps aren't saved as sessions, and recipes don't take a workspace
-  lease.
+- Recipe steps aren't saved as individual sessions. The recipe holds and
+  heartbeats one workspace lease across the whole sequence, including MCP/tool
+  setup and cleanup. Compatible readers can coexist; a conflicting writer is
+  refused by the existing lease owner.
 - Each step can set `agent` (a profile) and `mode`.
 - The recipe stops at the first failed step and tells you how many later
   steps did not run.
+
+[Garuda Starters](workflows.md) is the simpler entry for the five packaged
+role/flow journeys. Recipes keep custom prompt sequences; they do not gain typed
+flow artifacts, independent review or a new session/resume engine.
 
 ## Use Garuda in scripts and CI
 

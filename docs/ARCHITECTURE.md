@@ -116,6 +116,12 @@ fastest way to learn the system.
    It discloses unprobed runtime facts, visible user-authored waivers, and the
    single-harness Build and check remedy through the existing role-run mechanism.
    It does not call the full Setup view, which performs discovery probes.
+   Read-only ACP roles also require a configured confinement image and a Docker
+   executable in static readiness; launch still performs the existing Docker
+   preflight and never substitutes host no-edits for confinement.
+   `scenarios/examples.py` copies installed reconnect project resources into an
+   exclusively new user-selected directory and initializes local Git without
+   inheriting repository-directed environment or global Git hooks/config.
    Native consult quiescence normalizes ordinary synchronous/asynchronous
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,

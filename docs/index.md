@@ -55,6 +55,10 @@ result but does not verify it.
 
 ## Find your way
 
+[Ready-to-use workflows](use-cases/workflows.md) packages planning, feedback,
+reviewed building, role work and specialist questions around your Garuda setup.
+Start with the runnable reconnect example and inspect readiness before launch.
+
 <div class="grid cards" markdown>
 
 -   :material-rocket-launch: **Quickstart**

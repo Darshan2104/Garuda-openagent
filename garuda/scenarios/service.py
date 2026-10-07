@@ -70,6 +70,18 @@ def readiness(context: LaunchContext, *, starter_id: str) -> dict:
                 blockers.append("harness.cli_missing")
                 diagnostics.append(_diagnostic("harness.cli_missing", f"{name}: executable unavailable for {plan.runtime_id}",
                                                manifest.setup or "Install the harness's official CLI and rerun `garuda init`.", level="error"))
+            if plan.permissions == "readonly":
+                from garuda.workspace.confined_acp import Confinement
+
+                confinement = Confinement.from_config(plan.harness)
+                row["confinement"] = "configured; runtime preflight not checked" if confinement else "missing image"
+                if confinement is None or not shutil.which("docker"):
+                    blockers.append("workspace.readonly_unenforced")
+                    diagnostics.append(_diagnostic(
+                        "workspace.readonly_unenforced",
+                        f"{name}: read-only ACP requires a configured confinement image and Docker executable",
+                        "Configure harnesses.<runtime>.confinement.image in your user garuda.yaml and install Docker; runtime preflight must still prove confinement.",
+                        level="error"))
             try:
                 acp_options(plan, manifest.version)
             except RoleRefused as exc:

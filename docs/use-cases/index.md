@@ -52,6 +52,14 @@ start at Level 1.
 
 </div>
 
+## Ready-to-use workflows
+
+[Garuda Starters](workflows.md) offers five packaged journeys with current
+readiness, preview commands, bounded artifacts and explicit next actions. Try
+the local reconnect project; use the existing role/flow owners and your chosen
+harnesses. [Recipes](automate.md#run-a-multi-step-recipe) remain available for
+custom prompt sequences.
+
 ## Level 1 · Explore safely
 
 Read-only recipes. [Open Level 1 →](explore.md)

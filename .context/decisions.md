@@ -1552,3 +1552,22 @@ blocks fresh-store and late cleanup release until the issuing owner finalizes
 a completed borrow after receipt publication. Unknown cleanup quarantines the
 root and retains ownership; abandoned loans require operator cleanup, with no
 automatic reclaim or hostile same-process Python protection claim.
+
+
+## 2026-10-07 — Starter examples and first-run authority prerequisites (#309)
+
+The reconnect project has one canonical ordinary-code source under
+`examples/workflows/reconnect/`, packaged as installed namespace resources.
+`garuda starter example reconnect DIR` exclusively creates a new selected
+directory outside existing repositories and refuses linked parents. It performs
+local Git initialization with repository-directed environment and global hooks
+and configuration excluded; it never installs a harness, supplies a model, or
+claims an agent produced the example. Existing retry tests do not prove the new
+status feature; users request deterministic transition checks with their change.
+
+The fresh ACP setup path retains `garuda init`'s read-only scout and the existing
+Docker confinement requirement. Static starter readiness exposes a missing
+confinement image or Docker executable without a probe; runtime preflight still
+proves confinement. Host no-edits detection never silently replaces a read-only
+ACP boundary. Starter naming and the five journeys reuse role/flow owners;
+recipes remain custom prompt sequences with their existing whole-recipe lease.
