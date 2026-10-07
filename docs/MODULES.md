@@ -392,6 +392,21 @@ of the preview identity. It grants no
 authority and starts nothing. Starter CLI/dashboard launch interfaces are
 separate follow-on work.
 
+`handoff.py` provides one read-only plan selection path for both feedback and
+`build-review`'s `pair` variant. `FLOW:STEP:ATTEMPT` must identify a completed
+same-project sequential producer with matching receipt, intent/receipt journal
+ordering, child-session lineage and exactly one plan artifact. `artifacts.load`
+remains the content validation owner; its descriptor reads check regular-file
+identity after opening and do not follow parent symlinks. Plans are delivered in
+full after redaction/escaping, alongside all recorded approved task fields.
+Recorded input/task/scope hashes detect inconsistent changes; private store
+records are local evidence, not cryptographic proof against a writer who can
+rewrite the whole store. Legacy plans require explicit constraints. The final
+compiled task budget applies after labels, escaped content and inherited scope;
+required content is refused rather than clipped. Preview writes no source or
+context files and never launches implementation. `digests.py` owns canonical
+starter hashing shared by compilation and recorded-input validation.
+
 `service.py::StarterService` adds a pure library, preview and explicit Build and
 check compilation. Listing needs no invented task inputs; preview and readiness
 share the same resolved configuration/role plans via `compile_with_context`.

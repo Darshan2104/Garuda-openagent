@@ -17,10 +17,22 @@ fields:
     type: text
     required: false
     label: Desired behavior
+  goal:
+    type: text
+    label: Original goal
+  requirements:
+    type: text
+    label: Requirements
+  exclude:
+    type: text
+    label: Out of scope
   constraints:
     type: text
     required: false
     label: Constraints to preserve
+  plan_artifact:
+    type: text
+    label: Selected plan (FLOW:STEP:ATTEMPT)
   sources:
     type: source-refs
     label: Sources

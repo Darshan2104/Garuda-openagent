@@ -526,3 +526,241 @@ def test_library_refuses_invalid_workspace_before_admission(tmp_path, value):
         StarterService().list(workspace)
     assert caught.value.code == "starter.workspace_invalid"
     assert SessionStore().list_sessions() == []
+
+
+@pytest.fixture
+def completed_plan(tmp_path, monkeypatch):
+    """Real runner/ACP producer owns sessions, journal, receipt and artifact."""
+    import asyncio
+
+    from garuda.flows.service import FlowExecutionService
+    from tests.test_runtime_cli import _git_workspace, _install_shim, _on_path
+
+    ws = _git_workspace(tmp_path)
+    bin_dir = tmp_path / 'bin'
+    _install_shim(bin_dir, 'artifacts')
+    capture = tmp_path / 'received.json'
+    target = _install_shim(tmp_path / 'capture-bin', 'resume', state_file=capture)
+    shutil.copyfile(target, bin_dir / 'capture-acp-shim')
+    (bin_dir / 'capture-acp-shim').chmod(0o755)
+    _on_path(monkeypatch, bin_dir)
+    Path(os.environ['GARUDA_GLOBAL_SETTINGS']).write_text(yaml.safe_dump({'runtimes': [
+        {'runtime_id': name, 'kind': 'acp', 'version': '1', 'command': [command]}
+        for name, command in [('producer', 'fake-acp-shim'), ('capture', 'capture-acp-shim')]]}))
+    doc = {'version': 1, 'roles': {role: {'harness': 'producer'}
+                                 for role in ('scout', 'planner', 'coder', 'reviewer')}}
+    doc['roles']['coder']['harness'] = 'capture'
+    gy.user_path().write_text(gy.dump(doc))
+    inputs = {'goal': "Status 'client' <handoff>", 'requirements': 'All status transitions',
+              'exclude': 'Do not rewrite transport', 'constraints': 'Keep retry delay and protocol'}
+    store = SessionStore()
+    plan = compile_scenario('plan-change', inputs, ws, store=store)
+    result = asyncio.run(FlowExecutionService(store).run(plan.target, plan.task, str(ws))).flow
+    assert result.stopped is None
+    # #308 will attach compiler metadata at launch. This fixture attaches it to
+    # the actual completed root; it never fabricates admission or a receipt.
+    store.update_meta(result.flow_session, {'starter': plan.launch_metadata()})
+    receipt_path = store.root / result.flow_session / 'flow' / 'receipts' / 'plan-1.json'
+    receipt = json.loads(receipt_path.read_text())
+    artifact = store.root / result.flow_session / 'flow' / receipt['outputs'][0]['path']
+    return {'ws': ws, 'store': store, 'inputs': inputs, 'sid': result.flow_session,
+            'reference': result.flow_session + ':plan:1', 'receipt_path': receipt_path,
+            'receipt': receipt, 'artifact': artifact, 'content': artifact.read_text(),
+            'capture': capture}
+
+
+@pytest.mark.parametrize('starter,inputs', [
+    ('build-review', {'variant': 'pair'}),
+    ('plan-feedback', {'feedback': 'Explain the unavailable state', 'constraints': 'Also retain public names'}),
+])
+def test_full_plan_and_approved_scope_reach_followup_runtime(completed_plan, monkeypatch, capsys, starter, inputs):
+    import hashlib
+
+    from tests.test_runtime_cli import _main
+
+    source = completed_plan
+    selected = {**inputs, 'plan_artifact': source['reference']}
+    doc = gy.load_file(gy.user_path())
+    if starter == 'plan-feedback':
+        doc['roles']['scout']['harness'] = 'capture'
+        gy.user_path().write_text(gy.dump(doc))
+    roots = [source['ws'], source['store'].root]
+    before = _snapshot(*roots)
+    plan = compile_scenario(starter, selected, source['ws'], store=source['store'])
+    assert _snapshot(*roots) == before  # preview never starts implementation
+    args = build_parser().parse_args(shlex.split(plan.equivalent_command)[1:])
+    assert args.task == plan.task
+    manifest = next(row for row in plan.sources if row['kind'] == 'plan-artifact')
+    assert (manifest['flow_session'], manifest['producer_session'], manifest['step'], manifest['attempt']) == (
+        source['sid'], source['receipt']['session_id'], 'plan', 1)
+    assert manifest['artifact']['digest'] == source['receipt']['outputs'][0]['digest']
+    assert manifest['original_inputs'] == source['inputs'] and manifest['legacy_inputs'] is False
+    assert '<flow-input type="plan"' in plan.task
+    envelope = plan.task[plan.task.index('<flow-input type="plan"'):]
+    assert manifest['delivered_input_sha256'] == hashlib.sha256(envelope.encode()).hexdigest()
+    assert source['content'] in plan.task
+    code, output = _main(monkeypatch, capsys, *shlex.split(plan.equivalent_command)[1:])
+    assert code == 0, output
+    received = json.loads(source['capture'].read_text())['prompts'][0]
+    assert plan.task in received and source['content'] in received
+    for name, value in source['inputs'].items():
+        assert f'name="{name}"' in received and escape(value) in received
+    if 'constraints' in inputs:
+        assert inputs['constraints'] in received  # new fields cannot erase source constraints
+    assert not (source['ws'] / '.context').exists()
+    # Fake ACP output proves delivery and owner wiring, not vendor capability,
+    # correctness of its patch, or quality of the independent review.
+
+
+def _write_record(path, value):
+    path.chmod(0o600)  # Deliberate local tampering with an owner-only immutable receipt.
+    path.write_text(json.dumps(value))
+
+
+@pytest.mark.parametrize('attack', [
+    'missing-artifact', 'changed-artifact', 'outside-path', 'artifact-symlink', 'ambiguous-plan',
+    'producer-id', 'producer-lineage', 'incomplete-producer', 'artifact-version', 'receipt-attempt',
+    'missing-intent', 'duplicate-receipt', 'reversed-journal', 'changed-inputs', 'changed-task',
+    'changed-scope', 'invalid-recorded-inputs', 'empty-plan', 'oversized-plan', 'escaped-budget', 'root-meta-fifo',
+])
+def test_plan_handoff_refuses_invalid_required_content_without_admission(completed_plan, monkeypatch, attack):
+    import hashlib
+
+    from garuda.agents.setup import RuntimeCatalog
+    from garuda.context.tags import TagError
+
+    source = completed_plan
+    receipt, artifact = source['receipt'], source['artifact']
+    store = source['store']
+    root_meta = store.root / source['sid'] / 'meta.json'
+    producer_meta = store.root / receipt['session_id'] / 'meta.json'
+    if attack == 'missing-artifact':
+        artifact.unlink()
+    elif attack == 'changed-artifact':
+        artifact.chmod(0o600)
+        artifact.write_text('Changed since preview')
+    elif attack == 'outside-path':
+        receipt['outputs'][0]['path'] = '../../outside'
+    elif attack == 'artifact-symlink':
+        artifact.unlink()
+        artifact.symlink_to(root_meta)
+    elif attack == 'ambiguous-plan':
+        receipt['outputs'].append(receipt['outputs'][0].copy())
+    elif attack in {'producer-id', 'artifact-version'}:
+        receipt['outputs'][0]['producer_session' if attack == 'producer-id' else 'version'] = ('wrong' if attack == 'producer-id' else True)
+    elif attack == 'receipt-attempt':
+        receipt['attempt'] = True
+    elif attack in {'producer-lineage', 'incomplete-producer'}:
+        meta = json.loads(producer_meta.read_text())
+        if attack == 'producer-lineage':
+            meta['flow_step']['step'] = 'scout'
+        else:
+            meta['state']['outcome'] = 'interrupted'
+        _write_record(producer_meta, meta)
+    elif attack in {'missing-intent', 'duplicate-receipt', 'reversed-journal'}:
+        path = store.root / source['sid'] / 'flow' / 'journal.jsonl'
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        chosen = [row for row in events if row.get('step') == 'plan']
+        if attack == 'missing-intent':
+            events.remove(chosen[0])
+        elif attack == 'duplicate-receipt':
+            events.append(chosen[1])
+        else:
+            events = [row for row in events if row not in chosen] + list(reversed(chosen))
+        path.write_text('\n'.join(json.dumps(row) for row in events) + '\n')
+    elif attack in {'changed-inputs', 'changed-task', 'changed-scope', 'invalid-recorded-inputs'}:
+        meta = json.loads(root_meta.read_text())
+        if attack == 'changed-inputs':
+            meta['starter']['inputs']['constraints'] = 'Discard retry protocol'
+        elif attack == 'changed-task':
+            meta['task'] = 'Discard retry protocol'
+        elif attack == 'invalid-recorded-inputs':
+            from garuda.scenarios.digests import digest
+
+            meta['starter']['inputs']['goal'] = None
+            meta['starter']['inputs_sha256'] = digest(meta['starter']['inputs'])
+        else:
+            meta['starter']['approved_scope'] = [{'source': 'old', 'fields': {'constraints': 'Discard retry protocol'}}]
+        _write_record(root_meta, meta)
+    elif attack == 'root-meta-fifo':
+        root_meta.unlink()
+        os.mkfifo(root_meta)
+    else:
+        body = {'empty-plan': '', 'oversized-plan': '日' * 64001, 'escaped-budget': '&' * 64000}[attack]
+        artifact.chmod(0o600)
+        artifact.write_text(body)
+        receipt['outputs'][0].update(size=len(body.encode()), digest=hashlib.sha256(body.encode()).hexdigest())
+    _write_record(source['receipt_path'], receipt)
+    roots = [source['ws'], store.root]
+    before = _snapshot(*roots)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('refusal attempted execution/discovery/network/model')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(RuntimeCatalog, 'discover', forbidden)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build', forbidden)
+    with pytest.raises((StarterError, TagError)) as caught:
+        compile_scenario('build-review', {'variant': 'pair', 'plan_artifact': source['reference']}, source['ws'], store=store)
+    assert caught.value.code == ('starter.input_too_large' if attack == 'escaped-budget' else
+                                 'session.tag_unknown' if attack == 'root-meta-fifo' else 'starter.plan_invalid')
+    assert _snapshot(*roots) == before
+
+
+def test_plan_handoff_never_uses_cross_project_brief_grant(completed_plan, tmp_path):
+    from garuda.context.tags import TagError
+    from garuda.core.project_identity import project_identity
+
+    other = tmp_path / 'other'
+    other.mkdir()
+    project_identity(completed_plan['store'].root, other)
+    with pytest.raises(TagError) as caught:
+        compile_scenario('build-review', {'goal': 'x', 'variant': 'pair', 'plan_artifact': completed_plan['reference']},
+                         other, store=completed_plan['store'], allow_cross_project_context=True)
+    assert caught.value.code == 'session.cross_project_context_denied'
+
+
+def test_legacy_plan_requires_explicit_constraints_and_preview_is_recompiled(completed_plan):
+    source = completed_plan
+    meta = source['store'].root / source['sid'] / 'meta.json'
+    doc = json.loads(meta.read_text())
+    del doc['starter']
+    _write_record(meta, doc)
+    inputs = {'goal': 'Implement the legacy plan', 'variant': 'pair', 'plan_artifact': source['reference']}
+    with pytest.raises(StarterError) as caught:
+        compile_scenario('build-review', inputs, source['ws'], store=source['store'])
+    assert caught.value.code == 'starter.plan_constraints_required'
+    inputs['constraints'] = 'Keep protocol unchanged'
+    preview = compile_scenario('build-review', inputs, source['ws'], store=source['store'])
+    assert preview.sources[0]['legacy_inputs'] is True
+    assert inputs['constraints'] in preview.task and source['content'] in preview.task
+    source['artifact'].chmod(0o600)
+    source['artifact'].write_text('changed after preview')
+    with pytest.raises(StarterError) as caught:
+        compile_scenario('build-review', inputs, source['ws'], store=source['store'])
+    assert caught.value.code == 'starter.plan_invalid'
+    # Compiler revalidation protects the data boundary; #308 owns invoking it
+    # at the starter launch boundary rather than executing a cached LaunchPlan.
+
+
+def test_repeated_feedback_preserves_earlier_approved_scope(completed_plan):
+    import asyncio
+
+    from garuda.flows.service import FlowExecutionService
+
+    source = completed_plan
+    inputs = {'feedback': 'Clarify failure states', 'constraints': 'Preserve public field names',
+              'plan_artifact': source['reference']}
+    plan = compile_scenario('plan-feedback', inputs, source['ws'], store=source['store'])
+    outcome = asyncio.run(FlowExecutionService(source['store']).run(plan.target, plan.task, str(source['ws']))).flow
+    assert outcome.stopped is None
+    source['store'].update_meta(outcome.flow_session, {'starter': plan.launch_metadata()})
+    next_plan = compile_scenario('build-review', {'variant': 'pair', 'constraints': 'Keep error codes',
+                                'plan_artifact': outcome.flow_session + ':plan:1'}, source['ws'], store=source['store'])
+    for value in (*source['inputs'].values(), inputs['feedback'], inputs['constraints'], 'Keep error codes'):
+        assert escape(value) in next_plan.task
+    manifest = next(row for row in next_plan.sources if row['kind'] == 'plan-artifact')
+    assert [row['source'] for row in manifest['approved_scope']] == [
+        source['reference'], outcome.flow_session + ':plan:1']

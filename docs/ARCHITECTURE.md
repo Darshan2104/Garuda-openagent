@@ -93,6 +93,16 @@ fastest way to learn the system.
    with digests, not pasted documents. Session sources reuse the existing tag
    authorization with read-only project-ID lookup and bounded brief rendering;
    unavailable identity evidence refuses without allocating a key or probing Git.
+   `scenarios/handoff.py` resolves an explicitly selected `FLOW:STEP:ATTEMPT`
+   in the same project through existing tag authorization. It validates the
+   sequential producer's receipt, journal ordering, completed child linkage and
+   exactly one versioned plan via the existing artifact loader. The full redacted
+   plan and recorded source-approved fields are escaped into task data; later
+   feedback cannot discard earlier constraints by replacing a current field.
+   Missing legacy constraints require explicit text. The compiler's digest covers
+   the source artifact, recorded inputs and exact delivered envelope; it must be
+   called again at execution, never replaced with a cached task. Starter CLI
+   launch-time invocation and metadata persistence are the following issue (#308).
    `scenarios/service.py` projects starter readiness from that same static
    resolution, using `setup_view.configuration` and the existing review predicate.
    It discloses unprobed runtime facts, visible user-authored waivers, and the
