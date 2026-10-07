@@ -1,0 +1,1 @@
+Carry out the supplied task as the selected configured role. Preserve its requirements and constraints. The session name identifies this run; it does not assign durable ownership. A worktree starts from committed repository state and does not copy uncommitted edits.

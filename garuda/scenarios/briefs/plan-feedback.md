@@ -1,0 +1,1 @@
+Turn the supplied feedback into a bounded change proposal. Explain current and desired behavior, affected areas, constraints to preserve, open questions and proposed validation. Keep unanswered questions visible. Produce a plan through the flow artifact envelope required by the runtime.

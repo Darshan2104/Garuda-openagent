@@ -1,5 +1,23 @@
 # Durable decisions
 
+## 2026-10-07 — Starter compilation is a read-only data boundary (#305)
+
+- Starter definitions, briefs and example inputs are installed package data,
+  with a strict schema separate from `garuda.yaml`; projects customize the
+  existing flows and roles, not executable starter definitions.
+- The compiler produces bounded labelled task data and an equivalent existing
+  command. It never allocates a session/queue row, discovers a runtime, calls a
+  model/network, or grants tool/model/network/consult authority. Text fields are
+  redacted and escaped; required text is refused rather than silently trimmed.
+- File sources name contained repository files and record digests; they are not
+  document extraction. Session sources retain the existing user authorization,
+  redaction and brief budget. Read-only tag resolution uses an existing project
+  key and does not allocate/repair identity or probe Git. Preview treats inherited
+  check evidence as not current; the launch owner must recompile/revalidate.
+- The public product noun is Starters; internal modules remain `scenarios`.
+  This change ships the compiler boundary only, not the starter CLI/dashboard,
+  reviewer readiness or plan-artifact/flow-check extensions.
+
 ## 2026-10-05 — Setup exposes all existing prompt section metrics (#268)
 
 - Dashboard section metadata includes the static inspector's existing UTF-8

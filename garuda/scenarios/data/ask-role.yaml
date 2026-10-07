@@ -1,0 +1,25 @@
+version: 1
+id: ask-role
+title: Ask a configured role a question
+launch:
+  kind: run
+  role: reviewer
+  no_edits: true
+  options:
+  - name
+fields:
+  question:
+    type: text
+    required: true
+    label: Question
+  role:
+    type: text
+    required: false
+    label: Selected role
+  options:
+    type: execution-options
+  sources:
+    type: source-refs
+    label: Sources
+brief: ask-role
+example: reconnect-question

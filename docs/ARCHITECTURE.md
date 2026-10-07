@@ -86,6 +86,13 @@ fastest way to learn the system.
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
    This facade adds no checks parameter or flow verification phase.
+   `scenarios/compile.py` compiles installed starter data into bounded labelled
+   tasks and exact existing CLI commands. It resolves effective flows and
+   configured role plans through the non-executing catalog; it never calls
+   Setup discovery or performs admission. File sources are contained references
+   with digests, not pasted documents. Session sources reuse the existing tag
+   authorization with read-only project-ID lookup and bounded brief rendering;
+   unavailable identity evidence refuses without allocating a key or probing Git.
    Native consult quiescence normalizes ordinary synchronous/asynchronous
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,

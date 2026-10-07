@@ -25,6 +25,7 @@ import hmac
 import os
 import re
 import secrets
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +119,42 @@ def load_key(store_root: Path) -> bytes:
 def compute_project_id(key: bytes, canonical: str) -> str:
     digest = hmac.new(key, _DOMAIN + canonical.encode("utf-8"), hashlib.sha256).hexdigest()
     return PROJECT_ID_PREFIX + digest[:32]
+
+
+def existing_project_id(store_root: Path, workspace: str | Path) -> str:
+    """Resolve against an existing key without allocation, locks or Git probes.
+
+    Used for read-only previews. Missing/corrupt identity evidence refuses;
+    preview cannot repair it or create a replacement identity.
+    """
+    from garuda.core.sessions import project_root
+
+    path = _key_path(store_root)
+    try:
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+                         dir_fd=parent)
+        finally:
+            os.close(parent)
+    except FileNotFoundError as exc:
+        raise ProjectKeyMissing("project identity key unavailable; preview cannot allocate or recover it") from exc
+    except OSError as exc:
+        raise ProjectIdentityError("cannot read existing project identity key") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ProjectIdentityError("project identity key is not a regular file")
+        data = os.read(fd, 129)
+    finally:
+        os.close(fd)
+    try:
+        text = data.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise ProjectIdentityError("project identity key is malformed") from exc
+    if len(data) > 128 or not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise ProjectIdentityError("project identity key is malformed")
+    canonical = project_root(os.path.abspath(os.path.expanduser(str(workspace))))
+    return compute_project_id(bytes.fromhex(text), canonical)
 
 
 def project_identity(store_root: Path, workspace: str | Path) -> ProjectIdentity:

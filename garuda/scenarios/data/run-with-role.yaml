@@ -1,0 +1,35 @@
+version: 1
+id: run-with-role
+title: Run a task as a chosen role
+launch:
+  kind: run
+  role: coder
+  options:
+  - name
+  - isolation
+  - bg
+  - checks
+fields:
+  goal:
+    type: text
+    required: true
+    label: Goal
+  requirements:
+    type: text
+    required: false
+    label: Requirements
+  constraints:
+    type: text
+    required: false
+    label: Constraints to preserve
+  role:
+    type: text
+    required: false
+    label: Selected role
+  options:
+    type: execution-options
+  sources:
+    type: source-refs
+    label: Sources
+brief: run-with-role
+example: reconnect-role

@@ -1,0 +1,28 @@
+version: 1
+id: plan-feedback
+title: Turn feedback into a plan
+launch:
+  kind: flow
+  flow: plan-only
+fields:
+  feedback:
+    type: text
+    required: true
+    label: Feedback
+  current:
+    type: text
+    required: false
+    label: Current behavior
+  desired:
+    type: text
+    required: false
+    label: Desired behavior
+  constraints:
+    type: text
+    required: false
+    label: Constraints to preserve
+  sources:
+    type: source-refs
+    label: Sources
+brief: plan-feedback
+example: reconnect-feedback
