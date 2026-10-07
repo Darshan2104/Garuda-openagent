@@ -622,6 +622,8 @@ async def run_acp_task(
     consult_host=None,
     session_id: str | None = None,
     capacity_loan=None,
+    starter_record: dict | None = None,
+    isolation: str = "shared",
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -671,18 +673,28 @@ async def run_acp_task(
         raise ValueError("capacity and workspace delegations cannot be combined")
     events = EventStore(session_id)
     session_id = events.session_id
+    from garuda.interfaces.session_service import choose_workspace, discard_new_worktree, plan_meta
+
+    workspace, worktree = choose_workspace(
+        store, workspace, session_id, isolation,
+        resume=resume_plan.source if resume_plan is not None else None,
+        resume_all_projects=True)
     if lease_capability is not None:
         from garuda.interfaces.session_service import acquire_lease
 
         lease = acquire_lease(workspace, session_id, capacity_key=manifest.runtime_id,
-                              capability=lease_capability)
+                              capability=lease_capability, worktree_plan=worktree)
     else:
         # A read-only role shares the workspace with other readers.
         readonly = role_plan is not None and role_plan.permissions == "readonly"
-        lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id,
-                                    mode="read-only" if readonly else "mutating",
-                                    capacity_loan=capacity_loan)
-        lease.acquire()
+        try:
+            lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id,
+                                        mode="read-only" if readonly else "mutating",
+                                        capacity_loan=capacity_loan)
+            lease.acquire()
+        except BaseException:
+            discard_new_worktree(worktree)
+            raise
     runtime = None
     began = False
     transferred_to_native = False
@@ -700,6 +712,10 @@ async def run_acp_task(
             ),
         )
         began = True
+        if worktree:
+            store.update_meta(session_id, plan_meta(worktree))
+        if starter_record is not None:
+            store.update_meta(session_id, {"starter": starter_record})
         if confinement is not None:
             store.update_meta(session_id, {"confinement": {
                 "kind": "docker", "image": confinement.image, "source": "read-only"}})
@@ -885,6 +901,8 @@ async def run_acp_task(
                     outcome["status"] = status
         finally:
             await lease.release()
+            if not began:
+                discard_new_worktree(worktree)
     return outcome
 
 

@@ -18,7 +18,7 @@ from garuda.runtime.roles import RoleRefused, acp_options
 from garuda.scenarios.catalog import load_catalog
 from garuda.scenarios.compile import LaunchContext, compile_with_context, resolve_launch, workspace_path
 from garuda.scenarios.inputs import validate_inputs
-from garuda.scenarios.types import StarterError
+from garuda.scenarios.types import LaunchPlan, StarterError
 
 RESOLUTION_ERRORS = (StarterError, gy.GarudaConfigError, RegistryError, RoleRefused, RuntimeSettingsError)
 INDEPENDENCE_LIMIT = (
@@ -137,6 +137,57 @@ class StarterService:
 
     def __init__(self, store: SessionStore | None = None):
         self.store = store or SessionStore()
+
+    def validate_record(self, record: dict, task: str, workspace: str | Path) -> None:
+        """Revalidate a frozen starter request immediately before queue dispatch."""
+        if not isinstance(record, dict) or not isinstance(record.get("inputs"), dict):
+            raise StarterError("starter.plan_invalid", "queued starter metadata is unreadable")
+        current, context = compile_with_context(
+            record.get("starter_id"), record["inputs"], workspace, store=self.store,
+            allow_cross_project_context=record.get("context_grant") == "user-request")
+        if current.launch_metadata() != record or current.task != task:
+            raise StarterError("starter.preview_changed", "queued starter inputs, sources or configuration changed")
+        if not readiness(context, starter_id=current.starter_id)["can_run"]:
+            raise StarterError("starter.not_ready", "queued starter readiness changed")
+
+    async def start(self, plan: LaunchPlan) -> dict:
+        """Recompile before dispatch; a cached task never authorizes a launch."""
+        from garuda.flows.service import FlowExecutionService
+
+        if not isinstance(plan, LaunchPlan):
+            raise StarterError("starter.plan_invalid", "compile a starter before starting it")
+        current, context = compile_with_context(
+            plan.starter_id, plan.inputs, plan.workspace, store=self.store,
+            allow_cross_project_context=plan.provenance.get("context_grant") == "user-request")
+        if current.digest != plan.digest:
+            raise StarterError("starter.preview_changed", "starter inputs, sources or configuration changed; preview again")
+        state = readiness(context, starter_id=plan.starter_id)
+        if not state["can_run"]:
+            raise StarterError("starter.not_ready", "resolve the starter's readiness diagnostics before starting")
+        if current.kind == "flow":
+            result = await FlowExecutionService(self.store).run(
+                current.target, current.task, current.workspace,
+                starter_record=current.launch_metadata())
+            return {"session_id": result.flow.flow_session,
+                    "exit_code": 0 if result.flow.completed else 3}
+        from garuda.agents.requests import execute_role_request
+
+        return await execute_role_request(current, self.store)
+
+    def result(self, session_id: str, *, workspace: str | Path | None = None, limit: int = 50, offset: int = 0) -> dict:
+        from garuda.core.read_model import starter_result
+
+        if workspace is not None:
+            import re
+
+            from garuda.context.tags import resolve
+            from garuda.core.session_records import ReadOnlySessions
+
+            if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', session_id):
+                (tag,) = resolve(ReadOnlySessions(self.store.root), workspace_path(workspace),
+                                 with_refs=[session_id], read_only=True)
+                session_id = tag.session_id
+        return starter_result(self.store, session_id, limit=limit, offset=offset)
 
     def list(self, workspace: str | Path) -> list[dict]:
         root = workspace_path(workspace)

@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
-import stat
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -20,7 +17,6 @@ from garuda.scenarios.digests import digest
 from garuda.scenarios.inputs import bounded_text, validate_inputs
 from garuda.scenarios.types import Starter, StarterError
 
-MAX_RECORD_BYTES = 4 * 1024 * 1024
 _STEP = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -30,53 +26,21 @@ def _refuse(message):
 
 
 def _bytes(store: SessionStore, relative: Path) -> bytes:
-    """Read only a compiler-selected regular store file via no-follow descriptors."""
-    directory = None
+    from garuda.core.session_records import RecordError, read_bytes
+
     try:
-        directory = os.open(store.root.resolve(), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
-        for part in relative.parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
-            os.close(directory)
-            directory = child
-        fd = os.open(relative.name, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
-        try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode):
-                raise _refuse("plan provenance is not a regular store file")
-            data = bytearray()
-            while block := os.read(fd, 65536):
-                data.extend(block)
-                if len(data) > MAX_RECORD_BYTES:
-                    raise _refuse("plan provenance exceeds its 4 MiB read budget")
-            after = os.fstat(fd)
-            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                raise _refuse("plan provenance changed while being read; preview again")
-            return bytes(data)
-        finally:
-            os.close(fd)
-    except OSError as exc:
-        raise _refuse("plan provenance is missing, unreadable or symlinked") from exc
-    finally:
-        if directory is not None:
-            os.close(directory)
+        return read_bytes(store, relative)
+    except RecordError as exc:
+        raise _refuse(str(exc)) from exc
 
 
 def _json(data: bytes):
-    def unique(pairs):
-        out = {}
-        for key, value in pairs:
-            if key in out:
-                raise ValueError("duplicate key")
-            out[key] = value
-        return out
+    from garuda.core.session_records import RecordError, parse_json
 
     try:
-        result = json.loads(data, object_pairs_hook=unique)
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        raise _refuse("plan provenance is not valid unique-key JSON") from exc
-    if not isinstance(result, dict):
-        raise _refuse("plan provenance must be a record")
-    return result
+        return parse_json(data)
+    except RecordError as exc:
+        raise _refuse(str(exc)) from exc
 
 
 class _PlanStore(SessionStore):

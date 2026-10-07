@@ -58,6 +58,7 @@ class StepLaunch:
     capability: Any
     attempt: int
     no_edits: bool
+    store: Any = None
 
 
 @dataclass
@@ -183,7 +184,7 @@ class FlowRunner:
 
     def __init__(self, store, workspace, name: str, flow: dict, resolved, *, task: str,
                  launcher: Launcher, flow_session: str | None = None,
-                 lease_ttl: float | None = None):
+                 lease_ttl: float | None = None, starter_record: dict | None = None):
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
@@ -194,6 +195,7 @@ class FlowRunner:
         self.flow_session = flow_session or str(uuid.uuid4())
         self.dir = flow_dir(store, self.flow_session)
         self.lease_ttl = lease_ttl
+        self.starter_record = starter_record
 
     # -- helpers -----------------------------------------------------------------------
 
@@ -267,7 +269,11 @@ class FlowRunner:
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
                                                                  _steps(self.flow)]},
-            "flow_state": "running"})
+            "flow_state": "running",
+            "review_policies": [{"step": s["id"], "reviewer": s["review"]["by"],
+                                 "policy": "required" if s["review"].get("independent", True) else "waived"}
+                                for s in _steps(self.flow) if "review" in s],
+            **({"starter": self.starter_record} if self.starter_record is not None else {})})
         (self.dir / "receipts").mkdir(mode=0o700, parents=True, exist_ok=True)
 
     def _lease_mode(self) -> str:
@@ -384,7 +390,7 @@ class FlowRunner:
             return role, await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=f"{step['id']}:{role}", role=role,
                 role_plan=plans[role], prompt=prompt, workspace=str(target), capability=None,
-                attempt=attempt, no_edits=True))
+                attempt=attempt, no_edits=True, store=self.store))
 
         results = await asyncio.gather(*(one(role) for role in members), return_exceptions=True)
         outcomes = []
@@ -555,7 +561,7 @@ class FlowRunner:
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
-                attempt=attempt, no_edits=no_edits))
+                attempt=attempt, no_edits=no_edits, store=self.store))
         finally:
             lease.revoke(capability)
         try:

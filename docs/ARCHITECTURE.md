@@ -101,8 +101,16 @@ fastest way to learn the system.
    feedback cannot discard earlier constraints by replacing a current field.
    Missing legacy constraints require explicit text. The compiler's digest covers
    the source artifact, recorded inputs and exact delivered envelope; it must be
-   called again at execution, never replaced with a cached task. Starter CLI
-   launch-time invocation and metadata persistence are the following issue (#308).
+   called again at execution, never replaced with a cached task.
+   `StarterService.start` recompiles and checks the digest/readiness before
+   delegating to `FlowExecutionService` or `agents/requests.py`. The role bridge
+   shares the existing parser and `interfaces/role_execution.py` setup sequence,
+   preserving native/ACP, queue, worktree, no-edits and acceptance owners.
+   Authoritative root/child sessions retain starter inputs/source digests.
+   `starter result` extends the shared read model with bounded selected-record
+   coverage and historical artifact validation, without active-process or Git
+   probes. Missing evidence remains unknown; review never becomes verification.
+   Work can continue only through an explicit validated launch command.
    `scenarios/service.py` projects starter readiness from that same static
    resolution, using `setup_view.configuration` and the existing review predicate.
    It discloses unprobed runtime facts, visible user-authored waivers, and the

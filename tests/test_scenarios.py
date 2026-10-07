@@ -529,11 +529,8 @@ def test_library_refuses_invalid_workspace_before_admission(tmp_path, value):
 
 
 @pytest.fixture
-def completed_plan(tmp_path, monkeypatch):
+def completed_plan(tmp_path, monkeypatch, capsys):
     """Real runner/ACP producer owns sessions, journal, receipt and artifact."""
-    import asyncio
-
-    from garuda.flows.service import FlowExecutionService
     from tests.test_runtime_cli import _git_workspace, _install_shim, _on_path
 
     ws = _git_workspace(tmp_path)
@@ -554,17 +551,15 @@ def completed_plan(tmp_path, monkeypatch):
     inputs = {'goal': "Status 'client' <handoff>", 'requirements': 'All status transitions',
               'exclude': 'Do not rewrite transport', 'constraints': 'Keep retry delay and protocol'}
     store = SessionStore()
-    plan = compile_scenario('plan-change', inputs, ws, store=store)
-    result = asyncio.run(FlowExecutionService(store).run(plan.target, plan.task, str(ws))).flow
-    assert result.stopped is None
-    # #308 will attach compiler metadata at launch. This fixture attaches it to
-    # the actual completed root; it never fabricates admission or a receipt.
-    store.update_meta(result.flow_session, {'starter': plan.launch_metadata()})
-    receipt_path = store.root / result.flow_session / 'flow' / 'receipts' / 'plan-1.json'
+    code, result = _starter_cli(monkeypatch, capsys, 'run', 'plan-change', '--workspace', str(ws),
+                                *[arg for k, v in inputs.items() for arg in ('--' + k, v)])
+    assert code == 0 and result['coverage']['complete'], result
+    flow_session = result['session_id']
+    receipt_path = store.root / flow_session / 'flow' / 'receipts' / 'plan-1.json'
     receipt = json.loads(receipt_path.read_text())
-    artifact = store.root / result.flow_session / 'flow' / receipt['outputs'][0]['path']
-    return {'ws': ws, 'store': store, 'inputs': inputs, 'sid': result.flow_session,
-            'reference': result.flow_session + ':plan:1', 'receipt_path': receipt_path,
+    artifact = store.root / flow_session / 'flow' / receipt['outputs'][0]['path']
+    return {'ws': ws, 'store': store, 'inputs': inputs, 'sid': flow_session,
+            'reference': flow_session + ':plan:1', 'receipt_path': receipt_path,
             'receipt': receipt, 'artifact': artifact, 'content': artifact.read_text(),
             'capture': capture}
 
@@ -575,8 +570,6 @@ def completed_plan(tmp_path, monkeypatch):
 ])
 def test_full_plan_and_approved_scope_reach_followup_runtime(completed_plan, monkeypatch, capsys, starter, inputs):
     import hashlib
-
-    from tests.test_runtime_cli import _main
 
     source = completed_plan
     selected = {**inputs, 'plan_artifact': source['reference']}
@@ -599,8 +592,10 @@ def test_full_plan_and_approved_scope_reach_followup_runtime(completed_plan, mon
     envelope = plan.task[plan.task.index('<flow-input type="plan"'):]
     assert manifest['delivered_input_sha256'] == hashlib.sha256(envelope.encode()).hexdigest()
     assert source['content'] in plan.task
-    code, output = _main(monkeypatch, capsys, *shlex.split(plan.equivalent_command)[1:])
-    assert code == 0, output
+    code, output = _starter_cli(monkeypatch, capsys, 'run', starter, '--workspace', str(source['ws']),
+                               *[arg for k, v in selected.items() for arg in ('--' + k.replace('_', '-'), v)])
+    assert code == 0 and output['coverage']['complete'], output
+    assert source['store'].load_meta(output['session_id'])['starter']['plan_digest'] == plan.digest
     received = json.loads(source['capture'].read_text())['prompts'][0]
     assert plan.task in received and source['content'] in received
     for name, value in source['inputs'].items():
@@ -764,3 +759,311 @@ def test_repeated_feedback_preserves_earlier_approved_scope(completed_plan):
     manifest = next(row for row in next_plan.sources if row['kind'] == 'plan-artifact')
     assert [row['source'] for row in manifest['approved_scope']] == [
         source['reference'], outcome.flow_session + ':plan:1']
+
+
+@pytest.mark.parametrize('changed', ['artifact', 'source-inputs', 'configuration'])
+def test_starter_start_revalidates_preview_before_admission(completed_plan, monkeypatch, changed):
+    import asyncio
+
+    source = completed_plan
+    plan = compile_scenario('build-review', {'variant': 'pair', 'plan_artifact': source['reference']},
+                            source['ws'], store=source['store'])
+    if changed == 'artifact':
+        source['artifact'].chmod(0o600)
+        source['artifact'].write_text('Changed after preview')
+    elif changed == 'source-inputs':
+        path = source['store'].root / source['sid'] / 'meta.json'
+        meta = json.loads(path.read_text())
+        meta['starter']['inputs']['constraints'] = 'Discard the previous constraints'
+        _write_record(path, meta)
+    else:
+        path = gy.user_path()
+        path.write_text(path.read_text() + '\n# Configuration changed after preview\n')
+    roots = [source['ws'], source['store'].root]
+    before = _snapshot(*roots)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('stale start attempted launch/model/network')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build', forbidden)
+    with pytest.raises(StarterError) as caught:
+        asyncio.run(StarterService(source['store']).start(plan))
+    assert caught.value.code == ('starter.preview_changed' if changed == 'configuration' else 'starter.plan_invalid')
+    assert _snapshot(*roots) == before
+
+
+def _starter_cli(monkeypatch, capsys, *argv):
+    from garuda.interfaces.main import main
+
+    monkeypatch.setattr(sys, 'argv', ['garuda', 'starter', *argv, '--json'])
+    with pytest.raises(SystemExit) as exited:
+        main()
+    captured = capsys.readouterr()
+    return exited.value.code, json.loads(captured.out)
+
+
+def test_starter_cli_discovery_and_preview_are_pure(configured, monkeypatch, capsys):
+    def denied(*args, **kwargs):
+        pytest.fail('pure CLI command attempted execution or network')
+
+    roots = [configured, SessionStore().root, gy.user_path().parent]
+    before = _snapshot(*roots)
+    monkeypatch.setattr(subprocess, 'run', denied)
+    monkeypatch.setattr(subprocess, 'Popen', denied)
+    monkeypatch.setattr(socket, 'create_connection', denied)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build_spec', denied)
+    code, rows = _starter_cli(monkeypatch, capsys, 'list', '--workspace', str(configured))
+    assert code == 0 and len(rows) == 5
+    code, shown = _starter_cli(monkeypatch, capsys, 'show', 'plan-change', '--workspace', str(configured))
+    assert code == 0 and shown['launch']['flow'] == 'plan-only'
+    code, preview = _starter_cli(monkeypatch, capsys, 'run', 'plan-change', '--goal', 'Preserve retry',
+                                 '--workspace', str(configured), '--preview')
+    assert code == 0 and preview['plan']['task'] and preview['plan']['equivalent_command']
+    assert _snapshot(*roots) == before
+
+
+@pytest.mark.parametrize('damage', ['none', 'page', 'receipt', 'journal', 'child', 'child-lineage', 'child-schema', 'artifact', 'state'])
+def test_starter_result_projects_real_owner_evidence_without_execution(completed_plan, monkeypatch, capsys, damage):
+    source = completed_plan
+    if damage == 'receipt':
+        source['receipt_path'].unlink()
+    elif damage == 'journal':
+        journal = source['store'].root / source['sid'] / 'flow' / 'journal.jsonl'
+        journal.write_bytes(journal.read_bytes().rstrip(b'\n'))
+    elif damage == 'child':
+        child = source['store'].session_dir(source['receipt']['session_id']) / 'meta.json'
+        child.unlink()
+    elif damage == 'child-lineage':
+        source['store'].update_meta(source['receipt']['session_id'], {'flow_step': {'step': 'other'}})
+    elif damage == 'child-schema':
+        source['store'].update_meta(source['receipt']['session_id'], {'schema_version': 99})
+    elif damage == 'artifact':
+        source['artifact'].chmod(0o600)
+        source['artifact'].write_text('Changed locally')
+    elif damage == 'state':
+        source['store'].update_meta(source['sid'], {'state': {'version': 99}, 'status': 'completed'})
+    before = _snapshot(source['ws'], source['store'].root)
+
+    def denied(*args, **kwargs):
+        pytest.fail('result attempted a process, model or network call')
+
+    monkeypatch.setattr(subprocess, 'run', denied)
+    monkeypatch.setattr(subprocess, 'Popen', denied)
+    monkeypatch.setattr(socket, 'create_connection', denied)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build_spec', denied)
+    page = ['--limit', '1'] if damage == 'page' else []
+    code, row = _starter_cli(monkeypatch, capsys, 'result', source['sid'], *page)
+    assert code == 0 and row['verification']['status'] == 'unavailable'
+    assert row['coverage']['complete'] == (damage == 'none')
+    assert _snapshot(source['ws'], source['store'].root) == before
+    if damage == 'none':
+        assert row['runtime'] is None and row['model'] is None
+        assert row['state']['outcome'] == 'completed' and row['goal'] == source['inputs']['goal']
+        assert row['next_action']['plan_artifact'] == source['reference']
+        assert [a['content'] for a in row['artifacts'] if a['type'] == 'plan'] == [source['content']]
+        assert all(i['runtime_id'] == 'producer' and i['model_id'] is None for i in row['identities'])
+    else:
+        assert row['next_action']['id'] == 'inspect-records'
+        if damage == 'state':
+            assert row['state']['outcome'] == 'unknown'
+
+
+@pytest.mark.parametrize('starter,field', [('run-with-role', 'goal'), ('ask-role', 'question')])
+def test_starter_native_roles_use_real_loop_and_acceptance(tmp_path, monkeypatch, capsys, starter, field):
+    from garuda.agents.resolve import user_agents_dir
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from tests.test_runtime_cli import _git_workspace
+
+    class Capture(ScriptModel):
+        def __init__(self):
+            super().__init__([ModelResponse(content='Native starter answer', tool_calls=[])])
+            self.tasks = []
+
+        async def complete(self, messages, *args, **kwargs):
+            self.tasks.extend(m.content for m in messages if m.role.value == 'user')
+            return await super().complete(messages, *args, **kwargs)
+
+        async def stream(self, messages, *args, **kwargs):
+            self.tasks.extend(m.content for m in messages if m.role.value == 'user')
+            async for delta in super().stream(messages, *args, **kwargs):
+                yield delta
+
+    ws = _git_workspace(tmp_path)
+    agents = user_agents_dir()
+    agents.mkdir(parents=True)
+    (agents / 'starter-fixture.yaml').write_text(yaml.safe_dump({
+        'version': 1, 'completion': {'verifier': False}, 'tools': {'preset': 'none'},
+        'memory': {'user': False, 'context_pack': False}, 'context': {'three_step_summary': False},
+        'limits': {'max_turns': 1}, 'permissions': {'mode': 'readonly'}}))
+    gy.user_path().write_text(gy.dump({'version': 1, 'roles': {
+        role: {'harness': 'native', 'model_id': 'fixture/model', 'profile': 'starter-fixture'}
+        for role in ('coder', 'reviewer')}}))
+    model = Capture()
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build_spec', lambda *_a, **_kw: model)
+    options = ['--check', shlex.join([sys.executable, '-c', 'print("acceptance passed")'])] if starter == 'run-with-role' else []
+    (ws / 'starter-scope.txt').write_text('Named source for role input')
+    extra = ['--source', 'starter-scope.txt']
+    if starter == 'run-with-role':
+        extra += ['--requirements', 'Keep every transition', '--exclude', 'Transport replacement',
+                  '--constraints', 'Keep delay', '--role', 'coder']
+    code, row = _starter_cli(monkeypatch, capsys, 'run', starter, '--' + field, 'Preserve retry @plain-text',
+                            '--name', 'native-starter', '--workspace', str(ws), *options, *extra)
+    assert code == 0 and row['state']['outcome'] == 'completed', row
+    assert any('Preserve retry @plain-text' in task for task in model.tasks)
+    assert any('starter-scope.txt' in task for task in model.tasks)
+    assert row['supplied_sources'][0]['read_by_agent'] is False
+    if starter == 'run-with-role':
+        assert any(all(value in task for value in ('Keep every transition', 'Transport replacement', 'Keep delay'))
+                   for task in model.tasks)
+    assert row['name'] == 'native-starter' and row['output']['text'] == 'Native starter answer'
+    assert row['identities'][0]['runtime_id'] == 'native'
+    assert row['identities'][0]['model_id'] == 'script/test'
+    assert row['review_label'] == 'no review'
+    assert row['verification']['status'] == ('passed' if options else 'unavailable')
+    if options:
+        (receipt,) = row['acceptance_receipts']
+        assert receipt['status'] == 'passed' and receipt['authority'] == gy.CLI
+        assert receipt['fingerprint'] and receipt['exit_code'] == 0
+    meta = SessionStore().load_meta(row['session_id'])
+    assert meta['starter']['inputs'][field] == 'Preserve retry @plain-text'
+    if starter == 'ask-role':
+        assert meta['no_edits']['result'] == 'unchanged'
+    code, named = _starter_cli(monkeypatch, capsys, 'result', 'native-starter', '--workspace', str(ws))
+    assert code == 0 and named['session_id'] == row['session_id']
+
+
+@pytest.mark.parametrize('mode', ['worktree', 'background', 'question', 'failed-check', 'withheld'])
+def test_starter_acp_roles_preserve_existing_owners(tmp_path, monkeypatch, capsys, mode):
+    import time
+
+    from tests.test_runtime_cli import _git_workspace, _hard_deadline, _install_shim, _on_path
+
+    ws = _git_workspace(tmp_path)
+    _install_shim(tmp_path / 'bin', 'write-anyway' if mode == 'withheld' else 'success', report_cwd=True)
+    _on_path(monkeypatch, tmp_path / 'bin')
+    Path(os.environ['GARUDA_GLOBAL_SETTINGS']).write_text(json.dumps({'runtimes': [
+        {'runtime_id': 'fixture', 'kind': 'acp', 'version': '1', 'command': ['fake-acp-shim']}]}))
+    gy.user_path().write_text(gy.dump({'version': 1, 'roles': {
+        role: {'harness': 'fixture'} for role in ('coder', 'reviewer')}}))
+    store = SessionStore(tmp_path / 'custom-sessions') if mode == 'background' else SessionStore()
+    if mode == 'background':
+        monkeypatch.setattr('garuda.interfaces.scenario_cli.StarterService', lambda: StarterService(store))
+    options = []
+    if mode == 'worktree':
+        (ws / 'uncommitted.txt').write_text('Source-only edit')
+        options = ['--isolation', 'worktree']
+    elif mode == 'background':
+        options = ['--bg']
+    elif mode == 'failed-check':
+        options = ['--check', shlex.join([sys.executable, '-c', 'raise SystemExit(1)'])]
+    starter, field = ('ask-role', 'question') if mode in ('question', 'withheld') else ('run-with-role', 'goal')
+    with _hard_deadline(45):
+        code, row = _starter_cli(monkeypatch, capsys, 'run', starter, '--' + field, 'Keep public behavior',
+                                '--workspace', str(ws), '--name', 'acp-starter', *options)
+        assert code == (3 if mode == 'withheld' else 0), row
+        if mode == 'background' and row['state']['work'] == 'queued':
+            assert row['runtime'] is None and row['model'] is None
+        sid = row['session_id']
+        if mode == 'background':
+            while store.load_meta(sid)['state']['work'] in ('working', 'waiting', 'queued'):
+                time.sleep(0.1)
+            row = StarterService(store).result(sid)
+    meta = store.load_meta(sid)
+    assert meta['starter']['inputs'][field] == 'Keep public behavior'
+    assert row['state']['outcome'] == 'completed' and row['name'] == 'acp-starter', row
+    assert row['identities'][0]['runtime_id'] == row['runtime'] == 'fixture'
+    assert row['identities'][0]['model_id'] is row['model'] is None
+    if mode == 'worktree':
+        target = Path(meta['worktree'])
+        assert target != ws and f'cwd={target}' in meta['final_message']
+        assert meta['dirty_source'] and meta['source_head'] and meta['branch']
+        assert not (target / 'uncommitted.txt').exists() and (ws / 'uncommitted.txt').read_text() == 'Source-only edit'
+    elif mode == 'background':
+        assert meta['background'] and meta['worker']['pid']
+        assert len(store.list_sessions()) == 1  # ACP reused the admitted queued id.
+        assert not SessionStore().list_sessions()  # Worker honored the explicit store.
+    elif mode == 'question':
+        assert meta['no_edits']['result'] == 'unchanged'
+    elif mode == 'withheld':
+        assert meta['outputs_withheld'] and (ws / 'sneaky.txt').exists()
+        assert row['output']['text'] is None and row['output']['scope'] == 'withheld'
+        assert row['next_action']['id'] == 'inspect-records'
+    else:
+        assert row['verification']['status'] == 'failed' and row['verification']['authority']
+        assert row['acceptance_receipts'][0]['status'] == 'failed'
+        assert row['acceptance_receipts'][0]['exit_code'] == 1
+
+
+def test_starter_result_discloses_waiver_even_when_coder_stops_before_review(completed_plan, monkeypatch, capsys, tmp_path):
+    import copy
+
+    from garuda.flows.packaged import FLOWS
+    from tests.test_runtime_cli import _install_shim
+
+    source = completed_plan
+    failed = _install_shim(tmp_path / 'writer-bin', 'write-anyway')
+    target = tmp_path / 'bin' / 'capture-acp-shim'
+    shutil.copyfile(failed, target)
+    target.chmod(0o755)
+    doc = gy.load_file(gy.user_path())
+    pair = copy.deepcopy(FLOWS['pair'])
+    pair['steps'][0]['review']['independent'] = False
+    pair['steps'][0]['write_policy'] = 'no-edits'
+    doc['flows'] = {'pair': pair}
+    gy.user_path().write_text(gy.dump(doc))
+    code, result = _starter_cli(monkeypatch, capsys, 'run', 'build-review', '--variant', 'pair',
+                                '--plan-artifact', source['reference'], '--workspace', str(source['ws']))
+    assert code == 3 and result['state']['outcome'] != 'completed', result
+    assert result['review_label'] == 'review not independent'
+    assert result['verification']['status'] == 'unavailable'
+    meta = source['store'].load_meta(result['session_id'])
+    assert 'review' not in meta and meta['review_policies'][0]['policy'] == 'waived'
+
+
+async def test_queued_starter_revalidates_changed_source_before_runtime_dispatch(configured, monkeypatch):
+    from garuda.interfaces import bg_sessions
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.runtime.queue import QueueStore
+
+    source = configured / 'scope.txt'
+    source.write_text('Approved scope')
+    store, queue = SessionStore(), QueueStore()
+    plan = compile_scenario('run-with-role', {'goal': 'Keep status', 'sources': ['scope.txt'],
+                                             'options': {'bg': True}}, configured, store=store)
+    args = build_parser().parse_args(shlex.split(plan.equivalent_command)[1:])
+    args.starter_record = plan.launch_metadata()
+    sid = bg_sessions.launch(args, store=store, queue=queue,
+                             spawn=lambda _sid: type('NoWorker', (), {'pid': os.getpid(), 'args': ['worker']})())
+    source.write_text('Changed while queued')
+    called = []
+
+    async def forbidden(_args):
+        called.append(True)
+        pytest.fail('changed source reached runtime dispatch')
+
+    code = await bg_sessions.run_worker_async(sid, store=store, queue=queue, runner=forbidden)
+    assert code == 1 and not called
+    assert store.load_meta(sid)['state']['outcome'] == 'failed'
+    assert not queue.entries() and not CapacityStore().holders('native')
+    assert source.read_text() == 'Changed while queued'
+
+
+def test_starter_cli_readiness_collision_refuses_before_admission(configured, monkeypatch, capsys):
+    doc = gy.load_file(gy.user_path())
+    for role in doc['roles'].values():
+        role['model_id'] = 'same/model'
+    gy.user_path().write_text(gy.dump(doc))
+    before = _snapshot(configured, SessionStore().root, gy.user_path().parent)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('blocked readiness attempted execution')
+
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr('garuda.model.factory.ModelFactory.build_spec', forbidden)
+    code, row = _starter_cli(monkeypatch, capsys, 'run', 'build-review', '--goal', 'Preserve status',
+                             '--workspace', str(configured))
+    assert code == 2 and row['error']['code'] == 'starter.not_ready'
+    assert _snapshot(configured, SessionStore().root, gy.user_path().parent) == before

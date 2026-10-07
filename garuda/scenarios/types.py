@@ -54,4 +54,5 @@ class LaunchPlan:
                 "approved_scope": self.provenance["approved_scope"],
                 "approved_scope_sha256": self.provenance["approved_scope_sha256"],
                 "task_sha256": self.provenance["task_sha256"],
-                "configuration_digest": self.provenance["configuration_digest"]}
+                "configuration_digest": self.provenance["configuration_digest"],
+                "context_grant": self.provenance.get("context_grant")}

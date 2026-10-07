@@ -143,3 +143,17 @@ def test_an_artifact_of_another_version_refuses(tmp_path):
         with pytest.raises(art.ArtifactError) as caught:
             art.load(tmp_path, stale, workspace_version="v")
         assert caught.value.code == "flow.input_version"
+
+
+async def test_flow_service_uses_supplied_store_for_real_child_sessions(repo, harnesses, tmp_path):
+    from garuda.flows.service import FlowExecutionService
+
+    store = SessionStore(tmp_path / 'flow-store')
+    outcome = await FlowExecutionService(store).run('plan-only', 'Inspect retry behavior', str(repo))
+    assert outcome.flow.completed
+    for receipt in outcome.flow.receipts:
+        child = store.load_meta(receipt['session_id'])
+        assert child['flow_step'] == {'flow_session': outcome.flow.flow_session,
+                                      'step': receipt['step'], 'attempt': receipt['attempt']}
+        assert child['project_id'] == store.load_meta(outcome.flow.flow_session)['project_id']
+    assert SessionStore().list_sessions() == []

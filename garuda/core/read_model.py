@@ -38,7 +38,7 @@ def _queue_index(queue) -> dict[str, dict]:
             for e in entries}
 
 
-def approvals(store, session_id: str) -> list[dict]:
+def approvals(store, session_id: str, *, requests: list[dict] | None = None) -> list[dict]:
     """Pending approval requests of one session (answered ones are not listed)."""
     from garuda.acp.approval_channel import FileApprovalChannel
 
@@ -48,7 +48,7 @@ def approvals(store, session_id: str) -> list[dict]:
         from garuda.context.redact import redact_text
 
         out = []
-        for r in channel.pending():
+        for r in channel.pending() if requests is None else requests:
             out.append({"approval_id": r.get("approval_id"),
                         "action": redact_text(str(r.get("action", "")))[0],
                         **{k: r.get(k) for k in ("family", "runtime_id", "expires_at", "ceiling",
@@ -100,7 +100,7 @@ def inbox(store, *, limit: int = 200) -> list[dict]:
     return out
 
 
-def flow(store, session_id: str, meta: dict | None = None) -> dict | None:
+def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dict] | None = None) -> dict | None:
     """A flow session's steps, attempts, receipts and review outcome, or ``None``."""
     meta = meta if meta is not None else store.load_meta(session_id)
     if meta.get("kind") != "flow":
@@ -108,10 +108,11 @@ def flow(store, session_id: str, meta: dict | None = None) -> dict | None:
     from garuda.flows import engine
 
     declared = (meta.get("flow") or {}).get("steps") or []
-    try:
-        receipts = engine.receipts(store, session_id)
-    except Exception:
-        receipts = []
+    if receipts is None:
+        try:
+            receipts = engine.receipts(store, session_id)
+        except Exception:
+            receipts = []
     steps = []
     edges = []
     for step in declared:
@@ -129,10 +130,10 @@ def flow(store, session_id: str, meta: dict | None = None) -> dict | None:
             "review": meta.get("review")}
 
 
-def session_row(store, meta: dict, *, queue_index: dict | None = None) -> dict[str, Any]:
+def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=None) -> dict[str, Any]:
     """The shared row for one session."""
     session_id = meta.get("session_id") or ""
-    state = effective_state(meta)
+    state = effective_state(meta, liveness=liveness)
     verification = dict(state.get("verification") or {"status": UNKNOWN})
     segments = meta.get("runtime_segments") or []
     runtime = segments[-1].get("runtime_id") if segments and isinstance(segments[-1], dict) \
@@ -198,3 +199,10 @@ def session(store, session_id: str, *, queue=None) -> dict:
     row["consults"] = {"summary": view.summary(consults), "line": view.line(consults),
                        "entries": consults}
     return row
+
+
+def starter_result(store, session_id: str, *, limit: int = 50, offset: int = 0) -> dict:
+    """Selected starter evidence with bounded coverage and no process probes."""
+    from garuda.core.starter_read_model import project
+
+    return project(store, session_id, limit=limit, offset=offset)
