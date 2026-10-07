@@ -104,6 +104,27 @@ def test_your_flow_replaces_a_packaged_one(repo, harnesses, monkeypatch, capsys)
     assert code == 0 and "[garuda] solo: done" in out and "review" not in out
 
 
+async def test_shared_flow_service_returns_recorded_review_and_state(repo, harnesses):
+    from garuda.flows.service import FlowExecutionService
+
+    store = SessionStore()
+    service = FlowExecutionService(store)
+    with pytest.raises(TypeError, match="checks"):
+        await service.run("pair", "x", str(repo), checks=["pytest -q"])
+    assert store.list_sessions() == []
+
+    outcome = await service.run("pair", "add a greeting", str(repo))
+    assert outcome.flow.completed
+    assert [(r["step"], r["status"]) for r in outcome.flow.receipts] == [
+        ("build", "done"), ("review", "done")]
+    meta = store.load_meta(outcome.flow.flow_session)
+    assert outcome.review == meta["review"]
+    assert outcome.review["status"] == "review_approved"
+    assert outcome.review["independence"]["policy"] == "required"
+    assert outcome.state == meta["state"]
+    assert outcome.state["verification"]["status"] == "unavailable"
+
+
 def test_config_show_prints_a_flow_to_copy(repo, monkeypatch, capsys):
     code, out = _main(monkeypatch, capsys, "config", "show", "--flow", "plan-build-review",
                       "--workspace", str(repo))

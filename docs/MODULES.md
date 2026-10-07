@@ -358,6 +358,13 @@ before; supervised recovery receipts remain separate work).
 
 ## `flows/` — sequential role steps (C.6a)
 
+`service.py::FlowExecutionService` is the shared in-process run/resume facade.
+It resolves effective packaged/configured flows, refuses unknown flows and
+missing roles before engine admission, and returns the engine outcome together
+with recorded review/state evidence. `interfaces/main.py` keeps CLI rendering
+and exit handling; `flow show` keeps its read-only receipt projection. The
+facade does not accept checks or finalize verification.
+
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
 holds the workspace lease from the first step to the last and lends each step
 a revocable `LeaseCapability` (`interfaces/run_guard.py`), so nothing outside

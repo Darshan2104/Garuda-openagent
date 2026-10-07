@@ -1272,10 +1272,10 @@ def run_flow(args) -> int:
     import json
     import sys
 
-    from garuda.config.garuda_yaml import GarudaConfigError, load_effective
+    from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.core.sessions import SessionStore
     from garuda.flows import engine
-    from garuda.flows.launch import launch_step
+    from garuda.flows.service import FlowExecutionService
     from garuda.workspace.lease import LeaseError
 
     store = SessionStore()
@@ -1292,38 +1292,19 @@ def run_flow(args) -> int:
                   f"outputs: {outs}")
         return 0
     try:
+        service = FlowExecutionService(store)
         if args.flow_command == "resume":
-            meta = store.load_meta(args.flow_session)
-            name, task, workspace = meta["flow"]["name"], meta["task"], meta["workspace"]
+            outcome = asyncio.run(service.resume(args.flow_session))
         else:
-            name, task, workspace = args.name, args.task, args.workspace
-        from garuda.flows import packaged
-
-        resolved = load_effective(workspace)
-        flows = packaged.available(resolved)
-        if name not in flows:
-            print(f"Error: flow.unknown: no flow named {name!r} "
-                  f"(have: {', '.join(sorted(flows))})", file=sys.stderr)
-            return 2
-        flow, _source = flows[name]
-        missing = packaged.missing_roles(flow, resolved)
-        if missing:
-            print(f"Error: flow.missing_roles: flow {name} needs the roles "
-                  f"{', '.join(packaged.required_roles(flow))}; define "
-                  f"{', '.join(missing)} in garuda.yaml (`garuda init` proposes them)",
-                  file=sys.stderr)
-            return 2
-        runner = engine.FlowRunner(store, workspace, name, flow, resolved, task=task,
-                                   launcher=launch_step,
-                                   flow_session=getattr(args, "flow_session", None))
-        result = asyncio.run(runner.run(resume=args.flow_command == "resume"))
+            outcome = asyncio.run(service.run(args.name, args.task, args.workspace))
     except (GarudaConfigError, LeaseError, engine.FlowStopped, OSError, ValueError,
             KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    result = outcome.flow
     for receipt in result.receipts:
         print(f"[garuda] {receipt['step']}: {receipt['status']}")
-    review = store.load_meta(result.flow_session).get("review")
+    review = outcome.review
     if review:
         print(f"[garuda] {review['status']} after {review['rounds']} round(s) "
               "(a review, not verification)")
