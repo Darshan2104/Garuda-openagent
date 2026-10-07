@@ -77,6 +77,51 @@ def test_a_model_outside_allowed_models_and_an_unknown_harness_refuse(tmp_path):
         roles.plan_role(resolved, catalog)
 
 
+def test_static_role_planning_executes_nothing_and_preserves_store_bytes(tmp_path, monkeypatch):
+    import socket
+    import subprocess
+
+    from garuda.agents import setup
+    from garuda.flows import packaged
+
+    ws = tmp_path / "ws"
+    (ws / ".agent").mkdir(parents=True)
+    (ws / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: checker, runtime_id: external}]\n")
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.write_text(yaml.safe_dump({"runtimes": [{
+        "runtime_id": "external", "kind": "acp", "version": "1",
+        "command": [sys.executable], "version_args": [sys.executable, "--version"],
+        "auth_probe": {"argv": [sys.executable, "--version"]},
+    }]}))
+    _user_file("version: 1\nroles:\n"
+               "  reviewer: {harness: checker, model_id: exact/model}\n")
+    roots = [ws, settings.parent, Path(os.environ["GARUDA_SESSIONS_DIR"]),
+             Path(os.environ["GARUDA_LEASES_DIR"])]
+
+    def snapshot():
+        return {p: p.read_bytes() for root in roots for p in root.rglob("*") if p.is_file()}
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("static role planning tried execution or a network/model call")
+
+    before = snapshot()
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(setup.RuntimeCatalog, "discover", forbidden)
+    monkeypatch.setattr("garuda.model.factory.ModelFactory.build", forbidden)
+    monkeypatch.setattr("garuda.model.factory.ModelFactory.build_spec", forbidden)
+    monkeypatch.setattr("garuda.agents.fallbacks.choose", forbidden)
+
+    resolved = gy.load_effective(ws, cli_role="reviewer")
+    plan = roles.plan_role(resolved, setup.prepare_runtime_catalog(ws))
+    assert (plan.runtime_id, plan.model_id) == ("external", "exact/model")
+    assert packaged.missing_roles(packaged.available(resolved)["pair"][0], resolved) == ["coder"]
+    assert snapshot() == before
+
+
 # --- ACP ------------------------------------------------------------------------------
 
 

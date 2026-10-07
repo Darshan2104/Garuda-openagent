@@ -125,12 +125,20 @@ async def test_an_invalid_review_stops_the_flow(repo):
     assert script.sequence == [("plan", 1), ("build", 1), ("review", 1)]
 
 
-@pytest.mark.parametrize("change", ["same identity", "fallback alias", "consulted"])
+@pytest.mark.parametrize("change", ["same identity", "primary aliases", "fallback alias", "consulted"])
 def test_a_reviewer_that_is_not_independent_is_rejected(repo, change):
     config = _config()
     roles = config["roles"]
     if change == "same identity":
         roles["reviewer"]["model_id"] = "c/1"
+    elif change == "primary aliases":
+        (repo / ".agent").mkdir()
+        (repo / ".agent" / "settings.yaml").write_text(
+            "runtime_refs:\n"
+            "  - {alias: builder, runtime_id: native}\n"
+            "  - {alias: checker, runtime_id: native}\n")
+        roles["coder"]["harness"] = "builder"
+        roles["reviewer"].update(harness="checker", model_id="c/1")
     elif change == "fallback alias":
         roles["coder"]["fallback"] = [{"harness": "native", "model_id": "r/1"}]
     else:
