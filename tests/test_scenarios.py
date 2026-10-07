@@ -21,6 +21,7 @@ from garuda.interfaces.main import build_parser
 from garuda.scenarios import catalog
 from garuda.scenarios.compile import compile_scenario
 from garuda.scenarios.inputs import MAX_FIELD_CHARS
+from garuda.scenarios.service import StarterService
 from garuda.scenarios.types import StarterError
 
 
@@ -274,6 +275,12 @@ def test_fresh_preview_with_installed_runtime_never_discovers_or_allocates(confi
     plan = compile_scenario("ask-role", {"question": "q"}, configured, store=store)
     assert plan.bindings["reviewer"]["runtime_id"] == "installed"
     assert plan.bindings["reviewer"]["agent"]["name"] == "specialist"
+    service = StarterService(store)
+    rows = {row["id"]: row["readiness"] for row in service.list(configured)}
+    assert set(rows) == {"plan-change", "plan-feedback", "build-review", "run-with-role", "ask-role"}
+    assert rows["ask-role"]["status"] == "ready"
+    assert rows["build-review"]["status"] == "needs-setup"
+    assert service.preview("ask-role", {"question": "q"}, configured)["plan"]["digest"] == plan.digest
     assert _snapshot(*roots) == before and not store.root.exists()
 
 
@@ -331,3 +338,191 @@ def test_compiled_fields_reach_the_actual_existing_runtime(tmp_path, monkeypatch
     for name, value in inputs.items():
         assert f'name="{name}"' in received
         assert escape(value) in received
+
+
+@pytest.mark.parametrize("case,status,decision", [
+    ("same", "needs-setup", "not_independent"),
+    ("primary-alias", "needs-setup", "not_independent"),
+    ("different-model", "ready", "independent"),
+    ("different-runtime", "ready", "independent"),
+    ("fallback", "needs-setup", "not_independent"),
+    ("consulted", "needs-setup", "not_independent"),
+    ("fallback-alias-gap", "ready", "independent"),
+    ("consulted-alias-gap", "ready", "independent"),
+])
+def test_readiness_uses_the_existing_configured_identity_rule(configured, case, status, decision):
+    doc = gy.load_file(gy.user_path())
+    roles = doc["roles"]
+    for role in roles.values():
+        role.pop("model_id")
+    if case in {"different-model", "fallback", "consulted", "fallback-alias-gap", "consulted-alias-gap"}:
+        roles["coder"]["model_id"] = "coder/model"
+        roles["reviewer"]["model_id"] = "reviewer/model"
+    if "alias" in case:
+        (configured / ".agent").mkdir()
+        (configured / ".agent" / "settings.yaml").write_text(
+            "runtime_refs: [{alias: builder, runtime_id: native}, {alias: checker, runtime_id: native}]\n")
+    if case == "primary-alias":
+        roles["coder"]["harness"] = "builder"
+        roles["reviewer"]["harness"] = "checker"
+    elif case == "different-runtime":
+        Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({"runtimes": [{
+            "runtime_id": "external", "kind": "acp", "version": "1", "command": [sys.executable]}]}))
+        roles["reviewer"]["harness"] = "external"
+    elif case.startswith("fallback"):
+        roles["coder"]["fallback"] = [{"harness": "builder" if "alias" in case else "native", "model_id": "reviewer/model"}]
+    elif case.startswith("consulted"):
+        roles["coder"]["consult"] = ["scout"]
+        roles["scout"].update(harness="builder" if "alias" in case else "native", model_id="reviewer/model")
+    gy.user_path().write_text(gy.dump(doc))
+    result = StarterService().preview("build-review", {"goal": "Add status"}, configured)
+    state = result["readiness"]
+    assert state["status"] == status and state["can_run"] == (status == "ready")
+    assert state["reviews"][0]["decision"] == decision
+    assert state["reviews"][0]["policy"] == "required"
+    assert "fallback and consulted harness aliases" in state["reviews"][0]["scope"]
+    assert state["runtime_evidence"]["reviewer"]["model_label"] == roles["reviewer"].get("model_id", "harness default")
+    assert state["verification"] == "unavailable"
+    if status == "needs-setup":
+        assert state["review_label"] == "review needs setup"
+        assert [r["id"] for r in state["remedies"]] == ["second-harness", "build-and-check", "user-waiver"]
+        assert state["remedies"][1]["review_label"] == "no review"
+        assert state["remedies"][2]["command"] == "garuda config show --flow plan-build-review"
+    else:
+        assert state["remedies"] == []
+
+
+@pytest.mark.parametrize("override,policy,label", [
+    ("waived-collision", "waived", "review not independent"),
+    ("waived-distinct", "waived", "review not independent"),
+    ("no-review", None, "no review"),
+])
+def test_readiness_reports_effective_user_review_policy(configured, override, policy, label):
+    from copy import deepcopy
+
+    from garuda.flows.packaged import FLOWS
+
+    doc = gy.load_file(gy.user_path())
+    if override == "waived-collision":
+        doc["roles"]["reviewer"]["model_id"] = doc["roles"]["coder"]["model_id"]
+    flow = deepcopy(FLOWS["plan-build-review"])
+    if override == "no-review":
+        flow = {"steps": [{"id": "build", "role": "coder", "outputs": ["patch"]}]}
+    else:
+        flow["steps"][1]["review"]["independent"] = False
+    doc["flows"] = {"plan-build-review": flow}
+    gy.user_path().write_text(gy.dump(doc))
+    result = StarterService().preview("build-review", {"goal": "status"}, configured)
+    state = result["readiness"]
+    assert state["status"] == "ready" and state["can_run"] is True
+    assert state["review_label"] == label
+    assert result["plan"]["provenance"]["flow_source"] == gy.USER
+    if policy:
+        assert state["reviews"][0]["policy"] == policy
+        assert state["reviews"][0]["label"] == "review not independent"
+        assert state["reviews"][0]["decision"] == ("not_independent" if override == "waived-collision" else "independent")
+    else:
+        assert state["reviews"] == []
+    assert state["remedies"] == []
+
+
+@pytest.mark.parametrize("problem,status,code", [
+    ("missing-role", "needs-setup", "starter.missing_roles"),
+    ("disabled", "needs-setup", "starter.runtime_disabled"),
+    ("unknown-runtime", "not-checked", "starter.resolution_not_checked"),
+    ("unproven-options", "not-checked", "role.options_unproven"),
+    ("missing-executable", "needs-setup", "harness.cli_missing"),
+])
+def test_unavailable_readiness_is_visible_before_admission(configured, problem, status, code):
+    doc = gy.load_file(gy.user_path())
+    if problem == "missing-role":
+        del doc["roles"]["reviewer"]
+    elif problem == "unknown-runtime":
+        doc["roles"]["reviewer"]["harness"] = "not-connected"
+    else:
+        settings = {"runtimes": [{"runtime_id": "external", "kind": "acp", "version": "unknown", "command": [sys.executable]}]}
+        if problem == "disabled":
+            settings["disabled_runtimes"] = ["external"]
+        elif problem == "missing-executable":
+            settings["runtimes"][0]["command"] = ["garuda-test-unavailable-executable"]
+            doc["roles"]["reviewer"].pop("model_id")
+        Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump(settings))
+        doc["roles"]["reviewer"]["harness"] = "external"
+    gy.user_path().write_text(gy.dump(doc))
+    store = SessionStore()
+    before = _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"]))
+    rows = {row["id"]: row["readiness"] for row in StarterService(store).list(configured)}
+    state = rows["build-review"]
+    assert state["status"] == status and state["can_run"] is False
+    assert code in {d["code"] for d in state["diagnostics"]}
+    assert _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"])) == before
+
+
+def test_single_harness_starters_and_explicit_build_check_keep_truthful_evidence(configured):
+    doc = gy.load_file(gy.user_path())
+    for role in doc["roles"].values():
+        role.pop("model_id")
+    gy.user_path().write_text(gy.dump(doc))
+    service = StarterService()
+    rows = {row["id"]: row["readiness"] for row in service.list(configured)}
+    assert all(rows[name]["status"] == "ready" for name in ("plan-change", "plan-feedback", "ask-role", "run-with-role"))
+    assert rows["build-review"]["status"] == "needs-setup"
+    assert "starter.live_checkout" in {d["code"] for d in rows["ask-role"]["diagnostics"]}
+    assert "verification.no_trusted_check" not in {d["code"] for d in rows["ask-role"]["diagnostics"]}
+    inputs = {"goal": "status", "requirements": "cover transitions", "exclude": "transport rewrite", "constraints": "preserve retry"}
+    result = service.build_and_check(inputs, configured, checks=["pytest -q"])
+    plan, state = result["plan"], result["readiness"]
+    assert plan["kind"] == "run" and plan["target"] == "coder"
+    assert state["review_label"] == "no review" and state["reviews"] == []
+    assert state["check_count"] == 1 and state["verification"] == "from-acceptance-receipt"
+    assert plan["checks"][0]["authority"] == gy.CLI
+    for name, value in inputs.items():
+        assert f'name="{name}"' in plan["task"] and escape(value) in plan["task"]
+    args = build_parser().parse_args(shlex.split(plan["equivalent_command"])[1:])
+    assert args.role == "coder" and args.checks == ["pytest -q"] and args.task == plan["task"]
+    assert "independent: false" not in plan["task"]
+    with pytest.raises(StarterError) as caught:
+        service.build_and_check({"goal": "status", "variant": "pair"}, configured)
+    assert caught.value.code == "starter.plan_required"
+
+
+def test_build_check_remedy_uses_actual_role_run_acceptance_receipt(tmp_path, monkeypatch, capsys):
+    from tests.test_runtime_cli import _git_workspace, _install_shim, _main, _on_path
+
+    ws = _git_workspace(tmp_path)
+    capture = tmp_path / "actual-prompt.json"
+    _install_shim(tmp_path / "bin", "resume", state_file=capture)
+    _on_path(monkeypatch, tmp_path / "bin")
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({"runtimes": [{
+        "runtime_id": "capture", "kind": "acp", "version": "1", "command": ["fake-acp-shim"]}]}))
+    gy.user_path().write_text(yaml.safe_dump({"version": 1, "roles": {"coder": {"harness": "capture"}}}))
+    result = StarterService().build_and_check({"goal": "status", "exclude": "no transport rewrite", "constraints": "preserve retry"},
+                                             ws, checks=[shlex.join([sys.executable, "-c", "print('accepted')"])])
+    code, output = _main(monkeypatch, capsys, *shlex.split(result["plan"]["equivalent_command"])[1:])
+    assert code == 0, output
+    (meta,) = SessionStore().list_sessions()
+    assert meta["state"]["verification"]["status"] == "passed"
+    assert meta["state"]["verification"]["authority"] == gy.CLI
+    (receipt,) = meta["acceptance_receipts"]
+    assert receipt["status"] == "passed" and receipt["authority"] == gy.CLI
+    assert receipt["fingerprint"]
+    assert "review" not in meta
+    received = json.loads(capture.read_text())["prompts"][0]
+    assert "no transport rewrite" in received and "preserve retry" in received
+
+
+@pytest.mark.parametrize("value", [None, "nul", "missing", "file"])
+def test_library_refuses_invalid_workspace_before_admission(tmp_path, value):
+    if value == "nul":
+        workspace = "bad\x00workspace"
+    elif value == "missing":
+        workspace = tmp_path / "absent"
+    elif value == "file":
+        workspace = tmp_path / "file"
+        workspace.write_text("x")
+    else:
+        workspace = None
+    with pytest.raises(StarterError) as caught:
+        StarterService().list(workspace)
+    assert caught.value.code == "starter.workspace_invalid"
+    assert SessionStore().list_sessions() == []

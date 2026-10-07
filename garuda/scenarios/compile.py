@@ -8,23 +8,23 @@ import os
 import re
 import shlex
 import stat
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from html import escape
 from pathlib import Path
 
 from garuda.agents import role_agent
-from garuda.agents.setup import prepare_runtime_catalog
+from garuda.agents.setup import RuntimeCatalog, prepare_runtime_catalog
 from garuda.config import garuda_yaml as gy
 from garuda.config.agent_home import global_settings_path
 from garuda.context.redact import redact_text
 from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import packaged
-from garuda.runtime.roles import plan_role
+from garuda.runtime.roles import RolePlan, plan_role
 from garuda.scenarios.catalog import brief_text, load_catalog
 from garuda.scenarios.inputs import bound_task, validate_inputs, validate_options
 from garuda.scenarios.sources import resolve_sources
-from garuda.scenarios.types import LaunchPlan, StarterError
+from garuda.scenarios.types import LaunchPlan, Starter, StarterError
 
 COMPILER_VERSION = 1
 
@@ -116,33 +116,37 @@ def _task(entry, inputs, sources, session_text) -> str:
     return bound_task("\n".join(parts))
 
 
-def compile_scenario(entry_id: str, inputs: dict, workspace: str | Path, *,
-                     store: SessionStore | None = None,
-                     allow_cross_project_context: bool = False) -> LaunchPlan:
-    """Compile an installed starter. Cross-project grants are explicit caller authority.
-
-    No launch, discovery, model call, admission or store mutation occurs here.
-    A caller must recompile before launch; HTTP start later compares the digest.
-    """
-    entries = load_catalog()
-    if type(allow_cross_project_context) is not bool:
-        raise StarterError("starter.input_invalid", "cross-project context grant must be boolean")
-    if not isinstance(entry_id, str) or entry_id not in entries:
-        raise StarterError("starter.unknown", "select an installed starter")
-    entry = entries[entry_id]
-    inputs = validate_inputs(entry, inputs)
+def workspace_path(workspace: str | Path) -> Path:
     try:
         root = Path(workspace).expanduser().resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         raise StarterError("starter.workspace_invalid", "select an existing workspace directory") from exc
     if not root.is_dir():
         raise StarterError("starter.workspace_invalid", "select an existing workspace directory")
+    return root
+
+
+@dataclass(frozen=True)
+class LaunchContext:
+    """Static resolution shared by listing, compilation and readiness; never persisted."""
+
+    resolved: gy.Resolved
+    catalog: RuntimeCatalog
+    kind: str
+    target: str
+    flow: dict | None
+    source: str
+    role_plans: dict[str, RolePlan]
+    options: dict
+
+
+def resolve_launch(entry: Starter, inputs: dict, root: Path) -> LaunchContext:
+    """Resolve only launch settings, so listing needs no invented task inputs."""
     options = validate_options(entry, inputs.get("options", {}))
     kind, flow = entry.launch["kind"], None
     target = inputs.get("role", entry.launch.get("role")) if kind == "run" else None
     if kind == "run" and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", target):
         raise StarterError("starter.role_invalid", "select a configured role name")
-    before = _config_sources(root)
     try:
         resolved = gy.load_effective(root, cli_role=target, cli_checks=options.get("checks", ()))
     except gy.GarudaConfigError as exc:
@@ -169,10 +173,38 @@ def compile_scenario(entry_id: str, inputs: dict, workspace: str | Path, *,
         missing = [target] if resolved is None or target not in resolved.config.get("roles", {}) else []
     if missing:
         raise StarterError("starter.missing_roles", f"define {', '.join(missing)} with `garuda init`")
-    bindings = {}
+    role_plans = {}
     for name in names:
         selected = gy.Resolved(config=resolved.config, provenance=resolved.provenance, role=name)
-        bindings[name] = role_agent.bind(plan_role(selected, catalog), str(root)).record()
+        harness = resolved.config["roles"][name]["harness"]
+        if catalog.registry.is_disabled(harness):
+            raise StarterError("starter.runtime_disabled", f"{name}: {harness} is disabled; review settings.yaml and rerun `garuda init`")
+        role_plans[name] = role_agent.bind(plan_role(selected, catalog), str(root))
+    return LaunchContext(resolved, catalog, kind, target, flow, source, role_plans, options)
+
+
+def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
+                     store: SessionStore | None = None,
+                     allow_cross_project_context: bool = False) -> tuple[LaunchPlan, LaunchContext]:
+    """Compile an installed starter. Cross-project grants are explicit caller authority.
+
+    No launch, discovery, model call, admission or store mutation occurs here.
+    A caller must recompile before launch; HTTP start later compares the digest.
+    """
+    entries = load_catalog()
+    if type(allow_cross_project_context) is not bool:
+        raise StarterError("starter.input_invalid", "cross-project context grant must be boolean")
+    if not isinstance(entry_id, str) or entry_id not in entries:
+        raise StarterError("starter.unknown", "select an installed starter")
+    entry = entries[entry_id]
+    inputs = validate_inputs(entry, inputs)
+    root = workspace_path(workspace)
+    before = _config_sources(root)
+    context = resolve_launch(entry, inputs, root)
+    resolved, catalog = context.resolved, context.catalog
+    kind, target, flow, source = context.kind, context.target, context.flow, context.source
+    options = context.options
+    bindings = {name: plan.record() for name, plan in context.role_plans.items()}
     sources, session_text = resolve_sources(inputs.get("sources", []), root, store=store,
                                            allow_cross_project_context=allow_cross_project_context)
     task = _task(entry, inputs, sources, session_text)
@@ -209,4 +241,11 @@ def compile_scenario(entry_id: str, inputs: dict, workspace: str | Path, *,
               "target": target, "inputs": inputs, "task": task, "sources": sources,
               "bindings": bindings, "options": options, "flow": flow, "provenance": provenance,
               "checks": checks, "limits": _limits(flow), "equivalent_command": shlex.join(argv)}
-    return LaunchPlan(**values, digest=digest(values))
+    return LaunchPlan(**values, digest=digest(values)), context
+
+
+def compile_scenario(entry_id: str, inputs: dict, workspace: str | Path, *,
+                     store: SessionStore | None = None,
+                     allow_cross_project_context: bool = False) -> LaunchPlan:
+    return compile_with_context(entry_id, inputs, workspace, store=store,
+                                allow_cross_project_context=allow_cross_project_context)[0]

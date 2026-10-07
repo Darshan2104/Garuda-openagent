@@ -389,8 +389,33 @@ redacted structured inputs, source/configuration digests, explicit supported
 options and the shell-quoted equivalent existing command. Role agent definitions
 bind through `agents/role_agent.py`'s pure resolver; their source digests are part
 of the preview identity. It grants no
-authority and starts nothing. Reviewer readiness and starter launch interfaces
-are separate follow-on work.
+authority and starts nothing. Starter CLI/dashboard launch interfaces are
+separate follow-on work.
+
+`service.py::StarterService` adds a pure library, preview and explicit Build and
+check compilation. Listing needs no invented task inputs; preview and readiness
+share the same resolved configuration/role plans via `compile_with_context`.
+The static Setup projection is `core/setup_view.py::configuration`; full
+`setup()` also performs discovery probes and is not used here. Readiness calls
+`flows/review.py::check_independent` directly and honors the effective flow's
+review policy: required collisions need setup; explicit user-authored waivers
+are labelled **review not independent**; an override without review says
+**no review**. Primary runtime IDs are canonical while configured fallback and
+consult aliases remain raw until the separate review-engine fix (#310).
+
+Readiness is configured preflight, not proof of future execution. Actual runtime
+version/options/login remain unprobed and cached login conclusions are historical;
+unknown resolution or unproven options say `not-checked`. Missing roles, disabled
+runtimes and unavailable executables need setup before admission. Role model IDs
+compare exactly under the existing rule; missing IDs show **harness default**.
+Single-harness collisions offer, in order, a second harness plus `garuda init`,
+Build and check through `run-with-role` with **no review**, or a flow-copy command
+for an explicit user-authored waiver. No remedy creates a waiver or starts work.
+Build and check preserves the supplied goal, requirements, exclusions, constraints
+and sources, and accepts explicitly selected checks; actual acceptance remains
+owned by the existing role run. Missing checks warn. Flows remain verification
+`unavailable` in P1a. Questions recommend an idle live checkout because another
+writer can cause no-edits output withholding.
 
 `inputs.py` owns typed fields/options and delivery limits (32,768 characters per
 text field; 128,000 characters/512,000 UTF-8 bytes for the final escaped task).

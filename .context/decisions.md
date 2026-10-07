@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-10-07 — Starter readiness is configured preflight (#306)
+
+- Library/preview use the pure static Setup configuration projection and the
+  compiler's exact resolved context, never full Setup discovery, fallback
+  selection, login probes, inference or admission. Actual version/login/offered
+  options remain unprobed; cached login conclusions are explicitly historical.
+- Reviewer readiness calls the existing review predicate. Primary identities
+  are canonical; fallback/consult aliases retain the documented engine gap
+  until #310. Exact model-ID semantics, including harness defaults, are unchanged.
+- Required collisions need setup. Effective user-authored waivers retain their
+  policy and **review not independent** label; a flow without review says
+  **no review**. Starters never author a waiver or automatically start a remedy.
+- Build and check compiles an explicit choice to the existing coder role-run
+  and acceptance-check owner, preserving original approved task constraints.
+  Flow verification remains unavailable in P1a; no flow-check argument is added.
+
 ## 2026-10-07 — Starter compilation is a read-only data boundary (#305)
 
 - Starter definitions, briefs and example inputs are installed package data,

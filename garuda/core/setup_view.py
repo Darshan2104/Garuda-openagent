@@ -1,7 +1,9 @@
 """The Setup view's read model (plan task F.4, #169): what is configured and what is wrong.
 
-Read-only, and it starts nothing: no vendor CLI is run (a harness's login state is the last
-recorded conclusion, or "not checked"), no model is called. It reports
+``configuration`` projects already resolved roles/flows/provenance without probes.
+The full ``setup`` view also discovers used harnesses (version/auth subprocesses
+and probe-cache writes); it calls no inference model. Its login summary uses
+the last recorded conclusion, or "not checked". It reports
 
 * **diagnostics** — configuration, harness and workspace-state findings, each with its code
   and a *fix* the person can copy;
@@ -124,6 +126,17 @@ def _flows(resolved) -> list[dict]:
     return rows
 
 
+def configuration(resolved) -> dict[str, Any]:
+    """The shared static configuration projection, without runtime/state probes."""
+    return {
+        "roles": _roles(resolved),
+        "flows": _flows(resolved),
+        "provenance": ([{"key": k, "source": v} for k, v in sorted(resolved.provenance.items())]
+                       if resolved else []),
+        "withheld": list(resolved.withheld) if resolved else [],
+    }
+
+
 def setup(workspace: str) -> dict[str, Any]:
     from garuda.config import garuda_yaml as gy
     from garuda.interfaces.onboarding import _config_diagnostics, _state_diagnostics
@@ -133,12 +146,8 @@ def setup(workspace: str) -> dict[str, Any]:
     diagnostics += _state_diagnostics()
     return {
         "diagnostics": [d.to_dict() for d in diagnostics],
-        "roles": _roles(resolved),
-        "flows": _flows(resolved),
+        **configuration(resolved),
         "consults": _consults(resolved),
         "agents": _agents(workspace),
-        "provenance": ([{"key": k, "source": v} for k, v in sorted(resolved.provenance.items())]
-                       if resolved else []),
-        "withheld": list(resolved.withheld) if resolved else [],
         "files": {"user": str(gy.user_path()), "project": str(gy.project_path(workspace))},
     }

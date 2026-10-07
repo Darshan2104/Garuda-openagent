@@ -93,6 +93,11 @@ fastest way to learn the system.
    with digests, not pasted documents. Session sources reuse the existing tag
    authorization with read-only project-ID lookup and bounded brief rendering;
    unavailable identity evidence refuses without allocating a key or probing Git.
+   `scenarios/service.py` projects starter readiness from that same static
+   resolution, using `setup_view.configuration` and the existing review predicate.
+   It discloses unprobed runtime facts, visible user-authored waivers, and the
+   single-harness Build and check remedy through the existing role-run mechanism.
+   It does not call the full Setup view, which performs discovery probes.
    Native consult quiescence normalizes ordinary synchronous/asynchronous
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,
