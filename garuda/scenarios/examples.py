@@ -11,7 +11,11 @@ from garuda.scenarios.types import StarterError
 
 
 def materialize_reconnect(directory: str) -> dict:
-    target = Path(directory).expanduser().absolute()
+    try:
+        target = Path(directory).expanduser().absolute()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise StarterError("starter.example_invalid",
+                           "choose a directory with a resolvable path and home directory") from exc
     if target.exists() or target.is_symlink():
         raise StarterError("starter.example_conflict", "choose a new directory; existing targets are never overwritten")
     if not target.parent.is_dir():
