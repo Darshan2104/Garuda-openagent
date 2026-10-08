@@ -1557,7 +1557,8 @@ automatic reclaim or hostile same-process Python protection claim.
 ## 2026-10-07 — Starter examples and first-run authority prerequisites (#309)
 
 The reconnect project has one canonical ordinary-code source under
-`examples/workflows/reconnect/`, packaged as installed namespace resources.
+`examples/workflows/reconnect/`, packaged as installed package resources with
+an explicit package initializer so editable installations also support reads.
 `garuda starter example reconnect DIR` exclusively creates a new selected
 directory outside existing repositories and refuses linked parents. It performs
 local Git initialization with repository-directed environment and global hooks
