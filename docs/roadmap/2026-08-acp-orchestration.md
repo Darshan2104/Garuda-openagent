@@ -11,6 +11,16 @@ Garuda becomes a control plane for both its own native LLM harness and external 
 
 The first release is **supervisor mode**. Garuda does not reimplement the external agent's loop and does not place an external agent behind `Model`. Supported direct inference transports remain a separate later lane and must use documented public vendor APIs only.
 
+## Ready-to-use CLI workflows
+
+The [Garuda Starters guide](../use-cases/workflows.md) describes the P1a CLI
+journeys and runnable reconnect example built on these existing runtime, role,
+flow and evidence owners. External read-only roles still require their configured
+Docker confinement; a connected host CLI alone is insufficient. Reviewed flows
+have verification unavailable until the separately gated flow-check phase.
+Dashboard discovery and durable starter starts remain later phases under the
+[finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
+
 ## Why this boundary
 
 An external coding agent already has its own context, tool execution, permissions, retry behavior, and session lifecycle. Wrapping it as a Garuda model would create two competing agent loops.

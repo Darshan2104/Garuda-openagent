@@ -60,9 +60,10 @@ garuda = "garuda.interfaces.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["garuda*"]
+include = ["garuda*", "examples.workflows.reconnect"]
 
 [tool.setuptools.package-data]
+"examples.workflows.reconnect" = ["*.toml", "*.md", ".gitignore"]
 garuda = [
     "agents/defaults/*.yaml",
     "agents/defaults/*.md",

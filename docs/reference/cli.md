@@ -278,6 +278,12 @@ limited page remain incomplete and offer inspection rather than an all-clear.
 An implement-plan command is offered only after the existing handoff owner
 validates the producer; invoking it remains an explicit user action.
 
-`garuda starter example reconnect DIR` is registered; materialization arrives
-with the release/examples follow-up (#309). Until then it returns a typed
-unavailable error without creating files.
+`garuda starter example reconnect DIR` creates the installed retry-client project
+in a new directory outside existing repositories, without symlinked parents.
+It refuses existing targets, initializes and commits local Git, and installs no
+dependencies or harnesses. Run `python -m pytest` there. See
+[Ready-to-use workflows](../use-cases/workflows.md) for all five journeys.
+
+Static readiness also checks that a read-only ACP role has a configured
+confinement image and a Docker executable. This performs no Docker probe;
+runtime preflight must still prove confinement, and refusal is a typed error.

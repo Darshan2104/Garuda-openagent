@@ -392,6 +392,14 @@ of the preview identity. It grants no
 authority and starts nothing. The CLI exposes this compiler through
 `interfaces/scenario_cli.py`; dashboard interfaces remain follow-on work.
 
+`examples.py::materialize_reconnect` copies installed resources into an
+exclusively new selected directory outside existing repositories and initializes
+local Git without inherited repository-directed environment/global hooks/config.
+The canonical ordinary source lives under `examples/workflows/reconnect/`,
+narrowly packaged as namespace resources; no second template source is maintained.
+Its six deterministic checks preserve retry behavior, not the requested future
+status feature. The example needs pytest but no Garuda model or agent at runtime.
+
 `handoff.py` provides one read-only plan selection path for both feedback and
 `build-review`'s `pair` variant. `FLOW:STEP:ATTEMPT` must identify a completed
 same-project sequential producer with matching receipt, intent/receipt journal
@@ -421,7 +429,9 @@ consult aliases remain raw until the separate review-engine fix (#310).
 Readiness is configured preflight, not proof of future execution. Actual runtime
 version/options/login remain unprobed and cached login conclusions are historical;
 unknown resolution or unproven options say `not-checked`. Missing roles, disabled
-runtimes and unavailable executables need setup before admission. Role model IDs
+runtimes and unavailable executables need setup before admission. Read-only ACP
+roles need a configured Docker confinement image and executable; static readiness
+never claims that the runtime mount/permission preflight has passed. Role model IDs
 compare exactly under the existing rule; missing IDs show **harness default**.
 Single-harness collisions offer, in order, a second harness plus `garuda init`,
 Build and check through `run-with-role` with **no review**, or a flow-copy command

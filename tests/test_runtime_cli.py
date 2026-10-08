@@ -113,7 +113,10 @@ def _git_workspace(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=ws, check=True, env=env)
     (ws / "a.txt").write_text("a\n", encoding="utf-8")
     subprocess.run(["git", "add", "a.txt"], cwd=ws, check=True, env=env)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=ws, check=True, env=env)
+    # Auto-maintenance can outlive commit and mutate .git during boundary
+    # snapshots; fixture setup must leave no background Git writer.
+    subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                    "commit", "-qm", "init"], cwd=ws, check=True, env=env)
     return ws
 
 

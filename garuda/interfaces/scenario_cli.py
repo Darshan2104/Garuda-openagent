@@ -17,6 +17,7 @@ from garuda.scenarios.catalog import load_catalog
 from garuda.scenarios.compile import compile_scenario
 from garuda.scenarios.service import RESOLUTION_ERRORS, StarterService
 from garuda.scenarios.types import StarterError
+from garuda.workspace.confined_acp import ConfinementRefused
 
 TEXT_FIELDS = ('goal', 'requirements', 'exclude', 'constraints', 'feedback', 'current',
                'desired', 'question', 'role', 'variant', 'plan_artifact')
@@ -115,7 +116,9 @@ def run(args):
         elif args.starter_command == 'result':
             render(service.result(args.session, workspace=args.workspace, limit=args.limit, offset=args.offset), as_json=args.json)
         elif args.starter_command == 'example':
-            raise StarterError('starter.example_unavailable', 'example materialization follows in the release/docs issue (#309)')
+            from garuda.scenarios.examples import materialize_reconnect
+
+            render(materialize_reconnect(args.directory))
         elif args.starter_command == 'run':
             inputs = _inputs(args)
             if args.preview:
@@ -136,7 +139,7 @@ def run(args):
                 render(data, as_json=args.json)
                 return started['exit_code']
         return 0
-    except (*RESOLUTION_ERRORS, AcpError, TagError, ProjectIdentityError, FlowStopped, BackgroundRefused, ValueError, OSError) as exc:
+    except (*RESOLUTION_ERRORS, ConfinementRefused, AcpError, TagError, ProjectIdentityError, FlowStopped, BackgroundRefused, ValueError, OSError) as exc:
         from garuda.context.redact import redact_text
 
         message = redact_text(str(exc))[0]
