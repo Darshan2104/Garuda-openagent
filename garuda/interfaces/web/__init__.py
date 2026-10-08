@@ -85,6 +85,7 @@ def build_context(
     outcome rather than a launch button that misbehaves.
     """
     store = SessionStore(root=config.sessions_dir)
+    workspaces = tuple(Path(p).expanduser().resolve() for p in config.workspaces) or (Path.cwd().resolve(),)
     ctx = DashboardContext(
         port=config.port,
         token=config.token or generate_token(),
@@ -92,14 +93,14 @@ def build_context(
         allow_run=config.allow_run,
         agents_dir=Path(config.agents_dir) if config.agents_dir else None,
         loop=loop,
-        workspace=(tuple(Path(p).expanduser().resolve() for p in config.workspaces) or (Path.cwd().resolve(),))[0],
+        workspace=workspaces[0],
+        workspaces=workspaces,
     )
     if config.allow_run and loop is not None:
         ctx.live = LiveRuns(
             loop=loop,
             store=store,
-            workspaces=tuple(Path(p).expanduser().resolve() for p in config.workspaces)
-            or (Path.cwd().resolve(),),
+            workspaces=workspaces,
             max_permission=config.max_permission,
             default_model=config.model or DEFAULT_MODEL,
             default_agent=config.agent,

@@ -148,6 +148,7 @@ function sessionDetailView(id) {
         return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
       }).join("") + "</ul>" : "") +
       flowHtml(row.flow) +
+      '<div id="starter-result-host"></div>' +
       '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>'
     );
     var stop = el("session-stop");
@@ -158,6 +159,7 @@ function sessionDetailView(id) {
         .catch(function (err) { toast(err.message); stop.disabled = false; });
     });
     startSessionStream(row.session_id);
+    loadStarterResult(row.session_id);
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +

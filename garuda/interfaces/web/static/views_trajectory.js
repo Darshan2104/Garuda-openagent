@@ -113,6 +113,7 @@ function renderTrajectory(payload, sources) {
     (live ? liveStreamHtml() : "") +
     '<div class="grid cols-4">' + detailTilesHtml(payload) + "</div>" +
     runFlagsHtml(payload) +
+    '<div id="starter-result-host"></div>' +
     '<div id="conversation-host"></div>' +
     overviewHtml(traj) +
     '<div class="card">' + pressureChartHtml(payload) + "</div>" +
@@ -126,6 +127,7 @@ function renderTrajectory(payload, sources) {
 
   el("traj").addEventListener("click", onTurnClick);
   if (typeof loadConversationPanel === "function") loadConversationPanel(run.session_id);
+  loadStarterResult(run.session_id);
   wireRawEvents();
   wireTimelineHead();
   restoreOpenTurns(turns);

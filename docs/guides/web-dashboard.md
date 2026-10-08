@@ -1,7 +1,8 @@
 # Web dashboard
 
 `garuda web` serves a local dashboard for watching sessions, answering
-approvals, checking usage and setup, and talking to the native Garuda agent.
+approvals, previewing Starters, checking usage and setup, and talking to the
+native Garuda agent.
 
 !!! abstract "At a glance"
     - Binds to loopback only, generates a capability token, validates `Host`
@@ -35,7 +36,7 @@ open that exact URL.
 | Flag | Default | Use |
 |---|---|---|
 | `--read-only` | off | Serve without any control or conversation |
-| `--allow-workspace DIR` | current directory | A directory conversations may use; repeatable |
+| `--allow-workspace DIR` | current directory | A directory conversations and starter previews may use; repeatable, also in read-only mode |
 | `--max-permission` | `smart` | Loosest posture a browser request may ask for, including any subagents it starts |
 | `--allow-agent NAME` | any you define | An agent a request may select by name; repeatable |
 | `--web-model` | your bindings | Default model for conversations |
@@ -50,6 +51,7 @@ open that exact URL.
 
 | Page | Route | What it's for |
 |---|---|---|
+| Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, forms, preview and copy-command |
 | Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
 | Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
 | Approvals | `#/inbox` | Every waiting approval; Allow or Deny |
@@ -58,6 +60,49 @@ open that exact URL.
 | Providers | `#/providers` | Each harness and API provider: install, login, limits |
 | Runtimes | `#/runtimes` | Runtime health, handoffs and recovery |
 | Chat | `#/chat` | A conversation with the native agent (not in `--read-only`) |
+
+## Starters
+
+Start with `garuda web --read-only --allow-workspace .` and open **Starters**.
+Choose a journey, enter its goal or question, and optionally name repository
+sources (`path#section`) or existing context (`session:NAME`), one per line.
+**Load reconnect example** fills the installed example; it does not create files.
+The build starter lets you select its flow variant and an explicit validated
+plan reference. Select a workspace from the operator's allowlist.
+
+**Preview command** shows the effective flow source, configured runtime/model
+bindings, permission posture, review policy, source and configuration digests,
+checks and their authority, configured invocation/review bounds, and unknown
+cost. Expand the provenance details to inspect these values. Readiness describes
+configured preflight; it does not prove current login, versions or observed
+capabilities. Named sources do not prove a runtime read them. A question also
+shows its live-checkout/no-edits limitation.
+
+With one harness, remedies appear in order: connect a second harness, **Build
+and check** (explicitly **no review**), or author a waiver in your configuration.
+A user-authored waiver stays labelled **review not independent**. Flow
+verification remains **unavailable** until the separate flow-check phase ships.
+
+**Copy command** copies the exact quoted CLI command. Run it explicitly in a
+terminal. Changing inputs invalidates the preview; preview again after sources
+or configuration change. Equivalent commands use the ordinary flow/run CLI and
+record ordinary sessions; `garuda starter run` additionally records structured
+starter inputs/source provenance and recompiles at launch. These pages and
+their POST preview create no
+sessions, queue rows, files, processes or model calls. There is no starter Start
+button or HTTP start route in this phase.
+
+Follow the resulting session through **Sessions** (flows and ACP) or its existing
+native trace. The shared starter panel keeps process, work, outcome, review and
+verification separate; it shows actual recorded identities, historical artifacts
+and acceptance receipts, supplied-source provenance, and bounded selected-session
+coverage. Ordinary runs show **Recorded run evidence** with absent starter
+provenance explicitly unknown. Missing or unreadable records stay unknown;
+a partial page does not
+prove project completion. Historical receipts do not probe the current workspace.
+**Preview implementation of this plan** opens the build form with the validated
+plan selected. It requires another explicit preview/copy step and starts nothing.
+See [Ready-to-use workflows](../use-cases/workflows.md) for the five journeys.
 
 ## Runs
 
@@ -231,6 +276,9 @@ the same `Host` and `Origin` checks. Write routes are refused in `--read-only`.
 
 | Route | Purpose |
 |---|---|
+| `GET /api/scenarios`, `GET /api/scenarios/<id>` | Installed starter library/detail and configured readiness; optional allowlisted `workspace` index |
+| `POST /api/scenarios/preview` | Pure compilation: `starter_id`, bounded `inputs`, optional integer `workspace`; also available read-only |
+| `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
 | `GET /api/sessions` | Every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
@@ -250,6 +298,12 @@ the same `Host` and `Origin` checks. Write routes are refused in `--read-only`.
 | `GET /api/runs/<id>/diff` | Session workspace delta |
 | `GET`, `POST /api/runs/<id>/recover` | Classify and run recovery |
 
+Starter preview accepts field data, never runtime, flow or catalog definitions,
+and cannot grant cross-project context access. Explicit Build and check uses
+`remedy: "build-and-check"` with `starter_id: "build-review"` and optional
+`checks`; it reuses the same role-run preview owner. Normal source/private-store
+authorization and request body limits apply. There is no `/api/scenarios/start`.
+
 **The live stream.** Each event's `id` is a byte offset into the session's
 log, so reconnecting with `Last-Event-ID` continues with the next event: none
 repeats and none is skipped. The stream sends a heartbeat every 15 seconds,
@@ -263,7 +317,7 @@ the token header, so read it with `fetch`.
 |---|---|
 | Capability token | Who can call dashboard routes |
 | Loopback bind | Network exposure |
-| Workspace allowlist | Which directories a conversation can use |
+| Workspace allowlist | Which directories conversations and starter previews can use |
 | `--max-permission` | What a browser request can ask for, including any subagents it starts |
 | `--allow-agent` | Which agents a request can name; a request never sends a definition |
 

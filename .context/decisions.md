@@ -1590,3 +1590,39 @@ Explicit waivers stay `policy: waived`; an unresolved configured set is null
 with decision unknown and a diagnostic, while actual identity evidence remains
 visible. Readiness consumes this same owner through its resolved role plans;
 no second starter algorithm, discovery, login or model call is introduced.
+
+
+## 2026-10-08 — Read-only Starters dashboard boundary (#314)
+
+The Starters HTTP library, detail, POST preview and selected result routes
+delegate to the same installed catalog, compiler, service and evidence readers
+as the CLI. Preview selects bounded field data and a canonical operator-allowed
+workspace index; it cannot submit runtime/flow/catalog definitions or grant
+cross-project context. Token, Host, Origin, body limits and existing source and
+private-store authorization remain the enforcers. Read-only contexts retain
+the allowlist without activating LiveRuns. An attached LiveRuns owns the same
+index list used by config and preview, including an explicitly empty allowlist
+that must never widen to the current directory. Reads and previews allocate no
+session/queue/lease, start no subprocess/model/discovery, and write no store bytes.
+
+The browser copies the exact quoted CLI command and invalidates it when inputs
+change. Recorded process/work/outcome, review, verification and selected-session
+coverage remain separate; historical artifacts and acceptance receipts do not
+probe the current workspace. Implementing a validated plan opens an explicit
+follow-up form, never launches. Equivalent commands use the ordinary CLI and
+produce legacy records without structured starter provenance; the result panel
+discloses that absence instead of hiding the run or inventing source evidence.
+Only `garuda starter run` recompiles and persists that starter record. P2
+introduces no HTTP start route or flow-check
+phase and can land independently of P1b; P3 execution stays separately gated.
+
+## 2026-10-08 — Keep supported MCP dependencies importable
+
+The declared dependency range caps Pydantic below 2.14, which removed
+`eval_type_backport` imported by the supported MCP 1.19 release during package
+initialization. A clean environment reproduced the import failure with MCP 1.19,
+Pydantic 2.14 and pydantic-settings 2.15; changing only Pydantic to 2.13.5 restored
+the client, HTTP transport, server and settings imports. Measurement constraints
+also pin Pydantic 2.13.5. This bounds user installs as well as the CI gate; raising
+the cap requires a verified MCP upgrade and both transport contracts, rather than
+patching vendor internals or suppressing MCP collection failures.

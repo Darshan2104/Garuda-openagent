@@ -1,6 +1,6 @@
 # Versions this tree's results were produced and its suite verified under.
 #
-# pyproject deliberately lower-bounds its dependencies: as a library, garuda
+# pyproject declares compatible dependency ranges: as a library, garuda
 # should install alongside whatever a host application already has. That is the
 # right contract for a dependency and the wrong one for a benchmark run, where an
 # upstream release can move a number nobody changed. litellm is the pointed
@@ -17,13 +17,15 @@
 # upstream release has broken something, and is expected to be the noisier of
 # the two. Both print `pip freeze`; the diff against this file is the finding.
 #
-# Regenerate with: pip freeze | grep -iE '^(litellm|pyyaml|jsonschema|mcp|pytest|pytest-asyncio|harbor|pypdf|openpyxl|mkdocs|mkdocs-material|rich)=='
+# Regenerate with: pip freeze | grep -iE '^(litellm|pyyaml|jsonschema|mcp|pydantic|pytest|pytest-asyncio|harbor|pypdf|openpyxl|mkdocs|mkdocs-material|rich)=='
 # Last verified: 2026-07-31, Python 3.12.
 
 litellm==1.87.0
 PyYAML==6.0.2
 jsonschema==4.25.1
 mcp==1.19.0
+# MCP 1.19's import-time use of eval_type_backport breaks with Pydantic 2.14.
+pydantic==2.13.5
 
 # dev
 pytest==8.4.2

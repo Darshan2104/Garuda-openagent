@@ -27,6 +27,10 @@ dependencies = [
     # than shipping a guessed one. Raise it deliberately, with an HTTP MCP server to
     # verify against.
     "mcp>=1.9.0,<2",
+    # MCP 1.19 imports eval_type_backport from Pydantic internals; 2.14 removed it.
+    # Keep the supported MCP range importable for plain user installs as well as CI.
+    # Raise this cap with a verified MCP upgrade, including the HTTP transport.
+    "pydantic>=2.11,<2.14",
 ]
 
 [project.optional-dependencies]

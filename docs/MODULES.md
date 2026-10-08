@@ -390,7 +390,8 @@ options and the shell-quoted equivalent existing command. Role agent definitions
 bind through `agents/role_agent.py`'s pure resolver; their source digests are part
 of the preview identity. It grants no
 authority and starts nothing. The CLI exposes this compiler through
-`interfaces/scenario_cli.py`; dashboard interfaces remain follow-on work.
+`interfaces/scenario_cli.py` and the read-only dashboard transport
+`interfaces/web/scenarios.py`.
 
 `examples.py::materialize_reconnect` copies installed resources into an
 exclusively new selected directory outside existing repositories and initializes
@@ -418,6 +419,17 @@ starter hashing shared by compilation and recorded-input validation.
 `service.py::StarterService` adds a pure library, preview and explicit Build and
 check compilation. Listing needs no invented task inputs; preview and readiness
 share the same resolved configuration/role plans via `compile_with_context`.
+`interfaces/web/scenarios.py` serves the installed library/detail, pure POST
+preview, and shared selected results behind existing dashboard authorization.
+It accepts allowlisted workspace indices and strict unique-key field JSON;
+request definitions and cross-project grants are refused. Read-only contexts
+retain the same workspace list without creating `LiveRuns`.
+`DashboardContext.allowed_workspaces` uses the live owner's list when attached,
+including an empty list, for both configuration and preview enforcement.
+The plain-script
+`static/views_scenarios.js` owns Starters forms, preview/copy, stale-response
+invalidation, and the result panel reused by session/native-trace views. An
+implementable plan opens an explicit follow-up form; there is no start route.
 The static Setup projection is `core/setup_view.py::configuration`; full
 `setup()` also performs discovery probes and is not used here. Readiness calls
 `flows/review.py::check_independent` directly and honors the effective flow's
