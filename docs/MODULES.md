@@ -379,6 +379,31 @@ escaping, symlinked or stale inputs. `review.py` (C.7) parses the bounded review
 `run_agent_task` and ACP steps through `run_acp_task`, each borrowing the flow's
 lease.
 
+## `scenarios/` — packaged starters and read-only compilation
+
+`catalog.py` loads strict version-1 definitions, briefs and example inputs from
+installed package resources, independently of `garuda.yaml`; it never loads a
+project catalog. `compile.py::compile_scenario` produces a serializable
+`types.py::LaunchPlan`: labelled task, effective flow/role bindings, original
+redacted structured inputs, source/configuration digests, explicit supported
+options and the shell-quoted equivalent existing command. Role agent definitions
+bind through `agents/role_agent.py`'s pure resolver; their source digests are part
+of the preview identity. It grants no
+authority and starts nothing. Reviewer readiness and starter launch interfaces
+are separate follow-on work.
+
+`inputs.py` owns typed fields/options and delivery limits (32,768 characters per
+text field; 128,000 characters/512,000 UTF-8 bytes for the final escaped task).
+Required input is refused rather than clipped. `sources.py` handles at most
+16 references: file paths/sections contained in the workspace, hashed through
+regular-file descriptor reads (16 MiB maximum per file), and session refs.
+Session refs use `context/tags.py::resolve(read_only=True)` under the existing
+cross-project user grant and `brief.py`'s redaction/shared budget. The read-only
+tag path uses `core/project_identity.py::existing_project_id`: existing key
+only, no lock/allocation/repair or filesystem-identity Git probe. Brief checks
+are not claimed current in preview. Full plan-artifact handoff is separate;
+the `pair` variant refuses until that mechanism is implemented.
+
 ## `eval/` — measurement, outside the agent
 
 `harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),

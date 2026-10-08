@@ -1,0 +1,1 @@
+Answer the supplied question from the named sources using your authorized tools. Separate source facts from your own inference and cite paths or session references. This is a no-edits run on the live checkout; an unrelated writer can cause output withholding. Prefer an idle checkout for a stable answer.

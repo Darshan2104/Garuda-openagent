@@ -1,0 +1,28 @@
+version: 1
+id: plan-change
+title: Plan a scoped change
+launch:
+  kind: flow
+  flow: plan-only
+fields:
+  goal:
+    type: text
+    required: true
+    label: Goal
+  requirements:
+    type: text
+    required: false
+    label: Requirements
+  exclude:
+    type: text
+    required: false
+    label: Out of scope
+  constraints:
+    type: text
+    required: false
+    label: Constraints to preserve
+  sources:
+    type: source-refs
+    label: Sources
+brief: plan-change
+example: reconnect-change

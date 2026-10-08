@@ -1,0 +1,1 @@
+Plan a bounded change using the existing implementation. Produce a work breakdown, likely files, scope risks, open questions and proposed validation. Preserve the supplied requirements, exclusions and constraints. Proposed validation is advice; no checks are run by this planning task.

@@ -1,0 +1,35 @@
+version: 1
+id: build-review
+title: Build with an independent review
+launch:
+  kind: flow
+  flow: plan-build-review
+  variants:
+    plan-build-review: plan-build-review
+    pair: pair
+fields:
+  goal:
+    type: text
+    required: true
+    label: Goal
+  requirements:
+    type: text
+    required: false
+    label: Requirements
+  exclude:
+    type: text
+    required: false
+    label: Out of scope
+  constraints:
+    type: text
+    required: false
+    label: Constraints to preserve
+  variant:
+    type: text
+    required: false
+    label: Flow variant
+  sources:
+    type: source-refs
+    label: Sources
+brief: build-review
+example: reconnect-build

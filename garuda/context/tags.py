@@ -64,10 +64,11 @@ def mentions(text: str) -> list[str]:
     return found
 
 
-def _project(store, workspace):
-    from garuda.core.project_identity import project_identity
+def _project_id(store, workspace, *, read_only):
+    from garuda.core.project_identity import existing_project_id, project_identity
 
-    return project_identity(store.root, workspace)
+    return (existing_project_id(store.root, workspace) if read_only else
+            project_identity(store.root, workspace).project_id)
 
 
 def _meta(store, session_id):
@@ -98,11 +99,12 @@ def resolve(
     allow_cross_project: bool = False,
     confirm: Callable[[Brief], bool] | None = None,
     exclude: str | None = None,
+    read_only: bool = False,
 ) -> list[Tag]:
-    """Resolve every tag for a run, or refuse before anything is prompted."""
+    """Resolve tags under existing grants; read_only never allocates identity."""
     if not (with_refs or with_ids or mentions(text)):
         return []  # nothing tagged: no project lookup at all
-    ident = _project(store, workspace)
+    project_id = _project_id(store, workspace, read_only=read_only)
     tags: dict[str, Tag] = {}
 
     def add(tag: Tag) -> None:
@@ -110,11 +112,11 @@ def resolve(
             tags[tag.session_id] = tag
 
     for ref in with_refs:
-        sid = _by_name(store, ident.project_id, ref)
+        sid = _by_name(store, project_id, ref)
         if sid is None and _FULL_ID.match(ref or ""):
             meta = _meta(store, ref)
             if meta is not None:
-                if meta.get("project_id") != ident.project_id:
+                if meta.get("project_id") != project_id:
                     raise TagError(
                         "session.cross_project_context_denied",
                         f"{ref} belongs to another project; use --with-id with "
@@ -123,19 +125,19 @@ def resolve(
                 sid = ref
         if sid is None:
             raise TagError("session.tag_unknown", f"no session named {ref!r} in this project")
-        add(Tag(sid, (_meta(store, sid) or {}).get("name"), ident.project_id, False, "flag"))
+        add(Tag(sid, (_meta(store, sid) or {}).get("name"), project_id, False, "flag"))
 
     for name in mentions(text):
-        sid = _by_name(store, ident.project_id, name)
+        sid = _by_name(store, project_id, name)
         if sid is not None:
-            add(Tag(sid, name, ident.project_id, False, "mention"))
+            add(Tag(sid, name, project_id, False, "mention"))
 
     for full_id in with_ids:
         meta = _meta(store, full_id) if _FULL_ID.match(full_id or "") else None
         if meta is None:
             raise TagError("session.tag_unknown", f"no session with id {full_id!r}")
-        if meta.get("project_id") == ident.project_id:
-            add(Tag(full_id, meta.get("name"), ident.project_id, False, "flag"))
+        if meta.get("project_id") == project_id:
+            add(Tag(full_id, meta.get("name"), project_id, False, "flag"))
             continue
         if allow_cross_project:
             provenance = "cross-project-flag"

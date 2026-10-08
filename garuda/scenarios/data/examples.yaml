@@ -1,0 +1,34 @@
+version: 1
+examples:
+  reconnect-change:
+    starter: plan-change
+    inputs:
+      goal: Add reconnect status using the current client
+      exclude: Transport rewrite
+      constraints: Preserve retry behavior
+  reconnect-feedback:
+    starter: plan-feedback
+    inputs:
+      feedback: Explain when reconnecting becomes connected
+      current: Status is unclear
+      desired: Status follows the existing retry lifecycle
+      constraints: Preserve retry behavior
+  reconnect-build:
+    starter: build-review
+    inputs:
+      goal: Add reconnect status
+      requirements: Cover state transitions with deterministic tests
+      exclude: Transport rewrite
+  reconnect-role:
+    starter: run-with-role
+    inputs:
+      goal: Add reconnect status
+      role: coder
+      options:
+        name: reconnect-status
+        checks:
+        - pytest -q
+  reconnect-question:
+    starter: ask-role
+    inputs:
+      question: Can reconnect status use the current retry client?

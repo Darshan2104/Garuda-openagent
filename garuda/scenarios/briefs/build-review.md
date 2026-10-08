@@ -1,0 +1,1 @@
+Implement the supplied bounded change with the configured flow roles and review policy. Preserve requirements, exclusions and constraints. Emit the typed artifacts required by each step. A review outcome is separate from verification; this flow has no acceptance-check phase in this release.
