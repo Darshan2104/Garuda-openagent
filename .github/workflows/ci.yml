@@ -96,6 +96,7 @@ jobs:
           /tmp/wheel-venv/bin/python -c "import garuda.model.factory, garuda.interfaces.main"
           /tmp/wheel-venv/bin/python -c "from garuda.scenarios.catalog import load_catalog; assert set(load_catalog()) == {'plan-change', 'plan-feedback', 'build-review', 'run-with-role', 'ask-role'}"
           /tmp/wheel-venv/bin/garuda --help > /dev/null
+          /tmp/wheel-venv/bin/garuda starter example reconnect /tmp/reconnect-wheel-example
 
   docs-contract:
     # Issue #9 (P0.3): fail on broken local docs links, nested READMEs,

@@ -200,7 +200,7 @@ that the model read each supplied source or that its answer is correct. Inspect
 coverage; limited pages, damaged receipts/journals/artifacts, missing child
 identities and unknown schemas remain incomplete. Artifacts describe historical
 bytes. Reading a result probes no active process, Git, model or network and
-starts no action. Context sources such as `--source @session-name` reuse existing
+starts no action. Context sources such as `--source session:session-name` reuse existing
 project authorization; a cross-project brief requires the explicit user grant.
 Full plan handoffs remain same-project even with that grant.
 
