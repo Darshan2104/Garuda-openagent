@@ -145,6 +145,8 @@ nav:
           - Agent definitions: design/2026-10-01-agent-definitions-design.md
       - Implementation plans:
           - plans/index.md
+          - Ready-to-use workflow scenarios: plans/2026-10-06-ready-to-use-workflow-scenarios.md
+          - Starter P0 contracts: plans/2026-10-07-starter-p0-contracts.md
           - Dual-model delegation and routing: plans/2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md
           - Collection forced terminal submission: plans/2026-09-29-collection-forced-terminal-submission-implementation.md
           - Paired-trial report CLI: plans/2026-09-29-paired-trial-report-cli-implementation.md
