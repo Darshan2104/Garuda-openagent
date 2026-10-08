@@ -529,9 +529,10 @@ class FlowRunner:
                 self.store.update_meta(self.flow_session, {"review": {
                     "status": "review_not_independent", "rounds": pair + 1, "history": history,
                     "independence": independence}})
-                raise FlowStopped("flow.review_not_independent",
-                                  "the reviewer shares an identity with what actually ran or "
-                                  "was consulted for the reviewed step", step=terminal["id"])
+                why = independence.get("identity_error") or (
+                    "the reviewer shares an identity with what actually ran or "
+                    "was consulted for the reviewed step")
+                raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
             if parsed.approved:
                 self.store.update_meta(self.flow_session, {"review": {
                     "status": "review_approved", "rounds": pair + 1, "history": history,

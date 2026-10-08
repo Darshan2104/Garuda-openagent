@@ -260,3 +260,31 @@ async def test_waiver_preserves_canonical_or_unknown_identity_evidence(repo, unr
         assert evidence['reviewed']['configured'] is None and 'missing' in evidence['identity_error']
     else:
         assert evidence['reviewed']['configured'] == [{'runtime': 'native', 'model_id': 'c/1'}, {'runtime': 'native', 'model_id': 'r/1'}]
+
+
+async def test_required_review_stops_if_identity_evidence_is_lost_after_launch(repo):
+    config = _config()
+    config['roles']['advisor'] = {'harness': 'native', 'model_id': 'a/1'}
+    config['roles']['coder']['consult'] = ['advisor']
+    script = Script([APPROVE])
+
+    async def launch(request):
+        result = await script(request)
+        if request.step_id == 'review':
+            # The configured identities were provable at admission. Losing that
+            # evidence during execution must not turn an approval into success.
+            runner.resolved.config['roles']['advisor']['harness'] = 'missing-after-launch'
+        return result
+
+    runner = _run(repo, launch, config)
+    result = await runner.run()
+    assert not result.completed and result.stopped.code == 'flow.review_not_independent'
+    assert 'cannot prove review independence' in str(result.stopped)
+    assert 'missing-after-launch' in str(result.stopped)
+    assert script.sequence == [('plan', 1), ('build', 1), ('review', 1)]
+    review = SessionStore().load_meta(result.flow_session)['review']
+    assert review['status'] == 'review_not_independent'
+    evidence = review['independence']
+    assert evidence['policy'] == 'required' and evidence['decision'] == 'unknown'
+    assert evidence['reviewed']['configured'] is None
+    assert evidence['reviewed']['launched'] == [{'runtime': 'native', 'model_id': 'c/1'}]
