@@ -144,6 +144,7 @@ nav:
           - Documentation refresh: design/2026-09-30-documentation-refresh-design.md
           - Teams and sessions: design/2026-10-01-teams-and-sessions-design.md
           - Agent definitions: design/2026-10-01-agent-definitions-design.md
+          - Flow verification ownership (proposed): design/2026-10-08-flow-verification-ownership-design.md
       - Implementation plans:
           - plans/index.md
           - Ready-to-use workflow scenarios: plans/2026-10-06-ready-to-use-workflow-scenarios.md
