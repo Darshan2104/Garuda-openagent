@@ -80,6 +80,12 @@ fastest way to learn the system.
    immutable AgentSpec through the shared role source selector, retaining source
    identity across named definition changes and snapshot workspace execution.
    Existing flow lease, no-edits, model and completion owners remain in control.
+   `flows/service.py::FlowExecutionService` provides shared asynchronous
+   `run(name, task, workspace)` and `resume(flow_session)` orchestration. It
+   resolves the effective flow and missing-role preflight, then delegates to
+   `FlowRunner`; the CLI renders the returned outcome and recorded review/state
+   evidence. Lease ownership, typed artifacts and recovery stay in the engine.
+   This facade adds no checks parameter or flow verification phase.
    Native consult quiescence normalizes ordinary synchronous/asynchronous
    failures to a typed snapshot refusal before capture; existing predispatch
    settlement refunds admission and releases that reservation. Typed refusals,

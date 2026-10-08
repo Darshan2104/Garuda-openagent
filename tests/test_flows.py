@@ -320,29 +320,44 @@ def test_a_flow_runs_from_the_cli_with_acp_roles(repo, tmp_path, monkeypatch, ca
     assert "[garuda] plan: done" in out and "[garuda] build: done" in out
     flow_id = json.loads(out.strip().splitlines()[-1])["flow_session"]
     code, out = _main(monkeypatch, capsys, "flow", "show", flow_id)
+    assert code == 0
     assert "plan (attempt 1): done; outputs: plan" in out
     steps = [m for m in SessionStore().list_sessions() if m.get("flow_step")]
     assert {m["flow_step"]["step"] for m in steps} == {"plan", "build"}
+    code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+    assert code == 0
+    assert json.loads(out.strip().splitlines()[-1])["flow_session"] == flow_id
+    assert {m["session_id"] for m in SessionStore().list_sessions() if m.get("flow_step")} == {
+        m["session_id"] for m in steps}
 
 
-async def test_resuming_after_a_failed_step_runs_a_new_attempt(repo):
+def test_resuming_a_failed_flow_through_cli_runs_a_new_attempt(repo, monkeypatch, capsys):
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(gy.dump(CONFIG))
+
     async def failing(launch):
         return StepResult(str(uuid.uuid4()), False, "")
 
-    runner = _runner(repo, Fake(repo, {"plan": _plan, "build": failing}))
-    first = await runner.run()
-    assert first.stopped.code == "flow.step_failed"
+    monkeypatch.setattr("garuda.flows.launch.launch_step", Fake(repo, {"plan": _plan, "build": failing}))
+    code, out = _main(monkeypatch, capsys, "flow", "run", "pbr", "-t", "ship it",
+                      "--workspace", str(repo))
+    assert code == 3 and "flow.step_failed" in out
+    flow_id = next(m["session_id"] for m in SessionStore().list_sessions() if m.get("flow"))
 
     async def build(launch):
         assert launch.attempt == 2
         return StepResult(str(uuid.uuid4()), True, _block("patch", "x"))
 
     fake = Fake(repo, {"build": build})
-    resumed = await _runner(repo, fake, flow_session=first.flow_session).run(resume=True)
-    assert resumed.completed and [launch.step_id for launch in fake.launches] == ["build"]
-    attempts = [(r["step"], r["attempt"], r["status"]) for r in resumed.receipts]
+    monkeypatch.setattr("garuda.flows.launch.launch_step", fake)
+    code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+    assert code == 0 and [launch.step_id for launch in fake.launches] == ["build"]
+    assert json.loads(out.strip().splitlines()[-1]) == {"flow_session": flow_id, "state": "completed"}
+    receipts = engine.receipts(SessionStore(), flow_id)
+    attempts = [(r["step"], r["attempt"], r["status"]) for r in receipts]
     assert attempts == [("plan", 1, "done"), ("build", 1, "stopped"), ("build", 2, "done")]
-    sessions = {r["session_id"] for r in resumed.receipts}
+    sessions = {r["session_id"] for r in receipts}
     assert len(sessions) == 3  # every attempt is its own session
 
 
