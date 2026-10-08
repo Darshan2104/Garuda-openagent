@@ -389,8 +389,8 @@ redacted structured inputs, source/configuration digests, explicit supported
 options and the shell-quoted equivalent existing command. Role agent definitions
 bind through `agents/role_agent.py`'s pure resolver; their source digests are part
 of the preview identity. It grants no
-authority and starts nothing. Starter CLI/dashboard launch interfaces are
-separate follow-on work.
+authority and starts nothing. The CLI exposes this compiler through
+`interfaces/scenario_cli.py`; dashboard interfaces remain follow-on work.
 
 `handoff.py` provides one read-only plan selection path for both feedback and
 `build-review`'s `pair` variant. `FLOW:STEP:ATTEMPT` must identify a completed
@@ -442,7 +442,37 @@ cross-project user grant and `brief.py`'s redaction/shared budget. The read-only
 tag path uses `core/project_identity.py::existing_project_id`: existing key
 only, no lock/allocation/repair or filesystem-identity Git probe. Brief checks
 are not claimed current in preview. Full plan-artifact handoff is separate;
-the `pair` variant refuses until that mechanism is implemented.
+the `pair` variant requires its validated explicit same-project producer reference.
+
+
+### Starter execution and results (#308)
+
+`scenarios/service.py::StarterService.start` recompiles approved inputs against
+current sources/configuration and checks readiness before dispatch. It records
+`LaunchPlan.launch_metadata()` through the existing session/flow owner.
+`agents/requests.py` translates the compiler's quoted equivalent command into
+existing parser arguments, never a shell invocation. Foreground role setup has
+one owner in `interfaces/role_execution.py`; `main.run_task` delegates to it.
+Background serialization preserves starter metadata and the actual admitted
+session ID/store, and the worker revalidates the frozen request after waiting
+for capacity, before runtime dispatch. ACP worktrees use `session_service.choose_workspace` and its
+cleanup contract; flow child launches use their parent's selected store.
+
+`core/read_model.py::starter_result` delegates selected evidence projection to
+`core/starter_read_model.py`, with selected record validation in
+`core/starter_evidence.py`. The shared flow view accepts already validated
+receipts, preserving its attempt/edge projection. `core/session_records.py`
+provides bounded, no-follow metadata/journal reads shared with handoff validation.
+The result includes existing inline acceptance receipts and separates
+process/work/outcome, review/policy and acceptance evidence,
+reports partial coverage, and validates full historical artifacts through the
+existing artifact loader. It never probes Git, liveness, a model or network;
+active-owner state is disclosed as unprobed. Stored summaries may be clipped and
+withheld output stays withheld. The handoff owner validates an offered explicit
+implement-plan command; reading results starts nothing. Effective review policy
+is recorded at flow begin so an explicit waiver remains visible even before a
+reviewer runs. P1a flows still have no acceptance-check phase.
+
 
 ## `eval/` — measurement, outside the agent
 

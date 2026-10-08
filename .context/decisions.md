@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-10-07 — Starter launch reuses execution owners (#308)
+
+- Start recompiles structured inputs/current sources and configuration before
+  admission, compares the approved preview digest, and persists starter metadata
+  through authoritative session/flow owners. Shared role setup dispatches native
+  and ACP work; background, capacity, worktree, no-edits and acceptance lifecycle
+  remain with existing owners. External coding agents remain behind ACP.
+- Result reads project bounded selected-session evidence without Git, process,
+  model or network probes. Historical artifact validation does not certify the
+  current workspace. Partial or unreadable evidence remains unknown; stored
+  summaries may be clipped, full plans are not clipped, and withheld output
+  remains withheld. Next actions are suggestions requiring explicit invocation.
+- Record effective flow review policy before steps begin so user-authored
+  waivers remain visible on early failure. Review is distinct from verification;
+  P1a flows have no acceptance-check phase. The CLI registers the example command;
+  example materialization belongs to the release follow-up (#309).
+
 ## 2026-10-07 — Plan handoff preserves approved source scope (#307)
 
 - Full-plan sharing is explicit and same-project in v1, independent of existing

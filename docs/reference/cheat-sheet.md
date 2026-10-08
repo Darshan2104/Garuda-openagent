@@ -164,6 +164,29 @@ garuda runtime resume --session latest -t "Continue natively"
 garuda runtime support --session latest
 ```
 
+## Packaged starters
+
+```bash
+garuda starter --help
+garuda starter list --workspace . --json
+garuda starter show plan-change --workspace .
+garuda starter run plan-change --goal "Explain reconnect status" --constraints "Keep retry behavior" --workspace . --preview
+garuda starter run plan-feedback --feedback "Explain the unavailable state" --workspace . --preview
+garuda starter run build-review --goal "Add reconnect status" --workspace . --preview
+garuda starter run run-with-role --goal "Add reconnect status" --role coder --check "pytest -q" --workspace . --preview
+garuda starter run ask-role --question "Where is reconnect behavior defined?" --workspace . --preview
+garuda starter result SESSION --workspace . --json
+```
+
+Replace `SESSION` with a full ID or a name from that project. Drop `--preview`
+only when ready to start; results and previews never start follow-up work.
+Review and acceptance verification are separate. Flow verification remains
+unavailable in this phase; role `--check` uses existing acceptance receipts.
+
+The example command is registered for the release/examples follow-up (#309):
+`garuda starter example reconnect ./garuda-reconnect-example`. Until then it
+returns a typed unavailable error and creates no files.
+
 ## Files Garuda reads
 
 | Path | What it is |

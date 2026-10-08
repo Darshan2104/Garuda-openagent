@@ -183,6 +183,8 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
                 workspace=os.path.realpath(args.workspace),
                 name=getattr(args, "name", None))
     directory = store.session_dir(session_id)
+    if getattr(args, "starter_record", None) is not None:
+        store.update_meta(session_id, {"starter": args.starter_record})
     digest = _admission_digest(description, binding)
     _write_private(directory / LAUNCH_FILE, {"version": 1, "args": description,
                                              "config_digest": digest})
@@ -192,7 +194,8 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
     queue.enqueue(scope, session_id, harness=harness, session_id=session_id,
                   config_digest=digest)
     try:
-        process = (spawn or _spawn_worker)(session_id)
+        process = (spawn(session_id) if spawn is not None else
+                   _spawn_worker(session_id, store_root=store.root))
     except BaseException:
         queue.cancel(scope, session_id)
         store.update_meta(session_id, {"status": "failed", "state": session_state.interrupted()})
@@ -215,11 +218,14 @@ def worker_record(process) -> dict:
     return {"pid": process.pid, "identity": identity, "pgid": process.pid, "command": command}
 
 
-def _spawn_worker(session_id: str) -> subprocess.Popen:
+def _spawn_worker(session_id: str, *, store_root: Path | None = None) -> subprocess.Popen:
+    env = dict(os.environ)
+    if store_root is not None:
+        env["GARUDA_SESSIONS_DIR"] = str(store_root.resolve())
     return subprocess.Popen(
         [sys.executable, "-m", "garuda.interfaces.main", WORKER_COMMAND, session_id],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True, close_fds=True, env=dict(os.environ))
+        start_new_session=True, close_fds=True, env=env)
 
 
 # --- the worker --------------------------------------------------------------------------
@@ -271,6 +277,7 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
     args.bg = False
     args._session_id = session_id
     args._queue_claim = True
+    args._store = store
     admission = next((entry for entry in queue.entries() if entry["id"] == session_id), None)
     if admission is None:
         return 0  # A queued cancellation removed the admission before this worker started.
@@ -311,6 +318,12 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
                 return 0
             await asyncio.sleep(delay)
             delay = min(delay * 2, poll_max)
+        if getattr(args, "starter_record", None) is not None:
+            from garuda.scenarios.service import StarterService
+
+            # A source may change while capacity is unavailable. This runs
+            # after waiting, before dispatch intent or any runtime exists.
+            StarterService(store).validate_record(args.starter_record, args.task, args.workspace)
         # Persist launch intent before any runtime can start, including an
         # unlimited harness. Death after this point quarantines the slot.
         queue.begin_dispatch(scope, session_id, owner)

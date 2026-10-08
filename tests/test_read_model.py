@@ -283,3 +283,40 @@ def test_a_bad_resume_id_or_session_is_refused(world):
     assert call(ctx, f"/api/sessions/{ids['done']}/stream", query="last_event_id=abc").status == 400
     assert call(ctx, f"/api/sessions/{ids['done']}/stream", query="last_event_id=-5").status == 400
     assert call(ctx, "/api/sessions/does-not-exist/stream").status == 404
+
+
+@pytest.mark.parametrize('damage', ['none', 'corrupt', 'symlink'])
+def test_starter_projection_preserves_unknown_approval_evidence(world, tmp_path, damage):
+    store, _queue, ids = world
+    path = store.session_dir(ids['waiting']) / 'approvals' / 'a1.request.json'
+    if damage == 'corrupt':
+        path.write_text('{unfinished')
+    elif damage == 'symlink':
+        target = tmp_path / 'outside-approval.json'
+        target.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(target)
+    row = read_model.starter_result(store, ids['waiting'])
+    assert row['coverage']['complete'] == (damage == 'none')
+    if damage == 'none':
+        assert row['approvals'][0]['approval_id'] == 'a1'
+        assert row['next_action']['command'] == 'garuda approvals list ' + ids['waiting']
+    else:
+        assert row['approvals_evidence']['status'] == 'unknown'
+        assert row['next_action']['id'] == 'inspect-records'
+
+
+def test_starter_result_does_not_verify_from_missing_or_disagreeing_inline_receipts(world):
+    store, _queue, ids = world
+    sid = ids['done']
+    state = session_state.finished(success=True)
+    state['verification'] = {'status': 'passed', 'authority': 'user-request'}
+    store.update_meta(sid, {'state': state})
+    for receipt in (None, [], [{'run': 'false', 'authority': 'user-request', 'status': 'failed', 'exit_code': 1}],
+                    [{'run': 'true', 'authority': 'user-request', 'status': 'passed', 'exit_code': 1, 'fingerprint': 'f' * 16}]):
+        if receipt is not None:
+            store.update_meta(sid, {'acceptance_receipts': receipt})
+        row = read_model.starter_result(store, sid)
+        assert row['state']['outcome'] == 'completed'
+        assert row['verification']['status'] == 'unknown' and not row['coverage']['complete']
+        assert row['next_action']['id'] == 'inspect-records'

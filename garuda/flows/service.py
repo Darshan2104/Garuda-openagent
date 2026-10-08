@@ -27,8 +27,9 @@ class FlowExecutionService:
     def __init__(self, store: SessionStore | None = None):
         self.store = store if store is not None else SessionStore()
 
-    async def run(self, name: str, task: str, workspace: str) -> FlowExecutionResult:
-        return await self._execute(name, task, workspace)
+    async def run(self, name: str, task: str, workspace: str, *,
+                  starter_record: dict | None = None) -> FlowExecutionResult:
+        return await self._execute(name, task, workspace, starter_record=starter_record)
 
     async def resume(self, flow_session: str) -> FlowExecutionResult:
         meta = self.store.load_meta(flow_session)
@@ -36,7 +37,8 @@ class FlowExecutionService:
                                    flow_session=flow_session)
 
     async def _execute(self, name: str, task: str, workspace: str, *,
-                       flow_session: str | None = None) -> FlowExecutionResult:
+                       flow_session: str | None = None,
+                       starter_record: dict | None = None) -> FlowExecutionResult:
         from garuda.flows.launch import launch_step
 
         resolved = load_effective(workspace)
@@ -52,7 +54,8 @@ class FlowExecutionService:
                 f"{', '.join(packaged.required_roles(flow))}; define "
                 f"{', '.join(missing)} in garuda.yaml (`garuda init` proposes them)")
         runner = engine.FlowRunner(self.store, workspace, name, flow, resolved, task=task,
-                                   launcher=launch_step, flow_session=flow_session)
+                                   launcher=launch_step, flow_session=flow_session,
+                                   starter_record=starter_record)
         result = await runner.run(resume=flow_session is not None)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))

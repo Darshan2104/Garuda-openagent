@@ -11,6 +11,10 @@ for your installed version. For ready-made examples, see the
 | Run tasks | `garuda run -t "…"` | Execute one headless task |
 | | `garuda chat` | Interactive session with `y/N` permission prompts |
 | | `garuda recipe run file.yaml` | Execute a YAML workflow |
+| Starters | `garuda starter list [--workspace DIR] [--json]` | Discover the five packaged starters and configured readiness |
+| | `garuda starter show ID [--workspace DIR] [--json]` | Inspect fields, supported options, and readiness |
+| | `garuda starter run ID ... [--preview] [--json]` | Compile current inputs and sources; preview or explicitly launch through existing flow/role owners |
+| | `garuda starter result SESSION [--workspace DIR] [--json] [--limit N] [--offset N]` | Read selected session evidence, coverage, and an explicit next action |
 | Sessions | `garuda sessions [--json]` | List recent sessions with state and queue position; `--json` is the same model the dashboard serves |
 | | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
 | | `garuda sessions cancel S` | Stop a background session: remove it from the queue before it starts, or stop its running worker |
@@ -222,3 +226,58 @@ Add `--require-passing-gates` when a valid report with failed rollout gates must
 exit non-zero, and `--evidence-scores FILE` to include independent quality
 scores (JSON). See [dual-model evaluation](../evaluation/dual-model-routing.md)
 for the manifest and a full example.
+
+
+## Starters
+
+`plan-change --goal TEXT` and `plan-feedback --feedback TEXT` run the packaged
+`plan-only` flow. They accept requirements, exclusions (`--exclude`), constraints,
+and repeated `--source` references. Feedback also accepts `--current` and
+`--desired`. `build-review --goal TEXT` runs `plan-build-review`; its `--variant pair` requires an explicit `--plan-artifact FLOW:STEP:ATTEMPT`. Feedback can use the
+same reference. Full validated plans and earlier approved constraints are
+included in the actual task; neither preview nor result reading starts work.
+
+```bash
+garuda starter run plan-change --goal "Explain reconnect status" --constraints "Keep retry behavior" --workspace . --preview
+garuda starter run plan-feedback --feedback "Explain the unavailable state" --workspace . --preview
+garuda starter run build-review --goal "Add reconnect status" --workspace . --preview
+garuda starter run run-with-role --role coder --goal "Add reconnect status" --check "pytest -q" --workspace . --preview
+garuda starter run ask-role --question "Where is reconnect behavior defined?" --workspace . --preview
+```
+
+`run-with-role --goal TEXT` defaults to the configured coder and accepts `--role`,
+`--name`, `--isolation shared|worktree|auto`, `--bg`, and repeated `--check`.
+It uses existing native/ACP execution, capacity, background queue, worktree, and
+acceptance owners. A worktree starts from committed source history; uncommitted
+source edits are retained in the source checkout. `ask-role --question TEXT`
+defaults to the reviewer, uses the existing no-edits guard in the live checkout,
+and accepts `--role`, `--name`, and repeated `--source` references. Output withheld
+by that guard stays withheld in the result. Use an idle checkout for questions.
+
+Sources are repository-relative paths (optionally `#section`), `session:NAME`,
+or `session-id:FULL_ID`. Cross-project briefs require the explicit
+`--allow-cross-project-context` flag; full-plan handoffs remain same-project.
+Files are named context references with digests: supplied context does not prove
+that a runtime read a file. `--preview` performs no process, model, network,
+admission, or store write. Start recompiles and revalidates before dispatch. Background workers revalidate
+again after waiting for capacity, using the recorded explicit context grant.
+Unsupported options refuse, including flow `--check` in this release.
+
+JSON runs put runtime progress on stderr and one result document on stdout.
+Results separate stored process/work/outcome, review and its independence policy,
+and verification. Flow verification is `unavailable`; a review is not an
+acceptance receipt. Role runs include their existing inline acceptance receipts. Missing or
+disagreeing receipt evidence remains unknown; the recorded execution outcome
+stays separate. This is historical evidence, without a current workspace probe.
+Stored summaries may be clipped by the existing session owner; validated plan
+artifacts are shown in full after redaction. Artifact validation describes
+historical bytes, without probing the current workspace or active process.
+Use a full session ID, or a project session name with `--workspace DIR`.
+Coverage concerns the selected session only. Missing or damaged records and a
+limited page remain incomplete and offer inspection rather than an all-clear.
+An implement-plan command is offered only after the existing handoff owner
+validates the producer; invoking it remains an explicit user action.
+
+`garuda starter example reconnect DIR` is registered; materialization arrives
+with the release/examples follow-up (#309). Until then it returns a typed
+unavailable error without creating files.
