@@ -88,33 +88,41 @@ async def test_a_quarantined_consult_and_an_unreadable_receipt_are_visible(world
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text("capacity: {native: 1}\n")
     monkeypatch.setattr(svc, "REAP_GRACE", 0.2)
-    stop = asyncio.Event()
+    stop, entered = asyncio.Event(), asyncio.Event()
+    children = []
 
     async def stubborn(child):
+        children.append(asyncio.current_task())
+        entered.set()
         while not stop.is_set():
             try:
-                await asyncio.sleep(30)
+                await stop.wait()
             except asyncio.CancelledError:
-                await asyncio.sleep(0)
+                pass
 
-    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
-    with pytest.raises(ConsultRefused):
-        await ConsultService(world.store, resolved, runner=stubborn).consult(
-            request(world, request_id="stuck"))
-    (row,) = view.entries(world.store, world.asker)
-    assert row["status"] == "quarantined" and row["code"] == "consult.quarantined"
-    assert row["evidence"] == "state only" and row["changes"]["evidence"] == "unknown"
-    assert row["changes"]["unchanged"] is None  # unknown, not "unchanged"
+    consult = asyncio.create_task(ConsultService(world.store, make_resolved(), runner=stubborn).consult(
+        request(world, request_id="stuck")))
+    try:
+        # Visibility needs a dispatched child. A setup deadline can instead refund
+        # admission before launch, which correctly leaves no row to display.
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        consult.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(consult, timeout=5)
+        (row,) = view.entries(world.store, world.asker)
+        assert row["status"] == "quarantined" and row["code"] == "consult.quarantined"
+        assert row["evidence"] == "state only" and row["changes"]["evidence"] == "unknown"
+        assert row["changes"]["unchanged"] is None  # unknown, not "unchanged"
 
-    receipts = Path(world.store.root) / ".consult" / world.asker / "receipts"
-    receipts.mkdir(parents=True, exist_ok=True)
-    (receipts / "bad.json").write_text("{not json")
-    assert [r["status"] for r in view.entries(world.store, world.asker)] == ["quarantined"]
-    stop.set()
-    for task in asyncio.all_tasks():
-        if task is not asyncio.current_task() and "stubborn" in repr(task):
-            task.cancel()
-    await asyncio.sleep(0.1)
+        receipts = Path(world.store.root) / ".consult" / world.asker / "receipts"
+        receipts.mkdir(parents=True, exist_ok=True)
+        (receipts / "bad.json").write_text("{not json")
+        assert [r["status"] for r in view.entries(world.store, world.asker)] == ["quarantined"]
+    finally:
+        stop.set()
+        if not consult.done():
+            consult.cancel()
+        await asyncio.gather(consult, *children, return_exceptions=True)
 
 
 async def test_the_session_detail_and_the_cli_line_report_consults(world):

@@ -423,8 +423,13 @@ The static Setup projection is `core/setup_view.py::configuration`; full
 `flows/review.py::check_independent` directly and honors the effective flow's
 review policy: required collisions need setup; explicit user-authored waivers
 are labelled **review not independent**; an override without review says
-**no review**. Primary runtime IDs are canonical while configured fallback and
-consult aliases remain raw until the separate review-engine fix (#310).
+**no review**. Primary, fallback and configured consult aliases use the trusted
+registry retained by role resolution, without discovery. Unknown or disabled
+references cannot prove required independence. `RolePlan.identity_registry` is
+transient evidence, excluded from record/repr/equality, preserved through
+fallback selection and agent binding. Required review refuses unknown identities;
+waived review retains its policy and labels unresolved configured evidence
+unknown while preserving actual launched/consulted records.
 
 Readiness is configured preflight, not proof of future execution. Actual runtime
 version/options/login remain unprobed and cached login conclusions are historical;

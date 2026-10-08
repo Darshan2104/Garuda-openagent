@@ -179,7 +179,13 @@ sequenceDiagram
   verification.
 - The reviewer must be **independent**: it may not run as the same harness and
   model as the coder, one of the coder's fallbacks, or a role the coder may
-  consult. Otherwise the flow stops with `flow.review_not_independent`.
+  consult. Primary, fallback and configured consult aliases resolve to canonical
+  runtime IDs through the trusted role registry. Unknown or disabled identity
+  references cannot prove independence. Exact model IDs remain distinct; missing
+  IDs retain the harness-default semantics. Otherwise the flow stops with
+  `flow.review_not_independent`. An explicit `independent: false` waiver retains
+  `policy: waived`; unresolved configured evidence is labelled unknown, not an
+  independent review. Actual launched and consulted identities remain recorded.
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
   `garuda flow resume FLOW_ID` continues after the last finished step.
 

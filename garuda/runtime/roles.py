@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from garuda.agents.spec_api import AgentSpec
+    from garuda.runtime.registry import RuntimeRegistry
 
 #: (runtime id, adapter version) -> {role field: ACP config option id}, from
 #: the A.3 captures in tests/fixtures/acp/ where `session/set_config_option`
@@ -68,6 +69,10 @@ class RolePlan:
     instructions: str | None = None
     #: Native resolved source held for execution only; never serialized in record().
     agent_spec: AgentSpec | None = field(default=None, repr=False, compare=False)
+
+    #: Start-time trusted alias/disablement evidence, never persisted or compared.
+    #: Review preflight uses this same non-executing registry as role resolution.
+    identity_registry: RuntimeRegistry | None = field(default=None, repr=False, compare=False)
 
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
@@ -112,6 +117,7 @@ def plan_role(resolved, catalog) -> RolePlan | None:
             or k == "defaults.role" or k == f"harnesses.{spec['harness']}"]
     return RolePlan(
         role=resolved.role, runtime_id=manifest.runtime_id, kind=kind,
+        identity_registry=catalog.registry,
         model_id=spec.get("model_id"), effort=spec.get("effort"),
         permissions=spec.get("permissions"), write_policy=spec.get("write_policy", "edits"),
         profile=spec.get("profile"), digest=digest,
