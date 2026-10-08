@@ -458,3 +458,26 @@ async def test_native_flow_executes_its_admitted_agent_source(repo, monkeypatch,
         assert "FLOW-PRIVATE-SOURCE-A" not in identity and "FLOW-PRIVATE-SOURCE-B" not in identity
     assert not (repo / "must-not-write.txt").exists()
     assert LeaseStore().holders_of(repo) == []
+
+
+def test_artifact_rechecks_open_descriptor_type_after_path_swap(tmp_path, monkeypatch):
+    """A post-lstat replacement must remain a typed artifact refusal."""
+    flow = tmp_path / 'flow'
+    ref = art.store(flow, type='plan', content='the plan', step='plan', session_id='s',
+                    attempt=1, workspace_version=None)
+    path = flow / ref.path
+    open_file = os.open
+    swapped = False
+
+    def swap_before_open(name, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and str(name) in {str(path), path.name}:
+            swapped = True
+            path.unlink()
+            path.mkdir()
+        return open_file(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', swap_before_open)
+    with pytest.raises(art.ArtifactError) as caught:
+        art.load(flow, ref, workspace_version=None)
+    assert swapped and caught.value.code == 'flow.input_not_regular'

@@ -13,7 +13,7 @@ MAX_TASK_CHARS = 128_000
 MAX_TASK_BYTES = 512_000
 
 
-def _text(value, name):
+def bounded_text(value, name):
     if not isinstance(value, str) or "\x00" in value:
         raise StarterError("starter.input_invalid", f"{name} must be text without NUL characters")
     if len(value) > MAX_FIELD_CHARS:
@@ -21,21 +21,21 @@ def _text(value, name):
     return redact_text(value)[0]
 
 
-def validate_inputs(entry: Starter, inputs: dict) -> dict:
+def validate_inputs(entry: Starter, inputs: dict, *, require_fields: bool = True) -> dict:
     if not isinstance(inputs, dict) or any(not isinstance(k, str) for k in inputs):
         raise StarterError("starter.input_invalid", "starter inputs must be a string-keyed mapping")
     if unknown := set(inputs) - set(entry.fields):
         raise StarterError("starter.input_invalid", f"unknown fields: {sorted(unknown)}")
     out = deepcopy(inputs)
     for name, field in entry.fields.items():
-        if field.get("required") and (name not in out or not out[name]):
+        if require_fields and field.get("required") and (name not in out or not out[name]):
             raise StarterError("starter.input_required", f"supply {name}")
         if name not in out:
             continue
         kind, value = field["type"], out[name]
         if kind == "text":
-            out[name] = _text(value, name)
-            if field.get("required") and not out[name].strip():
+            out[name] = bounded_text(value, name)
+            if require_fields and field.get("required") and not out[name].strip():
                 raise StarterError("starter.input_required", f"supply non-empty {name}")
         elif kind == "source-refs":
             if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
@@ -52,7 +52,7 @@ def validate_options(entry: Starter, value: dict) -> dict:
         raise StarterError("starter.option_unsupported", "use only the starter's supported execution options")
     out = deepcopy(value)
     if "name" in out:
-        _text(out["name"], "options.name")
+        bounded_text(out["name"], "options.name")
         validate_name(out["name"])
     if "bg" in out and type(out["bg"]) is not bool:
         raise StarterError("starter.input_invalid", "options.bg must be boolean")

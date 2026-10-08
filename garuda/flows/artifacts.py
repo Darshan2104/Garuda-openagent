@@ -132,11 +132,31 @@ def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> 
         raise ArtifactError("flow.input_not_regular", f"{ref.path} is not a regular file")
     if root not in path.resolve().parents:
         raise ArtifactError("flow.input_escapes", f"{ref.path} leaves the flow directory")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # Keep every parent anchored while opening the leaf. A path checked above
+    # can be replaced with a symlink, FIFO or directory before the actual read.
+    directory = None
     try:
-        data = os.read(fd, MAX_ARTIFACT_CHARS * 4 + 1)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        for part in Path(ref.path).parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(Path(ref.path).name, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+                     dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ArtifactError("flow.input_not_regular", f"{ref.path} is not a regular file")
+            data = os.read(fd, MAX_ARTIFACT_CHARS * 4 + 1)
+        finally:
+            os.close(fd)
+    except FileNotFoundError as exc:
+        raise ArtifactError("flow.input_missing", f"{ref.path} is gone") from exc
+    except OSError as exc:
+        raise ArtifactError("flow.input_not_regular", f"{ref.path} cannot be opened without following links") from exc
     finally:
-        os.close(fd)
+        if directory is not None:
+            os.close(directory)
     if len(data) != ref.size or hashlib.sha256(data).hexdigest() != ref.digest:
         raise ArtifactError("flow.input_forged",
                             f"{ref.path} does not match the digest its step recorded")

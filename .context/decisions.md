@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-10-07 — Plan handoff preserves approved source scope (#307)
+
+- Full-plan sharing is explicit and same-project in v1, independent of existing
+  cross-project brief grants. Select a sequential producer by flow, step and
+  attempt, validate its authoritative receipt/journal/child linkage and load
+  exactly one plan through the existing typed artifact owner.
+- Recorded starter inputs, delivered task and accumulated approved scope carry
+  digests. Preserve all prior task fields in a separate escaped source envelope,
+  even when new feedback supplies different constraints. Missing legacy inputs
+  require explicitly supplied constraints; neither a result read nor a preview
+  starts work or grants authority.
+- Deliver the full redacted plan, never a reference alone or a shortened body.
+  The complete escaped task must fit the approved compiler budget. Recompile
+  source/recorded-input digests at execution; #308 owns starter launch invocation
+  and persistence of `LaunchPlan.launch_metadata()` on authoritative sessions.
+
 ## 2026-10-07 — Starter readiness is configured preflight (#306)
 
 - Library/preview use the pure static Setup configuration projection and the

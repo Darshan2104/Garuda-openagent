@@ -28,6 +28,9 @@ fields:
     type: text
     required: false
     label: Flow variant
+  plan_artifact:
+    type: text
+    label: Selected plan (FLOW:STEP:ATTEMPT)
   sources:
     type: source-refs
     label: Sources
