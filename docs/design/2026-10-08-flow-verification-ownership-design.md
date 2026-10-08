@@ -8,9 +8,12 @@ review decisions below before P1b code begins.
 
 ## Baseline and scope
 
-Inspected main: `b9a60c12a8d4df291dfe94c22f1fc8978080b189` (2026-10-08), after
-PRs #318–#325 merged. P0 and P1a, including the reconnect example, are landed;
-#303–#310 and #317 are closed. The accepted source is revision 5 of
+Inspected main: `2414886d1aa6c969ead753221024c6699798cbd3` (2026-10-08), after
+PRs #318–#325 and #327 merged. P0, P1a and P2, including the reconnect example
+and read-only dashboard, are landed; #303–#310, #314 and #317 are closed.
+The flow, acceptance, lease, runtime and metadata owners below are unchanged
+from the original `b9a60c12a8d4df291dfe94c22f1fc8978080b189` inspection.
+The accepted source is revision 5 of
 [ready-to-use workflow scenarios](../plans/2026-10-06-ready-to-use-workflow-scenarios.md),
 especially §5.3 and §6.3. Its SHA-256 is
 `d39a83cb30a2149b273194fcbeab0bed6652be6d8697819fd65c9d886d06dca9`.
@@ -18,7 +21,8 @@ especially §5.3 and §6.3. Its SHA-256 is
 This design preserves those contracts and identifies the additional mechanisms
 needed to satisfy them. It proposes no second flow engine, automatic repair,
 background-flow support, new check configuration keys, or Docker-check host
-fallback. P2 read-only starter browsing remains independent after P1a.
+fallback. P2 read-only starter browsing landed independently of P1b; its UI
+continues to show flow verification as unavailable. P3 launch remains separately gated.
 
 ## Confirmed owners and gaps
 

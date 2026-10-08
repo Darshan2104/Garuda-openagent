@@ -127,3 +127,11 @@ def load_catalog() -> dict[str, Starter]:
 
 def brief_text(entry: Starter) -> str:
     return files("garuda.scenarios").joinpath("briefs", entry.brief + ".md").read_text(encoding="utf-8")
+
+
+def example_inputs(entry: Starter) -> dict:
+    """Return the installed example's form data; never read project templates."""
+    from copy import deepcopy
+
+    examples = _yaml(files("garuda.scenarios").joinpath("data", "examples.yaml").read_text(encoding="utf-8"))
+    return deepcopy(examples["examples"][entry.example]["inputs"])

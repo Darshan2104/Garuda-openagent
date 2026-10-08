@@ -29,6 +29,7 @@ server, neither of which belongs in the unit suite.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -239,6 +240,33 @@ def main() -> int:
                                          extra_env=con_env))
         if not run_check("check_consults.py", con_port, shots, con_env):
             failures.append("check_consults.py")
+
+        # --- read-only starters, with real ACP/flow/acceptance history --------
+        starter_workdir = workdir / "starters"
+        starter_workdir.mkdir()
+        starter_sessions = starter_workdir / "sessions"
+        starter_env = {"GARUDA_GLOBAL_SETTINGS": str(starter_workdir / "producer" / "settings.yaml"),
+                       "GARUDA_SESSIONS_DIR": str(starter_sessions),
+                       "GARUDA_LEASES_DIR": str(starter_workdir / "leases")}
+        subprocess.run([sys.executable, str(HERE / "seed_starters.py"), str(starter_workdir)],
+                       check=True, env={**os.environ, **starter_env})
+        manifest_path = starter_workdir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        starter_bases = {}
+        starter_port = con_port + 1
+        for profile, settings in manifest["profiles"].items():
+            starter_port = free_port(starter_port)
+            processes.append(start_dashboard(
+                starter_sessions, starter_port, workdir / f"web-starters-{profile}.log",
+                extra_env={**starter_env, "GARUDA_GLOBAL_SETTINGS": settings},
+                extra_args=["--allow-workspace", manifest["workspace"],
+                            "--allow-workspace", manifest["second"]]))
+            starter_bases[profile] = f"http://127.0.0.1:{starter_port}/"
+            starter_port += 1
+        if not run_check("check_scenarios.py", int(starter_bases["ready"].split(":")[-1].rstrip("/")), shots,
+                         {"GARUDA_CHECK_STARTERS": str(manifest_path),
+                          "GARUDA_CHECK_STARTER_PROFILES": json.dumps(starter_bases)}):
+            failures.append("check_scenarios.py")
 
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"

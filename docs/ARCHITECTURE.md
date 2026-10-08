@@ -116,6 +116,14 @@ fastest way to learn the system.
    It discloses unprobed runtime facts, visible user-authored waivers, and the
    single-harness Build and check remedy through the existing role-run mechanism.
    It does not call the full Setup view, which performs discovery probes.
+   The dashboard's `interfaces/web/scenarios.py` is a read-only transport over
+   these same catalog/compiler/service/read-model owners, including POST preview.
+   Requests select an installed starter and bounded fields, with an operator's
+   workspace index; token, Host, Origin, body limits and source authorization
+   remain enforced. The allowlist exists in read-only contexts without activating
+   `LiveRuns`. Starters forms copy exact commands; existing session/native-trace
+   panels show selected historical evidence and an explicit follow-up preview.
+   They add no launch route, progress store, cross-project grant or flow checks.
    Read-only ACP roles also require a configured confinement image and a Docker
    executable in static readiness; launch still performs the existing Docker
    preflight and never substitutes host no-edits for confinement.

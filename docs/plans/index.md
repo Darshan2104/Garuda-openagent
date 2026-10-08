@@ -17,11 +17,12 @@ linked GitHub issues for open work.
 - [Teams and sessions](2026-10-01-teams-and-sessions-implementation.md)
 - [Agent definitions](2026-10-01-agent-definitions-implementation.md)
 
-P1a implementation landed in a dependency-ordered PR stack beginning with
-[#318](https://github.com/Darshan2104/Garuda-openagent/pull/318), through
-[#323](https://github.com/Darshan2104/Garuda-openagent/pull/323), followed by the
-reconnect example/release guide change for #309 and review identity fixes in
-[#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P1a is landed;
-P1b still requires review of the proposed
+P0/P1a landed through [#318](https://github.com/Darshan2104/Garuda-openagent/pull/318)
+through [#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P2's
+read-only dashboard discovery, preview/copy and selected result evidence landed
+in [#327](https://github.com/Darshan2104/Garuda-openagent/pull/327), independently
+of P1b. P1b still requires review of the proposed
 [flow verification ownership design](../design/2026-10-08-flow-verification-ownership-design.md)
-in #311. P2 remains independent after P1a.
+in [draft #326](https://github.com/Darshan2104/Garuda-openagent/pull/326); trusted
+flow checks and P3 browser launch remain separately gated. The revision-5 plan
+snapshot is unchanged; current guides describe shipped behavior.
