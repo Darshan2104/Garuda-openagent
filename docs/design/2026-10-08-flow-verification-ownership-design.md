@@ -35,6 +35,7 @@ Paths below refer to the inspected main, not implemented P1b APIs.
 | `core/acceptance.py` | Authority selection, candidate fingerprint, per-command infrastructure guard, tree-changing-check void receipts, aggregate verdict. `run_check()` uses synchronous `subprocess.run`. | Reuse policy through an async owner; preserve synchronous entry points and their existing callers. |
 | `config/garuda_yaml.py`, `config/project_trust.py` | Effective check provenance; exact-byte project trust; untrusted checks withheld. `Resolved` retains provenance labels, not source-byte snapshots. | Resolve and freeze from the same bytes used for trust/parsing. Add an internal source snapshot boundary rather than hash a second read afterward. |
 | `runtime/session_state.py::finished` / `interrupted` | Build fresh state with unavailable verification by default. | Flow publication must explicitly retain the validated acceptance verdict; ordinary synchronous callers remain compatible. |
+| `core/sessions.py::merge_meta`, `SessionStore.mutate_meta` | Metadata replacement is atomic; the sidecar lock can fall back to unlocked writes, and `_atomic_write_text()` does not fsync file or directory. Corrupt metadata may be rebuilt from partial updates. | New P1b flow metadata needs strict locking, durable publication and corruption refusal at this same shared writer boundary; atomic replacement alone is insufficient. |
 | `flows/engine.py::recover` | Missing step receipt becomes quarantine; receipted steps skip on resume. No check-intent reconciliation exists. | Reconcile verification independently; completed steps do not authorize a missing check phase. |
 
 The CLI's current synchronous acceptance owner is
@@ -198,6 +199,17 @@ the existing redaction/tail policy, and keep no unbounded raw-output file. Store
 at most the existing 2,000-character redacted tail per check. Closed stdin and
 the existing string-shell / argv execution distinction remain.
 
+Baseline/delta/fingerprint reads, lock acquisition, and fsync also must not block
+the event loop. Existing `capture_baseline()` performs synchronous Git calls
+with per-call timeouts and file hashing; putting only the check command on the
+async path would leave a heartbeat stall. Run these probes/publication operations
+off the loop through a bounded owned worker, await settlement before release,
+and preserve the existing fingerprint/delta semantics. Git probes must disable
+repository-directed helper execution (such as fsmonitor) and optional index
+writes. A probe worker that can still spawn or write after cancellation requires
+cleanup evidence or quarantine, just like a check. An observation timeout is not
+proof that a worker stopped.
+
 Timeout, caller cancellation, heartbeat loss, or store failure requests owned
 teardown. Shield only bounded cleanup from repeated cancellation. Signal only
 matched owned identities; never signal an unrelated reused PID. Leader exit,
@@ -266,6 +278,19 @@ an explicit candidate/authority mismatch invalidates the phase even if an
 earlier receipt passed. Unsupported checks cannot yield a partial pass.
 
 Publication is ordered, not a fictitious atomic transaction across files:
+
+First establish a versioned private P1b publication-policy marker before creating
+the parent metadata. Every shared metadata writer for that session must recognize
+the marker independently of readable metadata. Use one common sidecar lock
+(`meta.json.lock`), with no-follow owner-bound descriptors and fail-closed lock
+acquisition; do not add a second lock that ordinary writers ignore. Refuse corrupt
+or replaced metadata instead of rebuilding it from partial updates. Fsync the
+complete temporary metadata file, atomically replace it through the retained
+directory descriptor, and fsync that directory. Adapt the existing shared
+session writer to this strict flow policy rather than write metadata behind its
+back. Legacy sessions retain their existing API/receipt semantics. Later tag,
+link or observability updates to a P1b flow must use that same policy and preserve
+the committed verification fields.
 
 1. Fsync complete cumulative evidence and every terminal check/cleanup receipt.
 2. Publish an immutable verification commit referencing the exact candidate,
@@ -349,6 +374,7 @@ the very lease/process/evidence boundary being tested with a fixture verdict.
 | #313 candidate/authority | Actual check changes the tree; external mutation or trust/source/ceiling change between pin, launch, cleanup and commit invalidates verification. An untrusted project check never writes its launch marker. |
 | #313 flow/step eligibility | Stopped/rejected/interrupted steps start no checks. Missing native/ACP cleanup proof or attempt evidence cannot be upgraded by `success=True`, no-edits output, or a final Git diff. Cover retries and parallel members. |
 | #313 publication/resume | Failed checks coexist with completed step outcome and approved review; final publication preserves failed verification. Restart at every publication boundary uses existing receipts and never treats finished steps as passed checks. |
+| #313 metadata durability | A concurrent real metadata writer uses the same lock. Inject lock, file-fsync, rename, directory-fsync and corrupt-record failures: no unlocked/partial-update fallback, no ordinary lease release, and no successful finalizer return. Preserve already-published records for reconciliation rather than pretend a failed fsync undid a rename. Later tag/link updates retain committed verification. |
 | #313 product wiring | Production service/CLI actually invokes the runner with frozen authorized checks; configured flow override and review-round bounds remain. Planning has no automatic checks; explicit planning checks use a mutating parent lease. |
 | Supported-environment limits | Linux real descendant controls pass before host support is claimed. macOS/unsupported mode or ceiling produces unavailable without launch or host fallback. Optional Docker/vendor/OS integrations are disclosed separately. |
 
