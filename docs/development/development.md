@@ -81,7 +81,7 @@ pip install -e ".[dev,eval]" -c constraints.txt
 pytest -q
 ```
 
-The project also needs an unconstrained dependency check before releases because users install from the declared lower bounds. The MCP dependency is deliberately capped below 2 until an HTTP transport migration is implemented and tested.
+The project also needs a dependency check without `constraints.txt` before releases because users install from the declared compatible ranges. MCP is deliberately capped below 2 until an HTTP transport migration is implemented and tested. Pydantic is capped below 2.14 because the supported MCP 1.19 release imports `eval_type_backport`, which Pydantic 2.14 removed. The measurement constraints pin the verified Pydantic 2.13.5 release; raising that cap requires checking MCP imports and both transport contracts.
 
 ## Change discipline
 
