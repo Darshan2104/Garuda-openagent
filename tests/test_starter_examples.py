@@ -36,8 +36,8 @@ def test_example_creates_a_runnable_project_only_in_selected_new_directory(tmp_p
     assert head.stdout.strip() == 'Initial reconnect example'
 
 
-@pytest.mark.parametrize('conflict', ['file', 'directory', 'symlink', 'dangling', 'parent-link', 'nested-git', 'missing-parent'])
-def test_example_refuses_conflicting_targets_without_writes(tmp_path, monkeypatch, capsys, conflict):
+@pytest.mark.parametrize('conflict', ['file', 'directory', 'symlink', 'dangling', 'parent-link', 'nested-git', 'missing-parent', 'unknown-home'])
+def test_example_refuses_invalid_or_conflicting_targets_without_writes(tmp_path, monkeypatch, capsys, conflict):
     target = tmp_path / 'selected'
     if conflict == 'file':
         target.write_text('keep me')
@@ -56,6 +56,18 @@ def test_example_refuses_conflicting_targets_without_writes(tmp_path, monkeypatc
         target = target / 'new'
     elif conflict == 'nested-git':
         target = _git_workspace(tmp_path) / 'new'
+    elif conflict == 'unknown-home':
+        import pwd as accounts
+
+        target = Path('~garuda-fixture-account') / 'new'
+        lookup = accounts.getpwnam
+
+        def missing_account(name):
+            if name == 'garuda-fixture-account':
+                raise KeyError(name)
+            return lookup(name)
+
+        monkeypatch.setattr(accounts, 'getpwnam', missing_account)
     else:
         target = target / 'missing' / 'new'
     before = _snapshot(tmp_path, SessionStore().root)
@@ -66,6 +78,8 @@ def test_example_refuses_conflicting_targets_without_writes(tmp_path, monkeypatc
     monkeypatch.setattr(subprocess, 'run', forbidden)
     code, output = _main(monkeypatch, capsys, 'starter', 'example', 'reconnect', str(target))
     assert code == 2 and 'Error:' in output
+    if conflict == 'unknown-home':
+        assert 'starter.example_invalid' in output
     assert _snapshot(tmp_path, SessionStore().root) == before
 
 
