@@ -423,7 +423,10 @@ share the same resolved configuration/role plans via `compile_with_context`.
 preview, and shared selected results behind existing dashboard authorization.
 It accepts allowlisted workspace indices and strict unique-key field JSON;
 request definitions and cross-project grants are refused. Read-only contexts
-retain the same workspace list without creating `LiveRuns`. The plain-script
+retain the same workspace list without creating `LiveRuns`.
+`DashboardContext.allowed_workspaces` uses the live owner's list when attached,
+including an empty list, for both configuration and preview enforcement.
+The plain-script
 `static/views_scenarios.js` owns Starters forms, preview/copy, stale-response
 invalidation, and the result panel reused by session/native-trace views. An
 implementable plan opens an explicit follow-up form; there is no start route.

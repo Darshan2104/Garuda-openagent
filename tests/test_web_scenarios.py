@@ -114,7 +114,17 @@ def test_read_only_library_and_detail_use_installed_metadata(context, monkeypatc
     assert _snapshot(context.workspace, context.store.root, gy.user_path().parent) == before
 
 
-def test_workspace_selection_is_an_allowlisted_index_in_read_only_mode(context, monkeypatch):
+@pytest.mark.parametrize("assembly", ["startup", "live-context"])
+def test_workspace_selection_is_an_allowlisted_index_in_read_only_mode(context, monkeypatch, assembly):
+    if assembly == "live-context":
+        from garuda.interfaces.web.live import LiveRuns
+
+        loop = asyncio.new_event_loop()
+        try:
+            context.live = LiveRuns(loop=loop, store=context.store, workspaces=context.workspaces)
+            context.workspaces = ()  # Existing embedders attach the live owner directly.
+        finally:
+            loop.close()  # Only pure HTTP reads are exercised; no loop work is submitted.
     _forbid_execution(monkeypatch)
     config = _body(_call(context, "/api/config"))
     assert len(config["workspaces"]) == 2
@@ -128,6 +138,12 @@ def test_workspace_selection_is_an_allowlisted_index_in_read_only_mode(context, 
             "starter_id": "plan-change", "workspace": selection, "inputs": {"goal": "refuse"}})
         assert response.status == 400
     assert _call(context, "/api/scenarios", query="workspace=0&workspace=1").status == 400
+    if assembly == "live-context":
+        context.live.workspaces = ()
+        refused = _call(context, "/api/scenarios/preview", payload={
+            "starter_id": "plan-change", "inputs": {"goal": "do not widen an empty allowlist"}})
+        assert refused.status == 400 and _body(refused)["error"]["code"] == "invalid_request"
+        assert _body(_call(context, "/api/config"))["workspaces"] == []
 
 
 @pytest.mark.parametrize("extra", [

@@ -64,6 +64,15 @@ class DashboardContext:
     workspaces: tuple[Path, ...] = ()
 
     @property
+    def allowed_workspaces(self) -> tuple[Path, ...]:
+        """One index allowlist for config, previews and the attached live owner."""
+        if self.live is not None:
+            # Preserve contexts assembled directly around LiveRuns, including
+            # an explicitly empty live allowlist. Never widen it to the cwd.
+            return self.live.workspaces
+        return self.workspaces or (self.workspace,)
+
+    @property
     def capabilities(self) -> dict[str, bool]:
         """What the UI is allowed to offer. It hides controls off this rather than
         showing buttons that 503.
@@ -204,7 +213,7 @@ def _config(request: Request, ctx: DashboardContext, _match) -> Response:
             # accepted instead of letting the user discover the ceiling via a 400.
             "workspaces": [
                 {"index": index, "path": str(path)}
-                for index, path in enumerate(ctx.workspaces or (ctx.workspace,))
+                for index, path in enumerate(ctx.allowed_workspaces)
             ],
             "max_permission": ctx.live.max_permission if ctx.live else None,
             "permission_modes": [

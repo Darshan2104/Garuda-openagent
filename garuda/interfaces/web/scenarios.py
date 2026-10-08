@@ -20,7 +20,7 @@ def _query(request, allowed):
 
 
 def _workspace(ctx, index):
-    workspaces = ctx.workspaces or (ctx.workspace,)
+    workspaces = ctx.allowed_workspaces
     if type(index) is not int or not 0 <= index < len(workspaces):
         raise ValueError("workspace must be an index into the configured workspaces.")
     root = workspaces[index]

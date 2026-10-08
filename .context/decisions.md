@@ -1600,7 +1600,9 @@ as the CLI. Preview selects bounded field data and a canonical operator-allowed
 workspace index; it cannot submit runtime/flow/catalog definitions or grant
 cross-project context. Token, Host, Origin, body limits and existing source and
 private-store authorization remain the enforcers. Read-only contexts retain
-the allowlist without activating LiveRuns. Reads and previews allocate no
+the allowlist without activating LiveRuns. An attached LiveRuns owns the same
+index list used by config and preview, including an explicitly empty allowlist
+that must never widen to the current directory. Reads and previews allocate no
 session/queue/lease, start no subprocess/model/discovery, and write no store bytes.
 
 The browser copies the exact quoted CLI command and invalidates it when inputs
