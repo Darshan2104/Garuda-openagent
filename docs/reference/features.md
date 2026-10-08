@@ -8,6 +8,8 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
+| Packaged starters | Five goal-oriented journeys using existing roles and flows | `garuda starter list` | [Workflows](../use-cases/workflows.md) |
+| Starters dashboard | Readiness, explicit preview/copy and recorded result evidence | `garuda web --read-only --allow-workspace .` | [Dashboard preview](../use-cases/workflows.md#preview-in-the-dashboard) |
 | Headless run | One task, an answer, a saved session | `garuda run -t "…"` | [Level 2](../use-cases/change-code.md#fix-a-bug-with-a-git-safety-net) |
 | Interactive chat | Turn-by-turn work with `y/N` approvals | `garuda chat` | [Level 2](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
 | Read-only mode | Inspection only, blocked writes | `garuda run --mode readonly -t "…"` | [Level 1](../use-cases/explore.md#ask-questions-about-a-codebase) |

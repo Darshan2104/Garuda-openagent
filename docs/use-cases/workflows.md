@@ -6,6 +6,30 @@ harnesses and models. Preview shows the effective bindings, readiness, supplied
 sources, review policy and the exact quoted equivalent Garuda command; starting
 work is always explicit. Starters do not require OpenRig.
 
+## Preview in the dashboard
+
+```bash
+garuda web --read-only --allow-workspace .
+```
+
+Open the printed token URL and choose **Starters**. Select a journey and
+workspace, fill its fields, then **Preview command** and **Copy command**.
+Run the copied command explicitly in a terminal. The preview shows configured
+roles, permission posture, readiness/remedies, source digests, review policy,
+invocation bounds and unknown cost. Changing inputs invalidates the preview;
+preview again after source/configuration changes. The equivalent command uses
+the ordinary flow/run CLI and records an ordinary session. Use
+`garuda starter run` with the same fields to also record structured inputs/source provenance
+and recompile at launch.
+
+Use **Sessions** to follow the resulting flow or role run. Its starter panel
+shows recorded identities, artifacts, historical verification, review and
+selected-session coverage separately. A completed validated plan offers
+**Preview implementation of this plan**, which opens the `pair` build form with
+that plan selected; it neither previews nor launches automatically. Missing
+evidence remains unknown; ordinary runs disclose absent starter provenance.
+See [Web dashboard](../guides/web-dashboard.md#starters).
+
 ## Set up and try the reconnect example
 
 Install and authenticate an official supported harness using its own CLI, or
@@ -225,5 +249,5 @@ remain explicit actions.
 
 Use [recipes](automate.md#run-a-multi-step-recipe) for custom prompt sequences.
 Recipes retain their existing whole-recipe workspace lease and are not aliases
-for artifact/review flows. Dashboard discovery, HTTP starter launch and trusted
-flow acceptance checks are later gated phases; this release is the CLI path.
+for artifact/review flows. Dashboard discovery and preview/copy are available;
+HTTP starter launch and trusted flow acceptance checks remain later gated phases.

@@ -60,6 +60,8 @@ class DashboardContext:
     live: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
     workspace: Path = field(default_factory=lambda: Path.cwd())
+    #: Read-only starter requests use the same index allowlist as live requests.
+    workspaces: tuple[Path, ...] = ()
 
     @property
     def capabilities(self) -> dict[str, bool]:
@@ -128,6 +130,37 @@ def requires_write(ctx: DashboardContext) -> Response | None:
     )
 
 
+# --- starters: read-only even when preview uses POST -------------------------
+
+
+@route("GET", r"/api/scenarios")
+def _starter_library(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    return scenarios.respond(scenarios.library, request, ctx)
+
+
+@route("POST", r"/api/scenarios/preview")
+def _starter_preview(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    return scenarios.respond(scenarios.preview, request, ctx)
+
+
+@route("GET", r"/api/scenarios/(?P<starter>[a-z0-9][a-z0-9_-]{0,47})")
+def _starter_detail(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    return scenarios.respond(scenarios.detail, request, ctx, match["starter"])
+
+
+@route("GET", r"/api/scenario-runs/(?P<sid>[^/]+)")
+def _starter_result(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    return scenarios.respond(scenarios.result, request, ctx, match["sid"])
+
+
 # --- health and configuration ------------------------------------------------
 
 
@@ -171,7 +204,7 @@ def _config(request: Request, ctx: DashboardContext, _match) -> Response:
             # accepted instead of letting the user discover the ceiling via a 400.
             "workspaces": [
                 {"index": index, "path": str(path)}
-                for index, path in enumerate(ctx.live.workspaces if ctx.live else ())
+                for index, path in enumerate(ctx.workspaces or (ctx.workspace,))
             ],
             "max_permission": ctx.live.max_permission if ctx.live else None,
             "permission_modes": [

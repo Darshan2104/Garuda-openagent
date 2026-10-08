@@ -5,14 +5,13 @@
  * previous view\'s poller before mounting the next — a leaked poller would keep fetching a
  * run nobody is looking at.
  *
- * Four views: the run list (with the stats over it), one run's trace, the
- * conversation, and the runtimes board (harness picker, handoff, diff, and
- * recovery). Anything that was neither reading a trace, talking to the agent,
- * nor operating a runtime has been removed rather than kept behind a nav entry. */
+ * Starters compile read-only previews. Existing session and trace views show their
+ * recorded evidence; navigation also invalidates pending starter requests. */
 
 "use strict";
 
 var ROUTES = [
+  [/^#\/starters(?:\/([^/?]+))?(?:\?(.*))?$/, function (m) { return startersView(m[1] ? decodeURIComponent(m[1]) : null, m[2]); }],
   [/^#\/runs\/([^/]+)$/, function (m) { return runDetailView(decodeURIComponent(m[1])); }],
   [/^#\/runs$/, function () { return runsView(); }],
   [/^#\/sessions\/([^/]+)$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
@@ -34,6 +33,7 @@ function navigate() {
   stopLive();
   stopChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
+  stopStarterViews();
   var hash = location.hash || "#/runs";
   setActiveNav(hash);
   for (var i = 0; i < ROUTES.length; i++) {

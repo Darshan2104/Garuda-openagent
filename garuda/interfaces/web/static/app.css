@@ -702,3 +702,20 @@ a { color: var(--accent); }
 /* consult lanes (G.4): the consults a session asked for, nested under it */
 .consult-lanes { list-style: none; margin: 8px 0 0; padding-left: 16px; border-left: 2px solid var(--border); }
 .consult-lane { padding: 4px 0; overflow-wrap: anywhere; }
+
+/* Starter previews and selected-session evidence. */
+.starter-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.starter-grid .card { min-width: 0; }
+.starter-workspace { max-width: 480px; }
+.starter-form, .starter-result { margin-top: 16px; }
+.starter-form label, .starter-result label { display: block; margin: 12px 0; }
+.starter-form input, .starter-form textarea, .starter-form select,
+.starter-result textarea, .starter-workspace select { width: 100%; box-sizing: border-box; }
+.starter-options { margin: 14px 0; border: 1px solid var(--border); }
+.starter-options input[type="checkbox"] { width: auto; }
+.starter-form details, .starter-result details, .starter-grid details { margin: 12px 0; }
+.starter-data, .starter-command { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.starter-bindings { width: 100%; border-collapse: collapse; }
+.starter-bindings th, .starter-bindings td { padding: 6px; text-align: left; overflow-wrap: anywhere; }
+.starter-build-check { margin: 20px 0; border-top: 1px solid var(--border); }
+.starter-result .btn { margin: 4px 8px 4px 0; }
