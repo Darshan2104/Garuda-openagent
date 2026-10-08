@@ -18,6 +18,10 @@ fields:
     type: text
     required: false
     label: Requirements
+  exclude:
+    type: text
+    required: false
+    label: Out of scope
   constraints:
     type: text
     required: false
