@@ -17,8 +17,11 @@ linked GitHub issues for open work.
 - [Teams and sessions](2026-10-01-teams-and-sessions-implementation.md)
 - [Agent definitions](2026-10-01-agent-definitions-implementation.md)
 
-P1a implementation is submitted as a dependency-ordered PR stack beginning with
+P1a implementation landed in a dependency-ordered PR stack beginning with
 [#318](https://github.com/Darshan2104/Garuda-openagent/pull/318), through
 [#323](https://github.com/Darshan2104/Garuda-openagent/pull/323), followed by the
-reconnect example/release guide change for #309. The phase is not landed while
-these PRs are open; P1b/P2 entry conditions remain in force.
+reconnect example/release guide change for #309 and review identity fixes in
+[#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P1a is landed;
+P1b still requires review of the proposed
+[flow verification ownership design](../design/2026-10-08-flow-verification-ownership-design.md)
+in #311. P2 remains independent after P1a.
