@@ -53,6 +53,12 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     workspace = os.path.realpath(launch.workspace)
     info = os.stat(workspace)
     role = launch.role_plan
+    if role is not None and role.kind == "acp" and (launch.no_edits or role.permissions == "readonly"):
+        from garuda.runtime.roles import RoleRefused
+
+        raise RoleRefused("workspace.readonly_unenforced",
+                          "owned ACP read-only execution requires container lifetime ownership, "
+                          "which is not yet supported")
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
     payload = {"version": 1, "workspace": workspace, "workspace_identity": [info.st_dev, info.st_ino], "prompt": launch.prompt,

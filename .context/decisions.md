@@ -17,7 +17,9 @@
 - Shared Setup separates configuration planning from client/tool activation;
   the combined API and live SDK client identity remain compatible. Owned workers
   initially refuse live SDK objects, executable project tools and enabled nested
-  collection profiles. Unsupported hosts and insufficient parent admission fail
+  collection profiles. ACP read-only/no-edits execution also refuses before
+  launch until Docker container lifetime ownership is supported. Unsupported
+  hosts and insufficient parent admission fail
   closed. Existing unverified flows remain the default; #313 owns public flow
   checks, cumulative evidence, durable phase admission and strict publication.
 

@@ -25,7 +25,7 @@ from garuda.runtime import owned_role
 from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
 from garuda.runtime.owned_role import execute_owned_role, prepare_owned_step
 from garuda.runtime.role_control import RoleControl
-from garuda.runtime.roles import RolePlan
+from garuda.runtime.roles import RolePlan, RoleRefused
 from garuda.workspace.lease import LeaseConflictError, LeaseError, LeaseStore
 
 linux = pytest.mark.skipif(sys.platform != "linux", reason="actual Linux role ownership")
@@ -291,6 +291,29 @@ async def test_changed_admitted_source_refuses_before_any_role_tool_starts(case,
         (workspace / "release").touch()
         server.shutdown()
         server.server_close()
+
+
+@linux
+@pytest.mark.parametrize("permissions,no_edits", [("auto", True), ("readonly", False)])
+async def test_owned_acp_readonly_refuses_before_host_cli_can_write(case, permissions, no_edits):
+    workspace, parent, _leases, store = case
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    shim = workspace.parent / "write_anyway_acp.py"
+    shim.write_text(
+        f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from garuda.acp.fake_agent import main\n"
+        "raise SystemExit(main(['--profile', 'write-anyway']))\n")
+    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "owned-acp", "kind": "acp",
+        "command": [sys.executable, str(shim)],
+        "version": "1"}]}))
+    role = RolePlan("reviewer", "owned-acp", "acp", permissions=permissions)
+    launch = StepLaunch(parent.session_id, "review", "reviewer", role, "review this workspace",
+                        str(workspace), parent.delegate(f"{parent.session_id}:review:1"),
+                        1, no_edits, store, require_owned=True)
+    with pytest.raises(RoleRefused, match="workspace.readonly_unenforced"):
+        await launch_step(launch)
+    assert not (workspace / "sneaky.txt").exists()
+    assert store.list_sessions() == []
 
 
 @linux

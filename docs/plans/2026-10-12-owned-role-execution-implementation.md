@@ -1,6 +1,6 @@
 # Shared owned role execution
 
-Status: implementation in progress for #330, a prerequisite split from #313
+Status: implemented for #330; final PR validation precedes merge. Prerequisite split from #313
 under the user-approved [P1b ownership design](../design/2026-10-08-flow-verification-ownership-design.md).
 #329 supplies the check subprocess owner. Public flow checks and P3 launches
 retain their separate gates.
@@ -38,9 +38,9 @@ tokens. Supervision is process ownership, not confinement. Unsupported execution
 configurations remain explicitly unsupported for verified flows. The revision-5
 snapshot stays unchanged; generated context is not collaboration storage.
 
-## Review checkpoint
+## Implementation and validation
 
-The draft implements separate worker-enforced process purpose budgets, pure
+The implementation supplies separate worker-enforced process purpose budgets, pure
 native planning followed by activation, trust-filtered frozen MCP configuration,
 and actual native/ACP execution in the Linux subprocess owner. Four actual
 native/ACP completion and repeated-cancellation cases prove detached writer
@@ -57,8 +57,11 @@ checks reject copied records, revoked grants, another step, read-only parent
 admission and an obsolete parent epoch. The shared flow launcher exposes this
 path only through its internal owned-execution requirement.
 
-Full-suite validation, final adversarial enforcement mutations and exact-head CI
-remain pending. The checkpoint's macOS full run had 3,629 passes and one failure
-from an existing test patching a moved factory alias; the test now targets the
-actual factory and the focused compatibility suite passes. This record does not
-claim that #330 or #313 is complete before their remaining gates pass.
+The Linux ownership/source/control suite and macOS full suite passed. Disposable adversarial
+copies failed the intended tests when actual peer identity checking was weakened,
+capacity was released early, or original source facts were replaced by later
+hashes. ACP no-edits execution reproduced a host-launch gap before its repair;
+owned ACP read-only/no-edits requests now refuse before launching a CLI because
+Docker container lifetime ownership is not yet supported. Ruff, documentation
+contracts, strict site generation and diagram links passed. Final commit CI is
+required before merge; #313's public verification and publication work is separate.
