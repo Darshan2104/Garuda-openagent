@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from garuda.config_sources import read_source_text, record_source_error, source_is_file
 from garuda.tools.protocol import ToolEffect
 
 logger = logging.getLogger(__name__)
@@ -266,13 +267,14 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
     fails to parse is logged and yields no servers.
     """
     p = Path(path)
-    text = p.read_text(encoding="utf-8")
+    text = read_source_text(p)
     try:
         if p.suffix.lower() == ".json":
             data = json.loads(text) if text.strip() else None
         else:
             data = yaml.safe_load(text)
     except Exception as exc:
+        record_source_error()
         logger.warning(
             "Failed to parse MCP config %s (%s: %s); no servers loaded",
             p,
@@ -364,12 +366,12 @@ def resolve_mcp_config_paths(
     # definition of the convention roots); `.cursor/mcp.json` is editor compat.
     project_files = list(resolve_agent_home(ws).mcp_paths)
     cursor = ws / ".cursor" / "mcp.json"
-    if cursor.is_file():
+    if source_is_file(cursor):
         project_files.append(str(cursor))
     global_candidate = _global_mcp_dir() / "mcp.json"
 
     project = project_files[0] if project_files else None
-    has_global = global_candidate.is_file()
+    has_global = source_is_file(global_candidate)
 
     if _mcp_merge_enabled(workspace):
         chosen = [p for p in (project, global_candidate if has_global else None) if p]

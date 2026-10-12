@@ -12,12 +12,13 @@ import sys
 import time
 from pathlib import Path
 
-from garuda.runtime.process_supervision import TAIL_BYTES, WIRE_LIMIT, ProcessRequest
+from garuda.runtime.process_request import MAX_REQUEST_BYTES, WIRE_VERSION, ProcessRequest
+from garuda.runtime.process_supervision import TAIL_BYTES
 from garuda.runtime.recovery import _process_identity
 
 
 def _emit(launch_id: str, kind: str, **fields) -> None:
-    print(json.dumps({"version": 1, "launch_id": launch_id, "kind": kind, **fields}), flush=True)
+    print(json.dumps({"version": WIRE_VERSION, "launch_id": launch_id, "kind": kind, **fields}), flush=True)
 
 
 def _children() -> list[int]:
@@ -91,7 +92,7 @@ def main() -> int:
     if not owner["identity"]:
         return 2
     _emit(launch_id, "ready", supervisor=owner)
-    raw = sys.stdin.buffer.readline(WIRE_LIMIT + 1)
+    raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
     command = None
     started = time.monotonic()
     tails = {"stdout_tail": bytearray(), "stderr_tail": bytearray()}
@@ -115,17 +116,17 @@ def main() -> int:
     request = ProcessRequest("true", "/")
     try:
         if raw and not cancelled:
-            if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
+            if len(raw) > MAX_REQUEST_BYTES or not raw.endswith(b"\n"):
                 raise ValueError("incomplete or oversized request")
             data = json.loads(raw)
             if not isinstance(data, dict) or set(data) != {
-                    "version", "run", "cwd", "env", "timeout", "term_grace", "kill_grace", "input_data"}:
+                    "version", "purpose", "run", "cwd", "env", "timeout", "term_grace", "kill_grace", "input_data"}:
                 raise ValueError("invalid request")
-            if type(data["version"]) is not int or data["version"] != 1:
+            if type(data["version"]) is not int or data["version"] != WIRE_VERSION:
                 raise ValueError("unsupported request")
             run = tuple(data["run"]) if isinstance(data["run"], list) else data["run"]
             request = ProcessRequest(run, data["cwd"], tuple(data["env"].items()),
-                                     data["timeout"], data["term_grace"], data["kill_grace"], data["input_data"])
+                                     data["timeout"], data["term_grace"], data["kill_grace"], data["input_data"], data["purpose"])
             request.document()
             env = {**os.environ, **dict(request.env)}
             input_fd = None

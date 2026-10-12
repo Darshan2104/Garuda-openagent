@@ -95,6 +95,14 @@ fastest way to learn the system.
    macOS and Docker check execution remain unavailable at this new boundary;
    synchronous acceptance APIs retain their existing behavior. The flow engine
    still needs #313's cumulative evidence and final publication integration.
+   The internal owned role service (#330) reuses that Linux
+   process owner around the actual native or ACP facade. The parent retains its
+   issued capability and capacity through ECHILD; child release is logical only.
+   Frozen role values and an actual-PID-bound private control channel avoid
+   constructing authority from copied lease records. Owned ACP read-only or
+   no-edits launches refuse: Docker container lifetime ownership is not yet
+   supported by this process-tree owner. Cumulative source evidence and final
+   publication integration remain gated by #313 before public verification.
    `scenarios/compile.py` compiles installed starter data into bounded labelled
    tasks and exact existing CLI commands. It resolves effective flows and
    configured role plans through the non-executing catalog; it never calls

@@ -59,6 +59,7 @@ class StepLaunch:
     attempt: int
     no_edits: bool
     store: Any = None
+    require_owned: bool = False
 
 
 @dataclass
@@ -66,6 +67,7 @@ class StepResult:
     session_id: str
     success: bool
     output: str
+    closure: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.agents import spec
+from garuda.config_sources import record_source
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,7 @@ def _read(path: Path, root: Path) -> bytes:
         os.close(fd)
     if len(data) > MAX_BYTES:
         raise spec.AgentSpecError("agent.too_large", "", f"{path} is over {MAX_BYTES} bytes")
+    record_source(path, data)
     return data
 
 

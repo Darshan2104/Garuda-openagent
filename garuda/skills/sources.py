@@ -26,6 +26,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from garuda.config_sources import record_source
 from garuda.skills.loader import Skill, _parse_allowed_tools
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ def _read(path: Path, root: Path) -> str | None:
         data = os.read(fd, MAX_SKILL_BYTES + 1)
     finally:
         os.close(fd)
+    record_source(path, data)
     if len(data) > MAX_SKILL_BYTES:
         logger.warning("skill %s is over %d bytes; skipped", path, MAX_SKILL_BYTES)
         return None

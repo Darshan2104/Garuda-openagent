@@ -335,7 +335,9 @@ async def test_cancellation_closes_what_activation_started(ws, monkeypatch):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(setup, "build_toolkit", fake_toolkit)
-    monkeypatch.setattr(setup, "create_agent", cancelled)
+    import garuda.core.rigorous as rigorous
+
+    monkeypatch.setattr(rigorous, "create_agent", cancelled)
     with pytest.raises(asyncio.CancelledError):
         await prepare_agent_run("careful", workspace=str(ws), model=ScriptModel([]))
     assert closed == [True]

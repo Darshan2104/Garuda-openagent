@@ -1,5 +1,28 @@
 # Durable decisions
 
+## 2026-10-12 — Owned roles retain parent authority through physical closure (#330)
+
+- Verified execution uses the shared Linux subreaper around the existing native
+  and ACP facades. The parent retains its issued mutating capability and child
+  capacity until ECHILD; a worker's release request is logical only. Capabilities
+  bind their issuing parent epoch and cannot revive after reacquisition.
+- Private control requires the actual launched worker PID/start identity and a
+  per-operation nonce. JSON snapshots carry resolved values, never a copied lease
+  grant, executable object serialization, or vendor OAuth credentials. Parent
+  and child/step/attempt/process linkage accompany closure evidence.
+- Preparation captures source digests at actual parser reads, including absent
+  inputs, project memory and selected skills. Owned checks validate the original
+  sources before activation and after closure. The capacity ceiling is resolved
+  with that preparation and cannot be reread as a wider policy during activation.
+- Shared Setup separates configuration planning from client/tool activation;
+  the combined API and live SDK client identity remain compatible. Owned workers
+  initially refuse live SDK objects, executable project tools and enabled nested
+  collection profiles. ACP read-only/no-edits execution also refuses before
+  launch until Docker container lifetime ownership is supported. Unsupported
+  hosts and insufficient parent admission fail
+  closed. Existing unverified flows remain the default; #313 owns public flow
+  checks, cumulative evidence, durable phase admission and strict publication.
+
 ## 2026-10-12 — Async acceptance has an owned Linux subtree boundary (#312)
 
 - The internal runner accepts frozen authorized checks and a parent-owned

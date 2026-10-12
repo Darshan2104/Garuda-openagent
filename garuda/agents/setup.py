@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
+from garuda.agents.native_plan import NativeRunPlan
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.config import (
     CollectionPolicy,
@@ -975,7 +976,7 @@ def resolve_profile(agent, workspace: str, agents_dirs) -> AgentProfile:
     return spec.profile()
 
 
-async def prepare_agent_run(
+def plan_agent_run(
     agent_name: str | Any,
     *,
     workspace: str,
@@ -983,9 +984,6 @@ async def prepare_agent_run(
     mcp_config_path: str | None = None,
     mode: str | None = None,
     permission_mode: str | None = None,
-    approval_handler=None,
-    extra_tools: list[Tool] | None = None,
-    load_project_tools: bool | None = None,
     # Dual-model role bindings (Tasks 1-3). `model` is the legacy explicit
     # reasoning alias; `reasoning_model` is its new spelling. Strings are model
     # names resolved through the shared precedence chain; live `Model` objects
@@ -997,21 +995,8 @@ async def prepare_agent_run(
     model_binding: str | None = None,
     reasoning_effort: str | None = None,
     thinking_budget_tokens: int | None = None,
-) -> PreparedNativeRun:
-    """Load profile, resolve model bindings, build toolkit, return run dependencies.
-
-    ``permission_mode`` overrides both the profile's declaration and the mode preset.
-    It has to be applied here rather than by the caller because ``PermissionEngine`` takes
-    its mode at construction and exposes no setter — a caller that assigned
-    ``config.permission_mode`` afterwards would change the reported posture while the
-    engine kept enforcing the old one, which is the worst of the three outcomes.
-
-    Model precedence per role: explicit args > role env > legacy GARUDA_MODEL
-    (reasoning) > route binding > profile > project > global > built-in. Omitted
-    flags stay None so lower-precedence configuration is never masked by an
-    eager parser default. Prepared clients are built fresh per call: concurrent
-    server jobs never share them.
-    """
+) -> NativeRunPlan:
+    """Resolve native configuration without constructing clients or starting tools."""
     from garuda.config.agent_home import resolve_agent_home, resolve_agents_dirs
 
     # Default the profiles dirs to the project's `.agent/agents` then `.garuda/agents`
@@ -1132,6 +1117,62 @@ async def prepare_agent_run(
             source=f"project settings ({home.workspace})",
         )
 
+    # --- Toolkit ------------------------------------------------------------
+    mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
+    # Config files the user chose are theirs; a project profile's own
+    # `mcp_config_path` is repository content like the rest of the project.
+    mcp_user_paths = [mcp_config_path] if mcp_config_path else []
+    if (
+        not mcp_config_path
+        and config.mcp_config_path
+        and profile_authority(profile.source_path, workspace) != PROJECT
+    ):
+        mcp_user_paths.append(config.mcp_config_path)
+    toolkit_names = profile.tools
+    if (
+        (bindings.collection is not None or sdk_collection is not None)
+        and collection_policy.enabled
+        and toolkit_names is not None
+    ):
+        # Resolve enough tools for both roles once. prepare_run applies the
+        # parent's profile filter before inserting delegate_collection, while
+        # CollectionCoordinator independently intersects the collector profile
+        # with the trusted non-mutating ceiling.
+        collection_profile = load_profile(collection_policy.profile, extra_dir=agents_dirs)
+        if collection_profile.tools is not None:
+            toolkit_names = list(dict.fromkeys([*toolkit_names, *collection_profile.tools]))
+    return NativeRunPlan(
+        workspace=workspace, profile=deepcopy(profile), config=deepcopy(config),
+        bindings=deepcopy(bindings), provenance=deepcopy(provenance),
+        collection_policy=deepcopy(collection_policy),
+        mcp_paths=tuple(mcp_paths), mcp_user_paths=tuple(mcp_user_paths),
+        toolkit_names=tuple(toolkit_names) if toolkit_names is not None else None,
+        sdk_reasoning=sdk_reasoning, sdk_collection=sdk_collection,
+    )
+
+
+async def activate_agent_plan(
+    plan: NativeRunPlan,
+    *,
+    approval_handler=None,
+    extra_tools: list[Tool] | None = None,
+    load_project_tools: bool | None = None,
+) -> PreparedNativeRun:
+    """Create fresh live dependencies from an already resolved native plan.
+
+    Activation does not resolve the profile, instructions, model settings, or
+    collection policy again. MCP files and project tools are still loaded here;
+    callers requiring frozen external inputs must supply those separately.
+    """
+    from garuda.core.rigorous import create_agent
+
+    workspace = plan.workspace
+    profile, config = deepcopy(plan.profile), deepcopy(plan.config)
+    bindings, provenance = deepcopy(plan.bindings), deepcopy(plan.provenance)
+    collection_policy = deepcopy(plan.collection_policy)
+    sdk_reasoning, sdk_collection = plan.sdk_reasoning, plan.sdk_collection
+    mcp_paths, mcp_user_paths = list(plan.mcp_paths), list(plan.mcp_user_paths)
+    toolkit_names = list(plan.toolkit_names) if plan.toolkit_names is not None else None
     resolved = ModelFactory().build(
         bindings,
         provenance,
@@ -1147,17 +1188,6 @@ async def prepare_agent_run(
         provenance["collection"].provenance.value,
     )
 
-    # --- Toolkit ------------------------------------------------------------
-    mcp_paths = resolve_mcp_config_paths(workspace, mcp_config_path or config.mcp_config_path)
-    # Config files the user chose are theirs; a project profile's own
-    # `mcp_config_path` is repository content like the rest of the project.
-    mcp_user_paths = [mcp_config_path] if mcp_config_path else []
-    if (
-        not mcp_config_path
-        and config.mcp_config_path
-        and profile_authority(profile.source_path, workspace) != PROJECT
-    ):
-        mcp_user_paths.append(config.mcp_config_path)
     permissions = PermissionEngine(
         mode=config.permission_mode,
         tool_rules=profile.tool_rules,
@@ -1165,15 +1195,6 @@ async def prepare_agent_run(
         bash_rules=profile.bash_rules,
         approval_handler=approval_handler,
     )
-    toolkit_names = profile.tools
-    if resolved.collection is not None and collection_policy.enabled and toolkit_names is not None:
-        # Resolve enough tools for both roles once. prepare_run applies the
-        # parent's profile filter before inserting delegate_collection, while
-        # CollectionCoordinator independently intersects the collector profile
-        # with the trusted non-mutating ceiling.
-        collection_profile = load_profile(collection_policy.profile, extra_dir=agents_dirs)
-        if collection_profile.tools is not None:
-            toolkit_names = list(dict.fromkeys([*toolkit_names, *collection_profile.tools]))
     tools, mcp_manager = await build_toolkit(
         toolkit_names,
         mcp_paths,
@@ -1182,6 +1203,7 @@ async def prepare_agent_run(
         load_project_tools=load_project_tools,
         mcp_servers=profile.mcp_servers,
         mcp_user_paths=mcp_user_paths,
+        **({"mcp_configs": deepcopy(plan.mcp_configs)} if plan.mcp_configs is not None else {}),
     )
     if profile.tools_removed:
         # `tools.remove` also removes an explicit or custom tool of that name (H.6).
@@ -1221,3 +1243,45 @@ async def prepare_agent_run(
         if mcp_manager is not None:
             await mcp_manager.close()
         raise
+
+
+async def prepare_agent_run(
+    agent_name: str | Any,
+    *,
+    workspace: str,
+    agents_dir: Path | list[Path] | None = None,
+    mcp_config_path: str | None = None,
+    mode: str | None = None,
+    permission_mode: str | None = None,
+    approval_handler=None,
+    extra_tools: list[Tool] | None = None,
+    load_project_tools: bool | None = None,
+    # Dual-model role bindings (Tasks 1-3). `model` is the legacy explicit
+    # reasoning alias; `reasoning_model` is its new spelling. Strings are model
+    # names resolved through the shared precedence chain; live `Model` objects
+    # are SDK-supplied clients kept by identity for their run only.
+    model: str | Any | None = None,
+    reasoning_model: str | Any | None = None,
+    collection_model: str | Any | None = None,
+    no_collection: bool = False,
+    model_binding: str | None = None,
+    reasoning_effort: str | None = None,
+    thinking_budget_tokens: int | None = None,
+) -> PreparedNativeRun:
+    """Resolve a native plan and activate fresh clients and tools for this run.
+
+    Explicit permissions are applied before constructing PermissionEngine.
+    Model precedence remains explicit > role env > legacy env > route > profile
+    > project > global > built-in. SDK clients are retained by identity.
+    """
+    plan = plan_agent_run(
+        agent_name, workspace=workspace, agents_dir=agents_dir,
+        mcp_config_path=mcp_config_path, mode=mode, permission_mode=permission_mode,
+        model=model, reasoning_model=reasoning_model, collection_model=collection_model,
+        no_collection=no_collection, model_binding=model_binding,
+        reasoning_effort=reasoning_effort, thinking_budget_tokens=thinking_budget_tokens,
+    )
+    return await activate_agent_plan(
+        plan, approval_handler=approval_handler, extra_tools=extra_tools,
+        load_project_tools=load_project_tools,
+    )
