@@ -118,8 +118,11 @@ def test_failed_write_leaves_original_readable(tmp_path, monkeypatch):
     assert json.loads(after)["task"] == "probe"
 
 
-def test_concurrent_meta_writes_lose_nothing(tmp_path):
+@pytest.mark.parametrize("strict", [False, True])
+def test_concurrent_meta_writes_lose_nothing(tmp_path, strict):
     store = SessionStore(tmp_path)
+    if strict:
+        store.protect_publication("s1")
     _begin(store)
     store.ensure_unified("s1")
     errors: list[BaseException] = []
