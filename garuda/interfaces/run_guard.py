@@ -47,6 +47,7 @@ class WorkspaceLeaseGuard:
         capacity_key: str | None = None,
         capacity_store=None,
         capacity_ceiling: int | None = None,
+        capacity_policy=None,
         capacity_loan=None,
         mode: str = "mutating",
     ):
@@ -65,6 +66,7 @@ class WorkspaceLeaseGuard:
         self._capacity_key = capacity_key
         self._capacity_store = capacity_store
         self._capacity_ceiling = capacity_ceiling
+        self._capacity_policy = capacity_policy
         self._capacity_loan = capacity_loan
         self._reservation = None
         # "read-only" work shares the workspace with other readers and never
@@ -101,11 +103,17 @@ class WorkspaceLeaseGuard:
             return
         if not self._capacity_key:
             return
-        from garuda.runtime.capacity import CapacityStore, configured_ceiling
+        from garuda.runtime.capacity import CapacityError, CapacityPolicy, CapacityStore, configured_ceiling
 
-        ceiling = self._capacity_ceiling
-        if ceiling is None:
-            ceiling = configured_ceiling(self._capacity_key)
+        if self._capacity_policy is not None:
+            if (type(self._capacity_policy) is not CapacityPolicy
+                    or self._capacity_policy.key != self._capacity_key):
+                raise CapacityError("resolved capacity policy names another runtime")
+            ceiling = self._capacity_policy.ceiling
+        else:
+            ceiling = self._capacity_ceiling
+            if ceiling is None:
+                ceiling = configured_ceiling(self._capacity_key)
         if ceiling is None:
             return
         store = self._capacity_store or CapacityStore()
@@ -238,6 +246,7 @@ class LeaseCapability:
         if _issuer is not _ISSUER:
             raise LeaseError("a lease capability is issued by its parent lease, not constructed")
         self._parent = parent
+        self._parent_epoch = parent._epoch
         self.session_id = session_id
         self.revoked = False
 
@@ -245,26 +254,28 @@ class LeaseCapability:
     def workspace(self) -> str:
         return self._parent.workspace
 
-    def guard(self, *, capacity_key: str | None = None) -> "BorrowedLease":
-        if self.revoked or not self._parent._held or self._parent._quarantined:
+    def guard(self, *, capacity_key: str | None = None, capacity_policy=None) -> "BorrowedLease":
+        if (self.revoked or not self._parent._held or self._parent._quarantined
+                or self._parent_epoch != self._parent._epoch):
             raise LeaseError("this lease capability was revoked")
         self._parent._check_authority()
-        return BorrowedLease(self, capacity_key=capacity_key)
+        return BorrowedLease(self, capacity_key=capacity_key, capacity_policy=capacity_policy)
 
 
 class BorrowedLease:
     """The lease surface a step sees: capacity of its own, the parent's lease."""
 
-    def __init__(self, capability: LeaseCapability, *, capacity_key: str | None):
+    def __init__(self, capability: LeaseCapability, *, capacity_key: str | None, capacity_policy=None):
         self._capability = capability
         self.workspace = capability.workspace
         self.session_id = capability.session_id
         self.leases = capability._parent.leases
         self._capacity = WorkspaceLeaseGuard(self.workspace, self.session_id,
-                                             capacity_key=capacity_key)
+                                             capacity_key=capacity_key, capacity_policy=capacity_policy)
 
     def _check(self) -> None:
-        if self._capability.revoked or self._capability._parent._quarantined:
+        if (self._capability.revoked or self._capability._parent._quarantined
+                or self._capability._parent_epoch != self._capability._parent._epoch):
             raise LeaseError("this lease capability was revoked or quarantined")
         self._capability._parent._check_authority()
 

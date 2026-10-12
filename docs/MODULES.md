@@ -260,14 +260,14 @@ manifest, starts the existing runtime facade inside the supervised worker, and
 returns `StepResult.closure` only after descendant closure. `role_control.py`
 retains the issued parent capability and actual child capacity in the parent;
 SO_PEERCRED and start identity bind its private socket to the launched worker.
-The child's logical release cannot free capacity. Cancellation settles the
+Capabilities bind the original parent epoch, and resolved capacity policy cannot
+be widened by rereading changed settings. The child's logical release cannot free capacity. Cancellation settles the
 subtree, and uncertainty quarantines the retained parent. `role_request.py`
 uses closed JSON values rather than executable object serialization.
 
 `config_sources.py` scopes source identities to actual parse reads. Owned
 preparation retains digests and absent-file observations, then uses an owned
-read helper to validate them before activation and after closure. This is
-being reviewed with source/ceiling mutation tests; it does not establish #313's
+read helper to validate them before activation and after closure. Source/ceiling and absent-input mutation tests exercise that refusal. It does not establish #313's
 durable phase admission or strict shared session publication. Owned workers
 currently refuse live SDK clients, executable project tool imports, and enabled
 nested collection profiles. The existing unverified flow launcher remains the

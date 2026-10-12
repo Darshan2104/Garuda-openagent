@@ -48,7 +48,17 @@ closure. They also observe the runtime's logical release and prove that its
 capacity remains occupied during physical cleanup. A separate actual process
 case rejects a correct nonce from a foreign PID.
 
-Source digests are now captured at parsing reads and checked by an owned helper;
-source/ceiling mutations, quarantine failures, approval/no-edits parity, full
-suite validation and final enforcement review are still pending. This record is
-an implementation checkpoint, not a claim that #330 or #313 is complete.
+Source digests are captured at parsing reads and checked by an owned helper.
+Actual source-change tests reject changes during parsing, ceiling-file changes,
+newly appearing configuration and project-memory inputs before tools launch.
+Actual broker tests cover ASK once and no-edits refusal. Supervisor loss and a
+failed result channel quarantine the original workspace and capacity. Caller
+checks reject copied records, revoked grants, another step, read-only parent
+admission and an obsolete parent epoch. The shared flow launcher exposes this
+path only through its internal owned-execution requirement.
+
+Full-suite validation, final adversarial enforcement mutations and exact-head CI
+remain pending. The checkpoint's macOS full run had 3,629 passes and one failure
+from an existing test patching a moved factory alias; the test now targets the
+actual factory and the focused compatibility suite passes. This record does not
+claim that #330 or #313 is complete before their remaining gates pass.

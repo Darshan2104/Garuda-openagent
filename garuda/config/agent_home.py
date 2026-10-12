@@ -138,6 +138,8 @@ def _load_settings(roots: tuple[Path, ...]) -> dict:
                 data = {}
             if isinstance(data, dict):
                 merged.update(data)
+            else:
+                record_source_error()
             break
     return merged
 
@@ -228,4 +230,7 @@ def _load_global_settings() -> dict:
         record_source_error()
         logger.warning("Failed to parse global agent settings %s", path, exc_info=True)
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        record_source_error()
+        return {}
+    return data

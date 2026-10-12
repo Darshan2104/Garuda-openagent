@@ -13,6 +13,10 @@ from garuda.flows.engine import StepLaunch, StepResult
 
 
 async def launch_step(launch: StepLaunch) -> StepResult:
+    if launch.require_owned:
+        from garuda.runtime.owned_role import launch_owned_step
+
+        return await launch_owned_step(launch)
     plan = launch.role_plan
     if plan is not None and plan.kind == "acp":
         return await _acp(launch)

@@ -27,12 +27,17 @@ class RoleControl:
     Socket peer credentials must identify the actual supervisor-issued command.
     """
 
-    def __init__(self, capability, workspace, capacity_key, *, approval=None):
+    def __init__(self, capability, workspace, capacity_key, *, approval=None, capacity_policy=None):
         if type(capability) is not LeaseCapability:
             raise LeaseError("owned roles require an issued parent capability")
+        if capability._parent._mode != "mutating":
+            raise LeaseError("owned roles require a mutating parent admission")
         if os.path.realpath(workspace) != os.path.realpath(capability.workspace):
             raise LeaseError("owned role workspace does not match its capability")
-        self.guard = capability.guard(capacity_key=capacity_key)
+        self.guard = capability.guard(capacity_key=capacity_key, capacity_policy=capacity_policy)
+        self.parent_snapshot = capability._parent.snapshot_ownership()
+        if self.parent_snapshot["lease"]["mode"] != "mutating":
+            raise LeaseError("owned roles require the retained mutating issuance")
         self.capacity_key = capacity_key
         self.workspace = os.path.realpath(workspace)
         self.approval = approval
@@ -157,6 +162,13 @@ class RoleControl:
                     return self._closer.result()
 
     async def _close(self, *, closed):
+        try:
+            await self._close_resources(closed=closed)
+        except BaseException:
+            await self.guard.stop_heartbeat()
+            raise
+
+    async def _close_resources(self, *, closed):
         if not closed:
             await self.guard.stop_heartbeat()
         if self._server is not None:
@@ -168,11 +180,10 @@ class RoleControl:
         for task in pending:
             task.cancel()
         if pending:
-            try:
-                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), 2)
-            except TimeoutError as exc:
+            _done, unfinished = await asyncio.wait(pending, timeout=2)
+            if unfinished:
                 await self.guard.stop_heartbeat()
-                raise CleanupUncertain("role control did not settle") from exc
+                raise CleanupUncertain("role control did not settle")
         if self._directory is not None:
             self._directory.cleanup()
         # BorrowedLease.release never releases the parent's workspace. Unknown

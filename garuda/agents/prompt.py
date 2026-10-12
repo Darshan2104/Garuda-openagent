@@ -39,6 +39,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from garuda.config_sources import read_source_fd, record_source
 from garuda.model.config import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class PromptRefused(ConfigError):
 def _read_inside(path: Path, root: Path, max_chars: int) -> tuple[str, bool] | None:
     """``(text, truncated)``; ``None`` when absent. Refuses an escape."""
     if not (path.exists() or path.is_symlink()):
+        record_source(path, None)
         return None
     try:
         real = path.resolve(strict=True)
@@ -102,7 +104,7 @@ def _read_inside(path: Path, root: Path, max_chars: int) -> tuple[str, bool] | N
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
-        data = os.read(fd, max_chars * 4 + 4)
+        data = read_source_fd(path, fd, max_chars * 4 + 4)
     finally:
         os.close(fd)
     text = data.decode("utf-8", errors="replace")

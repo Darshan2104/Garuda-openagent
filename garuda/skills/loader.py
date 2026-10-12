@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.agents.frontmatter import parse_frontmatter
+from garuda.config_sources import read_source_text
 
 
 @dataclass
@@ -39,7 +40,7 @@ def _parse_allowed_tools(value: object) -> list[str] | None:
 def load_skill(path: str | Path) -> Skill:
     """Load a single SKILL.md or skill markdown file."""
     target = Path(path)
-    meta, body = parse_frontmatter(target.read_text(encoding="utf-8"))
+    meta, body = parse_frontmatter(read_source_text(target))
     return Skill(
         name=meta.get("name", target.parent.name),
         description=meta.get("description", ""),

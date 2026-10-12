@@ -59,6 +59,7 @@ class StepLaunch:
     attempt: int
     no_edits: bool
     store: Any = None
+    require_owned: bool = False
 
 
 @dataclass

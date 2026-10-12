@@ -56,6 +56,24 @@ class CapacityUnavailable(CapacityError):
     """No slot is free for this runtime right now; nothing was reserved."""
 
 
+@dataclass(frozen=True)
+class CapacityPolicy:
+    """A resolved per-runtime ceiling; None explicitly means unlimited."""
+
+    key: str
+    ceiling: int | None
+
+    def __post_init__(self):
+        if not isinstance(self.key, str) or not self.key:
+            raise CapacityError("capacity policy requires a runtime key")
+        if self.ceiling is not None and (type(self.ceiling) is not int or self.ceiling < 1):
+            raise CapacityError("capacity policy requires a positive ceiling")
+
+    @classmethod
+    def resolve(cls, key):
+        return cls(key, configured_ceiling(key))
+
+
 def default_capacity_root() -> Path:
     from garuda.config.agent_home import global_settings_path
 

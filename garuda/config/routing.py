@@ -142,6 +142,7 @@ def load_global_orchestration() -> GlobalOrchestration:
         logger.warning("Failed to parse global settings %s", path, exc_info=True)
         return GlobalOrchestration()
     if not isinstance(data, dict):
+        record_source_error()
         return GlobalOrchestration()
     return parse_global_orchestration(data, source=f"global settings ({path})")
 

@@ -8,10 +8,11 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from garuda.config_sources import SourceCapture, SourceFact, record_digest
+from garuda.runtime.capacity import CapacityPolicy
 from garuda.runtime.process_supervision import CleanupUncertain, LinuxProcessSupervisor, ProcessRequest
 from garuda.runtime.role_control import RoleControl
 from garuda.runtime.role_request import encode_document, freeze_acp, freeze_native, freeze_role
@@ -27,10 +28,11 @@ class OwnedRoleRequest:
     session_id: str
     timeout: float = 3600
     sources: tuple[SourceFact, ...] = ()
+    capacity_policy: CapacityPolicy | None = None
 
     @property
     def digest(self):
-        return hashlib.sha256(encode_document({"payload": self.payload, "sources": [asdict(source) for source in self.sources]}).encode()).hexdigest()
+        return hashlib.sha256(encode_document({"payload": self.payload, "sources": [asdict(source) for source in self.sources], "capacity": asdict(self.capacity_policy) if self.capacity_policy else None}).encode()).hexdigest()
 
 
 def prepare_owned_step(launch, *, timeout=3600) -> OwnedRoleRequest:
@@ -40,8 +42,7 @@ def prepare_owned_step(launch, *, timeout=3600) -> OwnedRoleRequest:
                 if source.path is not None:
                     record_digest(source.path, source.digest)
         request = _prepare_owned_step(launch, timeout=timeout)
-        return OwnedRoleRequest(request.workspace, request.capacity_key, request.payload,
-                                request.session_id, request.timeout, capture.facts())
+        return replace(request, sources=capture.facts())
 
 
 def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
@@ -50,10 +51,11 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     from garuda.core.sessions import SessionStore
 
     workspace = os.path.realpath(launch.workspace)
+    info = os.stat(workspace)
     role = launch.role_plan
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
-    payload = {"version": 1, "workspace": workspace, "prompt": launch.prompt,
+    payload = {"version": 1, "workspace": workspace, "workspace_identity": [info.st_dev, info.st_ino], "prompt": launch.prompt,
                "session_id": session_id, "sessions_root": str(store.root.resolve()),
                "role": freeze_role(role), "no_edits": launch.no_edits,
                "flow": {"flow_session": launch.flow_session, "step": launch.step_id,
@@ -70,7 +72,8 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
             reasoning_effort=role.effort if role else None)
         payload.update(kind="native", native=freeze_native(native))
         capacity_key = "native"
-    return OwnedRoleRequest(workspace, capacity_key, encode_document(payload), session_id, timeout)
+    return OwnedRoleRequest(workspace, capacity_key, encode_document(payload), session_id, timeout,
+                            capacity_policy=CapacityPolicy.resolve(capacity_key))
 
 
 async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=None):
@@ -87,13 +90,25 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
             or request.capacity_key != ("native" if payload.get("kind") == "native"
                                         else payload["manifest"]["runtime_id"])):
         raise ValueError("owned role request binding differs")
-    control = RoleControl(capability, request.workspace, request.capacity_key, approval=approval)
+    control = RoleControl(capability, request.workspace, request.capacity_key, approval=approval,
+                          capacity_policy=request.capacity_policy)
+    flow = payload["flow"]
+    expected_child = f"{flow['flow_session']}:{flow['step']}:{flow['attempt']}"
+    if flow["flow_session"] != capability._parent.session_id or expected_child != capability.session_id:
+        raise ValueError("owned role request belongs to another parent or step")
     from garuda.core.acceptance_work import owned_call
 
     async def validate_sources():
+        info = os.stat(request.workspace)
+        if [info.st_dev, info.st_ino] != payload["workspace_identity"]:
+            raise ValueError("owned role workspace identity changed")
         await owned_call("admitted-sources", {"sources": [asdict(source) for source in request.sources]})
 
-    await validate_sources()
+    try:
+        await control.guard.race(validate_sources())
+    except CleanupUncertain:
+        await control.guard.stop_heartbeat()
+        raise
     process = await LinuxProcessSupervisor().prepare()
     started = False
     normal_result = False
@@ -109,12 +124,17 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         await control.guard.race(process.activate(execution))
         control.activated()
         terminal = await control.guard.race(process.wait())
-        await validate_sources()
+        await control.guard.race(validate_sources())
         result = control.result
         if terminal.outcome != "exited" or result is None or result["session_id"] != request.session_id:
             raise CleanupUncertain("owned role closed without a complete bound result")
         closure = {"version": 1, "request_digest": request.digest,
-                   "session_id": request.session_id, "process": asdict(terminal)}
+                   "session_id": request.session_id, "parent_id": flow["flow_session"],
+                   "step_id": flow["step"], "attempt": flow["attempt"],
+                   "workspace_identity": payload["workspace_identity"],
+                   "parent_owner": {key: control.parent_snapshot["lease"][key]
+                                    for key in ("pid", "identity", "pgid", "epoch")},
+                   "process": asdict(terminal)}
         normal_result = True
         return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
                           result["output"], closure=closure)
