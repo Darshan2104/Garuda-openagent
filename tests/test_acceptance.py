@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -11,6 +12,23 @@ from garuda.core import acceptance as ac
 from garuda.core.sessions import SessionStore
 from garuda.runtime.session_state import finished, validate
 from garuda.types import AgentResult
+
+
+def test_cold_receipt_redaction_works_without_an_inference_transport():
+    script = """
+import importlib.abc, sys
+sys.path.insert(0, sys.argv[1])
+class NoInference(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, *args):
+        if fullname == 'litellm' or fullname == 'garuda.model' or fullname.startswith('garuda.model.'):
+            raise ModuleNotFoundError('inference transport unavailable')
+sys.meta_path.insert(0, NoInference())
+from garuda.core.acceptance import _tail
+value = _tail('sk-fake-secret-123456789 result')
+assert 'sk-fake-secret-123456789' not in value and 'result' in value
+"""
+    subprocess.run([sys.executable, "-I", "-c", script, str(Path(__file__).resolve().parents[1])],
+                   check=True, capture_output=True, text=True, timeout=10)
 
 
 def _repo(path: Path) -> Path:

@@ -169,6 +169,12 @@ class WorkspaceLeaseGuard:
             raise LeaseError("lease authority is not held or is quarantined")
         self.leases.validate_issued(self.workspace, self.session_id, epoch=self._epoch)
 
+    def snapshot_ownership(self) -> dict:
+        """Retained facts for an owned read worker; not a transferable lease grant."""
+        if not self._held or self._quarantined or self._mode != "mutating":
+            raise LeaseError("acceptance requires the held mutating parent")
+        return self.leases.snapshot_issued(self.workspace, self.session_id, epoch=self._epoch)
+
     def delegate(self, session_id: str) -> LeaseCapability:
         """Lend this lease to one child step; revoke it when the step ends."""
         self._check_authority()

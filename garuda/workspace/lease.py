@@ -334,6 +334,22 @@ class LeaseStore:
                 raise LeaseError(f"no issued lease for workspace {key}")
             return current
 
+    def snapshot_issued(self, workspace: str, session_id: str, *, epoch: str | None) -> dict:
+        """Copy retained issuer facts without filesystem work.
+
+        This is not durable validation or mutation authority for another store.
+        An owned read worker must compare these facts with the locked record and
+        live issuer identity before supervised acceptance can use them.
+        """
+        issued = self._issued.get((workspace, session_id))
+        if (issued is None or issued.pid != os.getpid() or issued.pgid != os.getpgrp()
+                or not epoch or issued.epoch != epoch or issued.workspace != workspace
+                or not issued.identity or issued.identity == "unknown"):
+            raise LeaseError("no retained lease belongs to this instance/process")
+        fields = {key: value for key, value in issued.to_dict().items()
+                  if key in {"workspace", "session_id", "mode", "pid", "identity", "pgid", "epoch"}}
+        return {"root": str(self.root), "lease": fields}
+
     def heartbeat(
         self, workspace: str | Path, session_id: str, *, epoch: str | None = None
     ) -> Lease:

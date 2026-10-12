@@ -1,5 +1,23 @@
 # Durable decisions
 
+## 2026-10-12 — Async acceptance has an owned Linux subtree boundary (#312)
+
+- The internal runner accepts frozen authorized checks and a parent-owned
+  candidate/evidence context. It neither acquires a replacement lease nor
+  publishes a flow pass. #313 owns complete flow evidence and final publication.
+- Prepare a dedicated Linux subreaper, publish bound launch authorization, then
+  deliver one command. Bounded output and actual reaping to `ECHILD` precede an
+  immutable receipt. pidfds constrain signals to retained identities; missing
+  terminal evidence means uncertainty, including supervisor death.
+- Fixed Git, source, lease and storage helpers use the same owned process
+  boundary so cancellation cannot abandon an untracked writer. Receipt loss or
+  ambiguous publication quarantines the original parent; reconciliation never
+  launches or signals. Private phase-scoped records bind workspace identity,
+  issued lease, authority, effective policy, candidate and evidence digests.
+- Linux is the initial supported backend. macOS and Docker checks are unavailable
+  through this new API. Existing synchronous acceptance behavior is preserved.
+  Process ownership and permission screening are not confinement.
+
 ## 2026-10-07 — Starter launch reuses execution owners (#308)
 
 - Start recompiles structured inputs/current sources and configuration before

@@ -86,6 +86,15 @@ fastest way to learn the system.
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
    This facade adds no checks parameter or flow verification phase.
+   The internal `core/acceptance_runner.py` boundary accepts already-frozen
+   authorized checks and a candidate/evidence context from a retained parent
+   lease owner. A dedicated Linux subreaper owns each check and each fixed
+   filesystem/probe helper. Authorization is durable before command delivery;
+   terminal receipts require actual descendant closure. Lost publication or
+   cleanup evidence stops the parent's heartbeat and retains quarantine.
+   macOS and Docker check execution remain unavailable at this new boundary;
+   synchronous acceptance APIs retain their existing behavior. The flow engine
+   still needs #313's cumulative evidence and final publication integration.
    `scenarios/compile.py` compiles installed starter data into bounded labelled
    tasks and exact existing CLI commands. It resolves effective flows and
    configured role plans through the non-executing catalog; it never calls
