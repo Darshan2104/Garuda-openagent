@@ -7,6 +7,7 @@ linked GitHub issues for open work.
 
 - [Ready-to-use workflow scenarios](2026-10-06-ready-to-use-workflow-scenarios.md) — revision 5; P0 and P1a approved, later phases gated; tracked in [epic #302](https://github.com/Darshan2104/Garuda-openagent/issues/302).
 - [Starter P0 contract confirmation](2026-10-07-starter-p0-contracts.md) — current-main evidence and implementation constraints for the first CLI release.
+- [Owned asynchronous acceptance runner](2026-10-12-owned-acceptance-runner-implementation.md) — internal Linux process/receipt owner for #312; flow finalization remains #313.
 
 - [Dual-model delegation and runtime routing](2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md)
 - [Collection forced terminal submission](2026-09-29-collection-forced-terminal-submission-implementation.md)

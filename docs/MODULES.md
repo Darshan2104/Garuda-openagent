@@ -25,6 +25,9 @@ a behaviour.
 | `loop.py` | `DefaultAgent`: the turn loop, and nothing else. Model call → tool step → repeat. Re-exports the constants callers import from here. |
 | `run_state.py` | `prepare_run` (assembly: tool filtering, buffer, context bootstrap, subagent/collection wiring, deadline) and `RunState` (what the loop reads and writes, plus result building). |
 | `acceptance.py` | C.5 attributed verification: runs `user-config`, `trusted-project` and `user-request` checks after a session, writes a receipt each (authority, command, code fingerprint, exit code, bounded redacted output), voids a check that changes the tree, withholds a pass when the session changed that check's own test infrastructure, and derives verification; agent-suggested checks only ever set the self-check. |
+| `acceptance_runner.py`, `acceptance_request.py` | Internal asynchronous acceptance boundary for frozen authorized checks and a parent-owned candidate/evidence context. Checks retain the caller's lease, apply effective permission ceilings, use the shared receipt policy, and quarantine the owner on execution/publication uncertainty. No CLI or flow activation is added here. |
+| `acceptance_records.py` | Private, phase-scoped intent, launch authorization and immutable receipt records. Duplicate attempts reconcile without replay; lost authorization or receipt publication remains uncertain. |
+| `acceptance_work.py`, `acceptance_worker.py` | Fixed supervised helpers for source/lease/candidate validation and durable publication, keeping filesystem locks, Git and writers off the event loop. |
 | `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
 | `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
@@ -239,6 +242,14 @@ contract, and sibling event log; ordinary `invoke_subagent` stays on reasoning.
 single resolution point for every entry point.
 
 ## `runtime/` — harness boundary
+
+`runtime/process_supervision.py` owns one prepared Linux subreaper worker from
+`runtime/process_worker.py`. Activation follows durable authorization; bounded
+stream draining, cancellation and descendant reaping precede terminal evidence.
+Stable pidfds identify signal targets, and actual `ECHILD` establishes closure,
+including double-forked descendants that leave their process group. This is
+process ownership, not confinement. `runtime/private_records.py` supplies bounded
+descriptor-based private record reads; reading a record grants no authority.
 
 `protocol.py` is the `AgentRuntime` interface every harness implements (native or
 external — never place a harness behind `Model`). `events.py` is the normalized

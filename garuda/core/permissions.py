@@ -181,6 +181,14 @@ class PermissionEngine:
     def approval_handler(self) -> "ApprovalHandler | None":
         return self._approval_handler
 
+    def snapshot_policy(self) -> dict:
+        """Copy the rules actually used by this enforcer for authority binding."""
+        return {"version": 1, "mode": self._mode, "tools": dict(self._tool_rules),
+                "deny_paths": list(self._deny_paths), "ask_paths": list(self._ask_paths),
+                "deny_bash": [{"pattern": rule.pattern, "flags": rule.flags} for rule in self._deny_bash],
+                "ask_bash": [{"pattern": rule.pattern, "flags": rule.flags} for rule in self._ask_bash],
+                "allow_prefixes": list(self._allow_prefixes)}
+
     def install_approval_handler(self, handler: "ApprovalHandler | None") -> None:
         """Replace the ASK responder, e.g. with the shared approval broker.
 
@@ -324,6 +332,25 @@ class PermissionEngine:
             decision, reason, tool_name, arguments, self._approval_handler
         )
 
+    def decide_acceptance(self, arguments: dict) -> tuple[PermissionDecision, str | None]:
+        """Explicit check ceilings retain deny/ask rules even in auto tool mode."""
+        decision, reason = self.decide("bash", arguments)
+        command = arguments.get("command", "")
+        declared = PermissionDecision.ALLOW
+        if any(rule.search(command) for rule in self._deny_bash):
+            declared = PermissionDecision.DENY
+        elif any(rule.search(command) for rule in self._ask_bash):
+            declared = PermissionDecision.ASK
+        cwd = arguments.get("cwd", "")
+        decision = _strictest(decision, declared, self.check_path(cwd, "write"))
+        for path in [cwd, *command_path_tokens(command)]:
+            decision = _strictest(decision, self._match_path_rules(path) or PermissionDecision.ALLOW)
+        return decision, reason or ("Check permission ceiling refused" if decision == PermissionDecision.DENY else None)
+
+    async def evaluate_acceptance(self, arguments: dict) -> tuple[bool, str | None]:
+        decision, reason = self.decide_acceptance(arguments)
+        return await _resolve_decision(decision, reason, "bash", arguments, self._approval_handler)
+
 
 async def _resolve_decision(
     decision: PermissionDecision,
@@ -380,6 +407,19 @@ class DelegatedPermissionEngine:
     @property
     def parent(self):
         return self._parent
+
+    def snapshot_policy(self) -> dict:
+        return {"version": 1, "child": self._child.snapshot_policy(),
+                "parent": self._parent.snapshot_policy()}
+
+    def decide_acceptance(self, arguments: dict) -> tuple[PermissionDecision, str | None]:
+        child, child_reason = self._child.decide_acceptance(arguments)
+        parent, parent_reason = self._parent.decide_acceptance(arguments)
+        return _strictest(child, parent), parent_reason or child_reason
+
+    async def evaluate_acceptance(self, arguments: dict) -> tuple[bool, str | None]:
+        decision, reason = self.decide_acceptance(arguments)
+        return await _resolve_decision(decision, reason, "bash", arguments, self.approval_handler)
 
     @property
     def mode(self) -> str:

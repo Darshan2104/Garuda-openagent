@@ -57,7 +57,7 @@ INFRA = {
 
 
 def _words(run) -> list[str]:
-    if isinstance(run, list):
+    if isinstance(run, (list, tuple)):
         return list(run)
     try:
         return shlex.split(run)
@@ -97,6 +97,26 @@ def _tail(text: str) -> str:
     return clean[-OUTPUT_TAIL:]
 
 
+def evaluate_receipt(receipt: dict, *, before, after, exit_code, output: str,
+                     changed: list[str], duration_s: float, run=None) -> dict:
+    """Pure verdict policy shared by synchronous and supervised execution."""
+    receipt = dict(receipt)
+    receipt.update(exit_code=exit_code, fingerprint=before, output_tail=_tail(output),
+                   duration_s=round(duration_s, 3))
+    touched = infra_changed(receipt["run"] if run is None else run, changed)
+    if before is None or before != after:
+        receipt.update(status="void", reason="the check changed the tree it was checking")
+    elif exit_code is None:
+        receipt.update(status="failed", reason=output)
+    elif touched:
+        receipt.update(status="unverified", infra_changed=touched,
+                       code="verification.test_infra_changed",
+                       reason="the session changed test infrastructure this check depends on")
+    else:
+        receipt["status"] = "passed" if exit_code == 0 else "failed"
+    return receipt
+
+
 def run_check(check: dict, authority: str, workspace, changed: list[str], *,
               timeout: float = 900.0) -> dict:
     """Run one acceptance check and return its receipt."""
@@ -124,20 +144,9 @@ def run_check(check: dict, authority: str, workspace, changed: list[str], *,
     except OSError as exc:
         exit_code, output = None, f"could not run: {exc}"
     after = fingerprint(root)
-    receipt.update(exit_code=exit_code, fingerprint=before, output_tail=_tail(output),
-                   duration_s=round(time.time() - receipt["started_at"], 3))
-    touched = infra_changed(run, changed)
-    if before is None or before != after:
-        receipt.update(status="void", reason="the check changed the tree it was checking")
-    elif exit_code is None:
-        receipt.update(status="failed", reason=output)
-    elif touched:
-        receipt.update(status="unverified", infra_changed=touched,
-                       code="verification.test_infra_changed",
-                       reason="the session changed test infrastructure this check depends on")
-    else:
-        receipt["status"] = "passed" if exit_code == 0 else "failed"
-    return receipt
+    return evaluate_receipt(receipt, before=before, after=after, exit_code=exit_code,
+                            output=output, changed=changed,
+                            duration_s=time.time() - receipt["started_at"])
 
 
 def verification_from(receipts: list[dict]) -> dict:

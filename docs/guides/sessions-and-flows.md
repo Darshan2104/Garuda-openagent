@@ -67,6 +67,14 @@ trusted. Garuda runs them after the session and records a receipt for each
 verification is `unavailable`. A check that changes the code it checks, or
 that depends on test setup the session changed, can't pass.
 
+The internal asynchronous acceptance runner currently supports Linux host checks
+with owned descendant cleanup and private, phase-scoped receipts. It does not
+yet enable checks for flows: cumulative flow evidence and final publication are
+tracked in [#313](https://github.com/Darshan2104/Garuda-openagent/issues/313).
+macOS and Docker checks are unavailable through that new internal API; existing
+synchronous session checks retain their behavior. See the
+[implementation record](../plans/2026-10-12-owned-acceptance-runner-implementation.md).
+
 ### Background sessions and the queue
 
 `garuda run --bg` writes the session as `queued`, adds it to a durable
