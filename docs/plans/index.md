@@ -9,6 +9,8 @@ linked GitHub issues for open work.
 - [Starter P0 contract confirmation](2026-10-07-starter-p0-contracts.md) — current-main evidence and implementation constraints for the first CLI release.
 - [Owned asynchronous acceptance runner](2026-10-12-owned-acceptance-runner-implementation.md) — internal Linux process/receipt owner for #312; flow finalization remains #313.
 
+- [Shared owned role execution](2026-10-12-owned-role-execution-implementation.md) — #330 prerequisite in progress; public verified flow activation remains gated on #313.
+
 - [Dual-model delegation and runtime routing](2026-09-14-dual-model-delegation-and-runtime-routing-implementation.md)
 - [Collection forced terminal submission](2026-09-29-collection-forced-terminal-submission-implementation.md)
 - [Paired-trial report CLI](2026-09-29-paired-trial-report-cli-implementation.md)

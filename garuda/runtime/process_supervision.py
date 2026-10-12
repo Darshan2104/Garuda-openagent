@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from garuda.runtime.process_request import WIRE_VERSION, ProcessRequest
+
 WIRE_LIMIT = 65_536
 TAIL_BYTES = 4_096  # Two maximally escaped tails still fit the bounded JSON channel.
 
@@ -36,41 +38,6 @@ def _identity(value):
             and type(value["pid"]) is int and value["pid"] > 1
             and type(value["pgid"]) is int and value["pgid"] == value["pid"]
             and isinstance(value["identity"], str) and value["identity"] not in {"", "unknown"})
-
-
-@dataclass(frozen=True)
-class ProcessRequest:
-    run: str | tuple[str, ...]
-    cwd: str
-    env: tuple[tuple[str, str], ...] = ()
-    timeout: float = 900.0
-    term_grace: float = 3.0
-    kill_grace: float = 3.0
-    input_data: str | None = None
-
-    def document(self) -> dict:
-        if not isinstance(self.run, (str, tuple)) or not self.run:
-            raise ValueError("command must be nonempty shell text or an argv tuple")
-        if isinstance(self.run, tuple) and (not self.run[0] or any(not isinstance(v, str) for v in self.run)):
-            raise ValueError("argv must contain strings and a nonempty executable")
-        if not isinstance(self.cwd, str) or not os.path.isabs(self.cwd):
-            raise ValueError("cwd must be absolute")
-        for value, maximum in ((self.timeout, 900), (self.term_grace, 3), (self.kill_grace, 3)):
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not (
-                    math.isfinite(value) and 0 < value <= maximum):
-                raise ValueError("process limits must be positive and within policy bounds")
-        env = dict(self.env)
-        if len(env) != len(self.env) or any(not isinstance(k, str) or not k or "=" in k
-                                         or not isinstance(v, str) for k, v in self.env):
-            raise ValueError("invalid environment definitions")
-        if self.input_data is not None and not isinstance(self.input_data, str):
-            raise ValueError("owned helper input must be text")
-        result = {"version": 1, "run": self.run, "cwd": self.cwd, "env": env,
-                  "timeout": self.timeout, "term_grace": self.term_grace,
-                  "kill_grace": self.kill_grace, "input_data": self.input_data}
-        if len(json.dumps(result).encode()) > WIRE_LIMIT - 1:
-            raise ValueError("process request exceeds its bound")
-        return result
 
 
 @dataclass(frozen=True)
@@ -147,7 +114,7 @@ class OwnedProcess:
             raw = await self.proc.stdout.readline()
             message = json.loads(raw)
             if (len(raw) > WIRE_LIMIT or not isinstance(message, dict)
-                    or type(message.get("version")) is not int or message["version"] != 1
+                    or type(message.get("version")) is not int or message["version"] != WIRE_VERSION
                     or message.get("launch_id") != self.launch_id):
                 raise ValueError("invalid worker envelope")
             return message

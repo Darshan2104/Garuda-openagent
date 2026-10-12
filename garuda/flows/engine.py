@@ -66,6 +66,7 @@ class StepResult:
     session_id: str
     success: bool
     output: str
+    closure: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]

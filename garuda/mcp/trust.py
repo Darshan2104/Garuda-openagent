@@ -36,6 +36,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from garuda.config_sources import record_digest, record_source
+
 logger = logging.getLogger(__name__)
 
 STORE_VERSION = 1
@@ -83,7 +85,9 @@ def _file_digest(path: Path) -> str:
             if total > _MAX_SCRIPT_BYTES:
                 raise TrustError(f"referenced file {path} is larger than {_MAX_SCRIPT_BYTES} bytes")
             digest.update(chunk)
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    record_digest(path, value)
+    return value
 
 
 def _referenced_files(tokens: list[str], workspace: Path) -> list[dict]:
@@ -130,6 +134,7 @@ def _read_store(path: Path) -> list[dict]:
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
+        record_source(path, None)
         return []
     except OSError as exc:
         if exc.errno == errno.ELOOP:
@@ -143,7 +148,9 @@ def _read_store(path: Path) -> list[dict]:
             return []
         with os.fdopen(fd, "rb") as handle:
             fd = -1
-            data = json.loads(handle.read().decode("utf-8"))
+            raw = handle.read()
+            record_source(path, raw)
+            data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         logger.warning("MCP trust store %s is unreadable (%s); no project server is trusted", path, exc)
         return []

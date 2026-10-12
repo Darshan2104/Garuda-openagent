@@ -151,9 +151,19 @@ class McpClientManager:
         a warning before anything starts; one that ``allowed_servers`` names
         explicitly refuses the run instead, because the profile requires it.
         """
+        manager = cls()
+        await manager.start(cls.resolve_configs(
+            paths, allowed_servers, workspace=workspace, user_paths=user_paths))
+        return manager
+
+    @staticmethod
+    def resolve_configs(
+        paths: list[str], allowed_servers: list[str] | None = None, *,
+        workspace: str | None = None, user_paths: list[str] | tuple[str, ...] = (),
+    ) -> list[McpServerConfig]:
+        """Resolve trust and filtering without launching or connecting any server."""
         from garuda.mcp.trust import UNTRUSTED_CODE, describe
 
-        manager = cls()
         servers, untrusted = partition_mcp_servers(
             paths, workspace=workspace, user_paths=user_paths
         )
@@ -178,8 +188,7 @@ class McpClientManager:
             )
         if allow is not None:
             servers = [s for s in servers if s.name in allow]
-        await manager.start(servers)
-        return manager
+        return servers
 
     async def start(self, servers: list[McpServerConfig]) -> None:
         """Connect to each configured server. A failing server is logged and skipped

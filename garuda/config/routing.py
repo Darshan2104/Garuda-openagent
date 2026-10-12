@@ -129,14 +129,16 @@ def load_global_orchestration() -> GlobalOrchestration:
     import yaml
 
     from garuda.config.agent_home import global_settings_path
+    from garuda.config_sources import read_source_text, record_source_error, source_is_file
 
     logger = logging.getLogger(__name__)
     path = global_settings_path()
-    if not path.is_file():
+    if not source_is_file(path):
         return GlobalOrchestration()
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(read_source_text(path)) or {}
     except Exception:
+        record_source_error()
         logger.warning("Failed to parse global settings %s", path, exc_info=True)
         return GlobalOrchestration()
     if not isinstance(data, dict):

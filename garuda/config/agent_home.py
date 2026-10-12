@@ -34,6 +34,8 @@ from pathlib import Path
 
 import yaml
 
+from garuda.config_sources import read_source_text, record_source_error, source_is_file
+
 logger = logging.getLogger(__name__)
 
 # Convention folders at the workspace root, in precedence order (first wins).
@@ -83,7 +85,7 @@ class AgentHome:
         for root in self.roots:
             for name in _MCP_FILENAMES:
                 candidate = root / name
-                if candidate.is_file():
+                if source_is_file(candidate):
                     paths.append(str(candidate))
                     break
         return paths
@@ -126,11 +128,12 @@ def _load_settings(roots: tuple[Path, ...]) -> dict:
     for root in reversed(roots):
         for name in _SETTINGS_FILENAMES:
             path = root / name
-            if not path.is_file():
+            if not source_is_file(path):
                 continue
             try:
-                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                data = yaml.safe_load(read_source_text(path)) or {}
             except Exception:
+                record_source_error()
                 logger.warning("Failed to parse agent settings %s", path, exc_info=True)
                 data = {}
             if isinstance(data, dict):
@@ -217,11 +220,12 @@ def global_settings_path() -> Path:
 
 def _load_global_settings() -> dict:
     path = global_settings_path()
-    if not path.is_file():
+    if not source_is_file(path):
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(read_source_text(path)) or {}
     except Exception:
+        record_source_error()
         logger.warning("Failed to parse global agent settings %s", path, exc_info=True)
         return {}
     return data if isinstance(data, dict) else {}

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from garuda.config_sources import read_source_text
 from garuda.model.config import ConfigError
 
 VERSION = 1
@@ -417,7 +418,7 @@ def project_path(workspace) -> Path:
 
 def load_file(path: Path) -> dict | None:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_source_text(path)
     except FileNotFoundError:
         return None
     except OSError as exc:

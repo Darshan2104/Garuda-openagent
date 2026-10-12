@@ -153,7 +153,7 @@ def _context(data):
 def dispatch(operation, data):
     if not isinstance(data, dict):
         raise ValueError("operation input is not a mapping")
-    schemas = {"fingerprint": {"workspace"}, "sources": {"sources"}, "owner": {"snapshot"},
+    schemas = {"admitted-sources": {"sources"}, "fingerprint": {"workspace"}, "sources": {"sources"}, "owner": {"snapshot"},
                "context": {"snapshot", "workspace", "workspace_identity", "cwd", "sources"},
                "prepare": {"session_dir", "binding", "summary", "limits"},
                "transition": {"session_dir", "binding", "expected", "phase", "fields"},
@@ -161,6 +161,10 @@ def dispatch(operation, data):
                "reconcile": {"session_dir", "binding"}}
     if operation not in schemas or set(data) != schemas[operation]:
         raise ValueError("unsupported operation or fields")
+    if operation == "admitted-sources":
+        from garuda.config_sources import verify_sources
+
+        return verify_sources(data["sources"])
     if operation == "fingerprint":
         return _fingerprint(data)
     if operation == "sources":

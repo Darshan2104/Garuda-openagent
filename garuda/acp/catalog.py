@@ -297,12 +297,14 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
     from garuda.config.agent_home import global_settings_path
 
     path = global_settings_path()
-    if not Path(path).is_file():
+    from garuda.config_sources import read_source_text, source_is_file
+
+    if not source_is_file(Path(path)):
         return {}
     try:
         import yaml
 
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(read_source_text(Path(path))) or {}
     except (OSError, yaml.YAMLError) as exc:
         raise RuntimeSettingsError(f"cannot read trusted runtime settings {path}: {exc}") from exc
     if not isinstance(data, Mapping):
@@ -529,8 +531,11 @@ def builtin_manifest_dicts() -> list[dict[str, Any]]:
     """Raw JSON dicts of the shipped vendor manifests, for `parse_global_manifests`."""
     dicts = []
     for filename in BUILTIN_MANIFEST_FILES:
-        with open(os.path.join(BUILTIN_DIR, filename), encoding="utf-8") as handle:
-            data = json.load(handle)
+        from pathlib import Path
+
+        from garuda.config_sources import read_source_text
+
+        data = json.loads(read_source_text(Path(BUILTIN_DIR) / filename))
         if not isinstance(data, dict):
             raise ValueError(f"builtin manifest {filename} must be an object")
         dicts.append(data)
