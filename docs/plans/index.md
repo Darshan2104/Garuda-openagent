@@ -18,9 +18,11 @@ linked GitHub issues for open work.
 - [Agent definitions](2026-10-01-agent-definitions-implementation.md)
 
 P0/P1a landed through [#318](https://github.com/Darshan2104/Garuda-openagent/pull/318)
-through [#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P2 adds
-read-only dashboard discovery, preview/copy and selected result evidence after
-that entry gate, independently of P1b. P1b's verification ownership review remains
+through [#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P2's
+read-only dashboard discovery, preview/copy and selected result evidence landed
+in [#327](https://github.com/Darshan2104/Garuda-openagent/pull/327), independently
+of P1b. P1b still requires review of the proposed
+[flow verification ownership design](../design/2026-10-08-flow-verification-ownership-design.md)
 in [draft #326](https://github.com/Darshan2104/Garuda-openagent/pull/326); trusted
 flow checks and P3 browser launch remain separately gated. The revision-5 plan
 snapshot is unchanged; current guides describe shipped behavior.
