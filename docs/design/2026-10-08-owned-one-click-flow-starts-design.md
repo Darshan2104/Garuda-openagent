@@ -1,6 +1,6 @@
 # Owned one-click flow starts
 
-**Status: proposed; awaiting separate P3 approval.** This is the design
+**Status: approved for implementation, 2026-10-12.** This is the design
 deliverable for [#315](https://github.com/Darshan2104/Garuda-openagent/issues/315).
 It enables no route, Start button, runtime capability or adopted decision.
 The issue requires P2 acceptance to land and a separate P3 go-ahead before
@@ -23,7 +23,7 @@ queue, automatic resume, new event bus, provider transport or OAuth integration.
 P1b flow verification remains unavailable until its actual mechanism lands.
 
 The [P1b ownership proposal](https://github.com/Darshan2104/Garuda-openagent/pull/326)
-is still unapproved. Its shared native/ACP cleanup and strict metadata prerequisites
+was approved by the user on 2026-10-12 and merged. Its shared native/ACP cleanup and strict metadata prerequisites
 also affect P3. They may land before verification itself, after their own review;
 this proposal cannot turn existing best-effort cleanup into closure evidence.
 
@@ -244,7 +244,7 @@ fixtures that manufacture publication/closure receipts:
   report live vendor/Docker/tmux/Harbor/OS coverage accurately. Update adopted
   architecture/reference/roadmap and durable decisions only when behavior lands.
 
-Approval must select the gateway approach and platform rollout, and accept the
-shared strict-admission/authority/cleanup prerequisites. P3 approval alone is
+The user approved the shared-gateway approach, Linux-first rollout, and shared
+strict-admission/authority/cleanup prerequisites on 2026-10-12. P3 approval alone is
 not evidence that those prerequisites exist. #315 stays open until its actual
 flow-start acceptance passes; #316 remains a separate run-kind gate.
