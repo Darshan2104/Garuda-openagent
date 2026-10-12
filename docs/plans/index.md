@@ -21,8 +21,10 @@ P0/P1a landed through [#318](https://github.com/Darshan2104/Garuda-openagent/pul
 through [#325](https://github.com/Darshan2104/Garuda-openagent/pull/325). P2's
 read-only dashboard discovery, preview/copy and selected result evidence landed
 in [#327](https://github.com/Darshan2104/Garuda-openagent/pull/327), independently
-of P1b. P1b still requires review of the proposed
+of P1b. The user approved the recommended
 [flow verification ownership design](../design/2026-10-08-flow-verification-ownership-design.md)
-in [draft #326](https://github.com/Darshan2104/Garuda-openagent/pull/326); trusted
-flow checks and P3 browser launch remain separately gated. The revision-5 plan
+in [#326](https://github.com/Darshan2104/Garuda-openagent/pull/326) and the separate
+[P3 launch design](../design/2026-10-08-owned-one-click-flow-starts-design.md)
+on 2026-10-12. Trusted flow checks and browser launch still require their
+implementation and runtime conformance gates. The revision-5 plan
 snapshot is unchanged; current guides describe shipped behavior.

@@ -1,10 +1,11 @@
 # Flow verification ownership, evidence, and recovery
 
-**Status: proposed; awaiting design review.** This record implements the design
+**Status: approved for implementation, 2026-10-12.** This record implements the design
 deliverable for [#311](https://github.com/Darshan2104/Garuda-openagent/issues/311),
 not the runtime behavior in #312 or #313. Neither `flow run --check` nor automatic
-`build-review` checks exist on the inspected main. Approval must resolve the
-review decisions below before P1b code begins.
+`build-review` checks exist on the inspected main. The user approved the
+recommended decisions below before P1b code begins.
+Approval is design evidence, not evidence that the runtime has shipped.
 
 ## Baseline and scope
 
@@ -22,7 +23,8 @@ This design preserves those contracts and identifies the additional mechanisms
 needed to satisfy them. It proposes no second flow engine, automatic repair,
 background-flow support, new check configuration keys, or Docker-check host
 fallback. P2 read-only starter browsing landed independently of P1b; its UI
-continues to show flow verification as unavailable. P3 launch remains separately gated.
+continues to show flow verification as unavailable. The separate P3 design is
+also approved; launch remains gated on implementation conformance.
 
 ## Confirmed owners and gaps
 
@@ -388,7 +390,7 @@ corresponding owner test fails. Do not add a parallel production seam solely to
 make tests pass. Run focused checks first, then repository pytest/Ruff/docs gates
 on each implementation PR.
 
-## Decisions needed to complete #311
+## Reviewed decisions for #311
 
 1. **Platform and cleanup support:** approve the Linux-subtree-supervisor-first
    proposal, with flow checks unavailable on macOS until an equivalent backend
@@ -403,6 +405,8 @@ on each implementation PR.
 
 Recommended decisions: Linux first; split shared step-closure work if its
 implementation cannot stay focused within #313; retain the current delta owner's
-boundary-based scope and disclose it. These are proposals, not recorded approval.
-Until review records all three choices, #311 remains open and #312/#313 remain
-behind the design gate.
+boundary-based scope and disclose it. The user approved all three recommended
+choices on 2026-10-12. PR #326 records that approval and is merged; #311 is closed.
+Shared step closure may be split if needed to keep its implementation focused.
+The design gate for #312/#313 is satisfied; their implementation and acceptance
+obligations remain open.

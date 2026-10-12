@@ -13,4 +13,5 @@ reference, and architecture documentation.
 - [Documentation refresh](2026-09-30-documentation-refresh-design.md)
 - [Teams and sessions](2026-10-01-teams-and-sessions-design.md)
 - [Agent definitions](2026-10-01-agent-definitions-design.md)
-- [Flow verification ownership, evidence, and recovery](2026-10-08-flow-verification-ownership-design.md) — proposed; #311 design review is required before P1b code.
+- [Flow verification ownership, evidence, and recovery](2026-10-08-flow-verification-ownership-design.md) — approved for implementation on 2026-10-12; runtime conformance remains required.
+- [Owned one-click flow starts](2026-10-08-owned-one-click-flow-starts-design.md) — approved for implementation on 2026-10-12; ownership conformance is required before #315 enables Start.
