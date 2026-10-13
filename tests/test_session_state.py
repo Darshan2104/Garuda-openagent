@@ -72,6 +72,16 @@ async def test_an_authoritative_grader_verifies(tmp_path):
     assert state["verification"] == {"status": "passed", "authority": "user-config"}
 
 
+def test_finished_flow_preserves_an_explicit_failed_check_verdict():
+    verdict = {"status": "failed", "authority": "user-request"}
+    state = ss.finished(success=True, verification=verdict)
+
+    assert state["outcome"] == "completed"
+    assert state["verification"] == verdict
+    with pytest.raises(ss.SessionStateError, match="authority"):
+        ss.finished(success=True, verification={"status": "passed"})
+
+
 def test_a_live_session_is_live_and_a_dead_owner_reads_as_crashed(tmp_path):
     store = SessionStore(tmp_path / "sessions")
     store.begin("mine", task="t", model="m", agent="a", workspace=str(tmp_path))
