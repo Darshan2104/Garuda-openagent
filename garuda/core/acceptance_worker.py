@@ -176,6 +176,7 @@ def dispatch(operation, data):
                "terminal": {"session_dir", "binding", "receipt"},
                "reconcile": {"session_dir", "binding"},
                "flow-evidence-begin": {"snapshot", "session_dir", "parent_id", "workspace"},
+               "flow-evidence-version": {"snapshot", "session_dir", "parent_id", "workspace"},
                "flow-evidence-boundary": {"snapshot", "session_dir", "parent_id", "workspace",
                                           "ordinal", "step", "attempt"},
                "flow-evidence-finalize": {"snapshot", "session_dir", "parent_id", "workspace",
@@ -203,6 +204,8 @@ def dispatch(operation, data):
                                   data["workspace"], data["snapshot"])
         if operation == "flow-evidence-begin":
             return store.begin()
+        if operation == "flow-evidence-version":
+            return store.version()
         if operation == "flow-evidence-boundary":
             return store.boundary(data["ordinal"], data["step"], data["attempt"])
         return store.finalize(data["coverage"])

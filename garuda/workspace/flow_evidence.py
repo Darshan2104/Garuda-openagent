@@ -172,6 +172,19 @@ class FlowEvidenceStore:
         finally:
             os.close(directory)
 
+    def version(self):
+        """Fingerprint only the workspace still bound to this original owner."""
+        from garuda.core.acceptance import fingerprint
+
+        directory, _baseline, _start_digest = self._open()
+        try:
+            candidate = fingerprint(self.workspace)
+            if candidate is None:
+                raise StorageUnavailable("flow workspace fingerprint is unavailable")
+            return {"fingerprint": candidate}
+        finally:
+            os.close(directory)
+
     def finalize(self, coverage: list[dict]):
         """Require every supplied attempt and its exact boundary commitment."""
         if (not isinstance(coverage, list) or len(coverage) > 512
@@ -291,6 +304,10 @@ class OwnedFlowEvidence:
 
     async def begin(self):
         return await self._call("flow-evidence-begin")
+
+    async def version(self):
+        result = await self._call("flow-evidence-version")
+        return result["fingerprint"]
 
     async def boundary(self, ordinal, step, attempt):
         return await self._call("flow-evidence-boundary", ordinal=ordinal,
