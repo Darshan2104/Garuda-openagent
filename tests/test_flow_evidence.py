@@ -1,5 +1,6 @@
 """Complete parent evidence across settled flow attempt boundaries (#313)."""
 
+import json
 import subprocess
 import sys
 import uuid
@@ -104,6 +105,39 @@ async def test_rename_accounts_for_both_infrastructure_source_and_destination(ca
         reference = evidence.finalize([{"step": "coder", "attempt": 1}])
         changed = evidence.manifest(reference["manifest_digest"])["changed"]
         assert changed == ["conftest.py", "renamed.py"]
+    finally:
+        await owner.release()
+
+
+@pytest.mark.asyncio
+async def test_manifest_read_refuses_replaced_attempt_segment(case):
+    workspace, owner, evidence = case
+    try:
+        evidence.begin()
+        (workspace / "conftest.py").write_text("changed\n")
+        evidence.boundary(0, "coder", 1)
+        reference = evidence.finalize([{"step": "coder", "attempt": 1}])
+        path = evidence.path / "boundary-0.json"
+        segment = json.loads(path.read_text())
+        segment["changed"] = []
+        path.write_text(json.dumps(segment))
+        with pytest.raises(CorruptRecord, match="segment differs"):
+            evidence.manifest(reference["manifest_digest"])
+    finally:
+        await owner.release()
+
+
+@pytest.mark.asyncio
+async def test_manifest_read_refuses_missing_attempt_segment(case):
+    workspace, owner, evidence = case
+    try:
+        evidence.begin()
+        (workspace / "conftest.py").write_text("changed\n")
+        evidence.boundary(0, "coder", 1)
+        reference = evidence.finalize([{"step": "coder", "attempt": 1}])
+        (evidence.path / "boundary-0.json").unlink()
+        with pytest.raises(CorruptRecord, match="coverage"):
+            evidence.manifest(reference["manifest_digest"])
     finally:
         await owner.release()
 

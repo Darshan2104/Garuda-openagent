@@ -218,12 +218,52 @@ class FlowEvidenceStore:
             os.close(directory)
 
     def manifest(self, expected_digest: str):
-        directory, _baseline, _start_digest = self._open()
+        directory, _baseline, start_digest = self._open()
         try:
             document, actual = _read(directory, "manifest.json")
-            if actual != expected_digest or document.get("binding") != self.binding or document.get("complete") is not True:
+            if (actual != expected_digest
+                    or set(document) != {"version", "binding", "baseline_digest", "segments",
+                                         "changed", "final_changed", "complete"}
+                    or document["binding"] != self.binding
+                    or document["baseline_digest"] != start_digest
+                    or document["complete"] is not True):
                 raise CorruptRecord("flow evidence manifest does not match its commitment")
-            _paths(document.get("changed"))
+            changed = _paths(document["changed"])
+            final_changed = _paths(document["final_changed"])
+            segments = document["segments"]
+            if not isinstance(segments, list) or len(segments) > 512:
+                raise CorruptRecord("flow evidence segment coverage is invalid")
+            names = {name for name in os.listdir(directory) if name.startswith("boundary-")}
+            if names != {f"boundary-{index}.json" for index in range(len(segments))}:
+                raise CorruptRecord("flow evidence boundary coverage differs")
+            cumulative = set(final_changed)
+            attempts = set()
+            for ordinal, row in enumerate(segments):
+                if (not isinstance(row, dict) or set(row) != {"step", "attempt", "digest"}
+                        or not isinstance(row["step"], str) or not row["step"]
+                        or type(row["attempt"]) is not int or row["attempt"] < 1
+                        or not isinstance(row["digest"], str) or len(row["digest"]) != 64):
+                    raise CorruptRecord("flow evidence segment reference is invalid")
+                identity = (row["step"], row["attempt"])
+                if identity in attempts:
+                    raise CorruptRecord("flow evidence attempt is duplicated")
+                attempts.add(identity)
+                segment, segment_digest = _read(directory, f"boundary-{ordinal}.json")
+                if (segment_digest != row["digest"]
+                        or set(segment) != {"version", "binding", "baseline_digest", "ordinal",
+                                            "step", "attempt", "changed", "preexisting", "attribution"}
+                        or segment["binding"] != self.binding
+                        or segment["baseline_digest"] != start_digest
+                        or type(segment["ordinal"]) is not int or segment["ordinal"] != ordinal
+                        or segment["step"] != row["step"]
+                        or type(segment["attempt"]) is not int
+                        or segment["attempt"] != row["attempt"]
+                        or segment["attribution"] != BASELINE_CAPTURED):
+                    raise CorruptRecord("flow evidence segment differs from its commitment")
+                cumulative.update(_paths(segment["changed"]))
+                _paths(segment["preexisting"])
+            if changed != sorted(cumulative):
+                raise CorruptRecord("flow evidence cumulative paths differ from segments")
             return document
         finally:
             os.close(directory)
