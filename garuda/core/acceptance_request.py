@@ -136,6 +136,7 @@ def freeze_resolved_checks(resolved, workspace, source_facts, permissions) -> Fr
     """
     from garuda.config import garuda_yaml as gy
     from garuda.core.acceptance import checks_with_authority
+    from garuda.mcp.trust import trust_store_path
 
     source_by_path = {fact.path: fact.digest for fact in source_facts}
     if len(source_by_path) != len(source_facts):
@@ -149,6 +150,9 @@ def freeze_resolved_checks(resolved, workspace, source_facts, permissions) -> Fr
             raise ValueError("effective check has no trusted source authority")
         if authority in expected and source_by_path.get(expected[authority]) is None:
             raise ValueError("configured check has no parsed source snapshot")
+        if (authority == "trusted-project"
+                and source_by_path.get(str(trust_store_path().absolute())) is None):
+            raise ValueError("trusted project check has no grant source snapshot")
         checks.append(FrozenCheck(
             run=tuple(definition["run"]) if isinstance(definition["run"], list) else definition["run"],
             authority=authority, cwd=definition.get("cwd", "."), mode=definition.get("mode", "host"),

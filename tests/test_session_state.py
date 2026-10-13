@@ -72,7 +72,7 @@ async def test_an_authoritative_grader_verifies(tmp_path):
     assert state["verification"] == {"status": "passed", "authority": "user-config"}
 
 
-def test_finished_flow_preserves_an_explicit_failed_check_verdict():
+def test_finished_preserves_explicit_failed_verdict_without_changing_outcome():
     verdict = {"status": "failed", "authority": "user-request"}
     state = ss.finished(success=True, verification=verdict)
 
