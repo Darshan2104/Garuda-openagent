@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-10-12 — Protected flow metadata shares one strict publication owner (#313)
+
+- Opt-in protected sessions use the existing `meta.json.lock` for every shared
+  metadata writer. Missing or replaced locks, policy records or metadata refuse
+  publication; no strict operation falls back to unlocked legacy writes.
+- A private policy registry outside the per-session directory retains protected
+  identity when local markers disappear. An immutable initialization record
+  prevents missing metadata from authorizing a second initial publication.
+  A durable metadata head binds published bytes and inode; incomplete ordered
+  publication requires reconciliation instead of silently rebuilding metadata.
+- These records provide cooperative local integrity, not signatures against an
+  actor controlling the entire store. Legacy sessions retain their existing
+  writer behavior. #313 still owns verified-flow lifecycle wiring, immutable
+  verification commitments and public check enablement.
+
 ## 2026-10-12 — Owned roles retain parent authority through physical closure (#330)
 
 - Verified execution uses the shared Linux subreaper around the existing native

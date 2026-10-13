@@ -103,6 +103,11 @@ fastest way to learn the system.
    no-edits launches refuse: Docker container lifetime ownership is not yet
    supported by this process-tree owner. Cumulative source evidence and final
    publication integration remain gated by #313 before public verification.
+   The shared SessionStore now supports an opt-in strict publication policy.
+   Its external registry and durable metadata head prevent local marker loss
+   or metadata replacement from downgrading a protected flow to legacy writes;
+   every writer uses the same `meta.json.lock`. The flow lifecycle integration
+   and public enablement remain #313 work.
    `scenarios/compile.py` compiles installed starter data into bounded labelled
    tasks and exact existing CLI commands. It resolves effective flows and
    configured role plans through the non-executing catalog; it never calls

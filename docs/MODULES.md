@@ -42,6 +42,7 @@ a behaviour.
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
 | `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
+| `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; public flow checks remain gated on #313. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `buffer.py` | Session buffers holding large tool output and compacted history. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |

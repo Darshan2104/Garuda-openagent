@@ -120,7 +120,7 @@ def _meta_lock(meta_path: Path) -> Iterator[None]:
                 handle.close()
 
 
-def merge_meta(meta_path: Path, updates: dict) -> None:
+def merge_meta(meta_path: Path, updates: dict, *, initializing: bool = False) -> None:
     """Merge ``updates`` into the meta document under an exclusive lock.
 
     The single chokepoint for every meta read-modify-write. Two writers used to
@@ -128,7 +128,24 @@ def merge_meta(meta_path: Path, updates: dict) -> None:
     dropped the other's fields — a finished run could lose its usage totals to a
     concurrent provenance patch.
     """
+    from garuda.core.session_publication import publication_cycle
+
+    with publication_cycle(meta_path, initializing=initializing) as cycle:
+        if cycle is not None:
+            meta = cycle.read()
+            meta.update(updates)
+            meta.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+            cycle.write(meta)
+            return
     with _meta_lock(meta_path):
+        # A policy can be installed after the first selector read. The
+        # installer owns this same sidecar lock until registry publication;
+        # recheck under it so a stale legacy decision cannot publish metadata.
+        from garuda.core.session_publication import _policy
+        from garuda.runtime.strict_store import StorageUnavailable
+
+        if _policy(meta_path) is not None:
+            raise StorageUnavailable("session publication policy changed; retry")
         meta: dict = {}
         if meta_path.exists():
             try:
@@ -254,6 +271,12 @@ class SessionStore:
     def events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
 
+    def protect_publication(self, session_id: str) -> None:
+        """Require durable, fail-closed metadata before this session begins."""
+        from garuda.core.session_publication import protect_session
+
+        protect_session(self.session_dir(session_id) / "meta.json")
+
     def begin(
         self,
         session_id: str,
@@ -312,7 +335,7 @@ class SessionStore:
                     "handoff": {"state": "none", "attempts": 0},
                 }
             )
-        merge_meta(directory / "meta.json", document)
+        merge_meta(directory / "meta.json", document, initializing=True)
         return self.events_path(session_id)
 
     def _identity_fields(
@@ -429,7 +452,21 @@ class SessionStore:
         writers from different processes are serialized only where `flock` works.
         """
         meta_path = self.session_dir(session_id) / "meta.json"
+        from garuda.core.session_publication import publication_cycle
+
+        with publication_cycle(meta_path) as cycle:
+            if cycle is not None:
+                meta = cycle.read()
+                meta.update(mutate(dict(meta)))
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                cycle.write(meta)
+                return meta
         with _meta_lock(meta_path):
+            from garuda.core.session_publication import _policy
+            from garuda.runtime.strict_store import StorageUnavailable
+
+            if _policy(meta_path) is not None:
+                raise StorageUnavailable("session publication policy changed; retry")
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if not isinstance(meta, dict):
                 raise ValueError(f"session {session_id} meta is not a mapping")
@@ -551,6 +588,11 @@ class SessionStore:
 
     def load_meta(self, session_id: str) -> dict:
         path = self.session_dir(session_id) / "meta.json"
+        from garuda.core.session_publication import publication_cycle
+
+        with publication_cycle(path) as cycle:
+            if cycle is not None:
+                return cycle.read()
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _in_project(self, meta: dict, project_id: str, project_path: str) -> bool:
@@ -581,6 +623,8 @@ class SessionStore:
         raise FileNotFoundError("No saved sessions to resume.")
 
     def list_sessions(self, limit: int | None = 20) -> list[dict]:
+        from garuda.runtime.strict_store import StorageError
+
         if not self.root.exists():
             return []
         metas: list[dict] = []
@@ -588,8 +632,8 @@ class SessionStore:
             meta_path = directory / "meta.json"
             if meta_path.is_file():
                 try:
-                    metas.append(json.loads(meta_path.read_text(encoding="utf-8")))
-                except (OSError, json.JSONDecodeError):
+                    metas.append(self.load_meta(directory.name))
+                except (OSError, ValueError, StorageError):
                     continue
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return metas if limit is None else metas[:limit]
