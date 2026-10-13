@@ -270,8 +270,13 @@ uses closed JSON values rather than executable object serialization.
 `config_sources.py` scopes source identities to actual parse reads. Owned
 preparation retains digests and absent-file observations, then uses an owned
 read helper to validate them before activation and after closure. Source/ceiling
-and absent-input mutation tests exercise that refusal. It does not establish #313's
-durable phase admission or strict shared session publication. Owned workers
+and absent-input mutation tests exercise that refusal. Project configuration
+and trust-grant reads report their exact bytes to an active source capture;
+`freeze_resolved_checks` requires those identities for configured checks, and
+the worker rejects changed or newly appeared inputs. No live flow caller uses
+that request yet, so it does not establish #313's durable phase admission or
+final verification publication.
+Owned workers
 currently refuse live SDK clients, executable project tool imports, and enabled
 nested collection profiles. Owned ACP read-only/no-edits execution also refuses
 before launch: its required Docker container lifetime is outside the proven
