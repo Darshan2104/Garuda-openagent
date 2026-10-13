@@ -187,7 +187,9 @@ class FlowRunner:
     def __init__(self, store, workspace, name: str, flow: dict, resolved, *, task: str,
                  launcher: Launcher, flow_session: str | None = None,
                  lease_ttl: float | None = None, starter_record: dict | None = None,
-                 verification_request=None):
+                 verification_request=None, verification_permissions=None):
+        if (verification_request is None) != (verification_permissions is None):
+            raise ValueError("flow verification requires its frozen permission ceiling")
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
@@ -200,7 +202,9 @@ class FlowRunner:
         self.lease_ttl = lease_ttl
         self.starter_record = starter_record
         self.verification_request = verification_request
+        self.verification_permissions = verification_permissions
         self._evidence = None
+        self._verification_quarantined = False
 
     # -- helpers -----------------------------------------------------------------------
 
@@ -305,6 +309,47 @@ class FlowRunner:
             coverage.append({"step": key[0], "attempt": key[1],
                              "boundary_digest": boundary["boundary_digest"]})
         return coverage
+
+    async def _finalize_verification(self, lease, reference, manifest):
+        """Keep the original parent until the check commit and state both publish."""
+        from garuda.core.acceptance_request import CheckContext
+        from garuda.core.acceptance_runner import AcceptanceRunner
+        from garuda.flows.verification_records import OwnedFlowVerification
+        from garuda.runtime.session_state import finished
+
+        request, permissions = self.verification_request, self.verification_permissions
+        request.validate_ceiling(permissions)
+        if not request.checks:
+            raise FlowStopped("flow.verification_not_requested", "no trusted check was selected")
+        try:
+            candidate = await self._evidence.version()
+            identity = manifest["binding"]["workspace_identity"]
+            context = CheckContext(self.flow_session, str(uuid.uuid4()), self.workspace,
+                                   candidate, reference["manifest_digest"],
+                                   tuple(manifest["changed"]), True, tuple(identity))
+            publisher = OwnedFlowVerification(self.store, lease, request, context, permissions)
+            phase = await publisher.prepare()
+            # The intent precedes any acceptance launch. A crash after the
+            # private intent but before this metadata update remains visible
+            # and cannot be treated as a fresh flow run.
+            self.store.update_meta(self.flow_session, {
+                "flow_verification_phase": {"phase_id": context.phase_id,
+                                            "digest": phase["phase_digest"]}})
+            result = await lease.race(AcceptanceRunner(self.store).run(
+                request, context, lease, permissions))
+            commitment = await publisher.commit(phase["phase_digest"], result)
+            self.store.update_meta(self.flow_session, {
+                "flow_state": "completed", "status": "completed",
+                "state": finished(success=True, verification=result.verification),
+                "acceptance_receipts": result.receipts,
+                "flow_verification_commit": commitment})
+        except BaseException:
+            # An activation or publication may have happened. Retain the
+            # original owner until the phase is reconciled; never claim that
+            # a failed write rolled the check back.
+            self._verification_quarantined = True
+            await lease.stop_heartbeat()
+            raise
 
     async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
         version = await self._version_for_flow()
@@ -434,8 +479,9 @@ class FlowRunner:
                     await lease.stop_heartbeat()
                     raise FlowStopped("flow.evidence_unavailable",
                                       "complete parent evidence could not be finalized") from exc
-                raise FlowStopped("flow.verification_not_enabled",
-                                  "owned flow verification finalization is not enabled")
+                await self._finalize_verification(lease, reference, manifest)
+                result.receipts = receipts(self.store, self.flow_session)
+                return result
             self.store.update_meta(self.flow_session, {
                 "flow_state": "completed", "status": "completed",
                 "state": finished(success=True)})
@@ -452,7 +498,7 @@ class FlowRunner:
             # intent and no receipt, so a resume quarantines it.
             from garuda.runtime.process_supervision import CleanupUncertain
 
-            uncertain = isinstance(exc, CleanupUncertain)
+            uncertain = isinstance(exc, CleanupUncertain) or self._verification_quarantined
             if uncertain:
                 await lease.stop_heartbeat()
             self.store.update_meta(self.flow_session, {"flow_state": "quarantined" if uncertain else "interrupted",

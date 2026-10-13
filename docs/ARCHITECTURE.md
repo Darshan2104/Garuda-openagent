@@ -96,9 +96,12 @@ fastest way to learn the system.
    synchronous acceptance APIs retain their existing behavior. A private flow
    evidence store can now retain full parent-baseline deltas at supplied settled
    attempt boundaries, including paths later restored and both rename paths.
-   Its manifest reader checks every referenced segment. The flow engine still
-   needs #313's complete attempt-coverage and final publication integration;
-   this store alone does not authorize verification.
+   Its manifest reader checks every referenced segment. The opt-in internal
+   flow path now reconciles step intents and boundary commitments, then writes
+   a candidate-bound check phase and verification commit before strict parent
+   metadata publication. Public service/CLI selection, restart reconciliation,
+   and full acceptance gates remain #313 work; these internal records alone do
+   not authorize user-visible flow verification.
    The internal owned role service (#330) reuses that Linux
    process owner around the actual native or ACP facade. The parent retains its
    issued capability and capacity through ECHILD; child release is logical only.
