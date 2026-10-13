@@ -266,6 +266,46 @@ class FlowRunner:
             "process": {key: process[key] for key in ("supervisor", "command", "cleanup",
                                                       "outcome", "exit_code")}}
 
+    def _evidence_coverage(self, done: list[dict]) -> list[dict]:
+        """Tie every settled step intent to its receipt and boundary digest."""
+        from garuda.core.acceptance_request import is_digest
+
+        entries = journal(self.store, self.flow_session)
+        intents = [entry for entry in entries if entry.get("event") == "intent"]
+        settled = [entry for entry in entries if entry.get("event") == "receipt"]
+        actual = receipts(self.store, self.flow_session)
+        identities = [(entry.get("step"), entry.get("attempt")) for entry in done]
+        if (len(intents) != len(done) or len(settled) != len(done)
+                or len(actual) != len(done)
+                or len(set(identities)) != len(done)
+                or set(identities) != {(entry.get("step"), entry.get("attempt"))
+                                       for entry in actual}
+                or any(entry.get("event") not in {"intent", "receipt"} for entry in entries)):
+            raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
+        by_id = {step["id"]: step for step in _steps(self.flow)}
+        coverage = []
+        for intent, recorded, receipt in zip(intents, settled, done, strict=True):
+            key = (intent.get("step"), intent.get("attempt"))
+            boundary = receipt.get("evidence_boundary")
+            if (key != (recorded.get("step"), recorded.get("attempt"))
+                    or key != (receipt.get("step"), receipt.get("attempt"))
+                    or intent.get("index") != receipt.get("index")
+                    or intent.get("index") != by_id.get(key[0], {}).get("index")
+                    or receipt.get("status") != "done"
+                    or receipt.get("success") is not True
+                    or receipt not in actual
+                    or key[0] not in by_id
+                    or type(key[1]) is not int
+                    or not isinstance(boundary, dict)
+                    or not is_digest(boundary.get("boundary_digest"))):
+                raise FlowStopped("flow.evidence_incomplete",
+                                  "step receipt or boundary does not cover its intent")
+            self._closed_step(StepResult(receipt["session_id"], True, "",
+                                         receipt.get("closure")), by_id[key[0]], key[1])
+            coverage.append({"step": key[0], "attempt": key[1],
+                             "boundary_digest": boundary["boundary_digest"]})
+        return coverage
+
     async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
         version = await self._version_for_flow()
         resolved = []
@@ -376,6 +416,24 @@ class FlowRunner:
                                                attempt=tried.get(step["id"], 0) + 1)
                 done.append(receipt)
             if self.verification_request is not None:
+                try:
+                    coverage = self._evidence_coverage(done)
+                    reference, manifest = await self._evidence.finalize(coverage)
+                    self.store.update_meta(self.flow_session, {
+                        "flow_evidence_manifest": reference,
+                        "flow_delta_changed": manifest["changed"][:200],
+                        "flow_delta_changed_total": len(manifest["changed"]),
+                        "flow_delta_changed_complete": len(manifest["changed"]) <= 200,
+                        "flow_final_changed": manifest["final_changed"][:200],
+                        "flow_final_changed_total": len(manifest["final_changed"]),
+                        "flow_final_changed_complete": len(manifest["final_changed"]) <= 200})
+                except FlowStopped:
+                    await lease.stop_heartbeat()
+                    raise
+                except Exception as exc:
+                    await lease.stop_heartbeat()
+                    raise FlowStopped("flow.evidence_unavailable",
+                                      "complete parent evidence could not be finalized") from exc
                 raise FlowStopped("flow.verification_not_enabled",
                                   "owned flow verification finalization is not enabled")
             self.store.update_meta(self.flow_session, {
@@ -384,7 +442,9 @@ class FlowRunner:
         except FlowStopped as stop:
             result.stopped = stop
             self.store.update_meta(self.flow_session, {
-                "flow_state": "quarantined" if stop.code == "flow.cleanup_unproved" else "stopped",
+                "flow_state": "quarantined" if stop.code in {
+                    "flow.cleanup_unproved", "flow.evidence_incomplete", "flow.evidence_unavailable"
+                } else "stopped",
                 "status": "failed", "state": finished(success=False),
                 "flow_stop": {"code": stop.code, "step": stop.step, "message": str(stop)}})
         except BaseException as exc:
@@ -656,6 +716,7 @@ class FlowRunner:
             except Exception as exc:
                 # The cleanup is proved, but evidence publication is not. No
                 # later candidate may be verified from this attempt.
+                await lease.stop_heartbeat()
                 raise FlowStopped("flow.evidence_unavailable",
                                   "complete attempt evidence could not be published",
                                   step=step["id"]) from exc
