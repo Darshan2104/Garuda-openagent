@@ -488,7 +488,7 @@ class FlowRunner:
         except FlowStopped as stop:
             result.stopped = stop
             self.store.update_meta(self.flow_session, {
-                "flow_state": "quarantined" if stop.code in {
+                "flow_state": "quarantined" if self._verification_quarantined or stop.code in {
                     "flow.cleanup_unproved", "flow.evidence_incomplete", "flow.evidence_unavailable"
                 } else "stopped",
                 "status": "failed", "state": finished(success=False),

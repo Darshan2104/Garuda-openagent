@@ -178,8 +178,8 @@ class FlowVerificationRecords:
                     actual = CheckRecords(self.path.parent, binding).reconcile()
                     if (actual["classification"] != "terminal"
                             or actual["receipt_digest"] != reference
-                            or actual["result"].get("status") != status
-                            or actual["result"].get("authority") != check["authority"]):
+                            or actual["result"] != {key: result[key] for key in (
+                                "authority", "status", "code", "fingerprint") if key in result}):
                         raise CorruptRecord("flow check receipt disagrees with commitment")
                 elif attempt_id in refs:
                     raise CorruptRecord("unlaunched flow check has a receipt reference")
@@ -201,8 +201,14 @@ class FlowVerificationRecords:
             elif verdict.get("status") == "invalidated":
                 if verdict.get("code") not in {
                         "verification.authority_changed", "verification.candidate_changed",
-                        "verification.check_changed_tree"} or set(verdict) != {"status", "code"}:
+                        "verification.check_changed_tree", "verification.test_infra_changed"
+                        } or set(verdict) != {"status", "code"}:
                     raise CorruptRecord("invalid flow verification invalidation")
+                if (len(results) == len(phase["checks"])
+                        and verdict.get("code") in {"verification.check_changed_tree",
+                                                    "verification.test_infra_changed"}
+                        and verdict != verification_from(results)):
+                    raise CorruptRecord("flow invalidation differs from receipts")
             else:
                 raise CorruptRecord("unsupported flow verification commitment")
             document = {"version": 1, "phase_digest": phase_digest, "candidate": phase["candidate"],

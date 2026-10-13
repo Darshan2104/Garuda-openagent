@@ -65,6 +65,13 @@ async def test_actual_check_receipt_is_required_for_a_candidate_bound_commit(cas
     assert not marker.exists()
     result = await owner.race(AcceptanceRunner(store).run(request, context, owner, permissions))
     assert result.verification["status"] == "passed"
+    from garuda.flows.verification_records import FlowVerificationRecords
+
+    direct = FlowVerificationRecords(store.session_dir(owner.session_id), owner.session_id)
+    forged = [{"authority": "user-request", "status": "passed", "fingerprint": "f" * 16}]
+    with pytest.raises(CorruptRecord, match="receipt disagrees"):
+        direct.commit(phase["phase_digest"], forged, result.receipt_refs,
+                      result.verification)
     commitment = await records.commit(phase["phase_digest"], result)
     document = json.loads((store.session_dir(owner.session_id) / "flow" /
                            "verification-commit.json").read_text())
@@ -129,6 +136,35 @@ async def test_tree_changing_check_commits_only_an_invalidated_verdict(case):
     document = json.loads((store.session_dir(owner.session_id) / "flow" /
                            "verification-commit.json").read_text())
     assert document["verification"] == result.verification
+    assert len(commitment["commit_digest"]) == 64
+
+
+@linux
+@pytest.mark.asyncio
+async def test_real_infrastructure_change_commits_invalidated_verdict(case):
+    _root, workspace, store, owner = case
+    evidence = OwnedFlowEvidence(store.session_dir(owner.session_id), owner.session_id,
+                                 str(workspace), owner)
+    await evidence.begin()
+    (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    reference, manifest = await evidence.finalize([])
+    assert "pyproject.toml" in manifest["changed"]
+    candidate = await evidence.version()
+    info = workspace.stat()
+    context = CheckContext(owner.session_id, str(uuid.uuid4()), str(workspace), candidate,
+                           reference["manifest_digest"], tuple(manifest["changed"]), True,
+                           (info.st_dev, info.st_ino))
+    permissions = PermissionEngine(mode="auto")
+    request = FrozenCheckRequest.freeze(
+        [FrozenCheck((sys.executable, "-m", "pytest", "--version"), "user-request")],
+        (), permissions)
+    records = OwnedFlowVerification(store, owner, request, context, permissions)
+    phase = await records.prepare()
+    result = await owner.race(AcceptanceRunner(store).run(request, context, owner, permissions))
+    assert result.receipts[0]["status"] == "unverified"
+    assert result.verification == {"status": "invalidated",
+                                   "code": "verification.test_infra_changed"}
+    commitment = await records.commit(phase["phase_digest"], result)
     assert len(commitment["commit_digest"]) == 64
 
 
