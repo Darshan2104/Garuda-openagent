@@ -138,6 +138,14 @@ def merge_meta(meta_path: Path, updates: dict, *, initializing: bool = False) ->
             cycle.write(meta)
             return
     with _meta_lock(meta_path):
+        # A policy can be installed after the first selector read. The
+        # installer owns this same sidecar lock until registry publication;
+        # recheck under it so a stale legacy decision cannot publish metadata.
+        from garuda.core.session_publication import _policy
+        from garuda.runtime.strict_store import StorageUnavailable
+
+        if _policy(meta_path) is not None:
+            raise StorageUnavailable("session publication policy changed; retry")
         meta: dict = {}
         if meta_path.exists():
             try:
@@ -454,6 +462,11 @@ class SessionStore:
                 cycle.write(meta)
                 return meta
         with _meta_lock(meta_path):
+            from garuda.core.session_publication import _policy
+            from garuda.runtime.strict_store import StorageUnavailable
+
+            if _policy(meta_path) is not None:
+                raise StorageUnavailable("session publication policy changed; retry")
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if not isinstance(meta, dict):
                 raise ValueError(f"session {session_id} meta is not a mapping")

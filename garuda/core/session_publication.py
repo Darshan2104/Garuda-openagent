@@ -77,14 +77,17 @@ def protect_session(meta_path: Path):
             existing = read_record(registry_fd, meta_path.parent.name + ".json")
             if existing is not None:
                 raise StorageUnavailable("session publication policy already exists")
+            lock = os.open("meta.json.lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | FLAGS,
+                           0o600, dir_fd=directory)
+            if fcntl is None:
+                raise StorageUnavailable("strict metadata requires cross-process locking")
+            fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 os.stat("meta.json", dir_fd=directory, follow_symlinks=False)
             except FileNotFoundError:
                 pass
             else:
                 raise StorageUnavailable("cannot retrofit publication policy onto metadata")
-            lock = os.open("meta.json.lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | FLAGS,
-                           0o600, dir_fd=directory)
             os.fsync(lock)
             os.fsync(directory)
             policy = {"version": 1, "kind": "flow-verification",
@@ -132,12 +135,18 @@ def _metadata(directory):
 
 
 def _policy(meta_path):
-    registry = meta_path.parent.parent / REGISTRY
-    try:
-        fd = open_directory(registry)
-    except FileNotFoundError:
+    # A legacy caller may address the same store through a directory symlink.
+    # Resolve only the store root: protected IDs still find their policy and
+    # fail strict traversal below, while unrelated legacy IDs keep working.
+    registry = meta_path.parent.parent.resolve() / REGISTRY
+    # Legacy stores may have symlinked ancestors or non-private directories.
+    # Apply strict traversal only when a registry exists; local protection
+    # evidence below still refuses a missing registry. Once observed, losing
+    # the registry during traversal must fail rather than downgrade the cycle.
+    if not os.path.lexists(registry):
         policy = None
     else:
+        fd = open_directory(registry)
         try:
             _private_directory(fd)
             policy = read_record(fd, meta_path.parent.name + ".json")

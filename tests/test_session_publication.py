@@ -2,14 +2,76 @@
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 
 import pytest
 
 from garuda.core import session_publication as publication
 from garuda.core.sessions import SessionStore, merge_meta
 from garuda.runtime.strict_store import StorageError
+
+
+def test_legacy_metadata_keeps_symlinked_store_compatibility(tmp_path):
+    target = tmp_path / "real-store"
+    target.mkdir()
+    link = tmp_path / "linked-store"
+    link.symlink_to(target, target_is_directory=True)
+    store = SessionStore(link)
+    store.begin("legacy", task="initial", model="test", agent="test", workspace=str(tmp_path))
+    # A protected session in the same real store must not break ordinary IDs.
+    strict = SessionStore(target)
+    strict.protect_publication("flow")
+    strict.begin("flow", task="protected", model="test", agent="test", workspace=str(tmp_path))
+    store.mutate_meta("legacy", lambda current: {"task": current["task"] + " updated"})
+    assert store.load_meta("legacy")["task"] == "initial updated"
+    assert [meta["session_id"] for meta in store.list_sessions()] == ["legacy"]
+    assert strict.load_meta("flow")["task"] == "protected"
+    with pytest.raises((StorageError, OSError)):
+        store.update_meta("flow", {"task": "downgraded"})
+
+
+def test_legacy_writer_cannot_publish_after_policy_is_installed(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / "sessions")
+    store.session_dir("flow").mkdir(mode=0o700, parents=True)
+    selected = threading.Event()
+    proceed = threading.Event()
+    failures = []
+    original = publication.publication_cycle
+
+    @contextmanager
+    def paused_cycle(path, **kwargs):
+        with original(path, **kwargs) as cycle:
+            if cycle is None:
+                selected.set()
+                assert proceed.wait(5)
+            yield cycle
+
+    monkeypatch.setattr(publication, "publication_cycle", paused_cycle)
+
+    def writer():
+        try:
+            store.begin("flow", task="stale writer", model="test", agent="test", workspace=str(tmp_path))
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        assert selected.wait(5)
+        store.protect_publication("flow")
+    finally:
+        proceed.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(failures) == 1 and isinstance(failures[0], StorageError)
+    assert not (store.session_dir("flow") / "meta.json").exists()
+    monkeypatch.setattr(publication, "publication_cycle", original)
+    store.begin("flow", task="protected writer", model="test", agent="test", workspace=str(tmp_path))
+    assert store.load_meta("flow")["task"] == "protected writer"
 
 
 @pytest.fixture
@@ -103,3 +165,60 @@ def test_missing_posix_locking_cannot_fall_back_to_unlocked_writes(protected, mo
     monkeypatch.setattr(publication, "fcntl", None)
     with pytest.raises(StorageError, match="cross-process"):
         protected.update_meta("flow", {"status": "completed"})
+
+
+@pytest.mark.parametrize("fault", ["lock", "file-fsync", "metadata-rename",
+                                  "metadata-directory-fsync", "head-rename",
+                                  "head-directory-fsync"])
+def test_durability_failure_never_reports_success_or_uses_legacy_writer(protected, monkeypatch, fault):
+    from garuda.core import sessions
+
+    meta = protected.session_dir("flow") / "meta.json"
+    before = meta.read_bytes()
+    real_fsync, real_replace = os.fsync, os.replace
+    published = set()
+
+    def fail():
+        raise OSError("injected publication failure")
+
+    def fsync(fd):
+        is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        if (fault == "file-fsync" and not is_directory
+                or fault == "metadata-directory-fsync" and is_directory and "meta.json" in published
+                or fault == "head-directory-fsync" and is_directory and publication.HEAD in published):
+            fail()
+        return real_fsync(fd)
+
+    def replace(source, destination, **kwargs):
+        if (fault == "metadata-rename" and destination == "meta.json"
+                or fault == "head-rename" and destination == publication.HEAD):
+            fail()
+        result = real_replace(source, destination, **kwargs)
+        published.add(destination)
+        return result
+
+    def legacy_write(*args):
+        pytest.fail("protected metadata reached the legacy writer")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fsync)
+        patch.setattr(os, "replace", replace)
+        patch.setattr(sessions, "_atomic_write_text", legacy_write)
+        if fault == "lock":
+            patch.setattr(publication.fcntl, "flock", lambda *args: fail())
+        with pytest.raises((OSError, StorageError), match="publication failure"):
+            protected.update_meta("flow", {"status": "completed"})
+
+    if fault in ("lock", "file-fsync", "metadata-rename"):
+        assert meta.read_bytes() == before
+        assert protected.load_meta("flow")["status"] == "running"
+    elif fault == "head-directory-fsync":
+        # Rename has happened despite the failed durability acknowledgement.
+        # The caller must reconcile; pretending the old bytes survived is wrong.
+        assert protected.load_meta("flow")["status"] == "completed"
+    else:
+        assert meta.read_bytes() != before
+        with pytest.raises(StorageError, match="publication head"):
+            protected.load_meta("flow")
+        with pytest.raises(StorageError):
+            protected.update_meta("flow", {"status": "running"})
