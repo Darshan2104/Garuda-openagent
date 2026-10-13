@@ -25,6 +25,7 @@ from garuda.core.acceptance_request import (
 )
 from garuda.core.acceptance_runner import AcceptanceRunner, CheckExecutionUncertain
 from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
+from garuda.core.acceptance_worker import AuthorityChanged, _sources
 from garuda.core.permissions import DelegatedPermissionEngine, PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
@@ -74,6 +75,16 @@ def _request(checks, permissions, *, sources=(), timeout=3):
 
 def _python(script, **kwargs):
     return FrozenCheck((sys.executable, "-c", script), "user-request", **kwargs)
+
+
+def test_absent_source_snapshot_requires_continued_absence(tmp_path):
+    path = tmp_path / "not-created" / "garuda.yaml"
+    frozen = FrozenSource(str(path), None)
+    assert _sources({"sources": [frozen.document()]}) == {"valid": True}
+    path.parent.mkdir()
+    path.write_text("version: 1\nchecks: [true]\n")
+    with pytest.raises(AuthorityChanged, match="appeared"):
+        _sources({"sources": [frozen.document()]})
 
 
 @pytest.mark.asyncio
@@ -253,6 +264,23 @@ async def test_frozen_authority_change_invalidates_completed_check_without_launc
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@linux
+@pytest.mark.asyncio
+async def test_absent_frozen_source_appearing_refuses_check_launch(case):
+    root, store, owner, context = case
+    permissions = PermissionEngine(mode="auto")
+    source = root / "new.yaml"
+    source.write_text("new authority")
+    marker = root / "launched"
+    request = _request([_python(f"open({str(marker)!r},'w').close()")], permissions,
+                       sources=[FrozenSource(str(source), None)])
+
+    result = await AcceptanceRunner(store).run(request, context, owner, permissions)
+
+    assert result.verification == {"status": "invalidated", "code": "verification.authority_changed"}
+    assert not marker.exists()
 
 
 @linux

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from garuda.config import garuda_yaml as gy
+from garuda.config_sources import record_source, record_source_error
 
 MAX_BYTES = 1 << 20
 UNTRUSTED = "config.project_untrusted"
@@ -55,8 +56,10 @@ def read_project_file(workspace) -> ProjectFile | None:
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
+        record_source(path, None)
         return None
     except OSError as exc:
+        record_source_error()
         raise gy.GarudaConfigError("config.invalid", "", f"{path}: {exc} (a symlinked "
                                    "garuda.yaml is refused)") from exc
     try:
@@ -71,7 +74,9 @@ def read_project_file(workspace) -> ProjectFile | None:
             chunks.append(chunk)
     finally:
         os.close(fd)
-    return ProjectFile(path=path, data=b"".join(chunks), repository=str(Path(root).resolve()))
+    data = b"".join(chunks)
+    record_source(path, data)
+    return ProjectFile(path=path, data=data, repository=str(Path(root).resolve()))
 
 
 def _key(project: ProjectFile):
