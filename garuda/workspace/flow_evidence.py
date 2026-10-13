@@ -1,8 +1,8 @@
-"""Private, complete boundary deltas for an owned flow verification phase.
+"""Private boundary deltas for an owned flow verification phase.
 
 These records are written by a supervised read worker while the original
 mutating parent lease remains live. A final manifest is an immutable summary of
-every receipted attempt boundary, not an inference from clipped child metadata.
+the caller-supplied complete attempt coverage, not clipped child metadata.
 """
 
 from __future__ import annotations
@@ -197,6 +197,7 @@ class FlowEvidenceStore:
                         or document["baseline_digest"] != start_digest
                         or type(document["ordinal"]) is not int or document["ordinal"] != ordinal
                         or document["step"] != identity["step"]
+                        or type(document["attempt"]) is not int
                         or document["attempt"] != identity["attempt"]
                         or document["attribution"] != BASELINE_CAPTURED):
                     raise CorruptRecord("flow evidence segment differs from coverage")
@@ -298,5 +299,22 @@ class OwnedFlowEvidence:
                                        self.base["workspace"], self.base["snapshot"])
             return reader.manifest(reference["manifest_digest"])
 
-        manifest = await self.owner.race(asyncio.to_thread(read))
+        async def settled_read():
+            # Cancelling a to_thread future does not stop its thread. Keep the
+            # parent awaiting the bounded read before its ordinary release.
+            worker = asyncio.create_task(asyncio.to_thread(read))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                worker.exception()  # consume a settled read error; cancellation still wins
+                raise
+
+        manifest = await self.owner.race(settled_read())
         return reference, manifest

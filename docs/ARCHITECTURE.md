@@ -93,8 +93,12 @@ fastest way to learn the system.
    terminal receipts require actual descendant closure. Lost publication or
    cleanup evidence stops the parent's heartbeat and retains quarantine.
    macOS and Docker check execution remain unavailable at this new boundary;
-   synchronous acceptance APIs retain their existing behavior. The flow engine
-   still needs #313's cumulative evidence and final publication integration.
+   synchronous acceptance APIs retain their existing behavior. A private flow
+   evidence store can now retain full parent-baseline deltas at supplied settled
+   attempt boundaries, including paths later restored and both rename paths.
+   Its manifest reader checks every referenced segment. The flow engine still
+   needs #313's complete attempt-coverage and final publication integration;
+   this store alone does not authorize verification.
    The internal owned role service (#330) reuses that Linux
    process owner around the actual native or ACP facade. The parent retains its
    issued capability and capacity through ECHILD; child release is logical only.
