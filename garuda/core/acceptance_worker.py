@@ -117,7 +117,7 @@ def _sources(data):
     return {"valid": True}
 
 
-def _fingerprint(data):
+def _sanitize_git_environment():
     # This process is disposable and has no unrelated runtime work. Preserve the
     # existing fingerprint algorithm while disabling repository Git helpers and
     # inherited redirection/index state for these owned read-only probes.
@@ -131,6 +131,10 @@ def _fingerprint(data):
     for index, (key, value) in enumerate(config.items()):
         os.environ[f"GIT_CONFIG_KEY_{index}"] = key
         os.environ[f"GIT_CONFIG_VALUE_{index}"] = value
+
+
+def _fingerprint(data):
+    _sanitize_git_environment()
     from garuda.core.acceptance import fingerprint
 
     value = fingerprint(data["workspace"])
@@ -170,7 +174,12 @@ def dispatch(operation, data):
                "prepare": {"session_dir", "binding", "summary", "limits"},
                "transition": {"session_dir", "binding", "expected", "phase", "fields"},
                "terminal": {"session_dir", "binding", "receipt"},
-               "reconcile": {"session_dir", "binding"}}
+               "reconcile": {"session_dir", "binding"},
+               "flow-evidence-begin": {"snapshot", "session_dir", "parent_id", "workspace"},
+               "flow-evidence-boundary": {"snapshot", "session_dir", "parent_id", "workspace",
+                                          "ordinal", "step", "attempt"},
+               "flow-evidence-finalize": {"snapshot", "session_dir", "parent_id", "workspace",
+                                          "coverage"}}
     if operation not in schemas or set(data) != schemas[operation]:
         raise ValueError("unsupported operation or fields")
     if operation == "admitted-sources":
@@ -185,6 +194,18 @@ def dispatch(operation, data):
         return _owner(data)
     if operation == "context":
         return _context(data)
+    if operation.startswith("flow-evidence-"):
+        from garuda.workspace.flow_evidence import FlowEvidenceStore
+
+        _owner({"snapshot": data["snapshot"]})
+        _sanitize_git_environment()
+        store = FlowEvidenceStore(data["session_dir"], data["parent_id"],
+                                  data["workspace"], data["snapshot"])
+        if operation == "flow-evidence-begin":
+            return store.begin()
+        if operation == "flow-evidence-boundary":
+            return store.boundary(data["ordinal"], data["step"], data["attempt"])
+        return store.finalize(data["coverage"])
     store = CheckRecords(data["session_dir"], data["binding"])
     if operation == "prepare":
         return store.prepare(data["summary"], data["limits"])
