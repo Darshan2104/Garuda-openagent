@@ -101,16 +101,22 @@ def queued(owner: dict | None = None) -> dict:
     return validate(state)
 
 
-def finished(*, success: bool, completion_gate: dict | None = None) -> dict:
+def finished(*, success: bool, completion_gate: dict | None = None,
+             verification: dict | None = None) -> dict:
     """The terminal state of a run that ended normally.
 
     ``completion_gate`` is the run's ``metadata["completion_gate"]``: whether
     the native gate ran, and whether an authoritative grader stood behind it.
     """
     gate = completion_gate or {}
-    verification: dict[str, Any] = {"status": "unavailable"}
+    derived_verification: dict[str, Any] = {"status": "unavailable"}
     if success and gate.get("authoritative_grader"):
-        verification = {"status": "passed", "authority": "user-config"}
+        derived_verification = {"status": "passed", "authority": "user-config"}
+    # The flow's owned acceptance phase can end after implementation succeeds.
+    # Its explicit verdict is the final fact, including a failed check; callers
+    # without that phase retain the original completion-gate behavior.
+    if verification is not None:
+        derived_verification = dict(verification)
     self_check = None
     if gate.get("verifier"):
         self_check = {"status": "passed" if success else "failed", "source": "native-completion-gate"}
@@ -120,7 +126,7 @@ def finished(*, success: bool, completion_gate: dict | None = None) -> dict:
             "process": "exited",
             "work": "done",
             "outcome": "completed" if success else "failed",
-            "verification": verification,
+            "verification": derived_verification,
             "self_check": self_check,
         }
     )

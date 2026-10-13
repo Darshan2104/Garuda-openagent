@@ -88,10 +88,22 @@ def _sources(data):
         if not isinstance(source, dict) or set(source) != {"path", "digest"}:
             raise ValueError("invalid frozen source")
         path = Path(source["path"])
-        parent = open_directory(path.parent)
+        try:
+            parent = open_directory(path.parent)
+        except FileNotFoundError:
+            if source["digest"] is None:
+                continue
+            raise AuthorityChanged("frozen check source parent disappeared") from None
         fd = None
         try:
-            fd = os.open(path.name, os.O_RDONLY | FLAGS, dir_fd=parent)
+            try:
+                fd = os.open(path.name, os.O_RDONLY | FLAGS, dir_fd=parent)
+            except FileNotFoundError:
+                if source["digest"] is None:
+                    continue
+                raise AuthorityChanged("frozen check source disappeared") from None
+            if source["digest"] is None:
+                raise AuthorityChanged("absent check source appeared")
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise ValueError("source is not a regular file")
             with os.fdopen(os.dup(fd), "rb") as handle:

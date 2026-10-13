@@ -24,10 +24,11 @@ def is_digest(value, size=64):
 @dataclass(frozen=True)
 class FrozenSource:
     path: str
-    digest: str
+    digest: str | None
 
     def document(self):
-        if not isinstance(self.path, str) or not os.path.isabs(self.path) or not is_digest(self.digest):
+        if (not isinstance(self.path, str) or not os.path.isabs(self.path)
+                or self.digest is not None and not is_digest(self.digest)):
             raise ValueError("invalid frozen check source")
         return {"path": self.path, "digest": self.digest}
 
@@ -125,6 +126,40 @@ class FrozenCheckRequest:
     def validate_ceiling(self, permissions):
         if canonical(permissions.snapshot_policy()) != self.ceiling_policy:
             raise ValueError("effective check permission ceiling changed")
+
+
+def freeze_resolved_checks(resolved, workspace, source_facts, permissions) -> FrozenCheckRequest:
+    """Bind effective checks to the source reads used for this resolution.
+
+    ``source_facts`` must come from a SourceCapture spanning load_effective;
+    re-reading configuration here would lose the parsed-byte identity.
+    """
+    from garuda.config import garuda_yaml as gy
+    from garuda.core.acceptance import checks_with_authority
+    from garuda.mcp.trust import trust_store_path
+
+    source_by_path = {fact.path: fact.digest for fact in source_facts}
+    if len(source_by_path) != len(source_facts):
+        raise ValueError("check source snapshot has duplicate paths")
+    expected = {"user-config": str(gy.user_path().absolute()),
+                "trusted-project": str(gy.project_path(workspace).absolute())}
+
+    checks = []
+    for definition, authority in checks_with_authority(resolved):
+        if authority not in ACCEPTANCE:
+            raise ValueError("effective check has no trusted source authority")
+        if authority in expected and source_by_path.get(expected[authority]) is None:
+            raise ValueError("configured check has no parsed source snapshot")
+        if (authority == "trusted-project"
+                and source_by_path.get(str(trust_store_path().absolute())) is None):
+            raise ValueError("trusted project check has no grant source snapshot")
+        checks.append(FrozenCheck(
+            run=tuple(definition["run"]) if isinstance(definition["run"], list) else definition["run"],
+            authority=authority, cwd=definition.get("cwd", "."), mode=definition.get("mode", "host"),
+            env=tuple(sorted(definition.get("env", {}).items())),
+        ))
+    sources = tuple(FrozenSource(fact.path, fact.digest) for fact in source_facts)
+    return FrozenCheckRequest.freeze(checks, sources, permissions)
 
 
 @dataclass(frozen=True)
