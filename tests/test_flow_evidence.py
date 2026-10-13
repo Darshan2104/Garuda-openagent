@@ -6,11 +6,10 @@ import uuid
 
 import pytest
 
-from garuda.core.acceptance_work import owned_call
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
 from garuda.runtime.strict_store import CorruptRecord
-from garuda.workspace.flow_evidence import FlowEvidenceStore
+from garuda.workspace.flow_evidence import FlowEvidenceStore, OwnedFlowEvidence
 from garuda.workspace.lease import LeaseStore
 
 
@@ -114,19 +113,16 @@ async def test_rename_accounts_for_both_infrastructure_source_and_destination(ca
 async def test_live_parent_worker_captures_the_original_attempt_boundaries(case):
     workspace, owner, evidence = case
     owner.start_heartbeat()
-    base = {"snapshot": owner.snapshot_ownership(), "session_dir": str(evidence.session),
-            "parent_id": owner.session_id, "workspace": str(workspace)}
+    adapter = OwnedFlowEvidence(evidence.session, owner.session_id, str(workspace), owner)
     try:
-        await owned_call("flow-evidence-begin", base)
+        await adapter.begin()
         (workspace / "conftest.py").write_text("changed\n")
-        await owned_call("flow-evidence-boundary", {**base, "ordinal": 0,
-                                                    "step": "coder", "attempt": 1})
+        await adapter.boundary(0, "coder", 1)
         (workspace / "conftest.py").write_text("original\n")
-        await owned_call("flow-evidence-boundary", {**base, "ordinal": 1,
-                                                    "step": "coder", "attempt": 2})
-        reference = await owned_call("flow-evidence-finalize", {
-            **base, "coverage": [{"step": "coder", "attempt": 1},
-                                  {"step": "coder", "attempt": 2}]})
-        assert evidence.manifest(reference["manifest_digest"])["changed"] == ["conftest.py"]
+        await adapter.boundary(1, "coder", 2)
+        reference, manifest = await adapter.finalize([{"step": "coder", "attempt": 1},
+                                                       {"step": "coder", "attempt": 2}])
+        assert reference["changed_count"] == 1
+        assert manifest["changed"] == ["conftest.py"]
     finally:
         await owner.release()

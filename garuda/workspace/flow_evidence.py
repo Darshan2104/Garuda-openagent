@@ -7,6 +7,7 @@ every receipted attempt boundary, not an inference from clipped child metadata.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -226,3 +227,36 @@ class FlowEvidenceStore:
             return document
         finally:
             os.close(directory)
+
+
+class OwnedFlowEvidence:
+    """Async parent adapter; every Git probe and publication has owned closure."""
+
+    def __init__(self, session_dir, parent_id, workspace, owner):
+        self.owner = owner
+        self.base = {"snapshot": owner.snapshot_ownership(),
+                     "session_dir": str(session_dir),
+                     "parent_id": parent_id, "workspace": workspace}
+
+    async def _call(self, operation, **fields):
+        from garuda.core.acceptance_work import owned_call
+
+        return await self.owner.race(owned_call(operation, {**self.base, **fields}))
+
+    async def begin(self):
+        return await self._call("flow-evidence-begin")
+
+    async def boundary(self, ordinal, step, attempt):
+        return await self._call("flow-evidence-boundary", ordinal=ordinal,
+                                step=step, attempt=attempt)
+
+    async def finalize(self, coverage):
+        reference = await self._call("flow-evidence-finalize", coverage=coverage)
+
+        def read():
+            reader = FlowEvidenceStore(self.base["session_dir"], self.base["parent_id"],
+                                       self.base["workspace"], self.base["snapshot"])
+            return reader.manifest(reference["manifest_digest"])
+
+        manifest = await self.owner.race(asyncio.to_thread(read))
+        return reference, manifest
