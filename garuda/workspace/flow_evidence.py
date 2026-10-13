@@ -173,14 +173,18 @@ class FlowEvidenceStore:
             os.close(directory)
 
     def finalize(self, coverage: list[dict]):
-        """Require every expected attempt exactly once; retain restored changes."""
+        """Require every supplied attempt and its exact boundary commitment."""
         if (not isinstance(coverage, list) or len(coverage) > 512
-                or any(not isinstance(row, dict) or set(row) != {"step", "attempt"}
+                or any(not isinstance(row, dict) or set(row) != {"step", "attempt", "boundary_digest"}
                        for row in coverage)):
             raise ValueError("invalid flow evidence coverage")
         identities = [(row["step"], row["attempt"]) for row in coverage]
         if (any(not isinstance(step, str) or not step or type(attempt) is not int or attempt < 1
-                for step, attempt in identities) or len(set(identities)) != len(identities)):
+                for step, attempt in identities) or len(set(identities)) != len(identities)
+                or any(not isinstance(row["boundary_digest"], str)
+                       or len(row["boundary_digest"]) != 64
+                       or any(char not in "0123456789abcdef" for char in row["boundary_digest"])
+                       for row in coverage)):
             raise ValueError("duplicate or invalid flow evidence attempt")
         directory, baseline, start_digest = self._open()
         try:
@@ -199,6 +203,7 @@ class FlowEvidenceStore:
                         or document["step"] != identity["step"]
                         or type(document["attempt"]) is not int
                         or document["attempt"] != identity["attempt"]
+                        or segment_digest != identity["boundary_digest"]
                         or document["attribution"] != BASELINE_CAPTURED):
                     raise CorruptRecord("flow evidence segment differs from coverage")
                 changed.update(_paths(document["changed"]))
