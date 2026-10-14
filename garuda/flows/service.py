@@ -2,7 +2,8 @@
 
 The engine owns admission, workspace leases, step receipts and recovery.
 This facade resolves the effective flow and refuses missing roles before
-passing execution to that owner. It does not run acceptance checks.
+passing execution to that owner. Its opt-in check path freezes authority before
+admission; the engine remains the sole acceptance owner.
 """
 
 from __future__ import annotations
@@ -28,8 +29,10 @@ class FlowExecutionService:
         self.store = store if store is not None else SessionStore()
 
     async def run(self, name: str, task: str, workspace: str, *,
-                  starter_record: dict | None = None) -> FlowExecutionResult:
-        return await self._execute(name, task, workspace, starter_record=starter_record)
+                  starter_record: dict | None = None,
+                  checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+        return await self._execute(name, task, workspace, starter_record=starter_record,
+                                   checks=checks)
 
     async def resume(self, flow_session: str) -> FlowExecutionResult:
         meta = self.store.load_meta(flow_session)
@@ -60,10 +63,27 @@ class FlowExecutionService:
 
     async def _execute(self, name: str, task: str, workspace: str, *,
                        flow_session: str | None = None,
-                       starter_record: dict | None = None) -> FlowExecutionResult:
+                       starter_record: dict | None = None,
+                       checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
         from garuda.flows.launch import launch_step
 
-        resolved = load_effective(workspace)
+        request = permissions = None
+        if checks is None:
+            resolved = load_effective(workspace)
+        else:
+            from garuda.config_sources import SourceCapture
+            from garuda.core.acceptance_request import freeze_resolved_checks
+            from garuda.core.permissions import PermissionEngine
+
+            if (not isinstance(checks, tuple) or len(checks) > 16
+                    or any(not isinstance(check, str) or not check.strip()
+                           or len(check) > 2048 or "\0" in check for check in checks)):
+                raise engine.FlowStopped("flow.check_request_invalid",
+                                         "select at most 16 bounded check commands")
+            permissions = PermissionEngine(mode="smart")
+            with SourceCapture() as capture:
+                resolved = load_effective(workspace, cli_checks=checks)
+            request = freeze_resolved_checks(resolved, workspace, capture.facts(), permissions)
         flows = packaged.available(resolved)
         if name not in flows:
             raise engine.FlowStopped("flow.unknown", f"no flow named {name!r} "
@@ -75,9 +95,20 @@ class FlowExecutionService:
                 "flow.missing_roles", f"flow {name} needs the roles "
                 f"{', '.join(packaged.required_roles(flow))}; define "
                 f"{', '.join(missing)} in garuda.yaml (`garuda init` proposes them)")
+        if request is not None and request.checks:
+            import sys
+
+            if sys.platform != "linux":
+                raise engine.FlowStopped(
+                    "flow.verification_unavailable",
+                    "owned flow checks require the Linux supervisor on this host")
+        else:
+            request = permissions = None
         runner = engine.FlowRunner(self.store, workspace, name, flow, resolved, task=task,
                                    launcher=launch_step, flow_session=flow_session,
-                                   starter_record=starter_record)
+                                   starter_record=starter_record,
+                                   verification_request=request,
+                                   verification_permissions=permissions)
         result = await runner.run(resume=flow_session is not None)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))

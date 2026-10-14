@@ -442,8 +442,16 @@ class FlowRunner:
         result = FlowResult(self.flow_session)
         try:
             if self.verification_request is not None:
+                from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
                 from garuda.workspace.flow_evidence import OwnedFlowEvidence
 
+                try:
+                    await lease.race(owned_call("admitted-sources", {
+                        "sources": [source.document() for source in
+                                    self.verification_request.sources]}))
+                except AcceptanceWorkError as exc:
+                    raise FlowStopped("flow.check_authority_changed",
+                                      "check sources changed before step admission") from exc
                 self._evidence = OwnedFlowEvidence(self.store.session_dir(self.flow_session),
                                                    self.flow_session, self.workspace, lease)
                 baseline = await self._evidence.begin()

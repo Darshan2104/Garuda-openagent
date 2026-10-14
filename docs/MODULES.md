@@ -419,7 +419,11 @@ It resolves effective packaged/configured flows, refuses unknown flows and
 missing roles before engine admission, and returns the engine outcome together
 with recorded review/state evidence. `interfaces/main.py` keeps CLI rendering
 and exit handling; `flow show` keeps its read-only receipt projection. The
-facade does not accept checks or finalize verification.
+facade accepts an internal opt-in bounded `checks` tuple, freezes effective
+check authority with exact parsed source identities before admission, and
+refuses unsupported hosts before step launch. The engine revalidates sources
+under its parent lease and solely owns finalization. The public CLI does not
+select checks yet.
 
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
 holds the workspace lease from the first step to the last and lends each step

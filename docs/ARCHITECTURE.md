@@ -85,7 +85,10 @@ fastest way to learn the system.
    resolves the effective flow and missing-role preflight, then delegates to
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
-   This facade adds no checks parameter or flow verification phase.
+   The facade has an internal opt-in `checks` tuple: it freezes the effective
+   configured and explicit checks with their parsed source identities before
+   admission. The engine revalidates those sources under the retained lease
+   before any step and owns the check phase. The CLI does not select it yet.
    The internal `core/acceptance_runner.py` boundary accepts already-frozen
    authorized checks and a candidate/evidence context from a retained parent
    lease owner. A dedicated Linux subreaper owns each check and each fixed
@@ -102,7 +105,7 @@ fastest way to learn the system.
    metadata publication. A completed protected flow can be read back only after
    the private commit and terminal check receipts reconcile; an incomplete or
    uncertain phase refuses ordinary resume without replay. Automatic recovery,
-   public service/CLI selection, and full acceptance gates remain #313 work;
+   public CLI selection, and full acceptance gates remain #313 work;
    these internal records alone do not authorize user-visible flow verification.
    The internal owned role service (#330) reuses that Linux
    process owner around the actual native or ACP facade. The parent retains its

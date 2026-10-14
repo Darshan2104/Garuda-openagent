@@ -14,12 +14,11 @@ import pytest
 import yaml
 
 from garuda.config import garuda_yaml as gy
-from garuda.core.acceptance_request import CheckLimits, FrozenCheck, FrozenCheckRequest
-from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.flows.engine import FlowRunner, FlowStopped
 from garuda.flows.launch import launch_step
 from garuda.flows.service import FlowExecutionService
+from garuda.interfaces.run_guard import WorkspaceLeaseGuard
 from garuda.workspace.lease import LeaseConflictError, LeaseStore
 
 linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux-owned flow and check")
@@ -84,31 +83,30 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
         (agent / "owned-flow.yaml").write_text(
             "name: owned-flow\ntools: [bash]\npermission_mode: auto\n"
             "enable_verifier: false\nmax_turns: 2\n")
-        resolved = gy.resolve(gy.parse({
+        config = {
             "version": 1,
             "roles": {"coder": {"harness": "native", "agent": "owned-flow",
                                 "permissions": "auto"}},
-            "flows": {"owned": {"steps": [{"id": "build", "role": "coder"}]}}}), None)
+            "flows": {"owned": {"steps": [{"id": "build", "role": "coder"}]}},
+            "checks": [{"run": "true"}]}
+        gy.user_path().write_text(yaml.safe_dump(config))
+        resolved = gy.load_effective(workspace)
         entered, release = tmp_path / "entered", tmp_path / "release"
-        script = ("import pathlib,time;"
-                  f"pathlib.Path({str(entered)!r}).touch();"
-                  f"exec(\"while not pathlib.Path({str(release)!r}).exists(): time.sleep(.01)\")")
-        permissions = PermissionEngine(mode="auto")
-        request = FrozenCheckRequest.freeze(
-            [FrozenCheck((sys.executable, "-c", script), "user-request")], (), permissions,
-            limits=CheckLimits(20, 40, .1, .5))
+        script = tmp_path / "wait_check.py"
+        script.write_text(
+            "import pathlib, time\n"
+            f"pathlib.Path({str(entered)!r}).touch()\n"
+            f"while not pathlib.Path({str(release)!r}).exists(): time.sleep(.01)\n")
         store = SessionStore(tmp_path / "sessions")
-        runner = FlowRunner(store, workspace, "owned", resolved.config["flows"]["owned"],
-                            resolved, task="implement", launcher=launch_step,
-                            verification_request=request, verification_permissions=permissions)
-        task = asyncio.create_task(runner.run())
+        task = asyncio.create_task(FlowExecutionService(store).run(
+            "owned", "implement", str(workspace), checks=(f"{sys.executable} {script}",)))
         try:
             await _appears(entered, task)
             competitor = LeaseStore()
             with pytest.raises(LeaseConflictError):
                 competitor.acquire(str(workspace), "other-mutator", "mutating")
             release.touch()
-            result = await asyncio.wait_for(task, 40)
+            result = (await asyncio.wait_for(task, 40)).flow
             assert result.completed
             meta = store.load_meta(result.flow_session)
             assert meta["flow_state"] == "completed"
@@ -127,7 +125,7 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             assert readback.flow.completed
             assert readback.flow.receipts == result.receipts
             assert readback.state["verification"] == {"status": "passed",
-                                                     "authority": "user-request"}
+                                                     "authority": "user-config,user-request"}
             assert store.load_meta(result.flow_session) == meta
             receipt_file = next((store.session_dir(result.flow_session) /
                                  f"acceptance-{meta['flow_verification_phase']['phase_id']}").glob(
@@ -135,6 +133,19 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             receipt_file.unlink()
             with pytest.raises(FlowStopped, match="flow.verification_reconciliation_required"):
                 await FlowExecutionService(store).resume(result.flow_session)
+
+            original_acquire = WorkspaceLeaseGuard.acquire
+
+            def change_source_after_admission(guard):
+                original_acquire(guard)
+                gy.user_path().write_text(yaml.safe_dump({**config,
+                                                          "checks": [{"run": "false"}]}))
+
+            monkeypatch.setattr(WorkspaceLeaseGuard, "acquire", change_source_after_admission)
+            refused = (await FlowExecutionService(store).run(
+                "owned", "implement", str(workspace), checks=())).flow
+            assert refused.stopped.code == "flow.check_authority_changed"
+            assert refused.receipts == []
         finally:
             release.touch()
             if not task.done():
