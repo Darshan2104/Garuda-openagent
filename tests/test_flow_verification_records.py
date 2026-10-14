@@ -9,6 +9,7 @@ import pytest
 
 from garuda.core.acceptance_request import CheckContext, FrozenCheck, FrozenCheckRequest
 from garuda.core.acceptance_runner import AcceptanceRunner
+from garuda.core.acceptance_work import AcceptanceWorkError
 from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.flows.verification_records import OwnedFlowVerification
@@ -105,7 +106,7 @@ async def test_lost_actual_check_receipt_cannot_commit_a_pass(case):
     receipt = next((store.session_dir(owner.session_id) / f"acceptance-{context.phase_id}").glob(
         "receipt-*.json"))
     receipt.unlink()
-    with pytest.raises(CorruptRecord, match="receipt disagrees"):
+    with pytest.raises(AcceptanceWorkError, match="CorruptRecord"):
         await records.commit(phase["phase_digest"], result)
     assert not (store.session_dir(owner.session_id) / "flow" / "verification-commit.json").exists()
 

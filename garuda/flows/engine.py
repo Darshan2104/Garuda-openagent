@@ -392,6 +392,9 @@ class FlowRunner:
             protect_session(self.store.session_dir(self.flow_session) / "meta.json")
         self.store.begin(self.flow_session, task=self.task, model="flow",
                          agent=f"flow:{self.name}", workspace=self.workspace)
+        # Path.mkdir(parents=True) creates missing ancestors with the default
+        # mode, which makes the flow directory too open for owned records.
+        self.dir.mkdir(mode=0o700)
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
                                                                  _steps(self.flow)]},
@@ -400,7 +403,7 @@ class FlowRunner:
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
                                 for s in _steps(self.flow) if "review" in s],
             **({"starter": self.starter_record} if self.starter_record is not None else {})})
-        (self.dir / "receipts").mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.dir / "receipts").mkdir(mode=0o700)
 
     def _lease_mode(self) -> str:
         if self.verification_request is not None:

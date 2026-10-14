@@ -30,6 +30,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -68,7 +69,8 @@ def _words(run) -> list[str]:
 def infra_patterns(run) -> tuple[str, ...]:
     """The infrastructure a check's result depends on, from its command."""
     words = [w for w in _words(run) if "=" not in w or w.startswith("-")]
-    if words[:2] == ["python", "-m"] or words[:2] == ["python3", "-m"]:
+    if (len(words) >= 2 and words[1] == "-m"
+            and re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", Path(words[0]).name)):
         words = words[2:]
     if words and words[0] in ("uv", "poetry", "pipenv", "hatch") and "run" in words[:2]:
         words = words[words.index("run") + 1:]

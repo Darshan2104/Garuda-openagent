@@ -142,7 +142,8 @@ def test_output_is_bounded_and_redacted(ws):
 
 
 @pytest.mark.parametrize("run, tool", [
-    ("pytest -q", "pytest"), ("python -m pytest -x", "pytest"), ("uv run pytest", "pytest"),
+    ("pytest -q", "pytest"), ("python -m pytest -x", "pytest"),
+    ("/usr/bin/python3.12 -m pytest -q", "pytest"), ("uv run pytest", "pytest"),
     ("npm test", "npm"), (["cargo", "test"], "cargo"), ("CI=1 make test", "make"),
 ])
 def test_infra_patterns_follow_the_tool(run, tool):
