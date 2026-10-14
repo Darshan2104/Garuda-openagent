@@ -5,10 +5,12 @@ Status: foundation in progress for #313 under the approved
 The acceptance runner (#312) and native/ACP lifetime owner (#330) have landed.
 The private cumulative boundary store and supervised adapter are available;
 the opt-in engine now validates step coverage and publishes a private check
-phase, receipt-backed commitment, and strict final metadata. Source/permission
-selection, supported-platform behavior, restart reconciliation, and the full
-owner-level acceptance gates are still integration work, not shipped flow
-verification.
+phase, receipt-backed commitment, and strict final metadata. The internal
+service freezes configured and explicit check authority before admission;
+the owner revalidates sources under its lease and completed protected flows
+read back only matching private and parent receipts. Unfinished-phase recovery,
+public selection, and the full owner-level acceptance gates are still
+integration work, not shipped flow verification.
 Public flow checks remain disabled until the integration gates below pass.
 
 ## Implementation order
@@ -32,7 +34,7 @@ Public flow checks remain disabled until the integration gates below pass.
 5. Reconcile recorded bindings on resume without launching uncertain attempts
    again. Missing check-side files cannot authorize fresh work. Preserve the
    committed verification across final status, tag and observability updates.
-6. Enable service checks, CLI --check and authorized build-review checks only
+6. Enable public service/CLI --check and authorized build-review checks only
    after owner-level integration proves competition, cancellation, cumulative
    evidence, candidate/source binding and restart behavior. Keep execution,
    review and verification as separate outcomes.

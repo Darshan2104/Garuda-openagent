@@ -129,6 +129,7 @@ async def test_real_check_produces_bound_redacted_receipts_and_does_not_replay(c
     assert hashlib.sha256(raw).hexdigest() == intent["receipt_digest"] == result.receipt_refs[0]["digest"]
     again = await runner.run(request, context, owner, permissions)
     assert again.verification["status"] == "passed"
+    assert again.receipts == result.receipts
     assert len(marker.read_text().splitlines()) == 1
     assert (await runner.reconcile(receipt["binding"]))["classification"] == "terminal"
 

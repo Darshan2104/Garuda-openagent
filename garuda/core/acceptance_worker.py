@@ -255,7 +255,7 @@ def dispatch(operation, data):
         return store.transition(data["expected"], data["phase"], **data["fields"])
     if operation == "terminal":
         return store.terminal(data["receipt"])
-    return store.reconcile()
+    return store.reconcile(full_result=True)
 
 
 def main():
