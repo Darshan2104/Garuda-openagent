@@ -128,6 +128,83 @@ class FlowVerificationRecords:
         finally:
             os.close(directory)
 
+    def committed(self, reference):
+        """Read a published commit and recheck its terminal receipt chain."""
+        if (not isinstance(reference, dict) or set(reference) != {"commit_digest"}
+                or not _hex(reference["commit_digest"], 64)):
+            raise CorruptRecord("flow verification commit reference is invalid")
+        directory = self._open()
+        try:
+            phase = self._phase(directory)
+            document = read_record(directory, COMMIT)
+            if (not isinstance(document, dict)
+                    or set(document) != {"version", "phase_digest", "candidate",
+                                         "evidence_digest", "checks", "verification"}
+                    or type(document["version"]) is not int or document["version"] != 1
+                    or digest(document) != reference["commit_digest"]
+                    or document["phase_digest"] != digest(phase)
+                    or document["candidate"] != phase["candidate"]
+                    or document["evidence_digest"] != phase["evidence_digest"]
+                    or not isinstance(document["checks"], list)
+                    or len(document["checks"]) > len(phase["checks"])
+                    or not isinstance(document["verification"], dict)):
+                raise CorruptRecord("flow verification commit is not bound to its phase")
+            results = []
+            for index, row in enumerate(document["checks"]):
+                check = phase["checks"][index]
+                if (not isinstance(row, dict)
+                        or set(row) not in ({"index", "check_id", "authority", "status"},
+                                            {"index", "check_id", "authority", "status",
+                                             "receipt_digest"})
+                        or type(row["index"]) is not int or row["index"] != index
+                        or row["check_id"] != check["check_id"]
+                        or row["authority"] != check["authority"]
+                        or not isinstance(row["status"], str)
+                        or row["status"] not in TERMINAL | UNLAUNCHED):
+                    raise CorruptRecord("flow verification check summary changed")
+                if row["status"] in TERMINAL:
+                    if not _hex(row.get("receipt_digest"), 64):
+                        raise CorruptRecord("terminal flow check lost its receipt reference")
+                    actual = CheckRecords(self.path.parent,
+                                          self._binding(phase, index, check)).reconcile()
+                    if (actual["classification"] != "terminal"
+                            or actual["receipt_digest"] != row["receipt_digest"]
+                            or actual["result"].get("status") != row["status"]
+                            or actual["result"].get("authority") != row["authority"]):
+                        raise CorruptRecord("terminal flow check receipt changed")
+                    results.append(actual["result"])
+                elif "receipt_digest" in row:
+                    raise CorruptRecord("unlaunched flow check has a receipt reference")
+                else:
+                    results.append({"authority": row["authority"], "status": row["status"]})
+            verdict = document["verification"]
+            complete = len(results) == len(phase["checks"])
+            if not isinstance(verdict.get("status"), str):
+                valid = False
+            elif verdict["status"] in {"passed", "failed"}:
+                valid = complete and verdict == verification_from(results)
+            elif verdict["status"] == "unavailable":
+                valid = (verdict == {"status": "unavailable",
+                                     "code": "verification.unsupported_supervisor"} and not results
+                         or complete and verdict == verification_from(results))
+            elif verdict["status"] == "invalidated":
+                valid = (set(verdict) == {"status", "code"}
+                         and isinstance(verdict["code"], str)
+                         and verdict["code"] in {"verification.authority_changed",
+                                                 "verification.candidate_changed",
+                                                 "verification.check_changed_tree",
+                                                 "verification.test_infra_changed"}
+                         and (not complete or verdict["code"] in {
+                             "verification.authority_changed", "verification.candidate_changed"}
+                              or verdict == verification_from(results)))
+            else:
+                valid = False
+            if not valid:
+                raise CorruptRecord("flow verification commit verdict is not supported by receipts")
+            return document
+        finally:
+            os.close(directory)
+
 
     @staticmethod
     def _binding(phase, index, check):

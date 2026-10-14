@@ -99,9 +99,11 @@ fastest way to learn the system.
    Its manifest reader checks every referenced segment. The opt-in internal
    flow path now reconciles step intents and boundary commitments, then writes
    a candidate-bound check phase and verification commit before strict parent
-   metadata publication. Public service/CLI selection, restart reconciliation,
-   and full acceptance gates remain #313 work; these internal records alone do
-   not authorize user-visible flow verification.
+   metadata publication. A completed protected flow can be read back only after
+   the private commit and terminal check receipts reconcile; an incomplete or
+   uncertain phase refuses ordinary resume without replay. Automatic recovery,
+   public service/CLI selection, and full acceptance gates remain #313 work;
+   these internal records alone do not authorize user-visible flow verification.
    The internal owned role service (#330) reuses that Linux
    process owner around the actual native or ACP facade. The parent retains its
    issued capability and capacity through ECHILD; child release is logical only.

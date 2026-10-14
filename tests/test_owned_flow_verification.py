@@ -19,6 +19,7 @@ from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.flows.engine import FlowRunner, FlowStopped
 from garuda.flows.launch import launch_step
+from garuda.flows.service import FlowExecutionService
 from garuda.workspace.lease import LeaseConflictError, LeaseStore
 
 linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux-owned flow and check")
@@ -122,6 +123,18 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             with pytest.raises(FlowStopped, match="flow.verification_reconciliation_required"):
                 await restarted.run(resume=True)
             assert store.load_meta(result.flow_session) == meta
+            readback = await FlowExecutionService(store).resume(result.flow_session)
+            assert readback.flow.completed
+            assert readback.flow.receipts == result.receipts
+            assert readback.state["verification"] == {"status": "passed",
+                                                     "authority": "user-request"}
+            assert store.load_meta(result.flow_session) == meta
+            receipt_file = next((store.session_dir(result.flow_session) /
+                                 f"acceptance-{meta['flow_verification_phase']['phase_id']}").glob(
+                                     "receipt-*.json"))
+            receipt_file.unlink()
+            with pytest.raises(FlowStopped, match="flow.verification_reconciliation_required"):
+                await FlowExecutionService(store).resume(result.flow_session)
         finally:
             release.touch()
             if not task.done():

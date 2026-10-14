@@ -145,7 +145,9 @@ from this store alone.
 candidate-bound verdict commitment. It checks terminal results against the
 real acceptance record owner; a missing receipt cannot become a pass. The
 flow engine has an opt-in internal finalizer under its retained lease, but
-the service and CLI do not select it yet, and resume does not replay checks.
+the service and CLI do not select it yet. A protected completed flow is read
+back only if its commit and terminal check receipt chain still agree; other
+protected resumes refuse without replay.
 `evidence.py` is the shared session boundary over it. `host_backed()` is the one
 workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
 workspace bind-mounted) are attributable; `remote` is recorded

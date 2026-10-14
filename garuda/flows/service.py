@@ -33,6 +33,28 @@ class FlowExecutionService:
 
     async def resume(self, flow_session: str) -> FlowExecutionResult:
         meta = self.store.load_meta(flow_session)
+        if meta.get("publication_policy") is not None:
+            from garuda.flows.verification_records import FlowVerificationRecords
+            from garuda.runtime.strict_store import StorageError
+
+            try:
+                commit = FlowVerificationRecords(self.store.session_dir(flow_session),
+                                                 flow_session).committed(
+                                                     meta.get("flow_verification_commit"))
+                state = meta.get("state")
+                if (meta.get("flow_state") != "completed"
+                        or meta.get("status") != "completed"
+                        or not isinstance(state, dict)
+                        or state.get("verification") != commit["verification"]):
+                    raise ValueError("protected flow final state is not committed")
+            except (StorageError, OSError, ValueError) as exc:
+                raise engine.FlowStopped(
+                    "flow.verification_reconciliation_required",
+                    "protected flow has incomplete or uncertain verification; "
+                    "steps and checks are never replayed automatically") from exc
+            return FlowExecutionResult(
+                engine.FlowResult(flow_session, engine.receipts(self.store, flow_session)),
+                meta.get("review"), meta.get("state"))
         return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
                                    flow_session=flow_session)
 
