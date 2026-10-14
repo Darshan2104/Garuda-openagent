@@ -80,6 +80,14 @@ async def test_actual_check_receipt_is_required_for_a_candidate_bound_commit(cas
     assert document["evidence_digest"] == reference["manifest_digest"]
     assert document["checks"][0]["receipt_digest"] == result.receipt_refs[0]["digest"]
     assert len(commitment["commit_digest"]) == 64
+    published_phase = {"phase_id": context.phase_id, "digest": phase["phase_digest"]}
+    assert direct.committed(commitment, result.receipts, published_phase) == document
+    with pytest.raises(CorruptRecord, match="published terminal check receipt changed"):
+        direct.committed(commitment, [{**result.receipts[0], "status": "failed"}],
+                         published_phase)
+    with pytest.raises(CorruptRecord, match="published flow check phase differs"):
+        direct.committed(commitment, result.receipts,
+                         {**published_phase, "digest": "0" * 64})
     assert marker.exists()
 
 

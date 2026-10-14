@@ -43,10 +43,15 @@ class FlowExecutionService:
             try:
                 commit = FlowVerificationRecords(self.store.session_dir(flow_session),
                                                  flow_session).committed(
-                                                     meta.get("flow_verification_commit"))
+                                                     meta.get("flow_verification_commit"),
+                                                     meta.get("acceptance_receipts"),
+                                                     meta.get("flow_verification_phase"))
                 state = meta.get("state")
+                evidence = meta.get("flow_evidence_manifest")
                 if (meta.get("flow_state") != "completed"
                         or meta.get("status") != "completed"
+                        or not isinstance(evidence, dict)
+                        or evidence.get("manifest_digest") != commit["evidence_digest"]
                         or not isinstance(state, dict)
                         or state.get("verification") != commit["verification"]):
                     raise ValueError("protected flow final state is not committed")

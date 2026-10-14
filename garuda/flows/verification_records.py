@@ -128,14 +128,17 @@ class FlowVerificationRecords:
         finally:
             os.close(directory)
 
-    def committed(self, reference):
-        """Read a published commit and recheck its terminal receipt chain."""
+    def committed(self, reference, published_receipts, published_phase):
+        """Read a published commit and recheck its terminal and parent receipt chain."""
         if (not isinstance(reference, dict) or set(reference) != {"commit_digest"}
                 or not _hex(reference["commit_digest"], 64)):
             raise CorruptRecord("flow verification commit reference is invalid")
         directory = self._open()
         try:
             phase = self._phase(directory)
+            if published_phase != {"phase_id": phase["phase_id"],
+                                    "digest": digest(phase)}:
+                raise CorruptRecord("published flow check phase differs from intent")
             document = read_record(directory, COMMIT)
             if (not isinstance(document, dict)
                     or set(document) != {"version", "phase_digest", "candidate",
@@ -166,7 +169,8 @@ class FlowVerificationRecords:
                     if not _hex(row.get("receipt_digest"), 64):
                         raise CorruptRecord("terminal flow check lost its receipt reference")
                     actual = CheckRecords(self.path.parent,
-                                          self._binding(phase, index, check)).reconcile()
+                                          self._binding(phase, index, check)).reconcile(
+                                              full_result=True)
                     if (actual["classification"] != "terminal"
                             or actual["receipt_digest"] != row["receipt_digest"]
                             or actual["result"].get("status") != row["status"]
@@ -201,6 +205,18 @@ class FlowVerificationRecords:
                 valid = False
             if not valid:
                 raise CorruptRecord("flow verification commit verdict is not supported by receipts")
+            if (not isinstance(published_receipts, list)
+                    or len(published_receipts) != len(results)):
+                raise CorruptRecord("published flow check receipts differ from commitment")
+            for published, actual, summary in zip(published_receipts, results,
+                                                  document["checks"], strict=True):
+                if not isinstance(published, dict):
+                    raise CorruptRecord("published flow check receipt is invalid")
+                if summary["status"] in TERMINAL:
+                    if published != actual:
+                        raise CorruptRecord("published terminal check receipt changed")
+                elif {key: published.get(key) for key in ("authority", "status")} != actual:
+                    raise CorruptRecord("published unlaunched check status changed")
             return document
         finally:
             os.close(directory)
