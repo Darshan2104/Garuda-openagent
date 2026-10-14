@@ -47,13 +47,14 @@ def phase_document(request, context, owner):
     if (owner.session_id != context.parent_id or owner.workspace != context.workspace
             or lease["mode"] != "mutating"):
         raise ValueError("flow check phase has no matching mutating parent")
-    return {"version": 1, "parent_id": context.parent_id, "phase_id": context.phase_id,
+    return {"version": 2, "parent_id": context.parent_id, "phase_id": context.phase_id,
             "workspace": context.workspace,
             "workspace_identity": list(context.workspace_identity),
             "owner": {key: lease[key] for key in ("pid", "identity", "pgid", "epoch")},
             "candidate": context.candidate, "evidence_digest": context.evidence_digest,
             "request_digest": request.identity, "authority_digest": request.authority_digest,
             "ceiling_digest": request.ceiling_digest,
+            "sources": [source.document() for source in request.sources],
             "checks": [{"check_id": check.identity, "authority": check.authority,
                         "mode": check.mode} for check in request.checks]}
 
@@ -76,7 +77,7 @@ class FlowVerificationRecords:
         return directory
 
     def _phase(self, directory):
-        phase = read_record(directory, PHASE)
+        phase = read_record(directory, PHASE, versions=(2,))
         if phase is None:
             raise CorruptRecord("flow verification phase intent is missing")
         self.validate_phase(phase)
@@ -85,8 +86,9 @@ class FlowVerificationRecords:
     def validate_phase(self, phase):
         keys = {"version", "parent_id", "phase_id", "workspace", "workspace_identity",
                 "owner", "candidate", "evidence_digest", "request_digest",
-                "authority_digest", "ceiling_digest", "checks"}
+                "authority_digest", "ceiling_digest", "sources", "checks"}
         if (not isinstance(phase, dict) or set(phase) != keys
+                or type(phase["version"]) is not int or phase["version"] != 2
                 or phase["parent_id"] != self.parent_id or not _uuid(phase["phase_id"])
                 or not isinstance(phase["workspace"], str)
                 or not os.path.isabs(phase["workspace"])
@@ -106,6 +108,17 @@ class FlowVerificationRecords:
                        or owner[key] == "unknown"
                        for key in ("identity", "epoch"))):
             raise CorruptRecord("flow verification owner is invalid")
+        sources = phase["sources"]
+        if (not isinstance(sources, list) or len(sources) > 32
+                or any(not isinstance(source, dict) or set(source) != {"path", "digest"}
+                       or not isinstance(source["path"], str)
+                       or not os.path.isabs(source["path"])
+                       or "\0" in source["path"]
+                       or (source["digest"] is not None
+                           and not _hex(source["digest"], 64)) for source in sources)
+                or [source["path"] for source in sources] != sorted({
+                    source["path"] for source in sources})):
+            raise CorruptRecord("flow verification source identities are invalid")
         checks = phase["checks"]
         if (not isinstance(checks, list) or len(checks) > 32
                 or any(not isinstance(check, dict) or set(check) != {"check_id", "authority", "mode"}

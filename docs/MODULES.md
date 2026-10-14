@@ -141,13 +141,14 @@ attempt boundaries and a cumulative manifest; reads validate the baseline and
 each referenced segment. The caller must prove complete step-attempt coverage
 and descendant closure before using that manifest. No public flow check runs
 from this store alone.
-`flows/verification_records.py` keeps the original parent phase intent and
-candidate-bound verdict commitment. It checks terminal results against the
-real acceptance record owner; a missing receipt cannot become a pass. The
-flow engine has an opt-in internal finalizer under its retained lease, but
-the service and CLI do not select it yet. A protected completed flow is read
-back only if its commit and terminal check receipt chain still agree; other
-protected resumes refuse without replay.
+`flows/verification_records.py` keeps the original parent phase intent,
+including frozen source identities, and candidate-bound verdict commitment.
+It checks terminal results against the real acceptance record owner; a missing
+receipt cannot become a pass. The flow engine has an opt-in internal finalizer
+under its retained lease, selected only by the internal service path, not the
+CLI. A protected completed flow is read back only if its commit, terminal
+receipts, and parent publication agree; other protected resumes refuse without
+replay.
 `evidence.py` is the shared session boundary over it. `host_backed()` is the one
 workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
 workspace bind-mounted) are attributable; `remote` is recorded

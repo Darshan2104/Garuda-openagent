@@ -1,6 +1,7 @@
 """A real owned flow keeps its workspace lease through the check commitment."""
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -114,6 +115,11 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             assert meta["state"]["verification"]["status"] == "passed"
             assert meta["flow_verification_commit"]["commit_digest"]
             assert meta["acceptance_receipts"][0]["status"] == "passed"
+            phase = json.loads((store.session_dir(result.flow_session) / "flow" /
+                                "verification-phase.json").read_text())
+            assert phase["version"] == 2
+            assert {"path": str(gy.user_path()),
+                    "digest": hashlib.sha256(gy.user_path().read_bytes()).hexdigest()} in phase["sources"]
             assert not competitor.holders_of(str(workspace))
             restarted = FlowRunner(store, workspace, "owned", resolved.config["flows"]["owned"],
                                    resolved, task="implement", launcher=launch_step,

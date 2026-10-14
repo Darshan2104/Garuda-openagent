@@ -6,9 +6,10 @@ The acceptance runner (#312) and native/ACP lifetime owner (#330) have landed.
 The private cumulative boundary store and supervised adapter are available;
 the opt-in engine now validates step coverage and publishes a private check
 phase, receipt-backed commitment, and strict final metadata. The internal
-service freezes configured and explicit check authority before admission;
-the owner revalidates sources under its lease and completed protected flows
-read back only matching private and parent receipts. Unfinished-phase recovery,
+service freezes configured and explicit check authority before admission.
+The owner revalidates sources under its lease, and the private phase retains
+their original identities. Completed protected flows read back only matching
+private and parent receipts. Unfinished-phase recovery,
 public selection, and the full owner-level acceptance gates are still
 integration work, not shipped flow verification.
 Public flow checks remain disabled until the integration gates below pass.
