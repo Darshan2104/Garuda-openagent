@@ -266,6 +266,13 @@ class FlowRunner:
     # -- running -----------------------------------------------------------------------
 
     def _begin(self) -> None:
+        # A reserved flow ID is not permission to reuse a prior session. The
+        # exclusive directory creation also covers records without meta.json
+        # (for example, a crash during the first publication).
+        try:
+            self.store.session_dir(self.flow_session).mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise FlowStopped("flow.session_exists", "the flow session already exists") from exc
         self.store.begin(self.flow_session, task=self.task, model="flow",
                          agent=f"flow:{self.name}", workspace=self.workspace)
         self.store.update_meta(self.flow_session, {
@@ -287,9 +294,7 @@ class FlowRunner:
         from garuda.interfaces.run_guard import WorkspaceLeaseGuard
         from garuda.runtime.session_state import finished, interrupted
 
-        if not resume:
-            self._begin()
-        else:
+        if resume:
             recover(self.store, self.flow_session)
             held = [r["step"] for r in receipts(self.store, self.flow_session)
                     if r.get("status") == "quarantined"]
@@ -302,7 +307,11 @@ class FlowRunner:
         lease.acquire()
         lease.start_heartbeat()
         result = FlowResult(self.flow_session)
+        begun = resume
         try:
+            if not resume:
+                self._begin()
+                begun = True
             existing = receipts(self.store, self.flow_session)
             done = [r for r in existing if r.get("status") == "done"]
             completed_steps = {r["step"] for r in done}
@@ -328,6 +337,8 @@ class FlowRunner:
                 "flow_state": "completed", "status": "completed",
                 "state": finished(success=True)})
         except FlowStopped as stop:
+            if not begun:
+                raise
             result.stopped = stop
             self.store.update_meta(self.flow_session, {
                 "flow_state": "stopped", "status": "failed", "state": finished(success=False),
@@ -335,9 +346,10 @@ class FlowRunner:
         except BaseException:
             # Cancelled or crashed mid-flow: the step that was running has an
             # intent and no receipt, so a resume quarantines it.
-            self.store.update_meta(self.flow_session, {"flow_state": "interrupted",
-                                                       "status": "failed",
-                                                       "state": interrupted()})
+            if begun:
+                self.store.update_meta(self.flow_session, {"flow_state": "interrupted",
+                                                           "status": "failed",
+                                                           "state": interrupted()})
             raise
         finally:
             await lease.release()

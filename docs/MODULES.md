@@ -409,7 +409,9 @@ and exit handling; `flow show` keeps its read-only receipt projection. The
 facade does not accept checks or finalize verification.
 
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
-holds the workspace lease from the first step to the last and lends each step
+is created exclusively after the engine takes its workspace lease (a busy
+workspace creates no parent, and a reused ID cannot overwrite one). It holds
+that lease from the first step to the last and lends each step
 a revocable `LeaseCapability` (`interfaces/run_guard.py`), so nothing outside
 the flow takes the workspace between steps and no step keeps it. Per step
 attempt it resolves typed inputs, journals the intent (fsynced) before launch,

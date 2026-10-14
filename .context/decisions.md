@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-10-14 — New flow admission precedes parent publication (#315 prerequisite)
+
+- The flow engine acquires its own workspace lease before creating a new parent
+  session. An occupied workspace creates no parent session, and an existing
+  session directory, even without metadata, refuses a new run rather than being
+  reused. Resume keeps its separate quarantine check before lease acquisition.
+- This does not enable browser Start or prove durable operation identity,
+  frozen authority, descendant closure, or the #315 acceptance gate.
+
 ## 2026-10-12 — Protected flow metadata shares one strict publication owner (#313)
 
 - Opt-in protected sessions use the existing `meta.json.lock` for every shared

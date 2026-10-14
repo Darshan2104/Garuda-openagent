@@ -84,7 +84,10 @@ fastest way to learn the system.
    `run(name, task, workspace)` and `resume(flow_session)` orchestration. It
    resolves the effective flow and missing-role preflight, then delegates to
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
-   evidence. Lease ownership, typed artifacts and recovery stay in the engine.
+   evidence. New flows take the engine's workspace lease before creating a
+   parent session and refuse any pre-existing parent ID, including a directory
+   without metadata. Lease ownership, typed artifacts and recovery stay in the engine.
+   This is only an admission prerequisite for #315; browser Start remains unavailable.
    This facade adds no checks parameter or flow verification phase.
    The internal `core/acceptance_runner.py` boundary accepts already-frozen
    authorized checks and a candidate/evidence context from a retained parent
