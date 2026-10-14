@@ -17,7 +17,7 @@ from garuda.config import garuda_yaml as gy
 from garuda.core.acceptance_request import CheckLimits, FrozenCheck, FrozenCheckRequest
 from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
-from garuda.flows.engine import FlowRunner
+from garuda.flows.engine import FlowRunner, FlowStopped
 from garuda.flows.launch import launch_step
 from garuda.workspace.lease import LeaseConflictError, LeaseStore
 
@@ -116,6 +116,12 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             assert meta["flow_verification_commit"]["commit_digest"]
             assert meta["acceptance_receipts"][0]["status"] == "passed"
             assert not competitor.holders_of(str(workspace))
+            restarted = FlowRunner(store, workspace, "owned", resolved.config["flows"]["owned"],
+                                   resolved, task="implement", launcher=launch_step,
+                                   flow_session=result.flow_session)
+            with pytest.raises(FlowStopped, match="flow.verification_reconciliation_required"):
+                await restarted.run(resume=True)
+            assert store.load_meta(result.flow_session) == meta
         finally:
             release.touch()
             if not task.done():

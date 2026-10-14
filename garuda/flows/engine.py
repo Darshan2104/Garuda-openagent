@@ -416,9 +416,15 @@ class FlowRunner:
         from garuda.interfaces.run_guard import WorkspaceLeaseGuard
         from garuda.runtime.session_state import finished, interrupted
 
-        if resume and self.verification_request is not None:
-            raise FlowStopped("flow.verification_resume_unavailable",
-                              "owned flow verification recovery is not enabled")
+        if resume:
+            # Service callers reconstruct a runner without the original live
+            # check request. A protected parent must never fall through the
+            # ordinary step-resume path and overwrite its committed verdict.
+            prior = self.store.load_meta(self.flow_session)
+            if prior.get("publication_policy") is not None or self.verification_request is not None:
+                raise FlowStopped("flow.verification_reconciliation_required",
+                                  "owned flow verification requires recovery from its durable phase; "
+                                  "steps and checks are never replayed automatically")
         if not resume:
             self._begin()
         else:
