@@ -135,6 +135,12 @@ repo-subdirectory workspaces map to real files), hashes symlinks by link text,
 never opens FIFOs/devices, and raises on any git failure for a repository
 baseline rather than reporting an empty delta. A non-repo workspace records an
 explicit `unsupported_nonrepo` baseline.
+`flow_evidence.py` is an internal, opt-in parent-baseline store for #313. Under
+a retained mutating owner, its supervised worker captures bounded, immutable
+attempt boundaries and a cumulative manifest; reads validate the baseline and
+each referenced segment. The caller must prove complete step-attempt coverage
+and descendant closure before using that manifest. No public flow check runs
+from this store alone.
 `evidence.py` is the shared session boundary over it. `host_backed()` is the one
 workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
 workspace bind-mounted) are attributable; `remote` is recorded

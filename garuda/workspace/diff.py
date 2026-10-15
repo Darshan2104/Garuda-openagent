@@ -125,6 +125,9 @@ class DeltaFile:
     #: This path was already dirty when the session started, but changed again
     #: during this session.  It is session work, not a pre-existing-only row.
     preexisting_at_start: bool = False
+    #: Source of a detected rename. Verification must account for both paths,
+    #: even though the ordinary changed-path display names only the destination.
+    renamed_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -431,6 +434,7 @@ def session_delta(baseline: Baseline, path: str | Path) -> SessionDelta:
                 kind=kind,
                 preexisting=preexisting,
                 preexisting_at_start=inherited and not preexisting,
+                renamed_from=renamed.get(rel),
             )
         )
     return SessionDelta(

@@ -3,6 +3,9 @@
 Status: foundation in progress for #313 under the approved
 [P1b ownership design](../design/2026-10-08-flow-verification-ownership-design.md).
 The acceptance runner (#312) and native/ACP lifetime owner (#330) have landed.
+The private cumulative boundary store and supervised adapter are available;
+flow-step coverage, check finalization, and publication are still integration
+work, not shipped flow verification.
 Public flow checks remain disabled until the integration gates below pass.
 
 ## Implementation order
