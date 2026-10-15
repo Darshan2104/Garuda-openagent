@@ -88,6 +88,9 @@ fastest way to learn the system.
    parent session and refuse any pre-existing parent ID, including a directory
    without metadata. Lease ownership, typed artifacts and recovery stay in the engine.
    This is only an admission prerequisite for #315; browser Start remains unavailable.
+   The internal #315 launch-intent store now reserves a private operation identity
+   and validates its lifecycle under a cross-process lock; no interface calls it
+   yet, and neither its record nor a preview digest authorizes execution.
    This facade adds no checks parameter or flow verification phase.
    The internal `core/acceptance_runner.py` boundary accepts already-frozen
    authorized checks and a candidate/evidence context from a retained parent

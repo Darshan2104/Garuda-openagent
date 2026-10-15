@@ -464,6 +464,10 @@ starter hashing shared by compilation and recorded-input validation.
 `service.py::StarterService` adds a pure library, preview and explicit Build and
 check compilation. Listing needs no invented task inputs; preview and readiness
 share the same resolved configuration/role plans via `compile_with_context`.
+`launch_intents.py` is an internal, not-yet-wired #315 storage boundary: one
+private, owner-bound operation record under the session store, canonical digest
+identity, serialized cross-process prepare and legal fsynced transitions. It
+does not grant dispatch authority, reconcile a run, or enable browser Start.
 `interfaces/web/scenarios.py` serves the installed library/detail, pure POST
 preview, and shared selected results behind existing dashboard authorization.
 It accepts allowlisted workspace indices and strict unique-key field JSON;

@@ -1,5 +1,15 @@
 # Durable decisions
 
+## 2026-10-15 — Flow operation identity is durable but not launch authority (#315)
+
+- A private, descriptor-bound launch-intent record uses a canonical UUIDv4,
+  immutable request/plan/authority digests, a reserved parent ID and an original
+  process owner. Cross-process prepare is idempotent only for the same identity;
+  changed identity and stale/illegal transitions refuse. Strict owner-only,
+  bounded reads and fsynced publication preserve corruption and ambiguity.
+- The intent store does not itself launch, reconcile, approve, or prove cleanup.
+  It is not yet wired to an HTTP gateway, so Start remains unavailable.
+
 ## 2026-10-14 — New flow admission precedes parent publication (#315 prerequisite)
 
 - The flow engine acquires its own workspace lease before creating a new parent
