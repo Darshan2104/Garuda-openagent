@@ -154,7 +154,8 @@ if os.fork() == 0:
     os.setsid()
     if os.fork() != 0: os._exit(0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    pathlib.Path('helper').write_text(str(os.getpid()))
+    pathlib.Path('helper.tmp').write_text(str(os.getpid()))
+    os.replace('helper.tmp', 'helper')
     while True:
         with open('writes','a') as f: f.write('x')
         time.sleep(.005)
