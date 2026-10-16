@@ -139,6 +139,25 @@ async def test_busy_workspace_creates_no_flow_session(repo):
         await owner.release()
 
 
+async def test_owned_snapshot_failure_releases_lease_before_parent_publication(
+        repo, monkeypatch):
+    flow_id = str(uuid.uuid4())
+    store = SessionStore()
+
+    def unavailable(_guard):
+        raise RuntimeError("ownership snapshot unavailable")
+
+    monkeypatch.setattr(WorkspaceLeaseGuard, "snapshot_ownership", unavailable)
+    runner = FlowRunner(
+        store, repo, "pbr", _resolved().config["flows"]["pbr"], _resolved(),
+        task="ship it", launcher=Fake(repo, {"plan": _plan}), flow_session=flow_id,
+        operation_binding={}, on_admitted=lambda *_args: None)
+    with pytest.raises(RuntimeError, match="ownership snapshot unavailable"):
+        await runner.run()
+    assert LeaseStore().holders_of(repo) == []
+    assert not store.session_dir(flow_id).exists()
+
+
 @pytest.mark.parametrize("with_meta", [False, True])
 async def test_new_flow_refuses_existing_parent_without_rewriting_it(repo, with_meta):
     flow_id = str(uuid.uuid4())

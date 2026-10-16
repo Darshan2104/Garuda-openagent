@@ -61,6 +61,9 @@ class StepLaunch:
     no_edits: bool
     store: Any = None
     require_owned: bool = False
+    runtime_catalog: Any = None
+    approval_handler: Any = None
+    workspace_identity: list[int] | None = None
 
 
 @dataclass
@@ -209,9 +212,14 @@ class FlowRunner:
     def __init__(self, store, workspace, name: str, flow: dict, resolved, *, task: str,
                  launcher: Launcher, flow_session: str | None = None,
                  lease_ttl: float | None = None, starter_record: dict | None = None,
-                 verification_request=None, verification_permissions=None):
+                 verification_request=None, verification_permissions=None,
+                 prepared_roles: dict | None = None, runtime_catalog=None,
+                 authority_sources: tuple = (), operation_binding: dict | None = None,
+                 on_admitted=None, approval_handler=None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
+        if (operation_binding is None) != (on_admitted is None):
+            raise ValueError("owned operation binding and admission callback are inseparable")
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
@@ -225,7 +233,15 @@ class FlowRunner:
         self.starter_record = starter_record
         self.verification_request = verification_request
         self.verification_permissions = verification_permissions
+        self.prepared_roles = dict(prepared_roles) if prepared_roles is not None else None
+        self.runtime_catalog = runtime_catalog
+        self.authority_sources = tuple(authority_sources)
+        self.operation_binding = dict(operation_binding) if operation_binding is not None else None
+        self.on_admitted = on_admitted
+        self.approval_handler = approval_handler
+        self.require_owned = verification_request is not None or operation_binding is not None
         self._evidence = None
+        self._owned_snapshot = None
         self._verification_quarantined = False
         self._interrupted_acceptance_receipts = None
 
@@ -244,6 +260,11 @@ class FlowRunner:
         return await self._evidence.version() if self._evidence is not None else self._version()
 
     def _role_plan(self, role: str):
+        if self.prepared_roles is not None:
+            if role not in self.prepared_roles:
+                raise FlowStopped("flow.role_unprepared",
+                                  f"role {role} is absent from the admitted authority", step=role)
+            return self.prepared_roles[role]
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
         from garuda.config.garuda_yaml import Resolved
@@ -264,6 +285,24 @@ class FlowRunner:
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=role) from exc
 
+    def _validate_operation_workspace(self) -> None:
+        if self.operation_binding is None:
+            return
+        expected = self.operation_binding.get("workspace_identity")
+        try:
+            root = Path(self.workspace)
+            resolved = root.resolve(strict=True)
+            info = os.stat(resolved)
+        except OSError as exc:
+            raise FlowStopped(
+                "flow.workspace_changed",
+                "the admitted workspace is no longer available") from exc
+        if (resolved != root or type(expected) is not list or len(expected) != 2
+                or [info.st_dev, info.st_ino] != expected):
+            raise FlowStopped(
+                "flow.workspace_changed",
+                "the admitted workspace identity changed before child launch")
+
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
@@ -274,7 +313,10 @@ class FlowRunner:
 
         closure = outcome.closure
         process = closure.get("process") if isinstance(closure, dict) else None
-        expected_owner = {key: self._evidence.base["snapshot"]["lease"][key]
+        if not isinstance(self._owned_snapshot, dict):
+            raise FlowStopped("flow.cleanup_unproved",
+                              "the parent ownership snapshot is unavailable", step=step["id"])
+        expected_owner = {key: self._owned_snapshot["lease"][key]
                           for key in ("pid", "identity", "pgid", "epoch")}
         if (not isinstance(closure, dict) or not isinstance(process, dict)
                 or closure.get("version") != 1 or not is_digest(closure.get("request_digest"))
@@ -429,13 +471,17 @@ class FlowRunner:
         # published session. Reserve the directory only after the workspace
         # lease has been acquired.
         try:
-            self.store.session_dir(self.flow_session).mkdir(parents=True, exist_ok=False)
+            self.store.session_dir(self.flow_session).mkdir(
+                mode=0o700, parents=True, exist_ok=False)
         except FileExistsError as exc:
             raise FlowStopped("flow.session_exists", "the flow session already exists") from exc
-        if self.verification_request is not None:
+        if self.require_owned:
             from garuda.core.session_publication import protect_session
 
-            protect_session(self.store.session_dir(self.flow_session) / "meta.json")
+            protect_session(
+                self.store.session_dir(self.flow_session) / "meta.json",
+                kind="flow-verification" if self.verification_request is not None
+                else "owned-flow")
         self.store.begin(self.flow_session, task=self.task, model="flow",
                          agent=f"flow:{self.name}", workspace=self.workspace)
         # Path.mkdir(parents=True) creates missing ancestors with the default
@@ -448,11 +494,13 @@ class FlowRunner:
             "review_policies": [{"step": s["id"], "reviewer": s["review"]["by"],
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
                                 for s in _steps(self.flow) if "review" in s],
-            **({"starter": self.starter_record} if self.starter_record is not None else {})})
+            **({"starter": self.starter_record} if self.starter_record is not None else {}),
+            **({"flow_operation": self.operation_binding}
+               if self.operation_binding is not None else {})})
         (self.dir / "receipts").mkdir(mode=0o700)
 
     def _lease_mode(self) -> str:
-        if self.verification_request is not None:
+        if self.require_owned:
             return "mutating"
         if all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow) if "role" in s):
             return "read-only"
@@ -487,9 +535,34 @@ class FlowRunner:
         result = FlowResult(self.flow_session)
         begun = resume
         try:
+            if self.require_owned:
+                self._owned_snapshot = lease.snapshot_ownership()
+                if self.operation_binding is not None:
+                    self._validate_operation_workspace()
+                    self.operation_binding.update({
+                        "session_id": self.flow_session,
+                        "lease_epoch": self._owned_snapshot["lease"]["epoch"],
+                    })
             if not resume:
                 await _settled_sync(self._begin)
                 begun = True
+                if self.on_admitted is not None:
+                    await self.on_admitted(
+                        self.flow_session, self.operation_binding["lease_epoch"])
+            if self.authority_sources:
+                from dataclasses import asdict
+
+                from garuda.config_sources import SourceChanged, verify_sources
+
+                try:
+                    await lease.race(_settled_sync(
+                        verify_sources,
+                        [asdict(source) for source in self.authority_sources]))
+                except SourceChanged as exc:
+                    raise FlowStopped(
+                        "flow.authority_changed",
+                        "admitted starter sources changed before the first step") from exc
+            self._validate_operation_workspace()
             if self.verification_request is not None:
                 from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
                 from garuda.workspace.flow_evidence import OwnedFlowEvidence
@@ -594,7 +667,7 @@ class FlowRunner:
         ``readonly`` roles, which run only in proven Docker confinement
         (C.8a). Source and snapshot must both be unchanged afterwards.
         """
-        if self._evidence is not None:
+        if self.require_owned:
             raise FlowStopped("flow.parallel_verification_unavailable",
                               "parallel snapshot members have no owned closure evidence",
                               step=step["id"])
@@ -802,6 +875,7 @@ class FlowRunner:
                         prompt_extra: str = "") -> dict:
         from garuda.workspace.no_edits import NoEditsGuard
 
+        self._validate_operation_workspace()
         role = step["role"]
         plan = self._role_plan(role)
         no_edits = self._no_edits(step, role)
@@ -818,12 +892,14 @@ class FlowRunner:
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
                 attempt=attempt, no_edits=no_edits, store=self.store,
-                require_owned=self._evidence is not None))
+                require_owned=self.require_owned, runtime_catalog=self.runtime_catalog,
+                approval_handler=self.approval_handler,
+                workspace_identity=(self.operation_binding or {}).get("workspace_identity")))
         finally:
             lease.revoke(capability)
         closure = None
         boundary = None
-        if self._evidence is not None:
+        if self.require_owned:
             from garuda.runtime.process_supervision import CleanupUncertain
 
             try:
@@ -831,18 +907,19 @@ class FlowRunner:
             except FlowStopped:
                 await lease.stop_heartbeat()
                 raise
-            try:
-                boundary = await self._evidence.boundary(len(done), step["id"], attempt)
-            except CleanupUncertain:
-                await lease.stop_heartbeat()
-                raise
-            except Exception as exc:
-                # The cleanup is proved, but evidence publication is not. No
-                # later candidate may be verified from this attempt.
-                await lease.stop_heartbeat()
-                raise FlowStopped("flow.evidence_unavailable",
-                                  "complete attempt evidence could not be published",
-                                  step=step["id"]) from exc
+            if self._evidence is not None:
+                try:
+                    boundary = await self._evidence.boundary(len(done), step["id"], attempt)
+                except CleanupUncertain:
+                    await lease.stop_heartbeat()
+                    raise
+                except Exception as exc:
+                    # The cleanup is proved, but evidence publication is not. No
+                    # later candidate may be verified from this attempt.
+                    await lease.stop_heartbeat()
+                    raise FlowStopped("flow.evidence_unavailable",
+                                      "complete attempt evidence could not be published",
+                                      step=step["id"]) from exc
         try:
             await self._publish(outcome.session_id, {"flow_step": {
                 "flow_session": self.flow_session, "step": step["id"], "attempt": attempt}})
@@ -854,7 +931,8 @@ class FlowRunner:
             "inputs": [ref.to_dict() for ref, _ in inputs],
             "workspace_version_before": version_before, "recorded_at": _now(), "outputs": [],
             "role_plan": plan.record() if plan is not None else None,
-            **({"closure": closure, "evidence_boundary": boundary} if closure is not None else {}),
+            **({"closure": closure} if closure is not None else {}),
+            **({"evidence_boundary": boundary} if boundary is not None else {}),
         }
         stop: FlowStopped | None = None
         if guard is not None:

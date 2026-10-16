@@ -8,6 +8,8 @@ admission; the engine remains the sole acceptance owner.
 
 from __future__ import annotations
 
+import re
+import uuid
 from dataclasses import dataclass
 
 from garuda.config.garuda_yaml import load_effective
@@ -34,9 +36,123 @@ class FlowExecutionService:
         return await self._execute(name, task, workspace, starter_record=starter_record,
                                    checks=checks)
 
+    async def run_prepared(self, plan, context, *, flow_session: str,
+                           operation_binding: dict, on_admitted, approval_handler,
+                           permission_mode: str,
+                           checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+        """Execute the exact starter objects admitted by the dashboard gateway.
+
+        This path never reloads the flow, role bindings or runtime registry. The
+        caller has already persisted launch authorization; the engine still owns
+        the workspace lease, strict parent publication and every child lifetime.
+        """
+        import sys
+
+        from garuda.flows.launch import launch_step
+        from garuda.scenarios.compile import LaunchContext
+        from garuda.scenarios.types import LaunchPlan
+
+        if (not isinstance(plan, LaunchPlan) or not isinstance(context, LaunchContext)
+                or plan.kind != "flow" or context.kind != "flow"
+                or context.flow is None or plan.flow != context.flow
+                or plan.target != context.target):
+            raise engine.FlowStopped("flow.prepared_invalid",
+                                     "the admitted starter plan and flow context disagree")
+        binding_fields = {"version", "operation_id", "request_digest", "plan_digest",
+                          "authority_digest", "workspace_identity", "owner"}
+        owner = operation_binding.get("owner") if isinstance(operation_binding, dict) else None
+        try:
+            operation_uuid = uuid.UUID(operation_binding.get("operation_id"))
+            session_uuid = uuid.UUID(flow_session)
+        except (ValueError, TypeError, AttributeError):
+            operation_uuid = session_uuid = None
+        if (plan.bindings != {name: role.record()
+                             for name, role in context.role_plans.items()}
+                or not isinstance(operation_binding, dict)
+                or set(operation_binding) != binding_fields
+                or operation_binding.get("version") != 1
+                or operation_binding.get("plan_digest") != plan.digest
+                or operation_binding.get("workspace_identity")
+                != plan.provenance.get("workspace_identity")
+                or type(operation_binding.get("workspace_identity")) is not list
+                or len(operation_binding["workspace_identity"]) != 2
+                or any(type(part) is not int or part < 0
+                       for part in operation_binding["workspace_identity"])
+                or operation_uuid is None or operation_uuid.version != 4
+                or str(operation_uuid) != operation_binding.get("operation_id")
+                or session_uuid is None or session_uuid.version != 4
+                or str(session_uuid) != flow_session
+                or any(not isinstance(operation_binding.get(name), str)
+                       or re.fullmatch(r"[0-9a-f]{64}", operation_binding[name]) is None
+                       for name in ("request_digest", "plan_digest", "authority_digest"))
+                or not isinstance(owner, dict)
+                or set(owner) != {"pid", "identity", "pgid", "epoch"}
+                or type(owner.get("pid")) is not int or owner["pid"] <= 0
+                or type(owner.get("pgid")) is not int or owner["pgid"] <= 0
+                or not isinstance(owner.get("identity"), str) or not owner["identity"]
+                or not isinstance(owner.get("epoch"), str)
+                or re.fullmatch(r"[0-9a-f]{32}", owner["epoch"]) is None
+                or not callable(on_admitted) or not callable(approval_handler)):
+            raise engine.FlowStopped("flow.prepared_invalid",
+                                     "the admitted role or operation binding disagrees")
+        if permission_mode not in {"readonly", "smart", "auto", "yolo"}:
+            raise engine.FlowStopped("flow.permission_ceiling_invalid",
+                                     "the dashboard permission ceiling is unsupported")
+        if sys.platform != "linux":
+            raise engine.FlowStopped("flow.ownership_unavailable",
+                                     "owned dashboard flows require the Linux supervisor")
+        from garuda.scenarios.authority import flow_authority
+
+        authority = flow_authority(
+            plan, context, max_permission=permission_mode,
+            server_epoch=owner["epoch"], backend_available=True,
+            approval_available=True)
+        if (not authority["can_start"]
+                or authority["digest"] != operation_binding["authority_digest"]):
+            raise engine.FlowStopped("flow.authority_invalid",
+                                     "the prepared flow exceeds or disagrees with its authority")
+
+        request = permissions = None
+        if checks is not None:
+            from garuda.core.acceptance_request import freeze_resolved_checks
+            from garuda.core.permissions import PermissionEngine
+
+            self._validate_checks(checks)
+            permissions = PermissionEngine(mode=permission_mode)
+            request = freeze_resolved_checks(
+                context.resolved, plan.workspace, context.source_facts, permissions)
+            if not request.checks:
+                request = permissions = None
+
+        runner = engine.FlowRunner(
+            self.store, plan.workspace, plan.target, context.flow, context.resolved,
+            task=plan.task, launcher=launch_step, flow_session=flow_session,
+            starter_record=plan.launch_metadata(), verification_request=request,
+            verification_permissions=permissions, prepared_roles=context.role_plans,
+            runtime_catalog=context.catalog, authority_sources=context.source_facts,
+            operation_binding=operation_binding, on_admitted=on_admitted,
+            approval_handler=approval_handler)
+        result = await runner.run()
+        meta = self.store.load_meta(result.flow_session)
+        return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
+
+    @staticmethod
+    def _validate_checks(checks: tuple[str, ...]) -> None:
+        if (not isinstance(checks, tuple) or len(checks) > 16
+                or any(not isinstance(check, str) or not check.strip()
+                       or len(check) > 2048 or "\0" in check for check in checks)):
+            raise engine.FlowStopped("flow.check_request_invalid",
+                                     "select at most 16 bounded check commands")
+
     async def resume(self, flow_session: str) -> FlowExecutionResult:
         meta = self.store.load_meta(flow_session)
-        if meta.get("publication_policy") is not None:
+        policy = meta.get("publication_policy")
+        if isinstance(policy, dict) and policy.get("kind") == "owned-flow":
+            raise engine.FlowStopped(
+                "flow.operation_managed",
+                "dashboard-owned flow operations are projected from their durable intent; "
+                "they are never resumed automatically")
+        if policy is not None:
             from garuda.flows.verification_records import FlowVerificationRecords
             from garuda.runtime.strict_store import StorageError
 
@@ -101,11 +217,7 @@ class FlowExecutionService:
             from garuda.core.acceptance_request import freeze_resolved_checks
             from garuda.core.permissions import PermissionEngine
 
-            if (not isinstance(checks, tuple) or len(checks) > 16
-                    or any(not isinstance(check, str) or not check.strip()
-                           or len(check) > 2048 or "\0" in check for check in checks)):
-                raise engine.FlowStopped("flow.check_request_invalid",
-                                         "select at most 16 bounded check commands")
+            self._validate_checks(checks)
             permissions = PermissionEngine(mode="smart")
             with SourceCapture() as capture:
                 resolved = load_effective(workspace, cli_checks=checks)

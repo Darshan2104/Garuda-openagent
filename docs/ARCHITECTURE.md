@@ -81,7 +81,8 @@ fastest way to learn the system.
    identity across named definition changes and snapshot workspace execution.
    Existing flow lease, no-edits, model and completion owners remain in control.
    `flows/service.py::FlowExecutionService` provides shared asynchronous
-   `run(name, task, workspace, checks=...)` and `resume(flow_session)` orchestration. It
+   `run(name, task, workspace, checks=...)`, `run_prepared(...)`, and
+   `resume(flow_session)` orchestration. It
    resolves the effective flow and missing-role preflight, then delegates to
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
@@ -129,6 +130,9 @@ fastest way to learn the system.
    or metadata replacement from downgrading a protected flow to legacy writes;
    every writer uses the same `meta.json.lock`. Check-enabled flows use this
    policy through terminal verification publication and read-back reconciliation.
+   Dashboard-owned flows use the same policy from their operation binding through
+   terminal publication, so every child and final writer must retain the admitted
+   parent identity.
    `scenarios/compile.py` compiles installed starter data into bounded labelled
    tasks and exact existing CLI commands. It resolves effective flows and
    configured role plans through the non-executing catalog; it never calls
@@ -159,14 +163,24 @@ fastest way to learn the system.
    It discloses unprobed runtime facts, visible user-authored waivers, and the
    single-harness Build and check remedy through the existing role-run mechanism.
    It does not call the full Setup view, which performs discovery probes.
-   The dashboard's `interfaces/web/scenarios.py` is a read-only transport over
-   these same catalog/compiler/service/read-model owners, including POST preview.
+   The dashboard's `interfaces/web/scenarios.py` is a transport over these same
+   catalog/compiler/service/read-model owners. Library, detail, POST preview and
+   result reads remain pure.
    Requests select an installed starter and bounded fields, with an operator's
    workspace index; token, Host, Origin, body limits and source authorization
    remain enforced. The allowlist exists in read-only contexts without activating
-   `LiveRuns`. Starters forms copy exact commands; existing session/native-trace
-   panels show selected historical evidence and an explicit follow-up preview.
-   They add no launch route, progress store, cross-project grant or flow checks.
+   `LiveRuns`. On Linux, a write-mode dashboard constructs one loop-owned
+   `FlowStartGateway`. It returns a server-authority envelope with flow previews,
+   durably reserves one UUIDv4 operation before dispatch, recompiles and validates
+   every captured source plus the authority ceiling, and enters the existing flow
+   engine through `run_prepared`. Duplicate HTTP requests project the same intent;
+   a restart or ambiguous interruption never replays it. Operation status points
+   at the authoritative flow session for progress and approvals, while shutdown
+   stops admission and drains owned work before shared live services close.
+   Unsupported hosts, read-only dashboards and run-kind starters expose no Start
+   capability. Starters forms retain exact copy commands and selected historical
+   evidence; the gateway creates no second queue, progress store, cross-project
+   grant or verification owner.
    Read-only ACP roles also require a configured confinement image and a Docker
    executable in static readiness; launch still performs the existing Docker
    preflight and never substitutes host no-edits for confinement.

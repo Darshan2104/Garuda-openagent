@@ -51,7 +51,7 @@ open that exact URL.
 
 | Page | Route | What it's for |
 |---|---|---|
-| Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, forms, preview and copy-command |
+| Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
 | Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
 | Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
 | Approvals | `#/inbox` | Every waiting approval; Allow or Deny |
@@ -65,7 +65,8 @@ open that exact URL.
 
 Start with `garuda web --read-only --allow-workspace .` and open **Starters**.
 Choose a journey, enter its goal or question, and optionally name repository
-sources (`path#section`) or existing context (`session:NAME`), one per line.
+regular non-symlink repository sources (`path#section`) or existing context
+(`session:NAME`), one per line.
 **Load reconnect example** fills the installed example; it does not create files.
 The build starter lets you select its flow variant and an explicit validated
 plan reference. Select a workspace from the operator's allowlist.
@@ -82,17 +83,30 @@ With one harness, remedies appear in order: connect a second harness, **Build
 and check** (explicitly **no review**), or author a waiver in your configuration.
 A user-authored waiver stays labelled **review not independent**. Build-review
 previews show authorized configured checks and their authority. Linux CLI starts
-can produce candidate-bound verification; the dashboard preview itself remains
-read-only and never launches a check.
+and Linux write-mode browser flow starts can produce candidate-bound
+verification. Preview itself remains pure and never launches a check.
 
 **Copy command** copies the exact quoted CLI command. Run it explicitly in a
 terminal. Changing inputs invalidates the preview; preview again after sources
 or configuration change. Equivalent commands use the ordinary flow/run CLI and
 record ordinary sessions; `garuda starter run` additionally records structured
-starter inputs/source provenance and recompiles at launch. These pages and
-their POST preview create no
-sessions, queue rows, files, processes or model calls. There is no starter Start
-button or HTTP start route in this phase.
+starter inputs/source provenance and recompiles at launch. Library/detail/result
+reads and POST preview create no sessions, queue rows, files, processes or model
+calls.
+
+On Linux, a dashboard started without `--read-only` shows **Start flow** when a
+flow-kind preview is ready, fits `--max-permission`, and has the required runtime,
+approval and process-owner capabilities. Start creates one durable operation and
+runs through the existing flow engine. The operation ID stays with the page while
+it polls, so a duplicate request returns the same admission and never launches a
+second flow. Source, configuration, role/runtime scope or authority changes after
+preview refuse before a child starts. A busy workspace, full runtime capacity or
+another refusal raised before the flow reserves its parent session is reported as
+`refused`; that operation stays refused, so preview and start again. Closing the
+tab does not cancel the owned
+operation. Garuda stops new admission during server shutdown, drains its tasks,
+and never replays uncertain work after restart. Read-only dashboards, unsupported
+hosts and run-kind starters remain copy-only.
 
 Follow the resulting session through **Sessions** (flows and ACP) or its existing
 native trace. The shared starter panel keeps process, work, outcome, review and
@@ -280,6 +294,8 @@ the same `Host` and `Origin` checks. Write routes are refused in `--read-only`.
 |---|---|
 | `GET /api/scenarios`, `GET /api/scenarios/<id>` | Installed starter library/detail and configured readiness; optional allowlisted `workspace` index |
 | `POST /api/scenarios/preview` | Pure compilation: `starter_id`, bounded `inputs`, optional integer `workspace`; also available read-only |
+| `POST /api/scenarios/start` | Write-mode Linux flow admission: exact `operation_id`, `starter_id`, `inputs`, `workspace`, `preview_digest`, and `authority_digest` |
+| `GET /api/scenario-operations/<operation_id>` | Durable admission/flow projection for polling and approval-heartbeat refresh |
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
@@ -304,7 +320,12 @@ Starter preview accepts field data, never runtime, flow or catalog definitions,
 and cannot grant cross-project context access. Explicit Build and check uses
 `remedy: "build-and-check"` with `starter_id: "build-review"` and optional
 `checks`; it reuses the same role-run preview owner. Normal source/private-store
-authorization and request body limits apply. There is no `/api/scenarios/start`.
+authorization and request body limits apply. Start accepts exactly the fields in
+the table; `operation_id` is a canonical UUIDv4 and both digests are lowercase
+SHA-256 values returned by the matching preview. The server recompiles and derives
+current authority; browser-supplied envelopes, paths, definitions and executables
+are never accepted as authority. The same token, Host, Origin, workspace allowlist
+and body limits apply. Read-only mode refuses both operation routes.
 
 **The live stream.** Each event's `id` is a byte offset into the session's
 log, so reconnecting with `Last-Event-ID` continues with the next event: none

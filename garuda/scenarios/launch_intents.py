@@ -34,7 +34,9 @@ _EPOCH = re.compile(r"[0-9a-f]{32}\Z")
 _REASON = re.compile(r"[a-z][a-z0-9_.-]{0,79}\Z")
 _PHASES = {
     "prepared": frozenset({"launch-authorized", "refused", "abandoned", "uncertain"}),
-    "launch-authorized": frozenset({"admitted", "uncertain", "quarantined"}),
+    # ``refused`` here is only for a runner that unwound before reserving its
+    # parent session; the caller must prove that before advancing.
+    "launch-authorized": frozenset({"admitted", "refused", "uncertain", "quarantined"}),
     "admitted": frozenset({"terminal", "uncertain", "quarantined"}),
     "terminal": frozenset(),
     "refused": frozenset(),

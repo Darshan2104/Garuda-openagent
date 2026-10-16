@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8895/")
@@ -45,8 +46,9 @@ with sync_playwright() as p:
         problems.append("the chat nav entry is missing in write mode")
 
     page.goto(f"{BASE}#/chat", wait_until="networkidle")
-    page.wait_for_timeout(1500)
-    if not page.query_selector("#chat-form"):
+    try:
+        page.wait_for_selector("#chat-form", timeout=10_000)
+    except PlaywrightTimeoutError:
         problems.append("the chat view did not open")
     meta = page.text_content("#chat-meta") or ""
     print("chat opened:", meta.strip())

@@ -67,6 +67,22 @@ def test_transition_requires_the_original_live_owner_and_preserves_uncertainty(p
         store.advance(operation_id, expected="uncertain", phase="launch-authorized", owner=owner)
 
 
+def test_authorized_refusal_is_terminal_and_cannot_bind_a_session(private_store):
+    _, workspace, store = private_store
+    operation_id = str(uuid.uuid4())
+    owner = current_owner()
+    store.prepare(**{**_request(workspace, operation_id), "owner": owner})
+    store.advance(operation_id, expected="prepared", phase="launch-authorized", owner=owner)
+    with pytest.raises(IntentStateError):
+        store.advance(operation_id, expected="launch-authorized", phase="refused",
+                      owner=owner, reason="workspace.busy", session_id=str(uuid.uuid4()))
+    refused = store.advance(operation_id, expected="launch-authorized", phase="refused",
+                            owner=owner, reason="workspace.busy")
+    assert refused["phase"] == "refused" and refused["session_id"] is None
+    with pytest.raises(IntentStateError):
+        store.advance(operation_id, expected="refused", phase="launch-authorized", owner=owner)
+
+
 def test_read_of_absent_operation_does_not_create_store(private_store):
     root, _, store = private_store
     assert store.read(str(uuid.uuid4())) is None

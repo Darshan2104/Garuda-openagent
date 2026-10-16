@@ -1,5 +1,34 @@
 # Durable decisions
 
+## 2026-10-16 — Browser flow starts have one durable Linux owner (#315)
+
+- A write-mode Linux dashboard creates one loop-owned flow gateway. Preview adds
+  a descriptive server-authority envelope bound to the workspace identity,
+  server epoch, operator permission ceiling, exact role/runtime scope, process
+  closure and approval capabilities. The browser returns only its digest; the
+  protected request and freshly derived server policy remain the authority.
+- Start requires a canonical UUIDv4 and exact preview/authority digests. One
+  private launch intent is durable before dispatch. Identical retries project
+  that operation; changed bindings refuse, and restart or ambiguous interruption
+  reconciles existing evidence without replay. An authorized operation becomes
+  terminal `refused` only on a known pre-launch refusal (lease conflict,
+  capacity, flow stop) with its reserved parent absent; cancellation and unknown
+  failures stay `uncertain`. HTTP connection and tab lifetime
+  do not own the work. Shutdown stops admission and drains gateway tasks before
+  the shared approval/live-run owner closes.
+- The gateway recompiles inputs, configuration, selected files and plan artifacts
+  before admission. The flow service revalidates those exact captured bytes plus
+  admitted roles, runtime catalog, workspace, permission ceiling, owner epoch and
+  operation binding under the retained flow lease before its first child. The
+  strict `owned-flow` publication policy binds parent, children and terminal
+  metadata to that operation.
+- Flow-kind starts reuse the existing engine, owned native/ACP role service,
+  approval broker, verification phase and session read model. The intent is not a
+  queue or progress store. Read-only dashboards, unsupported hosts, parallel
+  flows, permission escalation, ACP readonly/no-edits and run-kind starters fail
+  closed; run-kind browser starts remain #316. Process ownership is a lifecycle
+  boundary, not OS confinement.
+
 ## 2026-10-15 — Flow operation identity is durable but not launch authority (#315)
 
 - A private, descriptor-bound launch-intent record uses a canonical UUIDv4,

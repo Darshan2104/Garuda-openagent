@@ -58,6 +58,9 @@ class DashboardContext:
     #: mode, which is why every write route checks for them rather than assuming.
     loop: Any = None
     live: Any = None
+    #: Server-loop owner for durable flow starter operations. It exists only
+    #: in write mode and never borrows the HTTP connection lifetime.
+    flow_starts: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
     workspace: Path = field(default_factory=lambda: Path.cwd())
     #: Read-only starter requests use the same index allowlist as live requests.
@@ -80,7 +83,12 @@ class DashboardContext:
         ``chat`` needs both the flag *and* an attached loop: a read-write dashboard with no
         agent loop would advertise a conversation that could never take a turn.
         """
-        return {"chat": self.allow_run and self.live is not None}
+        return {
+            "chat": self.allow_run and self.live is not None,
+            "flow_start": bool(
+                self.allow_run and self.flow_starts is not None
+                and self.flow_starts.available),
+        }
 
 
 Handler = Callable[[Request, DashboardContext, "re.Match[str]"], Response]
@@ -154,6 +162,26 @@ def _starter_preview(request: Request, ctx: DashboardContext, _match) -> Respons
     from garuda.interfaces.web import scenarios
 
     return scenarios.respond(scenarios.preview, request, ctx)
+
+
+@route("POST", r"/api/scenarios/start")
+def _starter_start(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    refusal = _live(ctx)
+    if refusal is not None:
+        return refusal
+    return scenarios.start(request, ctx)
+
+
+@route("GET", r"/api/scenario-operations/(?P<operation>[0-9a-f-]+)")
+def _starter_operation(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    refusal = _live(ctx)
+    if refusal is not None:
+        return refusal
+    return scenarios.operation(request, ctx, match["operation"])
 
 
 @route("GET", r"/api/scenarios/(?P<starter>[a-z0-9][a-z0-9_-]{0,47})")

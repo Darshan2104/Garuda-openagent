@@ -254,8 +254,9 @@ defaults to the reviewer, uses the existing no-edits guard in the live checkout,
 and accepts `--role`, `--name`, and repeated `--source` references. Output withheld
 by that guard stays withheld in the result. Use an idle checkout for questions.
 
-Sources are repository-relative paths (optionally `#section`), `session:NAME`,
-or `session-id:FULL_ID`. Cross-project briefs require the explicit
+File sources are regular, non-symlink repository-relative paths (optionally
+`#section`); session sources use `session:NAME` or `session-id:FULL_ID`.
+Cross-project briefs require the explicit
 `--allow-cross-project-context` flag; full-plan handoffs remain same-project.
 Files are named context references with digests: supplied context does not prove
 that a runtime read a file. `--preview` performs no process, model, network,

@@ -194,8 +194,10 @@ def main():
             "starter_id": "plan-change", "inputs": {"goal": "refuse"}},
             headers={"X-Garuda-Token": TOKEN, "Origin": "https://foreign.invalid"}).status == 403
         assert context.request.get(BASE + "api/scenarios", headers={"X-Garuda-Token": "wrong"}).status == 401
-        assert context.request.post(BASE + "api/scenarios/start", data={}, headers={
-            "X-Garuda-Token": TOKEN, "Origin": BASE.rstrip("/")}).status in {404, 405}
+        unavailable = context.request.post(BASE + "api/scenarios/start", data={}, headers={
+            "X-Garuda-Token": TOKEN, "Origin": BASE.rstrip("/")})
+        assert unavailable.status == 503
+        assert unavailable.json()["error"]["code"] == "read_only"
         assert snapshot() == before, "dashboard starter reads/previews changed workspace, configuration, sessions or launch count"
         assert not errors, errors
         browser.close()

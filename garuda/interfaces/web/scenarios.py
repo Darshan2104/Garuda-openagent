@@ -78,7 +78,53 @@ def preview(request, ctx):
             raise ValueError("Select Build and check explicitly for the build-review starter.")
         return service.build_and_check(body["inputs"], root, checks=body.get("checks"))
     # Read-only preview cannot grant or persist cross-project authorization.
+    if ctx.flow_starts is not None:
+        return ctx.flow_starts.preview(body["starter_id"], body["inputs"], root)
     return service.preview(body["starter_id"], body["inputs"], root)
+
+
+def start(request, ctx):
+    """Admit one durable operation on the server loop, never the HTTP thread."""
+    from garuda.interfaces.web import live as live_module
+    from garuda.scenarios.gateway import FlowStartError, FlowStartRequest
+
+    if ctx.flow_starts is None or ctx.loop is None:
+        return error("starter.gateway_unavailable",
+                     "The dashboard has no owned flow gateway.", status=503)
+    try:
+        spec = FlowStartRequest.parse(parse_json(request.body or b"{}"))
+        payload = live_module.call_on_loop(ctx.loop, ctx.flow_starts.admit(spec))
+    except ValueError as exc:
+        return error("starter.start_invalid", str(exc), status=400)
+    except FlowStartError as exc:
+        return error(exc.code, str(exc), status=exc.status)
+    except TimeoutError:
+        return error("starter.gateway_unavailable",
+                     "The flow gateway did not answer admission in time.", status=504)
+    return ok(payload, status=201 if payload.get("new") else
+              202 if payload.get("status") == "admission-pending" else 200)
+
+
+def operation(request, ctx, operation_id):
+    """Read one operation and refresh its dashboard approval heartbeat."""
+    from garuda.interfaces.web import live as live_module
+    from garuda.scenarios.gateway import FlowStartError
+
+    _query(request, set())
+    if ctx.flow_starts is None or ctx.loop is None:
+        return error("starter.gateway_unavailable",
+                     "The dashboard has no owned flow gateway.", status=503)
+    try:
+        payload = live_module.call_on_loop(
+            ctx.loop, ctx.flow_starts.status(operation_id))
+    except FlowStartError as exc:
+        return error(exc.code, str(exc), status=exc.status)
+    except TimeoutError:
+        return error("starter.gateway_unavailable",
+                     "The flow gateway did not answer status in time.", status=504)
+    if payload is None:
+        return error("not_found", "No such starter operation.", status=404)
+    return ok(payload)
 
 
 def result(request, ctx, session_id):
