@@ -180,12 +180,13 @@ garuda starter result SESSION --workspace . --json
 
 Replace `SESSION` with a full ID or a name from that project. Drop `--preview`
 only when ready to start; results and previews never start follow-up work.
-Review and acceptance verification are separate. Flow verification remains
-unavailable in this phase; role `--check` uses existing acceptance receipts.
+Review and acceptance verification are separate. Flow verification is
+candidate-bound on supported Linux flows; role `--check` uses its existing
+acceptance receipts. In a Linux write-mode dashboard, flow-kind starter previews
+may also expose **Start flow**. Run-kind starter previews remain copy-only.
 
-The example command is registered for the release/examples follow-up (#309):
-`garuda starter example reconnect ./garuda-reconnect-example`. Until then it
-returns a typed unavailable error and creates no files.
+The packaged example command creates a new standalone repository:
+`garuda starter example reconnect ./garuda-reconnect-example`.
 
 ## Files Garuda reads
 

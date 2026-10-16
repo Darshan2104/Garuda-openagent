@@ -26,10 +26,13 @@ def _refuse(message):
 
 
 def _bytes(store: SessionStore, relative: Path) -> bytes:
+    from garuda.config_sources import record_source
     from garuda.core.session_records import RecordError, read_bytes
 
     try:
-        return read_bytes(store, relative)
+        raw = read_bytes(store, relative)
+        record_source(store.root / relative, raw)
+        return raw
     except RecordError as exc:
         raise _refuse(str(exc)) from exc
 
@@ -128,6 +131,9 @@ def resolve_plan(reference: str, workspace: Path, store: SessionStore) -> PlanHa
     try:
         ref = artifacts.ArtifactRef.from_dict(record)
         content = artifacts.load(flow_root, ref, workspace_version=None)
+        from garuda.config_sources import record_digest
+
+        record_digest(flow_root / ref.path, ref.digest)
     except (artifacts.ArtifactError, OSError, ValueError, KeyError, TypeError) as exc:
         raise _refuse("the selected plan is missing, changed, unsupported or outside its flow store") from exc
     if not content.strip():

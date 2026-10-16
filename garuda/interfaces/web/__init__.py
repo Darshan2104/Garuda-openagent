@@ -111,6 +111,11 @@ def build_context(
         # A closed tab never sends DELETE and an abandoned approval wedges a run, so the
         # reaper is part of write mode rather than something the client can forget.
         ctx.live.start_reaper()
+        from garuda.scenarios.gateway import FlowStartGateway
+
+        ctx.flow_starts = FlowStartGateway(
+            store=store, workspaces=workspaces, max_permission=config.max_permission,
+            approvals=ctx.live.approvals)
     return ctx
 
 
@@ -156,6 +161,10 @@ async def serve_dashboard(config: DashboardConfig) -> None:
     finally:
         server.shutdown()
         server.server_close()
+        if ctx.flow_starts is not None:
+            # Stop admission, deny outstanding asks and drain the actual flow
+            # owners before the shared approval broker and chat owner close.
+            await ctx.flow_starts.aclose()
         if ctx.live is not None:
             # Cancel anything still running so `run_agent_task`'s own teardown fires: a
             # Ctrl-C must not leave a container or an MCP subprocess behind.

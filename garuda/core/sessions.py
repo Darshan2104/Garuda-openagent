@@ -271,11 +271,11 @@ class SessionStore:
     def events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
 
-    def protect_publication(self, session_id: str) -> None:
+    def protect_publication(self, session_id: str, *, kind: str = "flow-verification") -> None:
         """Require durable, fail-closed metadata before this session begins."""
         from garuda.core.session_publication import protect_session
 
-        protect_session(self.session_dir(session_id) / "meta.json")
+        protect_session(self.session_dir(session_id) / "meta.json", kind=kind)
 
     def begin(
         self,
@@ -588,12 +588,17 @@ class SessionStore:
 
     def load_meta(self, session_id: str) -> dict:
         path = self.session_dir(session_id) / "meta.json"
+        from garuda.config_sources import record_source
         from garuda.core.session_publication import publication_cycle
 
         with publication_cycle(path) as cycle:
             if cycle is not None:
-                return cycle.read()
-        return json.loads(path.read_text(encoding="utf-8"))
+                document = cycle.read()
+                record_source(path, cycle.raw)
+                return document
+        raw = path.read_bytes()
+        record_source(path, raw)
+        return json.loads(raw)
 
     def _in_project(self, meta: dict, project_id: str, project_path: str) -> bool:
         """Whether a session belongs to the project (legacy sessions by path)."""

@@ -203,5 +203,7 @@ def test_result_route_uses_actual_owned_flow_records_without_launch(request, mon
     assert page["next_action"]["id"] == "inspect-records"
     for query in ("limit=0", "limit=201", "offset=-1", "offset=invalid", "limit=1&limit=2"):
         assert _call(ctx, "/api/scenario-runs/" + fixture["sid"], query=query).status == 400
-    assert _call(ctx, "/api/scenarios/start", payload={"starter_id": "plan-change"}).status in (404, 405)
+    denied = _call(ctx, "/api/scenarios/start", payload={"starter_id": "plan-change"})
+    assert denied.status == 503
+    assert _body(denied)["error"]["code"] == "read_only"
     assert _snapshot(fixture["ws"], fixture["store"].root, gy.user_path().parent) == before

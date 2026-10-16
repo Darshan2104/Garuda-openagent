@@ -80,7 +80,7 @@ def test_health_reports_the_running_version_and_capabilities(ctx):
     # Pinned to the package, the same way `garuda serve`'s health is.
     assert payload["version"] == garuda.__version__
     assert payload["mode"] == "read-only"
-    assert payload["capabilities"] == {"chat": False}
+    assert payload["capabilities"] == {"chat": False, "flow_start": False}
     assert payload["port"] == PORT
 
 

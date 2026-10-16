@@ -153,7 +153,9 @@ def test_sources_effective_flow_and_bound_agent_change_preview_digest(configured
     assert rebound.task == bound.task
 
 
-@pytest.mark.parametrize("attack", ["escape", "absolute", "outside-symlink", "directory", "fifo"])
+@pytest.mark.parametrize("attack", [
+    "escape", "absolute", "outside-symlink", "inside-symlink", "directory", "fifo",
+])
 def test_source_boundary_refuses_unsafe_files(configured, tmp_path, attack):
     outside = tmp_path / "outside"
     outside.write_text("not authorized")
@@ -164,14 +166,22 @@ def test_source_boundary_refuses_unsafe_files(configured, tmp_path, attack):
     elif attack == "outside-symlink":
         (configured / "source").symlink_to(outside)
         ref = "source"
+    elif attack == "inside-symlink":
+        target = configured / "target"
+        target.write_text("changes through another logical path")
+        (configured / "source").symlink_to(target)
+        ref = "source"
     elif attack == "directory":
         (configured / "source").mkdir()
         ref = "source"
     else:
         os.mkfifo(configured / "source")
         ref = "source"
-    with pytest.raises(StarterError):
+    with pytest.raises(StarterError) as caught:
         compile_scenario("ask-role", {"question": "q", "sources": [ref]}, configured)
+    if attack == "inside-symlink":
+        # A contained alias is refused by its own rule, not as an escape.
+        assert caught.value.code == "starter.source_invalid"
 
 
 @pytest.mark.parametrize("inputs,code", [

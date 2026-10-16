@@ -9,8 +9,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
-_ACTIVE = ContextVar("garuda_source_capture", default=None)
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
+MAX_VERIFIED_SOURCE_BYTES = 16 * 1024 * 1024
+_ACTIVE = ContextVar("garuda_source_capture", default=None)
 
 
 class SourceChanged(ValueError):
@@ -21,6 +22,7 @@ class SourceChanged(ValueError):
 class SourceFact:
     path: str
     digest: str | None
+    max_bytes: int = MAX_SOURCE_BYTES
 
 
 class SourceCapture:
@@ -37,16 +39,22 @@ class SourceCapture:
     def __exit__(self, *_):
         _ACTIVE.reset(self._token)
 
-    def observe(self, path, digest):
+    def observe(self, path, digest, *, max_bytes=MAX_SOURCE_BYTES):
         name = os.path.abspath(Path(path).expanduser())
-        if name in self._facts and self._facts[name] != digest:
+        if (type(max_bytes) is not int or max_bytes <= 0
+                or max_bytes > MAX_VERIFIED_SOURCE_BYTES):
             self._invalid = True
-        self._facts[name] = digest
+            return
+        prior = self._facts.get(name)
+        if prior is not None and prior[0] != digest:
+            self._invalid = True
+        self._facts[name] = (digest, min(prior[1], max_bytes) if prior else max_bytes)
 
     def facts(self):
         if self._invalid or len(self._facts) > 256:
             raise SourceChanged("source preparation was inconsistent or unbounded")
-        return tuple(SourceFact(path, digest) for path, digest in sorted(self._facts.items()))
+        return tuple(SourceFact(path, digest, max_bytes)
+                     for path, (digest, max_bytes) in sorted(self._facts.items()))
 
 
 def record_source(path, raw):
@@ -57,10 +65,10 @@ def record_source(path, raw):
         capture.observe(path, hashlib.sha256(raw).hexdigest() if raw is not None else None)
 
 
-def record_digest(path, digest):
+def record_digest(path, digest, *, max_bytes=MAX_SOURCE_BYTES):
     capture = _ACTIVE.get()
     if capture is not None:
-        capture.observe(path, digest)
+        capture.observe(path, digest, max_bytes=max_bytes)
 
 
 def record_source_error():
@@ -120,22 +128,28 @@ def verify_sources(documents):
     if not isinstance(documents, list) or len(documents) > 256:
         raise SourceChanged("invalid source snapshot")
     for document in documents:
-        if not isinstance(document, dict) or set(document) != {"path", "digest"}:
+        if (not isinstance(document, dict)
+                or set(document) not in ({"path", "digest"},
+                                         {"path", "digest", "max_bytes"})):
             raise SourceChanged("invalid source identity")
         path = Path(document["path"])
         expected = document["digest"]
+        max_bytes = document.get("max_bytes", MAX_SOURCE_BYTES)
         if expected is not None and (not isinstance(expected, str) or len(expected) != 64):
             raise SourceChanged("invalid source digest")
+        if (type(max_bytes) is not int or max_bytes <= 0
+                or max_bytes > MAX_VERIFIED_SOURCE_BYTES):
+            raise SourceChanged("invalid source size bound")
         directory = descriptor = None
         try:
             directory = open_directory(path.parent)
             descriptor = os.open(path.name, os.O_RDONLY | FLAGS, dir_fd=directory)
             info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SOURCE_BYTES:
+            if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
                 raise SourceChanged("source is not a bounded regular file")
             with os.fdopen(os.dup(descriptor), "rb") as handle:
-                raw = handle.read(MAX_SOURCE_BYTES + 1)
-            if len(raw) > MAX_SOURCE_BYTES or hashlib.sha256(raw).hexdigest() != expected:
+                raw = handle.read(max_bytes + 1)
+            if len(raw) > max_bytes or hashlib.sha256(raw).hexdigest() != expected:
                 raise SourceChanged("admitted source changed")
         except FileNotFoundError:
             if expected is not None:

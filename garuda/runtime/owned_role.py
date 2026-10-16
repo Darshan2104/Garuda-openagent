@@ -52,6 +52,13 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
 
     workspace = os.path.realpath(launch.workspace)
     info = os.stat(workspace)
+    identity = [info.st_dev, info.st_ino]
+    if launch.workspace_identity is not None and identity != launch.workspace_identity:
+        from garuda.runtime.roles import RoleRefused
+
+        raise RoleRefused(
+            "flow.workspace_changed",
+            "the admitted workspace identity changed before owned role preparation")
     role = launch.role_plan
     if role is not None and role.kind == "acp" and (launch.no_edits or role.permissions == "readonly"):
         from garuda.runtime.roles import RoleRefused
@@ -61,13 +68,14 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
                           "which is not yet supported")
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
-    payload = {"version": 1, "workspace": workspace, "workspace_identity": [info.st_dev, info.st_ino], "prompt": launch.prompt,
+    payload = {"version": 1, "workspace": workspace, "workspace_identity": identity, "prompt": launch.prompt,
                "session_id": session_id, "sessions_root": str(store.root.resolve()),
                "role": freeze_role(role), "no_edits": launch.no_edits,
                "flow": {"flow_session": launch.flow_session, "step": launch.step_id,
                         "attempt": launch.attempt}}
     if role is not None and role.kind == "acp":
-        manifest = freeze_acp(prepare_runtime_catalog(workspace), role.runtime_id)
+        catalog = launch.runtime_catalog or prepare_runtime_catalog(workspace)
+        manifest = freeze_acp(catalog, role.runtime_id)
         payload.update(kind="acp", manifest=manifest)
         capacity_key = manifest["runtime_id"]
     else:
@@ -162,4 +170,5 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
 async def launch_owned_step(launch):
     """Flow adapter for the owned role facade; public verification is enabled separately."""
     request = prepare_owned_step(launch)
-    return await execute_owned_role(request, launch.capability)
+    return await execute_owned_role(
+        request, launch.capability, approval=launch.approval_handler)

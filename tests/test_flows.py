@@ -17,7 +17,7 @@ from garuda.core.sessions import SessionStore
 from garuda.flows import artifacts as art
 from garuda.flows import engine
 from garuda.flows.engine import FlowRunner, StepResult
-from garuda.interfaces.run_guard import LeaseCapability
+from garuda.interfaces.run_guard import LeaseCapability, WorkspaceLeaseGuard
 from garuda.workspace.lease import LeaseConflictError, LeaseError, LeaseStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +118,68 @@ async def test_steps_run_in_order_with_receipts_and_typed_inputs(repo):
     assert oct(receipt_file.stat().st_mode)[-3:] == "400"
     assert [e["event"] for e in engine.journal(SessionStore(), result.flow_session)] == [
         "intent", "receipt", "intent", "receipt"]
+
+
+async def test_busy_workspace_creates_no_flow_session(repo):
+    flow_id = str(uuid.uuid4())
+    store = SessionStore()
+    owner = WorkspaceLeaseGuard(str(repo), str(uuid.uuid4()))
+    owner.acquire()
+
+    async def no_launch(_launch):
+        raise AssertionError("a refused flow launched a step")
+
+    try:
+        with pytest.raises(LeaseConflictError):
+            await FlowRunner(store, repo, "pbr", _resolved().config["flows"]["pbr"],
+                             _resolved(), task="ship it", launcher=no_launch,
+                             flow_session=flow_id).run()
+        assert not store.session_dir(flow_id).exists()
+    finally:
+        await owner.release()
+
+
+async def test_owned_snapshot_failure_releases_lease_before_parent_publication(
+        repo, monkeypatch):
+    flow_id = str(uuid.uuid4())
+    store = SessionStore()
+
+    def unavailable(_guard):
+        raise RuntimeError("ownership snapshot unavailable")
+
+    monkeypatch.setattr(WorkspaceLeaseGuard, "snapshot_ownership", unavailable)
+    runner = FlowRunner(
+        store, repo, "pbr", _resolved().config["flows"]["pbr"], _resolved(),
+        task="ship it", launcher=Fake(repo, {"plan": _plan}), flow_session=flow_id,
+        operation_binding={}, on_admitted=lambda *_args: None)
+    with pytest.raises(RuntimeError, match="ownership snapshot unavailable"):
+        await runner.run()
+    assert LeaseStore().holders_of(repo) == []
+    assert not store.session_dir(flow_id).exists()
+
+
+@pytest.mark.parametrize("with_meta", [False, True])
+async def test_new_flow_refuses_existing_parent_without_rewriting_it(repo, with_meta):
+    flow_id = str(uuid.uuid4())
+    store = SessionStore()
+    directory = store.session_dir(flow_id)
+    if with_meta:
+        store.begin(flow_id, task="original", model="native", agent="owner",
+                    workspace=str(repo))
+    else:
+        directory.mkdir(parents=True)
+    before = (directory / "meta.json").read_bytes() if with_meta else None
+
+    async def no_launch(_launch):
+        raise AssertionError("a reused flow session launched a step")
+
+    with pytest.raises(engine.FlowStopped) as caught:
+        await FlowRunner(store, repo, "pbr", _resolved().config["flows"]["pbr"],
+                         _resolved(), task="ship it", launcher=no_launch,
+                         flow_session=flow_id).run()
+    assert caught.value.code == "flow.session_exists"
+    assert ((directory / "meta.json").read_bytes() if with_meta else None) == before
+    assert LeaseStore().holders_of(repo) == []
 
 
 async def test_flow_publication_keeps_the_event_loop_responsive(repo, monkeypatch):

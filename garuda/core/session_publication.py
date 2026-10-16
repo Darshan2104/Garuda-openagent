@@ -31,6 +31,7 @@ MARKER = ".publication-policy.json"
 INITIALIZED = ".publication-initialized.json"
 HEAD = ".publication-head.json"
 META_LIMIT = 1_048_576
+POLICY_KINDS = frozenset({"flow-verification", "owned-flow"})
 
 
 def _identity(fd):
@@ -63,8 +64,10 @@ def _child(parent, name):
     return fd
 
 
-def protect_session(meta_path: Path):
+def protect_session(meta_path: Path, *, kind: str = "flow-verification"):
     """Establish strict policy before creating the session's first metadata."""
+    if kind not in POLICY_KINDS:
+        raise ValueError("unsupported session publication policy")
     meta_path = meta_path.absolute()
     root = meta_path.parent.parent
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -90,7 +93,7 @@ def protect_session(meta_path: Path):
                 raise StorageUnavailable("cannot retrofit publication policy onto metadata")
             os.fsync(lock)
             os.fsync(directory)
-            policy = {"version": 1, "kind": "flow-verification",
+            policy = {"version": 1, "kind": kind,
                       "session_id": meta_path.parent.name, "nonce": uuid.uuid4().hex,
                       "directory": _identity(directory), "lock": _identity(lock)}
             # A crash between registry and marker leaves a known protected ID;
@@ -127,7 +130,7 @@ def _metadata(directory):
         document = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
         if not isinstance(document, dict):
             raise CorruptRecord("session metadata is not a mapping")
-        return document, _identity(fd), hashlib.sha256(raw).hexdigest()
+        return document, _identity(fd), hashlib.sha256(raw).hexdigest(), raw
     except (ValueError, UnicodeError) as exc:
         raise CorruptRecord("session metadata is unreadable") from exc
     finally:
@@ -167,7 +170,7 @@ def _policy(meta_path):
                 raise StorageUnavailable("protected metadata lost its publication registry")
         return None
     if (set(policy) != {"version", "kind", "session_id", "nonce", "directory", "lock"}
-            or policy["kind"] != "flow-verification" or policy["session_id"] != meta_path.parent.name
+            or policy["kind"] not in POLICY_KINDS or policy["session_id"] != meta_path.parent.name
             or not isinstance(policy["nonce"], str) or len(policy["nonce"]) != 32
             or any(not isinstance(policy[key], list) or len(policy[key]) != 2
                    or any(type(value) is not int or value < 0 for value in policy[key])
@@ -206,7 +209,7 @@ class MetadataCycle:
             return {}
         if stamp != _marker(self.policy):
             raise StorageUnavailable("session initialization evidence is unavailable")
-        document, identity, digest = _metadata(self.directory)
+        document, identity, digest, raw = _metadata(self.directory)
         self.head = read_record(self.directory, HEAD)
         if (self.head is None or set(self.head) != {"version", "nonce", "metadata", "digest"}
                 or self.head["nonce"] != self.policy["nonce"]
@@ -215,6 +218,7 @@ class MetadataCycle:
         if (document.get("publication_policy") != _marker(self.policy)
                 or document.get("session_id") != self.policy["session_id"]):
             raise CorruptRecord("session metadata policy binding differs")
+        self.raw = raw
         return document
 
     def write(self, document):
@@ -226,7 +230,7 @@ class MetadataCycle:
             if os.path.lexists(self.path):
                 raise StorageUnavailable("metadata appeared before initial publication")
         else:
-            _current, identity, digest = _metadata(self.directory)
+            _current, identity, digest, _raw = _metadata(self.directory)
             if identity != self.head["metadata"] or digest != self.head["digest"]:
                 raise StorageUnavailable("metadata changed during publication")
         if ("publication_policy" in document
@@ -239,7 +243,7 @@ class MetadataCycle:
         if len(raw) > META_LIMIT:
             raise CorruptRecord("session metadata exceeds its publication bound")
         write_locked_document(self.directory, self.path, json.loads(raw))
-        _published, identity, digest = _metadata(self.directory)
+        _published, identity, digest, _raw = _metadata(self.directory)
         self.head = {"version": 1, "nonce": self.policy["nonce"],
                      "metadata": identity, "digest": digest}
         write_locked_document(self.directory, self.path.parent / HEAD, self.head)

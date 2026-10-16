@@ -6,7 +6,7 @@ harnesses and models. Preview shows the effective bindings, readiness, supplied
 sources, review policy and the exact quoted equivalent Garuda command; starting
 work is always explicit. Starters do not require OpenRig.
 
-## Preview in the dashboard
+## Preview or start in the dashboard
 
 ```bash
 garuda web --read-only --allow-workspace .
@@ -14,13 +14,32 @@ garuda web --read-only --allow-workspace .
 
 Open the printed token URL and choose **Starters**. Select a journey and
 workspace, fill its fields, then **Preview command** and **Copy command**.
-Run the copied command explicitly in a terminal. The preview shows configured
+Run the copied command explicitly in a terminal. The read-only dashboard never
+shows **Start flow**. The preview shows configured
 roles, permission posture, readiness/remedies, source digests, review policy,
 invocation bounds and unknown cost. Changing inputs invalidates the preview;
 preview again after source/configuration changes. The equivalent command uses
 the ordinary flow/run CLI and records an ordinary session. Use
 `garuda starter run` with the same fields to also record structured inputs/source provenance
 and recompile at launch.
+
+On Linux, start the dashboard without `--read-only` to run a flow-kind preview
+from the browser:
+
+```bash
+garuda web --allow-workspace . --max-permission smart
+```
+
+After preview, **Start flow** appears only when the selected flow is ready and
+its requested step permissions fit the dashboard ceiling. The browser sends a
+fresh UUIDv4 operation plus the preview and server-authority digests. Garuda
+durably admits that operation, recompiles its sources and configuration, and
+revalidates them under the flow lease before the first child. Repeated clicks or
+HTTP retries with the same operation return the same flow. A stale preview is
+refused and asks for a new preview; an interrupted or restarted operation is
+reported from durable evidence and is never automatically replayed. Follow its
+link in **Sessions** for steps, approvals and final evidence. Run-kind journeys
+remain copy-command until their shared native/ACP start facade lands.
 
 Use **Sessions** to follow the resulting flow or role run. Its starter panel
 shows recorded identities, artifacts, historical verification, review and
@@ -260,6 +279,7 @@ remain explicit actions.
 
 Use [recipes](automate.md#run-a-multi-step-recipe) for custom prompt sequences.
 Recipes retain their existing whole-recipe workspace lease and are not aliases
-for artifact/review flows. Dashboard discovery and preview/copy are available;
-HTTP starter launch remains a later gated phase. Trusted flow checks are available
-through the CLI; the dashboard remains read-only preview and evidence browsing.
+for artifact/review flows. Dashboard discovery and preview/copy remain available
+in read-only mode. A Linux write-mode dashboard can start flow-kind previews
+through durable owned operations; run-kind previews remain copy-only. Trusted
+flow checks use the same flow owner whether admission came from CLI or dashboard.

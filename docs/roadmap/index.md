@@ -2,8 +2,9 @@
 
 Garuda Starters ([epic #302](https://github.com/Darshan2104/Garuda-openagent/issues/302)):
 the P0/P1a CLI and P2 read-only dashboard share existing runtime owners. P1b
-trusted Linux flow checks use the reviewed ownership boundary; P3 browser launch
-remains the next gated phase. See the [approved plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md)
+trusted Linux flow checks and P3 Linux browser flow starts use the reviewed
+ownership boundary. The run-kind browser facade remains #316. See the
+[approved plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md)
 and [current workflow guide](../use-cases/workflows.md).
 
 - [ACP orchestration and unified context](2026-08-acp-orchestration.md) — the

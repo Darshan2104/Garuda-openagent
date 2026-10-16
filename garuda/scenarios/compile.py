@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import stat
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from html import escape
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from garuda.agents import role_agent
 from garuda.agents.setup import RuntimeCatalog, prepare_runtime_catalog
 from garuda.config import garuda_yaml as gy
 from garuda.config.agent_home import global_settings_path
+from garuda.config_sources import SourceCapture, SourceFact
 from garuda.context.redact import redact_text
 from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
@@ -130,6 +131,7 @@ class LaunchContext:
     source: str
     role_plans: dict[str, RolePlan]
     options: dict
+    source_facts: tuple[SourceFact, ...] = ()
 
 
 def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool = False) -> LaunchContext:
@@ -171,7 +173,13 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         harness = resolved.config["roles"][name]["harness"]
         if catalog.registry.is_disabled(harness):
             raise StarterError("starter.runtime_disabled", f"{name}: {harness} is disabled; review settings.yaml and rerun `garuda init`")
-        role_plans[name] = role_agent.bind(plan_role(selected, catalog), str(root))
+        plan = role_agent.bind(plan_role(selected, catalog), str(root))
+        if plan is not None and plan.permissions is None:
+            permission = None
+            if plan.agent_spec is not None:
+                permission = plan.agent_spec.resolved().leaves.get("permissions.mode")
+            plan = replace(plan, permissions=permission or "smart")
+        role_plans[name] = plan
     return LaunchContext(resolved, catalog, kind, target, flow, source, role_plans, options)
 
 
@@ -192,15 +200,22 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
     inputs = validate_inputs(entry, inputs, require_fields=False)
     root = workspace_path(workspace)
     before = _config_sources(root)
-    inputs, handoff = prepare_inputs(entry, inputs, root, store or SessionStore())
-    inputs = validate_inputs(entry, inputs)
-    context = resolve_launch(entry, inputs, root, has_plan=handoff is not None)
+    # Retain the identities observed at the actual parser reads. The resolved
+    # objects and selected source bytes below feed execution directly; their
+    # paths/digests are revalidated after admission so an ABA change cannot
+    # silently authorize another plan.
+    with SourceCapture() as capture:
+        inputs, handoff = prepare_inputs(entry, inputs, root, store or SessionStore())
+        inputs = validate_inputs(entry, inputs)
+        context = resolve_launch(entry, inputs, root, has_plan=handoff is not None)
+        sources, session_text = resolve_sources(
+            inputs.get("sources", []), root, store=store,
+            allow_cross_project_context=allow_cross_project_context)
     resolved, catalog = context.resolved, context.catalog
     kind, target, flow, source = context.kind, context.target, context.flow, context.source
     options = context.options
     bindings = {name: plan.record() for name, plan in context.role_plans.items()}
-    sources, session_text = resolve_sources(inputs.get("sources", []), root, store=store,
-                                           allow_cross_project_context=allow_cross_project_context)
+    context = replace(context, source_facts=capture.facts())
     handoff_text = render_plan(handoff) if handoff else ""
     scope = handoff.manifest["approved_scope"] if handoff else []
     if handoff:

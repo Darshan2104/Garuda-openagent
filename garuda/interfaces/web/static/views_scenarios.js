@@ -1,7 +1,12 @@
-/* Starters: read-only catalog, explicit preview/copy, and recorded result evidence. */
+/* Starters: pure previews plus server-owned flow operations when supported. */
 "use strict";
 
-function stopStarterViews() { STATE.starterView = null; STATE.starterResult = null; }
+function stopStarterViews() {
+  if (STATE.starterView && STATE.starterView.operationTimer) {
+    clearTimeout(STATE.starterView.operationTimer);
+  }
+  STATE.starterView = null; STATE.starterResult = null;
+}
 
 function starterErrorHtml(err) {
   return '<div class="notice err"><div class="notice-title">' + esc(err.code || "Could not load starter") +
@@ -61,7 +66,7 @@ function startersView(starterId, query) {
       state.roles = {};
       library.starters.forEach(function (r) { Object.keys(r.readiness.bindings || {}).forEach(function (role) { state.roles[role] = true; }); });
       render('<div class="page-head"><h1>Starters</h1>' + starterWorkspaceHtml(workspace) +
-        '<a class="btn" href="#/sessions">Follow a run</a></div><p>Choose a goal, preview it, then copy its command into your terminal.</p>' +
+        '<a class="btn" href="#/sessions">Follow a run</a></div><p>Choose a goal and preview it. Supported flow starters can run here; every other starter keeps its equivalent command.</p>' +
         '<p class="starter-context">Workspace: <code>' + esc(library.workspace) + '</code></p>' +
         (state.entry ? '<a href="#/starters?workspace=' + workspace + '">← All starters</a>' + starterFormHtml(state) :
           '<div class="grid starter-grid" id="starter-cards">' + library.starters.map(function (r) {
@@ -116,7 +121,8 @@ function starterFormHtml(state) {
     '<div class="row"><button type="submit" class="btn btn-primary" id="starter-preview-button">Preview command</button>' +
     '<button type="button" class="btn" id="starter-example">Load reconnect example</button></div></form>' +
     (entry.id === "build-review" ? '<div class="starter-build-check"><h3>Build and check · no review</h3><p>Use the current goal and constraints with the coder role instead of an independent review.</p><label>Explicit checks <textarea id="starter-remedy-checks" rows="2" placeholder="One command per line"></textarea></label><button type="button" class="btn" id="starter-build-check">Preview Build and check</button></div>' : "") +
-    '<div id="starter-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Preview again after sources or configuration change.</p></div></section>';
+    '<div id="starter-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Preview again after sources or configuration change.</p></div>' +
+    '<div id="starter-operation" aria-live="polite"></div></section>';
 }
 
 function starterInputs(state) {
@@ -138,8 +144,14 @@ function starterInputs(state) {
 function invalidateStarterPreview(state) {
   state.revision++;
   state.preview = null;
+  if (state.operation && state.operation.done) {
+    if (state.operationTimer) clearTimeout(state.operationTimer);
+    state.operation = null;
+    var operation = el("starter-operation");
+    if (operation) operation.innerHTML = "";
+  }
   var target = el("starter-preview");
-  if (target) target.innerHTML = '<p class="stat-sub">Inputs changed. Preview again before copying a command.</p>';
+  if (target) target.innerHTML = '<p class="stat-sub">Inputs changed. Preview again before copying a command or starting a new operation.</p>';
 }
 
 function applyStarterInputs(state, values) {
@@ -174,6 +186,11 @@ function wireStarterForm(state) {
 }
 
 function requestStarterPreview(state, remedy) {
+  if (state.operation && state.operation.done) {
+    if (state.operationTimer) clearTimeout(state.operationTimer);
+    state.operation = null;
+    el("starter-operation").innerHTML = "";
+  }
   var revision = ++state.revision;
   state.preview = null;
   var body = { starter_id: state.id, inputs: starterInputs(state), workspace: state.workspace };
@@ -185,8 +202,11 @@ function requestStarterPreview(state, remedy) {
   return api("/api/scenarios/preview", { method: "POST", body: body }).then(function (data) {
     if (STATE.starterView !== state || revision !== state.revision) return;
     state.preview = data;
-    el("starter-preview").innerHTML = starterPreviewHtml(data);
+    state.previewInputs = body.inputs;
+    el("starter-preview").innerHTML = starterPreviewHtml(data, state);
     el("starter-copy").addEventListener("click", function () { copyStarterCommand(el("starter-command")); });
+    var start = el("starter-start");
+    if (start) start.addEventListener("click", function () { requestStarterStart(state); });
   }).catch(function (err) {
     if (STATE.starterView === state && revision === state.revision) el("starter-preview").innerHTML = starterErrorHtml(err);
   });
@@ -198,8 +218,15 @@ function copyStarterCommand(node) {
   });
 }
 
-function starterPreviewHtml(data) {
+function starterPreviewHtml(data, state) {
   var plan = data.plan;
+  var authority = data.authority || {};
+  var canStart = (!state.operation || state.operation.done) && plan.kind === "flow" &&
+    authority.can_start && data.readiness.can_run &&
+    STATE.health && STATE.health.capabilities && STATE.health.capabilities.flow_start;
+  var authorityHtml = authority.digest ?
+    '<details><summary>Dashboard execution authority</summary><pre class="starter-data">' +
+    esc(JSON.stringify(authority, null, 2)) + '</pre></details>' : '';
   return '<h3>Preview</h3>' + starterReadinessHtml(data.readiness) +
     '<p>' + chip("launch", plan.kind + " / " + plan.target) + " " + chip("verification", plan.provenance.verification) + " " + chip("cost", plan.limits.cost) + '</p>' +
     '<p class="stat-sub">Effective flow source: ' + esc(plan.provenance.flow_source) + ' · configured role invocations ≤ ' + esc(plan.limits.max_role_invocations) +
@@ -208,8 +235,101 @@ function starterPreviewHtml(data) {
     esc(JSON.stringify({ sources: plan.sources, checks: plan.checks, options: plan.options, flow: plan.flow, provenance: plan.provenance, bindings: plan.bindings, configuration: data.configuration }, null, 2)) + '</pre></details>' +
     '<label>Equivalent CLI command <textarea id="starter-command" readonly rows="6">' + esc(plan.equivalent_command) + '</textarea></label>' +
     '<button type="button" class="btn" id="starter-copy">Copy command</button>' +
+    (canStart ? '<button type="button" class="btn btn-primary" id="starter-start">Start flow</button>' : '') +
     '<p class="stat-sub">This equivalent command records an ordinary run. The CLI <code>garuda starter run</code> also records structured starter inputs and source provenance.</p>' +
-    '<p class="stat-sub">Plan digest: <code>' + esc(plan.digest) + '</code>. Sources and configuration can change after preview; create a fresh preview when they do.</p>';
+    '<p class="stat-sub">Plan digest: <code>' + esc(plan.digest) + '</code>. Sources and configuration can change after preview; create a fresh preview when they do.</p>' + authorityHtml;
+}
+
+function requestStarterStart(state) {
+  if (!state.preview || !state.preview.authority || !state.preview.authority.can_start) return;
+  if (!state.operation) state.operation = { id: crypto.randomUUID() };
+  var operation = state.operation;
+  var button = el("starter-start");
+  if (button) button.disabled = true;
+  el("starter-operation").innerHTML = '<p class="loading">Durably admitting this flow…</p>';
+  return api("/api/scenarios/start", { method: "POST", body: {
+    operation_id: operation.id,
+    starter_id: state.id,
+    inputs: state.previewInputs,
+    workspace: state.workspace,
+    preview_digest: state.preview.plan.digest,
+    authority_digest: state.preview.authority.digest
+  }}).then(function (row) {
+    if (STATE.starterView !== state || state.operation !== operation) return;
+    renderStarterOperation(state, row, []);
+    pollStarterOperation(state);
+  }).catch(function (err) {
+    if (STATE.starterView !== state || state.operation !== operation) return;
+    if (err.code === "starter.preview_changed" || err.code === "starter.authority_changed") {
+      state.preview = null;
+      state.operation = null;
+    }
+    el("starter-operation").innerHTML = starterErrorHtml(err) +
+      '<button type="button" class="btn" id="starter-retry-preview">Create a fresh preview</button>';
+    el("starter-retry-preview").addEventListener("click", function () { requestStarterPreview(state, false); });
+    if (button) button.disabled = false;
+  });
+}
+
+function scheduleStarterOperation(state, delay) {
+  // One timer per view: an approval answer polls immediately and must not
+  // start a second loop beside the pending one.
+  if (state.operationTimer) clearTimeout(state.operationTimer);
+  state.operationTimer = setTimeout(function () { pollStarterOperation(state); }, delay);
+}
+
+function pollStarterOperation(state) {
+  var operation = state.operation;
+  if (!operation || STATE.starterView !== state) return;
+  if (state.operationTimer) clearTimeout(state.operationTimer);
+  state.operationTimer = null;
+  Promise.all([
+    api("/api/scenario-operations/" + encodeURIComponent(operation.id)),
+    api("/api/approvals?owner=" + encodeURIComponent(operation.id)).catch(function () { return { approvals: [] }; })
+  ]).then(function (both) {
+    if (STATE.starterView !== state || state.operation !== operation) return;
+    renderStarterOperation(state, both[0], both[1].approvals || []);
+    if (["terminal", "uncertain", "quarantined", "refused", "abandoned"].indexOf(both[0].status) === -1) {
+      scheduleStarterOperation(state, 900);
+    }
+  }).catch(function (err) {
+    if (STATE.starterView !== state || state.operation !== operation) return;
+    el("starter-operation").innerHTML = starterErrorHtml(err);
+    // Polling also keeps waiting approvals alive, so a transient failure
+    // retries; a definitive client error (scope changed, not found) stops.
+    if (!err.status || err.status >= 500) scheduleStarterOperation(state, 2000);
+  });
+}
+
+function renderStarterOperation(state, row, approvals) {
+  var host = el("starter-operation");
+  if (!host) return;
+  if (["terminal", "uncertain", "quarantined", "refused", "abandoned"].indexOf(row.status) !== -1) {
+    state.operation.done = true;
+  }
+  var session = row.session_id ?
+    '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open flow details</a>' : '';
+  host.innerHTML = '<section class="card starter-operation-card"><h3>Flow operation</h3><p>' +
+    chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
+    '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
+    (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +
+    '. Keep this page open while approvals are waiting. Closing it denies unanswered asks but leaves server-owned work running.</p>' +
+    (row.reason ? '<p class="notice err">' + esc(row.reason) + '</p>' : '') + session +
+    '<div class="starter-operation-approvals">' + (approvals.length ? approvals.map(function (ask) {
+      return '<div class="notice warn"><div class="notice-title">Approval required</div><div class="notice-body"><code>' +
+        esc(ask.action) + '</code></div><button type="button" class="btn btn-primary" data-flow-approval="' +
+        esc(ask.ask_id) + '" data-approved="true">Allow</button><button type="button" class="btn" data-flow-approval="' +
+        esc(ask.ask_id) + '" data-approved="false">Deny</button></div>';
+    }).join("") : '<p class="stat-sub">No approval is waiting.</p>') + '</div></section>';
+  host.querySelectorAll("[data-flow-approval]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var ask = this.getAttribute("data-flow-approval");
+      this.disabled = true;
+      api("/api/approvals/" + encodeURIComponent(ask), { method: "POST", body: {
+        approved: this.getAttribute("data-approved") === "true"
+      }}).then(function () { pollStarterOperation(state); }).catch(function (err) { toast(err.message); });
+    });
+  });
 }
 
 function starterResultHtml(row) {

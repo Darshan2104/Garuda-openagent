@@ -8,6 +8,7 @@ import stat
 from dataclasses import asdict
 from pathlib import Path
 
+from garuda.config_sources import record_digest
 from garuda.context import brief, tags
 from garuda.core.sessions import SessionStore
 from garuda.scenarios.types import StarterError
@@ -28,6 +29,10 @@ def _file(ref: str, root: Path) -> dict:
         relative = physical.relative_to(root)
     except (OSError, ValueError, RuntimeError) as exc:
         raise StarterError("starter.source_escapes", "source is missing or leaves the workspace") from exc
+    if physical != logical:
+        raise StarterError(
+            "starter.source_invalid",
+            "starter sources must be regular repository files without symlink traversal")
     # Walk the resolved contained path by descriptors: a parent swapped for a
     # symlink after resolution must not redirect this read outside the root.
     try:
@@ -62,9 +67,11 @@ def _file(ref: str, root: Path) -> dict:
         raise StarterError("starter.source_invalid", "cannot read a stable contained source") from exc
     finally:
         os.close(directory)
+    source_digest = digest.hexdigest()
+    record_digest(physical, source_digest, max_bytes=MAX_SOURCE_BYTES)
     return {"kind": "file", "path": logical.relative_to(root).as_posix(),
             "resolved_path": relative.as_posix(), "section": section if separator else None,
-            "sha256": digest.hexdigest(), "bytes": total, "read_by_agent": False}
+            "sha256": source_digest, "bytes": total, "read_by_agent": False}
 
 
 def resolve_sources(refs: list[str], workspace: Path, *, store: SessionStore | None = None,

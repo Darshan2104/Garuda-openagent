@@ -268,6 +268,37 @@ def main() -> int:
                           "GARUDA_CHECK_STARTER_PROFILES": json.dumps(starter_bases)}):
             failures.append("check_scenarios.py")
 
+        # --- Linux owned flow start: real browser, approval, child and gateway ---------
+        if sys.platform == "linux":
+            flow_root = workdir / "flow-start"
+            flow_root.mkdir()
+            flow_sessions = flow_root / "sessions"
+            flow_workspace = flow_root / "workspace"
+            flow_settings = flow_root / "settings.yaml"
+            flow_port = free_port(starter_port + 1)
+            flow_log = (workdir / "web-flow-start.log").open("w")
+            flow_env = {
+                **os.environ,
+                "GARUDA_GLOBAL_SETTINGS": str(flow_settings),
+                "GARUDA_SESSIONS_DIR": str(flow_sessions),
+                "GARUDA_LEASES_DIR": str(flow_root / "leases"),
+            }
+            process = subprocess.Popen([
+                sys.executable, str(HERE / "serve_flow_starts.py"), str(flow_port),
+                str(flow_sessions), str(flow_workspace), str(flow_settings), TOKEN,
+            ], stdout=flow_log, stderr=subprocess.STDOUT, env=flow_env)
+            processes.append(process)
+            for _ in range(80):
+                with socket.socket() as probe:
+                    if probe.connect_ex(("127.0.0.1", flow_port)) == 0:
+                        break
+                if process.poll() is not None:
+                    raise SystemExit(f"owned flow dashboard exited early; see {flow_log.name}")
+                time.sleep(0.25)
+            if not run_check("check_flow_starts.py", flow_port, shots, {
+                    "GARUDA_CHECK_FLOW_SOURCE": str(flow_workspace / "source.txt")}):
+                failures.append("check_flow_starts.py")
+
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"
         chat_sessions.mkdir()

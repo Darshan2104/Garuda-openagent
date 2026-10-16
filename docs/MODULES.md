@@ -419,7 +419,11 @@ before; supervised recovery receipts remain separate work).
 It resolves effective packaged/configured flows, refuses unknown flows and
 missing roles before engine admission, and returns the engine outcome together
 with recorded review/state evidence. `interfaces/main.py` keeps CLI rendering
-and exit handling; `flow show` keeps its read-only receipt projection. The
+and exit handling; `flow show` keeps its read-only receipt projection.
+`run_prepared` accepts an already compiled starter plan, exact captured source
+facts, admitted role/runtime values and a durable operation binding. It rechecks
+those values under the flow lease before the first child and uses the same engine,
+approval broker, owned role execution and publication policies as CLI flows. The
 facade accepts an internal opt-in bounded `checks` tuple, freezes effective
 check authority with exact parsed source identities before admission, and
 refuses unsupported hosts before step launch. The engine revalidates sources
@@ -427,7 +431,9 @@ under its parent lease and solely owns finalization. The public CLI does not
 select checks yet.
 
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
-holds the workspace lease from the first step to the last and lends each step
+is created exclusively after the engine takes its workspace lease (a busy
+workspace creates no parent, and a reused ID cannot overwrite one). It holds
+that lease from the first step to the last and lends each step
 a revocable `LeaseCapability` (`interfaces/run_guard.py`), so nothing outside
 the flow takes the workspace between steps and no step keeps it. Per step
 attempt it resolves typed inputs, journals the intent (fsynced) before launch,
@@ -440,7 +446,7 @@ escaping, symlinked or stale inputs. `review.py` (C.7) parses the bounded review
 `run_agent_task` and ACP steps through `run_acp_task`, each borrowing the flow's
 lease.
 
-## `scenarios/` — packaged starters and read-only compilation
+## `scenarios/` — packaged starters, compilation and owned flow admission
 
 `catalog.py` loads strict version-1 definitions, briefs and example inputs from
 installed package resources, independently of `garuda.yaml`; it never loads a
@@ -480,8 +486,17 @@ starter hashing shared by compilation and recorded-input validation.
 `service.py::StarterService` adds a pure library, preview and explicit Build and
 check compilation. Listing needs no invented task inputs; preview and readiness
 share the same resolved configuration/role plans via `compile_with_context`.
+`launch_intents.py` owns one private, owner-bound operation record under the
+session store: canonical digest identity, serialized cross-process prepare and
+legal fsynced transitions. `authority.py` derives the descriptive server envelope
+from the selected workspace, operator ceiling, exact role/runtime scope and
+available lifecycle capabilities. `gateway.py` is the only browser flow dispatcher:
+it reserves an intent, recompiles, verifies both digests, schedules one task on
+the server loop, projects the authoritative session and drains it at shutdown.
+Existing or restarted operations are read/reconciled without replay.
 `interfaces/web/scenarios.py` serves the installed library/detail, pure POST
-preview, and shared selected results behind existing dashboard authorization.
+preview, shared selected results, POST start and operation status behind existing
+dashboard authorization.
 It accepts allowlisted workspace indices and strict unique-key field JSON;
 request definitions and cross-project grants are refused. Read-only contexts
 retain the same workspace list without creating `LiveRuns`.
@@ -489,8 +504,11 @@ retain the same workspace list without creating `LiveRuns`.
 including an empty list, for both configuration and preview enforcement.
 The plain-script
 `static/views_scenarios.js` owns Starters forms, preview/copy, stale-response
-invalidation, and the result panel reused by session/native-trace views. An
-implementable plan opens an explicit follow-up form; there is no start route.
+invalidation, retained operation IDs and polling, and the result panel reused by
+session/native-trace views. A Linux write-mode preview may expose **Start flow**
+for flow-kind plans whose current readiness and server authority allow it.
+Read-only, unsupported-host and run-kind views remain copy-only. An implementable
+plan opens an explicit follow-up form.
 The static Setup projection is `core/setup_view.py::configuration`; full
 `setup()` also performs discovery probes and is not used here. Readiness calls
 `flows/review.py::check_independent` directly and honors the effective flow's

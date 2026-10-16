@@ -1,11 +1,11 @@
 # Owned one-click flow starts
 
-**Status: approved for implementation, 2026-10-12.** This is the design
-deliverable for [#315](https://github.com/Darshan2104/Garuda-openagent/issues/315).
-It enables no route, Start button, runtime capability or adopted decision.
-The issue requires P2 acceptance to land and a separate P3 go-ahead before
-the write surface is enabled. Approval of this proposal does not waive any
-implementation or runtime conformance gate below.
+**Status: implemented for Linux flow-kind starters in #336, 2026-10-16.** This
+is the approved design record for
+[#315](https://github.com/Darshan2104/Garuda-openagent/issues/315). Run-kind
+Starters remain preview/copy pending #316. Current behavior is documented in the
+[dashboard guide](../guides/web-dashboard.md#starters); this record preserves the
+pre-implementation baseline and acceptance rationale.
 
 ## Baseline and scope
 
@@ -245,6 +245,6 @@ fixtures that manufacture publication/closure receipts:
   architecture/reference/roadmap and durable decisions only when behavior lands.
 
 The user approved the shared-gateway approach, Linux-first rollout, and shared
-strict-admission/authority/cleanup prerequisites on 2026-10-12. P3 approval alone is
-not evidence that those prerequisites exist. #315 stays open until its actual
-flow-start acceptance passes; #316 remains a separate run-kind gate.
+strict-admission/authority/cleanup prerequisites on 2026-10-12. #336 implemented
+and exercised those prerequisites for flow-kind starts; #316 remains a separate
+run-kind gate.

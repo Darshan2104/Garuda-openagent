@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** P0, P1 and P2 delivered; owned browser start (P3) remains
+**Status:** P0, P1 and P2 delivered; P3 flow starts delivered, run-kind facade remains
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -19,7 +19,9 @@ flow and evidence owners. External read-only roles still require their configure
 Docker confinement; a connected host CLI alone is insufficient. Reviewed flows
 can run authorized configured or explicit checks on Linux while retaining their
 parent workspace owner; other hosts report verification unavailable.
-Dashboard discovery is read-only and durable browser starts remain a later phase under the
+Dashboard discovery and preview remain pure. On Linux, a write-mode dashboard
+can durably start flow-kind previews through the existing flow owner; run-kind
+browser starts remain a later phase under the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 
 ## Why this boundary
