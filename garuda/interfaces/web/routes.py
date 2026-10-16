@@ -85,7 +85,7 @@ class DashboardContext:
         """
         return {
             "chat": self.allow_run and self.live is not None,
-            "flow_start": bool(
+            "starter_start": bool(
                 self.allow_run and self.flow_starts is not None
                 and self.flow_starts.available),
         }

@@ -177,8 +177,12 @@ fastest way to learn the system.
    a restart or ambiguous interruption never replays it. Operation status points
    at the authoritative flow session for progress and approvals, while shutdown
    stops admission and drains owned work before shared live services close.
-   Unsupported hosts, read-only dashboards and run-kind starters expose no Start
-   capability. Starters forms retain exact copy commands and selected historical
+   Run-kind plans enter `agents/role_runs.py::RoleRunService.run_prepared`, which
+   executes one owned parent with exactly one role step through the same engine
+   path (`FlowExecutionService._run_owned`): the child gets the exact task through
+   the owned native/ACP role executor, never `LiveChat`. `run_authority` refuses
+   worktree/auto isolation, background, fallback roles and read-only ACP.
+   Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.
    Read-only ACP roles also require a configured confinement image and a Docker

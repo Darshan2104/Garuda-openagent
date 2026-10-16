@@ -448,16 +448,17 @@ async def test_stale_preview_and_permission_escalation_refuse_before_intent(
     assert not (ctx.store.root / "launch-intents").exists()
 
 
-async def test_run_starters_remain_copy_only_and_start_keeps_transport_guards(write_context):
+async def test_unowned_run_options_refuse_and_start_keeps_transport_guards(write_context):
     ctx = write_context
-    inputs = {"goal": "run only through the future shared facade", "role": "coder"}
+    inputs = {"goal": "run in the background", "role": "coder", "options": {"bg": True}}
     preview = await _preview(ctx, starter="run-with-role", inputs=inputs)
     assert preview["plan"]["kind"] == "run"
     assert preview["authority"]["can_start"] is False
     request = _start_body(preview, str(uuid.uuid4()), starter="run-with-role", inputs=inputs)
     refused = await _call(ctx, "/api/scenarios/start", method="POST", body=request)
     assert refused.status == 409
-    assert _body(refused)["error"]["code"] == "starter.run_start_unavailable"
+    assert _body(refused)["error"]["code"] == "starter.background_unowned"
+    assert not (ctx.store.root / "launch-intents").exists()
 
     attempts = [
         ({TOKEN_HEADER: "wrong"}, 401, "unauthorized"),

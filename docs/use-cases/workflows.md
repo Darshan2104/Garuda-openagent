@@ -39,7 +39,10 @@ HTTP retries with the same operation return the same flow. A stale preview is
 refused and asks for a new preview; an interrupted or restarted operation is
 reported from durable evidence and is never automatically replayed. Follow its
 link in **Sessions** for steps, approvals and final evidence. Run-kind journeys
-remain copy-command until their shared native/ACP start facade lands.
+show **Start run** (`run-with-role`) or **Ask role** (`ask-role`) under the same
+rules; they run as one owned parent with one role step. Worktree isolation,
+background runs and other unsupported options keep the copy command; see
+[Web dashboard](../guides/web-dashboard.md#starters).
 
 Use **Sessions** to follow the resulting flow or role run. Its starter panel
 shows recorded identities, artifacts, historical verification, review and
@@ -280,6 +283,6 @@ remain explicit actions.
 Use [recipes](automate.md#run-a-multi-step-recipe) for custom prompt sequences.
 Recipes retain their existing whole-recipe workspace lease and are not aliases
 for artifact/review flows. Dashboard discovery and preview/copy remain available
-in read-only mode. A Linux write-mode dashboard can start flow-kind previews
-through durable owned operations; run-kind previews remain copy-only. Trusted
+in read-only mode. A Linux write-mode dashboard can start flow-kind and
+supported run-kind previews through durable owned operations. Trusted
 flow checks use the same flow owner whether admission came from CLI or dashboard.

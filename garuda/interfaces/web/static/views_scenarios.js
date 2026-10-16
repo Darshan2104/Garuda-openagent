@@ -66,7 +66,7 @@ function startersView(starterId, query) {
       state.roles = {};
       library.starters.forEach(function (r) { Object.keys(r.readiness.bindings || {}).forEach(function (role) { state.roles[role] = true; }); });
       render('<div class="page-head"><h1>Starters</h1>' + starterWorkspaceHtml(workspace) +
-        '<a class="btn" href="#/sessions">Follow a run</a></div><p>Choose a goal and preview it. Supported flow starters can run here; every other starter keeps its equivalent command.</p>' +
+        '<a class="btn" href="#/sessions">Follow a run</a></div><p>Choose a goal and preview it. Supported starters can start here; every starter keeps its equivalent command.</p>' +
         '<p class="starter-context">Workspace: <code>' + esc(library.workspace) + '</code></p>' +
         (state.entry ? '<a href="#/starters?workspace=' + workspace + '">← All starters</a>' + starterFormHtml(state) :
           '<div class="grid starter-grid" id="starter-cards">' + library.starters.map(function (r) {
@@ -221,9 +221,10 @@ function copyStarterCommand(node) {
 function starterPreviewHtml(data, state) {
   var plan = data.plan;
   var authority = data.authority || {};
-  var canStart = (!state.operation || state.operation.done) && plan.kind === "flow" &&
+  var canStart = (!state.operation || state.operation.done) &&
+    (plan.kind === "flow" || plan.kind === "run") &&
     authority.can_start && data.readiness.can_run &&
-    STATE.health && STATE.health.capabilities && STATE.health.capabilities.flow_start;
+    STATE.health && STATE.health.capabilities && STATE.health.capabilities.starter_start;
   var authorityHtml = authority.digest ?
     '<details><summary>Dashboard execution authority</summary><pre class="starter-data">' +
     esc(JSON.stringify(authority, null, 2)) + '</pre></details>' : '';
@@ -235,7 +236,8 @@ function starterPreviewHtml(data, state) {
     esc(JSON.stringify({ sources: plan.sources, checks: plan.checks, options: plan.options, flow: plan.flow, provenance: plan.provenance, bindings: plan.bindings, configuration: data.configuration }, null, 2)) + '</pre></details>' +
     '<label>Equivalent CLI command <textarea id="starter-command" readonly rows="6">' + esc(plan.equivalent_command) + '</textarea></label>' +
     '<button type="button" class="btn" id="starter-copy">Copy command</button>' +
-    (canStart ? '<button type="button" class="btn btn-primary" id="starter-start">Start flow</button>' : '') +
+    (canStart ? '<button type="button" class="btn btn-primary" id="starter-start">' +
+      (plan.kind === "flow" ? "Start flow" : plan.provenance.no_edits ? "Ask role" : "Start run") + '</button>' : '') +
     '<p class="stat-sub">This equivalent command records an ordinary run. The CLI <code>garuda starter run</code> also records structured starter inputs and source provenance.</p>' +
     '<p class="stat-sub">Plan digest: <code>' + esc(plan.digest) + '</code>. Sources and configuration can change after preview; create a fresh preview when they do.</p>' + authorityHtml;
 }
@@ -246,7 +248,7 @@ function requestStarterStart(state) {
   var operation = state.operation;
   var button = el("starter-start");
   if (button) button.disabled = true;
-  el("starter-operation").innerHTML = '<p class="loading">Durably admitting this flow…</p>';
+  el("starter-operation").innerHTML = '<p class="loading">Durably admitting this operation…</p>';
   return api("/api/scenarios/start", { method: "POST", body: {
     operation_id: operation.id,
     starter_id: state.id,
@@ -308,8 +310,8 @@ function renderStarterOperation(state, row, approvals) {
     state.operation.done = true;
   }
   var session = row.session_id ?
-    '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open flow details</a>' : '';
-  host.innerHTML = '<section class="card starter-operation-card"><h3>Flow operation</h3><p>' +
+    '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
+  host.innerHTML = '<section class="card starter-operation-card"><h3>Starter operation</h3><p>' +
     chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +

@@ -215,11 +215,20 @@ class FlowRunner:
                  verification_request=None, verification_permissions=None,
                  prepared_roles: dict | None = None, runtime_catalog=None,
                  authority_sources: tuple = (), operation_binding: dict | None = None,
-                 on_admitted=None, approval_handler=None):
+                 on_admitted=None, approval_handler=None, launch_kind: str = "flow",
+                 session_name: str | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
         if (operation_binding is None) != (on_admitted is None):
             raise ValueError("owned operation binding and admission callback are inseparable")
+        if launch_kind not in {"flow", "run"}:
+            raise ValueError("unsupported flow launch kind")
+        if launch_kind == "run" and (
+                operation_binding is None or len(flow.get("steps", [])) != 1
+                or any(set(step) - {"id", "role", "write_policy"} for step in flow["steps"])):
+            # A run parent hands the role its exact task: one owned step with
+            # no flow inputs, outputs or review to describe in a preamble.
+            raise ValueError("an owned run parent is exactly one plain role step")
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
@@ -239,6 +248,8 @@ class FlowRunner:
         self.operation_binding = dict(operation_binding) if operation_binding is not None else None
         self.on_admitted = on_admitted
         self.approval_handler = approval_handler
+        self.launch_kind = launch_kind
+        self.session_name = session_name
         self.require_owned = verification_request is not None or operation_binding is not None
         self._evidence = None
         self._owned_snapshot = None
@@ -450,6 +461,9 @@ class FlowRunner:
     def _prompt(self, step: dict, role: str, inputs) -> str:
         from html import escape
 
+        if self.launch_kind == "run":
+            # The CLI run receives exactly this task; so does its owned child.
+            return self.task
         parts = [self.task, "",
                  f"[garuda] You are the {role} step `{step['id']}` of flow `{self.name}`."]
         for ref, content in inputs:
@@ -483,7 +497,8 @@ class FlowRunner:
                 kind="flow-verification" if self.verification_request is not None
                 else "owned-flow")
         self.store.begin(self.flow_session, task=self.task, model="flow",
-                         agent=f"flow:{self.name}", workspace=self.workspace)
+                         agent=f"flow:{self.name}", workspace=self.workspace,
+                         name=self.session_name)
         # Path.mkdir(parents=True) creates missing ancestors with the default
         # mode, which makes the flow directory too open for owned records.
         self.dir.mkdir(mode=0o700)
@@ -496,7 +511,8 @@ class FlowRunner:
                                 for s in _steps(self.flow) if "review" in s],
             **({"starter": self.starter_record} if self.starter_record is not None else {}),
             **({"flow_operation": self.operation_binding}
-               if self.operation_binding is not None else {})})
+               if self.operation_binding is not None else {}),
+            **({"launch_kind": "run"} if self.launch_kind == "run" else {})})
         (self.dir / "receipts").mkdir(mode=0o700)
 
     def _lease_mode(self) -> str:

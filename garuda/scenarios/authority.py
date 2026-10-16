@@ -26,6 +26,117 @@ def _effective_permission(context, role: str, *, no_edits: bool) -> str:
     return mode if mode in _PERMISSION_RANK else "smart"
 
 
+def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, block) -> dict:
+    """One role's admitted identity, after the blockers shared by every launch kind."""
+    role_plan = context.role_plans[role]
+    configured = context.resolved.config.get("roles", {}).get(role, {})
+    if configured.get("fallback"):
+        block("starter.fallback_probe_unowned",
+              f"Role {role} has a fallback chain whose launch probe is not owned by this gateway.",
+              "Use a role without fallbacks for one-click Start.")
+    permission = _effective_permission(context, role, no_edits=no_edits)
+    if (_PERMISSION_RANK.get(permission, 99)
+            > _PERMISSION_RANK.get(max_permission, -1)):
+        block("starter.permission_exceeds_ceiling",
+              f"Role {role} requests {permission}, above the dashboard ceiling {max_permission}.",
+              "Tighten the role or explicitly restart the dashboard with that ceiling.")
+    if role_plan.kind == "acp" and (no_edits or permission == "readonly"):
+        block("starter.acp_readonly_ownership_unavailable",
+              f"Role {role} needs read-only ACP container lifetime ownership that is unavailable.",
+              "Use a supported native role or run the equivalent command manually.")
+    return {"runtime_id": role_plan.runtime_id, "kind": role_plan.kind,
+            "model_id": role_plan.model_id, "role_digest": role_plan.digest,
+            "permission": permission, "write_policy": role_plan.write_policy}
+
+
+def _host_blockers(max_permission: str, backend_available: bool,
+                   approval_available: bool, block) -> None:
+    if max_permission not in _PERMISSION_RANK:
+        block("starter.permission_ceiling_invalid",
+              "The dashboard permission ceiling is unsupported.",
+              "Restart the dashboard with a supported permission ceiling.")
+    if not backend_available:
+        block("starter.ownership_unavailable",
+              "Owned starter runs require the Linux descendant supervisor.",
+              "Run this starter from a Garuda dashboard on Linux.")
+    if not approval_available:
+        block("starter.approval_unavailable",
+              "The dashboard approval broker is unavailable.",
+              "Restart the dashboard in write mode with its agent loop attached.")
+
+
+def _capabilities(backend_available: bool, approval_available: bool) -> dict:
+    return {
+        "process_cleanup": "linux-subreaper" if backend_available else "unavailable",
+        "approvals": "dashboard-broker" if approval_available else "unavailable",
+        "strict_parent_publication": True,
+        "automatic_relaunch": False,
+    }
+
+
+def start_authority(plan, context, **policy) -> dict:
+    """The authority envelope for the plan's launch kind."""
+    if plan.kind == "run" and context.kind == "run":
+        return run_authority(plan, context, **policy)
+    return flow_authority(plan, context, **policy)
+
+
+def run_authority(plan, context, *, max_permission: str, server_epoch: str,
+                  backend_available: bool, approval_available: bool) -> dict:
+    """Server policy for one owned run-kind start (run-with-role, ask-role).
+
+    Only options the owned role-run parent actually honours are admitted;
+    every other run option refuses here instead of being silently dropped.
+    """
+    blockers: list[dict[str, str]] = []
+
+    def block(code: str, message: str, fix: str) -> None:
+        blockers.append({"code": code, "message": message, "fix": fix,
+                         "level": "error"})
+
+    if plan.kind != "run" or context.kind != "run" or context.flow is not None:
+        block("starter.launch_kind_mismatch",
+              "This preview is not a run-kind starter.",
+              "Preview the starter again.")
+    _host_blockers(max_permission, backend_available, approval_available, block)
+    options = dict(plan.options)
+    if options.get("isolation", "shared") != "shared":
+        block("starter.isolation_unowned",
+              "Worktree isolation is not yet owned by dashboard role runs.",
+              "Choose shared isolation, or copy the equivalent command.")
+    if options.get("bg"):
+        block("starter.background_unowned",
+              "Background role runs are not yet admitted from the dashboard.",
+              "Clear background, or copy the equivalent command.")
+    configured = context.resolved.config.get("roles", {}).get(plan.target, {})
+    # The engine applies the starter's no-edits and the role's own policy alike.
+    no_edits = (bool(plan.provenance.get("no_edits"))
+                or configured.get("write_policy") == "no-edits")
+    role = None
+    if plan.target in context.role_plans:
+        role = _role_scope(context, plan.target, no_edits=no_edits,
+                           max_permission=max_permission, block=block)
+    else:
+        block("starter.role_unprepared", f"Role {plan.target} was not resolved.",
+              "Preview the starter again.")
+    envelope = {
+        "version": 1,
+        "kind": "run",
+        "server_epoch": server_epoch,
+        "workspace": {"path": plan.workspace,
+                      "identity": plan.provenance.get("workspace_identity")},
+        "operator": {"max_permission": max_permission},
+        "run": {"target": plan.target, "role": role, "no_edits": no_edits,
+                "workspace_mode": "live-checkout", "options": options,
+                "checks": [{"definition_digest": check["definition_digest"],
+                            "authority": check["authority"]} for check in plan.checks]},
+        "capabilities": {**_capabilities(backend_available, approval_available),
+                         "checks": "owned-acceptance" if plan.checks else "none"},
+    }
+    return {"digest": digest(envelope), "can_start": not blockers,
+            "envelope": envelope, "diagnostics": blockers}
+
+
 def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
                    backend_available: bool, approval_available: bool) -> dict:
     """Build the exact server policy a later Start request must match."""
@@ -36,21 +147,10 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
                          "level": "error"})
 
     if plan.kind != "flow" or context.kind != "flow" or context.flow is None:
-        block("starter.run_start_unavailable",
-              "One-click Start is available only for flow starters.",
-              "Copy the equivalent run command until the shared run facade lands.")
-    if max_permission not in _PERMISSION_RANK:
-        block("starter.permission_ceiling_invalid",
-              "The dashboard permission ceiling is unsupported.",
-              "Restart the dashboard with a supported permission ceiling.")
-    if not backend_available:
-        block("starter.ownership_unavailable",
-              "Owned flow starts require the Linux descendant supervisor.",
-              "Run this starter from a Garuda dashboard on Linux.")
-    if not approval_available:
-        block("starter.approval_unavailable",
-              "The dashboard approval broker is unavailable.",
-              "Restart the dashboard in write mode with its agent loop attached.")
+        block("starter.launch_kind_mismatch",
+              "This preview is not a flow starter.",
+              "Preview the starter again.")
+    _host_blockers(max_permission, backend_available, approval_available, block)
 
     roles = {}
     steps = []
@@ -67,28 +167,12 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
         for role in names:
             if not role or role not in context.role_plans:
                 continue
-            role_plan = context.role_plans[role]
             configured = context.resolved.config.get("roles", {}).get(role, {})
-            if configured.get("fallback"):
-                block("starter.fallback_probe_unowned",
-                      f"Role {role} has a fallback chain whose launch probe is not owned by this gateway.",
-                      "Use a role without fallbacks for one-click Start.")
             no_edits = (step.get("write_policy") or configured.get("write_policy")) == "no-edits"
-            permission = _effective_permission(context, role, no_edits=no_edits)
-            if (_PERMISSION_RANK.get(permission, 99)
-                    > _PERMISSION_RANK.get(max_permission, -1)):
-                block("starter.permission_exceeds_ceiling",
-                      f"Role {role} requests {permission}, above the dashboard ceiling {max_permission}.",
-                      "Tighten the role or explicitly restart the dashboard with that ceiling.")
-            if role_plan.kind == "acp" and (no_edits or permission == "readonly"):
-                block("starter.acp_readonly_ownership_unavailable",
-                      f"Role {role} needs read-only ACP container lifetime ownership that is unavailable.",
-                      "Use a supported native role or run the equivalent command manually.")
-            roles[role] = {"runtime_id": role_plan.runtime_id, "kind": role_plan.kind,
-                           "model_id": role_plan.model_id, "role_digest": role_plan.digest,
-                           "permission": permission, "write_policy": role_plan.write_policy}
+            roles[role] = _role_scope(context, role, no_edits=no_edits,
+                                      max_permission=max_permission, block=block)
             steps.append({"index": index, "id": step.get("id"), "role": role,
-                          "permission": permission, "no_edits": no_edits})
+                          "permission": roles[role]["permission"], "no_edits": no_edits})
 
     envelope = {
         "version": 1,
@@ -100,12 +184,7 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
                  "source": plan.provenance.get("flow_source"),
                  "roles": {name: roles[name] for name in sorted(roles)},
                  "steps": steps},
-        "capabilities": {
-            "process_cleanup": "linux-subreaper" if backend_available else "unavailable",
-            "approvals": "dashboard-broker" if approval_available else "unavailable",
-            "strict_parent_publication": True,
-            "automatic_relaunch": False,
-        },
+        "capabilities": _capabilities(backend_available, approval_available),
     }
     return {"digest": digest(envelope), "can_start": not blockers,
             "envelope": envelope, "diagnostics": blockers}

@@ -106,7 +106,22 @@ another refusal raised before the flow reserves its parent session is reported a
 tab does not cancel the owned
 operation. Garuda stops new admission during server shutdown, drains its tasks,
 and never replays uncertain work after restart. Read-only dashboards, unsupported
-hosts and run-kind starters remain copy-only.
+hosts and unsupported run options remain copy-only.
+
+The same Linux write-mode dashboard shows **Start run** for a ready
+`run-with-role` preview and **Ask role** for `ask-role`. Each runs as one owned
+parent session with exactly one role step, under the same operation, digest,
+duplicate, refusal and shutdown rules as **Start flow**. The role child receives
+the exact previewed task, through the shared owned native/ACP role executor;
+ACP never runs through a dashboard chat. Ask-role runs read-only with the
+no-edits check and withholds output if the checkout changed. Configured and
+explicit checks run through the flow engine's candidate-bound verification.
+The session name option is supported. Worktree or auto isolation, background
+runs, fallback roles, read-only/no-edits ACP roles and permissions above
+`--max-permission` refuse before any operation is recorded; copy the equivalent
+command for those. Because the owned parent holds a mutating workspace lease, a
+dashboard ask-role refuses while another session holds the workspace, where the
+CLI would take a read-only lease.
 
 Follow the resulting session through **Sessions** (flows and ACP) or its existing
 native trace. The shared starter panel keeps process, work, outcome, review and
