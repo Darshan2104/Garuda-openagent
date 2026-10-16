@@ -416,7 +416,10 @@ class FlowStartGateway:
                 or not isinstance(binding.get("lease_epoch"), str)
                 or meta.get("session_id") != record["reserved_session"]
                 or meta.get("workspace") != record["workspace"]
-                or not isinstance(policy, dict) or policy.get("kind") != "owned-flow"
+                # Checked starts publish under the strict verification policy;
+                # both kinds bind the same operation through ``flow_operation``.
+                or not isinstance(policy, dict)
+                or policy.get("kind") not in {"owned-flow", "flow-verification"}
                 or policy.get("session_id") != record["reserved_session"]
                 or not isinstance(starter, dict)
                 or starter.get("plan_digest") != record["plan_digest"]):

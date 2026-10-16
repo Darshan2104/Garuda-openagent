@@ -663,3 +663,50 @@ async def test_real_http_start_runs_one_owned_flow_for_duplicate_requests(tmp_pa
         await ctx.live.aclose()
         server.shutdown()
         server.server_close()
+
+
+@LINUX
+async def test_checked_flow_start_projects_its_committed_verification(tmp_path, monkeypatch):
+    """A checked start publishes under the verification policy and still projects terminal."""
+    monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    subprocess.run(["git", "-C", str(workspace), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.invalid", "commit", "--allow-empty",
+                    "-qm", "base"], check=True)
+    _configure_native_flow(workspace)
+    config = gy.load_file(gy.user_path())
+    config["flows"] = {"plan-build-review": {"steps": [{"id": "build", "role": "coder"}]}}
+    config["checks"] = [{"run": "true"}]
+    gy.user_path().write_text(gy.dump(config))
+    server, requests, _started, _release = _local_model()
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
+        "models": {"owned": {"model": "openai/owned-start",
+                              "api_base": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "model_bindings": {"default": {"reasoning": "owned"}},
+        "capacity": {"native": 1},
+    }))
+    ctx = build_context(DashboardConfig(
+        port=PORT, token=TOKEN, allow_run=True, sessions_dir=tmp_path / "sessions",
+        workspaces=(workspace,), open_browser=False), loop=asyncio.get_running_loop())
+    try:
+        inputs = {"goal": "build one checked change"}
+        preview = await _preview(ctx, starter="build-review", inputs=inputs)
+        assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+        operation_id = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start_body(
+            preview, operation_id, starter="build-review", inputs=inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _status(ctx, operation_id, {"terminal", "uncertain", "quarantined"},
+                                 timeout=60)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+        parent = ctx.store.load_meta(terminal["session_id"])
+        assert parent["publication_policy"]["kind"] == "flow-verification"
+        assert parent["state"]["verification"]["status"] == "passed"
+        assert ctx.flow_starts.intents.read(operation_id)["phase"] == "terminal"
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+        server.shutdown()
+        server.server_close()
