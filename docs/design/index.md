@@ -14,4 +14,4 @@ reference, and architecture documentation.
 - [Teams and sessions](2026-10-01-teams-and-sessions-design.md)
 - [Agent definitions](2026-10-01-agent-definitions-design.md)
 - [Flow verification ownership, evidence, and recovery](2026-10-08-flow-verification-ownership-design.md) — approved for implementation on 2026-10-12; runtime conformance remains required.
-- [Owned one-click flow starts](2026-10-08-owned-one-click-flow-starts-design.md) — approved on 2026-10-12 and implemented for Linux flow-kind starters in #336; run-kind starts remain #316.
+- [Owned one-click flow starts](2026-10-08-owned-one-click-flow-starts-design.md) — approved on 2026-10-12 and implemented for Linux flow-kind starters in #336; foreground run-kind starts reuse it through one owned role-run parent (#316).

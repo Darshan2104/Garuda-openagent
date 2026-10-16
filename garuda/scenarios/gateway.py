@@ -1,4 +1,4 @@
-"""Loop-owned, at-most-once admission for dashboard flow starters."""
+"""Loop-owned, at-most-once admission for dashboard flow and role-run starters."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from garuda.core import setup_view
 from garuda.core.sessions import SessionStore
 from garuda.runtime.ownership import current_owner, owner_liveness
 from garuda.runtime.strict_store import StorageError
-from garuda.scenarios.authority import flow_authority
+from garuda.scenarios.authority import start_authority
 from garuda.scenarios.catalog import VERSION as CATALOG_VERSION
 from garuda.scenarios.compile import COMPILER_VERSION, compile_with_context
 from garuda.scenarios.digests import digest
@@ -138,7 +138,7 @@ class FlowStartGateway:
         return self.backend_available and not self._closing
 
     def authority(self, plan, context) -> dict:
-        return flow_authority(
+        return start_authority(
             plan, context, max_permission=self.max_permission,
             server_epoch=self.server_epoch, backend_available=self.backend_available,
             approval_available=self.approvals is not None)
@@ -203,7 +203,7 @@ class FlowStartGateway:
             return await self._project(existing, duplicate=True)
         if not self.available:
             raise FlowStartError("starter.ownership_unavailable",
-                                 "Owned flow starts require the Linux descendant supervisor.",
+                                 "Owned starter runs require the Linux descendant supervisor.",
                                  status=503)
         try:
             plan, context = await _settled_call(
@@ -211,9 +211,6 @@ class FlowStartGateway:
         except RESOLUTION_ERRORS as exc:
             raise FlowStartError(getattr(exc, "code", "starter.preview_changed"), str(exc),
                                  status=409) from exc
-        if plan.kind != "flow":
-            raise FlowStartError("starter.run_start_unavailable",
-                                 "Run-kind starters remain copy-command until their shared facade lands.")
         if plan.provenance.get("workspace_identity") != identity:
             raise FlowStartError(
                 "starter.workspace_changed",
@@ -280,8 +277,6 @@ class FlowStartGateway:
             current = await _settled_call(
                 self.intents.advance, operation, expected="prepared",
                 phase="launch-authorized", owner=self.owner)
-            from garuda.flows.service import FlowExecutionService
-
             approval = self.approvals.make_handler(operation, lambda: None)
 
             async def admitted(session_id: str, lease_epoch: str) -> None:
@@ -292,19 +287,29 @@ class FlowStartGateway:
                     lease_epoch=lease_epoch)
                 self._resolve_admission(admission, await self._project(current))
 
-            result = await FlowExecutionService(self.store).run_prepared(
-                plan, context, flow_session=record["reserved_session"],
-                operation_binding={
-                    "version": 1, "operation_id": operation,
-                    "request_digest": record["request_digest"],
-                    "plan_digest": record["plan_digest"],
-                    "authority_digest": record["authority_digest"],
-                    "workspace_identity": record["workspace_identity"],
-                    "owner": record["owner"],
-                },
-                on_admitted=admitted, approval_handler=approval,
-                permission_mode=self.max_permission,
-                checks=() if plan.starter_id == "build-review" else None)
+            binding = {
+                "version": 1, "operation_id": operation,
+                "request_digest": record["request_digest"],
+                "plan_digest": record["plan_digest"],
+                "authority_digest": record["authority_digest"],
+                "workspace_identity": record["workspace_identity"],
+                "owner": record["owner"],
+            }
+            if plan.kind == "run":
+                from garuda.agents.role_runs import RoleRunService
+
+                result = await RoleRunService(self.store).run_prepared(
+                    plan, context, run_session=record["reserved_session"],
+                    operation_binding=binding, on_admitted=admitted,
+                    approval_handler=approval, permission_mode=self.max_permission)
+            else:
+                from garuda.flows.service import FlowExecutionService
+
+                result = await FlowExecutionService(self.store).run_prepared(
+                    plan, context, flow_session=record["reserved_session"],
+                    operation_binding=binding, on_admitted=admitted,
+                    approval_handler=approval, permission_mode=self.max_permission,
+                    checks=() if plan.starter_id == "build-review" else None)
             if current["phase"] == "admitted":
                 meta = await _settled_call(self.store.load_meta, result.flow.flow_session)
                 if meta.get("flow_state") == "quarantined":

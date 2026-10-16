@@ -46,9 +46,6 @@ class FlowExecutionService:
         caller has already persisted launch authorization; the engine still owns
         the workspace lease, strict parent publication and every child lifetime.
         """
-        import sys
-
-        from garuda.flows.launch import launch_step
         from garuda.scenarios.compile import LaunchContext
         from garuda.scenarios.types import LaunchPlan
 
@@ -58,6 +55,22 @@ class FlowExecutionService:
                 or plan.target != context.target):
             raise engine.FlowStopped("flow.prepared_invalid",
                                      "the admitted starter plan and flow context disagree")
+        return await self._run_owned(
+            plan, context, flow=context.flow, name=plan.target, flow_session=flow_session,
+            operation_binding=operation_binding, on_admitted=on_admitted,
+            approval_handler=approval_handler, permission_mode=permission_mode,
+            checks=checks)
+
+    async def _run_owned(self, plan, context, *, flow: dict, name: str, flow_session: str,
+                         operation_binding: dict, on_admitted, approval_handler,
+                         permission_mode: str, checks: tuple[str, ...] | None,
+                         launch_kind: str = "flow",
+                         session_name: str | None = None) -> FlowExecutionResult:
+        """The one owned parent path for dashboard flow and role-run starts."""
+        import sys
+
+        from garuda.flows.launch import launch_step
+
         binding_fields = {"version", "operation_id", "request_digest", "plan_digest",
                           "authority_digest", "workspace_identity", "owner"}
         owner = operation_binding.get("owner") if isinstance(operation_binding, dict) else None
@@ -101,16 +114,16 @@ class FlowExecutionService:
         if sys.platform != "linux":
             raise engine.FlowStopped("flow.ownership_unavailable",
                                      "owned dashboard flows require the Linux supervisor")
-        from garuda.scenarios.authority import flow_authority
+        from garuda.scenarios.authority import start_authority
 
-        authority = flow_authority(
+        authority = start_authority(
             plan, context, max_permission=permission_mode,
             server_epoch=owner["epoch"], backend_available=True,
             approval_available=True)
         if (not authority["can_start"]
                 or authority["digest"] != operation_binding["authority_digest"]):
             raise engine.FlowStopped("flow.authority_invalid",
-                                     "the prepared flow exceeds or disagrees with its authority")
+                                     "the prepared start exceeds or disagrees with its authority")
 
         request = permissions = None
         if checks is not None:
@@ -125,13 +138,14 @@ class FlowExecutionService:
                 request = permissions = None
 
         runner = engine.FlowRunner(
-            self.store, plan.workspace, plan.target, context.flow, context.resolved,
+            self.store, plan.workspace, name, flow, context.resolved,
             task=plan.task, launcher=launch_step, flow_session=flow_session,
             starter_record=plan.launch_metadata(), verification_request=request,
             verification_permissions=permissions, prepared_roles=context.role_plans,
             runtime_catalog=context.catalog, authority_sources=context.source_facts,
             operation_binding=operation_binding, on_admitted=on_admitted,
-            approval_handler=approval_handler)
+            approval_handler=approval_handler, launch_kind=launch_kind,
+            session_name=session_name)
         result = await runner.run()
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))

@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-10-16 — Dashboard run-kind starts are one owned role-run parent (#316)
+
+- `run-with-role` and `ask-role` browser starts reuse the #315 gateway, intent,
+  digest and shutdown rules. `RoleRunService.run_prepared` executes one owned
+  parent with exactly one plain role step through the flow engine's parent path,
+  so lease, strict publication, source revalidation, no-edits withholding,
+  candidate-bound checks and quarantine have one owner. The child receives the
+  exact previewed task through the owned native/ACP role executor; the CLI
+  `run_task` stack, its terminal approval prompts and `LiveChat` are not used.
+- `run_authority` admits only the session-name option. Worktree/auto isolation,
+  background, fallback roles, read-only/no-edits ACP and permissions above the
+  dashboard ceiling refuse before an intent exists. The parent's mutating lease
+  makes dashboard ask-role stricter than the CLI's read-only lease.
+- The parent is a flow-engine session (`kind: flow`, `launch_kind: run`, policy
+  `owned-flow`); the role child is linked by `flow_step`. Results use the
+  existing flow read model.
+
 ## 2026-10-16 — Browser flow starts have one durable Linux owner (#315)
 
 - A write-mode Linux dashboard creates one loop-owned flow gateway. Preview adds

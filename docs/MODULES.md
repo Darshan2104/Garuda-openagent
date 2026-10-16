@@ -490,7 +490,12 @@ share the same resolved configuration/role plans via `compile_with_context`.
 session store: canonical digest identity, serialized cross-process prepare and
 legal fsynced transitions. `authority.py` derives the descriptive server envelope
 from the selected workspace, operator ceiling, exact role/runtime scope and
-available lifecycle capabilities. `gateway.py` is the only browser flow dispatcher:
+available lifecycle capabilities; `start_authority` selects `flow_authority` or
+`run_authority`, which share the per-role fallback, ceiling and read-only ACP
+blockers and add the run-option blockers. `gateway.py` is the only browser starter
+dispatcher. Flow plans enter `FlowExecutionService.run_prepared`; run plans enter
+`agents/role_runs.py::RoleRunService.run_prepared`, which executes one owned parent
+with exactly one plain role step and the exact previewed task. Either way:
 it reserves an intent, recompiles, verifies both digests, schedules one task on
 the server loop, projects the authoritative session and drains it at shutdown.
 Existing or restarted operations are read/reconciled without replay.
@@ -505,9 +510,10 @@ including an empty list, for both configuration and preview enforcement.
 The plain-script
 `static/views_scenarios.js` owns Starters forms, preview/copy, stale-response
 invalidation, retained operation IDs and polling, and the result panel reused by
-session/native-trace views. A Linux write-mode preview may expose **Start flow**
-for flow-kind plans whose current readiness and server authority allow it.
-Read-only, unsupported-host and run-kind views remain copy-only. An implementable
+session/native-trace views. A Linux write-mode preview may expose **Start flow**,
+**Start run** or **Ask role** when its current readiness and server authority
+allow it. Read-only, unsupported-host and unsupported-option views remain
+copy-only. An implementable
 plan opens an explicit follow-up form.
 The static Setup projection is `core/setup_view.py::configuration`; full
 `setup()` also performs discovery probes and is not used here. Readiness calls
@@ -566,6 +572,11 @@ Background serialization preserves starter metadata and the actual admitted
 session ID/store, and the worker revalidates the frozen request after waiting
 for capacity, before runtime dispatch. ACP worktrees use `session_service.choose_workspace` and its
 cleanup contract; flow child launches use their parent's selected store.
+`agents/role_runs.py` is the dashboard's run-kind owner instead of that CLI path:
+`role_run_flow` builds the single internal step (`run`, or `ask` with
+`write_policy: no-edits`), and `RoleRunService.run_prepared` passes it to the
+shared owned parent path with `launch_kind="run"`, so the engine hands the child
+the exact task and names the parent from the `name` option.
 
 `core/read_model.py::starter_result` delegates selected evidence projection to
 `core/starter_read_model.py`, with selected record validation in

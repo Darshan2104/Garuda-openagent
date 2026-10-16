@@ -183,7 +183,7 @@ only when ready to start; results and previews never start follow-up work.
 Review and acceptance verification are separate. Flow verification is
 candidate-bound on supported Linux flows; role `--check` uses its existing
 acceptance receipts. In a Linux write-mode dashboard, flow-kind starter previews
-may also expose **Start flow**. Run-kind starter previews remain copy-only.
+may also expose **Start flow**, **Start run** or **Ask role**; unsupported run options remain copy-only.
 
 The packaged example command creates a new standalone repository:
 `garuda starter example reconnect ./garuda-reconnect-example`.
