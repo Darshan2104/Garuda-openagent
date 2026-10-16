@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** approved and decomposed into GitHub issues; implementation not started
+**Status:** P0, P1 and P2 delivered; owned browser start (P3) remains
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -17,8 +17,9 @@ The [Garuda Starters guide](../use-cases/workflows.md) describes the P1a CLI
 journeys and runnable reconnect example built on these existing runtime, role,
 flow and evidence owners. External read-only roles still require their configured
 Docker confinement; a connected host CLI alone is insufficient. Reviewed flows
-have verification unavailable until the separately gated flow-check phase.
-Dashboard discovery and durable starter starts remain later phases under the
+can run authorized configured or explicit checks on Linux while retaining their
+parent workspace owner; other hosts report verification unavailable.
+Dashboard discovery is read-only and durable browser starts remain a later phase under the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 
 ## Why this boundary

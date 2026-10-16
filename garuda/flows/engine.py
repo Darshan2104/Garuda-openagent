@@ -26,6 +26,7 @@ output or a no-edits change stops the flow.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import os
@@ -117,6 +118,27 @@ def _write_once(path: Path, record: dict) -> None:
     _fsync_dir(path.parent)
 
 
+async def _settled_sync(call, *args, complete_on_cancel: bool = False, **kwargs):
+    """Keep bounded blocking work off the loop and await its actual settlement.
+
+    A cancelled ``to_thread`` future does not stop its thread. Flow publication
+    must therefore wait for the underlying lock/fsync operation before the
+    parent lease can release. Only a completed terminal publication may absorb
+    a cancellation that arrived while it was being committed.
+    """
+    task = asyncio.create_task(asyncio.to_thread(call, *args, **kwargs))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    value = task.result()
+    if cancelled and not complete_on_cancel:
+        raise asyncio.CancelledError
+    return value
+
+
 def flow_dir(store, flow_session: str) -> Path:
     return Path(store.session_dir(flow_session)) / "flow"
 
@@ -186,7 +208,10 @@ class FlowRunner:
 
     def __init__(self, store, workspace, name: str, flow: dict, resolved, *, task: str,
                  launcher: Launcher, flow_session: str | None = None,
-                 lease_ttl: float | None = None, starter_record: dict | None = None):
+                 lease_ttl: float | None = None, starter_record: dict | None = None,
+                 verification_request=None, verification_permissions=None):
+        if (verification_request is None) != (verification_permissions is None):
+            raise ValueError("flow verification requires its frozen permission ceiling")
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
@@ -198,6 +223,15 @@ class FlowRunner:
         self.dir = flow_dir(store, self.flow_session)
         self.lease_ttl = lease_ttl
         self.starter_record = starter_record
+        self.verification_request = verification_request
+        self.verification_permissions = verification_permissions
+        self._evidence = None
+        self._verification_quarantined = False
+        self._interrupted_acceptance_receipts = None
+
+    async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
+        return await _settled_sync(self.store.update_meta, session_id, updates,
+                                   complete_on_cancel=terminal)
 
     # -- helpers -----------------------------------------------------------------------
 
@@ -205,6 +239,9 @@ class FlowRunner:
         from garuda.core.acceptance import fingerprint
 
         return fingerprint(self.workspace)
+
+    async def _version_for_flow(self) -> str | None:
+        return await self._evidence.version() if self._evidence is not None else self._version()
 
     def _role_plan(self, role: str):
         from garuda.agents.fallbacks import choose
@@ -231,8 +268,130 @@ class FlowRunner:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
 
-    def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
-        version = self._version()
+    def _closed_step(self, outcome: StepResult, step: dict, attempt: int) -> dict:
+        """Keep only bound lifetime facts, never raw process output tails."""
+        from garuda.core.acceptance_request import is_digest
+
+        closure = outcome.closure
+        process = closure.get("process") if isinstance(closure, dict) else None
+        expected_owner = {key: self._evidence.base["snapshot"]["lease"][key]
+                          for key in ("pid", "identity", "pgid", "epoch")}
+        if (not isinstance(closure, dict) or not isinstance(process, dict)
+                or closure.get("version") != 1 or not is_digest(closure.get("request_digest"))
+                or closure.get("session_id") != outcome.session_id
+                or closure.get("parent_id") != self.flow_session
+                or closure.get("step_id") != step["id"] or closure.get("attempt") != attempt
+                or closure.get("parent_owner") != expected_owner
+                or not isinstance(closure.get("workspace_identity"), list)
+                or len(closure["workspace_identity"]) != 2
+                or any(type(value) is not int or value < 0 for value in closure["workspace_identity"])
+                or process.get("cleanup") != {"backend": "linux-subreaper", "echild": True}
+                or process.get("outcome") != "exited"
+                or not isinstance(process.get("supervisor"), dict)
+                or not isinstance(process.get("command"), dict)):
+            raise FlowStopped("flow.cleanup_unproved",
+                              "step ended without bound descendant closure", step=step["id"])
+        return {key: closure[key] for key in ("version", "request_digest", "session_id",
+                                             "parent_id", "step_id", "attempt",
+                                             "workspace_identity", "parent_owner")} | {
+            "process": {key: process[key] for key in ("supervisor", "command", "cleanup",
+                                                      "outcome", "exit_code")}}
+
+    def _evidence_coverage(self, done: list[dict]) -> list[dict]:
+        """Tie every settled step intent to its receipt and boundary digest."""
+        from garuda.core.acceptance_request import is_digest
+
+        entries = journal(self.store, self.flow_session)
+        intents = [entry for entry in entries if entry.get("event") == "intent"]
+        settled = [entry for entry in entries if entry.get("event") == "receipt"]
+        actual = receipts(self.store, self.flow_session)
+        identities = [(entry.get("step"), entry.get("attempt")) for entry in done]
+        if (len(intents) != len(done) or len(settled) != len(done)
+                or len(actual) != len(done)
+                or len(set(identities)) != len(done)
+                or set(identities) != {(entry.get("step"), entry.get("attempt"))
+                                       for entry in actual}
+                or any(entry.get("event") not in {"intent", "receipt"} for entry in entries)):
+            raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
+        by_id = {step["id"]: step for step in _steps(self.flow)}
+        coverage = []
+        for intent, recorded, receipt in zip(intents, settled, done, strict=True):
+            key = (intent.get("step"), intent.get("attempt"))
+            boundary = receipt.get("evidence_boundary")
+            if (key != (recorded.get("step"), recorded.get("attempt"))
+                    or key != (receipt.get("step"), receipt.get("attempt"))
+                    or intent.get("index") != receipt.get("index")
+                    or intent.get("index") != by_id.get(key[0], {}).get("index")
+                    or receipt.get("status") != "done"
+                    or receipt.get("success") is not True
+                    or receipt not in actual
+                    or key[0] not in by_id
+                    or type(key[1]) is not int
+                    or not isinstance(boundary, dict)
+                    or not is_digest(boundary.get("boundary_digest"))):
+                raise FlowStopped("flow.evidence_incomplete",
+                                  "step receipt or boundary does not cover its intent")
+            self._closed_step(StepResult(receipt["session_id"], True, "",
+                                         receipt.get("closure")), by_id[key[0]], key[1])
+            coverage.append({"step": key[0], "attempt": key[1],
+                             "boundary_digest": boundary["boundary_digest"]})
+        return coverage
+
+    async def _finalize_verification(self, lease, reference, manifest):
+        """Keep the original parent until the check commit and state both publish."""
+        from garuda.core.acceptance_request import CheckContext
+        from garuda.core.acceptance_runner import AcceptanceRunner
+        from garuda.flows.verification_records import OwnedFlowVerification
+        from garuda.runtime.session_state import finished
+
+        request, permissions = self.verification_request, self.verification_permissions
+        request.validate_ceiling(permissions)
+        if not request.checks:
+            raise FlowStopped("flow.verification_not_requested", "no trusted check was selected")
+        runner = None
+        try:
+            candidate = await self._evidence.version()
+            identity = manifest["binding"]["workspace_identity"]
+            context = CheckContext(self.flow_session, str(uuid.uuid4()), self.workspace,
+                                   candidate, reference["manifest_digest"],
+                                   tuple(manifest["changed"]), True, tuple(identity))
+            publisher = OwnedFlowVerification(self.store, lease, request, context, permissions)
+            phase = await publisher.prepare()
+            # The intent precedes any acceptance launch. A crash after the
+            # private intent but before this metadata update remains visible
+            # and cannot be treated as a fresh flow run.
+            await self._publish(self.flow_session, {
+                "flow_verification_phase": {"phase_id": context.phase_id,
+                                            "digest": phase["phase_digest"]}})
+            runner = AcceptanceRunner(self.store)
+            result = await lease.race(runner.run(request, context, lease, permissions))
+            commitment = await publisher.commit(phase["phase_digest"], result)
+            await self._publish(self.flow_session, {
+                "flow_state": "completed", "status": "completed",
+                "state": finished(success=True, verification=result.verification),
+                "acceptance_receipts": result.receipts,
+                "flow_verification_commit": commitment}, terminal=True)
+        except asyncio.CancelledError:
+            # Cancellation before launch authorization, or after a terminal
+            # cancellation receipt, leaves no possible writer. Ambiguous
+            # activation still retains quarantine.
+            if runner is None or not runner.launch_ambiguous:
+                if runner is not None:
+                    self._interrupted_acceptance_receipts = list(runner.result.receipts)
+                raise
+            self._verification_quarantined = True
+            await lease.stop_heartbeat()
+            raise
+        except BaseException:
+            # An activation or publication may have happened. Retain the
+            # original owner until the phase is reconciled; never claim that
+            # a failed write rolled the check back.
+            self._verification_quarantined = True
+            await lease.stop_heartbeat()
+            raise
+
+    async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
+        version = await self._version_for_flow()
         resolved = []
         for kind in step.get("inputs", []):
             ref = next((art.ArtifactRef.from_dict(o) for r in reversed(done)
@@ -266,15 +425,22 @@ class FlowRunner:
     # -- running -----------------------------------------------------------------------
 
     def _begin(self) -> None:
-        # A reserved flow ID is not permission to reuse a prior session. The
-        # exclusive directory creation also covers records without meta.json
-        # (for example, a crash during the first publication).
+        # A reserved ID is not permission to reuse an earlier or partially
+        # published session. Reserve the directory only after the workspace
+        # lease has been acquired.
         try:
             self.store.session_dir(self.flow_session).mkdir(parents=True, exist_ok=False)
         except FileExistsError as exc:
             raise FlowStopped("flow.session_exists", "the flow session already exists") from exc
+        if self.verification_request is not None:
+            from garuda.core.session_publication import protect_session
+
+            protect_session(self.store.session_dir(self.flow_session) / "meta.json")
         self.store.begin(self.flow_session, task=self.task, model="flow",
                          agent=f"flow:{self.name}", workspace=self.workspace)
+        # Path.mkdir(parents=True) creates missing ancestors with the default
+        # mode, which makes the flow directory too open for owned records.
+        self.dir.mkdir(mode=0o700)
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
                                                                  _steps(self.flow)]},
@@ -283,9 +449,11 @@ class FlowRunner:
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
                                 for s in _steps(self.flow) if "review" in s],
             **({"starter": self.starter_record} if self.starter_record is not None else {})})
-        (self.dir / "receipts").mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.dir / "receipts").mkdir(mode=0o700)
 
     def _lease_mode(self) -> str:
+        if self.verification_request is not None:
+            return "mutating"
         if all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow) if "role" in s):
             return "read-only"
         return "mutating"
@@ -295,8 +463,18 @@ class FlowRunner:
         from garuda.runtime.session_state import finished, interrupted
 
         if resume:
-            recover(self.store, self.flow_session)
-            held = [r["step"] for r in receipts(self.store, self.flow_session)
+            # Service callers reconstruct a runner without the original live
+            # check request. A protected parent must never fall through the
+            # ordinary step-resume path and overwrite its committed verdict.
+            prior = await _settled_sync(self.store.load_meta, self.flow_session)
+            if prior.get("publication_policy") is not None or self.verification_request is not None:
+                raise FlowStopped("flow.verification_reconciliation_required",
+                                  "owned flow verification requires recovery from its durable phase; "
+                                  "steps and checks are never replayed automatically")
+        if resume:
+            await _settled_sync(recover, self.store, self.flow_session)
+            prior_receipts = await _settled_sync(receipts, self.store, self.flow_session)
+            held = [r["step"] for r in prior_receipts
                     if r.get("status") == "quarantined"]
             if held:
                 raise FlowStopped("flow.quarantined",
@@ -310,8 +488,23 @@ class FlowRunner:
         begun = resume
         try:
             if not resume:
-                self._begin()
+                await _settled_sync(self._begin)
                 begun = True
+            if self.verification_request is not None:
+                from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
+                from garuda.workspace.flow_evidence import OwnedFlowEvidence
+
+                try:
+                    await lease.race(owned_call("admitted-sources", {
+                        "sources": [source.document() for source in
+                                    self.verification_request.sources]}))
+                except AcceptanceWorkError as exc:
+                    raise FlowStopped("flow.check_authority_changed",
+                                      "check sources changed before step admission") from exc
+                self._evidence = OwnedFlowEvidence(self.store.session_dir(self.flow_session),
+                                                   self.flow_session, self.workspace, lease)
+                baseline = await self._evidence.begin()
+                await self._publish(self.flow_session, {"flow_evidence_baseline": baseline})
             existing = receipts(self.store, self.flow_session)
             done = [r for r in existing if r.get("status") == "done"]
             completed_steps = {r["step"] for r in done}
@@ -333,23 +526,60 @@ class FlowRunner:
                 receipt = await self._run_step(step, done, lease,
                                                attempt=tried.get(step["id"], 0) + 1)
                 done.append(receipt)
-            self.store.update_meta(self.flow_session, {
+            if self.verification_request is not None:
+                try:
+                    coverage = self._evidence_coverage(done)
+                    reference, manifest = await self._evidence.finalize(coverage)
+                    await self._publish(self.flow_session, {
+                        "flow_evidence_manifest": reference,
+                        "flow_delta_changed": manifest["changed"][:200],
+                        "flow_delta_changed_total": len(manifest["changed"]),
+                        "flow_delta_changed_complete": len(manifest["changed"]) <= 200,
+                        "flow_final_changed": manifest["final_changed"][:200],
+                        "flow_final_changed_total": len(manifest["final_changed"]),
+                        "flow_final_changed_complete": len(manifest["final_changed"]) <= 200})
+                except FlowStopped:
+                    await lease.stop_heartbeat()
+                    raise
+                except Exception as exc:
+                    await lease.stop_heartbeat()
+                    raise FlowStopped("flow.evidence_unavailable",
+                                      "complete parent evidence could not be finalized") from exc
+                await self._finalize_verification(lease, reference, manifest)
+                result.receipts = receipts(self.store, self.flow_session)
+                return result
+            await self._publish(self.flow_session, {
                 "flow_state": "completed", "status": "completed",
                 "state": finished(success=True)})
         except FlowStopped as stop:
             if not begun:
                 raise
             result.stopped = stop
-            self.store.update_meta(self.flow_session, {
-                "flow_state": "stopped", "status": "failed", "state": finished(success=False),
+            await self._publish(self.flow_session, {
+                "flow_state": "quarantined" if self._verification_quarantined or stop.code in {
+                    "flow.cleanup_unproved", "flow.evidence_incomplete", "flow.evidence_unavailable"
+                } else "stopped",
+                "status": "failed", "state": finished(success=False),
                 "flow_stop": {"code": stop.code, "step": stop.step, "message": str(stop)}})
-        except BaseException:
+        except BaseException as exc:
             # Cancelled or crashed mid-flow: the step that was running has an
             # intent and no receipt, so a resume quarantines it.
-            if begun:
-                self.store.update_meta(self.flow_session, {"flow_state": "interrupted",
-                                                           "status": "failed",
-                                                           "state": interrupted()})
+            if not begun:
+                raise
+            from garuda.runtime.process_supervision import CleanupUncertain
+
+            uncertain = isinstance(exc, CleanupUncertain) or self._verification_quarantined
+            if uncertain:
+                await lease.stop_heartbeat()
+            updates = {
+                "flow_state": "quarantined" if uncertain else "interrupted",
+                "status": "failed",
+                "state": interrupted(cancelled=isinstance(exc, asyncio.CancelledError))}
+            if self._interrupted_acceptance_receipts is not None:
+                updates["acceptance_receipts"] = self._interrupted_acceptance_receipts
+            await self._publish(
+                self.flow_session, updates,
+                terminal=isinstance(exc, asyncio.CancelledError) and not uncertain)
             raise
         finally:
             await lease.release()
@@ -364,6 +594,10 @@ class FlowRunner:
         ``readonly`` roles, which run only in proven Docker confinement
         (C.8a). Source and snapshot must both be unchanged afterwards.
         """
+        if self._evidence is not None:
+            raise FlowStopped("flow.parallel_verification_unavailable",
+                              "parallel snapshot members have no owned closure evidence",
+                              step=step["id"])
         import asyncio
 
         from garuda.workspace import snapshot_proto as snap
@@ -376,8 +610,8 @@ class FlowRunner:
                 raise FlowStopped("flow.parallel_reviewer_not_readonly",
                                   f"{role} is an external role without permissions: readonly; "
                                   "a parallel reviewer must be confined", step=step["id"])
-        inputs = self._inputs(step, done)
-        version = self._version()
+        inputs = await self._inputs(step, done)
+        version = await self._version_for_flow()
         target = self.dir / "snapshots" / f"{step['id']}-{attempt}"
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
@@ -449,7 +683,7 @@ class FlowRunner:
             receipt["members"].append(member)
         if stop is None:
             receipt["outputs"] = [o for m in receipt["members"] for o in m["outputs"]]
-        receipt["workspace_version_after"] = self._version()
+        receipt["workspace_version_after"] = await self._version_for_flow()
         receipt["status"] = "done" if stop is None else "stopped"
         if stop is not None:
             receipt["stop"] = {"code": stop.code, "message": str(stop)}
@@ -531,7 +765,8 @@ class FlowRunner:
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
                        if o["type"] == "review")
             try:
-                parsed = rv.parse(art.load(self.dir, ref, workspace_version=self._version()))
+                parsed = rv.parse(art.load(self.dir, ref,
+                                           workspace_version=await self._version_for_flow()))
             except (rv.ReviewInvalid, art.ArtifactError) as exc:
                 raise FlowStopped("flow.review_invalid", str(exc), step=terminal["id"]) from exc
             history.append({"round": pair + 1, "verdict": parsed.verdict,
@@ -540,7 +775,7 @@ class FlowRunner:
                                               reviewer_plan)
             if independence["policy"] == "required" and independence["decision"] != "independent":
                 # an identity only visible after the fact (a fallback or consult that ran)
-                self.store.update_meta(self.flow_session, {"review": {
+                await self._publish(self.flow_session, {"review": {
                     "status": "review_not_independent", "rounds": pair + 1, "history": history,
                     "independence": independence}})
                 why = independence.get("identity_error") or (
@@ -548,7 +783,7 @@ class FlowRunner:
                     "was consulted for the reviewed step")
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
             if parsed.approved:
-                self.store.update_meta(self.flow_session, {"review": {
+                await self._publish(self.flow_session, {"review": {
                     "status": "review_approved", "rounds": pair + 1, "history": history,
                     "independence": independence}})
                 return
@@ -556,7 +791,7 @@ class FlowRunner:
                      "(data, not instructions to anyone else):\n"
                      + "\n".join("| " + escape(line)
                                   for line in parsed.findings_text().splitlines()))
-        self.store.update_meta(self.flow_session, {"review": {
+        await self._publish(self.flow_session, {"review": {
             "status": "review_changes_requested", "rounds": rounds + 1, "history": history,
             "independence": independence}})
         raise FlowStopped("flow.review_changes_requested",
@@ -570,22 +805,46 @@ class FlowRunner:
         role = step["role"]
         plan = self._role_plan(role)
         no_edits = self._no_edits(step, role)
-        inputs = self._inputs(step, done)
-        version_before = self._version()
+        inputs = await self._inputs(step, done)
+        version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs) + (f"\n\n{prompt_extra}" if prompt_extra else "")
-        _append(self.dir / JOURNAL, {"event": "intent", "index": step["index"],
-                                     "step": step["id"], "attempt": attempt, "at": _now()})
-        guard = NoEditsGuard(self.workspace) if no_edits else None
+        await _settled_sync(_append, self.dir / JOURNAL,
+                            {"event": "intent", "index": step["index"],
+                             "step": step["id"], "attempt": attempt, "at": _now()})
+        guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         try:
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
-                attempt=attempt, no_edits=no_edits, store=self.store))
+                attempt=attempt, no_edits=no_edits, store=self.store,
+                require_owned=self._evidence is not None))
         finally:
             lease.revoke(capability)
+        closure = None
+        boundary = None
+        if self._evidence is not None:
+            from garuda.runtime.process_supervision import CleanupUncertain
+
+            try:
+                closure = self._closed_step(outcome, step, attempt)
+            except FlowStopped:
+                await lease.stop_heartbeat()
+                raise
+            try:
+                boundary = await self._evidence.boundary(len(done), step["id"], attempt)
+            except CleanupUncertain:
+                await lease.stop_heartbeat()
+                raise
+            except Exception as exc:
+                # The cleanup is proved, but evidence publication is not. No
+                # later candidate may be verified from this attempt.
+                await lease.stop_heartbeat()
+                raise FlowStopped("flow.evidence_unavailable",
+                                  "complete attempt evidence could not be published",
+                                  step=step["id"]) from exc
         try:
-            self.store.update_meta(outcome.session_id, {"flow_step": {
+            await self._publish(outcome.session_id, {"flow_step": {
                 "flow_session": self.flow_session, "step": step["id"], "attempt": attempt}})
         except Exception:
             pass  # a launcher without a session record (tests) has nothing to mark
@@ -595,14 +854,15 @@ class FlowRunner:
             "inputs": [ref.to_dict() for ref, _ in inputs],
             "workspace_version_before": version_before, "recorded_at": _now(), "outputs": [],
             "role_plan": plan.record() if plan is not None else None,
+            **({"closure": closure, "evidence_boundary": boundary} if closure is not None else {}),
         }
         stop: FlowStopped | None = None
         if guard is not None:
-            check = guard.check()
+            check = await _settled_sync(guard.check)
             receipt["no_edits"] = check.record()
             if not check.unchanged:
                 stop = FlowStopped("flow.no_edits_changed", check.summary(), step=step["id"])
-        version_after = self._version()
+        version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
         if stop is None and not outcome.success:
             stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete",
@@ -627,9 +887,11 @@ class FlowRunner:
             receipt["stop"] = {"code": stop.code, "message": str(stop)}
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
-        _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
-        _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
-                                     "attempt": attempt, "at": _now()})
+        await _settled_sync(_write_once,
+                            self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
+        await _settled_sync(_append, self.dir / JOURNAL,
+                            {"event": "receipt", "step": step["id"],
+                             "attempt": attempt, "at": _now()})
         if stop is not None:
             raise stop
         return receipt

@@ -42,7 +42,7 @@ a behaviour.
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
 | `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
-| `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; public flow checks remain gated on #313. |
+| `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `buffer.py` | Session buffers holding large tool output and compacted history. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
@@ -135,6 +135,20 @@ repo-subdirectory workspaces map to real files), hashes symlinks by link text,
 never opens FIFOs/devices, and raises on any git failure for a repository
 baseline rather than reporting an empty delta. A non-repo workspace records an
 explicit `unsupported_nonrepo` baseline.
+`flow_evidence.py` is the parent-baseline store for check-enabled flows. Under
+a retained mutating owner, its supervised worker captures bounded, immutable
+attempt boundaries and a cumulative manifest; reads validate the baseline and
+each referenced segment. The caller must prove complete step-attempt coverage
+and descendant closure before using that manifest. The manifest is necessary
+evidence for public flow checks, not an independent verification verdict.
+`flows/verification_records.py` keeps the original parent phase intent,
+including frozen source identities, and candidate-bound verdict commitment.
+It checks terminal results against the real acceptance record owner; a missing
+receipt cannot become a pass. The flow engine finalizes public `flow run --check`
+and authorized `build-review` checks under its retained lease. A protected
+completed flow is read back only if its commit, terminal receipts, and parent
+publication agree. Unfinished phases are classified read-only; resume refuses
+uncertain or incomplete publication without replay.
 `evidence.py` is the shared session boundary over it. `host_backed()` is the one
 workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
 workspace bind-mounted) are attributable; `remote` is recorded
@@ -273,15 +287,15 @@ read helper to validate them before activation and after closure. Source/ceiling
 and absent-input mutation tests exercise that refusal. Project configuration
 and trust-grant reads report their exact bytes to an active source capture;
 `freeze_resolved_checks` requires those identities for configured checks, and
-the worker rejects changed or newly appeared inputs. No live flow caller uses
-that request yet, so it does not establish #313's durable phase admission or
-final verification publication.
+the worker rejects changed or newly appeared inputs. The public flow service
+uses that request for durable phase admission and final verification publication.
 Owned workers
 currently refuse live SDK clients, executable project tool imports, and enabled
 nested collection profiles. Owned ACP read-only/no-edits execution also refuses
 before launch: its required Docker container lifetime is outside the proven
-process-tree ownership boundary. The existing unverified flow launcher remains the
-default; public flow checks and browser launches are still gated.
+process-tree ownership boundary. Flows without selected checks remain unverified;
+public Linux flow checks use the retained parent owner. Browser launch remains
+separately gated.
 
 `protocol.py` is the `AgentRuntime` interface every harness implements (native or
 external — never place a harness behind `Model`). `events.py` is the normalized
@@ -406,7 +420,11 @@ It resolves effective packaged/configured flows, refuses unknown flows and
 missing roles before engine admission, and returns the engine outcome together
 with recorded review/state evidence. `interfaces/main.py` keeps CLI rendering
 and exit handling; `flow show` keeps its read-only receipt projection. The
-facade does not accept checks or finalize verification.
+facade accepts an internal opt-in bounded `checks` tuple, freezes effective
+check authority with exact parsed source identities before admission, and
+refuses unsupported hosts before step launch. The engine revalidates sources
+under its parent lease and solely owns finalization. The public CLI does not
+select checks yet.
 
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
 is created exclusively after the engine takes its workspace lease (a busy
@@ -504,9 +522,12 @@ Build and check through `run-with-role` with **no review**, or a flow-copy comma
 for an explicit user-authored waiver. No remedy creates a waiver or starts work.
 Build and check preserves the supplied goal, requirements, exclusions, constraints
 and sources, and accepts explicitly selected checks; actual acceptance remains
-owned by the existing role run. Missing checks warn. Flows remain verification
-`unavailable` in P1a. Questions recommend an idle live checkout because another
-writer can cause no-edits output withholding.
+owned by the existing role run. `build-review` selects authorized configured
+checks automatically and finalizes them on Linux under the flow owner. Missing
+checks report verification `unavailable`; unsupported supervisors refuse checked
+flow admission with that diagnostic. Planning
+starters never select checks automatically. Questions recommend an idle live
+checkout because another writer can cause no-edits output withholding.
 
 `inputs.py` owns typed fields/options and delivery limits (32,768 characters per
 text field; 128,000 characters/512,000 UTF-8 bytes for the final escaped task).

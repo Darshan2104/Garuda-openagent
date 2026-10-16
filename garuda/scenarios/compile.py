@@ -208,9 +208,12 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
     task = _task(entry, inputs, sources, session_text, handoff_text)
     if _config_sources(root) != before:
         raise StarterError("starter.config_changed", "configuration changed during preview; preview again")
+    flow_check_support = kind == "flow" and entry.id == "build-review"
     checks = [{"definition": _display(definition), "definition_digest": digest(definition), "authority": authority,
-               "execution": "not-supported-by-flow" if kind == "flow" else "available-at-run"}
+               "execution": "available-at-flow-finalization" if flow_check_support else
+                            "not-supported-by-flow" if kind == "flow" else "available-at-run"}
               for definition, authority in checks_with_authority(resolved)]
+    flow_checks_selected = flow_check_support and bool(checks)
     config_digest = digest({"config": resolved.config, "provenance": resolved.provenance,
                             "withheld": resolved.withheld, "sources": before,
                             "manifests": [asdict(m) for m in catalog.registry.manifests],
@@ -223,7 +226,9 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
                   "workspace_identity": [info.st_dev, info.st_ino],
                   "context_grant": "user-request" if allow_cross_project_context else None,
                   "no_edits": bool(entry.launch.get("no_edits")),
-                  "verification": "unavailable" if kind == "flow" else "from-acceptance-receipt"}
+                  "verification": ("from-acceptance-receipt" if flow_checks_selected else
+                                   "unavailable" if kind == "flow" else
+                                   "from-acceptance-receipt")}
     argv = ["garuda", "flow", "run", target] if kind == "flow" else ["garuda", "run", "--role", target]
     argv += ["--task", task, "--workspace", str(root)]
     if entry.launch.get("no_edits"):

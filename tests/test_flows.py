@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 import uuid
 from pathlib import Path
 
@@ -79,6 +80,16 @@ def _runner(repo, launcher, *, flow="pbr", config=CONFIG, **kw):
                       task="ship it", launcher=launcher, **kw)
 
 
+def test_flow_cli_accepts_repeated_owned_checks():
+    from garuda.interfaces.main import build_parser
+
+    args = build_parser().parse_args([
+        "flow", "run", "pair", "--task", "ship it",
+        "--check", "pytest -q", "--check", "ruff check .",
+    ])
+    assert args.checks == ["pytest -q", "ruff check ."]
+
+
 async def _plan(launch):
     return StepResult(str(uuid.uuid4()), True, _block("plan", "1. edit a.txt"))
 
@@ -150,6 +161,43 @@ async def test_new_flow_refuses_existing_parent_without_rewriting_it(repo, with_
     assert caught.value.code == "flow.session_exists"
     assert ((directory / "meta.json").read_bytes() if with_meta else None) == before
     assert LeaseStore().holders_of(repo) == []
+
+
+async def test_flow_publication_keeps_the_event_loop_responsive(repo, monkeypatch):
+    """Strict initial and terminal lock/fsync work cannot starve the event loop."""
+    original = SessionStore.update_meta
+    ticks, blocked = [], []
+
+    def delayed(store, session_id, updates):
+        if updates.get("flow_state") in {"running", "completed"}:
+            row = [updates["flow_state"], len(ticks), None]
+            blocked.append(row)
+            time.sleep(.2)
+            row[2] = len(ticks)
+        return original(store, session_id, updates)
+
+    monkeypatch.setattr(SessionStore, "update_meta", delayed)
+    running = True
+
+    async def ticker():
+        while running:
+            ticks.append(None)
+            await asyncio.sleep(.01)
+
+    pulse = asyncio.create_task(ticker())
+    try:
+        result = await _runner(repo, Fake(repo, {"plan": _plan, "build": lambda launch:
+            _successful_patch(launch)})).run()
+        assert result.completed
+    finally:
+        running = False
+        await pulse
+    assert [row[0] for row in blocked] == ["running", "completed"]
+    assert all(row[2] - row[1] >= 5 for row in blocked)
+
+
+async def _successful_patch(_launch):
+    return StepResult(str(uuid.uuid4()), True, _block("patch", "x"))
 
 
 async def test_only_the_envelope_counts_and_a_model_path_is_ignored(repo):

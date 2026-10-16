@@ -131,8 +131,38 @@ def project(store, session_id, *, limit=50, offset=0):
                                'independent review configured' if policy == 'required' else
                                'review policy unknown' if recorded or policy else 'no review')
         row['review'] = recorded if coverage['complete'] else {'status': 'unknown', 'recorded': recorded}
-        # P1a flows have no acceptance-check owner. A stored review cannot verify.
-        row['verification'] = {'status': 'unavailable'}
+        commit_ref = meta.get('flow_verification_commit')
+        if commit_ref is None:
+            # Legacy/incomplete flows have no committed acceptance verdict. A
+            # stored review cannot verify them; phase evidence remains visible
+            # only as incomplete historical evidence.
+            row['verification'] = {'status': 'unavailable'}
+            receipts = meta.get('acceptance_receipts', [])
+            row['acceptance_receipts'] = receipts if isinstance(receipts, list) else []
+            if meta.get('flow_verification_phase') is not None:
+                coverage['complete'] = False
+                row['verification_evidence'] = (
+                    'Flow check publication is incomplete; no verdict is inferred or replayed.')
+        else:
+            try:
+                from garuda.flows.verification_records import FlowVerificationRecords
+                from garuda.runtime.strict_store import StorageError
+
+                commit = FlowVerificationRecords(
+                    store.session_dir(session_id), session_id).committed(
+                        commit_ref, meta.get('acceptance_receipts'),
+                        meta.get('flow_verification_phase'))
+                if row['verification'] != commit['verification']:
+                    raise RecordError('flow verification differs from its commitment')
+                row['verification'] = commit['verification']
+                row['acceptance_receipts'] = list(meta.get('acceptance_receipts') or [])
+                row['verification_evidence'] = (
+                    'Stored candidate-bound flow commitment and acceptance receipts; '
+                    'the current workspace is not probed.')
+            except (StorageError, OSError, ValueError, TypeError, KeyError):
+                row['verification'] = {'status': 'unknown'}
+                row['acceptance_receipts'] = []
+                coverage['complete'] = False
     else:
         identity, valid = starter_evidence.identity(store, session_id)
         row['runtime'] = identity['runtime_id']
@@ -174,6 +204,8 @@ def project(store, session_id, *, limit=50, offset=0):
         else:
             action = {'id': 'implement-plan', 'label': 'Implement this plan explicitly', 'plan_artifact': reference,
                   'command': shlex.join(['garuda', 'starter', 'run', 'build-review', '--variant', 'pair', '--plan-artifact', reference, '--workspace', meta['workspace']])}
+    elif row['verification'].get('code') == 'verification.unsupported_supervisor':
+        action = {'id': 'run-on-linux', 'label': 'Run the checked flow on Linux'}
     elif row['verification']['status'] == 'unavailable' and (not data or data['starter_id'] != 'ask-role'):
         action = {'id': 'configure-checks', 'label': 'Configure checks or use Build and check', 'command': 'garuda init --project'}
     else:

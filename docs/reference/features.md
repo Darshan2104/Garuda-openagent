@@ -69,6 +69,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Flows | Plan → build → review in one command | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
+| Checked flows | Candidate-bound Linux checks before the flow releases its workspace | `garuda flow run plan-build-review -t "…" --check "pytest -q"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Custom flows | Your own steps and reviews | `garuda config show --flow NAME` | [Level 5](../use-cases/teams.md#write-your-own-flow) |
 | Flow recovery | Continue after the last finished step | `garuda flow resume FLOW_ID` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |

@@ -1,9 +1,17 @@
 # Owned flow verification
 
-Status: foundation in progress for #313 under the approved
+Status: shipped for #313 under the approved
 [P1b ownership design](../design/2026-10-08-flow-verification-ownership-design.md).
 The acceptance runner (#312) and native/ACP lifetime owner (#330) have landed.
-Public flow checks remain disabled until the integration gates below pass.
+The private cumulative boundary store and supervised adapter validate step
+coverage and publish a private check
+phase, receipt-backed commitment, and strict final metadata. The internal
+service freezes configured and explicit check authority before admission.
+The owner revalidates sources under its lease, and the private phase retains
+their original identities. Completed protected flows read back only matching
+private and parent receipts. Unfinished-phase recovery classifies records without
+replay. Public repeated `flow run --check` and authorized configured checks for
+`build-review` use this owner on Linux; unsupported supervisors remain unavailable.
 
 ## Implementation order
 
@@ -26,7 +34,7 @@ Public flow checks remain disabled until the integration gates below pass.
 5. Reconcile recorded bindings on resume without launching uncertain attempts
    again. Missing check-side files cannot authorize fresh work. Preserve the
    committed verification across final status, tag and observability updates.
-6. Enable service checks, CLI --check and authorized build-review checks only
+6. Enable public service/CLI --check and authorized build-review checks only
    after owner-level integration proves competition, cancellation, cumulative
    evidence, candidate/source binding and restart behavior. Keep execution,
    review and verification as separate outcomes.

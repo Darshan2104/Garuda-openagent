@@ -609,6 +609,11 @@ def build_parser():
     flow_run.add_argument("name")
     flow_run.add_argument("-t", "--task", required=True)
     flow_run.add_argument("--workspace", default=".")
+    flow_run.add_argument(
+        "--check", dest="checks", action="append", default=[], metavar="COMMAND",
+        help="An acceptance check to run under the flow's retained workspace owner "
+             "(repeatable; Linux only)",
+    )
     flow_show = flow_sub.add_parser("show", help="A flow session's steps and receipts")
     flow_show.add_argument("flow_session")
     flow_resume = flow_sub.add_parser(
@@ -1304,7 +1309,8 @@ def run_flow(args) -> int:
         if args.flow_command == "resume":
             outcome = asyncio.run(service.resume(args.flow_session))
         else:
-            outcome = asyncio.run(service.run(args.name, args.task, args.workspace))
+            outcome = asyncio.run(service.run(
+                args.name, args.task, args.workspace, checks=tuple(args.checks)))
     except (GarudaConfigError, LeaseError, engine.FlowStopped, OSError, ValueError,
             KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1316,6 +1322,10 @@ def run_flow(args) -> int:
     if review:
         print(f"[garuda] {review['status']} after {review['rounds']} round(s) "
               "(a review, not verification)")
+    if outcome.state:
+        verification = outcome.state.get("verification") or {"status": "unavailable"}
+        authority = f" ({verification['authority']})" if verification.get("authority") else ""
+        print(f"[garuda] verification: {verification.get('status', 'unavailable')}{authority}")
     if result.stopped:
         print(f"[garuda] flow stopped: {result.stopped}", file=sys.stderr)
         return 3
