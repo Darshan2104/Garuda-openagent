@@ -176,10 +176,16 @@ def dispatch(operation, data):
                "terminal": {"session_dir", "binding", "receipt"},
                "reconcile": {"session_dir", "binding"},
                "flow-evidence-begin": {"snapshot", "session_dir", "parent_id", "workspace"},
+               "flow-evidence-version": {"snapshot", "session_dir", "parent_id", "workspace"},
                "flow-evidence-boundary": {"snapshot", "session_dir", "parent_id", "workspace",
                                           "ordinal", "step", "attempt"},
                "flow-evidence-finalize": {"snapshot", "session_dir", "parent_id", "workspace",
-                                          "coverage"}}
+                                          "coverage"},
+               "flow-verification-prepare": {"snapshot", "session_dir", "parent_id",
+                                             "phase", "sources"},
+               "flow-verification-commit": {"snapshot", "session_dir", "parent_id",
+                                            "phase", "phase_digest", "sources",
+                                            "results", "references", "verdict"}}
     if operation not in schemas or set(data) != schemas[operation]:
         raise ValueError("unsupported operation or fields")
     if operation == "admitted-sources":
@@ -203,9 +209,45 @@ def dispatch(operation, data):
                                   data["workspace"], data["snapshot"])
         if operation == "flow-evidence-begin":
             return store.begin()
+        if operation == "flow-evidence-version":
+            return store.version()
         if operation == "flow-evidence-boundary":
             return store.boundary(data["ordinal"], data["step"], data["attempt"])
         return store.finalize(data["coverage"])
+    if operation.startswith("flow-verification-"):
+        from garuda.flows.verification_records import FlowVerificationRecords
+        from garuda.workspace.flow_evidence import FlowEvidenceStore
+
+        phase = data["phase"]
+        records = FlowVerificationRecords(data["session_dir"], data["parent_id"])
+        records.validate_phase(phase)
+        snapshot = data["snapshot"]
+        lease = snapshot["lease"]
+        if (phase["parent_id"] != data["parent_id"]
+                or phase["workspace"] != lease["workspace"]
+                or phase["owner"] != {key: lease[key]
+                                       for key in ("pid", "identity", "pgid", "epoch")}):
+            raise OwnershipChanged("verification phase belongs to another owner")
+        invalidation = data.get("verdict") if operation == "flow-verification-commit" else None
+        try:
+            current = _context({"snapshot": snapshot, "workspace": phase["workspace"],
+                                "workspace_identity": phase["workspace_identity"],
+                                "cwd": ".", "sources": data["sources"]})
+        except AuthorityChanged:
+            if invalidation != {"status": "invalidated", "code": "verification.authority_changed"}:
+                raise
+            current = _fingerprint({"workspace": phase["workspace"]})
+        if current["fingerprint"] != phase["candidate"] and invalidation not in (
+                {"status": "invalidated", "code": "verification.candidate_changed"},
+                {"status": "invalidated", "code": "verification.check_changed_tree"},
+                {"status": "invalidated", "code": "verification.authority_changed"}):
+            raise WorkspaceChanged("flow verification candidate changed")
+        FlowEvidenceStore(data["session_dir"], data["parent_id"],
+                          phase["workspace"], snapshot).manifest(phase["evidence_digest"])
+        if operation == "flow-verification-prepare":
+            return records.prepare(phase)
+        return records.commit(data["phase_digest"], data["results"],
+                              data["references"], data["verdict"])
     store = CheckRecords(data["session_dir"], data["binding"])
     if operation == "prepare":
         return store.prepare(data["summary"], data["limits"])
@@ -213,7 +255,7 @@ def dispatch(operation, data):
         return store.transition(data["expected"], data["phase"], **data["fields"])
     if operation == "terminal":
         return store.terminal(data["receipt"])
-    return store.reconcile()
+    return store.reconcile(full_result=True)
 
 
 def main():

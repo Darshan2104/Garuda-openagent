@@ -130,6 +130,7 @@ of it, in one command.
 
 ```bash
 garuda flow run plan-only -t "Plan how to add a median(values) function to src/calc"
+garuda flow run plan-build-review -t "Implement median(values)" --check "python -m pytest"
 garuda flow show FLOW_ID
 ```
 
@@ -177,6 +178,11 @@ sequenceDiagram
   with the findings, for up to `max_rounds` more rounds. The flow ends
   `review_approved` or `review_changes_requested`. A review is not
   verification.
+- Repeated `--check` commands run on Linux only after every required step and
+  review settles. The parent flow keeps the workspace lease until candidate-bound
+  receipts and the final verdict are published. `build-review` starters select
+  authorized configured checks automatically. With no checks or an unsupported
+  supervisor, verification is `unavailable` and no host fallback runs.
 - The reviewer must be **independent**: it may not run as the same harness and
   model as the coder, one of the coder's fallbacks, or a role the coder may
   consult. Primary, fallback and configured consult aliases resolve to canonical
@@ -187,7 +193,9 @@ sequenceDiagram
   `policy: waived`; unresolved configured evidence is labelled unknown, not an
   independent review. Actual launched and consulted identities remain recorded.
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
-  `garuda flow resume FLOW_ID` continues after the last finished step.
+  `garuda flow resume FLOW_ID` continues after the last finished step. An
+  unfinished protected check phase is classified without replay; incomplete or
+  uncertain publication requires reconciliation.
 
 !!! warning "Native roles in flows: two current limitations"
     - A native step's output is the summary it passes to `task_complete`, so

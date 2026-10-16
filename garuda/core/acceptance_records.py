@@ -323,7 +323,7 @@ class CheckRecords:
         if "infra_changed_complete" in result and type(result["infra_changed_complete"]) is not bool:
             raise CorruptRecord("invalid terminal infrastructure coverage")
 
-    def reconcile(self):
+    def reconcile(self, *, full_result=False):
         with self.locked() as (directory, _):
             phase = self._phase(directory)
             intent = self._read_intent(directory)
@@ -332,9 +332,11 @@ class CheckRecords:
                 if intent is None or digest(receipt.get("binding")) != digest(self.binding):
                     raise CorruptRecord("receipt has no matching parent intent")
                 self._validate_receipt(intent, receipt)
-                summary = {key: value for key, value in receipt["result"].items()
-                           if key in {"authority", "status", "code", "fingerprint"}}
-                return {"classification": "terminal", "receipt_digest": digest(receipt), "result": summary}
+                result = (receipt["result"] if full_result else {
+                    key: value for key, value in receipt["result"].items()
+                    if key in {"authority", "status", "code", "fingerprint"}})
+                return {"classification": "terminal", "receipt_digest": digest(receipt),
+                        "result": result}
             if intent is None:
                 return {"classification": "uncertain" if self.binding["attempt_id"] in phase["attempts"]
                         else "absent"}

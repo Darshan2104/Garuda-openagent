@@ -81,12 +81,16 @@ fastest way to learn the system.
    identity across named definition changes and snapshot workspace execution.
    Existing flow lease, no-edits, model and completion owners remain in control.
    `flows/service.py::FlowExecutionService` provides shared asynchronous
-   `run(name, task, workspace)` and `resume(flow_session)` orchestration. It
+   `run(name, task, workspace, checks=...)` and `resume(flow_session)` orchestration. It
    resolves the effective flow and missing-role preflight, then delegates to
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
-   This facade adds no checks parameter or flow verification phase.
-   The internal `core/acceptance_runner.py` boundary accepts already-frozen
+   The facade accepts public `flow run --check` selections: it freezes the effective
+   configured and explicit checks with their parsed source identities before
+   admission. `build-review` automatically selects authorized configured checks;
+   planning starters do not. The engine revalidates those sources under the
+   retained lease before any step and owns the check phase.
+   `core/acceptance_runner.py` accepts already-frozen
    authorized checks and a candidate/evidence context from a retained parent
    lease owner. A dedicated Linux subreaper owns each check and each fixed
    filesystem/probe helper. Authorization is durable before command delivery;
@@ -96,22 +100,30 @@ fastest way to learn the system.
    synchronous acceptance APIs retain their existing behavior. A private flow
    evidence store can now retain full parent-baseline deltas at supplied settled
    attempt boundaries, including paths later restored and both rename paths.
-   Its manifest reader checks every referenced segment. The flow engine still
-   needs #313's complete attempt-coverage and final publication integration;
-   this store alone does not authorize verification.
+   Its manifest reader checks every referenced segment. A check-enabled flow
+   reconciles step intents and boundary commitments, then writes
+   a candidate-bound check phase with original source identities and a
+   verification commit before strict parent metadata publication. A completed
+   protected flow can be read back only after the private commit, terminal
+   check receipts, and published parent receipt
+   metadata reconcile. Resume classifies unfinished records without launching,
+   signalling or replaying a check; uncertain or incomplete publication is a
+   typed refusal. Linux host checks can publish user-visible flow verification.
+   Unsupported supervisors refuse check-enabled admission as unavailable without
+   running a step or check command.
    The internal owned role service (#330) reuses that Linux
    process owner around the actual native or ACP facade. The parent retains its
    issued capability and capacity through ECHILD; child release is logical only.
    Frozen role values and an actual-PID-bound private control channel avoid
    constructing authority from copied lease records. Owned ACP read-only or
    no-edits launches refuse: Docker container lifetime ownership is not yet
-   supported by this process-tree owner. Cumulative source evidence and final
-   publication integration remain gated by #313 before public verification.
+   supported by this process-tree owner. Its closure evidence feeds the cumulative
+   flow manifest and final check eligibility decision.
    The shared SessionStore now supports an opt-in strict publication policy.
    Its external registry and durable metadata head prevent local marker loss
    or metadata replacement from downgrading a protected flow to legacy writes;
-   every writer uses the same `meta.json.lock`. The flow lifecycle integration
-   and public enablement remain #313 work.
+   every writer uses the same `meta.json.lock`. Check-enabled flows use this
+   policy through terminal verification publication and read-back reconciliation.
    `scenarios/compile.py` compiles installed starter data into bounded labelled
    tasks and exact existing CLI commands. It resolves effective flows and
    configured role plans through the non-executing catalog; it never calls

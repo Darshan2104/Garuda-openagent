@@ -1,6 +1,6 @@
 # Owned asynchronous acceptance runner
 
-Status: implemented for #312; flow integration remains #313.
+Status: implemented for #312 and integrated into public flow finalization by #313.
 The user approved the recommended
 [P1b design](../design/2026-10-08-flow-verification-ownership-design.md) and
 [P3 design](../design/2026-10-08-owned-one-click-flow-starts-design.md) on 2026-10-12.

@@ -52,6 +52,10 @@ async def _settled(work):
 class AcceptanceRunner:
     def __init__(self, store):
         self.store = store
+        self.result = CheckPhaseResult()
+        # True only across the window where launch authorization may have
+        # persisted but no terminal subtree receipt has been confirmed.
+        self.launch_ambiguous = False
 
     @staticmethod
     def _snapshot(context, owner):
@@ -131,6 +135,10 @@ class AcceptanceRunner:
                                                  "digest": existing["receipt_digest"]})
             return
         async with await LinuxProcessSupervisor().prepare() as process:
+            # A lost response may mean authorization persisted. Mark the window
+            # before publication and clear it only after the terminal record is
+            # durably acknowledged.
+            self.launch_ambiguous = True
             await owned_call("transition", {**data, "expected": "prepared", "phase": "launch-authorized",
                                              "fields": {"supervisor": process.supervisor}})
             try:
@@ -168,6 +176,7 @@ class AcceptanceRunner:
                 if count:
                     receipt.update(infra_changed_total=count, infra_changed_complete=count <= 200)
                 await self._record(data, process, receipt, progress)
+                self.launch_ambiguous = False
                 if after["fingerprint"] != context.candidate:
                     raise _Invalidated("verification.check_changed_tree")
             except _Invalidated as exc:
@@ -176,6 +185,7 @@ class AcceptanceRunner:
                     receipt = {**base, "status": "void", "code": exc.code,
                                "reason": "candidate or authority changed", "fingerprint": context.candidate}
                     await self._record(data, process, receipt, progress)
+                    self.launch_ambiguous = False
                 raise
             except asyncio.CancelledError:
                 await process.close()
@@ -184,6 +194,7 @@ class AcceptanceRunner:
                            "output_tail": _tail(process.result.stdout_tail + process.result.stderr_tail)}
                 await _settled(self._record(data, process, receipt, progress))
                 progress.cancellation_published = True
+                self.launch_ambiguous = False
                 raise
 
     async def run(self, request: FrozenCheckRequest, context: CheckContext,
@@ -192,6 +203,7 @@ class AcceptanceRunner:
         context.validate()
         self._snapshot(context, owner)
         progress = _Progress()
+        self.result = progress.result
         if sys.platform != "linux":
             progress.result.verification = {"status": "unavailable", "code": "verification.unsupported_supervisor"}
             return progress.result
@@ -215,7 +227,9 @@ class AcceptanceRunner:
         except _Invalidated as exc:
             progress.result.verification = {"status": "invalidated", "code": exc.code}
         except asyncio.CancelledError:
-            if not progress.cancellation_published:
+            progress.result.verification = {
+                "status": "unavailable", "code": "verification.cancelled"}
+            if self.launch_ambiguous and not progress.cancellation_published:
                 await _settled(owner.stop_heartbeat())
             raise
         except TimeoutError:

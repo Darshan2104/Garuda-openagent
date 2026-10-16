@@ -132,6 +132,7 @@ Roles, flows, reviews, consults, and project checks.
 | [Set up roles](teams.md#set-up-your-roles) | `garuda init`, `garuda doctor` |
 | [Run as a role](teams.md#run-a-task-as-a-role) | `garuda run --role coder -t "…"` |
 | [Plan, build and review in one go](teams.md#run-a-plan-build-review-flow) | `garuda flow run plan-build-review -t "…"` |
+| [Verify a whole flow](teams.md#run-a-plan-build-review-flow) | `garuda flow run plan-build-review -t "…" --check "pytest -q"` |
 | [Write my own flow](teams.md#write-your-own-flow) | `garuda config show --flow <name>` |
 | [Let one role ask another](teams.md#let-one-role-ask-another) | `consult: [planner]` on a role |
 | [Require checks in this project](teams.md#require-checks-for-every-run-in-this-project) | `garuda config trust` |

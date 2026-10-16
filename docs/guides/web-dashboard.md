@@ -80,8 +80,10 @@ shows its live-checkout/no-edits limitation.
 
 With one harness, remedies appear in order: connect a second harness, **Build
 and check** (explicitly **no review**), or author a waiver in your configuration.
-A user-authored waiver stays labelled **review not independent**. Flow
-verification remains **unavailable** until the separate flow-check phase ships.
+A user-authored waiver stays labelled **review not independent**. Build-review
+previews show authorized configured checks and their authority. Linux CLI starts
+can produce candidate-bound verification; the dashboard preview itself remains
+read-only and never launches a check.
 
 **Copy command** copies the exact quoted CLI command. Run it explicitly in a
 terminal. Changing inputs invalidates the preview; preview again after sources
