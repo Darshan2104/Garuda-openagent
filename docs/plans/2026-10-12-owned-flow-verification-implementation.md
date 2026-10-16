@@ -1,18 +1,17 @@
 # Owned flow verification
 
-Status: foundation in progress for #313 under the approved
+Status: shipped for #313 under the approved
 [P1b ownership design](../design/2026-10-08-flow-verification-ownership-design.md).
 The acceptance runner (#312) and native/ACP lifetime owner (#330) have landed.
-The private cumulative boundary store and supervised adapter are available;
-the opt-in engine now validates step coverage and publishes a private check
+The private cumulative boundary store and supervised adapter validate step
+coverage and publish a private check
 phase, receipt-backed commitment, and strict final metadata. The internal
 service freezes configured and explicit check authority before admission.
 The owner revalidates sources under its lease, and the private phase retains
 their original identities. Completed protected flows read back only matching
-private and parent receipts. Unfinished-phase recovery,
-public selection, and the full owner-level acceptance gates are still
-integration work, not shipped flow verification.
-Public flow checks remain disabled until the integration gates below pass.
+private and parent receipts. Unfinished-phase recovery classifies records without
+replay. Public repeated `flow run --check` and authorized configured checks for
+`build-review` use this owner on Linux; unsupported supervisors remain unavailable.
 
 ## Implementation order
 

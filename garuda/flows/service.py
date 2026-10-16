@@ -40,12 +40,18 @@ class FlowExecutionService:
             from garuda.flows.verification_records import FlowVerificationRecords
             from garuda.runtime.strict_store import StorageError
 
-            try:
-                commit = FlowVerificationRecords(self.store.session_dir(flow_session),
-                                                 flow_session).committed(
-                                                     meta.get("flow_verification_commit"),
-                                                     meta.get("acceptance_receipts"),
-                                                     meta.get("flow_verification_phase"))
+            records = FlowVerificationRecords(self.store.session_dir(flow_session), flow_session)
+            reference = meta.get("flow_verification_commit")
+            if reference is not None:
+                try:
+                    commit = records.committed(
+                        reference, meta.get("acceptance_receipts"),
+                        meta.get("flow_verification_phase"))
+                except (StorageError, OSError, ValueError) as exc:
+                    raise engine.FlowStopped(
+                        "flow.verification_reconciliation_required",
+                        "protected flow publication disagrees with its durable check records; "
+                        "steps and checks are never replayed automatically") from exc
                 state = meta.get("state")
                 evidence = meta.get("flow_evidence_manifest")
                 if (meta.get("flow_state") != "completed"
@@ -54,15 +60,30 @@ class FlowExecutionService:
                         or evidence.get("manifest_digest") != commit["evidence_digest"]
                         or not isinstance(state, dict)
                         or state.get("verification") != commit["verification"]):
-                    raise ValueError("protected flow final state is not committed")
+                    raise engine.FlowStopped(
+                        "flow.verification_reconciliation_required",
+                        "protected flow final metadata is not bound to its check commitment; "
+                        "steps and checks are never replayed automatically")
+                return FlowExecutionResult(
+                    engine.FlowResult(flow_session, engine.receipts(self.store, flow_session)),
+                    meta.get("review"), meta.get("state"))
+            try:
+                recovery = records.reconcile_unfinished()
             except (StorageError, OSError, ValueError) as exc:
                 raise engine.FlowStopped(
                     "flow.verification_reconciliation_required",
-                    "protected flow has incomplete or uncertain verification; "
-                    "steps and checks are never replayed automatically") from exc
-            return FlowExecutionResult(
-                engine.FlowResult(flow_session, engine.receipts(self.store, flow_session)),
-                meta.get("review"), meta.get("state"))
+                    "protected flow check records are missing or corrupt; checks are never "
+                    "replayed automatically") from exc
+            classification = recovery["classification"]
+            code = ("flow.verification_uncertain" if classification == "uncertain" else
+                    "flow.verification_publication_incomplete" if classification in {
+                        "commit-unpublished", "terminal-unpublished"} else
+                    "flow.verification_interrupted")
+            states = ", ".join(
+                f"{row['index']}:{row['classification']}" for row in recovery["checks"])
+            raise engine.FlowStopped(
+                code, f"protected flow check phase is {classification}"
+                      f"{f' ({states})' if states else ''}; checks are never replayed automatically")
         return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
                                    flow_session=flow_session)
 

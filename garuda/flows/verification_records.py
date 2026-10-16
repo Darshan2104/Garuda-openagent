@@ -141,6 +141,63 @@ class FlowVerificationRecords:
         finally:
             os.close(directory)
 
+    def reconcile_unfinished(self):
+        """Classify a durable phase without launching, signalling or publishing.
+
+        This is deliberately read-only. Terminal receipts show what settled;
+        absent or uncertain records never authorize a replay or a verdict.
+        """
+        directory = self._open()
+        try:
+            phase = self._phase(directory)
+            if read_record(directory, COMMIT) is not None:
+                return {"classification": "commit-unpublished", "checks": []}
+        finally:
+            os.close(directory)
+
+        parent = open_directory(self.path.parent)
+        try:
+            policy_name = f"acceptance-policy-{phase['phase_id']}.json"
+            policy = read_record(parent, policy_name)
+            try:
+                os.stat(f"acceptance-{phase['phase_id']}", dir_fd=parent,
+                        follow_symlinks=False)
+                has_directory = True
+            except FileNotFoundError:
+                has_directory = False
+            if (policy is None) != (not has_directory):
+                raise CorruptRecord("flow check phase storage is incomplete")
+        finally:
+            os.close(parent)
+
+        rows = []
+        for index, check in enumerate(phase["checks"]):
+            if policy is None:
+                state = {"classification": "absent"}
+            else:
+                state = CheckRecords(
+                    self.path.parent, self._binding(phase, index, check)).reconcile(
+                        full_result=True)
+            row = {"index": index, "authority": check["authority"],
+                   "classification": state["classification"]}
+            if state["classification"] == "terminal":
+                row["status"] = state["result"]["status"]
+                row["receipt_digest"] = state["receipt_digest"]
+            rows.append(row)
+
+        classes = [row["classification"] for row in rows]
+        if any(value == "uncertain" for value in classes):
+            classification = "uncertain"
+        elif classes and all(value == "terminal" for value in classes):
+            classification = "terminal-unpublished"
+        elif any(value == "terminal" for value in classes):
+            classification = "interrupted"
+        elif any(value == "never-launched" for value in classes):
+            classification = "not-launched"
+        else:
+            classification = "not-started"
+        return {"classification": classification, "checks": rows}
+
     def committed(self, reference, published_receipts, published_phase):
         """Read a published commit and recheck its terminal and parent receipt chain."""
         if (not isinstance(reference, dict) or set(reference) != {"commit_digest"}

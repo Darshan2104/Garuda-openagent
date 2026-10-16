@@ -153,6 +153,13 @@ retries. The existing intent-equivalent command is:
 garuda flow run plan-build-review --task "Add reconnect status with deterministic transition tests; preserve retry behavior; exclude a transport rewrite"
 ```
 
+If trusted checks are configured, `build-review` selects them automatically.
+You can request checks directly on any flow:
+
+```bash
+garuda flow run plan-build-review --task "Add reconnect status" --check "python -m pytest"
+```
+
 A validated `--variant pair --plan-artifact FLOW_ID:plan:1` uses the existing
 `pair` flow instead. Both require configured independent coder/reviewer
 identities under Garuda's existing review rule. Preflight is configured evidence;
@@ -174,10 +181,14 @@ Readiness reports `needs-setup` and offers three explicit remedies:
    **review not independent**, including on early failure. Garuda creates no
    waiver for you.
 
-In this CLI release, reviewed flows report verification **unavailable**. They
-have no acceptance-check phase, even when project checks exist. A review verdict
-is separate from execution outcome and never proves test acceptance. Flow
-`--check`, `--bg` and `--isolation` are unsupported starter inputs.
+On Linux, the flow owner keeps its workspace lease through cumulative evidence,
+the final candidate, supervised checks, receipts and terminal publication. A
+passing or failing check therefore refers to the recorded flow candidate. A
+review verdict remains separate from execution outcome and never proves test
+acceptance. With no authorized checks, verification is **unavailable**. A host
+without the Linux check supervisor refuses checked-flow admission as unavailable,
+and no weaker host fallback runs.
+`--bg` and `--isolation` remain unsupported flow starter inputs.
 
 ## Run work as a role (Build and check)
 
@@ -250,4 +261,5 @@ remain explicit actions.
 Use [recipes](automate.md#run-a-multi-step-recipe) for custom prompt sequences.
 Recipes retain their existing whole-recipe workspace lease and are not aliases
 for artifact/review flows. Dashboard discovery and preview/copy are available;
-HTTP starter launch and trusted flow acceptance checks remain later gated phases.
+HTTP starter launch remains a later gated phase. Trusted flow checks are available
+through the CLI; the dashboard remains read-only preview and evidence browsing.

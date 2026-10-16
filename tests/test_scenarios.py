@@ -61,6 +61,24 @@ def test_packaged_starters_compile_to_existing_commands(configured, starter, fie
     assert json.loads(json.dumps(plan.to_dict()))["inputs"][field] == "Explain 'status'\nPreserve the client"
 
 
+def test_build_review_selects_configured_checks_for_owned_finalization(configured):
+    doc = gy.load_file(gy.user_path())
+    doc["checks"] = [{"run": "python -m pytest -q"}]
+    gy.user_path().write_text(gy.dump(doc))
+
+    result = StarterService().preview("build-review", {"goal": "Add status"}, configured)
+    plan, state = result["plan"], result["readiness"]
+    assert plan["provenance"]["verification"] == "from-acceptance-receipt"
+    assert plan["checks"][0]["authority"] == gy.USER
+    assert plan["checks"][0]["execution"] == "available-at-flow-finalization"
+    assert state["verification"] == (
+        "from-acceptance-receipt" if sys.platform == "linux" else "unavailable")
+    if sys.platform != "linux":
+        assert state["can_run"] is False and state["status"] == "needs-setup"
+        assert "verification.unsupported_supervisor" in {
+            row["code"] for row in state["diagnostics"]}
+
+
 @pytest.mark.parametrize("mutation", ["key", "version", "field-type", "launch-kind", "flow-option", "run-flow", "duplicate-key"])
 def test_catalog_parser_refuses_malformed_definitions(mutation):
     doc = asdict(catalog.load_catalog()["plan-change"])

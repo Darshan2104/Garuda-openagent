@@ -63,17 +63,26 @@ async def test_actual_check_receipt_is_required_for_a_candidate_bound_commit(cas
     request = FrozenCheckRequest.freeze([check], (), permissions)
     records = OwnedFlowVerification(store, owner, request, context, permissions)
     phase = await records.prepare()
-    assert not marker.exists()
-    result = await owner.race(AcceptanceRunner(store).run(request, context, owner, permissions))
-    assert result.verification["status"] == "passed"
     from garuda.flows.verification_records import FlowVerificationRecords
 
     direct = FlowVerificationRecords(store.session_dir(owner.session_id), owner.session_id)
+    assert direct.reconcile_unfinished() == {
+        "classification": "not-started",
+        "checks": [{"index": 0, "authority": "user-request", "classification": "absent"}],
+    }
+    assert not marker.exists()
+    result = await owner.race(AcceptanceRunner(store).run(request, context, owner, permissions))
+    assert result.verification["status"] == "passed"
+    recovery = direct.reconcile_unfinished()
+    assert recovery["classification"] == "terminal-unpublished"
+    assert recovery["checks"][0]["status"] == "passed"
     forged = [{"authority": "user-request", "status": "passed", "fingerprint": "f" * 16}]
     with pytest.raises(CorruptRecord, match="receipt disagrees"):
         direct.commit(phase["phase_digest"], forged, result.receipt_refs,
                       result.verification)
     commitment = await records.commit(phase["phase_digest"], result)
+    assert direct.reconcile_unfinished() == {
+        "classification": "commit-unpublished", "checks": []}
     document = json.loads((store.session_dir(owner.session_id) / "flow" /
                            "verification-commit.json").read_text())
     assert document["candidate"] == candidate

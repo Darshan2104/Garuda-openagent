@@ -1682,3 +1682,21 @@ the client, HTTP transport, server and settings imports. Measurement constraints
 also pin Pydantic 2.13.5. This bounds user installs as well as the CI gate; raising
 the cap requires a verified MCP upgrade and both transport contracts, rather than
 patching vendor internals or suppressing MCP collection failures.
+
+## 2026-10-16 — Flow checks finalize under the retained parent owner (#313)
+
+Public `flow run --check` freezes user-request and authorized configured checks
+before admission. `build-review` selects authorized configured checks
+automatically; planning starters do not. The parent flow keeps its mutating
+workspace lease and heartbeat through complete step evidence, final-candidate
+pinning, supervised check cleanup, immutable receipt commitment and strict
+terminal metadata publication. Review, execution outcome and verification stay
+separate. No selected checks remain unavailable; unsupported supervisors refuse
+checked-flow admission. The Linux backend never substitutes a weaker host runner.
+
+Cancellation with proved descendant cleanup publishes terminal cancellation
+receipts before ordinary lease release. Lost or uncertain activation, cleanup or
+publication retains quarantine. Resume validates a complete published commitment
+or classifies the durable unfinished phase read-only; it never launches, signals
+or infers a check from completed flow steps. A possibly launched or incompletely
+published check therefore requires reconciliation instead of automatic replay.

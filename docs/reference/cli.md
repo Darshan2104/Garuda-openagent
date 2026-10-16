@@ -24,7 +24,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda approvals answer S ID --allow` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only |
 | | `garuda doctor [--runtime ID] [--json]` | Check configuration, the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
-| Flows | `garuda flow run NAME -t TASK` | Run a `garuda.yaml` flow: its steps in order, each as its own session under its role |
+| Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
 | | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
@@ -261,12 +261,15 @@ Files are named context references with digests: supplied context does not prove
 that a runtime read a file. `--preview` performs no process, model, network,
 admission, or store write. Start recompiles and revalidates before dispatch. Background workers revalidate
 again after waiting for capacity, using the recorded explicit context grant.
-Unsupported options refuse, including flow `--check` in this release.
+Flow starters do not accept a check option. `build-review` automatically selects
+authorized configured checks; planning starters select none. The equivalent
+`garuda flow run` command accepts repeated `--check` arguments.
 
 JSON runs put runtime progress on stderr and one result document on stdout.
 Results separate stored process/work/outcome, review and its independence policy,
-and verification. Flow verification is `unavailable`; a review is not an
-acceptance receipt. Role runs include their existing inline acceptance receipts. Missing or
+and verification. A review is not an acceptance receipt. Check-enabled flows
+include candidate-bound receipts on Linux. No checks leave verification
+`unavailable`; an unsupported supervisor refuses checked-flow admission. Role runs include their existing inline acceptance receipts. Missing or
 disagreeing receipt evidence remains unknown; the recorded execution outcome
 stays separate. This is historical evidence, without a current workspace probe.
 Stored summaries may be clipped by the existing session owner; validated plan

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 from garuda.acp.catalog import RuntimeSettingsError
@@ -120,15 +121,21 @@ def readiness(context: LaunchContext, *, starter_id: str) -> dict:
         "independent review configured" if reviews else "no review")
     trusted_checks = checks_with_authority(context.resolved)
     if context.kind == "flow":
-        verification = "unavailable"
-        if starter_id == "build-review":
-            diagnostics.append(_diagnostic("verification.flow_unavailable", "This flow has no acceptance-check phase in this release.",
-                                           "Use Build and check for an acceptance receipt from the existing role run."))
+        verification = ("from-acceptance-receipt"
+                        if starter_id == "build-review" and trusted_checks
+                        and sys.platform == "linux" else "unavailable")
     else:
         verification = "from-acceptance-receipt"
     if starter_id in {"build-review", "run-with-role"} and not trusted_checks:
         diagnostics.append(_diagnostic("verification.no_trusted_check", "No trusted or explicitly requested checks are configured.",
                                        "Run `garuda init --project` to propose checks, or `garuda config trust` for a changed project file."))
+    if (starter_id == "build-review" and trusted_checks and sys.platform != "linux"):
+        blockers.append("flow.verification_unavailable")
+        diagnostics.append(_diagnostic(
+            "verification.unsupported_supervisor",
+            "Flow checks are unavailable because this host has no supported check supervisor.",
+            "Run the reviewed flow on Linux to execute its configured checks.",
+            level="error"))
     if starter_id == "ask-role":
         diagnostics.append(_diagnostic("starter.live_checkout", "This no-edits question uses the live checkout. Another writer can cause output withholding.",
                                        "Prefer an idle checkout for a stable answer."))
@@ -179,7 +186,8 @@ class StarterService:
         if current.kind == "flow":
             result = await FlowExecutionService(self.store).run(
                 current.target, current.task, current.workspace,
-                starter_record=current.launch_metadata())
+                starter_record=current.launch_metadata(),
+                checks=() if current.starter_id == "build-review" else None)
             return {"session_id": result.flow.flow_session,
                     "exit_code": 0 if result.flow.completed else 3}
         from garuda.agents.requests import execute_role_request

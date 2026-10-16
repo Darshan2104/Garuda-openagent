@@ -20,6 +20,8 @@ from garuda.flows.engine import FlowRunner, FlowStopped
 from garuda.flows.launch import launch_step
 from garuda.flows.service import FlowExecutionService
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+from garuda.scenarios.compile import compile_scenario
+from garuda.scenarios.service import StarterService
 from garuda.workspace.lease import LeaseConflictError, LeaseStore
 
 linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux-owned flow and check")
@@ -133,6 +135,50 @@ async def test_competing_mutator_waits_until_actual_flow_check_commit(tmp_path, 
             assert readback.state["verification"] == {"status": "passed",
                                                      "authority": "user-config,user-request"}
             assert store.load_meta(result.flow_session) == meta
+
+            config["flows"]["plan-build-review"] = config["flows"]["owned"]
+            gy.user_path().write_text(yaml.safe_dump(config))
+            starter_plan = compile_scenario(
+                "build-review", {"goal": "verify the reviewed candidate"},
+                workspace, store=store)
+            starter_started = await StarterService(store).start(starter_plan)
+            starter_row = StarterService(store).result(starter_started["session_id"])
+            assert starter_row["verification"]["status"] == "passed"
+            assert starter_row["verification_evidence"].startswith(
+                "Stored candidate-bound flow commitment")
+            assert [row["status"] for row in starter_row["acceptance_receipts"]] == [
+                "passed"]
+            assert starter_row["coverage"]["complete"] is True
+
+            cancel_entered = tmp_path / "cancel-entered"
+            cancel_script = tmp_path / "cancel_check.py"
+            cancel_script.write_text(
+                "import pathlib, time\n"
+                f"pathlib.Path({str(cancel_entered)!r}).touch()\n"
+                "while True: time.sleep(.01)\n")
+            cancelled = asyncio.create_task(FlowExecutionService(store).run(
+                "owned", "cancel safely", str(workspace),
+                checks=(f"{sys.executable} {cancel_script}",)))
+            await _appears(cancel_entered, cancelled)
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+            cancelled_meta = next(
+                row for row in store.list_sessions()
+                if row.get("flow") and row.get("flow_state") == "interrupted")
+            assert cancelled_meta["flow_state"] == "interrupted"
+            assert cancelled_meta["state"]["outcome"] == "cancelled"
+            assert sorted(row["status"] for row in cancelled_meta["acceptance_receipts"]) == [
+                "cancelled", "passed"]
+            assert not LeaseStore().holders_of(str(workspace))
+            with pytest.raises(FlowStopped, match="flow.verification_publication_incomplete"):
+                await FlowExecutionService(store).resume(cancelled_meta["session_id"])
+            cancel_receipts = list(
+                store.session_dir(cancelled_meta["session_id"]).glob(
+                    "acceptance-*/receipt-*.json"))
+            assert sorted(json.loads(path.read_text())["result"]["status"]
+                          for path in cancel_receipts) == ["cancelled", "passed"]
+
             receipt_file = next((store.session_dir(result.flow_session) /
                                  f"acceptance-{meta['flow_verification_phase']['phase_id']}").glob(
                                      "receipt-*.json"))
