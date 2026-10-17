@@ -116,12 +116,17 @@ the exact previewed task, through the shared owned native/ACP role executor;
 ACP never runs through a dashboard chat. Ask-role runs read-only with the
 no-edits check and withholds output if the checkout changed. Configured and
 explicit checks run through the flow engine's candidate-bound verification.
-The session name option is supported. Worktree or auto isolation, background
-runs, fallback roles, read-only/no-edits ACP roles and permissions above
+Session names and `worktree`/`auto` isolation are supported. The parent selects
+and leases the execution checkout before launching its child, preserving the
+previewed source authority. Uncommitted source changes are not copied to a
+worktree; its session records that fact. Refused, never-admitted worktrees are
+removed after preparation settles; admitted worktrees remain for inspection.
+Background runs, fallback roles, read-only/no-edits ACP roles and permissions above
 `--max-permission` refuse before any operation is recorded; copy the equivalent
-command for those. Because the owned parent holds a mutating workspace lease, a
-dashboard ask-role refuses while another session holds the workspace, where the
-CLI would take a read-only lease.
+command for those. An unchecked native ask-role takes a read-only parent lease,
+so it can inspect alongside an editor. Configured acceptance checks retain a
+mutating parent lease because checks may write. The authority preview discloses
+the effective lease mode; concurrent edits can still invalidate a no-edits answer.
 
 Follow the resulting session through **Sessions** (flows and ACP) or its existing
 native trace. The shared starter panel keeps process, work, outcome, review and

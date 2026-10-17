@@ -406,6 +406,18 @@ class FlowStartGateway:
         binding = meta.get("flow_operation")
         policy = meta.get("publication_policy")
         starter = meta.get("starter")
+        execution = meta.get("flow_execution_workspace")
+        if execution is None:
+            workspace_matches = meta.get("workspace") == record["workspace"]
+        else:
+            workspace_matches = (
+                isinstance(execution, dict) and set(execution) == {"source", "path", "identity"}
+                and execution.get("source") == record["workspace"]
+                and execution.get("path") == meta.get("workspace") == meta.get("worktree")
+                and meta.get("source_repo") == record["workspace"]
+                and meta.get("isolation") == "worktree"
+                and type(execution.get("identity")) is list and len(execution["identity"]) == 2
+                and all(type(part) is int and part >= 0 for part in execution["identity"]))
         if (not isinstance(binding, dict)
                 or set(binding) != {"version", "operation_id", "request_digest",
                                     "plan_digest", "authority_digest", "workspace_identity", "owner",
@@ -420,7 +432,7 @@ class FlowStartGateway:
                 or binding.get("session_id") != record["reserved_session"]
                 or not isinstance(binding.get("lease_epoch"), str)
                 or meta.get("session_id") != record["reserved_session"]
-                or meta.get("workspace") != record["workspace"]
+                or not workspace_matches
                 # Checked starts publish under the strict verification policy;
                 # both kinds bind the same operation through ``flow_operation``.
                 or not isinstance(policy, dict)

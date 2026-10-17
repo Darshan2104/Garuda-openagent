@@ -286,3 +286,10 @@ for artifact/review flows. Dashboard discovery and preview/copy remain available
 in read-only mode. A Linux write-mode dashboard can start flow-kind and
 supported run-kind previews through durable owned operations. Trusted
 flow checks use the same flow owner whether admission came from CLI or dashboard.
+
+For **Run with a role**, choose `worktree` isolation before Preview and Start to
+keep the source checkout available for another editor. Choose `auto` to create
+a worktree only when the source has a mutating owner. Source dirt is disclosed
+and is not copied. The resulting parent and child sessions name the selected
+worktree. An unchecked native **Ask a specialist** shares a read-only parent
+lease with an editor; configured acceptance checks require exclusive ownership.

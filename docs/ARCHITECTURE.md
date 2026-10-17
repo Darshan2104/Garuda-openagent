@@ -180,8 +180,12 @@ fastest way to learn the system.
    Run-kind plans enter `agents/role_runs.py::RoleRunService.run_prepared`, which
    executes one owned parent with exactly one role step through the same engine
    path (`FlowExecutionService._run_owned`): the child gets the exact task through
-   the owned native/ACP role executor, never `LiveChat`. `run_authority` refuses
-   worktree/auto isolation, background, fallback roles and read-only ACP.
+   the owned native/ACP role executor, never `LiveChat`. Run parents select
+   worktree/auto isolation before leasing, keep source and execution identities
+   separate, and pass parent-owned workspace metadata to the child. Unchecked
+   native asks use issued read-only lifetime ownership; acceptance snapshots
+   remain mutating-only. `run_authority` refuses background, fallback roles and
+   read-only ACP.
    Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.

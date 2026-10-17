@@ -51,6 +51,7 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     from garuda.core.sessions import SessionStore
 
     workspace = os.path.realpath(launch.workspace)
+    authority_workspace = launch.authority_workspace or workspace
     info = os.stat(workspace)
     identity = [info.st_dev, info.st_ino]
     if launch.workspace_identity is not None and identity != launch.workspace_identity:
@@ -73,6 +74,11 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
                "role": freeze_role(role), "no_edits": launch.no_edits,
                "flow": {"flow_session": launch.flow_session, "step": launch.step_id,
                         "attempt": launch.attempt}}
+    if launch.worktree_plan is not None:
+        from garuda.interfaces.session_service import plan_meta
+
+        payload["workspace_plan"] = plan_meta(launch.worktree_plan)
+        payload["workspace_owner"] = launch.flow_session
     if role is not None and role.kind == "acp":
         catalog = launch.runtime_catalog or prepare_runtime_catalog(workspace)
         manifest = freeze_acp(catalog, role.runtime_id)
@@ -80,11 +86,13 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
         capacity_key = manifest["runtime_id"]
     else:
         native = plan_agent_run(
-            role_agent.native_spec(role, workspace) if role and role.profile else "build",
-            workspace=workspace, model=role.model_id if role else None,
+            role_agent.native_spec(role, authority_workspace) if role and role.profile else "build",
+            workspace=authority_workspace, model=role.model_id if role else None,
             permission_mode="readonly" if launch.no_edits else (role.permissions if role else None),
             reasoning_effort=role.effort if role else None)
-        payload.update(kind="native", native=freeze_native(native))
+        frozen = freeze_native(native)
+        frozen["workspace"] = workspace
+        payload.update(kind="native", native=frozen)
         capacity_key = "native"
     return OwnedRoleRequest(workspace, capacity_key, encode_document(payload), session_id, timeout,
                             capacity_policy=CapacityPolicy.resolve(capacity_key))
@@ -104,8 +112,10 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
             or request.capacity_key != ("native" if payload.get("kind") == "native"
                                         else payload["manifest"]["runtime_id"])):
         raise ValueError("owned role request binding differs")
+    readonly = (payload.get("kind") == "native" and payload.get("no_edits") is True
+                and payload.get("native", {}).get("config", {}).get("permission_mode") == "readonly")
     control = RoleControl(capability, request.workspace, request.capacity_key, approval=approval,
-                          capacity_policy=request.capacity_policy)
+                          capacity_policy=request.capacity_policy, readonly=readonly)
     flow = payload["flow"]
     expected_child = f"{flow['flow_session']}:{flow['step']}:{flow['attempt']}"
     if flow["flow_session"] != capability._parent.session_id or expected_child != capability.session_id:

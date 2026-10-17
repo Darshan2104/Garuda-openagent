@@ -577,6 +577,12 @@ cleanup contract; flow child launches use their parent's selected store.
 `write_policy: no-edits`), and `RoleRunService.run_prepared` passes it to the
 shared owned parent path with `launch_kind="run"`, so the engine hands the child
 the exact task and names the parent from the `name` option.
+`agents/run_workspace.py` settles workspace selection through cancellation and
+discards only newly created trees whose parent never entered session publication.
+Run parents bind source authority separately from worktree execution identity;
+children receive the existing worktree metadata and its parent cleanup owner.
+`WorkspaceLeaseGuard.snapshot_lifetime` supports issued read-only role parents
+without loosening the mutating-only acceptance snapshot contract.
 
 `core/read_model.py::starter_result` delegates selected evidence projection to
 `core/starter_read_model.py`, with selected record validation in

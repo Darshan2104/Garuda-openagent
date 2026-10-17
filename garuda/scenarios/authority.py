@@ -100,10 +100,6 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
               "Preview the starter again.")
     _host_blockers(max_permission, backend_available, approval_available, block)
     options = dict(plan.options)
-    if options.get("isolation", "shared") != "shared":
-        block("starter.isolation_unowned",
-              "Worktree isolation is not yet owned by dashboard role runs.",
-              "Choose shared isolation, or copy the equivalent command.")
     if options.get("bg"):
         block("starter.background_unowned",
               "Background role runs are not yet admitted from the dashboard.",
@@ -127,7 +123,8 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
                       "identity": plan.provenance.get("workspace_identity")},
         "operator": {"max_permission": max_permission},
         "run": {"target": plan.target, "role": role, "no_edits": no_edits,
-                "workspace_mode": "live-checkout", "options": options,
+                "workspace_mode": options.get("isolation", "shared"), "options": options,
+                "lease_mode": "read-only" if no_edits and not plan.checks else "mutating",
                 "checks": [{"definition_digest": check["definition_digest"],
                             "authority": check["authority"]} for check in plan.checks]},
         "capabilities": {**_capabilities(backend_available, approval_available),

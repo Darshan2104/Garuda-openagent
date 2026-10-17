@@ -64,6 +64,8 @@ class StepLaunch:
     runtime_catalog: Any = None
     approval_handler: Any = None
     workspace_identity: list[int] | None = None
+    authority_workspace: str | None = None
+    worktree_plan: dict | None = None
 
 
 @dataclass
@@ -216,7 +218,8 @@ class FlowRunner:
                  prepared_roles: dict | None = None, runtime_catalog=None,
                  authority_sources: tuple = (), operation_binding: dict | None = None,
                  on_admitted=None, approval_handler=None, launch_kind: str = "flow",
-                 session_name: str | None = None):
+                 session_name: str | None = None, execution_workspace: dict | None = None,
+                 worktree_plan: dict | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
         if (operation_binding is None) != (on_admitted is None):
@@ -250,6 +253,8 @@ class FlowRunner:
         self.approval_handler = approval_handler
         self.launch_kind = launch_kind
         self.session_name = session_name
+        self.execution_workspace = execution_workspace
+        self.worktree_plan = worktree_plan
         self.require_owned = verification_request is not None or operation_binding is not None
         self._evidence = None
         self._owned_snapshot = None
@@ -301,7 +306,7 @@ class FlowRunner:
             return
         expected = self.operation_binding.get("workspace_identity")
         try:
-            root = Path(self.workspace)
+            root = Path((self.execution_workspace or {}).get("source", self.workspace))
             resolved = root.resolve(strict=True)
             info = os.stat(resolved)
         except OSError as exc:
@@ -313,6 +318,12 @@ class FlowRunner:
             raise FlowStopped(
                 "flow.workspace_changed",
                 "the admitted workspace identity changed before child launch")
+        if self.execution_workspace is not None:
+            target = Path(self.workspace)
+            info = target.stat()
+            if (str(target.resolve(strict=True)) != self.execution_workspace["path"]
+                    or [info.st_dev, info.st_ino] != self.execution_workspace["identity"]):
+                raise FlowStopped("flow.workspace_changed", "the selected worktree identity changed")
 
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
@@ -335,6 +346,9 @@ class FlowRunner:
                 or closure.get("parent_id") != self.flow_session
                 or closure.get("step_id") != step["id"] or closure.get("attempt") != attempt
                 or closure.get("parent_owner") != expected_owner
+                or (self.operation_binding is not None and closure.get("workspace_identity")
+                    != (self.execution_workspace["identity"] if self.execution_workspace else
+                        self.operation_binding["workspace_identity"]))
                 or not isinstance(closure.get("workspace_identity"), list)
                 or len(closure["workspace_identity"]) != 2
                 or any(type(value) is not int or value < 0 for value in closure["workspace_identity"])
@@ -513,10 +527,19 @@ class FlowRunner:
             **({"flow_operation": self.operation_binding}
                if self.operation_binding is not None else {}),
             **({"launch_kind": "run"} if self.launch_kind == "run" else {})})
+        if self.execution_workspace is not None:
+            from garuda.interfaces.session_service import plan_meta
+
+            self.store.update_meta(self.flow_session, {
+                **plan_meta(self.worktree_plan),
+                "flow_execution_workspace": self.execution_workspace})
         (self.dir / "receipts").mkdir(mode=0o700)
 
     def _lease_mode(self) -> str:
         if self.require_owned:
+            if (self.launch_kind == "run" and self.verification_request is None
+                    and all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow))):
+                return "read-only"
             return "mutating"
         if all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow) if "role" in s):
             return "read-only"
@@ -552,7 +575,8 @@ class FlowRunner:
         begun = resume
         try:
             if self.require_owned:
-                self._owned_snapshot = lease.snapshot_ownership()
+                self._owned_snapshot = (lease.snapshot_ownership() if self.verification_request
+                                        is not None else lease.snapshot_lifetime())
                 if self.operation_binding is not None:
                     self._validate_operation_workspace()
                     self.operation_binding.update({
@@ -910,7 +934,10 @@ class FlowRunner:
                 attempt=attempt, no_edits=no_edits, store=self.store,
                 require_owned=self.require_owned, runtime_catalog=self.runtime_catalog,
                 approval_handler=self.approval_handler,
-                workspace_identity=(self.operation_binding or {}).get("workspace_identity")))
+                workspace_identity=(self.execution_workspace or self.operation_binding or {}).get(
+                    "identity" if self.execution_workspace else "workspace_identity"),
+                authority_workspace=(self.execution_workspace or {}).get("source"),
+                worktree_plan=self.worktree_plan))
         finally:
             lease.revoke(capability)
         closure = None

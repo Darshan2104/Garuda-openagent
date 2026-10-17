@@ -183,6 +183,17 @@ class WorkspaceLeaseGuard:
             raise LeaseError("acceptance requires the held mutating parent")
         return self.leases.snapshot_issued(self.workspace, self.session_id, epoch=self._epoch)
 
+    def snapshot_lifetime(self) -> dict:
+        """Bind child lifetime to a genuine issuance, including read-only parents.
+
+        This snapshot authorizes no acceptance work: snapshot_ownership keeps
+        its separate mutating-only contract for checks which may write.
+        """
+        self._check_authority()
+        if self._mode not in {"mutating", "read-only"}:
+            raise LeaseError("unsupported lifetime ownership mode")
+        return self.leases.snapshot_issued(self.workspace, self.session_id, epoch=self._epoch)
+
     def delegate(self, session_id: str) -> LeaseCapability:
         """Lend this lease to one child step; revoke it when the step ends."""
         self._check_authority()

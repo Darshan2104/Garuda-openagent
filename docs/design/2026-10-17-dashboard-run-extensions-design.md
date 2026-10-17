@@ -1,6 +1,6 @@
 # Dashboard run start extensions (#337)
 
-Status: full design approved by the user on 2026-10-17; implementation pending.
+Status: full design approved by the user on 2026-10-17; implementation in progress.
 Extends the Linux-first gateway from #315 and foreground role parent from #316.
 
 ## Scope and approach

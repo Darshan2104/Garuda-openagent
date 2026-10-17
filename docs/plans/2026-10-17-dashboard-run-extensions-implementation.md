@@ -24,3 +24,17 @@ Approved scope: [design](../design/2026-10-17-dashboard-run-extensions-design.md
 
 The writing-plans skill is absent from the available local roots; this plan
 records the implementation sequence directly.
+
+## Implementation review: workspace and native ask ownership
+
+Steps 1 and 2 are implemented. Review verified source/target identity separation,
+frozen source profile use even when uncommitted profiles are absent from the
+worktree, selected checkout closure binding, child workspace metadata, settled
+cancellation cleanup and duplicate projection. Native asks are shared only when
+their prepared permissions are readonly; acceptance keeps exclusive ownership.
+
+Owner-boundary tests passed on macOS and in Linux Docker with `--init` (required
+to give the test owner a process identity/group above PID 1). Real native/ACP
+child closure, worktree checks, shared asks, checked-ask refusal and existing
+lease/verification regressions ran. Ruff and documentation checks passed.
+Remaining steps 3–6 retain their full scope; #337 is not complete.

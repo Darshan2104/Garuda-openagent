@@ -17,6 +17,8 @@ async def execute(payload, control):
     role = role_from_document(request["role"])
     store = SessionStore(request["sessions_root"])
     session_id = request["session_id"]
+    workspace_record = ({**request["workspace_plan"], "workspace_owner": request["workspace_owner"]}
+                        if "workspace_plan" in request else {})
     if request["kind"] == "native":
         from garuda.agents.setup import activate_agent_plan
         from garuda.core.events import EventStore
@@ -30,8 +32,8 @@ async def execute(payload, control):
             tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
             workspace=request["workspace"], events=events, mcp_manager=prepared.mcp_manager,
             lease_capability=control, store=store,
-            session_record={"role": role.record(), "flow_step": request["flow"]} if role else
-                           {"flow_step": request["flow"]},
+            session_record={**workspace_record, "flow_step": request["flow"],
+                            **({"role": role.record()} if role else {})},
             collection_model=prepared.collection, collection_policy=prepared.collection_policy)
         return {"session_id": session_id, "success": bool(result.success), "output": result.final_message or ""}
     if request["kind"] == "acp":
@@ -44,6 +46,8 @@ async def execute(payload, control):
             lease_capability=control, session_id=session_id,
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
         meta = store.load_meta(session_id)
+        if workspace_record:
+            store.update_meta(session_id, workspace_record)
         return {"session_id": session_id, "success": summary.get("status") == "completed",
                 "output": str(meta.get("final_message") or "")}
     raise ValueError("unsupported role kind")

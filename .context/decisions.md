@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-10-17 — Dashboard run workspace and read-only lifetime ownership (#337)
+
+- Run parents select worktree/auto isolation before leasing through the shared
+  workspace service. Original source authority and selected execution identity
+  are distinct; frozen native setup reads the previewed source, then executes
+  in the selected checkout. Parent and child retain worktree metadata, with
+  cleanup owned by the parent. Selection settles on cancellation before any
+  never-admitted worktree is discarded; admitted or ambiguous trees remain.
+- Unchecked native ask-role takes an issued read-only parent lease. Child
+  control validates the actual readonly prepared configuration and issuance.
+  Lifetime snapshots do not authorize acceptance: checked asks and acceptance
+  snapshots retain their mutating-only contract. No-edits invalidation still
+  withholds answers when concurrent edits change the checkout.
+- Background, owned fallback probes, read-only ACP container lifetimes and the
+  live Chrome role-start check remain open under #337.
+
 ## 2026-10-16 — Dashboard run-kind starts are one owned role-run parent (#316)
 
 - `run-with-role` and `ask-role` browser starts reuse the #315 gateway, intent,
