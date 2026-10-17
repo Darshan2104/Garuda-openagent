@@ -173,6 +173,7 @@ def project(store, record, *, duplicate=False):
                 or any(binding.get(key) != record[key] for key in (
                     "operation_id", "plan_digest", "authority_digest", "request_digest", "workspace_identity", "owner"))):
             return payload
+        payload["flow_state"] = meta.get("flow_state")
         queue = QueueStore(receipt["queue_root"], capacity=CapacityStore(request["capacity_root"]))
         rows = [row for row in queue.entries() if row["id"] == record["reserved_session"]]
         if rows and (len(rows) != 1 or not matches(rows[0], receipt)):
