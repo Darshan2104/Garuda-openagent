@@ -5,7 +5,7 @@ status; a proposed record has not been approved or implemented. They are
 kept for rationale and review history; current behavior belongs in the user,
 reference, and architecture documentation.
 
-- [Dashboard run extensions](2026-10-17-dashboard-run-extensions-design.md) — full #337 design approved on 2026-10-17; implementation in progress.
+- [Dashboard run extensions](2026-10-17-dashboard-run-extensions-design.md) — full #337 design approved on 2026-10-17; implemented through owned queue/workspace/container/probe lifetimes and Linux Chrome checks.
 
 - [Dual-model delegation and runtime routing](2026-09-14-dual-model-delegation-and-runtime-routing-design.md)
 - [Pluggable terminal strategy](2026-09-28-pluggable-terminal-strategy-design.md)

@@ -287,3 +287,22 @@ def test_the_fallback_chain_skips_an_exhausted_codex_end_to_end(store, fake, tmp
     assert [s["reason"] for s in chosen.fallback["skipped"]] == ["harness.limit_reached"]
     methods = fake.log.read_text().split()
     assert "getAuthStatus" not in methods and "turn/start" not in methods
+
+
+def test_partial_limit_line_respects_status_deadline_without_proving_exhaustion(store, fake, monkeypatch):
+    import time
+
+    from garuda.acp import limit_probe
+
+    path = Path(fake.exe)
+    path.write_text(path.read_text().replace(
+        '    print(json.dumps(reply), flush=True)',
+        '    import time\n'
+        '    sys.stdout.write(json.dumps(reply)[:4]); sys.stdout.flush()\n'
+        '    time.sleep(1.5)\n'
+        '    print(json.dumps(reply)[4:], flush=True)'))
+    monkeypatch.setattr(limit_probe, "TIMEOUT", 0.1)
+    started = time.monotonic()
+    assert refresh_codex(fake.exe, store, version="0.159.3") is None
+    assert time.monotonic() - started < 1.0
+    assert store.latest("codex") is None

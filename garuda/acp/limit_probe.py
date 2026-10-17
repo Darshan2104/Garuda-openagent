@@ -13,6 +13,7 @@ methods were called.
 from __future__ import annotations
 
 import json
+import os
 import select
 import subprocess
 import time
@@ -53,21 +54,34 @@ def refresh_codex(executable: str, store: LimitStore, *, spawn=_spawn, version=N
         proc.stdin.write(json.dumps(message) + "\n")
         proc.stdin.flush()
 
+    pending = bytearray()
+
     def receive(call_id: int) -> dict | None:
-        deadline = time.time() + TIMEOUT
-        while time.time() < deadline:
-            ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+        # Buffered readline can wait past the deadline after select reports a
+        # partial line. Read only available bytes and bound incomplete replies.
+        deadline = time.monotonic() + TIMEOUT
+        consumed = 0
+        while time.monotonic() < deadline:
+            if b"\n" in pending:
+                raw, _separator, rest = pending.partition(b"\n")
+                pending[:] = rest
+                try:
+                    message = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(message, dict) and message.get("id") == call_id:
+                    return message
+                continue
+            ready, _, _ = select.select([proc.stdout], [], [], min(0.5, max(0, deadline - time.monotonic())))
             if not ready:
                 continue
-            line = proc.stdout.readline(65_537)
-            if not line or len(line.encode("utf-8")) > 65_536:
+            chunk = os.read(proc.stdout.fileno(), 8192)
+            if not chunk:
                 return None
-            try:
-                message = json.loads(line)
-            except ValueError:
-                continue
-            if message.get("id") == call_id:
-                return message
+            pending.extend(chunk)
+            consumed += len(chunk)
+            if consumed > 65_536 or len(pending) > 65_536:
+                return None
         return None
 
     try:

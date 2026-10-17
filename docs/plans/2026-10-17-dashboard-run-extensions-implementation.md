@@ -91,3 +91,27 @@ uncertain or prove cancellation without another launch. The regression failed
 on the earlier background refusal. Review repaired transient release projection
 so a live finalizer stays pending until closure, and preserved the public typed
 refusal for an unreadable launch file.
+
+## Implementation review: Chrome and the complete issue
+
+Step 6 is implemented and the Linux Google Chrome workflow passed at
+`39f414c` ([run](https://github.com/Darshan2104/Garuda-openagent/actions/runs/39032899663)).
+It exercises the real native run approval, readonly ask, ACP worktree and
+background forms, exact duplicate projection, inbox/session links, source
+preservation and the existing flow stale-preview and transport refusals.
+The first Chrome run exposed an omitted background flow state in the operation
+response; the worker's actual completion was correct, and projection now exposes
+it to the panel. Screenshots and server/session records are CI artifacts.
+
+The full review mapped each #337 selector to its executing owner, inspected
+source/configuration identities, private publication, closure and queue lending,
+and checked that process ownership is never described as sandbox confinement.
+An adversarial coordinator release while a role loan is active refuses and keeps
+its durable capacity/queue records; ordinary completion releases once.
+
+Review also reproduced a partial quota-line deadline violation: buffered
+`readline` accepted a late status. The reader now consumes only ready bytes with
+bounded buffers and a monotonic deadline. The regression failed before repair;
+all quota/fallback unit checks pass afterward. Full pytest/CI and final PR
+readiness remain the acceptance gate; optional vendor, Harbor and tmux checks
+are not claimed.
