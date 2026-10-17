@@ -109,7 +109,7 @@ async def select_owned(candidates, catalog, workspace, owner, *, no_edits, publi
     raw = encode_document(payload)
     request_digest = hashlib.sha256(raw.encode()).hexdigest()
     bootstrap = ("import runpy,sys;sys.path.insert(0,sys.argv[1]);"
-                 "runpy.run_module('garuda.runtime.fallback_probe',run_name='__main__')")
+                 "runpy.run_module('garuda.agents.fallback_probe',run_name='__main__')")
     request = ProcessRequest((sys.executable, "-I", "-c", bootstrap, str(Path(__file__).resolve().parents[2])),
                              workspace, timeout=min(3600, 120 * len(candidates)), input_data=raw, purpose="role")
     process = await LinuxProcessSupervisor().prepare()

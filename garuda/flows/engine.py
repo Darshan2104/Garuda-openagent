@@ -955,7 +955,7 @@ class FlowRunner:
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         try:
             if role in self.prepared_fallbacks:
-                from garuda.runtime.fallback_probe import select_owned
+                from garuda.agents.fallback_probe import select_owned
                 from garuda.runtime.roles import RoleRefused
 
                 async def publish(record):

@@ -115,3 +115,9 @@ bounded buffers and a monotonic deadline. The regression failed before repair;
 all quota/fallback unit checks pass afterward. Full pytest/CI and final PR
 readiness remain the acceptance gate; optional vendor, Harbor and tmux checks
 are not claimed.
+
+The full suite's architecture gate caught direct ACP discovery imports in the
+new generic-runtime probe module. The orchestration now lives beside the
+existing fallback/setup service in `agents/fallback_probe.py`; the generic
+runtime contract and its existing test stay unchanged. Focused protocol and
+real owned fallback checks validate the corrected boundary.
