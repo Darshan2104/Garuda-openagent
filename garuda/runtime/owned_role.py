@@ -42,7 +42,14 @@ def prepare_owned_step(launch, *, timeout=3600) -> OwnedRoleRequest:
                 if source.path is not None:
                     record_digest(source.path, source.digest)
         request = _prepare_owned_step(launch, timeout=timeout)
-        return replace(request, sources=capture.facts())
+        facts = {fact.path: fact for fact in capture.facts()}
+        for admitted in launch.authority_sources:
+            if admitted.path in facts and admitted.digest != facts[admitted.path].digest:
+                from garuda.runtime.roles import RoleRefused
+
+                raise RoleRefused("flow.authority_changed", "role preparation read a different admitted source")
+            facts[admitted.path] = admitted
+        return replace(request, sources=tuple(facts[path] for path in sorted(facts)))
 
 
 def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:

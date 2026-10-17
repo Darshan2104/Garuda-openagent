@@ -72,7 +72,7 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                 or (context.kind == "run" and entry.launch.get("no_edits")))))
             row["availability"] = ("image runtime; not checked" if confined else
                                    "present" if manifest.command and shutil.which(manifest.command[0]) else "missing")
-            if row["availability"] == "missing":
+            if row["availability"] == "missing" and not (owned and name in context.fallback_plans):
                 blockers.append("harness.cli_missing")
                 diagnostics.append(_diagnostic("harness.cli_missing", f"{name}: executable unavailable for {plan.runtime_id}",
                                                manifest.setup or "Install the harness's official CLI and rerun `garuda init`.", level="error"))

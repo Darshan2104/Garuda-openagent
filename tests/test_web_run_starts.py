@@ -470,7 +470,7 @@ async def test_dashboard_acp_ask_uses_image_runtime_without_host_cli(tmp_path, m
     subprocess.run(["git", "config", "--global", "--add", "safe.directory", str(workspace)],
                    cwd=workspace, check=True)
     gy.user_path().write_text(gy.dump({"version": 1,
-        "roles": {"reviewer": {"harness": "image-only"}},
+        "roles": {"reviewer": {"harness": "image-only", "fallback": [{"harness": "native"}]}},
         "harnesses": {"image-only": {"confinement": {
             "image": "garuda-owned-acp-fixture:local",
             "command": ["python", "/opt/garuda/garuda/acp/fake_agent.py", "--profile", "probe-writes"]}}}}))

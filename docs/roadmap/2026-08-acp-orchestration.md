@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** P0, P1 and P2 delivered; P3 foreground starts support worktree isolation and owned read-only ACP; background and fallback extensions remain
+**Status:** P0, P1 and P2 delivered; P3 foreground starts support worktrees, owned read-only ACP and fallback probes; background starts remain
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -24,7 +24,8 @@ can durably start flow-kind previews through the existing flow owner, and
 foreground `run-with-role`/`ask-role` previews through one owned role-run
 parent, including worktree/auto isolation and shared unchecked native asks.
 Read-only ACP starts retain their Docker resources under the owned role parent.
-Background and fallback run starts remain a later phase
+Fallback probes retain their own supervised lifetime before the selected role
+starts. Background run starts remain a later phase
 under the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 

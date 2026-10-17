@@ -26,7 +26,7 @@ from dataclasses import replace
 from garuda.runtime.roles import RolePlan, RoleRefused
 
 
-def default_limit_check(catalog, runtime_id: str) -> bool:
+def default_limit_check(catalog, runtime_id: str, *, refresh=None) -> bool:
     """Whether ``runtime_id`` is exhausted *for fallback purposes*: only for a harness
     whose limit source is proved, by a refresh made now that no prompt is part of."""
     from garuda.observability.limits import PROVED_SOURCES, LimitStore
@@ -41,7 +41,7 @@ def default_limit_check(catalog, runtime_id: str) -> bool:
     store = LimitStore()
     executable = manifest.auth_probe.argv[0]
     try:
-        return store.assess(runtime_id, lambda: refresh_codex(executable, store)).eligible_exhausted
+        return store.assess(runtime_id, lambda: (refresh or refresh_codex)(executable, store)).eligible_exhausted
     except Exception:
         return False  # anything uncertain is not a reason
 
@@ -65,21 +65,28 @@ def _skip_reason(catalog, runtime_id: str, *, login_run=None, limit_check=None) 
     return None  # unknown, failed or timed out is never a reason
 
 
-def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None) -> RolePlan:
-    """The plan to start, with the fallback decision recorded on it."""
+def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
+    """Resolve the configured candidate set without executing any probes."""
     spec = resolved.config.get("roles", {}).get(plan.role, {})
     chain = spec.get("fallback", [])
     if not chain:
-        return plan
+        return (plan,)
     harnesses = resolved.config.get("harnesses", {})
-    candidates = [plan] + [
+    return (plan, *(
         replace(plan, runtime_id=catalog.registry.get(c["harness"]).runtime_id,
                 kind=catalog.registry.get(c["harness"]).kind.value,
                 model_id=c.get("model_id"), harness=harnesses.get(c["harness"], {}))
         for c in chain
-    ]
+    ))
+
+
+def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None) -> RolePlan:
+    """The plan to start, with the fallback decision recorded on it."""
+    choices = candidates(plan, resolved, catalog)
+    if len(choices) == 1:
+        return plan
     skipped = []
-    for index, candidate in enumerate(candidates):
+    for index, candidate in enumerate(choices):
         reason = _skip_reason(catalog, candidate.runtime_id, login_run=login_run,
                               limit_check=limit_check)
         if reason is None:

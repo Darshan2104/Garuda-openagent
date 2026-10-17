@@ -59,8 +59,8 @@ def refresh_codex(executable: str, store: LimitStore, *, spawn=_spawn, version=N
             ready, _, _ = select.select([proc.stdout], [], [], 0.5)
             if not ready:
                 continue
-            line = proc.stdout.readline()
-            if not line:
+            line = proc.stdout.readline(65_537)
+            if not line or len(line.encode("utf-8")) > 65_536:
                 return None
             try:
                 message = json.loads(line)

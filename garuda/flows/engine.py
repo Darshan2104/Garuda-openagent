@@ -66,6 +66,7 @@ class StepLaunch:
     workspace_identity: list[int] | None = None
     authority_workspace: str | None = None
     worktree_plan: dict | None = None
+    authority_sources: tuple = ()
 
 
 @dataclass
@@ -219,7 +220,7 @@ class FlowRunner:
                  authority_sources: tuple = (), operation_binding: dict | None = None,
                  on_admitted=None, approval_handler=None, launch_kind: str = "flow",
                  session_name: str | None = None, execution_workspace: dict | None = None,
-                 worktree_plan: dict | None = None):
+                 worktree_plan: dict | None = None, prepared_fallbacks: dict | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
         if (operation_binding is None) != (on_admitted is None):
@@ -246,6 +247,8 @@ class FlowRunner:
         self.verification_request = verification_request
         self.verification_permissions = verification_permissions
         self.prepared_roles = dict(prepared_roles) if prepared_roles is not None else None
+        self.prepared_fallbacks = dict(prepared_fallbacks or {})
+        self._fallback_probes = {}
         self.runtime_catalog = runtime_catalog
         self.authority_sources = tuple(authority_sources)
         self.operation_binding = dict(operation_binding) if operation_binding is not None else None
@@ -582,8 +585,8 @@ class FlowRunner:
         begun = resume
         try:
             if self.require_owned:
-                self._owned_snapshot = (lease.snapshot_ownership() if self.verification_request
-                                        is not None else lease.snapshot_lifetime())
+                self._owned_snapshot = (lease.snapshot_ownership() if lease._mode == "mutating"
+                                        else lease.snapshot_lifetime())
                 if self.operation_binding is not None:
                     self._validate_operation_workspace()
                     self.operation_binding.update({
@@ -935,6 +938,20 @@ class FlowRunner:
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         try:
+            if role in self.prepared_fallbacks:
+                from garuda.runtime.fallback_probe import select_owned
+                from garuda.runtime.roles import RoleRefused
+
+                async def publish(record):
+                    self._fallback_probes[f"{step['id']}:{attempt}"] = record
+                    await self._publish(self.flow_session, {"fallback_probes": dict(self._fallback_probes)})
+
+                try:
+                    plan = await select_owned(self.prepared_fallbacks[role], self.runtime_catalog,
+                                              self.workspace, lease, no_edits=no_edits, publish=publish)
+                except RoleRefused as exc:
+                    raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
+                self.prepared_roles[role] = plan
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
@@ -944,7 +961,7 @@ class FlowRunner:
                 workspace_identity=(self.execution_workspace or self.operation_binding or {}).get(
                     "identity" if self.execution_workspace else "workspace_identity"),
                 authority_workspace=(self.execution_workspace or {}).get("source"),
-                worktree_plan=self.worktree_plan))
+                worktree_plan=self.worktree_plan, authority_sources=self.authority_sources))
         finally:
             lease.revoke(capability)
         closure = None

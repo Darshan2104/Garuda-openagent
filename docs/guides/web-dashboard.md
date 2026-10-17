@@ -121,7 +121,7 @@ and leases the execution checkout before launching its child, preserving the
 previewed source authority. Uncommitted source changes are not copied to a
 worktree; its session records that fact. Refused, never-admitted worktrees are
 removed after preparation settles; admitted worktrees remain for inspection.
-Background runs, fallback roles and permissions above
+Background runs and permissions above
 `--max-permission` refuse before any operation is recorded; copy the equivalent
 command for those. An unchecked native ask-role takes a read-only parent lease,
 so it can inspect alongside an editor. Configured acceptance checks retain a
@@ -132,6 +132,13 @@ Docker. Their runtime can be installed only in that image. The parent owns the
 probe and execution containers, records their identities before launch, and
 verifies removal before releasing its lease or capacity. Failed confinement
 never substitutes a host run; ambiguous cleanup retains quarantine.
+Roles with fallback chains probe only after durable parent admission. The
+preview freezes every candidate and enforces the permission ceiling on each.
+Missing CLIs, documented logged-out answers and proved quota exhaustion can
+select the next candidate; uncertain status keeps the current one. Probe
+descendants close and the selection is recorded before the runtime is prompted.
+Image-only read-only candidates retain unknown host availability until owned
+confinement starts them; host absence does not select another harness.
 
 Follow the resulting session through **Sessions** (flows and ACP) or its existing
 native trace. The shared starter panel keeps process, work, outcome, review and

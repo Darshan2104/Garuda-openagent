@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-10-17 — Dashboard fallback decisions own their probes (#337)
+
+- Compilation captures every fallback candidate and its profile source facts.
+  Admission checks every effective permission and confinement requirement,
+  rather than granting the selected candidate wider authority later.
+- A Linux-owned probe worker bounds version/login output and limit replies,
+  preserves documented skip reasons, and closes detached probe descendants
+  before publishing selection. The role child consumes that discovered runtime
+  without a second probe. Image-only readonly availability/auth remain unknown
+  until owned confinement; host absence never proves an image CLI is missing.
+- The parent records probe intent, actual cleanup and decision before prompting;
+  cancellation records closure without a prompt. Admitted source facts remain
+  bound through role preparation, so changes during a probe cannot grant a run.
+
 ## 2026-10-17 — Owned readonly ACP includes daemon resource closure (#337)
 
 - The role parent owns both confinement preflight and execution containers.

@@ -179,6 +179,17 @@ def test_the_probe_refuses_any_other_method_even_if_asked(store, fake):
     assert "getAuthStatus" not in limit_probe.ALLOWED_METHODS
 
 
+def test_oversized_limit_reply_cannot_prove_exhaustion(store, fake):
+    fake.configure(used=1.0, reached=True, reset=NOW + 1800)
+    state = Path(os.environ["FAKE_STATE"])
+    data = json.loads(state.read_text())
+    data["limits"]["padding"] = "x" * 70_000
+    state.write_text(json.dumps(data))
+    decision = store.assess("codex", lambda: read(store, fake), now=NOW)
+    assert decision.eligible_exhausted is False
+    assert store.latest("codex") is None
+
+
 def test_the_raw_account_id_is_never_stored_and_the_digest_is_local(store, fake, tmp_path):
     fake.configure(used=1.0, reached=True, reset=NOW + 1800)
     first = read(store, fake)

@@ -186,8 +186,10 @@ fastest way to learn the system.
    native asks use issued read-only lifetime ownership; acceptance snapshots
    remain mutating-only. Read-only ACP uses parent-owned Docker containers with
    private pre-launch resource intents and verified absence receipts. Worker
-   exit alone cannot release daemon resources. `run_authority` refuses background
-   and fallback roles.
+   exit alone cannot release daemon resources. Fallback candidates are frozen
+   with compiler source facts and checked against the ceiling; supervised status
+   probes close before selection is published and passed to the child, avoiding
+   a second discovery at startup. `run_authority` still refuses background.
    Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.

@@ -591,6 +591,12 @@ verified absence and resource-record agreement. The child
 attaches to the parent's already-created container using its pinned Docker
 executable. Foreign identities, API ambiguity and publication failures retain
 the same workspace/capacity quarantine.
+`runtime/fallback_probe.py` owns bounded pre-prompt discovery for admitted
+fallback chains. The compiler captures all candidate profiles and authority;
+the engine publishes probe intent/closure and selected identity in the parent.
+The child consumes the discovered executable/version without probing again.
+Owned role preparation also retains admitted source facts to reject configuration
+drift during probing or preparation.
 
 `core/read_model.py::starter_result` delegates selected evidence projection to
 `core/starter_read_model.py`, with selected record validation in

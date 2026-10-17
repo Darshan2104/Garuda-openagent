@@ -81,6 +81,9 @@ class FlowExecutionService:
             operation_uuid = session_uuid = None
         if (plan.bindings != {name: role.record()
                              for name, role in context.role_plans.items()}
+                or plan.provenance.get("fallback_candidates", {}) != {
+                    name: [candidate.record() for candidate in choices]
+                    for name, choices in context.fallback_plans.items()}
                 or not isinstance(operation_binding, dict)
                 or set(operation_binding) != binding_fields
                 or operation_binding.get("version") != 1
@@ -152,7 +155,8 @@ class FlowExecutionService:
                 runtime_catalog=context.catalog, authority_sources=context.source_facts,
                 operation_binding=operation_binding, on_admitted=on_admitted,
                 approval_handler=approval_handler, launch_kind=launch_kind,
-                session_name=session_name, execution_workspace=execution, worktree_plan=worktree)
+                session_name=session_name, execution_workspace=execution, worktree_plan=worktree,
+                prepared_fallbacks=context.fallback_plans)
             result = await runner.run()
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))

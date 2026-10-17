@@ -626,6 +626,7 @@ async def run_acp_task(
     isolation: str = "shared",
     owned_container: str | None = None,
     owned_docker: str | None = None,
+    admitted_runtime: dict | None = None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -672,6 +673,21 @@ async def run_acp_task(
         manifest = next(m for m in catalog.registry.manifests
                         if m.runtime_id == resolved_rt.runtime_id)
         record = DiscoveredRuntime(runtime_id=manifest.runtime_id, kind="acp", available=True)
+    elif admitted_runtime is not None:
+        from garuda.acp.catalog import DiscoveredRuntime
+        from garuda.runtime.role_control import RoleControlClient
+
+        if (type(lease_capability) is not RoleControlClient
+                or set(admitted_runtime) != {"runtime_id", "executable", "version"}
+                or admitted_runtime["runtime_id"] != runtime_id
+                or not isinstance(admitted_runtime["executable"], str)
+                or not os.path.isabs(admitted_runtime["executable"])
+                or not isinstance(admitted_runtime["version"], str)):
+            raise ValueError("admitted runtime must match its owned role control")
+        catalog.registry.get(runtime_id)
+        manifest = catalog.registry.manifest_for(runtime_id)
+        record = DiscoveredRuntime(runtime_id=runtime_id, kind="acp", available=True,
+                                   executable=admitted_runtime["executable"], version=admitted_runtime["version"])
     else:
         manifest, record = acp_launch_target(catalog, runtime_id)
     # A role's exact model and effort must be settable on this adapter

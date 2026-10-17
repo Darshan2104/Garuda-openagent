@@ -46,6 +46,7 @@ async def execute(payload, control):
             lease_capability=control, session_id=session_id,
             owned_container=request.get("owned_container"),
             owned_docker=request.get("owned_docker"),
+            admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
         meta = store.load_meta(session_id)
         if workspace_record:

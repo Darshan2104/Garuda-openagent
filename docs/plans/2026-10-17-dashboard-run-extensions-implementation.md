@@ -57,3 +57,19 @@ dashboard ask-role without a host CLI. Source/Git writes were denied and scratch
 remained writable. Starter/ACP discovery regressions, Ruff and documentation
 checks passed. Background, owned fallback probes and live Chrome role checks
 remain under steps 4–6; #337 is not complete.
+
+## Implementation review: fallback probes
+
+Step 4 is implemented. Review verified static candidate/source capture, ceiling
+checks on every candidate, bounded status/limit replies, supervision of detached
+probe children, durable pre-prompt selection and consumption of the discovered
+runtime without repeated discovery. Initial source facts remain attached to
+owned role preparation, including worktree execution.
+
+Linux owner checks cover missing/logged-out/unknown/oversized/timed-out status,
+all-missing refusal, cancellation, source changes and prompt-at-most-once.
+Readonly image-only ACP with a native fallback also ran against actual Docker.
+The oversized quota-reply regression failed on the previous implementation and
+passed after bounded reading. The full earlier suite identified one mutating
+snapshot regression, fixed without relaxing its admission/cleanup contract.
+Background admission and live Chrome checks remain under steps 5–6.

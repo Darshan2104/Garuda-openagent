@@ -30,10 +30,24 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
     """One role's admitted identity, after the blockers shared by every launch kind."""
     role_plan = context.role_plans[role]
     configured = context.resolved.config.get("roles", {}).get(role, {})
-    if configured.get("fallback"):
-        block("starter.fallback_probe_unowned",
-              f"Role {role} has a fallback chain whose launch probe is not owned by this gateway.",
-              "Use a role without fallbacks for one-click Start.")
+    candidates = context.fallback_plans.get(role, (role_plan,))
+    if configured.get("fallback") and len(candidates) != len(configured["fallback"]) + 1:
+        block("starter.fallback_unprepared", f"Role {role} has an unresolved fallback chain.",
+              "Preview the starter again.")
+    for candidate in candidates[1:]:
+        permission = "readonly" if no_edits else candidate.permissions
+        if _PERMISSION_RANK.get(permission, 99) > _PERMISSION_RANK.get(max_permission, -1):
+            block("starter.permission_exceeds_ceiling",
+                  f"Fallback {candidate.runtime_id} for {role} exceeds the dashboard ceiling.",
+                  "Tighten the role or its agent profile.")
+        if candidate.kind == "acp" and (no_edits or permission == "readonly"):
+            import shutil
+
+            from garuda.workspace.confined_acp import Confinement
+
+            if Confinement.from_config(candidate.harness) is None or not shutil.which("docker"):
+                block("workspace.readonly_unenforced", f"Fallback {candidate.runtime_id} requires confinement.",
+                      "Configure its user confinement image and install Docker.")
     permission = _effective_permission(context, role, no_edits=no_edits)
     if (_PERMISSION_RANK.get(permission, 99)
             > _PERMISSION_RANK.get(max_permission, -1)):
@@ -52,7 +66,8 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
                   "Configure the user harness confinement image and install Docker; launch will prove confinement.")
     return {"runtime_id": role_plan.runtime_id, "kind": role_plan.kind,
             "model_id": role_plan.model_id, "role_digest": role_plan.digest,
-            "permission": permission, "write_policy": role_plan.write_policy}
+            "permission": permission, "write_policy": role_plan.write_policy,
+            **({"candidates": [candidate.record() for candidate in candidates]} if len(candidates) > 1 else {})}
 
 
 def _host_blockers(max_permission: str, backend_available: bool,
