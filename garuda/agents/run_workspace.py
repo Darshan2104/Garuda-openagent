@@ -19,7 +19,7 @@ async def _settled(task):
 
 
 @asynccontextmanager
-async def run_workspace(store, source, session_id, isolation):
+async def run_workspace(store, source, session_id, isolation, *, reserved_background=False):
     """Never abandon a creating worker or discard an admitted workspace.
 
     A partial session directory is retained conservatively: publication or
@@ -42,7 +42,17 @@ async def run_workspace(store, source, session_id, isolation):
             raise asyncio.CancelledError
         yield path, worktree, identity
     finally:
-        if worktree and not os.path.lexists(store.session_dir(session_id)):
+        absent = not os.path.lexists(store.session_dir(session_id))
+        if reserved_background and not absent:
+            # A queued parent exists before workspace selection. Only a proven
+            # never-admitted worktree may be discarded after a refusal.
+            from garuda.workspace.lease import LeaseStore
+
+            meta = store.load_meta(session_id)
+            absent = (meta.get("flow_operation") is None
+                      and not (store.session_dir(session_id) / "flow").exists()
+                      and not LeaseStore().live_holders_for_session(session_id))
+        if worktree and absent:
             _, interrupted = await _settled(asyncio.create_task(
                 asyncio.to_thread(discard_new_worktree, worktree)))
             if interrupted:

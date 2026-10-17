@@ -80,6 +80,7 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     payload = {"version": 1, "workspace": workspace, "workspace_identity": identity, "prompt": launch.prompt,
                "session_id": session_id, "sessions_root": str(store.root.resolve()),
                "role": freeze_role(role), "no_edits": launch.no_edits,
+               "external_approvals": launch.external_approvals,
                "flow": {"flow_session": launch.flow_session, "step": launch.step_id,
                         "attempt": launch.attempt}}
     if launch.worktree_plan is not None:

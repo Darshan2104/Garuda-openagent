@@ -73,3 +73,21 @@ The oversized quota-reply regression failed on the previous implementation and
 passed after bounded reading. The full earlier suite identified one mutating
 snapshot regression, fixed without relaxing its admission/cleanup contract.
 Background admission and live Chrome checks remain under steps 5–6.
+
+## Implementation review: background ownership
+
+Step 5 is implemented. Review checked reserved-session exclusivity, operation
+binding before enqueue, v2 closed schema, post-wait plan/source validation,
+retained ticket activation, single-use role capacity lending, durable native/ACP
+approval channels, identity-checked Stop, settled role/queue heartbeat cleanup
+and queue release before final closure publication. Status reads/duplicates do
+not recompile or dispatch and do not depend on the original server's liveness.
+
+Linux owner checks cover detached completion, dashboard shutdown/restart,
+duplicates before/after completion, live durable approval and cancellation,
+queued cancellation, queued source changes, native worktree/auto execution and
+candidate-bound checks. Publication cuts before enqueue and at spawn remain
+uncertain or prove cancellation without another launch. The regression failed
+on the earlier background refusal. Review repaired transient release projection
+so a live finalizer stays pending until closure, and preserved the public typed
+refusal for an unreadable launch file.

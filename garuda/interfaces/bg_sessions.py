@@ -151,7 +151,8 @@ def scope_of(args) -> str:
     return scope_for(harness_of(args))
 
 
-def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> str:
+def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, spawn=None,
+           reserved_session=None, operation_binding=None, owned_request=None) -> str:
     """Create the session and its queue entry, start the worker, return the session id."""
     import uuid
 
@@ -159,6 +160,16 @@ def launch(args: argparse.Namespace, *, store=None, queue=None, spawn=None) -> s
     from garuda.runtime import session_state
     from garuda.runtime.queue import QueueStore, scope_for
 
+    if any(value is not None for value in (reserved_session, operation_binding, owned_request)):
+        from garuda.scenarios.background import launch_owned
+
+        if any(value is None for value in (reserved_session, operation_binding, owned_request)):
+            raise BackgroundRefused("owned background launch requires its complete binding")
+        return launch_owned(store=store or SessionStore(), queue=queue or QueueStore(), spawn=spawn,
+                            reserved_session=reserved_session, operation_binding=operation_binding,
+                            request=owned_request)
+    if args is None:
+        raise BackgroundRefused("background launch requires arguments")
     task = args.task
     if getattr(args, "file", None):
         task = Path(args.file).read_text(encoding="utf-8")
@@ -232,13 +243,25 @@ def _spawn_worker(session_id: str, *, store_root: Path | None = None) -> subproc
 
 
 def _load_launch(store, session_id: str) -> dict:
-    from garuda.runtime.strict_store import read_document
+    from garuda.runtime.private_records import open_directory, read_record
 
     path = store.session_dir(session_id) / LAUNCH_FILE
-    info = os.lstat(path)
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise BackgroundRefused(f"{path} is not owner-only")
-    document = read_document(path, versions=(1,))
+    from garuda.runtime.strict_store import StorageError
+
+    directory = None
+    try:
+        directory = open_directory(path.parent.absolute())
+        document = read_record(directory, LAUNCH_FILE, versions=(1, 2), limit=2_097_152)
+    except (StorageError, OSError) as exc:
+        raise BackgroundRefused("background launch description is not privately readable") from exc
+    finally:
+        if directory is not None:
+            os.close(directory)
+    if document and document.get("version") == 2:
+        from garuda.scenarios.background import checked_request
+
+        checked_request(document)
+        return document
     if not document or not isinstance(document.get("args"), dict):
         raise BackgroundRefused(f"{path} is not a launch description")
     return document
@@ -271,8 +294,12 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
     from garuda.runtime.recovery import _process_identity
 
     store = store or SessionStore()
-    queue = queue or QueueStore()
     document = _load_launch(store, session_id)
+    if document["version"] == 2:
+        from garuda.scenarios.background_worker import run
+
+        return await run(session_id, document, store=store, queue=queue, poll_max=poll_max)
+    queue = queue or QueueStore()
     args = argparse.Namespace(**document["args"])
     args.bg = False
     args._session_id = session_id
@@ -392,8 +419,10 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
     from garuda.runtime.queue import QueueStore
     from garuda.runtime.recovery import ProcessIdentityUnavailable, _process_identity, same_process
 
-    queue = queue or QueueStore()
     meta = store.load_meta(session_id)
+    if queue is None and meta.get("background_operation") is not None:
+        queue = QueueStore(meta["background_operation"]["queue"]["queue_root"])
+    queue = queue or QueueStore()
     if not meta.get("background"):
         raise BackgroundRefused("not a background session")
     state = session_state.effective_state(meta)
@@ -409,7 +438,10 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
         queued = False
     if scope is not None and queued and queue.cancel(scope, session_id):
         store.update_meta(session_id, {"status": "cancelled",
-                                       "state": session_state.interrupted(cancelled=True)})
+                                       "state": session_state.interrupted(cancelled=True),
+                                       **({"background_cancelled_before_dispatch": True,
+                                           "flow_state": "interrupted"}
+                                          if meta.get("background_operation") else {})})
         return "removed from the queue before it started"
     worker = meta.get("worker") or {}
     pid, recorded = worker.get("pid"), worker.get("identity")

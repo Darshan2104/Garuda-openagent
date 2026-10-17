@@ -67,6 +67,7 @@ class StepLaunch:
     authority_workspace: str | None = None
     worktree_plan: dict | None = None
     authority_sources: tuple = ()
+    external_approvals: bool = False
 
 
 @dataclass
@@ -220,7 +221,8 @@ class FlowRunner:
                  authority_sources: tuple = (), operation_binding: dict | None = None,
                  on_admitted=None, approval_handler=None, launch_kind: str = "flow",
                  session_name: str | None = None, execution_workspace: dict | None = None,
-                 worktree_plan: dict | None = None, prepared_fallbacks: dict | None = None):
+                 worktree_plan: dict | None = None, prepared_fallbacks: dict | None = None,
+                 background_admission=None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
         if (operation_binding is None) != (on_admitted is None):
@@ -258,6 +260,7 @@ class FlowRunner:
         self.session_name = session_name
         self.execution_workspace = execution_workspace
         self.worktree_plan = worktree_plan
+        self.background_admission = background_admission
         self.require_owned = verification_request is not None or operation_binding is not None
         self._evidence = None
         self._owned_snapshot = None
@@ -508,21 +511,31 @@ class FlowRunner:
         # A reserved ID is not permission to reuse an earlier or partially
         # published session. Reserve the directory only after the workspace
         # lease has been acquired.
-        try:
-            self.store.session_dir(self.flow_session).mkdir(
-                mode=0o700, parents=True, exist_ok=False)
-        except FileExistsError as exc:
-            raise FlowStopped("flow.session_exists", "the flow session already exists") from exc
-        if self.require_owned:
-            from garuda.core.session_publication import protect_session
+        if self.background_admission is not None:
+            self.background_admission.validate()
+            meta = self.store.load_meta(self.flow_session)
+            policy = meta.get("publication_policy")
+            if (meta.get("background_operation") != self.background_admission.operation
+                    or meta.get("flow_operation") is not None or self.dir.exists()
+                    or not isinstance(policy, dict) or policy.get("kind") not in {"owned-flow", "flow-verification"}
+                    or policy.get("session_id") != self.flow_session):
+                raise FlowStopped("flow.background_invalid", "queued parent cannot be adopted")
+            self.store.update_meta(self.flow_session, {
+                "workspace": self.workspace, "status": "running"})
+        else:
+            try:
+                self.store.session_dir(self.flow_session).mkdir(
+                    mode=0o700, parents=True, exist_ok=False)
+            except FileExistsError as exc:
+                raise FlowStopped("flow.session_exists", "the flow session already exists") from exc
+            if self.require_owned:
+                from garuda.core.session_publication import protect_session
 
-            protect_session(
-                self.store.session_dir(self.flow_session) / "meta.json",
-                kind="flow-verification" if self.verification_request is not None
-                else "owned-flow")
-        self.store.begin(self.flow_session, task=self.task, model="flow",
-                         agent=f"flow:{self.name}", workspace=self.workspace,
-                         name=self.session_name)
+                protect_session(
+                    self.store.session_dir(self.flow_session) / "meta.json",
+                    kind="flow-verification" if self.verification_request is not None else "owned-flow")
+            self.store.begin(self.flow_session, task=self.task, model="flow",
+                             agent=f"flow:{self.name}", workspace=self.workspace, name=self.session_name)
         # Path.mkdir(parents=True) creates missing ancestors with the default
         # mode, which makes the flow directory too open for owned records.
         self.dir.mkdir(mode=0o700)
@@ -578,7 +591,10 @@ class FlowRunner:
                                   f"{', '.join(held)} was interrupted after launch; it is never "
                                   "replayed", step=held[0])
         lease = WorkspaceLeaseGuard(self.workspace, self.flow_session, mode=self._lease_mode(),
-                                    ttl_sec=self.lease_ttl)
+                                    ttl_sec=self.lease_ttl,
+                                    capacity_key=(self.background_admission.harness
+                                                  if self.background_admission else None),
+                                    queued_admission=self.background_admission)
         lease.acquire()
         lease.start_heartbeat()
         result = FlowResult(self.flow_session)
@@ -961,7 +977,8 @@ class FlowRunner:
                 workspace_identity=(self.execution_workspace or self.operation_binding or {}).get(
                     "identity" if self.execution_workspace else "workspace_identity"),
                 authority_workspace=(self.execution_workspace or {}).get("source"),
-                worktree_plan=self.worktree_plan, authority_sources=self.authority_sources))
+                worktree_plan=self.worktree_plan, authority_sources=self.authority_sources,
+                external_approvals=self.background_admission is not None))
         finally:
             lease.revoke(capability)
         closure = None

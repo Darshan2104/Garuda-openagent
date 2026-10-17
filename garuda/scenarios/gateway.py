@@ -235,7 +235,8 @@ class FlowStartGateway:
                 request_digest=request_digest, plan_digest=plan.digest,
                 authority_digest=authority["digest"], workspace=str(root),
                 workspace_identity=identity, compiler_version=COMPILER_VERSION,
-                catalog_version=CATALOG_VERSION, owner=self.owner)
+                catalog_version=CATALOG_VERSION, owner=self.owner,
+                background=plan.kind == "run" and bool(plan.options.get("bg")))
         except IntentConflict as exc:
             raise FlowStartError("starter.operation_conflict", str(exc)) from exc
         except (StorageError, IntentStateError, OSError, ValueError) as exc:
@@ -295,6 +296,20 @@ class FlowStartGateway:
                 "workspace_identity": record["workspace_identity"],
                 "owner": record["owner"],
             }
+            if record["version"] == 2:
+                from garuda.interfaces import bg_sessions
+                from garuda.runtime.queue import QueueStore
+                from garuda.scenarios.background import capsule
+
+                queue = QueueStore()
+                request = capsule(plan, context, binding, self.max_permission, queue)
+                await _settled_call(
+                    bg_sessions.launch, store=self.store, queue=queue,
+                    reserved_session=record["reserved_session"], operation_binding=binding,
+                    owned_request=request)
+                current = await _settled_call(self.intents.read, operation)
+                self._resolve_admission(admission, await self._project(current))
+                return
             if plan.kind == "run":
                 from garuda.agents.role_runs import RoleRunService
 
@@ -350,6 +365,8 @@ class FlowStartGateway:
                 return {**record, "phase": "uncertain", "reason": "publication.uncertain"}
             record = latest
             phase = record["phase"]
+            if record["version"] == 2 and record.get("queue_admission") is not None:
+                return record  # worker lifetime is independent of this server
             if phase == "prepared":
                 return await _settled_call(
                     self.intents.advance, record["operation_id"], expected=phase,
@@ -446,6 +463,10 @@ class FlowStartGateway:
         return meta
 
     async def _project(self, record: dict, *, duplicate: bool = False) -> dict:
+        if record["version"] == 2 and record["phase"] != "prepared":
+            from garuda.scenarios.background import project
+
+            return await _settled_call(project, self.store, record, duplicate=duplicate)
         phase = record["phase"]
         task = self._tasks.get(record["operation_id"])
         active = task is not None and not task.done()

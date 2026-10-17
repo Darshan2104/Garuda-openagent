@@ -315,9 +315,10 @@ function renderStarterOperation(state, row, approvals) {
     chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +
-    '. Keep this page open while approvals are waiting. Closing it denies unanswered asks but leaves server-owned work running.</p>' +
+    (row.background ? '. This run continues after the dashboard closes. Answer its durable requests in <a href="#/inbox">Approval inbox</a>.</p>' :
+      '. Keep this page open while approvals are waiting. Closing it denies unanswered asks but leaves server-owned work running.</p>') +
     (row.reason ? '<p class="notice err">' + esc(row.reason) + '</p>' : '') + session +
-    '<div class="starter-operation-approvals">' + (approvals.length ? approvals.map(function (ask) {
+    '<div class="starter-operation-approvals">' + (row.background ? '<p class="stat-sub">Background approvals use the session channel.</p>' : approvals.length ? approvals.map(function (ask) {
       return '<div class="notice warn"><div class="notice-title">Approval required</div><div class="notice-body"><code>' +
         esc(ask.action) + '</code></div><button type="button" class="btn btn-primary" data-flow-approval="' +
         esc(ask.ask_id) + '" data-approved="true">Allow</button><button type="button" class="btn" data-flow-approval="' +

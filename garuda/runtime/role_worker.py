@@ -31,7 +31,7 @@ async def execute(payload, control):
             task=request["prompt"], model=prepared.reasoning, agent=prepared.agent,
             tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
             workspace=request["workspace"], events=events, mcp_manager=prepared.mcp_manager,
-            lease_capability=control, store=store,
+            lease_capability=control, store=store, external_approvals=request.get("external_approvals", False),
             session_record={**workspace_record, "flow_step": request["flow"],
                             **({"role": role.record()} if role else {})},
             collection_model=prepared.collection, collection_policy=prepared.collection_policy)
@@ -47,6 +47,8 @@ async def execute(payload, control):
             owned_container=request.get("owned_container"),
             owned_docker=request.get("owned_docker"),
             admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
+            session_record={**workspace_record, "flow_step": request["flow"]},
+            external_approvals=request.get("external_approvals", False),
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
         meta = store.load_meta(session_id)
         if workspace_record:

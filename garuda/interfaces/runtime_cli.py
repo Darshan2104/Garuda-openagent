@@ -627,6 +627,8 @@ async def run_acp_task(
     owned_container: str | None = None,
     owned_docker: str | None = None,
     admitted_runtime: dict | None = None,
+    session_record: dict | None = None,
+    external_approvals: bool = False,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -742,6 +744,8 @@ async def run_acp_task(
             ),
         )
         began = True
+        if session_record:
+            store.update_meta(session_id, session_record)
         if worktree:
             store.update_meta(session_id, plan_meta(worktree))
         if starter_record is not None:
@@ -774,7 +778,7 @@ async def run_acp_task(
         )
         lease.start_heartbeat()
         handler, _broker = broker_approval_handler(
-            store, session_id, manifest.runtime_id, handler=approval
+            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
         )
         def make_runtime():
             runtime = build_runtime()

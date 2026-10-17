@@ -183,7 +183,6 @@ async def test_changed_source_after_run_admission_launches_no_child(run_context,
 
 
 @pytest.mark.parametrize("case,code", [
-    ("background", "starter.background_unowned"),
     ("permission", "starter.permission_exceeds_ceiling"),
     ("acp-ask", "workspace.readonly_unenforced"),
 ])
@@ -201,8 +200,7 @@ async def test_unowned_run_starts_refuse_before_any_intent(tmp_path, monkeypatch
             starter, inputs = "ask-role", {"question": "explain source.txt"}
         else:
             starter = "run-with-role"
-            options = {"bg": True} if case == "background" else {}
-            inputs = {"goal": "bounded change", **({"options": options} if options else {})}
+            inputs = {"goal": "bounded change"}
         preview = await _preview(ctx, starter, inputs)
         assert not preview["authority"]["can_start"]
         assert code in {item["code"] for item in preview["authority"]["diagnostics"]}

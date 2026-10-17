@@ -50,6 +50,7 @@ class WorkspaceLeaseGuard:
         capacity_policy=None,
         capacity_loan=None,
         mode: str = "mutating",
+        queued_admission=None,
     ):
         from garuda.workspace.lease import DEFAULT_TTL_SEC, LeaseStore
 
@@ -69,6 +70,7 @@ class WorkspaceLeaseGuard:
         self._capacity_policy = capacity_policy
         self._capacity_loan = capacity_loan
         self._reservation = None
+        self._queued_admission = queued_admission
         # "read-only" work shares the workspace with other readers and never
         # blocks or is blocked by them; it still conflicts with nothing else.
         self._mode = mode
@@ -96,12 +98,21 @@ class WorkspaceLeaseGuard:
         if self._capacity_loan is not None:
             from garuda.runtime.capacity import CapacityError
             from garuda.runtime.capacity_loan import CapacityLoan
+            from garuda.runtime.queue_capacity import QueueCapacityLoan
 
-            if type(self._capacity_loan) is not CapacityLoan:
+            if type(self._capacity_loan) not in {CapacityLoan, QueueCapacityLoan}:
                 raise CapacityError("capacity delegation requires an issued loan")
             self._capacity_loan.acquire(self._capacity_key, self.session_id)
             return
         if not self._capacity_key:
+            return
+        if self._queued_admission is not None:
+            self._queued_admission.validate()
+            self._capacity_store = self._queued_admission.queue.capacity
+            # The queue already enforced its ceiling. This must activate that
+            # exact existing slot even when its configured ceiling is unlimited.
+            self._reservation = self._capacity_store.reserve(
+                self._capacity_key, self.session_id, 1, queue_ticket=self._queued_admission.ticket)
             return
         from garuda.runtime.capacity import CapacityError, CapacityPolicy, CapacityStore, configured_ceiling
 
@@ -281,8 +292,15 @@ class BorrowedLease:
         self.workspace = capability.workspace
         self.session_id = capability.session_id
         self.leases = capability._parent.leases
+        parent = capability._parent
+        loan = None
+        if parent._queued_admission is not None and capacity_key == parent._capacity_key:
+            from garuda.runtime.queue_capacity import QueueCapacityLoan
+
+            loan = QueueCapacityLoan(parent._queued_admission, capability)
         self._capacity = WorkspaceLeaseGuard(self.workspace, self.session_id,
-                                             capacity_key=capacity_key, capacity_policy=capacity_policy)
+                                             capacity_key=capacity_key, capacity_policy=capacity_policy,
+                                             capacity_loan=loan)
 
     def _check(self) -> None:
         if (self._capability.revoked or self._capability._parent._quarantined
@@ -355,7 +373,7 @@ def session_approval_channel(store, session_id: str):
     return FileApprovalChannel(store.session_dir(session_id) / "approvals", session_id)
 
 
-def install_session_broker(permissions, store, session_id: str):
+def install_session_broker(permissions, store, session_id: str, *, external=False):
     """Route a native engine's ASK decisions through the session broker.
 
     The engine's existing interactive handler (if any) becomes the answerer,
@@ -365,7 +383,7 @@ def install_session_broker(permissions, store, session_id: str):
 
     broker = ApprovalBroker(engine=permissions, store=store,
                             channel=session_approval_channel(store, session_id))
-    broker.set_answerer(approval_answerer(permissions.approval_handler))
+    broker.set_answerer(None if external else approval_answerer(permissions.approval_handler))
     permissions.install_approval_handler(broker.handler(session_id=session_id))
     return broker
 
@@ -397,6 +415,7 @@ def broker_approval_handler(
     *,
     handler: Callable[[str], Awaitable[bool]] | None = None,
     timeout_sec: float = 300.0,
+    external: bool = False,
 ):
     """An ACP `approval_handler` that parks every agent request in a broker.
 
@@ -411,7 +430,7 @@ def broker_approval_handler(
         engine=PermissionEngine(), store=store, timeout_sec=timeout_sec,
         channel=session_approval_channel(store, session_id),
     )
-    broker.set_answerer(approval_answerer(handler))
+    broker.set_answerer(None if external else approval_answerer(handler))
     return broker.handler(session_id=session_id, runtime_id=runtime_id), broker
 
 

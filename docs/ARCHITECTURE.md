@@ -189,7 +189,17 @@ fastest way to learn the system.
    exit alone cannot release daemon resources. Fallback candidates are frozen
    with compiler source facts and checked against the ceiling; supervised status
    probes close before selection is published and passed to the child, avoiding
-   a second discovery at startup. `run_authority` still refuses background.
+   a second discovery at startup. Background run starts bind a v2 intent to the
+   existing queue and reserve the same parent session before enqueue. The detached
+   worker revalidates the frozen plan/sources after waiting, adopts its genuine
+   queue ticket and executes that owned parent. `runtime/queue_capacity.py` lends
+   the activated slot to one issued role child without a second admission;
+   the queue coordinator releases only after child and parent closure. Fallbacks
+   to another harness obtain that harness's separate capacity. Worker/session/
+   queue evidence projects progress independently of the dashboard server; v2
+   intents remain authorization records rather than a second progress store.
+   Background requests use the durable session approval channel and the existing
+   identity-checked Stop. Server shutdown does not cancel the detached worker.
    Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.

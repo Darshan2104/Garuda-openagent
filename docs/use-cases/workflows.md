@@ -40,8 +40,9 @@ refused and asks for a new preview; an interrupted or restarted operation is
 reported from durable evidence and is never automatically replayed. Follow its
 link in **Sessions** for steps, approvals and final evidence. Run-kind journeys
 show **Start run** (`run-with-role`) or **Ask role** (`ask-role`) under the same
-rules; they run as one owned parent with one role step. Worktree isolation,
-background runs and other unsupported options keep the copy command; see
+rules; they run as one owned parent with one role step. Worktree/auto isolation
+and background queue starts are supported on Linux. Background runs continue
+after dashboard shutdown, with durable approvals in the inbox; see
 [Web dashboard](../guides/web-dashboard.md#starters).
 
 Use **Sessions** to follow the resulting flow or role run. Its starter panel

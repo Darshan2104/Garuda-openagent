@@ -21,12 +21,12 @@ can run authorized configured or explicit checks on Linux while retaining their
 parent workspace owner; other hosts report verification unavailable.
 Dashboard discovery and preview remain pure. On Linux, a write-mode dashboard
 can durably start flow-kind previews through the existing flow owner, and
-foreground `run-with-role`/`ask-role` previews through one owned role-run
+`run-with-role`/`ask-role` previews through one owned role-run
 parent, including worktree/auto isolation and shared unchecked native asks.
 Read-only ACP starts retain their Docker resources under the owned role parent.
 Fallback probes retain their own supervised lifetime before the selected role
-starts. Background run starts remain a later phase
-under the
+starts. Background runs bind the existing durable queue and continue under
+a detached owned worker with file-backed approvals. See the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 
 ## Why this boundary

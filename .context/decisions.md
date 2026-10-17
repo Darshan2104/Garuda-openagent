@@ -1,5 +1,29 @@
 # Durable decisions
 
+## 2026-10-17 — Background starters belong to their detached queue worker (#337)
+
+- V2 intents bind the reserved parent UUID to the existing queue's canonical
+  scope, harness and launch digest before enqueue. Strict session metadata and
+  a bounded private launch capsule retain the same operation binding. Only the
+  first request dispatches; duplicates, lost responses and restarted servers
+  read evidence without recompiling, enqueueing or spawning.
+- The v2 intent stays `launch-authorized`: it records authorization, while the
+  worker/session/queue/closure records project progress independently of server
+  liveness. Missing/conflicting evidence remains uncertain. Queue release in
+  progress is not a terminal outcome or a replay grant.
+- The worker waits without a workspace lease, validates the saved plan/sources,
+  and adopts only its retained live queue ticket. A single-use queue loan lends
+  its activated capacity to the genuine issued role child. The queue owner
+  releases after child closure and parent workspace release; ambiguous cleanup
+  retains ownership. Other-harness fallbacks take separate capacity.
+- Background children use the existing durable approval channel and broker;
+  requests survive dashboard shutdown and retain their ceiling, expiry, nonce,
+  audit and delivery checks. Existing Stop verifies the actual worker identity.
+  Queued cancellation records successful removal before dispatch.
+- This supersedes the intermediate open-status notes below. Linux Google Chrome
+  checks now exercise native role approvals/asks, ACP worktree/background starts
+  and duplicate projection through the real forms.
+
 ## 2026-10-17 — Dashboard fallback decisions own their probes (#337)
 
 - Compilation captures every fallback candidate and its profile source facts.

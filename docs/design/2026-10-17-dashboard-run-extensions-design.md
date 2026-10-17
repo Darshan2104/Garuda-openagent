@@ -23,6 +23,8 @@ refuse. Bind the operation in session metadata before enqueue. Admission binds
 scope, queue item, runtime, launch digest and session; no task/credential enters
 the intent. Queue admission is distinct from a workspace lease epoch.
 
+The v2 intent remains `launch-authorized`; worker progress belongs to the
+strict session/queue/closure records, not to an intent phase rewrite.
 Only the initial request may enqueue/spawn. Duplicates, lost responses and
 restarts reconcile existing session/launch/queue records; they never dispatch.
 Contradictory or missing evidence yields uncertainty. Background status follows

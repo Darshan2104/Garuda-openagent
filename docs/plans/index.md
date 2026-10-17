@@ -34,6 +34,7 @@ in [#326](https://github.com/Darshan2104/Garuda-openagent/pull/326) and the sepa
 [P3 launch design](../design/2026-10-08-owned-one-click-flow-starts-design.md)
 on 2026-10-12. Trusted flow checks landed through #335. Owned Linux browser flow
 starts landed through #336; foreground run-kind starts use the owned role-run
-parent from #316.
+parent from #316, extended with background/worktree/readonly ACP/fallback
+ownership in #337.
 The revision-5 plan snapshot is unchanged; current guides describe shipped
 behavior.

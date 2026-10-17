@@ -121,10 +121,6 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
               "Preview the starter again.")
     _host_blockers(max_permission, backend_available, approval_available, block)
     options = dict(plan.options)
-    if options.get("bg"):
-        block("starter.background_unowned",
-              "Background role runs are not yet admitted from the dashboard.",
-              "Clear background, or copy the equivalent command.")
     configured = context.resolved.config.get("roles", {}).get(plan.target, {})
     # The engine applies the starter's no-edits and the role's own policy alike.
     no_edits = (bool(plan.provenance.get("no_edits"))
@@ -149,7 +145,9 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
                 "checks": [{"definition_digest": check["definition_digest"],
                             "authority": check["authority"]} for check in plan.checks]},
         "capabilities": {**_capabilities(backend_available, approval_available),
-                         "checks": "owned-acceptance" if plan.checks else "none"},
+                         "checks": "owned-acceptance" if plan.checks else "none",
+                         **({"approvals": "durable-session-channel", "queue": "owned-worker"}
+                            if options.get("bg") else {})},
     }
     return {"digest": digest(envelope), "can_start": not blockers,
             "envelope": envelope, "diagnostics": blockers}

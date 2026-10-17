@@ -111,7 +111,8 @@ hosts and unsupported run options remain copy-only.
 The same Linux write-mode dashboard shows **Start run** for a ready
 `run-with-role` preview and **Ask role** for `ask-role`. Each runs as one owned
 parent session with exactly one role step, under the same operation, digest,
-duplicate, refusal and shutdown rules as **Start flow**. The role child receives
+duplicate and refusal rules as **Start flow**. Foreground runs drain on
+server shutdown; background runs belong to their detached worker. The role child receives
 the exact previewed task, through the shared owned native/ACP role executor;
 ACP never runs through a dashboard chat. Ask-role runs read-only with the
 no-edits check and withholds output if the checkout changed. Configured and
@@ -121,9 +122,18 @@ and leases the execution checkout before launching its child, preserving the
 previewed source authority. Uncommitted source changes are not copied to a
 worktree; its session records that fact. Refused, never-admitted worktrees are
 removed after preparation settles; admitted worktrees remain for inspection.
-Background runs and permissions above
-`--max-permission` refuse before any operation is recorded; copy the equivalent
-command for those. An unchecked native ask-role takes a read-only parent lease,
+**Queue in background** creates the intent's reserved session and binds its
+operation before enqueueing. The detached Linux worker waits without a workspace
+lease, revalidates the admitted configuration and sources, then owns the role
+and any checks. It continues after tab or dashboard shutdown. Requests with the
+same operation ID inspect that session and queue binding, including after a
+restart or a lost HTTP response; they never enqueue or spawn again. Answer
+background requests in the **Approval inbox**, or with `garuda approvals`.
+**Stop** uses the recorded worker identity and waits for owned cleanup; uncertain
+closure retains capacity. Queued cancellation removes work before dispatch.
+Missing or conflicting publication is shown as uncertainty and is never retried
+automatically. Permissions above `--max-permission` still refuse before any
+operation is recorded; copy the equivalent command if that ceiling is unsuitable. An unchecked native ask-role takes a read-only parent lease,
 so it can inspect alongside an editor. Configured acceptance checks retain a
 mutating parent lease because checks may write. The authority preview discloses
 the effective lease mode; concurrent edits can still invalidate a no-edits answer.
