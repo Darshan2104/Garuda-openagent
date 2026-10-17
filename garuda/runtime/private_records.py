@@ -57,7 +57,7 @@ def open_directory(path: Path) -> int:
         raise
 
 
-def read_record(directory: int, name: str, *, versions=(1,)) -> dict | None:
+def read_record(directory: int, name: str, *, versions=(1,), limit=LIMIT) -> dict | None:
     try:
         fd = os.open(name, os.O_RDONLY | FLAGS, dir_fd=directory)
     except FileNotFoundError:
@@ -65,8 +65,8 @@ def read_record(directory: int, name: str, *, versions=(1,)) -> dict | None:
     try:
         private_file(fd)
         with os.fdopen(os.dup(fd), "rb") as handle:
-            raw = handle.read(LIMIT + 1)
-        if len(raw) > LIMIT:
+            raw = handle.read(limit + 1)
+        if len(raw) > limit:
             raise CorruptRecord("check record exceeds its bound")
         try:
             document = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_constant)

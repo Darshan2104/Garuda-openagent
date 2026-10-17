@@ -31,7 +31,7 @@ class RoleRunService:
 
     async def run_prepared(self, plan, context, *, run_session: str,
                            operation_binding: dict, on_admitted, approval_handler,
-                           permission_mode: str):
+                           permission_mode: str, background_admission=None):
         from garuda.flows import engine
         from garuda.flows.service import FlowExecutionService
         from garuda.scenarios.compile import LaunchContext
@@ -50,4 +50,4 @@ class RoleRunService:
             flow_session=run_session, operation_binding=operation_binding,
             on_admitted=on_admitted, approval_handler=approval_handler,
             permission_mode=permission_mode, checks=(), launch_kind="run",
-            session_name=plan.options.get("name"))
+            session_name=plan.options.get("name"), background_admission=background_admission)

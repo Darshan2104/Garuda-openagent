@@ -30,10 +30,24 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
     """One role's admitted identity, after the blockers shared by every launch kind."""
     role_plan = context.role_plans[role]
     configured = context.resolved.config.get("roles", {}).get(role, {})
-    if configured.get("fallback"):
-        block("starter.fallback_probe_unowned",
-              f"Role {role} has a fallback chain whose launch probe is not owned by this gateway.",
-              "Use a role without fallbacks for one-click Start.")
+    candidates = context.fallback_plans.get(role, (role_plan,))
+    if configured.get("fallback") and len(candidates) != len(configured["fallback"]) + 1:
+        block("starter.fallback_unprepared", f"Role {role} has an unresolved fallback chain.",
+              "Preview the starter again.")
+    for candidate in candidates[1:]:
+        permission = "readonly" if no_edits else candidate.permissions
+        if _PERMISSION_RANK.get(permission, 99) > _PERMISSION_RANK.get(max_permission, -1):
+            block("starter.permission_exceeds_ceiling",
+                  f"Fallback {candidate.runtime_id} for {role} exceeds the dashboard ceiling.",
+                  "Tighten the role or its agent profile.")
+        if candidate.kind == "acp" and (no_edits or permission == "readonly"):
+            import shutil
+
+            from garuda.workspace.confined_acp import Confinement
+
+            if Confinement.from_config(candidate.harness) is None or not shutil.which("docker"):
+                block("workspace.readonly_unenforced", f"Fallback {candidate.runtime_id} requires confinement.",
+                      "Configure its user confinement image and install Docker.")
     permission = _effective_permission(context, role, no_edits=no_edits)
     if (_PERMISSION_RANK.get(permission, 99)
             > _PERMISSION_RANK.get(max_permission, -1)):
@@ -41,12 +55,19 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
               f"Role {role} requests {permission}, above the dashboard ceiling {max_permission}.",
               "Tighten the role or explicitly restart the dashboard with that ceiling.")
     if role_plan.kind == "acp" and (no_edits or permission == "readonly"):
-        block("starter.acp_readonly_ownership_unavailable",
-              f"Role {role} needs read-only ACP container lifetime ownership that is unavailable.",
-              "Use a supported native role or run the equivalent command manually.")
+        import shutil
+
+        from garuda.workspace.confined_acp import Confinement
+
+        confinement = Confinement.from_config(role_plan.harness)
+        if confinement is None or not shutil.which("docker"):
+            block("workspace.readonly_unenforced",
+                  f"Role {role} requires a configured confinement image and Docker executable.",
+                  "Configure the user harness confinement image and install Docker; launch will prove confinement.")
     return {"runtime_id": role_plan.runtime_id, "kind": role_plan.kind,
             "model_id": role_plan.model_id, "role_digest": role_plan.digest,
-            "permission": permission, "write_policy": role_plan.write_policy}
+            "permission": permission, "write_policy": role_plan.write_policy,
+            **({"candidates": [candidate.record() for candidate in candidates]} if len(candidates) > 1 else {})}
 
 
 def _host_blockers(max_permission: str, backend_available: bool,
@@ -100,14 +121,6 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
               "Preview the starter again.")
     _host_blockers(max_permission, backend_available, approval_available, block)
     options = dict(plan.options)
-    if options.get("isolation", "shared") != "shared":
-        block("starter.isolation_unowned",
-              "Worktree isolation is not yet owned by dashboard role runs.",
-              "Choose shared isolation, or copy the equivalent command.")
-    if options.get("bg"):
-        block("starter.background_unowned",
-              "Background role runs are not yet admitted from the dashboard.",
-              "Clear background, or copy the equivalent command.")
     configured = context.resolved.config.get("roles", {}).get(plan.target, {})
     # The engine applies the starter's no-edits and the role's own policy alike.
     no_edits = (bool(plan.provenance.get("no_edits"))
@@ -127,11 +140,14 @@ def run_authority(plan, context, *, max_permission: str, server_epoch: str,
                       "identity": plan.provenance.get("workspace_identity")},
         "operator": {"max_permission": max_permission},
         "run": {"target": plan.target, "role": role, "no_edits": no_edits,
-                "workspace_mode": "live-checkout", "options": options,
+                "workspace_mode": options.get("isolation", "shared"), "options": options,
+                "lease_mode": "read-only" if no_edits and not plan.checks else "mutating",
                 "checks": [{"definition_digest": check["definition_digest"],
                             "authority": check["authority"]} for check in plan.checks]},
         "capabilities": {**_capabilities(backend_available, approval_available),
-                         "checks": "owned-acceptance" if plan.checks else "none"},
+                         "checks": "owned-acceptance" if plan.checks else "none",
+                         **({"approvals": "durable-session-channel", "queue": "owned-worker"}
+                            if options.get("bg") else {})},
     }
     return {"digest": digest(envelope), "can_start": not blockers,
             "envelope": envelope, "diagnostics": blockers}

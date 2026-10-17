@@ -317,6 +317,134 @@ async def test_owned_acp_readonly_refuses_before_host_cli_can_write(case, permis
 
 
 @linux
+@pytest.mark.skipif(os.getenv("GARUDA_LIVE_OWNED_DOCKER") != "1", reason="opt-in owned Docker lifecycle")
+@pytest.mark.parametrize("ending", ["normal", "cancel", "timeout", "cleanup-unavailable", "foreign-name",
+                                    "record-changed", "identity-changed", "missing-image"])
+async def test_owned_readonly_acp_proves_daemon_container_closure(case, ending, monkeypatch):
+    workspace, parent, _leases, store = case
+    workspace.chmod(0o755)
+    # Docker Desktop maps bind-mount ownership across hosts. Trust only this
+    # fixture path in a private config, never the user's global Git config.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(workspace.parent / "gitconfig"))
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", str(workspace)],
+                   cwd=workspace, check=True)
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    command = ["python", "/opt/garuda/garuda/acp/fake_agent.py", "--profile",
+               "probe-writes" if ending in {"normal", "cleanup-unavailable", "record-changed", "identity-changed"}
+               else "slow"]
+    settings.write_text(yaml.safe_dump({"runtimes": [{
+        "runtime_id": "owned-acp", "kind": "acp", "command": command, "version": "1"}],
+        "capacity": {"owned-acp": 1}}))
+    role = RolePlan("reviewer", "owned-acp", "acp", permissions="readonly", harness={
+        "confinement": {"image": ("garuda-owned-acp-fixture-missing:local" if ending == "missing-image"
+                                   else "garuda-owned-acp-fixture:local")}})
+    launch = StepLaunch(parent.session_id, "review", "reviewer", role, "review this workspace",
+                        str(workspace), parent.delegate(f"{parent.session_id}:review:1"),
+                        1, True, store, require_owned=True)
+    request = prepare_owned_step(launch, timeout=4 if ending == "timeout" else 30)
+    prefix = f"garuda-role-{request.session_id}"
+    if ending == "cleanup-unavailable":
+        from garuda.runtime.process_supervision import CleanupUncertain
+        from garuda.workspace.owned_confinement import DockerRoleOwner
+
+        original_remove = DockerRoleOwner._remove
+
+        async def unavailable(owner, name):
+            if name.endswith("-run"):
+                raise CleanupUncertain("Docker removal is unavailable")
+            await original_remove(owner, name)
+
+        monkeypatch.setattr(DockerRoleOwner, "_remove", unavailable)
+    if ending == "foreign-name":
+        subprocess.run(["docker", "create", "--name", f"{prefix}-probe", "--label",
+                        "garuda.role-owner=foreign", "--pull", "never",
+                        "garuda-owned-acp-fixture:local", "sleep", "60"], check=True, capture_output=True)
+    if ending in {"record-changed", "identity-changed"}:
+        from garuda.workspace.owned_confinement import DockerRoleOwner
+
+        original_create = DockerRoleOwner._create
+
+        async def changed(owner, kind, command):
+            identity = await original_create(owner, kind, command)
+            if kind == "run":
+                record = owner.records / ("intent.json" if ending == "record-changed" else "run.json")
+                data = json.loads(record.read_text())
+                if ending == "record-changed":
+                    data["nonce"] = "changed-after-container-creation"
+                else:
+                    data["id"] = "0" * 64
+                record.write_text(json.dumps(data))
+            return identity
+
+        monkeypatch.setattr(DockerRoleOwner, "_create", changed)
+
+    def containers(running=False):
+        result = subprocess.run(["docker", "container", "ls", "--all", "--quiet", "--no-trunc",
+                                 "--filter", f"name={prefix}" + ("-run" if running else ""),
+                                 *(["--filter", "status=running"] if running else [])],
+                                capture_output=True, check=True)
+        return result.stdout.split()
+
+    task = asyncio.create_task(execute_owned_role(request, launch.capability))
+    try:
+        if ending == "cancel":
+            deadline = asyncio.get_running_loop().time() + 20
+            while not (running := await asyncio.to_thread(containers, True)):
+                if task.done():
+                    await task
+                    pytest.fail("role ended before creating its owned container")
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(.02)
+            identity = json.loads((store.root / "owned-docker" / request.session_id / "run.json").read_text())
+            assert identity["id"].encode() in running
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif ending == "missing-image":
+            from garuda.workspace.confined_acp import ConfinementRefused
+
+            with pytest.raises(ConfinementRefused):
+                await task
+            assert not parent._quarantined
+            capacity = CapacityStore()
+            reservation = capacity.reserve("owned-acp", "refusal-released-capacity", 1)
+            capacity.release(reservation)
+        elif ending in {"timeout", "cleanup-unavailable", "foreign-name", "record-changed", "identity-changed"}:
+            from garuda.runtime.process_supervision import CleanupUncertain
+
+            with pytest.raises(CleanupUncertain):
+                await task
+            assert parent._quarantined
+            with pytest.raises(CapacityUnavailable):
+                CapacityStore().reserve("owned-acp", "must-stay-blocked", 1)
+        else:
+            result = await task
+            assert result.success and "wrote=scratch " in result.output
+            assert "refused=workspace,git" in result.output
+            assert result.closure["confinement"] == {
+                "backend": "docker", "absent": [f"{prefix}-probe", f"{prefix}-run"]}
+            assert not parent._quarantined
+        remaining = await asyncio.to_thread(containers)
+        assert bool(remaining) is (ending in {"cleanup-unavailable", "foreign-name"})
+        records = store.root / "owned-docker" / request.session_id
+        intent = json.loads((records / "intent.json").read_text())
+        assert intent["parent_id"] == parent.session_id
+        assert intent["names"] == {"probe": f"{prefix}-probe", "run": f"{prefix}-run"}
+        assert (records / "closure.json").exists() is (
+            not remaining and ending not in {"record-changed", "identity-changed"})
+        assert not (workspace / ".garuda-probe").exists()
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        # Test hygiene only, after assertions: exact fixture IDs, never names
+        # or containers outside this request's unique prefix.
+        for container in await asyncio.to_thread(containers):
+            subprocess.run(["docker", "rm", "--force", container.decode()], check=True,
+                           capture_output=True)
+
+
+@linux
 @pytest.mark.parametrize("policy", ["ask", "no-edits"])
 async def test_owned_native_preserves_actual_ask_broker_and_no_edits(case, monkeypatch, policy):
     workspace, parent, _leases, store = case

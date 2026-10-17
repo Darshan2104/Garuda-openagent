@@ -624,6 +624,11 @@ async def run_acp_task(
     capacity_loan=None,
     starter_record: dict | None = None,
     isolation: str = "shared",
+    owned_container: str | None = None,
+    owned_docker: str | None = None,
+    admitted_runtime: dict | None = None,
+    session_record: dict | None = None,
+    external_approvals: bool = False,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -648,16 +653,43 @@ async def run_acp_task(
     # A read-only ACP role runs only in proven Docker confinement (C.8a); its
     # adapter runs in the image, so no host executable is required or used.
     confinement = None
+    if owned_container is not None or owned_docker is not None:
+        import re
+
+        from garuda.runtime.role_control import RoleControlClient
+
+        if (type(lease_capability) is not RoleControlClient
+                or not isinstance(owned_container, str) or not isinstance(owned_docker, str)
+                or not os.path.isabs(owned_docker) or "\0" in owned_docker
+                or re.fullmatch(r"[0-9a-f]{64}", owned_container) is None
+                or role_plan is None or role_plan.kind != "acp" or role_plan.permissions != "readonly"):
+            raise ValueError("owned confinement requires the parent's role control and readonly role")
     if role_plan is not None and role_plan.kind == "acp" and role_plan.permissions == "readonly":
         from garuda.acp.catalog import DiscoveredRuntime
         from garuda.workspace.confined_acp import Confinement, preflight
 
         confinement = Confinement.from_config(role_plan.harness)
-        preflight(workspace, confinement)
+        if owned_container is None:
+            preflight(workspace, confinement)
         resolved_rt = catalog.registry.get(runtime_id)
         manifest = next(m for m in catalog.registry.manifests
                         if m.runtime_id == resolved_rt.runtime_id)
         record = DiscoveredRuntime(runtime_id=manifest.runtime_id, kind="acp", available=True)
+    elif admitted_runtime is not None:
+        from garuda.acp.catalog import DiscoveredRuntime
+        from garuda.runtime.role_control import RoleControlClient
+
+        if (type(lease_capability) is not RoleControlClient
+                or set(admitted_runtime) != {"runtime_id", "executable", "version"}
+                or admitted_runtime["runtime_id"] != runtime_id
+                or not isinstance(admitted_runtime["executable"], str)
+                or not os.path.isabs(admitted_runtime["executable"])
+                or not isinstance(admitted_runtime["version"], str)):
+            raise ValueError("admitted runtime must match its owned role control")
+        catalog.registry.get(runtime_id)
+        manifest = catalog.registry.manifest_for(runtime_id)
+        record = DiscoveredRuntime(runtime_id=runtime_id, kind="acp", available=True,
+                                   executable=admitted_runtime["executable"], version=admitted_runtime["version"])
     else:
         manifest, record = acp_launch_target(catalog, runtime_id)
     # A role's exact model and effort must be settable on this adapter
@@ -712,6 +744,8 @@ async def run_acp_task(
             ),
         )
         began = True
+        if session_record:
+            store.update_meta(session_id, session_record)
         if worktree:
             store.update_meta(session_id, plan_meta(worktree))
         if starter_record is not None:
@@ -744,7 +778,7 @@ async def run_acp_task(
         )
         lease.start_heartbeat()
         handler, _broker = broker_approval_handler(
-            store, session_id, manifest.runtime_id, handler=approval
+            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
         )
         def make_runtime():
             runtime = build_runtime()
@@ -756,14 +790,17 @@ async def run_acp_task(
             definition = role_plan.record().get("agent") if role_plan is not None else None
             if confinement is not None:
                 from garuda.acp.catalog import adapter_for_manifest
-                from garuda.workspace.confined_acp import CONTAINER_WORKSPACE, docker_argv
+                from garuda.workspace.confined_acp import CONTAINER_WORKSPACE, _docker_env, docker_argv
 
                 command = list(confinement.command or manifest.command)
+                argv = ([owned_docker, "start", "--attach", "--interactive", owned_container]
+                        if owned_container is not None else docker_argv(workspace, confinement, command))
                 return adapter_for_manifest(
-                    manifest, argv_override=docker_argv(workspace, confinement, command),
+                    manifest, argv_override=argv,
                     cwd=CONTAINER_WORKSPACE, store=store, approval_handler=handler,
                     persist_dir=str(store.session_dir(session_id)),
                     agent_definition=definition,
+                    extra_env=_docker_env(),
                 )
             return adapter_for_discovered(
                 manifest,

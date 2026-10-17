@@ -77,11 +77,15 @@ def prepare(workspace: Path, settings: Path, model_port: int) -> None:
         "models": {"browser": {"model": "openai/browser-flow",
                                  "api_base": f"http://127.0.0.1:{model_port}/v1"}},
         "model_bindings": {"default": {"reasoning": "browser"}},
-        "capacity": {"native": 1},
+        "capacity": {"native": 1, "browser-acp": 1},
+        "runtimes": [{"runtime_id": "browser-acp", "kind": "acp", "version": "1",
+                      "command": [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"]}],
     }))
     (settings.parent / "garuda.yaml").write_text(gy.dump({
         "version": 1,
-        "roles": {"coder": {"harness": "native", "agent": "browser-owned"}},
+        "roles": {"coder": {"harness": "native", "agent": "browser-owned"},
+                  "reviewer": {"harness": "native", "agent": "browser-owned"},
+                  "operator": {"harness": "browser-acp"}},
         "flows": {"plan-only": {"steps": [
             {"id": "plan", "role": "coder", "outputs": ["plan"]},
         ]}},

@@ -8,6 +8,7 @@ import re
 import shlex
 import stat
 from dataclasses import asdict, dataclass, replace
+from dataclasses import field as dataclass_field
 from html import escape
 from pathlib import Path
 
@@ -132,6 +133,7 @@ class LaunchContext:
     role_plans: dict[str, RolePlan]
     options: dict
     source_facts: tuple[SourceFact, ...] = ()
+    fallback_plans: dict[str, tuple[RolePlan, ...]] = dataclass_field(default_factory=dict)
 
 
 def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool = False) -> LaunchContext:
@@ -167,20 +169,27 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         missing = [target] if resolved is None or target not in resolved.config.get("roles", {}) else []
     if missing:
         raise StarterError("starter.missing_roles", f"define {', '.join(missing)} with `garuda init`")
-    role_plans = {}
+    role_plans, fallback_plans = {}, {}
     for name in names:
         selected = gy.Resolved(config=resolved.config, provenance=resolved.provenance, role=name)
         harness = resolved.config["roles"][name]["harness"]
         if catalog.registry.is_disabled(harness):
             raise StarterError("starter.runtime_disabled", f"{name}: {harness} is disabled; review settings.yaml and rerun `garuda init`")
-        plan = role_agent.bind(plan_role(selected, catalog), str(root))
-        if plan is not None and plan.permissions is None:
-            permission = None
-            if plan.agent_spec is not None:
-                permission = plan.agent_spec.resolved().leaves.get("permissions.mode")
-            plan = replace(plan, permissions=permission or "smart")
-        role_plans[name] = plan
-    return LaunchContext(resolved, catalog, kind, target, flow, source, role_plans, options)
+        from garuda.agents.fallbacks import candidates
+
+        choices = []
+        for candidate in candidates(plan_role(selected, catalog), selected, catalog):
+            plan = role_agent.bind(candidate, str(root))
+            if plan is not None and plan.permissions is None:
+                permission = (plan.agent_spec.resolved().leaves.get("permissions.mode")
+                              if plan.agent_spec is not None else None)
+                plan = replace(plan, permissions=permission or "smart")
+            choices.append(plan)
+        role_plans[name] = choices[0]
+        if len(choices) > 1:
+            fallback_plans[name] = tuple(choices)
+    return LaunchContext(resolved, catalog, kind, target, flow, source, role_plans, options,
+                         fallback_plans=fallback_plans)
 
 
 def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
@@ -244,6 +253,10 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
                   "verification": ("from-acceptance-receipt" if flow_checks_selected else
                                    "unavailable" if kind == "flow" else
                                    "from-acceptance-receipt")}
+    if context.fallback_plans:
+        provenance["fallback_candidates"] = {
+            role: [candidate.record() for candidate in choices]
+            for role, choices in context.fallback_plans.items()}
     argv = ["garuda", "flow", "run", target] if kind == "flow" else ["garuda", "run", "--role", target]
     argv += ["--task", task, "--workspace", str(root)]
     if entry.launch.get("no_edits"):

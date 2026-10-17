@@ -17,6 +17,8 @@ async def execute(payload, control):
     role = role_from_document(request["role"])
     store = SessionStore(request["sessions_root"])
     session_id = request["session_id"]
+    workspace_record = ({**request["workspace_plan"], "workspace_owner": request["workspace_owner"]}
+                        if "workspace_plan" in request else {})
     if request["kind"] == "native":
         from garuda.agents.setup import activate_agent_plan
         from garuda.core.events import EventStore
@@ -29,9 +31,9 @@ async def execute(payload, control):
             task=request["prompt"], model=prepared.reasoning, agent=prepared.agent,
             tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
             workspace=request["workspace"], events=events, mcp_manager=prepared.mcp_manager,
-            lease_capability=control, store=store,
-            session_record={"role": role.record(), "flow_step": request["flow"]} if role else
-                           {"flow_step": request["flow"]},
+            lease_capability=control, store=store, external_approvals=request.get("external_approvals", False),
+            session_record={**workspace_record, "flow_step": request["flow"],
+                            **({"role": role.record()} if role else {})},
             collection_model=prepared.collection, collection_policy=prepared.collection_policy)
         return {"session_id": session_id, "success": bool(result.success), "output": result.final_message or ""}
     if request["kind"] == "acp":
@@ -42,8 +44,15 @@ async def execute(payload, control):
             request["prompt"], runtime_id=request["manifest"]["runtime_id"], workspace=request["workspace"],
             store=store, catalog=catalog_from_document(request["manifest"]), role_plan=role,
             lease_capability=control, session_id=session_id,
+            owned_container=request.get("owned_container"),
+            owned_docker=request.get("owned_docker"),
+            admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
+            session_record={**workspace_record, "flow_step": request["flow"]},
+            external_approvals=request.get("external_approvals", False),
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
         meta = store.load_meta(session_id)
+        if workspace_record:
+            store.update_meta(session_id, workspace_record)
         return {"session_id": session_id, "success": summary.get("status") == "completed",
                 "output": str(meta.get("final_message") or "")}
     raise ValueError("unsupported role kind")

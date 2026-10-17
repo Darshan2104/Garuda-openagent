@@ -11,6 +11,23 @@ python scripts/check_docs.py
 
 Run narrow tests before broad tests. Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary, Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
 
+## Owned ACP Docker lifecycle checks
+
+On Linux with a reachable Docker daemon, build the stdlib-only protocol fixture
+and opt in to actual confinement and daemon cleanup checks:
+
+```bash
+docker build -t garuda-owned-acp-fixture:local -f tests/fixtures/owned-acp.Dockerfile .
+GARUDA_LIVE_OWNED_DOCKER=1 python3.12 -m pytest tests/test_owned_role.py tests/test_web_run_starts.py -k 'proves_daemon or dashboard_acp_ask' -q
+```
+
+These exercise source/Git write denial, usable scratch, normal exit, active
+cancellation, timeout, cleanup failure, foreign identity and resource-record
+disagreement. The fixture uses no vendor login or provider network. If the test
+runner itself is in Docker, use `--init`, make its Docker CLI/daemon reachable,
+and mount the test temporary directory at the same absolute host/container path
+so sibling containers see the fixture workspace. Ordinary pytest does not opt in.
+
 ## Documentation contract (P0.3)
 
 CI fails on broken local Markdown links, unexpected nested `README.md` files,

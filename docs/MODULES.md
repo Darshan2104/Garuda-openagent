@@ -577,6 +577,27 @@ cleanup contract; flow child launches use their parent's selected store.
 `write_policy: no-edits`), and `RoleRunService.run_prepared` passes it to the
 shared owned parent path with `launch_kind="run"`, so the engine hands the child
 the exact task and names the parent from the `name` option.
+`agents/run_workspace.py` settles workspace selection through cancellation and
+discards only newly created trees whose parent never entered execution admission
+(including a queued parent reserved before workspace selection).
+Run parents bind source authority separately from worktree execution identity;
+children receive the existing worktree metadata and its parent cleanup owner.
+`WorkspaceLeaseGuard.snapshot_lifetime` supports issued read-only role parents
+without loosening the mutating-only acceptance snapshot contract.
+`workspace/owned_confinement.py` owns exact Docker container lifetimes for
+read-only/no-edits ACP children: supervised CLI operations, nonce-labelled
+preflight and runtime containers, private `owned-docker/<child>/intent.json`
+before creation, exact IDs before container start, and `closure.json` only after
+verified absence and resource-record agreement. The child
+attaches to the parent's already-created container using its pinned Docker
+executable. Foreign identities, API ambiguity and publication failures retain
+the same workspace/capacity quarantine.
+`agents/fallback_probe.py` owns bounded pre-prompt discovery for admitted
+fallback chains. The compiler captures all candidate profiles and authority;
+the engine publishes probe intent/closure and selected identity in the parent.
+The child consumes the discovered executable/version without probing again.
+Owned role preparation also retains admitted source facts to reject configuration
+drift during probing or preparation.
 
 `core/read_model.py::starter_result` delegates selected evidence projection to
 `core/starter_read_model.py`, with selected record validation in
@@ -654,3 +675,15 @@ ruff check garuda/
 garuda run -t "List files in the current directory"          # interactive posture
 garuda run -t "..." --mode eval --model openrouter/deepseek/deepseek-v4-flash-0731   # full gate stack
 ```
+
+`scenarios/background.py` binds owned background capsules, reserved sessions and
+v2 launch intents to the existing queue before spawning. Its read-only projector
+requires agreeing strict session/launch/queue/closure evidence and never compiles,
+enqueues or launches on a duplicate or restart. `scenarios/background_worker.py`
+waits without workspace ownership, validates the frozen plan and sources, claims
+and dispatches once, then publishes closure only after workspace and queue release.
+`runtime/queue_capacity.py` lends the activated queue reservation to one actual
+issued child; ordinary capacity loans still refuse queue slots. The coordinator
+checks completed retained loan ownership before returning capacity. Background
+children install their session broker with an external file answerer; native and
+ACP requests can outlive the server and retain existing timeout/audit delivery.
