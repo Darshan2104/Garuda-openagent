@@ -147,7 +147,7 @@ class FlowStartGateway:
         plan, context = compile_with_context(
             starter_id, inputs, workspace, store=self.store)
         return {"plan": plan.to_dict(),
-                "readiness": readiness(context, starter_id=starter_id),
+                "readiness": readiness(context, starter_id=starter_id, owned=True),
                 "configuration": setup_view.configuration(context.resolved),
                 "authority": self.authority(plan, context)}
 
@@ -222,7 +222,7 @@ class FlowStartGateway:
         if authority["digest"] != spec.authority_digest:
             raise FlowStartError("starter.authority_changed",
                                  "Dashboard authority changed; preview again.")
-        state = readiness(context, starter_id=plan.starter_id)
+        state = readiness(context, starter_id=plan.starter_id, owned=True)
         if not state["can_run"]:
             raise FlowStartError("starter.not_ready",
                                  "Resolve the starter readiness diagnostics before starting.")

@@ -184,8 +184,10 @@ fastest way to learn the system.
    worktree/auto isolation before leasing, keep source and execution identities
    separate, and pass parent-owned workspace metadata to the child. Unchecked
    native asks use issued read-only lifetime ownership; acceptance snapshots
-   remain mutating-only. `run_authority` refuses background, fallback roles and
-   read-only ACP.
+   remain mutating-only. Read-only ACP uses parent-owned Docker containers with
+   private pre-launch resource intents and verified absence receipts. Worker
+   exit alone cannot release daemon resources. `run_authority` refuses background
+   and fallback roles.
    Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.

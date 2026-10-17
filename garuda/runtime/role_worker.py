@@ -44,6 +44,8 @@ async def execute(payload, control):
             request["prompt"], runtime_id=request["manifest"]["runtime_id"], workspace=request["workspace"],
             store=store, catalog=catalog_from_document(request["manifest"]), role_plan=role,
             lease_capability=control, session_id=session_id,
+            owned_container=request.get("owned_container"),
+            owned_docker=request.get("owned_docker"),
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
         meta = store.load_meta(session_id)
         if workspace_record:

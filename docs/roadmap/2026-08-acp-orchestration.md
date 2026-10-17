@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** P0, P1 and P2 delivered; P3 flow and foreground role starts support worktree isolation; background, fallback and read-only ACP extensions remain
+**Status:** P0, P1 and P2 delivered; P3 foreground starts support worktree isolation and owned read-only ACP; background and fallback extensions remain
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -23,7 +23,8 @@ Dashboard discovery and preview remain pure. On Linux, a write-mode dashboard
 can durably start flow-kind previews through the existing flow owner, and
 foreground `run-with-role`/`ask-role` previews through one owned role-run
 parent, including worktree/auto isolation and shared unchecked native asks.
-Background, fallback and read-only ACP run starts remain a later phase
+Read-only ACP starts retain their Docker resources under the owned role parent.
+Background and fallback run starts remain a later phase
 under the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 

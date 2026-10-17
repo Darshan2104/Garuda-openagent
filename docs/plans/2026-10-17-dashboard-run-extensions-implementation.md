@@ -13,6 +13,9 @@ Approved scope: [design](../design/2026-10-17-dashboard-run-extensions-design.md
    owner tests. Self-review.
 4. Freeze fallback candidates and supervise probes. Enforce selected ceiling,
    persist selection before prompting, preserve skip semantics and one prompt.
+   Capture every candidate's sources at compilation and reconcile owned role
+   preparation against those admitted facts, including configuration changes
+   during a probe, before any selected runtime starts.
    Enable only after owner tests. Self-review.
 5. Add strict v2 intents and reserved background admission. Bind metadata before
    enqueue, delegate capacity to the owned worker, reconcile without dispatch,
@@ -37,4 +40,20 @@ Owner-boundary tests passed on macOS and in Linux Docker with `--init` (required
 to give the test owner a process identity/group above PID 1). Real native/ACP
 child closure, worktree checks, shared asks, checked-ask refusal and existing
 lease/verification regressions ran. Ruff and documentation checks passed.
-Remaining steps 3–6 retain their full scope; #337 is not complete.
+## Implementation review: readonly ACP ownership
+
+Step 3 is implemented. Review checked container daemon lifetimes separately
+from host process cleanup, exact ID/nonce ownership, cancellation settlement,
+pinned Docker executable/context, create-only private resource intents and
+closure publication before release. A known preflight refusal releases capacity
+only after local and daemon closure; resource/publication ambiguity quarantines.
+Closure validation uses the already-selected role record and never reprobes a
+fallback. Dashboard readiness can use an image-only runtime without changing
+CLI-only no-edits behavior.
+
+Actual Linux/Docker checks exercised normal exit, active cancellation, timeout,
+cleanup API failure, foreign-name collision, changed resource intent and
+dashboard ask-role without a host CLI. Source/Git writes were denied and scratch
+remained writable. Starter/ACP discovery regressions, Ruff and documentation
+checks passed. Background, owned fallback probes and live Chrome role checks
+remain under steps 4–6; #337 is not complete.

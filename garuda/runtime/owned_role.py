@@ -63,10 +63,11 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     role = launch.role_plan
     if role is not None and role.kind == "acp" and (launch.no_edits or role.permissions == "readonly"):
         from garuda.runtime.roles import RoleRefused
+        from garuda.workspace.confined_acp import Confinement
 
-        raise RoleRefused("workspace.readonly_unenforced",
-                          "owned ACP read-only execution requires container lifetime ownership, "
-                          "which is not yet supported")
+        if Confinement.from_config(role.harness) is None:
+            raise RoleRefused("workspace.readonly_unenforced", "this harness has no confinement image configured")
+        role = replace(role, permissions="readonly")
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
     payload = {"version": 1, "workspace": workspace, "workspace_identity": identity, "prompt": launch.prompt,
@@ -112,7 +113,15 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
             or request.capacity_key != ("native" if payload.get("kind") == "native"
                                         else payload["manifest"]["runtime_id"])):
         raise ValueError("owned role request binding differs")
-    readonly = (payload.get("kind") == "native" and payload.get("no_edits") is True
+    confinement = None
+    if payload.get("kind") == "acp" and payload.get("role", {}).get("permissions") == "readonly":
+        from garuda.workspace.confined_acp import Confinement
+        from garuda.workspace.owned_confinement import DockerRoleOwner
+
+        confinement = DockerRoleOwner(
+            request.workspace, request.session_id,
+            Confinement.from_config(payload["role"]["harness"]), payload["manifest"]["command"])
+    readonly = confinement is not None or (payload.get("kind") == "native" and payload.get("no_edits") is True
                 and payload.get("native", {}).get("config", {}).get("permission_mode") == "readonly")
     control = RoleControl(capability, request.workspace, request.capacity_key, approval=approval,
                           capacity_policy=request.capacity_policy, readonly=readonly)
@@ -135,16 +144,26 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         raise
     process = await LinuxProcessSupervisor().prepare()
     started = False
+    activation_attempted = False
     normal_result = False
     try:
         endpoint = await control.start(process)
         started = True
+        if confinement is not None:
+            from garuda.core.sessions import SessionStore
+
+            await control.guard.race(confinement.persist(
+                SessionStore(payload["sessions_root"]), flow["flow_session"], control.parent_snapshot))
+            payload["owned_container"] = await control.guard.race(confinement.prepare())
+            payload["owned_docker"] = confinement.docker
+            await control.guard.race(validate_sources())
         bootstrap = ("import runpy,sys;sys.path.insert(0,sys.argv[1]);"
                      "runpy.run_module('garuda.runtime.role_worker',run_name='__main__')")
         command = (sys.executable, "-I", "-c", bootstrap, str(Path(__file__).resolve().parents[2]))
         execution = ProcessRequest(command, request.workspace, timeout=request.timeout,
                                    input_data=encode_document({"request": payload, "control": endpoint}),
                                    purpose="role")
+        activation_attempted = True
         await control.guard.race(process.activate(execution))
         control.activated()
         terminal = await control.guard.race(process.wait())
@@ -159,13 +178,15 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                    "parent_owner": {key: control.parent_snapshot["lease"][key]
                                     for key in ("pid", "identity", "pgid", "epoch")},
                    "process": asdict(terminal)}
+        if confinement is not None:
+            closure["confinement"] = await confinement.close()
         normal_result = True
         return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
                           result["output"], closure=closure)
     except asyncio.CancelledError:
         await process.close()
-        # ECHILD is sufficient for cancellation closure; no successful result
-        # is claimed. The flow's phase owner records cancellation separately.
+        # Local closure and the separate Docker cleanup below must both settle;
+        # no successful result is claimed for cancellation.
         normal_result = process.result is not None
         raise
     finally:
@@ -173,8 +194,20 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         try:
             await process.close()
         finally:
-            if started:
-                await control.close(closed=normal_result and process.result is not None)
+            try:
+                if confinement is not None:
+                    try:
+                        await confinement.close()
+                    except BaseException:
+                        normal_result = False
+                        if started:
+                            await control.guard.stop_heartbeat()
+                        raise
+            finally:
+                if started:
+                    no_child = (not activation_attempted and process.result is not None
+                                and process.result.command is None)
+                    await control.close(closed=(normal_result or no_child) and process.result is not None)
 
 
 async def launch_owned_step(launch):

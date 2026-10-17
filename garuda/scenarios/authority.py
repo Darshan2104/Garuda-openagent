@@ -41,9 +41,15 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
               f"Role {role} requests {permission}, above the dashboard ceiling {max_permission}.",
               "Tighten the role or explicitly restart the dashboard with that ceiling.")
     if role_plan.kind == "acp" and (no_edits or permission == "readonly"):
-        block("starter.acp_readonly_ownership_unavailable",
-              f"Role {role} needs read-only ACP container lifetime ownership that is unavailable.",
-              "Use a supported native role or run the equivalent command manually.")
+        import shutil
+
+        from garuda.workspace.confined_acp import Confinement
+
+        confinement = Confinement.from_config(role_plan.harness)
+        if confinement is None or not shutil.which("docker"):
+            block("workspace.readonly_unenforced",
+                  f"Role {role} requires a configured confinement image and Docker executable.",
+                  "Configure the user harness confinement image and install Docker; launch will prove confinement.")
     return {"runtime_id": role_plan.runtime_id, "kind": role_plan.kind,
             "model_id": role_plan.model_id, "role_digest": role_plan.digest,
             "permission": permission, "write_policy": role_plan.write_policy}

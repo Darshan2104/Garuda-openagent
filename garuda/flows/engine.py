@@ -329,7 +329,7 @@ class FlowRunner:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
 
-    def _closed_step(self, outcome: StepResult, step: dict, attempt: int) -> dict:
+    def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
         from garuda.core.acceptance_request import is_digest
 
@@ -358,11 +358,18 @@ class FlowRunner:
                 or not isinstance(process.get("command"), dict)):
             raise FlowStopped("flow.cleanup_unproved",
                               "step ended without bound descendant closure", step=step["id"])
+        confinement = closure.get("confinement")
+        if isinstance(role_record, dict) and role_record.get("kind") == "acp" and (
+                self._no_edits(step, step["role"]) or role_record.get("permissions") == "readonly"):
+            prefix = f"garuda-role-{outcome.session_id}"
+            if confinement != {"backend": "docker", "absent": [f"{prefix}-probe", f"{prefix}-run"]}:
+                raise FlowStopped("flow.cleanup_unproved", "ACP container closure is unproved", step=step["id"])
         return {key: closure[key] for key in ("version", "request_digest", "session_id",
                                              "parent_id", "step_id", "attempt",
                                              "workspace_identity", "parent_owner")} | {
             "process": {key: process[key] for key in ("supervisor", "command", "cleanup",
-                                                      "outcome", "exit_code")}}
+                                                      "outcome", "exit_code")},
+            **({"confinement": confinement} if confinement is not None else {})}
 
     def _evidence_coverage(self, done: list[dict]) -> list[dict]:
         """Tie every settled step intent to its receipt and boundary digest."""
@@ -399,7 +406,7 @@ class FlowRunner:
                 raise FlowStopped("flow.evidence_incomplete",
                                   "step receipt or boundary does not cover its intent")
             self._closed_step(StepResult(receipt["session_id"], True, "",
-                                         receipt.get("closure")), by_id[key[0]], key[1])
+                                         receipt.get("closure")), by_id[key[0]], key[1], receipt.get("role_plan"))
             coverage.append({"step": key[0], "attempt": key[1],
                              "boundary_digest": boundary["boundary_digest"]})
         return coverage
@@ -946,7 +953,7 @@ class FlowRunner:
             from garuda.runtime.process_supervision import CleanupUncertain
 
             try:
-                closure = self._closed_step(outcome, step, attempt)
+                closure = self._closed_step(outcome, step, attempt, plan.record() if plan else None)
             except FlowStopped:
                 await lease.stop_heartbeat()
                 raise

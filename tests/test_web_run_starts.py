@@ -185,7 +185,7 @@ async def test_changed_source_after_run_admission_launches_no_child(run_context,
 @pytest.mark.parametrize("case,code", [
     ("background", "starter.background_unowned"),
     ("permission", "starter.permission_exceeds_ceiling"),
-    ("acp-ask", "starter.acp_readonly_ownership_unavailable"),
+    ("acp-ask", "workspace.readonly_unenforced"),
 ])
 async def test_unowned_run_starts_refuse_before_any_intent(tmp_path, monkeypatch, case, code):
     workspace = _workspace(tmp_path)
@@ -456,6 +456,48 @@ async def test_acp_run_with_role_completes_without_live_chat(tmp_path, monkeypat
         assert len(children) == 1
         child = ctx.store.load_meta(children[0]["session_id"])
         assert child["role"]["runtime_id"] == "owned-acp"
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+
+
+@LINUX
+@pytest.mark.skipif(os.getenv("GARUDA_LIVE_OWNED_DOCKER") != "1", reason="opt-in owned Docker lifecycle")
+async def test_dashboard_acp_ask_uses_image_runtime_without_host_cli(tmp_path, monkeypatch):
+    workspace = _workspace(tmp_path)
+    workspace.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", str(workspace)],
+                   cwd=workspace, check=True)
+    gy.user_path().write_text(gy.dump({"version": 1,
+        "roles": {"reviewer": {"harness": "image-only"}},
+        "harnesses": {"image-only": {"confinement": {
+            "image": "garuda-owned-acp-fixture:local",
+            "command": ["python", "/opt/garuda/garuda/acp/fake_agent.py", "--profile", "probe-writes"]}}}}))
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
+        "runtimes": [{"runtime_id": "image-only", "kind": "acp",
+                      "command": ["/not-installed-on-host"], "version": "1"}],
+        "capacity": {"image-only": 1}}))
+    ctx = await _context(tmp_path, workspace)
+    try:
+        inputs = {"question": "review the read-only source"}
+        preview = await _preview(ctx, "ask-role", inputs)
+        assert preview["readiness"]["can_run"], preview["readiness"]["diagnostics"]
+        assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+        operation = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
+            preview, operation, "ask-role", inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _terminal(ctx, operation)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+        from garuda.flows.engine import receipts
+
+        (receipt,) = receipts(ctx.store, terminal["session_id"])
+        assert receipt["no_edits"]["result"] == "unchanged"
+        assert receipt["closure"]["confinement"]["backend"] == "docker"
+        assert len(receipt["closure"]["confinement"]["absent"]) == 2
+        assert (workspace / "source.txt").read_text() == "previewed source\n"
+        assert not (workspace / "planted.txt").exists()
     finally:
         await ctx.flow_starts.aclose()
         await ctx.live.aclose()

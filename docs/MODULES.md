@@ -583,6 +583,14 @@ Run parents bind source authority separately from worktree execution identity;
 children receive the existing worktree metadata and its parent cleanup owner.
 `WorkspaceLeaseGuard.snapshot_lifetime` supports issued read-only role parents
 without loosening the mutating-only acceptance snapshot contract.
+`workspace/owned_confinement.py` owns exact Docker container lifetimes for
+read-only/no-edits ACP children: supervised CLI operations, nonce-labelled
+preflight and runtime containers, private `owned-docker/<child>/intent.json`
+before creation, exact IDs before container start, and `closure.json` only after
+verified absence and resource-record agreement. The child
+attaches to the parent's already-created container using its pinned Docker
+executable. Foreign identities, API ambiguity and publication failures retain
+the same workspace/capacity quarantine.
 
 `core/read_model.py::starter_result` delegates selected evidence projection to
 `core/starter_read_model.py`, with selected record validation in

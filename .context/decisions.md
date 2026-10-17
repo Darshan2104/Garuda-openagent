@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-10-17 — Owned readonly ACP includes daemon resource closure (#337)
+
+- The role parent owns both confinement preflight and execution containers.
+  Private resource intents precede daemon creation; nonce labels and exact IDs
+  distinguish owned resources from foreign collisions. Supervised Docker CLI
+  calls verify absence independently of child process closure. Closure records
+  publish before lease/capacity release; missing or changed records, unavailable
+  APIs and unproved removal retain quarantine. Reading these records never
+  authorizes restart, replay or foreign cleanup.
+- The role worker attaches to an already-created container through the parent's
+  pinned Docker executable. Read-only source mounts, non-root execution and
+  bounded scratch remain required. No host harness or vendor credentials are
+  substituted. Dashboard readiness accepts image-only runtimes; CLI-only
+  no-edits behavior remains with its existing owner.
+
 ## 2026-10-17 — Dashboard run workspace and read-only lifetime ownership (#337)
 
 - Run parents select worktree/auto isolation before leasing through the shared

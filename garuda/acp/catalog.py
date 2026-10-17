@@ -554,6 +554,7 @@ def adapter_for_manifest(
     persist_dir: str | None = None,
     metrics=None,
     agent_definition: dict | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -561,8 +562,10 @@ def adapter_for_manifest(
     `adapter_for_discovered`); it replaces the manifest's bare command, and no
     second PATH lookup happens here, so a PATH change after discovery cannot
     substitute a different binary. Without it the factory refuses rather than
-    re-resolving. ``argv_override`` is only the deterministic test seam for the
-    protocol fixture. `cwd` is the absolute session root sent in `session/new`;
+    re-resolving. ``argv_override`` is used by trusted confinement owners and
+    deterministic protocol fixtures; ``extra_env`` carries the Docker CLI's
+    configured context without forwarding it into the agent container.
+    `cwd` is the absolute session root sent in `session/new`;
     launch paths pass the workspace so the harness never defaults to Garuda's
     own directory. `store` binds the child and active segment to the session
     at start; `approval_handler` answers `session/request_permission` (launch
@@ -574,6 +577,7 @@ def adapter_for_manifest(
     return AcpRuntime(
         argv,
         runtime_id=manifest.runtime_id,
+        extra_env=extra_env,
         policy=policy,
         cwd=cwd,
         setup_hint=manifest.setup,

@@ -293,3 +293,7 @@ a worktree only when the source has a mutating owner. Source dirt is disclosed
 and is not copied. The resulting parent and child sessions name the selected
 worktree. An unchecked native **Ask a specialist** shares a read-only parent
 lease with an editor; configured acceptance checks require exclusive ownership.
+An ACP specialist requires Docker and a user-configured confinement image.
+Its adapter may be installed only inside the image. The parent verifies the
+read-only source mount and owns the container until removal is proved; no host
+runtime or host vendor credentials are substituted.
