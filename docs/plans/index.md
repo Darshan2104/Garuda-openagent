@@ -5,6 +5,8 @@ each record's status: a plan can include behavior that has not shipped. Use the
 current guides for command reference and the [open backlog](../BACKLOG.md) and
 linked GitHub issues for open work.
 
+- [Dashboard run extensions](2026-10-17-dashboard-run-extensions-implementation.md) — approved #337 scope and owner-boundary validation sequence.
+
 - [Ready-to-use workflow scenarios](2026-10-06-ready-to-use-workflow-scenarios.md) — revision 5; P0, P1, P2, flow-kind P3 and foreground run-kind P3 (#316) delivered; tracked in [epic #302](https://github.com/Darshan2104/Garuda-openagent/issues/302).
 - [Starter P0 contract confirmation](2026-10-07-starter-p0-contracts.md) — current-main evidence and implementation constraints for the first CLI release.
 - [Owned asynchronous acceptance runner](2026-10-12-owned-acceptance-runner-implementation.md) — internal Linux process/receipt owner for #312, now used by #313 flow finalization.
