@@ -49,6 +49,8 @@ refuse even when a later heredoc or malformed quote confuses the scanner.
 Read-only screening also refuses tree's recursive HTML file generation (`-R`).
 Path rules compare literal and lexically normalized workspace-relative and
 absolute spellings, including operands relative to a command's explicit `cwd`.
+The active root is scoped to each async run and restored on exit, so concurrent
+runs can share a policy without changing each other's path decisions.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.
 Lazy `use_tool` calls resolve into the shared runner before target hooks, required

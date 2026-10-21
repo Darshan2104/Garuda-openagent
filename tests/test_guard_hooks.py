@@ -227,3 +227,35 @@ async def test_absolute_path_rules_use_execution_workspace_when_process_cwd_diff
     messages = [m for m in result.messages if m.tool_call_id == "c"]
     assert messages and "Permission denied" in messages[0].content
     assert "hidden content" not in messages[0].content
+
+
+async def test_concurrent_runs_keep_shared_path_policy_bound_to_each_workspace(tmp_path):
+    import asyncio
+
+    ready = asyncio.Barrier(2)
+    permissions = PermissionEngine(path_rules={"deny": ["secrets/**"]})
+    original_policy = permissions.snapshot_policy()
+
+    class SynchronizedModel(ScriptModel):
+        async def complete(self, messages, **kwargs):
+            if len(self._responses) == 2:
+                await ready.wait()
+            return await super().complete(messages, **kwargs)
+
+    async def run_in(name):
+        workspace = tmp_path / name
+        secret = workspace / "secrets" / "key"
+        secret.parent.mkdir(parents=True)
+        secret.write_text(f"hidden-{name}")
+        result = await DefaultAgent().run(
+            task="t", model=SynchronizedModel([_call("read_file", path=str(secret)), _done()]),
+            env=LocalEnvironment(workspace), tools=default_tools(),
+            permissions=permissions, config=AgentConfig(max_turns=3, enable_verifier=False),
+        )
+        message = next(m for m in result.messages if m.tool_call_id == "c")
+        assert "Permission denied" in message.content
+        assert f"hidden-{name}" not in message.content
+
+    async with asyncio.timeout(10):
+        await asyncio.gather(run_in("first"), run_in("second"))
+    assert permissions.snapshot_policy() == original_policy

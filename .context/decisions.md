@@ -1889,8 +1889,9 @@ Discovered targets enter ToolRunner's ordinary screening and execution lifecycle
 wrapper permission checks do not replace target hooks, validation or accounting.
 Parallel eligibility is decided again after hooks. Binary tools use the
 Environment.read_bytes protocol under the backend's text-file path policy.
-Permission rules normalize lexical path spellings against the executing workspace;
-symlink targets and broad shell results retain the documented guardrail limits.
+Permission rules normalize lexical path spellings against an async-run-local
+executing workspace root, restoring the prior binding on exit; shared permission
+engines cannot overwrite another run's root. Symlink targets and broad shell results retain the documented guardrail limits.
 Persistent-shell cancellation closes the owned process group before releasing its
 command lock; the next command gets a fresh shell, and unconfirmed cleanup refuses
 reuse. No permission check is described as a confinement boundary.

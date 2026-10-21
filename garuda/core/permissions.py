@@ -3,11 +3,25 @@ import os
 import posixpath
 import re
 import shlex
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable
 
 ApprovalHandler = Callable[[str], Awaitable[bool]]
+
+_active_workspace: ContextVar[str | None] = ContextVar("permission_workspace", default=None)
+
+
+@contextmanager
+def permission_workspace(workspace_root: str):
+    """Bind path screening to this async run without mutating shared policies."""
+    token = _active_workspace.set(os.path.abspath(workspace_root))
+    try:
+        yield
+    finally:
+        _active_workspace.reset(token)
 
 
 class PermissionDecision(str, Enum):
@@ -221,7 +235,7 @@ class PermissionEngine:
         workspace_root: str | Path | None = None,
     ):
         self._mode = mode
-        self._workspace_root = os.path.abspath(workspace_root or Path.cwd())
+        self._configured_workspace_root = os.path.abspath(workspace_root or Path.cwd())
         self._tool_rules = tool_rules or {}
         self._path_rules = path_rules or {}
         self._bash_rules = bash_rules or {}
@@ -271,9 +285,9 @@ class PermissionEngine:
             return PermissionDecision.ALLOW
         return PermissionDecision.ALLOW
 
-    def bind_workspace(self, workspace_root: str) -> None:
-        """Use the executing environment's root, including container paths."""
-        self._workspace_root = os.path.abspath(workspace_root)
+    @property
+    def _workspace_root(self) -> str:
+        return _active_workspace.get() or self._configured_workspace_root
 
     def _path_matches(self, path: str, pattern: str, cwd: str | None = None) -> bool:
         base = os.path.join(self._workspace_root, cwd or "")
@@ -478,10 +492,6 @@ class DelegatedPermissionEngine:
         self._child = child
         self._parent = parent
         self._handler_override: ApprovalHandler | None = None
-
-    def bind_workspace(self, workspace_root: str) -> None:
-        self._child.bind_workspace(workspace_root)
-        self._parent.bind_workspace(workspace_root)
 
     @property
     def child(self) -> PermissionEngine:

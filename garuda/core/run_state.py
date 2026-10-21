@@ -637,8 +637,6 @@ async def prepare_run(
     if events.model_name is None:
         events.model_name = model.model_name
     permissions = permissions or PermissionEngine(mode=config.permission_mode)
-    if hasattr(permissions, "bind_workspace"):
-        permissions.bind_workspace(env.workspace_root)
     hooks = hooks or HookRegistry()
     # Every environment touch from here on is screened for transport-level
     # death, so a vanished container aborts the run instead of producing a
