@@ -188,6 +188,15 @@ Tree's recursive HTML output (`-R`) is refused alongside explicit output paths.
 Smart mode screens both original and joined shell continuations. Incomplete
 tokenization, including heredoc bodies that confuse the command scanner, requires
 approval even with an allow prefix; detectable dangerous commands still refuse.
+An allow prefix must match both command spellings; a multiline command may still
+need approval under an ask rule. A `#` inside a word cannot hide later commands.
+Path rules normalize `./`, `..`, and absolute paths against the workspace root.
+Image and document readers follow the environment's file-path policy, including
+local workspace confinement. Web fetches reject non-global addresses, including
+shared address space (`100.64.0.0/10`), on initial requests and redirects.
+Cancelling a persistent-shell command closes its process group before the next
+call, which starts with fresh shell state. A per-call `cwd` also accepts trailing
+shell comments without losing the session's state.
 Cancelling a stateless local command attempts process-group cleanup and settles
 its pipe readers before returning cancellation. If process cleanup fails, the
 original cancellation retains that failure as its cause. These checks remain

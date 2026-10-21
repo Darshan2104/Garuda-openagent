@@ -1876,3 +1876,22 @@ publication retains quarantine. Resume validates a complete published commitment
 or classifies the durable unfinished phase read-only; it never launches, signals
 or infers a check from completed flow steps. A possibly launched or incompletely
 published check therefore requires reconciliation instead of automatic replay.
+
+## 2026-10-21 — Keep tool and launch authority at their existing owners
+
+Restricted JSON-RPC clients may select tasks and admitted agent names, but cannot
+change the operator's workspace/backend, Docker host/image, agent directory or MCP
+config. An explicit agent allowlist or permission ceiling enables this restriction;
+matching configured values remain accepted. MCP config selection can authorize
+host subprocesses, so it must not become request-owned in a restricted service.
+
+Discovered targets enter ToolRunner's ordinary screening and execution lifecycle;
+wrapper permission checks do not replace target hooks, validation or accounting.
+Parallel eligibility is decided again after hooks. Binary tools use the
+Environment.read_bytes protocol under the backend's text-file path policy.
+Permission rules normalize lexical path spellings against an async-run-local
+executing workspace root, restoring the prior binding on exit; shared permission
+engines cannot overwrite another run's root. Symlink targets and broad shell results retain the documented guardrail limits.
+Persistent-shell cancellation closes the owned process group before releasing its
+command lock; the next command gets a fresh shell, and unconfirmed cleanup refuses
+reuse. No permission check is described as a confinement boundary.

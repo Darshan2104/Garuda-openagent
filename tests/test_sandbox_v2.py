@@ -139,7 +139,8 @@ def test_sandbox_allows_unconfined_when_not_required(monkeypatch, tmp_path: Path
 # --workspace-kind sandbox. These tests don't need sandbox-exec/bwrap present.
 
 
-async def test_sandbox_read_file_blocks_symlink_escape(tmp_path: Path):
+@pytest.mark.parametrize("operation", ["read_file", "read_bytes"])
+async def test_sandbox_file_reads_block_symlink_escape(tmp_path: Path, operation):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("TOP SECRET", encoding="utf-8")
@@ -150,7 +151,7 @@ async def test_sandbox_read_file_blocks_symlink_escape(tmp_path: Path):
 
     env = SandboxEnvironment(workspace_root=workspace, policy=SandboxPolicy(require_sandbox=False))
     with pytest.raises(PermissionError):
-        await env.read_file("escape/secret.txt")
+        await getattr(env, operation)("escape/secret.txt")
 
 
 async def test_sandbox_write_file_blocks_symlink_escape(tmp_path: Path):

@@ -235,6 +235,10 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
     permission mode); anything looser is refused with `agent.narrow_refused`.
     See [structured JSON output](customize.md#get-structured-json-back).
 
+Custom environments implement `read_bytes(path)` alongside `read_file(path)` and
+`write_file(path, content)`; image, PDF and spreadsheet tools use it under the
+same backend file-path policy.
+
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
@@ -301,6 +305,11 @@ garuda serve --workspace . --agent build --allow-agent build --allow-agent revie
 - `--permission-ceiling` is the loosest mode a requested agent may run with
   (default: that of `--agent`), so naming `garuda/harbor` can't raise the
   server's authority.
+- With either limit configured, launch settings stay with the operator: requests
+  cannot change `workspace`, `workspace_kind`, `docker_host`, `docker_image`,
+  `agents_dir`, or `mcp_config`. Repeating the configured value is accepted.
+  Choose these settings when starting the server. Without either explicit limit,
+  authenticated callers retain control of these launch settings.
 
 ---
 

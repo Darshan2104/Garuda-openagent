@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import contextlib
 import math
 import shlex
@@ -192,6 +193,14 @@ class DockerEnvironment:
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
         return result.stdout
+
+    async def read_bytes(self, path: str) -> bytes:
+        target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
+        # No login shell: profile banners must not corrupt the encoded content.
+        result = await self._exec_argv(["sh", "-c", f"base64 < {shlex.quote(target)}"])
+        if result.exit_code != 0:
+            raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
+        return base64.b64decode(result.stdout)
 
     async def write_file(self, path: str, content: str) -> None:
         temp = Path(tempfile.gettempdir()) / f"garuda-upload-{uuid.uuid4().hex}.txt"

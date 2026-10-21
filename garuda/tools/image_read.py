@@ -1,5 +1,5 @@
+import base64
 import mimetypes
-import shlex
 
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
@@ -44,12 +44,16 @@ class ImageReadTool:
             return ToolResult(tool_call_id="", content=f"Not an image file: {path}", is_error=True)
 
         # Read bytes through the environment (portable across docker/remote).
-        result = await env.execute(f"base64 < {shlex.quote(path)}", timeout=30.0)
-        if result.exit_code != 0:
+        try:
+            data = await env.read_bytes(path)
+        except PermissionError as exc:
+            return ToolResult(tool_call_id="", content=str(exc), is_error=True,
+                              metadata={"permission_denied": True})
+        except (FileNotFoundError, IsADirectoryError):
             return ToolResult(
                 tool_call_id="", content=f"Image not found or unreadable: {path}", is_error=True
             )
-        encoded = "".join(result.stdout.split())
+        encoded = base64.b64encode(data).decode("ascii")
         if not encoded:
             return ToolResult(tool_call_id="", content=f"Image is empty: {path}", is_error=True)
         if len(encoded) > MAX_IMAGE_B64_CHARS:

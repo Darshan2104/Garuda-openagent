@@ -132,7 +132,8 @@ class UseToolTool:
     def __init__(self, tools: dict[str, Tool]):
         self._tools = tools
 
-    async def execute(self, arguments: dict, env: Environment, ctx: ToolContext) -> ToolResult:
+    def resolve(self, arguments: dict, ctx: ToolContext) -> tuple[Tool, dict] | ToolResult:
+        """Resolve a target without executing it; the runner owns its lifecycle."""
         name = arguments.get("name")
         if not name or not isinstance(name, str):
             return ToolResult(
@@ -149,7 +150,7 @@ class UseToolTool:
                 ),
                 is_error=True,
             )
-        tool_args = arguments.get("arguments") or {}
+        tool_args = arguments.get("arguments", {})
         if not isinstance(tool_args, dict):
             return ToolResult(
                 tool_call_id="",
@@ -172,10 +173,18 @@ class UseToolTool:
         if name in getattr(ctx, "removed_tools", frozenset()):
             return ToolResult(tool_call_id="", is_error=True,
                               content=f"{name} was removed from this agent's tools")
-        # Re-screen the *target* tool through the permission engine. The agent loop
-        # only evaluated "use_tool" (always allowed); without this, a per-tool deny/ask
-        # rule on the underlying tool would be silently bypassed whenever it is reached
-        # via use_tool (i.e. in lazy-discovery mode). Mirrors the loop's own screen.
+        if isinstance(tool, UseToolTool):
+            return ToolResult(tool_call_id="", content="Nested use_tool dispatch is not supported.", is_error=True)
+        return tool, tool_args
+
+    async def execute(self, arguments: dict, env: Environment, ctx: ToolContext) -> ToolResult:
+        resolved = self.resolve(arguments, ctx)
+        if isinstance(resolved, ToolResult):
+            return resolved
+        tool, tool_args = resolved
+        name = tool.name
+        # Standalone callers retain permission screening. Native runs resolve
+        # this wrapper in ToolRunner.screen and use the entire target lifecycle.
         if ctx.permissions is not None:
             allowed, reason = await ctx.permissions.evaluate_tool_call(name, tool_args)
             if not allowed:

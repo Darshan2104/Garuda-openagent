@@ -47,8 +47,23 @@ Smart command screening checks the original text and a continuation-joined form.
 Tokenization uncertainty requires approval; recognized dangerous commands still
 refuse even when a later heredoc or malformed quote confuses the scanner.
 Read-only screening also refuses tree's recursive HTML file generation (`-R`).
+Path rules compare literal and lexically normalized workspace-relative and
+absolute spellings, including operands relative to a command's explicit `cwd`.
+The active root is scoped to each async run and restored on exit, so concurrent
+runs can share a policy without changing each other's path decisions.
+Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
+backend's file-path policy instead of reading through an unchecked shell command.
+Lazy `use_tool` calls resolve into the shared runner before target hooks, required
+arguments, memo, ledger and event handling. The parallel runner reclassifies calls
+after hooks; a batch containing a rewritten mutation runs sequentially.
 Stateless local cancellation settles readers and retains cleanup failures as the
 original cancellation's cause rather than replacing the cancellation outcome.
+Persistent-shell cancellation closes the process group while holding the command
+lock, discards the interrupted frame and starts a new shell on the next call.
+Failed cleanup refuses further commands until cleanup succeeds.
+A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
+request overrides of workspace, backend, Docker host/image, agent directory and
+MCP configuration before activation. These settings remain operator-owned.
 
 ## The run path
 

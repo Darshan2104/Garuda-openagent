@@ -170,6 +170,10 @@ class SandboxEnvironment:
         self._confine_real_path(path)
         return await self._inner.read_file(path)
 
+    async def read_bytes(self, path: str) -> bytes:
+        self._confine_real_path(path)
+        return await self._inner.read_bytes(path)
+
     async def write_file(self, path: str, content: str) -> None:
         self._confine_real_path(path)
         return await self._inner.write_file(path, content)

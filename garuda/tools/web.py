@@ -58,8 +58,7 @@ def _address_error(raw: str) -> str | None:
         candidates.extend(teredo)
     for candidate in candidates:
         if (
-            candidate.is_private or candidate.is_loopback or candidate.is_link_local
-            or candidate.is_reserved or candidate.is_multicast or candidate.is_unspecified
+            not candidate.is_global or candidate.is_reserved or candidate.is_multicast
         ):
             return (
                 f"resolves to a non-public address ({candidate}); "

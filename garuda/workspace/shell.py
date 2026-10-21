@@ -6,7 +6,8 @@ calls — matching how a developer's terminal behaves. Commands are framed with 
 unique end marker so output and the exit code are captured reliably; stderr is
 merged into stdout (a terminal shows both). On timeout the running command is
 interrupted (SIGINT to the process group); if the shell is wedged it is killed
-and respawned (state is lost only on that failure path).
+and respawned (state is lost on that failure path). Cancellation closes the
+process group before another call can run; that next call starts with fresh state.
 """
 
 import asyncio
@@ -25,11 +26,14 @@ class PersistentShell:
         self._env = env
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        self._cleanup_pending = False
 
     async def _ensure_started(self) -> None:
+        if self._cleanup_pending:
+            raise RuntimeError("Previous shell cleanup is incomplete; refusing another command")
         if self._proc is not None and self._proc.returncode is None:
             return
-        self._proc = await asyncio.create_subprocess_exec(
+        launch = asyncio.create_task(asyncio.create_subprocess_exec(
             "bash",
             "--norc",
             "--noprofile",
@@ -39,11 +43,40 @@ class PersistentShell:
             cwd=self._cwd,
             env=self._env,
             start_new_session=True,  # own process group, so SIGINT/kill hit children too
-        )
+        ))
+        try:
+            self._proc = await asyncio.shield(launch)
+        except asyncio.CancelledError as cancelled:
+            # Retain ownership even when cancellation races process creation.
+            try:
+                while not launch.done():
+                    try:
+                        await asyncio.shield(launch)
+                    except asyncio.CancelledError:
+                        continue
+                self._proc = launch.result()
+            except Exception as exc:
+                raise cancelled from exc
+            raise
 
     async def run(self, command: str, timeout: float | None = 120.0) -> ExecResult:
         async with self._lock:  # one command at a time on a single shared shell
-            return await self._run_locked(command, timeout)
+            try:
+                return await self._run_locked(command, timeout)
+            except asyncio.CancelledError as cancelled:
+                # Discard the cancelled frame and all its output before releasing
+                # the lock. The next call starts a fresh shell, never a stale read.
+                cleanup = asyncio.create_task(self.close())
+                try:
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            continue
+                    cleanup.result()
+                except Exception as exc:
+                    raise cancelled from exc
+                raise
 
     async def _run_locked(self, command: str, timeout: float | None) -> ExecResult:
         await self._ensure_started()
@@ -105,9 +138,9 @@ class PersistentShell:
             lines.append(line)
 
     def _signal(self, sig: int) -> None:
-        if self._proc and self._proc.returncode is None:
+        if self._proc is not None:
             try:
-                os.killpg(os.getpgid(self._proc.pid), sig)
+                os.killpg(self._proc.pid, sig)
             except (ProcessLookupError, PermissionError):
                 pass
 
@@ -124,12 +157,14 @@ class PersistentShell:
     async def close(self) -> None:
         if self._proc is None:
             return
+        self._cleanup_pending = True
         self._signal(signal.SIGKILL)
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
-        except (asyncio.TimeoutError, TimeoutError, ProcessLookupError):
+        except ProcessLookupError:
             pass
         self._proc = None
+        self._cleanup_pending = False
 
 
 class _ShellClosed(Exception):

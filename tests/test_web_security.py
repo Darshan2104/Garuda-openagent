@@ -131,7 +131,7 @@ def test_a_state_changing_request_must_carry_an_origin(method):
 
 
 def test_a_missing_or_wrong_token_is_unauthorized():
-    for provided in (None, "", "not-the-token"):
+    for provided in (None, "", "not-the-token", "café", "\u2603"):
         response = _refuse(token=provided)
         assert response is not None and response.status == 401, provided
         assert _code(response) == "unauthorized"

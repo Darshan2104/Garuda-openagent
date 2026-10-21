@@ -54,7 +54,7 @@ def ceiling_fingerprint(engine) -> str:
     """A digest of what the permission ceiling would decide."""
     parts = []
     for name in ("_mode", "_tool_rules", "_bash_rules", "_path_rules", "_allow_prefixes",
-                 "_deny_bash", "_ask_bash", "_deny_paths", "_ask_paths"):
+                 "_deny_bash", "_ask_bash", "_deny_paths", "_ask_paths", "_workspace_root"):
         parts.append(repr(getattr(engine, name, None)))
     parent = getattr(engine, "_parent", None)
     if parent is not None:

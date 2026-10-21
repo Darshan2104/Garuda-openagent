@@ -996,6 +996,7 @@ class CollectionCoordinator:
         profile_bash_rules: dict[str, list[str]] | None = None,
     ) -> tuple[list[Tool], CollectionPermissionCeiling]:
         child_permissions = PermissionEngine(
+            workspace_root=self.env.workspace_root,
             mode="readonly",
             tool_rules=profile_tool_rules,
             path_rules=profile_path_rules,

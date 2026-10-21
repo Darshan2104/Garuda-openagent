@@ -40,7 +40,8 @@ just in source. See `workspace/sandbox_policy.py`.
 **Permission path rules are guardrails, not confinement.** Argument screening
 cannot see a command's *results*, so a broad `grep '' .` still surfaces content a
 path rule denies. Same class: deny regexes are best-effort — shell expansion and
-indirection beat any regex. The OS sandbox and `readonly` mode are the boundary.
+indirection beat any regex. Permission rules and `readonly` remain guardrails;
+use a Docker workspace when confinement is required.
 
 **`pane_delta` falls back to full scrollback on a prefix miss.** A fidelity
 trade-off — more output, never less. Not a defect.

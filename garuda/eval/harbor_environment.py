@@ -1,5 +1,6 @@
 """Bridge Harbor task environments to Garuda's Environment protocol."""
 
+import base64
 import math
 import shlex
 import tempfile
@@ -61,6 +62,13 @@ class HarborEnvironmentAdapter:
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr or f"Cannot read {resolved}")
         return result.stdout
+
+    async def read_bytes(self, path: str) -> bytes:
+        resolved = self._resolve_path(path)
+        result = await self.execute(f"base64 < {shlex.quote(resolved)}")
+        if result.exit_code != 0:
+            raise FileNotFoundError(result.stderr or f"Cannot read {resolved}")
+        return base64.b64decode(result.stdout)
 
     async def write_file(self, path: str, content: str) -> None:
         resolved = self._resolve_path(path)

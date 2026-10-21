@@ -24,7 +24,7 @@ from garuda.context.manager import ContextManager
 from garuda.core.completion import CONTRACT_REJECT_LIMIT
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
-from garuda.core.permissions import PermissionEngine
+from garuda.core.permissions import PermissionEngine, permission_workspace
 from garuda.core.run_state import RunState, prepare_run
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
@@ -113,68 +113,69 @@ class DefaultAgent:
         collection_policy=None,
         allowed_tool_effects=None,
     ) -> AgentResult:
-        state = await prepare_run(
-            task=task,
-            profile_name=self._profile_name,
-            model=model,
-            env=env,
-            tools=tools,
-            config=config,
-            events=events,
-            permissions=permissions,
-            hooks=hooks,
-            subagent_runner=subagent_runner,
-            agents_dir=agents_dir,
-            context=context,
-            checkpoint=checkpoint,
-            buffer=buffer,
-            emit_session_events=emit_session_events,
-            state_checkpoint=state_checkpoint,
-            pack_manager=pack_manager,
-            pack_source_runtime=pack_source_runtime,
-            pack_git_evidence=pack_git_evidence,
-            initial_state=initial_state,
-            workspace_delta_loader=workspace_delta_loader,
-            terminal_strategy=terminal_strategy,
-            collection_model=collection_model,
-            collection_policy=collection_policy,
-            allowed_tool_effects=allowed_tool_effects,
-        )
+        with permission_workspace(env.workspace_root):
+            state = await prepare_run(
+                task=task,
+                profile_name=self._profile_name,
+                model=model,
+                env=env,
+                tools=tools,
+                config=config,
+                events=events,
+                permissions=permissions,
+                hooks=hooks,
+                subagent_runner=subagent_runner,
+                agents_dir=agents_dir,
+                context=context,
+                checkpoint=checkpoint,
+                buffer=buffer,
+                emit_session_events=emit_session_events,
+                state_checkpoint=state_checkpoint,
+                pack_manager=pack_manager,
+                pack_source_runtime=pack_source_runtime,
+                pack_git_evidence=pack_git_evidence,
+                initial_state=initial_state,
+                workspace_delta_loader=workspace_delta_loader,
+                terminal_strategy=terminal_strategy,
+                collection_model=collection_model,
+                collection_policy=collection_policy,
+                allowed_tool_effects=allowed_tool_effects,
+            )
 
-        # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
-        # run's store for as long as it runs.
-        accounting_token = accounting.bind(state.events)
-        try:
-            turn = 0
-            for turn in range(1, state.config.max_turns + 1):
-                state.turn = turn
-                # Opened before compaction so this turn's record owns the compaction
-                # cost. Compaction happens *because* of the history this turn inherited,
-                # and attributing it to the previous turn would make the turn that paid
-                # for it look cheap.
-                state.metrics.open_turn(turn)
+            # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
+            # run's store for as long as it runs.
+            accounting_token = accounting.bind(state.events)
+            try:
+                turn = 0
+                for turn in range(1, state.config.max_turns + 1):
+                    state.turn = turn
+                    # Opened before compaction so this turn's record owns the compaction
+                    # cost. Compaction happens *because* of the history this turn inherited,
+                    # and attributing it to the previous turn would make the turn that paid
+                    # for it look cheap.
+                    state.metrics.open_turn(turn)
 
-                await state.compact_if_needed(turn)
+                    await state.compact_if_needed(turn)
 
-                state.steering.flush(state.context)
-                state.save_checkpoint()
+                    state.steering.flush(state.context)
+                    state.save_checkpoint()
 
-                should_stop, _ = state.steering.open_turn(turn, state.context, state.events)
-                if should_stop:
-                    break
+                    should_stop, _ = state.steering.open_turn(turn, state.context, state.events)
+                    if should_stop:
+                        break
 
-                outcome = await self._run_turn(state, model, turn)
-                # Emitted after the turn's work, so a trajectory carries its own timing
-                # without a consumer having to difference event timestamps. A turn that
-                # ended the run has already flushed its own record (see
-                # RunState.flush_turn_metrics), and this is then a no-op.
-                state.flush_turn_metrics()
-                if outcome is not None:
-                    return outcome
+                    outcome = await self._run_turn(state, model, turn)
+                    # Emitted after the turn's work, so a trajectory carries its own timing
+                    # without a consumer having to difference event timestamps. A turn that
+                    # ended the run has already flushed its own record (see
+                    # RunState.flush_turn_metrics), and this is then a no-op.
+                    state.flush_turn_metrics()
+                    if outcome is not None:
+                        return outcome
 
-            return await self._final_submission(state, model, turn)
-        finally:
-            accounting.reset(accounting_token)
+                return await self._final_submission(state, model, turn)
+            finally:
+                accounting.reset(accounting_token)
 
     async def _final_submission(
         self, state: RunState, model: Model, turn: int

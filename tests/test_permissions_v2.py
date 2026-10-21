@@ -268,9 +268,8 @@ async def test_root_removal_is_denied_even_when_approval_is_granted(command):
     "pytest \\\ntests/a.py -q",
     "py\\\ntest tests/a.py -q",
 ])
-@pytest.mark.parametrize("rules", [{}, {"allow_prefixes": ["pytest"], "ask": [".*"]}])
-async def test_smart_mode_allows_ordinary_shell_continuations(command, rules):
-    engine = PermissionEngine(mode="smart", bash_rules=rules)
+async def test_smart_mode_allows_ordinary_shell_continuations(command):
+    engine = PermissionEngine(mode="smart")
     allowed, reason = await engine.evaluate_tool_call("bash", {"command": command})
     assert allowed and reason is None
 
@@ -302,3 +301,77 @@ async def test_custom_command_denial_covers_continued_executable_names():
     engine = PermissionEngine(mode="smart", bash_rules={"deny": [r"^forbidden\b"]})
     allowed, _ = await engine.evaluate_tool_call("bash", {"command": "for\\\nbidden file"})
     assert not allowed
+
+
+@pytest.mark.parametrize("spelling", ["secrets/key", "./secrets/key", "a/../secrets/key", "absolute"])
+@pytest.mark.parametrize("tool", ["read_file", "image_read", "bash"])
+async def test_workspace_relative_denial_covers_equivalent_paths(tmp_path, monkeypatch, spelling, tool):
+    monkeypatch.chdir(tmp_path)
+    path = str(tmp_path / "secrets/key") if spelling == "absolute" else spelling
+    engine = PermissionEngine(path_rules={"deny": ["secrets/**"]})
+    args = {"command": f"cat {path}"} if tool == "bash" else {"path": path}
+    allowed, _ = await engine.evaluate_tool_call(tool, args)
+    assert not allowed
+
+
+async def test_normalized_write_path_still_requires_approval(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    asked = []
+
+    async def approve(action):
+        asked.append(action)
+        return True
+
+    engine = PermissionEngine(path_rules={"ask": ["src/**"]}, approval_handler=approve)
+    allowed, _ = await engine.evaluate_tool_call("write_file", {"path": "./src/main.py", "content": "x"})
+    assert allowed and len(asked) == 1
+
+
+@pytest.mark.parametrize("command", ["cat x#; cat .env", "cat x# && cat .env", "cat x#|cat .env"])
+async def test_hash_inside_word_does_not_hide_denied_paths(command):
+    engine = PermissionEngine(path_rules={"deny": ["**/.env"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
+    assert not allowed
+
+
+async def test_hash_inside_word_does_not_hide_root_removal():
+    from garuda.core.permissions import PermissionDecision
+
+    assert PermissionEngine().check_command("echo a#; rm -rf -- /*") == PermissionDecision.DENY
+
+
+async def test_allow_prefix_cannot_hide_a_command_after_an_escaped_backslash():
+    from garuda.core.permissions import PermissionDecision
+
+    command = "pytest x" + "\\" * 2 + "\nrm -rf build"
+    engine = PermissionEngine(bash_rules={"allow_prefixes": ["pytest"]})
+    assert engine.check_command(command) == PermissionDecision.ASK
+
+
+async def test_command_operands_are_normalized_relative_to_explicit_cwd(tmp_path):
+    engine = PermissionEngine(path_rules={"deny": ["secrets/**"]}, workspace_root=tmp_path)
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "cat key", "cwd": "./secrets"})
+    assert not allowed
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_multiline_allow_prefix_still_obeys_ask_rules(approved):
+    asked = []
+
+    async def approve(action):
+        asked.append(action)
+        return approved
+
+    engine = PermissionEngine(bash_rules={"allow_prefixes": ["pytest"], "ask": [".*"]},
+                              approval_handler=approve)
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "pytest " + "\\" + "\ntests/a.py"})
+    assert allowed is approved
+    assert len(asked) == 1
+
+
+async def test_acceptance_path_ceiling_resolves_operands_against_check_cwd(tmp_path):
+    from garuda.core.permissions import PermissionDecision
+
+    engine = PermissionEngine(mode="auto", path_rules={"deny": ["secrets/**"]}, workspace_root=tmp_path)
+    decision, _ = engine.decide_acceptance({"command": "cat key", "cwd": "secrets"})
+    assert decision == PermissionDecision.DENY

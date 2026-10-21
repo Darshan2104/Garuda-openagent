@@ -190,9 +190,15 @@ class HealthMonitoredEnvironment:
         return result
 
     async def read_file(self, path: str) -> str:
+        return await self._read("read_file", path)
+
+    async def read_bytes(self, path: str) -> bytes:
+        return await self._read("read_bytes", path)
+
+    async def _read(self, operation: str, path: str):
         self._check_latched()
         try:
-            return await self._env.read_file(path)
+            return await getattr(self._env, operation)(path)
         except EnvironmentUnavailableError:
             raise
         except Exception as exc:
