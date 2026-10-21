@@ -6,6 +6,8 @@ means two commands racing at the completion gate, while being conservative only
 means they run one after another as they always did.
 """
 
+import shutil
+
 import pytest
 
 from garuda.core import evidence
@@ -101,6 +103,8 @@ def test_anything_else_fails_closed(command):
     "xxd {input.txt,output.txt}",
     "tree -o output.txt .",
     "tree -afo output.txt .",
+    "tree -R -L 1 -H .",
+    "tree -aR -L 1 -H .",
     "LD_PRELOAD=./library.so cat input.txt",
     "env DYLD_INSERT_LIBRARIES=./library.dylib cat input.txt",
     "RIPGREP_CONFIG_PATH=./config rg hello input.txt",
@@ -139,14 +143,17 @@ async def test_readonly_refuses_argument_environment_and_executable_bypasses(com
     "rg --pre ./preprocessor hello input.txt",
     "rg --pr\\\ne ./preprocessor hello input.txt",
     'rg "--pr\\\ne" ./preprocessor hello input.txt',
+    pytest.param("tree -R -L 1 -H .", marks=pytest.mark.skipif(
+        shutil.which("tree") is None, reason="tree is not installed")),
 ])
-async def test_readonly_shell_cannot_overwrite_files_or_execute_preprocessors(tmp_path, command):
+async def test_readonly_shell_cannot_write_files_or_execute_preprocessors(tmp_path, command):
     (tmp_path / "input.txt").write_text("hello\n")
     victim = tmp_path / "victim.txt"
     victim.write_text("original\n")
     preprocessor = tmp_path / "preprocessor"
     preprocessor.write_text('#!/bin/sh\nprintf changed > victim.txt\ncat "$1"\n')
     preprocessor.chmod(0o700)
+    (tmp_path / "child" / "grandchild").mkdir(parents=True)
     allowed, _ = await PermissionEngine(mode="readonly").evaluate_tool_call(
         "bash", {"command": command}
     )
@@ -155,6 +162,7 @@ async def test_readonly_shell_cannot_overwrite_files_or_execute_preprocessors(tm
             {"command": command}, LocalEnvironment(tmp_path), ToolContext(session_id="readonly")
         )
     assert victim.read_text() == "original\n"
+    assert not list(tmp_path.rglob("00Tree.html"))
     assert not allowed
 
 

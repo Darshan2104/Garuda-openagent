@@ -250,6 +250,9 @@ async def test_command_working_directory_ask_requires_approval():
     "rm -rf /tmp/unused /", "rm -f -r -- /", "/bin/rm -rf -- //",
     "rm -rf -- /tmp/..", "rm -rf -- /./", "rm --recurs --forc -- /",
     "rm --rec\\\nursive --force -- /", "rm -rf -- /\nprintf '",
+    "r\\\nm -rf -- /", "rm -rf -- /\\\ntmp/..",
+    "cat <<'EOF'\nit's done\nEOF\nrm -rf -- /",
+    "cat <<'EOF'\nit's done\nEOF\nr\\\nm --rec\\\nursive -f -- /\nprintf '",
 ])
 async def test_root_removal_is_denied_even_when_approval_is_granted(command):
     async def approve(_action):
@@ -259,3 +262,43 @@ async def test_root_removal_is_denied_even_when_approval_is_granted(command):
                               bash_rules={"allow_prefixes": ["rm"]})
     allowed, reason = await engine.evaluate_tool_call("bash", {"command": command})
     assert not allowed and reason
+
+
+@pytest.mark.parametrize("command", [
+    "pytest \\\ntests/a.py -q",
+    "py\\\ntest tests/a.py -q",
+])
+@pytest.mark.parametrize("rules", [{}, {"allow_prefixes": ["pytest"], "ask": [".*"]}])
+async def test_smart_mode_allows_ordinary_shell_continuations(command, rules):
+    engine = PermissionEngine(mode="smart", bash_rules=rules)
+    allowed, reason = await engine.evaluate_tool_call("bash", {"command": command})
+    assert allowed and reason is None
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_smart_heredoc_parse_uncertainty_requires_approval_even_with_allow_prefix(approved):
+    asked = []
+
+    async def approve(action):
+        asked.append(action)
+        return approved
+
+    command = "cat > notes.md <<'EOF'\nit's done\nEOF"
+    engine = PermissionEngine(mode="smart", approval_handler=approve,
+                              bash_rules={"allow_prefixes": ["cat"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
+    assert allowed is approved
+    assert len(asked) == 1
+
+
+@pytest.mark.parametrize("command", ["cat pri\\\nvate.env", "cat 'private\\\n.env'"])
+async def test_continuation_screening_preserves_path_denials(command):
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["private.env", "private\\\n.env"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
+    assert not allowed
+
+
+async def test_custom_command_denial_covers_continued_executable_names():
+    engine = PermissionEngine(mode="smart", bash_rules={"deny": [r"^forbidden\b"]})
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "for\\\nbidden file"})
+    assert not allowed

@@ -118,22 +118,32 @@ def command_path_tokens(command: str) -> list[str]:
     err toward *stricter* on a deny rule. Unbalanced quotes fall back to a
     whitespace split rather than failing open.
     """
-    try:
-        tokens = shlex.split(command, comments=True)
-    except ValueError:
-        tokens = command.split()
+    tokens = []
+    # Inspect both forms: joining continuations exposes split names/operands,
+    # while the original preserves literal backslash-newlines inside quotes.
+    for text in {command, command.replace("\\\n", "")}:
+        try:
+            tokens.extend(shlex.split(text, comments=True))
+        except ValueError:
+            tokens.extend(text.split())
     return [t for t in tokens if t and not t.startswith("-")]
 
 
-def _removes_root(command: str) -> bool:
-    """Recognize recursive forced root removal despite option/operand ordering.
+def _root_removal_decision(command: str) -> PermissionDecision:
+    """Deny literal root removal; require approval for incomplete tokenization.
 
     Keep the regex guards for expansion-shaped text; this token check covers
     literal operands, `--`, and normalized spellings without executing a shell.
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
-    tokens = list(lexer)
+    tokens = []
+    incomplete = False
+    try:
+        for token in lexer:
+            tokens.append(token)
+    except ValueError:
+        incomplete = True
     for index, token in enumerate(tokens):
         if token.rsplit("/", 1)[-1] != "rm" or (index and tokens[index - 1] == "git"):
             continue
@@ -156,8 +166,15 @@ def _removes_root(command: str) -> bool:
         if recursive and force and any(
                 path.startswith("/") and posixpath.normpath(path).strip("/") == ""
                 or path in {"/*", "~", "~/"} for path in operands):
-            return True
-    return False
+            return PermissionDecision.DENY
+    if "\n" in command:
+        # A heredoc body can confuse shlex without invalidating later commands.
+        # Check each line for a hard refusal even if unrelated quotes happen to
+        # balance across the body. Per-line uncertainty adds no further refusal.
+        if any(_root_removal_decision(line) == PermissionDecision.DENY
+               for line in command.splitlines()):
+            return PermissionDecision.DENY
+    return PermissionDecision.ASK if incomplete else PermissionDecision.ALLOW
 
 
 class PermissionEngine:
@@ -303,22 +320,21 @@ class PermissionEngine:
                 if is_side_effect_free(command)
                 else PermissionDecision.DENY
             )
-        # shlex and the shell disagree on backslash-newline continuations.
-        # Malformed later lines can also follow a complete executable command.
-        if "\\\n" in command:
-            return PermissionDecision.DENY
-        try:
-            if _removes_root(command):
-                return PermissionDecision.DENY
-        except ValueError:
+        joined = command.replace("\\\n", "")
+        forms = {command, joined}
+        decision = _strictest(*(_root_removal_decision(text) for text in forms))
+        if decision == PermissionDecision.DENY:
             return PermissionDecision.DENY
         for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
-            if pattern.search(command):
+            if any(pattern.search(text) for text in forms):
                 return PermissionDecision.DENY
-        if self._matches_allow_prefix(command):
+        # An allow prefix cannot bypass uncertainty, but approval can resolve it.
+        if decision == PermissionDecision.ASK:
+            return decision
+        if self._matches_allow_prefix(joined):
             return PermissionDecision.ALLOW
         for pattern in self._ask_bash + ASK_COMMAND_PATTERNS:
-            if pattern.search(command):
+            if any(pattern.search(text) for text in forms):
                 return PermissionDecision.ASK
         return PermissionDecision.ALLOW
 

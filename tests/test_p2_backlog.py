@@ -166,6 +166,57 @@ async def test_cancelling_local_execution_settles_its_group_and_readers(tmp_path
         assert work in done, "execution did not settle during bounded fixture cleanup"
 
 
+@pytest.mark.parametrize("failure", ["wait-timeout", "kill-failed"])
+async def test_local_cleanup_failure_preserves_cancellation_and_settles_readers(
+        tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+
+    import garuda.workspace.local as local
+
+    spawn = asyncio.create_subprocess_shell
+    waiting = asyncio.Event()
+    processes = []
+
+    async def unavailable_wait():
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def lose_closure(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        # Retain real process/pipe ownership but simulate unavailable wait evidence.
+        return SimpleNamespace(pid=process.pid, stdout=process.stdout, stderr=process.stderr,
+                               returncode=None, wait=unavailable_wait, kill=process.kill)
+
+    def fail_kill(_process):
+        raise PermissionError("process group cleanup unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", lose_closure)
+    monkeypatch.setattr(local, "_PIPE_DRAIN_TIMEOUT", 0.02)
+    if failure == "kill-failed":
+        monkeypatch.setattr(local, "_kill_process_tree", fail_kill)
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(LocalEnvironment(tmp_path).execute("exec sleep 60"))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        task.cancel("user interrupted")
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await task
+        assert cancelled.value.args == ("user interrupted",)
+        expected = TimeoutError if failure == "wait-timeout" else PermissionError
+        assert isinstance(cancelled.value.__cause__, expected)
+        assert not (asyncio.all_tasks() - before), "failed cleanup left pipe-reader tasks"
+    finally:
+        for process in processes:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(process.wait(), timeout=5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # --- count_tokens fallback -------------------------------------------------
 
 

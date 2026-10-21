@@ -184,8 +184,14 @@ Read-only shell screening checks arguments and environment overrides as well
 as program names. Output-file arguments, program-execution options and unsafe
 loader or executable-search overrides are refused. Command working directories
 also obey path rules; persistent-shell directories are passed as literal paths.
-Cancelling a stateless local command settles its process group and pipe readers before
-the call returns. These checks remain guardrails, not confinement.
+Tree's recursive HTML output (`-R`) is refused alongside explicit output paths.
+Smart mode screens both original and joined shell continuations. Incomplete
+tokenization, including heredoc bodies that confuse the command scanner, requires
+approval even with an allow prefix; detectable dangerous commands still refuse.
+Cancelling a stateless local command attempts process-group cleanup and settles
+its pipe readers before returning cancellation. If process cleanup fails, the
+original cancellation retains that failure as its cause. These checks remain
+guardrails, not confinement.
 
 !!! warning
     Don't combine `--mode readonly` with a more permissive `--permission-mode`
