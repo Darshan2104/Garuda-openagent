@@ -139,7 +139,7 @@ class TestBinaryReadIsPortable:
         assert await env.read_bytes("blob.bin") == payload
 
     @pytest.mark.asyncio
-    async def test_line_wrapping_does_not_corrupt_the_decode(self, tmp_path):
+    async def test_large_binary_read_preserves_all_bytes(self, tmp_path):
         """Large content survives the binary transport without text decoding."""
         from garuda.workspace.local import LocalEnvironment
 
