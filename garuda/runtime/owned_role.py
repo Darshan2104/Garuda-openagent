@@ -27,6 +27,8 @@ class OwnedRoleRequest:
     payload: str
     session_id: str
     timeout: float = 3600
+    # Immutable configuration only; the parent validates editable task inputs
+    # once under its lease before the first step.
     sources: tuple[SourceFact, ...] = ()
     capacity_policy: CapacityPolicy | None = None
 

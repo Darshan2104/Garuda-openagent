@@ -16,6 +16,122 @@ from tests.test_web_flow_starts import LINUX, _body, _call
 from tests.test_web_run_starts import _context, _preview, _start, _terminal, _workspace
 
 
+def configure_review_flow(tmp_path, workspace, *, fallback=False, independent=True, edit=None):
+    counter = tmp_path / "review-prompts"
+    fixture = tmp_path / "review_agent.py"
+    fixture.write_text(
+        "import sys,pathlib\n"
+        f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r})\n"
+        "from garuda.acp import fake_agent\n"
+        "original=fake_agent._handle_prompt\n"
+        "def prompt(*args,**kwargs):\n"
+        f"    with pathlib.Path({str(counter)!r}).open('a') as output: output.write(sys.argv[1]+'\\n')\n"
+        + (f"    if sys.argv[1]=='coder': pathlib.Path({str(edit)!r}).write_text('# edited by coder\\n')\n"
+           if edit is not None else "")
+        + "    return original(*args,**kwargs)\n"
+        "fake_agent._handle_prompt=prompt\n"
+        "raise SystemExit(fake_agent.main(['--profile','artifacts']))\n")
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
+        "runtimes": [
+            {"runtime_id": "builder", "kind": "acp", "version": "1",
+             "command": [sys.executable, str(fixture), "coder"]},
+            {"runtime_id": "primary", "kind": "acp", "version": "1",
+             "command": ["/not-installed"] if fallback else [sys.executable, str(fixture), "reviewer"]}],
+        "capacity": {"builder": 1, "primary": 1}}))
+    gy.user_path().write_text(gy.dump({"version": 1,
+        "roles": {"coder": {"harness": "builder"},
+                  "reviewer": {"harness": "primary",
+                               **({"fallback": [{"harness": "builder"}]} if fallback else {})}},
+        "flows": {"plan-build-review": {"steps": [
+            {"id": "build", "role": "coder", "outputs": ["patch"],
+             "review": {"by": "reviewer", "independent": independent}},
+            {"id": "review", "role": "reviewer", "inputs": ["patch"], "outputs": ["review"]}]}}}))
+    return counter
+
+
+@LINUX
+@pytest.mark.parametrize("independent", [True, False])
+async def test_review_uses_the_selected_reviewer_fallback_identity(tmp_path, independent):
+    workspace = _workspace(tmp_path)
+    counter = configure_review_flow(tmp_path, workspace, fallback=True, independent=independent)
+    ctx = await _context(tmp_path, workspace)
+    try:
+        inputs = {"goal": "review the actual coder with the selected fallback"}
+        preview = await _preview(ctx, "build-review", inputs)
+        assert preview["readiness"]["can_run"], preview["readiness"]["diagnostics"]
+        operation = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
+            preview, operation, "build-review", inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _terminal(ctx, operation)
+        meta = ctx.store.load_meta(terminal["session_id"])
+        assert counter.read_text().splitlines() == ["coder", "coder"]
+        assert terminal["outcome"] == ("stopped" if independent else "completed"), terminal
+        review = meta["review"]
+        assert review["status"] == ("review_not_independent" if independent else "review_approved")
+        assert review["independence"]["decision"] == "not_independent"
+        assert review["independence"]["reviewer"] == {
+            "role": "reviewer", "runtime": "builder", "model_id": None}
+        assert meta["fallback_probes"]["review:1"]["decision"]["taken"]["harness"] == "builder"
+        if independent:
+            assert meta["flow_stop"]["code"] == "flow.review_not_independent"
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+
+
+@LINUX
+@pytest.mark.parametrize("change", ["task", "checked-task", "configuration", "configuration-as-task"])
+async def test_editable_task_sources_and_configuration_have_distinct_lifetimes(tmp_path, change):
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+    from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
+
+    workspace = _workspace(tmp_path)
+    settings = workspace / ".agent" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text("# original configuration\n")
+    task_edit = change in {"task", "checked-task"}
+    target = workspace / "source.txt" if task_edit else settings
+    counter = configure_review_flow(tmp_path, workspace, edit=target)
+    if change == "checked-task":
+        config = yaml.safe_load(gy.user_path().read_text())
+        config["checks"] = [{"run": "test -f source.txt"}]
+        gy.user_path().write_text(gy.dump(config))
+    ctx = await _context(tmp_path, workspace)
+    try:
+        inputs = {"goal": "edit the named task input then review it", "sources": ["source.txt"]}
+        if change == "configuration-as-task":
+            inputs["sources"].append(".agent/settings.yaml")
+        preview = await _preview(ctx, "build-review", inputs)
+        operation = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
+            preview, operation, "build-review", inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _terminal(ctx, operation)
+        assert target.read_text() == "# edited by coder\n"
+        slots = CapacityStore()
+        if task_edit:
+            assert terminal["outcome"] == "completed", terminal
+            assert counter.read_text().splitlines() == ["coder", "reviewer"]
+            meta = ctx.store.load_meta(terminal["session_id"])
+            assert meta["review"]["status"] == "review_approved"
+            if change == "checked-task":
+                assert meta["state"]["verification"]["status"] == "passed"
+            reservation = slots.reserve("builder", "after-task-edit", 1)
+            slots.release(reservation)
+            holder = WorkspaceLeaseGuard(str(workspace), "after-task-edit")
+            holder.acquire()
+            await holder.release()
+        else:
+            assert terminal["outcome"] == "interrupted", terminal
+            assert counter.read_text().splitlines() == ["coder"]
+            with pytest.raises(CapacityUnavailable):
+                slots.reserve("builder", "after-configuration-edit", 1)
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+
+
 def configure(tmp_path, workspace, reason):
     counter = tmp_path / "prompts"
     fixture = tmp_path / "agent.py"

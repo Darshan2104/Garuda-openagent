@@ -134,6 +134,7 @@ class LaunchContext:
     options: dict
     source_facts: tuple[SourceFact, ...] = ()
     fallback_plans: dict[str, tuple[RolePlan, ...]] = dataclass_field(default_factory=dict)
+    configuration_sources: tuple[SourceFact, ...] = ()
 
 
 def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool = False) -> LaunchContext:
@@ -217,6 +218,9 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
         inputs, handoff = prepare_inputs(entry, inputs, root, store or SessionStore())
         inputs = validate_inputs(entry, inputs)
         context = resolve_launch(entry, inputs, root, has_plan=handoff is not None)
+        # Configuration stays immutable throughout execution. Task file references
+        # join the admission snapshot below, but may be edited by the actual task.
+        configuration_sources = capture.facts()
         sources, session_text = resolve_sources(
             inputs.get("sources", []), root, store=store,
             allow_cross_project_context=allow_cross_project_context)
@@ -224,7 +228,8 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
     kind, target, flow, source = context.kind, context.target, context.flow, context.source
     options = context.options
     bindings = {name: plan.record() for name, plan in context.role_plans.items()}
-    context = replace(context, source_facts=capture.facts())
+    context = replace(context, source_facts=capture.facts(),
+                      configuration_sources=configuration_sources)
     handoff_text = render_plan(handoff) if handoff else ""
     scope = handoff.manifest["approved_scope"] if handoff else []
     if handoff:

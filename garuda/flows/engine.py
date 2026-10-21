@@ -222,7 +222,7 @@ class FlowRunner:
                  on_admitted=None, approval_handler=None, launch_kind: str = "flow",
                  session_name: str | None = None, execution_workspace: dict | None = None,
                  worktree_plan: dict | None = None, prepared_fallbacks: dict | None = None,
-                 background_admission=None):
+                 background_admission=None, configuration_sources: tuple | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
         if (operation_binding is None) != (on_admitted is None):
@@ -253,6 +253,8 @@ class FlowRunner:
         self._fallback_probes = {}
         self.runtime_catalog = runtime_catalog
         self.authority_sources = tuple(authority_sources)
+        self.configuration_sources = (self.authority_sources if configuration_sources is None
+                                      else tuple(configuration_sources))
         self.operation_binding = dict(operation_binding) if operation_binding is not None else None
         self.on_admitted = on_admitted
         self.approval_handler = approval_handler
@@ -834,7 +836,7 @@ class FlowRunner:
         return receipt
 
     def _independence(self, step: dict, terminal: dict, done: list[dict], spec: dict,
-                      reviewed_plan, reviewer_plan) -> dict:
+                      reviewed_plan, reviewer_receipt: dict) -> dict:
         """The independence decision with the identities that **actually ran**: the reviewed
         role's launched plan (after any fallback) and the roles its sessions really consulted,
         beside the configured ones (G.4)."""
@@ -842,10 +844,8 @@ class FlowRunner:
         from garuda.flows import review as rv
 
         config = self.resolved.config
-        roles = config.get("roles", {})
-        mine = (reviewer_plan.runtime_id, reviewer_plan.model_id) if reviewer_plan else (
-            roles.get(terminal["role"], {}).get("harness"),
-            roles.get(terminal["role"], {}).get("model_id"))
+        reviewer = reviewer_receipt.get("role_plan") or {}
+        mine = (reviewer.get("runtime_id"), reviewer.get("model_id"))
         attempts = [r for r in done if r.get("step") == step["id"]]
         launched = set()
         consults: list[dict] = []
@@ -856,7 +856,8 @@ class FlowRunner:
             if attempt.get("session_id"):
                 consults.extend(view.entries(self.store, attempt["session_id"]))
         consulted = view.identities(consults)
-        identity_error = None
+        identity_error = (None if mine[0] else
+                          "cannot prove review independence: reviewer launch identity is missing")
         try:
             configured = rv.identities(config, step["role"], reviewed_plan)
         except rv.IdentityUnresolved as exc:
@@ -911,7 +912,7 @@ class FlowRunner:
             history.append({"round": pair + 1, "verdict": parsed.verdict,
                             "approved": parsed.approved, "findings": parsed.findings})
             independence = self._independence(step, terminal, done, spec, reviewed_plan,
-                                              reviewer_plan)
+                                              receipt)
             if independence["policy"] == "required" and independence["decision"] != "independent":
                 # an identity only visible after the fact (a fallback or consult that ran)
                 await self._publish(self.flow_session, {"review": {
@@ -977,7 +978,7 @@ class FlowRunner:
                 workspace_identity=(self.execution_workspace or self.operation_binding or {}).get(
                     "identity" if self.execution_workspace else "workspace_identity"),
                 authority_workspace=(self.execution_workspace or {}).get("source"),
-                worktree_plan=self.worktree_plan, authority_sources=self.authority_sources,
+                worktree_plan=self.worktree_plan, authority_sources=self.configuration_sources,
                 external_approvals=self.background_admission is not None))
         finally:
             lease.revoke(capability)

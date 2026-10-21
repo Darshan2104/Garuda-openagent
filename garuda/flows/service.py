@@ -146,7 +146,7 @@ class FlowExecutionService:
             self._validate_checks(checks)
             permissions = PermissionEngine(mode=permission_mode)
             request = freeze_resolved_checks(
-                context.resolved, plan.workspace, context.source_facts, permissions)
+                context.resolved, plan.workspace, context.configuration_sources, permissions)
             if not request.checks:
                 request = permissions = None
 
@@ -164,6 +164,7 @@ class FlowExecutionService:
                 starter_record=plan.launch_metadata(), verification_request=request,
                 verification_permissions=permissions, prepared_roles=context.role_plans,
                 runtime_catalog=context.catalog, authority_sources=context.source_facts,
+                configuration_sources=context.configuration_sources,
                 operation_binding=operation_binding, on_admitted=on_admitted,
                 approval_handler=approval_handler, launch_kind=launch_kind,
                 session_name=session_name, execution_workspace=execution, worktree_plan=worktree,

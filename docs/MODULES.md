@@ -293,8 +293,12 @@ with per-purpose time and size limits that command text cannot widen.
 
 `config_sources.py` scopes source identities to actual parse reads. Owned
 preparation retains digests and absent-file observations, then uses an owned
-read helper to validate them before activation and after closure. Source/ceiling
-and absent-input mutation tests exercise that refusal. Project configuration
+read helper to validate them before activation and after closure. These
+snapshots contain immutable configuration. Starter task-file references join
+the parent's initial admission validation, but their digests are excluded from
+role closure and acceptance authority so requested edits can reach review and
+verification. Configuration also listed as a task source remains immutable.
+Source/ceiling and absent-input mutation tests exercise that refusal. Project configuration
 and trust-grant reads report their exact bytes to an active source capture;
 `freeze_resolved_checks` requires those identities for configured checks, and
 the worker rejects changed or newly appeared inputs. The public flow service
