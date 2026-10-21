@@ -343,8 +343,11 @@ class ToolRunner:
             # gone. Propagate so the run aborts instead of continuing blind.
             raise
         except PermissionError as exc:
-            result = ToolResult(tool_call_id=call.id, content=str(exc), is_error=True,
-                                metadata={"permission_denied": True})
+            result = ToolResult(
+                tool_call_id=call.id,
+                content=self.context.shape_observation(str(exc), is_error=True),
+                is_error=True, metadata={"permission_denied": True},
+            )
         except Exception as exc:
             logger.warning("Tool %s raised %s: %s", call.name, type(exc).__name__, exc)
             result = ToolResult(

@@ -6,7 +6,8 @@ calls — matching how a developer's terminal behaves. Commands are framed with 
 unique end marker so output and the exit code are captured reliably; stderr is
 merged into stdout (a terminal shows both). On timeout the running command is
 interrupted (SIGINT to the process group); if the shell is wedged it is killed
-and respawned (state is lost only on that failure path).
+and respawned (state is lost on that failure path). Cancellation closes the
+process group before another call can run; that next call starts with fresh state.
 """
 
 import asyncio

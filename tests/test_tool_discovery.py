@@ -299,3 +299,22 @@ async def test_lazy_target_hook_cannot_reenter_the_dispatcher(tmp_path):
     hooks.register_before_tool(rewrite)
     result = await _dispatch(_runner(tmp_path, [tool], hooks), tool.name, {})
     assert not tool.ran and "Nested use_tool" in result.content
+
+
+async def test_lazy_permission_errors_remain_bounded_and_attributable(tmp_path):
+    from garuda.core.events import EventType
+
+    class RefusedTool(FakeTool):
+        async def execute(self, arguments, env, ctx):
+            raise PermissionError("access refused\n" + "x" * 100_000 + "\nend of refusal")
+
+    tool = RefusedTool("document_reader", "Read document")
+    runner = _runner(tmp_path, [tool])
+    result = await _dispatch(runner, tool.name, {})
+    assert result.is_error and result.metadata["permission_denied"] is True
+    # The shaper retains at most the budget plus its short omission notice.
+    assert "[truncated " in result.content
+    assert len(result.content.encode()) < 2 * runner.context.output_budget(is_error=True)
+    event = next(event for event in runner.events.get_all() if event["type"] == EventType.TOOL_RESULT.value)
+    assert event["payload"]["permission_denied"] is True
+    assert event["payload"]["content"] == result.content
