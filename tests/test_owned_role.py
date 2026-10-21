@@ -493,7 +493,7 @@ async def test_owned_native_preserves_actual_ask_broker_and_no_edits(case, monke
 
 
 @linux
-@pytest.mark.parametrize("fault", ["supervisor-loss", "result-channel-loss"])
+@pytest.mark.parametrize("fault", ["supervisor-loss", "result-channel-loss", "source-helper-loss"])
 async def test_owned_role_uncertainty_quarantines_the_original_owner_and_capacity(
         case, monkeypatch, fault):
     from garuda.runtime.process_supervision import CleanupUncertain
@@ -519,6 +519,22 @@ async def test_owned_role_uncertainty_quarantines_the_original_owner_and_capacit
     monkeypatch.setattr(RoleControl, "start", observe)
     if fault == "result-channel-loss":
         monkeypatch.setattr(RoleControl, "_dispatch", lose_result)
+    elif fault == "source-helper-loss":
+        from garuda.core import acceptance_work
+
+        owned_call = acceptance_work.owned_call
+        source_checks = 0
+
+        async def lose_source_evidence(operation, *args, **kwargs):
+            nonlocal source_checks
+            result = await owned_call(operation, *args, **kwargs)
+            if operation == "admitted-sources":
+                source_checks += 1
+                if source_checks == 2:
+                    raise CleanupUncertain("post-run source helper lost its closure evidence")
+            return result
+
+        monkeypatch.setattr(acceptance_work, "owned_call", lose_source_evidence)
     task = None
     handles = []
     try:

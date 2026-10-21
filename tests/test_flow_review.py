@@ -104,6 +104,10 @@ async def test_only_the_reviewed_step_retries_until_approval(repo):
                         ("review", 1, "done"), ("review", 2, "done")]
     meta = SessionStore().load_meta(result.flow_session)
     assert meta["review"]["status"] == "review_approved" and meta["review"]["rounds"] == 2
+    for receipt in result.receipts:
+        if receipt["step"] == "review":
+            assert receipt["role_plan"]["runtime_id"] == "native"
+            assert receipt["role_plan"]["model_id"] == "r/1"
     assert meta["state"]["verification"]["status"] == "unavailable"  # a review is not verification
 
 

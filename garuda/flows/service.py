@@ -140,14 +140,13 @@ class FlowExecutionService:
             raise engine.FlowStopped("flow.background_invalid", "background runs require their queue owner")
         request = permissions = None
         if checks is not None:
-            from garuda.core.acceptance_request import freeze_resolved_checks
             from garuda.core.permissions import PermissionEngine
 
             self._validate_checks(checks)
             permissions = PermissionEngine(mode=permission_mode)
-            request = freeze_resolved_checks(
+            request = self._freeze_checks(
                 context.resolved, plan.workspace, context.configuration_sources, permissions)
-            if not request.checks:
+            if request is None:
                 request = permissions = None
 
         from garuda.agents.run_workspace import run_workspace
@@ -172,6 +171,20 @@ class FlowExecutionService:
             result = await runner.run()
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
+
+    @staticmethod
+    def _freeze_checks(resolved, workspace, source_facts, permissions):
+        from garuda.core.acceptance import checks_with_authority
+        from garuda.core.acceptance_request import freeze_resolved_checks
+
+        if not checks_with_authority(resolved):
+            return None
+        try:
+            return freeze_resolved_checks(resolved, workspace, source_facts, permissions)
+        except ValueError as exc:
+            raise engine.FlowStopped("flow.check_request_invalid",
+                                     "the effective checks or their frozen source authority "
+                                     "are invalid or exceed the bounded check request") from exc
 
     @staticmethod
     def _validate_checks(checks: tuple[str, ...]) -> None:
@@ -251,14 +264,13 @@ class FlowExecutionService:
             resolved = load_effective(workspace)
         else:
             from garuda.config_sources import SourceCapture
-            from garuda.core.acceptance_request import freeze_resolved_checks
             from garuda.core.permissions import PermissionEngine
 
             self._validate_checks(checks)
             permissions = PermissionEngine(mode="smart")
             with SourceCapture() as capture:
                 resolved = load_effective(workspace, cli_checks=checks)
-            request = freeze_resolved_checks(resolved, workspace, capture.facts(), permissions)
+            request = self._freeze_checks(resolved, workspace, capture.facts(), permissions)
         flows = packaged.available(resolved)
         if name not in flows:
             raise engine.FlowStopped("flow.unknown", f"no flow named {name!r} "

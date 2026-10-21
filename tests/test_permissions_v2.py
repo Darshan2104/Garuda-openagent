@@ -223,3 +223,39 @@ async def test_path_ask_rule_on_bash_requires_approval():
     allowed, _ = await engine.evaluate_tool_call("bash", {"command": "cat server.pem"})
     assert not allowed
     assert asked
+
+
+@pytest.mark.parametrize("tool", ["bash", "bash_background", "tmux_exec"])
+async def test_command_working_directory_obeys_path_rules(tool):
+    engine = PermissionEngine(mode="smart", path_rules={"deny": ["private", "private/*"]})
+    allowed, reason = await engine.evaluate_tool_call(tool, {"command": "ls", "cwd": "private"})
+    assert not allowed and reason
+
+
+async def test_command_working_directory_ask_requires_approval():
+    asked = []
+
+    async def deny(action):
+        asked.append(action)
+        return False
+
+    engine = PermissionEngine(mode="smart", path_rules={"ask": ["private"]}, approval_handler=deny)
+    allowed, _ = await engine.evaluate_tool_call("bash", {"command": "ls", "cwd": "private"})
+    assert not allowed
+    assert len(asked) == 1
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf -- /", "rm --recursive --force -- /", "rm -rf / /tmp/unused",
+    "rm -rf /tmp/unused /", "rm -f -r -- /", "/bin/rm -rf -- //",
+    "rm -rf -- /tmp/..", "rm -rf -- /./", "rm --recurs --forc -- /",
+    "rm --rec\\\nursive --force -- /", "rm -rf -- /\nprintf '",
+])
+async def test_root_removal_is_denied_even_when_approval_is_granted(command):
+    async def approve(_action):
+        pytest.fail("recursive forced root removal must not reach approval")
+
+    engine = PermissionEngine(mode="smart", approval_handler=approve,
+                              bash_rules={"allow_prefixes": ["rm"]})
+    allowed, reason = await engine.evaluate_tool_call("bash", {"command": command})
+    assert not allowed and reason

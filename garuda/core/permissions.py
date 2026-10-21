@@ -1,4 +1,5 @@
 import fnmatch
+import posixpath
 import re
 import shlex
 from enum import Enum
@@ -122,6 +123,41 @@ def command_path_tokens(command: str) -> list[str]:
     except ValueError:
         tokens = command.split()
     return [t for t in tokens if t and not t.startswith("-")]
+
+
+def _removes_root(command: str) -> bool:
+    """Recognize recursive forced root removal despite option/operand ordering.
+
+    Keep the regex guards for expansion-shaped text; this token check covers
+    literal operands, `--`, and normalized spellings without executing a shell.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    for index, token in enumerate(tokens):
+        if token.rsplit("/", 1)[-1] != "rm" or (index and tokens[index - 1] == "git"):
+            continue
+        recursive = force = ended = False
+        operands = []
+        for argument in tokens[index + 1:]:
+            if argument and all(char in ";&|()<>" for char in argument):
+                break
+            if argument == "--" and not ended:
+                ended = True
+            elif not ended and argument.startswith("--"):
+                # GNU long options also accept unambiguous abbreviations.
+                recursive |= len(argument) > 2 and "--recursive".startswith(argument)
+                force |= len(argument) > 2 and "--force".startswith(argument)
+            elif not ended and argument.startswith("-"):
+                recursive |= "r" in argument or "R" in argument
+                force |= "f" in argument
+            else:
+                operands.append(argument)
+        if recursive and force and any(
+                path.startswith("/") and posixpath.normpath(path).strip("/") == ""
+                or path in {"/*", "~", "~/"} for path in operands):
+            return True
+    return False
 
 
 class PermissionEngine:
@@ -267,6 +303,15 @@ class PermissionEngine:
                 if is_side_effect_free(command)
                 else PermissionDecision.DENY
             )
+        # shlex and the shell disagree on backslash-newline continuations.
+        # Malformed later lines can also follow a complete executable command.
+        if "\\\n" in command:
+            return PermissionDecision.DENY
+        try:
+            if _removes_root(command):
+                return PermissionDecision.DENY
+        except ValueError:
+            return PermissionDecision.DENY
         for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
             if pattern.search(command):
                 return PermissionDecision.DENY
@@ -312,6 +357,7 @@ class PermissionEngine:
             detail_decision = _strictest(
                 self.check_command(command),
                 self._check_paths(command_path_tokens(command), "read"),
+                self.check_path(str(arguments.get("cwd") or ""), "read"),
             )
         elif tool_name in SEARCH_TOOLS:
             detail_decision = self._check_paths(

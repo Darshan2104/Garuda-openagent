@@ -279,7 +279,7 @@ def is_discriminating(command: str) -> bool:
 # running it changes anything. They are close to opposites in practice — the commands
 # that prove the most (`pytest`, `make`, the deliverable itself) are exactly the ones
 # that write — which is why concurrency here is a narrow win and not a broad one.
-SIDE_EFFECT_FREE_COMMANDS = INSPECTION_COMMANDS | frozenset(
+SIDE_EFFECT_FREE_COMMANDS = (INSPECTION_COMMANDS - {"less", "more"}) | frozenset(
     # `sort`, `uniq` and `cut` are deliberately absent despite reading by default:
     # `sort -o out.txt in.txt` and `uniq in.txt out.txt` name an output file as an
     # argument, with no redirect for _MUTATING_SHELL to catch. Admitting them let
@@ -299,7 +299,159 @@ SIDE_EFFECT_FREE_COMMANDS = INSPECTION_COMMANDS | frozenset(
 # Matched wherever it appears, not only at the end: `cat a & rm -rf build` is one
 # segment, so an end-anchored test saw only `cat` and called the whole thing safe.
 # What is backgrounded does not matter — that it escapes the check does.
-_MUTATING_SHELL = re.compile(r">|\btee\b|\bsudo\b|\bxargs\b|`|\$\(|(?<!&)&(?!&)")
+_MUTATING_SHELL = re.compile(r"[<>]|\btee\b|\bsudo\b|\bxargs\b|`|\$\(|(?<!&)&(?!&)")
+
+# Overrides outside this small display/locale set can select executable code
+# (LD_PRELOAD, DYLD_*, PATH, RIPGREP_CONFIG_PATH, LESSOPEN, ...). Unknown
+# overrides are refused instead of trying to enumerate every program's hooks.
+_INSPECTION_ENV = frozenset({
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES",
+    "LC_NUMERIC", "LC_TIME", "LC_MONETARY", "TERM", "COLORTERM", "NO_COLOR",
+    "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "TZ",
+})
+_INSPECTION_BIN_DIRS = frozenset({"/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"})
+
+
+def _literal_inspection_segment(segment: str) -> bool:
+    """Reject shell expansions whose resulting argv we cannot inspect."""
+    quote = None
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            elif char == "$" and quote == '"':
+                return False
+        elif char in "\"'":
+            quote = char
+        elif char in "$*?{}()":
+            return False
+        elif char in "[]":
+            # Keep the shell's [ / [[ test commands, but refuse filename globs.
+            before = segment[index - 1] if index else " "
+            after = segment[index + 1] if index + 1 < len(segment) else " "
+            if not (before.isspace() or before == char) or not (after.isspace() or after == char):
+                return False
+        index += 1
+    return quote is None
+
+
+def _inspection_argv(segment: str) -> list[str] | None:
+    """Resolve only known literal wrappers; never trust a workspace basename."""
+    if not _literal_inspection_segment(segment):
+        return None
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        return None
+    while tokens:
+        if re.match(r"^[A-Za-z_]\w*=", tokens[0]):
+            name, value = tokens.pop(0).split("=", 1)
+            if name not in _INSPECTION_ENV or not re.fullmatch(r"[\w.,:@/+%-]*", value):
+                return None
+            continue
+        program = tokens.pop(0)
+        if "/" in program:
+            directory, _, program = program.rpartition("/")
+            if directory not in _INSPECTION_BIN_DIRS:
+                return None
+        if program == "env":
+            if not tokens:
+                return [program]
+            if tokens[0] == "--":
+                tokens.pop(0)
+            if tokens and tokens[0].startswith("-"):
+                return None
+            continue
+        if program == "timeout":
+            while tokens and tokens[0] in {"--foreground", "--preserve-status"}:
+                tokens.pop(0)
+            if not tokens or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", tokens.pop(0)):
+                return None
+            continue
+        if program == "nice":
+            if tokens and tokens[0] == "-n":
+                tokens.pop(0)
+                if not tokens or not re.fullmatch(r"[+-]?\d+", tokens.pop(0)):
+                    return None
+            elif tokens and re.fullmatch(r"-\d+|--adjustment=[+-]?\d+", tokens[0]):
+                tokens.pop(0)
+            continue
+        if program == "time":
+            if tokens and tokens[0] == "-p":
+                tokens.pop(0)
+            continue
+        if program == "stdbuf":
+            while tokens and tokens[0].startswith("-"):
+                option = tokens.pop(0)
+                match = re.fullmatch(r"-[ioe](.*)", option)
+                if match is None:
+                    return None
+                value = match[1] or (tokens.pop(0) if tokens else "")
+                if not re.fullmatch(r"L|\d+[KMGTPEZY]?[B]?", value):
+                    return None
+            continue
+        return [program, *tokens]
+    return None
+
+
+def _inspection_arguments_safe(program: str, arguments: list[str]) -> bool:
+    """Some inspection utilities also have explicit write/execute modes."""
+    if program == "rg":
+        return not any(arg.split("=", 1)[0] in {"--pre", "--hostname-bin"} for arg in arguments)
+    if program in {"tree", "file"}:
+        forbidden = "o" if program == "tree" else "C"
+        return not any(
+            (arg.startswith("-") and not arg.startswith("--") and forbidden in arg[1:])
+            or arg.split("=", 1)[0] in {"--compile", "--output", "--outfile"}
+            for arg in arguments
+        )
+    if program == "printf":
+        if not arguments:
+            return True
+        # Bash's builtin can assign shell variables through either -v or %n;
+        # changing exported PATH here can redirect a later inspection command.
+        if arguments[0].startswith("-v"):
+            return False
+        format_string = arguments[1] if arguments[0] == "--" and len(arguments) > 1 else arguments[0]
+        return re.search(r"%[-+ #0-9.*]*n", format_string) is None
+    if program == "date":
+        remaining = list(arguments)
+        while remaining:
+            arg = remaining.pop(0)
+            if arg == "-r":
+                if not remaining:
+                    return False
+                remaining.pop(0)
+            elif not (arg.startswith("+") or re.fullmatch(
+                r"-[ujR]+|-I(?:date|hours|minutes|seconds|ns)?|"
+                r"--(?:utc|universal|rfc-email|help|version)|"
+                r"--(?:iso-8601|rfc-3339)(?:=[\w-]+)?", arg
+            )):
+                return False
+        return True
+    if program == "xxd":
+        remaining = list(arguments)
+        while remaining:
+            arg = remaining.pop(0)
+            if arg == "--":
+                return len(remaining) <= 1
+            if not arg.startswith("-") or arg == "-":
+                return not remaining  # a second positional names an output file
+            if arg in {"-c", "-g", "-l", "-n", "-o", "-s", "-R"}:
+                if not remaining:
+                    return False
+                remaining.pop(0)
+            elif arg not in {
+                "-a", "-b", "-C", "-d", "-E", "-e", "-h", "-i", "-p", "-r", "-u", "-v",
+            } and not re.fullmatch(r"-[cglnosR].+", arg):
+                return False
+        return True
+    return True
 
 
 def is_side_effect_free(command: str) -> bool:
@@ -322,6 +474,10 @@ def is_side_effect_free(command: str) -> bool:
     text = command or ""
     if not text.strip():
         return False
+    # Shells remove escaped newlines before parsing, while shlex retains them
+    # inside words. Refuse continuations instead of screening a different argv.
+    if "\\\n" in text:
+        return False
     segments = split_segments(text)
     if not segments:
         return False
@@ -331,43 +487,16 @@ def is_side_effect_free(command: str) -> bool:
         # outside quotes.
         if _MUTATING_SHELL.search(segment):
             return False
-        head = _command_head(segment)
+        argv = _inspection_argv(segment)
         # A segment that is only `cd x` or env assignments resolves to no program.
         # `cd` cannot be treated as harmless here: it moves the working directory for
         # everything after it in the same command, so its effect is exactly the kind
         # of ordering dependence that makes concurrency unsafe.
-        if head is None or head not in SIDE_EFFECT_FREE_COMMANDS:
+        if argv is None or argv[0] not in SIDE_EFFECT_FREE_COMMANDS:
+            return False
+        if not _inspection_arguments_safe(argv[0], argv[1:]):
             return False
     return True
-
-
-def _command_head(segment: str) -> str | None:
-    """Resolved program name for one segment, or None if it runs no program.
-
-    Skips leading env assignments and wrapper prefixes, so ``FOO=1 timeout 5 cat x``
-    is judged on ``cat``. Unlike ``classify_segment`` it does **not** skip ``sudo``
-    (caught as mutating by the caller) or ``cd`` (which resolves to ``cd``, is absent
-    from the allowlist, and therefore makes the whole command ineligible).
-    """
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        tokens = segment.split()
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if "=" in token and not token.startswith("-") and re.match(r"^\w+=", token):
-            index += 1
-            continue
-        if token in ("env", "nohup", "time", "timeout", "stdbuf", "nice"):
-            index += 1
-            while index < len(tokens) and re.match(r"^-|^\d+[smhd]?$", tokens[index]):
-                index += 1
-            continue
-        break
-    if index >= len(tokens):
-        return None
-    return tokens[index].rsplit("/", 1)[-1]
 
 
 def weakness_reason(command: str) -> str:

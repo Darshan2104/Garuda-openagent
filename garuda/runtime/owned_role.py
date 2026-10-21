@@ -139,7 +139,8 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
     expected_child = f"{flow['flow_session']}:{flow['step']}:{flow['attempt']}"
     if flow["flow_session"] != capability._parent.session_id or expected_child != capability.session_id:
         raise ValueError("owned role request belongs to another parent or step")
-    from garuda.core.acceptance_work import owned_call
+    from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
+    from garuda.runtime.roles import RoleRefused
 
     async def validate_sources():
         info = os.stat(request.workspace)
@@ -177,10 +178,21 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         await control.guard.race(process.activate(execution))
         control.activated()
         terminal = await control.guard.race(process.wait())
-        await control.guard.race(validate_sources())
         result = control.result
         if terminal.outcome != "exited" or result is None or result["session_id"] != request.session_id:
             raise CleanupUncertain("owned role closed without a complete bound result")
+        # A settled policy refusal does not undo proved process closure. Reject
+        # changed configuration, but release this closed child's capacity after
+        # any separately owned daemon resources have also been removed below.
+        try:
+            await control.guard.race(validate_sources())
+        except AcceptanceWorkError as exc:
+            # This domain refusal arrives only after the source helper itself
+            # has proved closure. CleanupUncertain must retain quarantine.
+            normal_result = True
+            raise RoleRefused("flow.authority_changed",
+                              "owned role configuration changed during execution") from exc
+        normal_result = True
         closure = {"version": 1, "request_digest": request.digest,
                    "session_id": request.session_id, "parent_id": flow["flow_session"],
                    "step_id": flow["step"], "attempt": flow["attempt"],
@@ -190,7 +202,6 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                    "process": asdict(terminal)}
         if confinement is not None:
             closure["confinement"] = await confinement.close()
-        normal_result = True
         return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
                           result["output"], closure=closure)
     except asyncio.CancelledError:

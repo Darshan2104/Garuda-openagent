@@ -664,6 +664,47 @@ async def test_real_http_start_runs_one_owned_flow_for_duplicate_requests(tmp_pa
         server.server_close()
 
 
+@pytest.mark.parametrize("has_checks", [False, True])
+async def test_large_configuration_snapshot_only_bounds_requested_checks(
+        write_context, monkeypatch, has_checks):
+    from garuda.scenarios.compile import compile_with_context
+    from tests.test_web_run_starts import _capture
+
+    ctx = write_context
+    workspace = ctx.allowed_workspaces[0]
+    profile = workspace / ".agent" / "agents" / "owned-flow.yaml"
+    files = [f"instructions-{index}.md" for index in range(33)]
+    for name in files:
+        (profile.parent / name).write_text("One reviewed project instruction.\n")
+    profile.write_text(yaml.safe_dump({
+        "version": 1, "name": "owned-flow", "tools": {"preset": "none"},
+        "instructions": {"files": files}}))
+    config = gy.load_file(gy.user_path())
+    config["flows"] = {"plan-build-review": {"steps": [{"id": "build", "role": "coder"}]}}
+    if has_checks:
+        config["checks"] = [{"run": "true"}]
+    gy.user_path().write_text(gy.dump(config))
+    inputs = {"goal": "use a bounded configuration without inventing check authority"}
+    _plan, context = compile_with_context("build-review", inputs, workspace, store=ctx.store)
+    assert len(context.configuration_sources) > 32
+    launches = _capture(monkeypatch)
+    preview = await _preview(ctx, starter="build-review", inputs=inputs)
+    assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+    operation = str(uuid.uuid4())
+    response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start_body(
+        preview, operation, starter="build-review", inputs=inputs))
+    assert response.status in {201, 202}, _body(response)
+    terminal = await _status(ctx, operation, {"terminal", "refused", "uncertain"})
+    if has_checks:
+        assert terminal["status"] == "refused", terminal
+        assert terminal["reason"] == "flow.check_request_invalid"
+        assert launches == []
+    else:
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "stopped", terminal
+        assert len(launches) == 1
+        assert ctx.store.load_meta(terminal["session_id"])["flow_stop"]["code"] == "test.captured"
+
+
 @LINUX
 async def test_checked_flow_start_projects_its_committed_verification(tmp_path, monkeypatch):
     """A checked start publishes under the verification policy and still projects terminal."""

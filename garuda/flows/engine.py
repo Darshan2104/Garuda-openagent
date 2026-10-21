@@ -837,9 +837,11 @@ class FlowRunner:
 
     def _independence(self, step: dict, terminal: dict, done: list[dict], spec: dict,
                       reviewed_plan, reviewer_receipt: dict) -> dict:
-        """The independence decision with the identities that **actually ran**: the reviewed
-        role's launched plan (after any fallback) and the roles its sessions really consulted,
-        beside the configured ones (G.4)."""
+        """Compare the selected or executed reviewer with recorded reviewed identities.
+
+        Admission supplies the selected plan; approval supplies its actual receipt.
+        Both retain the reviewed role's launched, consulted and configured identities.
+        """
         from garuda.consult import view
         from garuda.flows import review as rv
 
@@ -896,11 +898,26 @@ class FlowRunner:
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
         extra = ""
         history = []
+
+        async def admit_reviewer(plan):
+            independence = self._independence(
+                step, terminal, done, spec, reviewed_plan,
+                {"role_plan": plan.record() if plan is not None else None})
+            if independence["policy"] == "required" and independence["decision"] != "independent":
+                await self._publish(self.flow_session, {"review": {
+                    "status": "review_not_independent", "rounds": len(history), "history": history,
+                    "independence": independence}})
+                why = independence.get("identity_error") or (
+                    "the selected reviewer shares an identity with what actually ran or "
+                    "was consulted for the reviewed step")
+                raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
+
         for pair in range(rounds + 1):
             for target in (step, terminal):
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
                 receipt = await self._run_step(target, done, lease, attempt=tried[target["id"]],
-                                               prompt_extra=extra if target is step else "")
+                                               prompt_extra=extra if target is step else "",
+                                               review_admission=admit_reviewer if target is terminal else None)
                 done.append(receipt)
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
                        if o["type"] == "review")
@@ -939,7 +956,8 @@ class FlowRunner:
                           step=terminal["id"])
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
-                        prompt_extra: str = "") -> dict:
+                        prompt_extra: str = "", review_admission=None) -> dict:
+        from garuda.runtime.roles import RoleRefused
         from garuda.workspace.no_edits import NoEditsGuard
 
         self._validate_operation_workspace()
@@ -957,18 +975,16 @@ class FlowRunner:
         try:
             if role in self.prepared_fallbacks:
                 from garuda.agents.fallback_probe import select_owned
-                from garuda.runtime.roles import RoleRefused
 
                 async def publish(record):
                     self._fallback_probes[f"{step['id']}:{attempt}"] = record
                     await self._publish(self.flow_session, {"fallback_probes": dict(self._fallback_probes)})
 
-                try:
-                    plan = await select_owned(self.prepared_fallbacks[role], self.runtime_catalog,
-                                              self.workspace, lease, no_edits=no_edits, publish=publish)
-                except RoleRefused as exc:
-                    raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
+                plan = await select_owned(self.prepared_fallbacks[role], self.runtime_catalog,
+                                          self.workspace, lease, no_edits=no_edits, publish=publish)
                 self.prepared_roles[role] = plan
+            if review_admission is not None:
+                await review_admission(plan)
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
@@ -980,6 +996,8 @@ class FlowRunner:
                 authority_workspace=(self.execution_workspace or {}).get("source"),
                 worktree_plan=self.worktree_plan, authority_sources=self.configuration_sources,
                 external_approvals=self.background_admission is not None))
+        except RoleRefused as exc:
+            raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         finally:
             lease.revoke(capability)
         closure = None

@@ -6,6 +6,10 @@ Each test names the behaviour a real run depends on, not the shape of the patch.
 import asyncio
 import json
 import os
+import shlex
+import signal
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -73,6 +77,93 @@ async def test_large_output_is_still_fully_captured(tmp_path):
     result = await env.execute("for i in $(seq 1 2000); do echo line$i; done", timeout=30)
     assert result.exit_code == 0
     assert result.stdout.count("\n") == 2000
+
+
+@pytest.mark.parametrize("phase", ["launching", "running", "leader-exited", "collecting"])
+async def test_cancelling_local_execution_settles_its_group_and_readers(tmp_path, monkeypatch, phase):
+    """Cancellation owns both a live command and pipes retained after its leader exits."""
+    ready = tmp_path / "ready.json"
+    script = (
+        "import json,os,subprocess,sys,time; from pathlib import Path; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        f"ready=Path({str(ready)!r}); "
+        "ready.with_suffix('.tmp').write_text(json.dumps([os.getpid(),child.pid])); "
+        "ready.with_suffix('.tmp').replace(ready); "
+        + ("time.sleep(60)" if phase in {"launching", "running"} else "")
+    )
+    collecting = asyncio.Event()
+    launch_release = asyncio.Event()
+    if phase in {"launching", "collecting"}:
+        import garuda.workspace.local as local
+
+        spawn, collect = asyncio.create_subprocess_shell, local._collect
+
+        async def controlled_spawn(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            if phase == "launching":
+                await launch_release.wait()
+                return process
+            async with asyncio.timeout(10):
+                while process.returncode is None:
+                    await asyncio.sleep(0.01)
+            return process
+
+        async def record_collection(reader):
+            collecting.set()
+            return await collect(reader)
+
+        # Keep the real child and pipes, but force the leader-exit/read interleaving.
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", controlled_spawn)
+        monkeypatch.setattr(local, "_collect", record_collection)
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"],
+                                 start_new_session=True)
+    before = asyncio.all_tasks()
+    work = asyncio.create_task(LocalEnvironment(tmp_path).execute(
+        f"exec {shlex.quote(sys.executable)} -c {shlex.quote(script)}", timeout=30))
+    pids = []
+    try:
+        async with asyncio.timeout(10):
+            while not ready.exists():
+                await asyncio.sleep(0.01)
+            pids = json.loads(ready.read_text())
+            if phase in {"leader-exited", "collecting"}:
+                while subprocess.run(["ps", "-p", str(pids[0]), "-o", "stat="],
+                                     capture_output=True, text=True).returncode == 0:
+                    await asyncio.sleep(0.01)
+            if phase == "collecting":
+                await collecting.wait()
+
+        work.cancel()
+        await asyncio.sleep(0)
+        launch_release.set()
+        # A second cancellation can arrive while subprocess cleanup awaits the OS.
+        async with asyncio.timeout(10):
+            while not work.done():
+                await asyncio.sleep(0)
+                work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+
+        for pid in pids:
+            state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                                   capture_output=True, text=True).stdout.strip()
+            assert not state or state.startswith("Z"), f"command process {pid} survived cancellation"
+        assert unrelated.poll() is None, "cancellation signalled a foreign process group"
+        assert not (asyncio.all_tasks() - before), "execution left a pipe-reader or cleanup task"
+    finally:
+        launch_release.set()
+        if pids:
+            try:
+                os.killpg(pids[0], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        work.cancel()
+        done, _ = await asyncio.wait({work}, timeout=5)
+        if work in done and not work.cancelled():
+            work.exception()
+        unrelated.kill()
+        unrelated.wait(timeout=5)
+        assert work in done, "execution did not settle during bounded fixture cleanup"
 
 
 # --- count_tokens fallback -------------------------------------------------
