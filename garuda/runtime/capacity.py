@@ -217,7 +217,8 @@ class CapacityStore:
             document["version"] = 2
         return document
 
-    def reserve(self, key: str, holder: str, ceiling: int, *, owner: Owner | None = None) -> Reservation:
+    def reserve(self, key: str, holder: str, ceiling: int, *, owner: Owner | None = None,
+                queue_ticket: QueueTicket | None = None) -> Reservation:
         """Take a slot, retry the exact owner, or refuse live/unknown replacement."""
         if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
             raise CapacityError(f"ceiling must be a positive integer, got {ceiling!r}")
@@ -231,6 +232,10 @@ class CapacityStore:
             with exclusive_lock(self.root) as directory_fd:
                 document = self._load(key, for_mutation=True, directory_fd=directory_fd)
                 slots = document["slots"]
+                if queue_ticket is not None and (
+                        adopted != queue_ticket or queue_ticket.key != key or queue_ticket.holder != holder
+                        or not is_adopted(self.root, queue_ticket)):
+                    raise CapacityUnavailable("queued activation lost its retained claiming ticket")
                 existing = slots.get(holder)
                 if existing is None and adopted is not None:
                     raise CapacityUnavailable("queued launch no longer has its committed reservation")

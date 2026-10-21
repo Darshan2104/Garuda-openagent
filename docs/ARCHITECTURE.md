@@ -180,8 +180,26 @@ fastest way to learn the system.
    Run-kind plans enter `agents/role_runs.py::RoleRunService.run_prepared`, which
    executes one owned parent with exactly one role step through the same engine
    path (`FlowExecutionService._run_owned`): the child gets the exact task through
-   the owned native/ACP role executor, never `LiveChat`. `run_authority` refuses
-   worktree/auto isolation, background, fallback roles and read-only ACP.
+   the owned native/ACP role executor, never `LiveChat`. Run parents select
+   worktree/auto isolation before leasing, keep source and execution identities
+   separate, and pass parent-owned workspace metadata to the child. Unchecked
+   native asks use issued read-only lifetime ownership; acceptance snapshots
+   remain mutating-only. Read-only ACP uses parent-owned Docker containers with
+   private pre-launch resource intents and verified absence receipts. Worker
+   exit alone cannot release daemon resources. Fallback candidates are frozen
+   with compiler source facts and checked against the ceiling; supervised status
+   probes close before selection is published and passed to the child, avoiding
+   a second discovery at startup. Background run starts bind a v2 intent to the
+   existing queue and reserve the same parent session before enqueue. The detached
+   worker revalidates the frozen plan/sources after waiting, adopts its genuine
+   queue ticket and executes that owned parent. `runtime/queue_capacity.py` lends
+   the activated slot to one issued role child without a second admission;
+   the queue coordinator releases only after child and parent closure. Fallbacks
+   to another harness obtain that harness's separate capacity. Worker/session/
+   queue evidence projects progress independently of the dashboard server; v2
+   intents remain authorization records rather than a second progress store.
+   Background requests use the durable session approval channel and the existing
+   identity-checked Stop. Server shutdown does not cancel the detached worker.
    Unsupported hosts and read-only dashboards expose no Start capability. Starters forms retain exact copy commands and selected historical
    evidence; the gateway creates no second queue, progress store, cross-project
    grant or verification owner.

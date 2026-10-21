@@ -51,7 +51,7 @@ _FIELDS = frozenset({
     "session_id", "lease_epoch", "outcome", "reason",
 })
 _IDENTITY = frozenset({
-    "operation_id", "request_digest", "plan_digest", "authority_digest", "workspace",
+    "version", "operation_id", "request_digest", "plan_digest", "authority_digest", "workspace",
     "workspace_identity", "store_identity", "compiler_version", "catalog_version",
 })
 
@@ -89,10 +89,13 @@ def _owner(value: object) -> bool:
 
 
 def _validate(record: object) -> dict:
-    if type(record) is not dict or set(record) != _FIELDS:
+    if type(record) is not dict:
         raise CorruptRecord("launch intent has unknown or missing fields")
-    if type(record["version"]) is not int or record["version"] != 1:
+    if type(record.get("version")) is not int or record["version"] not in {1, 2}:
         raise CorruptRecord("launch intent version is unsupported")
+    fields = _FIELDS | {"queue_admission"} if record["version"] == 2 else _FIELDS
+    if set(record) != fields:
+        raise CorruptRecord("launch intent has unknown or missing fields")
     if not _uuid4(record["operation_id"]) or not _uuid4(record["reserved_session"]):
         raise CorruptRecord("launch intent has an invalid operation or session ID")
     if any(type(record[key]) is not str or _DIGEST.fullmatch(record[key]) is None
@@ -114,6 +117,23 @@ def _validate(record: object) -> dict:
     phase = record["phase"]
     if type(phase) is not str or phase not in _PHASES:
         raise CorruptRecord("launch intent has an invalid phase")
+    if record["version"] == 2:
+        if phase in {"admitted", "terminal"}:
+            raise CorruptRecord("background intent records authorization, not worker progress")
+        queue = record["queue_admission"]
+        if queue is not None:
+            if (type(queue) is not dict or set(queue) != {"queue_root", "scope", "item_id", "harness", "config_digest"}
+                    or queue["item_id"] != record["reserved_session"]
+                    or not isinstance(queue["config_digest"], str) or _DIGEST.fullmatch(queue["config_digest"]) is None
+                    or not isinstance(queue["harness"], str) or not queue["harness"]
+                    or not isinstance(queue["scope"], str) or ":" not in queue["scope"]
+                    or not queue["scope"].rsplit(":", 1)[0]
+                    or queue["scope"].rsplit(":", 1)[1] != queue["harness"]
+                    or not isinstance(queue["queue_root"], str) or not queue["queue_root"].startswith("/")
+                    or str(Path(queue["queue_root"])) != queue["queue_root"]
+                    or ".." in Path(queue["queue_root"]).parts or "\0" in queue["queue_root"]
+                    or phase == "prepared"):
+                raise CorruptRecord("background queue admission is invalid")
     if ((phase == "prepared" and record["sequence"] != 0)
             or (phase == "admitted" and record["sequence"] < 2)
             or (phase == "terminal" and record["sequence"] < 3)
@@ -340,14 +360,17 @@ class LaunchIntentStore:
 
     def prepare(self, *, operation_id: str, request_digest: str, plan_digest: str,
                 authority_digest: str, workspace: str, workspace_identity: list[int],
-                compiler_version: int, catalog_version: int, owner: Owner) -> tuple[dict, bool]:
+                compiler_version: int, catalog_version: int, owner: Owner,
+                background: bool = False) -> tuple[dict, bool]:
+        if type(background) is not bool:
+            raise ValueError("background must be a boolean")
         if (not isinstance(owner, Owner) or not _owner(owner.to_dict())
                 or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
             raise IntentStateError("launch intent owner identity is not live and proven")
         with self._locked(create=True) as (directory_fd, store_identity):
             assert directory_fd is not None
             candidate = {
-                "version": 1, "operation_id": operation_id,
+                "version": 2 if background else 1, "operation_id": operation_id,
                 "request_digest": request_digest, "plan_digest": plan_digest,
                 "authority_digest": authority_digest, "workspace": workspace,
                 "workspace_identity": workspace_identity, "store_identity": store_identity,
@@ -355,6 +378,7 @@ class LaunchIntentStore:
                 "reserved_session": str(uuid.uuid4()), "owner": owner.to_dict(),
                 "sequence": 0, "phase": "prepared", "session_id": None,
                 "lease_epoch": None, "outcome": None, "reason": None,
+                **({"queue_admission": None} if background else {}),
             }
             _validate(candidate)
             existing = self._read(directory_fd, operation_id)
@@ -366,6 +390,28 @@ class LaunchIntentStore:
                 return existing, False
             self._write(directory_fd, operation_id, candidate)
             return candidate, True
+
+    def bind_queue(self, operation_id: str, *, owner: Owner, admission: dict) -> dict:
+        """Persist a queue identity before enqueue; a duplicate cannot authorize dispatch."""
+        if (not _uuid4(operation_id) or not isinstance(owner, Owner)
+                or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
+            raise IntentStateError("background admission requires the live original owner")
+        with self._locked() as (directory_fd, store_identity):
+            record = self._read(directory_fd, operation_id) if directory_fd is not None else None
+            if (record is None or record["store_identity"] != store_identity or record["version"] != 2
+                    or record["owner"] != owner.to_dict() or record["phase"] != "launch-authorized"):
+                raise IntentStateError("background intent is not authorized by this owner")
+            if record["queue_admission"] is not None:
+                if record["queue_admission"] != admission:
+                    raise IntentConflict("background queue binding already names another admission")
+                return record
+            updated = {**record, "queue_admission": admission, "sequence": record["sequence"] + 1}
+            try:
+                _validate(updated)
+            except CorruptRecord as exc:
+                raise IntentStateError(str(exc)) from exc
+            self._write(directory_fd, operation_id, updated)
+            return updated
 
     def advance(self, operation_id: str, *, expected: str, phase: str, owner: Owner,
                 session_id: str | None = None, lease_epoch: str | None = None,

@@ -165,6 +165,7 @@ async def run_agent_task(
     isolation: str = "shared",
     context_attached=None,
     session_record: dict | None = None,
+    external_approvals: bool = False,
     lease_capability=None,
     capacity_loan=None,
     store: SessionStore | None = None,
@@ -294,7 +295,7 @@ async def run_agent_task(
     # broker's answerer. With no handler, asks deny immediately (audited)
     # instead of hanging until timeout.
     try:
-        install_session_broker(permissions, store, events.session_id)
+        install_session_broker(permissions, store, events.session_id, external=external_approvals)
         # Persist the trusted routing decision before the runtime is started.
         # The caller has already resolved any automatic selection, so this
         # pin protects the executor actually being launched.

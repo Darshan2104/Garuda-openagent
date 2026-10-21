@@ -65,7 +65,7 @@ class FlowExecutionService:
                          operation_binding: dict, on_admitted, approval_handler,
                          permission_mode: str, checks: tuple[str, ...] | None,
                          launch_kind: str = "flow",
-                         session_name: str | None = None) -> FlowExecutionResult:
+                         session_name: str | None = None, background_admission=None) -> FlowExecutionResult:
         """The one owned parent path for dashboard flow and role-run starts."""
         import sys
 
@@ -81,6 +81,9 @@ class FlowExecutionService:
             operation_uuid = session_uuid = None
         if (plan.bindings != {name: role.record()
                              for name, role in context.role_plans.items()}
+                or plan.provenance.get("fallback_candidates", {}) != {
+                    name: [candidate.record() for candidate in choices]
+                    for name, choices in context.fallback_plans.items()}
                 or not isinstance(operation_binding, dict)
                 or set(operation_binding) != binding_fields
                 or operation_binding.get("version") != 1
@@ -125,6 +128,16 @@ class FlowExecutionService:
             raise engine.FlowStopped("flow.authority_invalid",
                                      "the prepared start exceeds or disagrees with its authority")
 
+        if background_admission is not None:
+            from garuda.scenarios.background import BackgroundAdmission
+
+            if (type(background_admission) is not BackgroundAdmission
+                    or background_admission.session_id != flow_session
+                    or background_admission.operation["binding"] != operation_binding):
+                raise engine.FlowStopped("flow.background_invalid", "background admission disagrees")
+            background_admission.validate()
+        elif plan.options.get("bg"):
+            raise engine.FlowStopped("flow.background_invalid", "background runs require their queue owner")
         request = permissions = None
         if checks is not None:
             from garuda.core.acceptance_request import freeze_resolved_checks
@@ -137,16 +150,25 @@ class FlowExecutionService:
             if not request.checks:
                 request = permissions = None
 
-        runner = engine.FlowRunner(
-            self.store, plan.workspace, name, flow, context.resolved,
-            task=plan.task, launcher=launch_step, flow_session=flow_session,
-            starter_record=plan.launch_metadata(), verification_request=request,
-            verification_permissions=permissions, prepared_roles=context.role_plans,
-            runtime_catalog=context.catalog, authority_sources=context.source_facts,
-            operation_binding=operation_binding, on_admitted=on_admitted,
-            approval_handler=approval_handler, launch_kind=launch_kind,
-            session_name=session_name)
-        result = await runner.run()
+        from garuda.agents.run_workspace import run_workspace
+
+        isolation = plan.options.get("isolation", "shared") if launch_kind == "run" else "shared"
+        async with run_workspace(self.store, plan.workspace, flow_session, isolation,
+                                 reserved_background=background_admission is not None) as selected:
+            workspace, worktree, identity = selected
+            execution = ({"source": plan.workspace, "path": workspace, "identity": identity}
+                         if workspace != plan.workspace else None)
+            runner = engine.FlowRunner(
+                self.store, workspace, name, flow, context.resolved,
+                task=plan.task, launcher=launch_step, flow_session=flow_session,
+                starter_record=plan.launch_metadata(), verification_request=request,
+                verification_permissions=permissions, prepared_roles=context.role_plans,
+                runtime_catalog=context.catalog, authority_sources=context.source_facts,
+                operation_binding=operation_binding, on_admitted=on_admitted,
+                approval_handler=approval_handler, launch_kind=launch_kind,
+                session_name=session_name, execution_workspace=execution, worktree_plan=worktree,
+                prepared_fallbacks=context.fallback_plans, background_admission=background_admission)
+            result = await runner.run()
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
 

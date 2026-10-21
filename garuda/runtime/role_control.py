@@ -27,17 +27,19 @@ class RoleControl:
     Socket peer credentials must identify the actual supervisor-issued command.
     """
 
-    def __init__(self, capability, workspace, capacity_key, *, approval=None, capacity_policy=None):
+    def __init__(self, capability, workspace, capacity_key, *, approval=None, capacity_policy=None,
+                 readonly=False):
         if type(capability) is not LeaseCapability:
             raise LeaseError("owned roles require an issued parent capability")
-        if capability._parent._mode != "mutating":
+        if capability._parent._mode != "mutating" and not readonly:
             raise LeaseError("owned roles require a mutating parent admission")
         if os.path.realpath(workspace) != os.path.realpath(capability.workspace):
             raise LeaseError("owned role workspace does not match its capability")
         self.guard = capability.guard(capacity_key=capacity_key, capacity_policy=capacity_policy)
-        self.parent_snapshot = capability._parent.snapshot_ownership()
-        if self.parent_snapshot["lease"]["mode"] != "mutating":
-            raise LeaseError("owned roles require the retained mutating issuance")
+        self.parent_snapshot = capability._parent.snapshot_lifetime()
+        if self.parent_snapshot["lease"]["mode"] not in (
+                {"mutating", "read-only"} if readonly else {"mutating"}):
+            raise LeaseError("owned role posture disagrees with its retained issuance")
         self.capacity_key = capacity_key
         self.workspace = os.path.realpath(workspace)
         self.approval = approval

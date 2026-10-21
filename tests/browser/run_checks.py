@@ -96,9 +96,44 @@ def run_check(name: str, port: int, shots: Path, extra_env: dict | None = None) 
     return result.returncode == 0
 
 
+def run_owned_starts(workdir, shots, start_port=8991):
+    root = workdir / "owned-start"
+    root.mkdir()
+    sessions, workspace, settings = root / "sessions", root / "workspace", root / "settings.yaml"
+    port = free_port(start_port)
+    env = {**os.environ, "GARUDA_GLOBAL_SETTINGS": str(settings),
+           "GARUDA_SESSIONS_DIR": str(sessions), "GARUDA_LEASES_DIR": str(root / "leases")}
+    with (workdir / "web-owned-start.log").open("w") as log:
+        process = subprocess.Popen([
+            sys.executable, str(HERE / "serve_flow_starts.py"), str(port),
+            str(sessions), str(workspace), str(settings), TOKEN,
+        ], stdout=log, stderr=subprocess.STDOUT, env=env)
+        try:
+            for _ in range(80):
+                with socket.socket() as probe:
+                    if probe.connect_ex(("127.0.0.1", port)) == 0:
+                        break
+                if process.poll() is not None:
+                    raise RuntimeError(f"owned start dashboard exited; see {log.name}")
+                time.sleep(0.25)
+            else:
+                raise RuntimeError(f"owned start dashboard did not listen; see {log.name}")
+            extra = {"GARUDA_CHECK_FLOW_SOURCE": str(workspace / "source.txt")}
+            return (run_check("check_run_starts.py", port, shots, extra)
+                    and run_check("check_flow_starts.py", port, shots, extra))
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep", action="store_true", help="keep the temp dirs and screenshots")
+    parser.add_argument("--owned-starts-only", action="store_true", help="Linux Chrome owned flow/role starts only")
     args = parser.parse_args()
 
     try:
@@ -111,6 +146,11 @@ def main() -> int:
     shots = workdir / "screenshots"
     shots.mkdir()
     print(f"working directory: {workdir}")
+
+    if args.owned_starts_only:
+        if sys.platform != "linux":
+            raise SystemExit("owned starts require Linux")
+        return 0 if run_owned_starts(workdir, shots) else 1
 
     failures = []
     processes = []
@@ -268,36 +308,9 @@ def main() -> int:
                           "GARUDA_CHECK_STARTER_PROFILES": json.dumps(starter_bases)}):
             failures.append("check_scenarios.py")
 
-        # --- Linux owned flow start: real browser, approval, child and gateway ---------
-        if sys.platform == "linux":
-            flow_root = workdir / "flow-start"
-            flow_root.mkdir()
-            flow_sessions = flow_root / "sessions"
-            flow_workspace = flow_root / "workspace"
-            flow_settings = flow_root / "settings.yaml"
-            flow_port = free_port(starter_port + 1)
-            flow_log = (workdir / "web-flow-start.log").open("w")
-            flow_env = {
-                **os.environ,
-                "GARUDA_GLOBAL_SETTINGS": str(flow_settings),
-                "GARUDA_SESSIONS_DIR": str(flow_sessions),
-                "GARUDA_LEASES_DIR": str(flow_root / "leases"),
-            }
-            process = subprocess.Popen([
-                sys.executable, str(HERE / "serve_flow_starts.py"), str(flow_port),
-                str(flow_sessions), str(flow_workspace), str(flow_settings), TOKEN,
-            ], stdout=flow_log, stderr=subprocess.STDOUT, env=flow_env)
-            processes.append(process)
-            for _ in range(80):
-                with socket.socket() as probe:
-                    if probe.connect_ex(("127.0.0.1", flow_port)) == 0:
-                        break
-                if process.poll() is not None:
-                    raise SystemExit(f"owned flow dashboard exited early; see {flow_log.name}")
-                time.sleep(0.25)
-            if not run_check("check_flow_starts.py", flow_port, shots, {
-                    "GARUDA_CHECK_FLOW_SOURCE": str(flow_workspace / "source.txt")}):
-                failures.append("check_flow_starts.py")
+        # --- Linux-owned flow and role starts in the real Chrome channel ------
+        if sys.platform == "linux" and not run_owned_starts(workdir, shots, starter_port + 1):
+            failures.append("owned starts")
 
         # --- chat, approvals and grounding, ScriptModel-backed ----------------
         chat_sessions = workdir / "chat-sessions"

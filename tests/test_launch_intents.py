@@ -48,6 +48,28 @@ def test_concurrent_processes_reserve_one_session_for_one_operation(private_stor
     assert store.read(operation_id)["reserved_session"] == results[0][0]["reserved_session"]
 
 
+def test_background_v2_binds_queue_once_without_inventing_a_workspace_admission(private_store):
+    root, workspace, store = private_store
+    operation = str(uuid.uuid4())
+    request = _request(workspace, operation)
+    record, created = store.prepare(**request, background=True)
+    assert created and record["version"] == 2 and record["queue_admission"] is None
+    admission = {"queue_root": str(root.parent / "queue"), "scope": "user:native",
+                 "item_id": record["reserved_session"], "harness": "native", "config_digest": "d" * 64}
+    with pytest.raises(IntentStateError):
+        store.bind_queue(operation, owner=request["owner"], admission=admission)
+    store.advance(operation, expected="prepared", phase="launch-authorized", owner=request["owner"])
+    bound = store.bind_queue(operation, owner=request["owner"], admission=admission)
+    assert bound["queue_admission"] == admission
+    assert bound["session_id"] is None and bound["lease_epoch"] is None
+    assert store.bind_queue(operation, owner=request["owner"], admission=admission) == bound
+    with pytest.raises(IntentConflict):
+        store.bind_queue(operation, owner=request["owner"], admission={**admission, "config_digest": "e" * 64})
+    with pytest.raises(IntentConflict):
+        store.prepare(**request)
+    assert store.read(operation) == bound
+
+
 def test_transition_requires_the_original_live_owner_and_preserves_uncertainty(private_store):
     root, workspace, store = private_store
     operation_id = str(uuid.uuid4())

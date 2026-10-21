@@ -175,6 +175,12 @@ class QueueSlots:
                     return
                 if not self._same(slot, ticket):
                     raise CapacityUnavailable("queue release cannot alter a replacement slot")
+                if "loan" in slot:
+                    from garuda.runtime.queue_capacity import QueueCapacityLoan
+
+                    loan = self.capacity._loans.get((ticket.key, ticket.holder))
+                    if type(loan) is not QueueCapacityLoan or not loan.owner_may_release(slot, ticket):
+                        raise CapacityUnavailable("queued role borrower has no completed closure")
                 phase = slot["queue"]["phase"]
                 if preactivation_only and phase in ACTIVATED_PHASES:
                     raise CapacityUnavailable("activated release cannot be recovered without cleanup proof")

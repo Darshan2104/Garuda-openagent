@@ -156,12 +156,14 @@ async def test_run_kind_start_hands_one_owned_child_the_exact_task(
     assert len(launches) == 1
 
 
-async def test_changed_source_after_run_admission_launches_no_child(run_context, monkeypatch):
+@pytest.mark.parametrize("isolation", ["shared", "worktree"])
+async def test_changed_source_after_run_admission_launches_no_child(run_context, monkeypatch, isolation):
     from garuda.agents.role_runs import RoleRunService
 
     ctx = run_context
     launches = _capture(monkeypatch)
-    inputs = {"goal": "use the admitted source", "sources": ["source.txt"]}
+    inputs = {"goal": "use the admitted source", "sources": ["source.txt"],
+              "options": {"isolation": isolation}}
     preview = await _preview(ctx, "run-with-role", inputs)
     original = RoleRunService.run_prepared
 
@@ -181,10 +183,8 @@ async def test_changed_source_after_run_admission_launches_no_child(run_context,
 
 
 @pytest.mark.parametrize("case,code", [
-    ("worktree", "starter.isolation_unowned"),
-    ("background", "starter.background_unowned"),
     ("permission", "starter.permission_exceeds_ceiling"),
-    ("acp-ask", "starter.acp_readonly_ownership_unavailable"),
+    ("acp-ask", "workspace.readonly_unenforced"),
 ])
 async def test_unowned_run_starts_refuse_before_any_intent(tmp_path, monkeypatch, case, code):
     workspace = _workspace(tmp_path)
@@ -200,9 +200,7 @@ async def test_unowned_run_starts_refuse_before_any_intent(tmp_path, monkeypatch
             starter, inputs = "ask-role", {"question": "explain source.txt"}
         else:
             starter = "run-with-role"
-            options = ({"isolation": "worktree"} if case == "worktree" else
-                       {"bg": True} if case == "background" else {})
-            inputs = {"goal": "bounded change", **({"options": options} if options else {})}
+            inputs = {"goal": "bounded change"}
         preview = await _preview(ctx, starter, inputs)
         assert not preview["authority"]["can_start"]
         assert code in {item["code"] for item in preview["authority"]["diagnostics"]}
@@ -221,9 +219,52 @@ async def _terminal(ctx, operation_id, timeout=60):
                                              "refused", "abandoned"}, timeout=timeout)
 
 
+@pytest.mark.parametrize("isolation", ["worktree", "auto"])
+async def test_isolated_run_owns_selected_worktree_and_preserves_source(
+        run_context, monkeypatch, isolation):
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+
+    ctx = run_context
+    source = ctx.flow_starts.workspaces[0]
+    source_bytes = (source / "source.txt").read_bytes()
+    competing = WorkspaceLeaseGuard(str(source), "existing-source-editor")
+    competing.acquire()
+    launches = _capture(monkeypatch)
+    inputs = {"goal": "work in an isolated checkout", "options": {"isolation": isolation}}
+    try:
+        preview = await _preview(ctx, "run-with-role", inputs)
+        assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+        operation = str(uuid.uuid4())
+        request = _start(preview, operation, "run-with-role", inputs)
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=request)
+        assert response.status == 201, _body(response)
+        terminal = await _terminal(ctx, operation)
+        assert terminal["status"] == "terminal", terminal
+        (launch,) = launches
+        target = Path(launch.workspace)
+        assert target != source and target.is_dir()
+        assert launch.authority_workspace == str(source)
+        info = target.stat()
+        assert launch.workspace_identity == [info.st_dev, info.st_ino]
+        parent = ctx.store.load_meta(terminal["session_id"])
+        assert parent["workspace"] == parent["worktree"] == str(target)
+        assert parent["source_repo"] == str(source)
+        assert parent["dirty_source"] is True
+        assert parent["flow_execution_workspace"] == {
+            "source": str(source), "path": str(target), "identity": launch.workspace_identity}
+        assert (source / "source.txt").read_bytes() == source_bytes
+        duplicate = await _call(ctx, "/api/scenarios/start", method="POST", body=request)
+        assert _body(duplicate)["session_id"] == terminal["session_id"]
+        assert len(launches) == 1 and target.is_dir()
+        assert competing._held
+    finally:
+        await competing.release()
+
+
 @LINUX
 @pytest.mark.parametrize("checked", [False, True])
-async def test_native_run_with_role_completes_in_one_owned_child(tmp_path, monkeypatch, checked):
+@pytest.mark.parametrize("isolation", ["shared", "worktree"])
+async def test_native_run_with_role_completes_in_one_owned_child(tmp_path, monkeypatch, checked, isolation):
     monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
     workspace = _workspace(tmp_path)
     _configure(workspace)
@@ -236,9 +277,9 @@ async def test_native_run_with_role_completes_in_one_owned_child(tmp_path, monke
     }))
     ctx = await _context(tmp_path, workspace)
     try:
-        inputs = {"goal": "answer with one owned note"}
+        inputs = {"goal": "answer with one owned note", "options": {"isolation": isolation}}
         if checked:
-            inputs["options"] = {"checks": ["git status --porcelain"]}
+            inputs["options"]["checks"] = ["git status --porcelain"]
         preview = await _preview(ctx, "run-with-role", inputs)
         assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
         assert preview["authority"]["envelope"]["capabilities"]["checks"] == (
@@ -258,6 +299,12 @@ async def test_native_run_with_role_completes_in_one_owned_child(tmp_path, monke
                     if row.get("flow_step", {}).get("flow_session") == terminal["session_id"]]
         assert [row["flow_step"]["step"] for row in children] == ["run"]
         parent = ctx.store.load_meta(terminal["session_id"])
+        if isolation == "worktree":
+            assert parent["workspace"] != str(workspace)
+            assert children[0]["workspace"] == parent["worktree"]
+            assert parent["source_repo"] == str(workspace)
+            assert children[0]["source_repo"] == str(workspace)
+            assert children[0]["workspace_owner"] == terminal["session_id"]
         if checked:
             # The explicit check ran once, candidate-bound, under the run parent.
             assert parent["state"]["verification"]["status"] == "passed"
@@ -268,6 +315,106 @@ async def test_native_run_with_role_completes_in_one_owned_child(tmp_path, monke
     finally:
         await ctx.flow_starts.aclose()
         await ctx.live.aclose()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_never_admitted_worktree_is_discarded_after_selection_settles(
+        tmp_path, monkeypatch, cancel):
+    import threading
+
+    from garuda.agents.run_workspace import run_workspace
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import session_service
+
+    source = _workspace(tmp_path)
+    store = SessionStore(tmp_path / "sessions")
+    entered, release = threading.Event(), threading.Event()
+    selected = []
+    choose = session_service.choose_workspace
+
+    def delayed(*args, **kwargs):
+        result = choose(*args, **kwargs)
+        selected.append(result)
+        entered.set()
+        assert release.wait(10)
+        return result
+
+    monkeypatch.setattr(session_service, "choose_workspace", delayed)
+
+    async def refused():
+        async with run_workspace(store, str(source), str(uuid.uuid4()), "worktree"):
+            raise ValueError("refused before admission")
+
+    task = asyncio.create_task(refused())
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        if cancel:
+            task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError if cancel else ValueError):
+            await task
+        (path, metadata), = selected
+        assert not Path(path).exists()
+        branch = subprocess.run(["git", "-C", str(source), "show-ref", "--verify", "--quiet",
+                                 f"refs/heads/{metadata['branch']}"], capture_output=True)
+        assert branch.returncode == 1
+        assert store.list_sessions() == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@LINUX
+@pytest.mark.parametrize("checked", [False, True])
+async def test_native_ask_shares_workspace_but_acceptance_still_requires_exclusion(
+        tmp_path, monkeypatch, checked):
+    from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+
+    monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
+    source = _workspace(tmp_path)
+    _configure(source)
+    if checked:
+        configured = gy.load_file(gy.user_path())
+        configured["checks"] = [{"run": "git status --porcelain"}]
+        gy.user_path().write_text(gy.dump(configured))
+    server, requests, _started, _release = _local_model()
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
+        "models": {"owned": {"model": "openai/owned-start",
+                              "api_base": f"http://127.0.0.1:{server.server_port}/v1"}},
+        "model_bindings": {"default": {"reasoning": "owned"}},
+        "capacity": {"native": 1},
+    }))
+    holder = WorkspaceLeaseGuard(str(source), "source-editor")
+    holder.acquire()
+    ctx = await _context(tmp_path, source)
+    try:
+        inputs = {"question": "explain this workspace"}
+        preview = await _preview(ctx, "ask-role", inputs)
+        operation = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
+            preview, operation, "ask-role", inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _terminal(ctx, operation)
+        if checked:
+            assert terminal["status"] == "refused" and terminal["reason"] == "workspace.busy"
+            assert requests == []
+        else:
+            assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+            assert len(requests) == 1
+            from garuda.flows.engine import receipts
+
+            (receipt,) = receipts(ctx.store, terminal["session_id"])
+            assert receipt["no_edits"]["result"] == "unchanged"
+        assert holder._held
+        assert (source / "source.txt").read_text() == "previewed source\n"
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+        await holder.release()
         server.shutdown()
         server.server_close()
 
@@ -307,6 +454,48 @@ async def test_acp_run_with_role_completes_without_live_chat(tmp_path, monkeypat
         assert len(children) == 1
         child = ctx.store.load_meta(children[0]["session_id"])
         assert child["role"]["runtime_id"] == "owned-acp"
+    finally:
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+
+
+@LINUX
+@pytest.mark.skipif(os.getenv("GARUDA_LIVE_OWNED_DOCKER") != "1", reason="opt-in owned Docker lifecycle")
+async def test_dashboard_acp_ask_uses_image_runtime_without_host_cli(tmp_path, monkeypatch):
+    workspace = _workspace(tmp_path)
+    workspace.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", str(workspace)],
+                   cwd=workspace, check=True)
+    gy.user_path().write_text(gy.dump({"version": 1,
+        "roles": {"reviewer": {"harness": "image-only", "fallback": [{"harness": "native"}]}},
+        "harnesses": {"image-only": {"confinement": {
+            "image": "garuda-owned-acp-fixture:local",
+            "command": ["python", "/opt/garuda/garuda/acp/fake_agent.py", "--profile", "probe-writes"]}}}}))
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
+        "runtimes": [{"runtime_id": "image-only", "kind": "acp",
+                      "command": ["/not-installed-on-host"], "version": "1"}],
+        "capacity": {"image-only": 1}}))
+    ctx = await _context(tmp_path, workspace)
+    try:
+        inputs = {"question": "review the read-only source"}
+        preview = await _preview(ctx, "ask-role", inputs)
+        assert preview["readiness"]["can_run"], preview["readiness"]["diagnostics"]
+        assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+        operation = str(uuid.uuid4())
+        response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
+            preview, operation, "ask-role", inputs))
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _terminal(ctx, operation)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+        from garuda.flows.engine import receipts
+
+        (receipt,) = receipts(ctx.store, terminal["session_id"])
+        assert receipt["no_edits"]["result"] == "unchanged"
+        assert receipt["closure"]["confinement"]["backend"] == "docker"
+        assert len(receipt["closure"]["confinement"]["absent"]) == 2
+        assert (workspace / "source.txt").read_text() == "previewed source\n"
+        assert not (workspace / "planted.txt").exists()
     finally:
         await ctx.flow_starts.aclose()
         await ctx.live.aclose()

@@ -1,0 +1,33 @@
+name: Owned starts in Google Chrome
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: browser-owned-starts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chrome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned package and browser driver
+        run: |
+          pip install -e ".[dev]" -c constraints.txt
+          pip install playwright
+          google-chrome --version
+      - name: Exercise owned role and flow starts in Google Chrome
+        run: python tests/browser/run_checks.py --owned-starts-only --keep
+      - name: Retain screenshots and server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-starts-chrome
+          path: /tmp/garuda-browser-checks-*/

@@ -52,10 +52,11 @@ def _independence_remedies(target: str) -> list[dict]:
     ]
 
 
-def readiness(context: LaunchContext, *, starter_id: str) -> dict:
+def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -> dict:
     """Configured prerequisites, with separately labelled unprobed runtime facts."""
     diagnostics, blockers, unchecked, evidence = [], [], [], {}
     registry = context.catalog.registry
+    entry = load_catalog()[starter_id]
     for name, plan in context.role_plans.items():
         manifest = registry.manifest_for(plan.runtime_id)
         declared = registry.get(context.resolved.config["roles"][name]["harness"]).capabilities
@@ -66,12 +67,16 @@ def readiness(context: LaunchContext, *, starter_id: str) -> dict:
         if plan.kind == "native":
             row["availability"] = "in-process"
         else:
-            row["availability"] = "present" if manifest.command and shutil.which(manifest.command[0]) else "missing"
-            if row["availability"] == "missing":
+            confined = (plan.permissions == "readonly" or (owned and (
+                plan.write_policy == "no-edits"
+                or (context.kind == "run" and entry.launch.get("no_edits")))))
+            row["availability"] = ("image runtime; not checked" if confined else
+                                   "present" if manifest.command and shutil.which(manifest.command[0]) else "missing")
+            if row["availability"] == "missing" and not (owned and name in context.fallback_plans):
                 blockers.append("harness.cli_missing")
                 diagnostics.append(_diagnostic("harness.cli_missing", f"{name}: executable unavailable for {plan.runtime_id}",
                                                manifest.setup or "Install the harness's official CLI and rerun `garuda init`.", level="error"))
-            if plan.permissions == "readonly":
+            if confined:
                 from garuda.workspace.confined_acp import Confinement
 
                 confinement = Confinement.from_config(plan.harness)
