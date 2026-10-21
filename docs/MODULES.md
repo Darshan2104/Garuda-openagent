@@ -202,6 +202,10 @@ read-only detached copy.
 `manager.py` holds history and decides when to act. `shaper.py` caps and shapes
 tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
+`state_card.py` is `WorkingState`, the hard-bounded state card assembled from
+the side-effect ledger, goal, todos, acceptance contract and checked commands
+with their exit codes, rendered deterministically and re-pinned after every
+compaction; the model's summary adds only findings, dead ends and why.
 `schemas.py` validates the generated `current-task.md`/`handoff.md` files
 (versioned frontmatter, bounded fields, unknown fields round-trip, unknown
 versions rejected). `pack.py` is the single writer: it compiles both files
@@ -256,7 +260,8 @@ contract, and sibling event log; ordinary `invoke_subagent` stays on reasoning.
 `agents/setup.py::prepare_agent_run` returns `PreparedNativeRun` and is the
 single resolution point for every entry point. `plan_agent_run` resolves native
 configuration without constructing provider clients or starting tools;
-`activate_agent_plan` creates fresh live dependencies from that snapshot.
+`activate_agent_plan` creates fresh live dependencies from that snapshot;
+`agents/native_plan.py` holds that snapshot (`NativeRunPlan`).
 `prepare_agent_run` preserves the existing combined API and SDK client identity.
 
 ## `runtime/` — harness boundary
@@ -280,6 +285,11 @@ be widened by rereading changed settings. The child's logical release cannot
 free capacity. Cancellation settles the
 subtree, and uncertainty quarantines the retained parent. `role_request.py`
 uses closed JSON values rather than executable object serialization.
+`role_worker.py` is the fixed worker entry the parent launches; only the parent
+can authorize its lease operations. `process_request.py` is the bounded,
+versioned request every owned process takes through `process_supervision.py`
+(acceptance checks, role workers, confinement Docker calls, fallback probes),
+with per-purpose time and size limits that command text cannot widen.
 
 `config_sources.py` scopes source identities to actual parse reads. Owned
 preparation retains digests and absent-file observations, then uses an owned
@@ -376,7 +386,10 @@ is the P1 initial-only selector (issue #77): explicit → profile pin → first
 trusted deterministic rule → optional classifier (#80) → configured
 default → built-in native, with bounded side-effect-free trait detection,
 trusted-only task regexes, pre-start validation, persisted rationale, and
-startup fallback only on an unchanged baseline. `selection/classifier.py`
+startup fallback only on an unchanged baseline. `selection/models.py` holds
+the shared types, `selection/scoring.py` parses, sorts and matches rules, and
+`selection/explain.py` persists the rationale with only routing facts (no
+secrets, environment values or full workspace paths). `selection/classifier.py`
 makes at most one tool-free, single-attempt call on the collection binding
 (the reasoning binding only when trusted global config allows it) over an
 approved candidate table fixed before the call, then revalidates the strict
@@ -618,7 +631,9 @@ reviewer runs. P1a flows still have no acceptance-check phase.
 ## `eval/` — measurement, outside the agent
 
 `harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),
-`harbor_environment.py`, `ablation.py` (per-variant config matrix),
+`harbor_environment.py`, `answer_checks.py` (decidable deliverable checks
+derived from the task statement, such as a named result file existing and
+parsing), `ablation.py` (per-variant config matrix),
 `atif_export.py`, `dashboard.py`, `costs.py` (four-tier cost resolution),
 `pricing.py` (the versioned price snapshot `costs.py` resolves against, so a
 reported cost does not move when an upstream table does).
