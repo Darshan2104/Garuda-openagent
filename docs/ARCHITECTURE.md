@@ -132,6 +132,12 @@ fastest way to learn the system.
    immutable requirement even when it is also named as a task source.
    Review independence uses the terminal attempt's recorded reviewer plan,
    including its selected fallback; missing reviewer identity refuses approval.
+   The selected reviewer is checked before its prompt is dispatched, then
+   checked again against the completed receipt and consulted identities.
+   Post-execution configuration drift rejects the result without undoing proved
+   child closure: capacity and workspace ownership release once the process and
+   any separately owned containers are closed. Unproved cleanup still quarantines.
+   A flow without effective checks skips the bounded check request entirely.
    The shared SessionStore now supports an opt-in strict publication policy.
    Its external registry and durable metadata head prevent local marker loss
    or metadata replacement from downgrading a protected flow to legacy writes;

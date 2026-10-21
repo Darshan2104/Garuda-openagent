@@ -77,3 +77,31 @@ async def test_bash_tool_stateless_by_default(tmp_path: Path):
     await tool.execute({"command": "export TOK=shouldnotpersist"}, env, ctx)
     result = await tool.execute({"command": "echo [$TOK]"}, env, ctx)
     assert "[]" in result.content  # fresh subprocess each call -> no state carried
+
+
+@pytest.mark.parametrize("name", ["a'$(touch injected)", "a'`touch injected`"])
+async def test_per_call_cwd_is_literal_shell_data(tmp_path: Path, name):
+    target = tmp_path / name
+    target.mkdir()
+    env = LocalEnvironment(workspace_root=tmp_path)
+    try:
+        result = await env.persistent_execute("pwd", cwd=name)
+        assert not (tmp_path / "injected").exists(), "cwd executed a shell substitution"
+        assert result.exit_code == 0
+        assert Path(result.stdout.strip()) == target.resolve()
+    finally:
+        await env.aclose()
+
+
+async def test_per_call_relative_cwd_uses_workspace_without_moving_the_shell(tmp_path: Path):
+    (tmp_path / "session").mkdir()
+    (tmp_path / "target").mkdir()
+    env = LocalEnvironment(workspace_root=tmp_path)
+    try:
+        await env.persistent_execute("cd session")
+        result = await env.persistent_execute("pwd", cwd="target")
+        assert result.exit_code == 0
+        assert result.stdout.strip() == (await env.execute("pwd", cwd="target")).stdout.strip()
+        assert Path((await env.persistent_execute("pwd")).stdout.strip()) == (tmp_path / "session").resolve()
+    finally:
+        await env.aclose()

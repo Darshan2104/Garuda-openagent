@@ -1,11 +1,11 @@
 # Garuda Open Agent
 
+> A provider-agnostic runtime for models and coding harnesses.
+
 Garuda is a provider-agnostic coding-agent harness for terminal and software
 engineering work. It combines a configurable agent loop with real tools,
 workspaces, permissions, context management, evidence-based completion, sessions,
 MCP, and observability.
-
-> The harness is the product, not the model.
 
 **Python:** 3.12+ · **License:** MIT · **Current release:** 1.2.0
 

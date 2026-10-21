@@ -65,7 +65,7 @@ async def test_review_uses_the_selected_reviewer_fallback_identity(tmp_path, ind
         assert response.status in {201, 202}, _body(response)
         terminal = await _terminal(ctx, operation)
         meta = ctx.store.load_meta(terminal["session_id"])
-        assert counter.read_text().splitlines() == ["coder", "coder"]
+        assert counter.read_text().splitlines() == (["coder"] if independent else ["coder", "coder"])
         assert terminal["outcome"] == ("stopped" if independent else "completed"), terminal
         review = meta["review"]
         assert review["status"] == ("review_not_independent" if independent else "review_approved")
@@ -84,7 +84,7 @@ async def test_review_uses_the_selected_reviewer_fallback_identity(tmp_path, ind
 @pytest.mark.parametrize("change", ["task", "checked-task", "configuration", "configuration-as-task"])
 async def test_editable_task_sources_and_configuration_have_distinct_lifetimes(tmp_path, change):
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard
-    from garuda.runtime.capacity import CapacityStore, CapacityUnavailable
+    from garuda.runtime.capacity import CapacityStore
 
     workspace = _workspace(tmp_path)
     settings = workspace / ".agent" / "settings.yaml"
@@ -123,10 +123,15 @@ async def test_editable_task_sources_and_configuration_have_distinct_lifetimes(t
             holder.acquire()
             await holder.release()
         else:
-            assert terminal["outcome"] == "interrupted", terminal
+            assert terminal["outcome"] == "stopped", terminal
             assert counter.read_text().splitlines() == ["coder"]
-            with pytest.raises(CapacityUnavailable):
-                slots.reserve("builder", "after-configuration-edit", 1)
+            meta = ctx.store.load_meta(terminal["session_id"])
+            assert meta["flow_stop"]["code"] == "flow.authority_changed"
+            reservation = slots.reserve("builder", "after-configuration-edit", 1)
+            slots.release(reservation)
+            holder = WorkspaceLeaseGuard(str(workspace), "after-configuration-edit")
+            holder.acquire()
+            await holder.release()
     finally:
         await ctx.flow_starts.aclose()
         await ctx.live.aclose()

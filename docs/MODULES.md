@@ -298,6 +298,9 @@ snapshots contain immutable configuration. Starter task-file references join
 the parent's initial admission validation, but their digests are excluded from
 role closure and acceptance authority so requested edits can reach review and
 verification. Configuration also listed as a task source remains immutable.
+Changed configuration with a complete bound result and proved descendant closure
+refuses the result but releases the closed child's capacity. Missing result or
+cleanup evidence still retains quarantine.
 Source/ceiling and absent-input mutation tests exercise that refusal. Project configuration
 and trust-grant reads report their exact bytes to an active source capture;
 `freeze_resolved_checks` requires those identities for configured checks, and

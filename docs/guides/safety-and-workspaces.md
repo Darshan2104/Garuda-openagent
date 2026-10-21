@@ -180,6 +180,13 @@ explicit `--permission-mode` still wins.
 | `auto` | Allows every request. Only per-tool `tool_rules` apply; path rules, bash rules, and built-in refusals are skipped (currently the same as `yolo`) |
 | `yolo` | Same as `auto`. Use only inside a boundary you trust independently |
 
+Read-only shell screening checks arguments and environment overrides as well
+as program names. Output-file arguments, program-execution options and unsafe
+loader or executable-search overrides are refused. Command working directories
+also obey path rules; persistent-shell directories are passed as literal paths.
+Cancelling a stateless local command settles its process group and pipe readers before
+the call returns. These checks remain guardrails, not confinement.
+
 !!! warning
     Don't combine `--mode readonly` with a more permissive `--permission-mode`
     and still call the result read-only.

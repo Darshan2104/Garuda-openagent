@@ -9,7 +9,11 @@ means they run one after another as they always did.
 import pytest
 
 from garuda.core import evidence
+from garuda.core.permissions import PermissionEngine
 from garuda.core.verifier import _verification_segments, group_command
+from garuda.tools.bash import BashTool
+from garuda.tools.protocol import ToolContext
+from garuda.workspace.local import LocalEnvironment
 
 READ_ONLY = [
     "cat out.txt",
@@ -22,8 +26,16 @@ READ_ONLY = [
     "sha256sum artifact.tar",
     "jq -e '.ok' report.json",
     "test -f build/app",
-    "FOO=1 timeout 5 cat x",
+    "LANG=C timeout 5 cat x",
     "/usr/bin/cat x",
+    "xxd -l 32 -c8 out.txt",
+    "xxd -r -s -16 out.txt",
+    "tree -L 2 src",
+    "rg -n 'hello.*' out.txt",
+    "env LC_ALL=C cat out.txt",
+    "nice -n 5 cat out.txt",
+    "stdbuf -oL cat out.txt",
+    "date -u +%Y-%m-%d",
 ]
 
 MUTATES_OR_UNKNOWN = [
@@ -78,6 +90,72 @@ def test_read_only_commands_are_side_effect_free(command):
 @pytest.mark.parametrize("command", MUTATES_OR_UNKNOWN)
 def test_anything_else_fails_closed(command):
     assert evidence.is_side_effect_free(command) is False
+
+
+@pytest.mark.parametrize("command", [
+    "rg --pre=./preprocessor hello input.txt",
+    "rg --hostname-bin ./preprocessor hello input.txt",
+    "xxd -p -c8 input.txt output.txt",
+    "xxd input.txt -p",
+    "xxd -- input.txt output.txt",
+    "xxd {input.txt,output.txt}",
+    "tree -o output.txt .",
+    "tree -afo output.txt .",
+    "LD_PRELOAD=./library.so cat input.txt",
+    "env DYLD_INSERT_LIBRARIES=./library.dylib cat input.txt",
+    "RIPGREP_CONFIG_PATH=./config rg hello input.txt",
+    "PATH=. cat input.txt",
+    "env FOO=1 cat input.txt",
+    "time env LD_PRELOAD=./library.so cat input.txt",
+    "./cat input.txt",
+    "/tmp/cat input.txt",
+    "./timeout 5 cat input.txt",
+    "timeout 5 ./cat input.txt",
+    "env -S 'cat input.txt'",
+    "time -o output.txt cat input.txt",
+    "timeout -s ABRT 5 cat input.txt",
+    "cat <(touch output.txt)",
+    "rg $RG_OPTIONS input.txt",
+    "rg * input.txt",
+    "rg {--pre=rm,input.txt}",
+    "rg @(--pre=rm) input.txt",
+    "printf -v PATH .",
+    "printf '%n' PATH",
+    "printf -- '%n' PATH",
+    "file -C -m input.txt",
+    "date 010100002025",
+    "less -o output.txt input.txt",
+    "cat 'unterminated",
+])
+async def test_readonly_refuses_argument_environment_and_executable_bypasses(command):
+    allowed, _ = await PermissionEngine(mode="readonly").evaluate_tool_call(
+        "bash", {"command": command}
+    )
+    assert not allowed
+
+
+@pytest.mark.parametrize("command", [
+    "xxd input.txt victim.txt",
+    "rg --pre ./preprocessor hello input.txt",
+    "rg --pr\\\ne ./preprocessor hello input.txt",
+    'rg "--pr\\\ne" ./preprocessor hello input.txt',
+])
+async def test_readonly_shell_cannot_overwrite_files_or_execute_preprocessors(tmp_path, command):
+    (tmp_path / "input.txt").write_text("hello\n")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original\n")
+    preprocessor = tmp_path / "preprocessor"
+    preprocessor.write_text('#!/bin/sh\nprintf changed > victim.txt\ncat "$1"\n')
+    preprocessor.chmod(0o700)
+    allowed, _ = await PermissionEngine(mode="readonly").evaluate_tool_call(
+        "bash", {"command": command}
+    )
+    if allowed:
+        await BashTool().execute(
+            {"command": command}, LocalEnvironment(tmp_path), ToolContext(session_id="readonly")
+        )
+    assert victim.read_text() == "original\n"
+    assert not allowed
 
 
 def test_quoted_operators_do_not_leak():

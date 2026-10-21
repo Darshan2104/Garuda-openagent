@@ -211,6 +211,9 @@ tempCodeRunnerFile.py
 .context/handoff.md
 .context/sessions/
 
+# Local server state, credentials, databases and backups are never source files.
+/config/
+
 # PyPI configuration file
 .pypirc
 

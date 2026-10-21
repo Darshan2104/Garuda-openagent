@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-10-21 — Admission, result validity and cleanup have separate decisions
+
+- Read-only command screening checks complete argument forms, environment
+  overrides and executable selection. A command's working directory is also
+  subject to path rules and is quoted literally in persistent shells. Stateless
+  local cancellation retains launch ownership through process-group and pipe cleanup.
+- Required reviewer independence is checked after fallback selection and before
+  prompting, then checked again using the completed receipt and consult records.
+  Missing launch identity remains a refusal, including for native reviewers.
+- Configuration drift rejects an owned role's result. A complete bound result
+  and proved descendant closure still release capacity after separately owned
+  container cleanup. Missing result or closure evidence retains quarantine.
+- Flows with no effective checks do not construct a bounded check request.
+  Invalid or oversized actual check requests receive a typed flow refusal.
+- Root `config/` is local private server state and is excluded from Git. This
+  does not change the tracked Python configuration package under `garuda/config/`.
+
 ## 2026-10-21 — Review identities and source lifetimes follow actual execution
 
 - Required review independence uses the terminal attempt's recorded role plan,

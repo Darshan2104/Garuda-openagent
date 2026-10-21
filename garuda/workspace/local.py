@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import os
+import shlex
 import signal
 import time
 from pathlib import Path
@@ -10,14 +11,14 @@ from garuda.workspace.paths import resolve_workspace_path
 
 
 def _kill_process_tree(process: "asyncio.subprocess.Process") -> None:
-    """Kill the whole process group so a timed-out command's children die too.
+    """Kill the issued process group, including after its leader has exited.
 
     The subprocess is launched as a session leader (start_new_session=True), so its
-    PID is its process-group id; killpg reaps grandchildren (node/pytest/etc.) that
+    PID is its process-group id; killpg kills grandchildren (node/pytest/etc.) that
     a bare process.kill() would orphan (holding ports/locks/CPU for the rest of the run).
     """
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        os.killpg(process.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         try:
             process.kill()
@@ -40,6 +41,28 @@ async def _collect(task: "asyncio.Task[bytes]") -> bytes:
         return b""
     except Exception:
         return b""
+
+
+async def _cancel_execution(
+    launch: "asyncio.Task[asyncio.subprocess.Process]", readers: list[asyncio.Task[bytes]]
+) -> None:
+    """Settle a cancelled launch and all resources it actually created."""
+    try:
+        process = await launch
+    except Exception:
+        return  # launch failed before it produced a process to own
+    _kill_process_tree(process)
+    try:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_PIPE_DRAIN_TIMEOUT)
+        except TimeoutError:
+            if process.returncode is None:
+                raise
+            # An escaped descendant may retain a pipe after the leader was reaped.
+    finally:
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
 
 
 class LocalEnvironment:
@@ -76,52 +99,58 @@ class LocalEnvironment:
             workdir = self._workspace_root
         start = time.monotonic()
 
-        process = await asyncio.create_subprocess_shell(
+        launch = asyncio.create_task(asyncio.create_subprocess_shell(
             command,
             cwd=str(workdir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
             start_new_session=True,  # own process group, so timeout can kill children
-        )
+        ))
         # Read the pipes in their own tasks rather than via communicate(). A
         # wait_for around communicate() *cancels* it on timeout, which abandons the
         # readers and loses everything the command had already written — and a build
         # or test run that burned its whole budget and then died is exactly when its
         # output matters most. Draining separately keeps the partial output.
-        stdout_task = asyncio.create_task(process.stdout.read())
-        stderr_task = asyncio.create_task(process.stderr.read())
+        readers = []
         try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
-            _kill_process_tree(process)
-            with contextlib.suppress(ProcessLookupError):
-                await process.wait()
-            # The process is dead, so both pipes are at EOF and these return at once.
-            partial_out = await _collect(stdout_task)
-            partial_err = await _collect(stderr_task)
-            duration_ms = int((time.monotonic() - start) * 1000)
-            notice = f"Command timed out after {timeout}s and was killed."
+            # Retain launch ownership if cancellation arrives while the OS is spawning.
+            process = await asyncio.shield(launch)
+            stdout_task = asyncio.create_task(process.stdout.read())
+            stderr_task = asyncio.create_task(process.stderr.read())
+            readers.extend((stdout_task, stderr_task))
+            timed_out = False
+            try:
+                await asyncio.wait_for(process.wait(), timeout=timeout)
+            except (TimeoutError, asyncio.TimeoutError):
+                timed_out = True
+                _kill_process_tree(process)
+                with contextlib.suppress(ProcessLookupError):
+                    await process.wait()
+            stdout_bytes = await _collect(stdout_task)
+            stderr_bytes = await _collect(stderr_task)
+            stderr = stderr_bytes.decode(errors="replace")
+            if timed_out:
+                notice = f"Command timed out after {timeout}s and was killed."
+                stderr = f"{stderr}\n{notice}" if stderr else notice
             return ExecResult(
-                stdout=partial_out.decode(errors="replace"),
-                stderr=(
-                    f"{partial_err.decode(errors='replace')}\n{notice}"
-                    if partial_err
-                    else notice
-                ),
-                exit_code=124,
-                duration_ms=duration_ms,
-                truncated=True,
+                stdout=stdout_bytes.decode(errors="replace"),
+                stderr=stderr,
+                exit_code=124 if timed_out else (process.returncode or 0),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                truncated=timed_out,
             )
-        stdout_bytes = await _collect(stdout_task)
-        stderr_bytes = await _collect(stderr_task)
-        duration_ms = int((time.monotonic() - start) * 1000)
-        return ExecResult(
-            stdout=stdout_bytes.decode(errors="replace"),
-            stderr=stderr_bytes.decode(errors="replace"),
-            exit_code=process.returncode or 0,
-            duration_ms=duration_ms,
-        )
+        except asyncio.CancelledError:
+            cleanup = asyncio.create_task(_cancel_execution(launch, readers))
+            while True:
+                try:
+                    await asyncio.shield(cleanup)
+                    break
+                except asyncio.CancelledError:
+                    if cleanup.done():
+                        cleanup.result()
+                        break
+            raise
 
     async def persistent_execute(
         self, command: str, timeout: float | None = 120.0, cwd: str | None = None
@@ -138,7 +167,9 @@ class LocalEnvironment:
 
             self._shell = PersistentShell(cwd=str(self._workspace_root), env=dict(os.environ))
         if cwd:
-            command = f"( cd {Path(cwd).as_posix()!r} && {command} )"
+            cwd_path = Path(cwd)
+            workdir = cwd_path if cwd_path.is_absolute() else (self._workspace_root / cwd_path)
+            command = f"( cd {shlex.quote(str(workdir))} && {command} )"
         return await self._shell.run(command, timeout=timeout)
 
     async def aclose(self) -> None:
