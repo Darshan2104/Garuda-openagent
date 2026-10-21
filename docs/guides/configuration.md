@@ -343,8 +343,8 @@ capacity:
 - Background runs fix their effective `garuda.yaml` role before they queue. A
   role with a dynamic `fallback` chain is refused by `garuda run --bg` (run it
   in the foreground), and a worker refuses if the role's runtime or model
-  changed while it waited. A dashboard **Queue in background** start does
-  accept fallback chains: it freezes every candidate at preview and records an
+  changed while it waited. A Linux dashboard **Queue in background** start
+  does accept fallback chains: it freezes every candidate at preview and records an
   owned probe's selection before prompting
   ([Web dashboard](web-dashboard.md)).
 - A slot whose owner died stays counted until Garuda can prove its child

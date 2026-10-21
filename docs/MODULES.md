@@ -202,9 +202,10 @@ read-only detached copy.
 `manager.py` holds history and decides when to act. `shaper.py` caps and shapes
 tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
-`state_card.py` is `WorkingState`, the run's self-knowledge assembled from the
-side-effect ledger, goal, todos, acceptance contract and observed commands and
-rendered deterministically; a summary keeps only what no ledger can produce.
+`state_card.py` is `WorkingState`, the hard-bounded state card assembled from
+the side-effect ledger, goal, todos, acceptance contract and checked commands
+with their exit codes, rendered deterministically and re-pinned after every
+compaction; the model's summary adds only findings, dead ends and why.
 `schemas.py` validates the generated `current-task.md`/`handoff.md` files
 (versioned frontmatter, bounded fields, unknown fields round-trip, unknown
 versions rejected). `pack.py` is the single writer: it compiles both files
@@ -286,7 +287,9 @@ subtree, and uncertainty quarantines the retained parent. `role_request.py`
 uses closed JSON values rather than executable object serialization.
 `role_worker.py` is the fixed worker entry the parent launches; only the parent
 can authorize its lease operations. `process_request.py` is the bounded,
-versioned wire request shared by owned check and role workers.
+versioned request every owned process takes through `process_supervision.py`
+(acceptance checks, role workers, confinement Docker calls, fallback probes),
+with per-purpose time and size limits that command text cannot widen.
 
 `config_sources.py` scopes source identities to actual parse reads. Owned
 preparation retains digests and absent-file observations, then uses an owned
@@ -386,7 +389,7 @@ trusted-only task regexes, pre-start validation, persisted rationale, and
 startup fallback only on an unchanged baseline. `selection/models.py` holds
 the shared types, `selection/scoring.py` parses, sorts and matches rules, and
 `selection/explain.py` persists the rationale with only routing facts (no
-secrets, environment values or full paths). `selection/classifier.py`
+secrets, environment values or full workspace paths). `selection/classifier.py`
 makes at most one tool-free, single-attempt call on the collection binding
 (the reasoning binding only when trusted global config allows it) over an
 approved candidate table fixed before the call, then revalidates the strict
