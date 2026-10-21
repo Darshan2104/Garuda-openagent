@@ -125,6 +125,13 @@ fastest way to learn the system.
    no-edits launches refuse: Docker container lifetime ownership is not yet
    supported by this process-tree owner. Its closure evidence feeds the cumulative
    flow manifest and final check eligibility decision.
+   Starter task-file digests are validated under the parent lease before the
+   first step. Configuration digests remain bound through role preparation,
+   closure and acceptance checks; task files may change during the work and
+   remain available to later steps. A file read as configuration keeps that
+   immutable requirement even when it is also named as a task source.
+   Review independence uses the terminal attempt's recorded reviewer plan,
+   including its selected fallback; missing reviewer identity refuses approval.
    The shared SessionStore now supports an opt-in strict publication policy.
    Its external registry and durable metadata head prevent local marker loss
    or metadata replacement from downgrading a protected flow to legacy writes;

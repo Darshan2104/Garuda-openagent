@@ -1,5 +1,16 @@
 # Durable decisions
 
+## 2026-10-21 — Review identities and source lifetimes follow actual execution
+
+- Required review independence uses the terminal attempt's recorded role plan,
+  including its selected fallback. Missing reviewer identity refuses approval;
+  an explicit waiver still records the actual independence decision.
+- Starter compilation retains all parsed source facts for validation under the
+  parent lease before the first step, and separately retains configuration
+  facts for role preparation, closure and acceptance authority. Editable task
+  files may change during execution and be consumed by later steps. A file
+  used as configuration remains immutable even when named as a task source.
+
 ## 2026-10-17 — Background starters belong to their detached queue worker (#337)
 
 - V2 intents bind the reserved parent UUID to the existing queue's canonical

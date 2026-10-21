@@ -219,9 +219,11 @@ async def test_the_review_annotation_names_actual_identities_and_policy(world):
     step = {"id": "code", "role": "coder"}
     done = [{"step": "code", "session_id": world.asker,
              "role_plan": {"runtime_id": "native", "model_id": "m1"}}]
+    auditor_receipt = {"role_plan": {"runtime_id": "native", "model_id": "m3"}}
+    reviewer_receipt = {"role_plan": {"runtime_id": "native", "model_id": "m2"}}
 
     ok = independence(runner, step, {"role": "auditor", "id": "audit"}, done, {},
-                      plan("native", "m1"), plan("native", "m3"))
+                      plan("native", "m1"), auditor_receipt)
     assert ok["decision"] == "independent" and ok["policy"] == "required"
     assert ok["reviewer"] == {"role": "auditor", "runtime": "native", "model_id": "m3"}
     assert ok["reviewed"]["consulted"] == [{"runtime": "native", "model_id": "m2"}]
@@ -229,17 +231,17 @@ async def test_the_review_annotation_names_actual_identities_and_policy(world):
 
     # the reviewer is the role the coder actually consulted
     shared = independence(runner, step, {"role": "reviewer", "id": "review"}, done, {},
-                          plan("native", "m1"), plan("native", "m2"))
+                          plan("native", "m1"), reviewer_receipt)
     assert shared["decision"] == "not_independent"
 
     # a fallback that really launched as the reviewer's identity is caught after the fact
     fell_back = [{"step": "code", "session_id": "00000000-0000-0000-0000-0000000000f0",
                   "role_plan": {"runtime_id": "native", "model_id": "m3"}}]
     after = independence(runner, step, {"role": "auditor", "id": "audit"}, fell_back, {},
-                         plan("native", "m1"), plan("native", "m3"))
+                         plan("native", "m1"), auditor_receipt)
     assert after["decision"] == "not_independent"
     assert after["reviewed"]["launched"] == [{"runtime": "native", "model_id": "m3"}]
 
     waived = independence(runner, step, {"role": "reviewer", "id": "review"}, done,
-                          {"independent": False}, plan("native", "m1"), plan("native", "m2"))
+                          {"independent": False}, plan("native", "m1"), reviewer_receipt)
     assert waived["policy"] == "waived" and waived["decision"] == "not_independent"
