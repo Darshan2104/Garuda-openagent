@@ -22,6 +22,7 @@ from garuda.core.metrics import RunMetrics, stopwatch
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.plugins.hooks import HookRegistry
+from garuda.tools.discovery import UseToolTool
 from garuda.tools.protocol import Tool, ToolContext
 from garuda.types import Message, Role, ToolCall, ToolResult
 from garuda.workspace.health import EnvironmentUnavailableError
@@ -109,7 +110,9 @@ class ToolRunner:
 
     # -- gating ---------------------------------------------------------------
 
-    async def screen(self, call: ToolCall, turn: int) -> tuple[ToolCall | None, Message | None]:
+    async def screen(
+        self, call: ToolCall, turn: int, *, _dispatching: bool = False
+    ) -> tuple[ToolCall | None, Message | None]:
         """Run permissions and before-hooks for one call.
 
         Returns ``(call, None)`` when the call may proceed — possibly a call the
@@ -146,6 +149,24 @@ class ToolRunner:
             denied = await self._authorize(hooked_call, turn)
             if denied is not None:
                 return None, denied
+        dispatcher = self.tool_map.get(hooked_call.name)
+        if isinstance(dispatcher, UseToolTool):
+            if _dispatching:
+                return None, Message(role=Role.TOOL, content="Nested use_tool dispatch is not supported.",
+                                     name=hooked_call.name, tool_call_id=call.id)
+            invalid = _missing_required_arguments(dispatcher, hooked_call.arguments)
+            if invalid is not None:
+                return hooked_call, None  # execute() returns the normal schema error
+            resolved = dispatcher.resolve(hooked_call.arguments, self.ctx)
+            if isinstance(resolved, ToolResult):
+                return None, Message(role=Role.TOOL, content=resolved.content,
+                                     name=hooked_call.name, tool_call_id=call.id)
+            tool, arguments = resolved
+            # Preserve the model's call id while giving hooks, events, memo and
+            # side-effect accounting the concrete tool name and arguments.
+            self.tool_map[tool.name] = tool
+            return await self.screen(ToolCall(id=call.id, name=tool.name, arguments=arguments),
+                                     turn, _dispatching=True)
         return hooked_call, None
 
     async def _authorize(self, call: ToolCall, turn: int) -> Message | None:
@@ -321,6 +342,9 @@ class ToolRunner:
             # Not a tool failure the model can route around — the workspace is
             # gone. Propagate so the run aborts instead of continuing blind.
             raise
+        except PermissionError as exc:
+            result = ToolResult(tool_call_id=call.id, content=str(exc), is_error=True,
+                                metadata={"permission_denied": True})
         except Exception as exc:
             logger.warning("Tool %s raised %s: %s", call.name, type(exc).__name__, exc)
             result = ToolResult(
@@ -392,6 +416,17 @@ class ToolRunner:
                 plan.append(("msg", message))
                 continue
             plan.append(("exec", screened))
+
+        # Hooks (or a rewritten lazy dispatcher) can change a read into a
+        # mutation. Reclassify the final calls before dispatching any of them.
+        if any(entry[0] == "exec" and entry[1].name not in PARALLEL_SAFE_TOOLS for entry in plan):
+            executed = []
+            for kind, item in plan:
+                if kind == "msg":
+                    self.context.append(item)
+                else:
+                    executed.append((item, await self.run_one(item, turn)))
+            return executed
 
         exec_indices = [i for i, entry in enumerate(plan) if entry[0] == "exec"]
         # Emit TOOL_CALL at dispatch, not after gather() returns. Trace spans and

@@ -231,6 +231,10 @@ class TmuxEnvironment:
         target = self._resolve_path(path)
         return await asyncio.to_thread(target.read_text, encoding="utf-8")
 
+    async def read_bytes(self, path: str) -> bytes:
+        target = self._resolve_path(path)
+        return await asyncio.to_thread(target.read_bytes)
+
     async def write_file(self, path: str, content: str) -> None:
         target = self._resolve_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)

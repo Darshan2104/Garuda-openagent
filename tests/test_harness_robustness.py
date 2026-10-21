@@ -127,45 +127,34 @@ class TestMissingRequiredArguments:
 
 
 class TestBinaryReadIsPortable:
-    """`read_pdf` / `read_spreadsheet` were dead on every macOS host.
-
-    They ran `base64 -w0 FILE` with a bare `base64 FILE` fallback. BSD/macOS
-    `base64` accepts no positional input file at all — both forms fail with
-    `base64: invalid argument <path>` — so the fallback was as wrong as the primary
-    and the tools reported a present file as missing. Reads from stdin now, the one
-    form GNU and BSD agree on.
-    """
+    """Binary file reads preserve arbitrary bytes and missing-file outcomes."""
 
     @pytest.mark.asyncio
     async def test_bytes_round_trip_through_the_environment(self, tmp_path):
-        from garuda.tools.documents import _read_file_bytes
         from garuda.workspace.local import LocalEnvironment
 
         payload = bytes(range(256)) * 8  # non-UTF8, spans every byte value
         (tmp_path / "blob.bin").write_bytes(payload)
         env = LocalEnvironment(workspace_root=str(tmp_path))
-        assert await _read_file_bytes(env, "blob.bin") == payload
+        assert await env.read_bytes("blob.bin") == payload
 
     @pytest.mark.asyncio
     async def test_line_wrapping_does_not_corrupt_the_decode(self, tmp_path):
-        """No `-w0` is passed, so output arrives wrapped; b64decode must tolerate it.
-        Large enough to force several wraps at BSD's 76-column default."""
-        from garuda.tools.documents import _read_file_bytes
+        """Large content survives the binary transport without text decoding."""
         from garuda.workspace.local import LocalEnvironment
 
         payload = b"".join(bytes([i % 256]) for i in range(5000))
         (tmp_path / "big.bin").write_bytes(payload)
         env = LocalEnvironment(workspace_root=str(tmp_path))
-        assert await _read_file_bytes(env, "big.bin") == payload
+        assert await env.read_bytes("big.bin") == payload
 
     @pytest.mark.asyncio
     async def test_a_missing_file_still_raises_filenotfound(self, tmp_path):
-        from garuda.tools.documents import _read_file_bytes
         from garuda.workspace.local import LocalEnvironment
 
         env = LocalEnvironment(workspace_root=str(tmp_path))
         with pytest.raises(FileNotFoundError):
-            await _read_file_bytes(env, "absent.bin")
+            await env.read_bytes("absent.bin")
 
     @pytest.mark.asyncio
     async def test_read_spreadsheet_reads_a_real_workbook(self, tmp_path):
@@ -390,3 +379,69 @@ class TestExportedVersionsTrackThePackage:
         from garuda.eval.harbor_adapter import GarudaHarborAgent
 
         assert GarudaHarborAgent.version(GarudaHarborAgent) == garuda.__version__
+
+
+@pytest.mark.parametrize("kind", ["image", "pdf", "xlsx"])
+@pytest.mark.parametrize("absolute", [False, True])
+async def test_binary_tools_refuse_files_outside_workspace(tmp_path, kind, absolute):
+    from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
+    from garuda.tools.image_read import ImageReadTool
+    from garuda.tools.protocol import ToolContext
+    from garuda.workspace.local import LocalEnvironment
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if kind == "image":
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(b"fake pixels")
+        tool = ImageReadTool()
+    elif kind == "pdf":
+        pypdf = pytest.importorskip("pypdf")
+        outside = tmp_path / "outside.pdf"
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        writer.write(outside)
+        tool = ReadPdfTool()
+    else:
+        openpyxl = pytest.importorskip("openpyxl")
+        outside = tmp_path / "outside.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active.append(["secret"])
+        workbook.save(outside)
+        tool = ReadSpreadsheetTool()
+    path = str(outside) if absolute else f"../{outside.name}"
+    try:
+        result = await tool.execute({"path": path}, LocalEnvironment(workspace), ToolContext(session_id="s"))
+    except PermissionError:
+        return
+    assert result.is_error and "outside" in result.content.lower()
+
+
+@pytest.mark.parametrize("backend", ["docker", "remote"])
+async def test_container_binary_transport_preserves_bytes_and_literal_paths(tmp_path, monkeypatch, backend):
+    import os
+
+    from garuda.workspace.docker import DockerEnvironment
+    from garuda.workspace.remote import RemoteEnvironment
+
+    # Exercise the real subprocess/argv path against a local exec-only daemon
+    # stand-in. Binary encoding and file access are performed by the actual sh/base64.
+    cli = tmp_path / "docker"
+    cli.write_text(f"#!{sys.executable}\n" + '''import os, sys
+args = sys.argv[1:]
+if args[:1] == ["-H"]:
+    args = args[2:]
+assert args[:2] == ["exec", "test-container"], args
+os.execvp(args[2], args[2:])
+''')
+    cli.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    filename = "a'$(touch injected).bin"
+    payload = bytes(range(256)) * 20
+    (tmp_path / filename).write_bytes(payload)
+    if backend == "docker":
+        env = DockerEnvironment("test-container", workspace_root=str(tmp_path))
+    else:
+        env = RemoteEnvironment(["docker", "-H", "unix:///unused"], "test-container", workspace_root=str(tmp_path))
+    assert await env.read_bytes(filename) == payload
+    assert not (tmp_path / "injected").exists()

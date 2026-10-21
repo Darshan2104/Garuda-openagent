@@ -125,7 +125,7 @@ class JsonRpcServer:
                 provided = value.strip()
                 break
         # Constant-time compare so the token can't be recovered by timing.
-        return hmac.compare_digest(provided, f"Bearer {self._config.token}")
+        return hmac.compare_digest(provided.encode("utf-8"), f"Bearer {self._config.token}".encode("utf-8"))
 
     @staticmethod
     def _has_browser_origin(headers: dict[str, str] | None) -> bool:
@@ -349,15 +349,24 @@ class JsonRpcServer:
         if not task:
             raise ValueError("params.task is required")
 
+        from garuda.agents.selection import SelectionRefused, check_named
         from garuda.config.agent_home import resolve_agents_dirs
 
         agent_name = params.get("agent", self._config.agent)
         for forbidden in ("agent_file", "agent_spec", "definition"):
             if forbidden in params:
-                from garuda.agents.selection import SelectionRefused
-
                 raise SelectionRefused("agent.inline_over_http",
                                        f"params.{forbidden} is not accepted from a request")
+        # A restricted client selects work, never launch authority. Reject
+        # before resolving project definitions or starting any MCP subprocess.
+        if self._config.allowed_agents is not None or self._config.permission_ceiling is not None:
+            for field in ("agents_dir", "mcp_config", "workspace", "workspace_kind",
+                          "docker_host", "docker_image"):
+                if field in params and params[field] != getattr(self._config, field):
+                    raise SelectionRefused(
+                        "agent.inline_over_http",
+                        f"params.{field} cannot override a restricted server's launch settings",
+                    )
         mode = params.get("mode")  # None -> honor the profile's own mode
         workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
         workspace = params.get("workspace", self._config.workspace)
@@ -368,13 +377,6 @@ class JsonRpcServer:
         # subagents resolve custom profiles the same standard way.
         agents_path = resolve_agents_dirs(workspace, agents_dir)
 
-        from garuda.agents.selection import SelectionRefused, check_named
-
-        if self._config.allowed_agents is not None and "agents_dir" in params and (
-                params["agents_dir"] != self._config.agents_dir):
-            raise SelectionRefused("agent.inline_over_http",
-                                   "params.agents_dir cannot add definitions to a server with an "
-                                   "agent allowlist")
         capped = check_named(agent_name, workspace=workspace, agents_dirs=agents_path,
                              allowed=self._config.allowed_agents,
                              ceiling=self._config.permission_ceiling,

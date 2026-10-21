@@ -29,7 +29,7 @@ a behaviour.
 | `acceptance_records.py` | Private, phase-scoped intent, launch authorization and immutable receipt records. Duplicate attempts reconcile without replay; lost authorization or receipt publication remains uncertain. |
 | `acceptance_work.py`, `acceptance_worker.py` | Fixed supervised helpers for source/lease/candidate validation and durable publication, keeping filesystem locks, Git and writers off the event loop. |
 | `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
-| `tool_runner.py` | Executing one call or a concurrent read batch: permissions, hooks, output shaping/buffering, event ordering. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
+| `tool_runner.py` | Executing direct and discovered target calls through permissions, hooks, validation, memo, ledger, output shaping/buffering and events. Rechecks parallel eligibility after hooks. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
 | `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
 | `termination.py` | The run-scoped terminal-tool strategy boundary, plus the adapter that preserves the default `task_complete` gate. |
@@ -40,7 +40,7 @@ a behaviour.
 | `evidence.py` | Two independent classifications of a shell command: whether it can actually fail (a check that cannot fail is not proof), and whether it writes anything (`is_side_effect_free`, which gates concurrency at the gate). Close to opposites in practice — the commands that prove the most are the ones that write. |
 | `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
-| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Screens original and joined continuations; incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
+| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Normalizes path spellings against the workspace and explicit command cwd. Screens original and joined continuations without treating in-word hashes as comments; allow prefixes must match both forms. Incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
@@ -72,14 +72,17 @@ Large output: `buffer_tools.py`. Discovery: `discovery.py` (token-lean MCP),
 
 ## `workspace/` — where commands run
 
-`protocol.py` is the `Environment` interface every tool talks to. Implementations:
+`protocol.py` is the `Environment` interface every tool talks to, including
+`read_bytes` for image/document reads under the backend's file-path policy. Implementations:
 `local.py`, `docker.py`, `remote.py`, `tmux.py` (persistent panes with marker
 polling), selected by `factory.py`.
 
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it
 records which confinement actually holds. `shell.py` is the opt-in persistent
-shell; `paths.py` and `health.py` are path safety and liveness. `lease.py`
+shell; cancellation kills and closes its process group before another command
+can run, with fresh state on the next call. `paths.py` and `health.py` are path
+safety and liveness for text and binary reads. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 expired holders retained after parent death without descendant-cleanup receipts,
 read-only registration preserving prior bindings, issuing-owner release removing

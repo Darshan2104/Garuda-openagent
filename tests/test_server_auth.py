@@ -101,3 +101,35 @@ async def test_sessions_method_lists_sessions(tmp_path, monkeypatch):
     assert len(sessions) == 1
     assert sessions[0]["session_id"] == "abc12345-0000"
     assert sessions[0]["status"] == "running"
+
+
+@pytest.mark.parametrize("value", ["Bearer café", "Bearer \u2603"])
+async def test_non_ascii_bearer_is_unauthorized(value):
+    server = JsonRpcServer(ServerConfig(token="sekrit"))
+    response = await server.handle(dict(HEALTH), headers={"authorization": value})
+    assert response["error"]["code"] == UNAUTHORIZED_CODE
+
+
+@pytest.mark.parametrize("field,value", [
+    ("mcp_config", "/tmp/untrusted-mcp.yaml"), ("workspace", "/tmp/other"),
+    ("workspace_kind", "local"), ("docker_host", "tcp://attacker:2375"),
+    ("docker_image", "attacker/image"), ("agents_dir", "/tmp/agents"),
+])
+@pytest.mark.parametrize("limits", [{"allowed_agents": ["reviewer"]}, {"permission_ceiling": "readonly"}])
+async def test_restricted_server_refuses_request_launch_settings(tmp_path, monkeypatch, field, value, limits):
+    import garuda.interfaces.server as server_module
+
+    activated = []
+
+    async def prepare(*args, **kwargs):
+        activated.append(kwargs)
+        raise RuntimeError("activation reached")
+
+    monkeypatch.setattr(server_module, "prepare_agent_run", prepare)
+    server = JsonRpcServer(ServerConfig(token="sekrit", agent="reviewer", workspace=str(tmp_path),
+                                        workspace_kind="docker", **limits))
+    response = await server.handle({"id": 2, "method": "run", "params": {"task": "t", field: value}},
+                                   headers={"authorization": "Bearer sekrit"})
+    assert "error" in response
+    assert f"params.{field}" in response["error"]["message"]
+    assert not activated

@@ -200,3 +200,102 @@ def test_default_threshold_env_override(monkeypatch):
     assert _default_lazy_threshold() == 3
     monkeypatch.setenv("GARUDA_MCP_MAX_DIRECT_TOOLS", "not-an-int")
     assert _default_lazy_threshold() == 10  # falls back to default
+
+
+def _runner(tmp_path, targets, hooks=None):
+    from garuda.context.manager import ContextManager
+    from garuda.core.action_memo import ActionMemo
+    from garuda.core.events import EventStore
+    from garuda.core.side_effects import SideEffectLedger
+    from garuda.core.tool_runner import ToolRunner
+    from garuda.model.script_model import ScriptModel
+    from garuda.plugins.hooks import HookRegistry
+
+    wrapper = UseToolTool(_map(*targets))
+    return ToolRunner(
+        tool_map={wrapper.name: wrapper}, env=LocalEnvironment(tmp_path),
+        ctx=ToolContext(session_id="lazy"), context=ContextManager(model=ScriptModel([])),
+        permissions=PermissionEngine(), hooks=hooks or HookRegistry(), events=EventStore(),
+        memo=ActionMemo(), ledger=SideEffectLedger(),
+    )
+
+
+async def _dispatch(runner, name, arguments, call_id="lazy"):
+    from garuda.types import ToolCall
+
+    call, message = await runner.screen(ToolCall(id=call_id, name="use_tool",
+                                                arguments={"name": name, "arguments": arguments}), 1)
+    if call is None:
+        return message
+    return await runner.run_one(call, 1)
+
+
+async def test_lazy_target_runs_before_and_after_hooks(tmp_path):
+    from garuda.plugins.hooks import HookRegistry
+
+    tool = RecordingTool("github_create_issue", "Create issue")
+    hooks = HookRegistry()
+
+    async def block(call, context):
+        return None if call.name == tool.name else call
+
+    hooks.register_before_tool(block)
+    runner = _runner(tmp_path, [tool], hooks)
+    result = await _dispatch(runner, tool.name, {})
+    assert not tool.ran and "blocked by hook" in result.content
+
+    hooks = HookRegistry()
+
+    async def redact(call, result, context):
+        if call.name == tool.name:
+            result.content = "redacted"
+        return result
+
+    hooks.register_after_tool(redact)
+    runner = _runner(tmp_path, [tool], hooks)
+    result = await _dispatch(runner, tool.name, {})
+    assert tool.ran and result.content == "redacted"
+    assert runner.context.get_messages()[-1].content == "redacted"
+
+
+async def test_lazy_target_validates_required_arguments(tmp_path):
+    tool = RecordingTool("github_create_issue", "Create issue", {
+        "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]})
+    result = await _dispatch(_runner(tmp_path, [tool]), tool.name, {})
+    assert result.is_error and "missing required argument(s): title" in result.content
+    assert not tool.ran
+
+
+async def test_lazy_target_records_memo_ledger_and_events(tmp_path):
+    from garuda.core.events import EventType
+    from garuda.tools.files import ReadFileTool, WriteFileTool
+
+    (tmp_path / "a.txt").write_text("initial")
+    runner = _runner(tmp_path, [ReadFileTool(), WriteFileTool()])
+    await _dispatch(runner, "read_file", {"path": "a.txt"}, "first")
+    repeated = await _dispatch(runner, "read_file", {"path": "a.txt"}, "repeat")
+    assert "[cached]" in repeated.content
+    await _dispatch(runner, "write_file", {"path": "a.txt", "content": "changed"}, "write")
+    fresh = await _dispatch(runner, "read_file", {"path": "a.txt"}, "fresh")
+    assert "changed" in fresh.content and "[cached]" not in fresh.content
+    assert runner.ledger.files_written == {"a.txt"}
+    calls = [event["payload"]["name"] for event in runner.events.get_all()
+             if event["type"] == EventType.TOOL_CALL.value]
+    assert calls == ["read_file", "read_file", "write_file", "read_file"]
+
+
+async def test_lazy_target_hook_cannot_reenter_the_dispatcher(tmp_path):
+    from garuda.plugins.hooks import HookRegistry
+    from garuda.types import ToolCall
+
+    tool = RecordingTool("github_create_issue", "Create issue")
+    hooks = HookRegistry()
+
+    async def rewrite(call, context):
+        if call.name == tool.name:
+            return ToolCall(id=call.id, name="use_tool", arguments={"name": tool.name, "arguments": {}})
+        return call
+
+    hooks.register_before_tool(rewrite)
+    result = await _dispatch(_runner(tmp_path, [tool], hooks), tool.name, {})
+    assert not tool.ran and "Nested use_tool" in result.content

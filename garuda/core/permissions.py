@@ -1,4 +1,5 @@
 import fnmatch
+import os
 import posixpath
 import re
 import shlex
@@ -96,7 +97,7 @@ SEARCH_TOOLS = {
 WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
 
 # File-operation tools that only read.
-READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet"}
+READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet", "image_read"}
 
 READONLY_DENIED_TOOLS = {
     "write_file",
@@ -123,7 +124,10 @@ def command_path_tokens(command: str) -> list[str]:
     # while the original preserves literal backslash-newlines inside quotes.
     for text in {command, command.replace("\\\n", "")}:
         try:
-            tokens.extend(shlex.split(text, comments=True))
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens.extend(lexer)
         except ValueError:
             tokens.extend(text.split())
     return [t for t in tokens if t and not t.startswith("-")]
@@ -137,6 +141,7 @@ def _root_removal_decision(command: str) -> PermissionDecision:
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
+    lexer.commenters = ""
     tokens = []
     incomplete = False
     try:
@@ -186,7 +191,8 @@ class PermissionEngine:
     - ``allow_prefixes``: list of literal command prefixes (e.g. ``"git status"``,
       ``"npm test"``). After stripping leading whitespace, a command that equals
       an allowed prefix or starts with it followed by whitespace is ALLOWED
-      immediately, skipping the ask patterns.
+      immediately, skipping the ask patterns, only if both the original and
+      continuation-joined spellings match without shell chaining.
     - ``ask``: list of regexes; a match requires interactive approval.
 
     Evaluation order for commands: deny (custom + built-in) -> allow_prefixes ->
@@ -202,7 +208,7 @@ class PermissionEngine:
     search (``grep '' .``) or an expanded wildcard still surfaces content from
     denied paths, because the denied path never appears as a literal argument.
     Path rules are a guardrail against casual/accidental access, not a
-    confinement boundary — use ``readonly`` mode or the OS sandbox for that.
+    confinement boundary — use a Docker workspace for untrusted code.
     """
 
     def __init__(
@@ -212,8 +218,10 @@ class PermissionEngine:
         path_rules: dict[str, list[str]] | None = None,
         bash_rules: dict[str, list[str]] | None = None,
         approval_handler: ApprovalHandler | None = None,
+        workspace_root: str | Path | None = None,
     ):
         self._mode = mode
+        self._workspace_root = os.path.abspath(workspace_root or Path.cwd())
         self._tool_rules = tool_rules or {}
         self._path_rules = path_rules or {}
         self._bash_rules = bash_rules or {}
@@ -236,7 +244,8 @@ class PermissionEngine:
 
     def snapshot_policy(self) -> dict:
         """Copy the rules actually used by this enforcer for authority binding."""
-        return {"version": 1, "mode": self._mode, "tools": dict(self._tool_rules),
+        return {"version": 1, "mode": self._mode, "workspace_root": self._workspace_root,
+                "tools": dict(self._tool_rules),
                 "deny_paths": list(self._deny_paths), "ask_paths": list(self._ask_paths),
                 "deny_bash": [{"pattern": rule.pattern, "flags": rule.flags} for rule in self._deny_bash],
                 "ask_bash": [{"pattern": rule.pattern, "flags": rule.flags} for rule in self._ask_bash],
@@ -262,37 +271,44 @@ class PermissionEngine:
             return PermissionDecision.ALLOW
         return PermissionDecision.ALLOW
 
-    def _path_matches(self, path: str, pattern: str) -> bool:
-        if fnmatch.fnmatch(path, pattern):
-            return True
-        normalized = pattern.removeprefix("**/")
-        return fnmatch.fnmatch(path, normalized) or Path(path).name == normalized
+    def bind_workspace(self, workspace_root: str) -> None:
+        """Use the executing environment's root, including container paths."""
+        self._workspace_root = os.path.abspath(workspace_root)
 
-    def _match_path_rules(self, path: str) -> PermissionDecision | None:
+    def _path_matches(self, path: str, pattern: str, cwd: str | None = None) -> bool:
+        base = os.path.join(self._workspace_root, cwd or "")
+        absolute = os.path.normpath(os.path.join(base, path))
+        # Retain the literal spelling for glob arguments and absolute rules.
+        forms = {path, absolute, os.path.relpath(absolute, self._workspace_root)}
+        normalized = pattern.removeprefix("**/")
+        return any(fnmatch.fnmatch(form, pattern) or fnmatch.fnmatch(form, normalized)
+                   or Path(form).name == normalized for form in forms)
+
+    def _match_path_rules(self, path: str, cwd: str | None = None) -> PermissionDecision | None:
         for pattern in self._deny_paths:
-            if self._path_matches(path, pattern):
+            if self._path_matches(path, pattern, cwd):
                 return PermissionDecision.DENY
         for pattern in self._ask_paths:
-            if self._path_matches(path, pattern):
+            if self._path_matches(path, pattern, cwd):
                 return PermissionDecision.ASK
         return None
 
-    def check_path(self, path: str, operation: str) -> PermissionDecision:
+    def check_path(self, path: str, operation: str, *, cwd: str | None = None) -> PermissionDecision:
         if self._mode in ("auto", "yolo"):
             return PermissionDecision.ALLOW
-        rule = self._match_path_rules(path)
+        rule = self._match_path_rules(path, cwd)
         if rule:
             return rule
         if self._mode == "readonly" and operation in ("write", "patch"):
             return PermissionDecision.DENY
         return PermissionDecision.ALLOW
 
-    def _check_paths(self, paths: list[str], operation: str) -> PermissionDecision:
+    def _check_paths(self, paths: list[str], operation: str, *, cwd: str | None = None) -> PermissionDecision:
         """Strictest ``check_path`` decision across several paths (ALLOW if none)."""
         decision = PermissionDecision.ALLOW
         for path in paths:
             if path:
-                decision = _strictest(decision, self.check_path(path, operation))
+                decision = _strictest(decision, self.check_path(path, operation, cwd=cwd))
         return decision
 
     def check_command(self, command: str) -> PermissionDecision:
@@ -331,7 +347,7 @@ class PermissionEngine:
         # An allow prefix cannot bypass uncertainty, but approval can resolve it.
         if decision == PermissionDecision.ASK:
             return decision
-        if self._matches_allow_prefix(joined):
+        if all(self._matches_allow_prefix(text) for text in forms):
             return PermissionDecision.ALLOW
         for pattern in self._ask_bash + ASK_COMMAND_PATTERNS:
             if any(pattern.search(text) for text in forms):
@@ -372,7 +388,7 @@ class PermissionEngine:
             # the path screen catches dangerous *operands* (`cat .env`).
             detail_decision = _strictest(
                 self.check_command(command),
-                self._check_paths(command_path_tokens(command), "read"),
+                self._check_paths(command_path_tokens(command), "read", cwd=arguments.get("cwd")),
                 self.check_path(str(arguments.get("cwd") or ""), "read"),
             )
         elif tool_name in SEARCH_TOOLS:
@@ -405,8 +421,9 @@ class PermissionEngine:
             declared = PermissionDecision.ASK
         cwd = arguments.get("cwd", "")
         decision = _strictest(decision, declared, self.check_path(cwd, "write"))
-        for path in [cwd, *command_path_tokens(command)]:
-            decision = _strictest(decision, self._match_path_rules(path) or PermissionDecision.ALLOW)
+        decision = _strictest(decision, self._match_path_rules(cwd) or PermissionDecision.ALLOW)
+        for path in command_path_tokens(command):
+            decision = _strictest(decision, self._match_path_rules(path, cwd) or PermissionDecision.ALLOW)
         return decision, reason or ("Check permission ceiling refused" if decision == PermissionDecision.DENY else None)
 
     async def evaluate_acceptance(self, arguments: dict) -> tuple[bool, str | None]:
@@ -462,6 +479,10 @@ class DelegatedPermissionEngine:
         self._parent = parent
         self._handler_override: ApprovalHandler | None = None
 
+    def bind_workspace(self, workspace_root: str) -> None:
+        self._child.bind_workspace(workspace_root)
+        self._parent.bind_workspace(workspace_root)
+
     @property
     def child(self) -> PermissionEngine:
         return self._child
@@ -498,9 +519,9 @@ class DelegatedPermissionEngine:
     def check_tool(self, tool_name: str) -> PermissionDecision:
         return _strictest(self._parent.check_tool(tool_name), self._child.check_tool(tool_name))
 
-    def check_path(self, path: str, operation: str) -> PermissionDecision:
+    def check_path(self, path: str, operation: str, *, cwd: str | None = None) -> PermissionDecision:
         return _strictest(
-            self._parent.check_path(path, operation), self._child.check_path(path, operation)
+            self._parent.check_path(path, operation, cwd=cwd), self._child.check_path(path, operation, cwd=cwd)
         )
 
     def check_command(self, command: str) -> PermissionDecision:

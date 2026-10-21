@@ -8,6 +8,8 @@ whole response sequential.
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from garuda.core.loop import DefaultAgent
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY, _message_to_litellm
 from garuda.model.protocol import ModelResponse
@@ -430,3 +432,59 @@ async def test_parallel_batch_permission_denial_still_pairs(tmp_path: Path):
     assert result.success
     payload = [_message_to_litellm(m) for m in result.messages]
     assert_openai_valid_sequence(payload)
+
+
+@pytest.mark.parametrize("target", ["bash", "write_file"])
+@pytest.mark.parametrize("in_place", [False, True])
+async def test_hook_rewritten_write_is_serialized_with_neighboring_reads(tmp_path, target, in_place):
+    from garuda.plugins.hooks import HookRegistry
+    from garuda.types import ToolResult
+
+    active = 0
+    observations = []
+
+    class Read:
+        name = "read_file"
+        description = "read"
+        parameters = {"type": "object"}
+
+        async def execute(self, arguments, env, ctx):
+            nonlocal active
+            active += 1
+            await asyncio.sleep(0.02)
+            observations.append(("read", arguments["path"]))
+            active -= 1
+            return ToolResult(tool_call_id="", content="read")
+
+    class Write:
+        name = target
+        description = "write"
+        parameters = {"type": "object"}
+
+        async def execute(self, arguments, env, ctx):
+            observations.append(("write", active))
+            return ToolResult(tool_call_id="", content="written")
+
+    hooks = HookRegistry()
+
+    async def rewrite(call, context):
+        if call.id == "middle":
+            if in_place:
+                call.name = target
+                call.arguments = {}
+                return call
+            return ToolCall(id=call.id, name=target, arguments={})
+        return call
+
+    hooks.register_before_tool(rewrite)
+    calls = [ToolCall(id=identifier, name="read_file", arguments={"path": identifier})
+             for identifier in ("first", "middle", "last")]
+    result = await DefaultAgent().run(
+        task="t", model=ScriptModel([ModelResponse(content=None, tool_calls=calls),
+            ModelResponse(content=None, tool_calls=[ToolCall(id="done", name="task_complete",
+                arguments={"summary": "Finished reading the selected files."})])]),
+        env=LocalEnvironment(tmp_path), tools=[Read(), Write()], hooks=hooks,
+        config=AgentConfig(max_turns=3, enable_verifier=False),
+    )
+    assert result.success
+    assert observations == [("read", "first"), ("write", 0), ("read", "last")]

@@ -216,3 +216,14 @@ async def test_an_unchanged_approved_call_runs_once_without_a_second_prompt(tmp_
 
     assert len(asked) == 1
     assert (tmp_path / "log.txt").read_text() == "once\n"
+
+
+async def test_absolute_path_rules_use_execution_workspace_when_process_cwd_differs(tmp_path):
+    secret = tmp_path / "secrets" / "key"
+    secret.parent.mkdir()
+    secret.write_text("hidden content")
+    result = await _run(tmp_path, [_call("read_file", path=str(secret)), _done()],
+                        PermissionEngine(path_rules={"deny": ["secrets/**"]}), HookRegistry())
+    messages = [m for m in result.messages if m.tool_call_id == "c"]
+    assert messages and "Permission denied" in messages[0].content
+    assert "hidden content" not in messages[0].content

@@ -180,6 +180,9 @@ isolation boundary.
     Plus the model, `--agent`, workspace, `--agents-dir`, and `--mcp-config`
     flags. Methods are listed in
     [Call Garuda over HTTP](../use-cases/automate.md#call-garuda-over-http).
+    With `--allow-agent` or an explicit `--permission-ceiling`, requests cannot
+    override the operator's workspace, workspace kind, Docker host/image,
+    agent directory, or MCP config. They may repeat the configured values.
 
 === "mcp list"
 

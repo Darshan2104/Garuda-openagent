@@ -167,7 +167,7 @@ def check_request(request: Request, *, port: int, token: str) -> Response | None
 
     provided = request.headers.get(TOKEN_HEADER, "")
     # Constant-time, so the token cannot be recovered by timing.
-    if not token or not hmac.compare_digest(provided, token):
+    if not token or not hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
         return error(
             CODE_UNAUTHORIZED,
             "Missing or invalid dashboard token. Relaunch `garuda web` and open the "

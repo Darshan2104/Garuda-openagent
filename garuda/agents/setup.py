@@ -1189,6 +1189,7 @@ async def activate_agent_plan(
     )
 
     permissions = PermissionEngine(
+        workspace_root=workspace,
         mode=config.permission_mode,
         tool_rules=profile.tool_rules,
         path_rules=profile.path_rules,

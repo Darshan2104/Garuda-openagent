@@ -242,6 +242,7 @@ class SubagentRunner:
         config.system_prompt = resolve_system_prompt(profile, self.workspace_root)
 
         child_permissions = PermissionEngine(
+            workspace_root=self.workspace_root,
             mode=profile.permission_mode,
             tool_rules=profile.tool_rules,
             path_rules=profile.path_rules,

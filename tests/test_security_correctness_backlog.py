@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import platform
+import socket
 import sys
 import tempfile
 import threading
@@ -565,3 +566,19 @@ def test_events_json_serialisable_for_jsonl_mode():
     store.append(EventType.CONTRACT, {"action": "gate_yield", "outstanding": ["c1"]})
     for event in store.get_all():
         json.loads(json.dumps(event, default=str))
+
+
+@pytest.mark.parametrize("address", ["100.64.0.1", "100.100.100.200", "100.127.255.254", "::ffff:100.100.100.200"])
+def test_fetch_refuses_shared_address_space_before_connect(monkeypatch, address):
+    def resolve(host, port, *args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))]
+
+    monkeypatch.setattr(web.socket, "getaddrinfo", resolve)
+
+    def unexpected_connect():
+        pytest.fail("shared-space addresses must be refused before opening a connection")
+
+    monkeypatch.setattr(web, "_build_opener", unexpected_connect)
+    error, content = web._blocking_fetch("http://metadata.example/latest/meta-data/", 1000)
+    assert error is not None and "non-public" in error
+    assert not content
