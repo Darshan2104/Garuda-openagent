@@ -51,8 +51,8 @@ async def _cancel_execution(
         process = await launch
     except Exception:
         return  # launch failed before it produced a process to own
-    _kill_process_tree(process)
     try:
+        _kill_process_tree(process)
         try:
             await asyncio.wait_for(process.wait(), timeout=_PIPE_DRAIN_TIMEOUT)
         except TimeoutError:
@@ -140,16 +140,21 @@ class LocalEnvironment:
                 duration_ms=int((time.monotonic() - start) * 1000),
                 truncated=timed_out,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             cleanup = asyncio.create_task(_cancel_execution(launch, readers))
-            while True:
-                try:
-                    await asyncio.shield(cleanup)
-                    break
-                except asyncio.CancelledError:
-                    if cleanup.done():
-                        cleanup.result()
+            try:
+                while True:
+                    try:
+                        await asyncio.shield(cleanup)
                         break
+                    except asyncio.CancelledError:
+                        if cleanup.done():
+                            cleanup.result()
+                            break
+            except Exception as exc:
+                # Keep cancellation as the public outcome without losing the
+                # evidence that process cleanup could not be confirmed.
+                raise cancelled from exc
             raise
 
     async def persistent_execute(

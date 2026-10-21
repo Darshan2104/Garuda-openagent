@@ -404,9 +404,10 @@ def _inspection_arguments_safe(program: str, arguments: list[str]) -> bool:
     if program == "rg":
         return not any(arg.split("=", 1)[0] in {"--pre", "--hostname-bin"} for arg in arguments)
     if program in {"tree", "file"}:
-        forbidden = "o" if program == "tree" else "C"
+        forbidden = "oR" if program == "tree" else "C"
         return not any(
-            (arg.startswith("-") and not arg.startswith("--") and forbidden in arg[1:])
+            (arg.startswith("-") and not arg.startswith("--")
+             and any(flag in arg[1:] for flag in forbidden))
             or arg.split("=", 1)[0] in {"--compile", "--output", "--outfile"}
             for arg in arguments
         )

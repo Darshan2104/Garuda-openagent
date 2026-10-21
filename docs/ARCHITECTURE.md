@@ -43,6 +43,13 @@ do, and only one is a real boundary:
 
 If a change depends on one of these holding, check which one you actually have.
 
+Smart command screening checks the original text and a continuation-joined form.
+Tokenization uncertainty requires approval; recognized dangerous commands still
+refuse even when a later heredoc or malformed quote confuses the scanner.
+Read-only screening also refuses tree's recursive HTML file generation (`-R`).
+Stateless local cancellation settles readers and retains cleanup failures as the
+original cancellation's cause rather than replacing the cancellation outcome.
+
 ## The run path
 
 A task flows through these in order. Following this list top to bottom is the

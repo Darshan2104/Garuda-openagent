@@ -40,7 +40,7 @@ a behaviour.
 | `evidence.py` | Two independent classifications of a shell command: whether it can actually fail (a check that cannot fail is not proof), and whether it writes anything (`is_side_effect_free`, which gates concurrency at the gate). Close to opposites in practice — the commands that prove the most are the ones that write. |
 | `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
-| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Guardrails, not confinement. |
+| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Screens original and joined continuations; incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |

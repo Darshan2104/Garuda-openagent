@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-10-21 — Shell parsing uncertainty uses approval without weakening refusals
+
+Smart command and operand screening checks both original text and a form with
+backslash-newline continuations joined. Original text retains literal quoted
+operands and declared policy matches; joined text exposes split executable names,
+flags and paths. Incomplete tokenization requires approval even with an allow
+prefix. Completed tokens and individual lines still detect root removal before
+approval, including commands surrounding heredocs. This remains a conservative
+guardrail rather than a shell parser or confinement boundary.
+
+Read-only screening refuses tree's recursive HTML output as a write operation.
+Stateless local execution settles readers even when signalling fails and keeps
+the original cancellation, with any cleanup failure retained as its cause.
+
 ## 2026-10-21 — Admission, result validity and cleanup have separate decisions
 
 - Read-only command screening checks complete argument forms, environment
