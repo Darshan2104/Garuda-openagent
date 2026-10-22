@@ -43,17 +43,18 @@ do, and only one is a real boundary:
 
 If a change depends on one of these holding, check which one you actually have.
 
-Smart command screening checks the original text and a continuation-joined form.
-Tokenization uncertainty requires approval; recognized dangerous commands still
-refuse even when a later heredoc or malformed quote confuses the scanner.
-Read-only screening also refuses tree's recursive HTML file generation (`-R`).
+Smart command screening checks original and continuation-joined text. Raw path
+tokens and raw root/home-removal refusals remain authoritative even if a comment
+view disagrees. Denied paths mentioned in comments can therefore refuse a call.
+Only literal newlines split fallback shell lines. Incomplete tokenization still
+requires approval when no hard refusal was detected. `core/shell_syntax.py` shares
+quote, escape and Bash separator handling across permissions, evidence segments
+and read-only inspection; these lexical views are not a complete shell parser.
 Path rules compare normalized workspace-relative paths, including physical aliases
 of the workspace root and operands relative to a command's explicit `cwd`.
 Relative patterns never match ancestor directories above an in-workspace path;
 absolute patterns still match absolute paths, and outside paths retain literal
-and absolute screening. Simple shell comments start at Bash word boundaries:
-space, tab, newline or shell operators. Other whitespace stays literal. Expansions,
-shell-specific quoting and heredocs retain conservative scanning.
+and absolute screening.
 The active root is scoped to each async run and restored on exit, so concurrent
 runs can share a policy without changing each other's path decisions.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
@@ -74,6 +75,11 @@ Cleanup retries before another command when exit is unproved. A reaped shell
 with retained pipes releases those pipes after the drain deadline. Process groups
 are signaled only while the shell has no recorded exit status. Repeated cancellation settles through
 `workspace/settlement.py` in both local execution modes.
+Managed tmux panes launch Bash without startup profiles or rc files, with history
+expansion disabled and no user history file. Unquoted or double-quoted history
+references still require approval in smart mode, even behind an allow prefix.
+The completion marker runs outside a safely quoted `eval` argument, so a command's
+trailing comment cannot swallow it while shell state remains persistent.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.

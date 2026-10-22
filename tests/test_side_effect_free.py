@@ -45,6 +45,7 @@ MUTATES_OR_UNKNOWN = [
     "pytest -q",
     "make test",
     "./run.sh",
+    "cat\rscript",  # Bash names a different program; CR is not a word separator.
     "cargo test",
     "npm test",
     "python -c 'assert solve() == 42'",

@@ -1910,3 +1910,18 @@ Lazy dispatch binds the selected tool to one screened call without changing the
 run's direct tool inventory. Persistent shell cleanup retries unproved exit,
 closes retained pipes after confirmed exit, and signals process groups only while
 the shell has no recorded exit status. These remain runtime guardrails, not confinement.
+
+
+## 2026-10-22 — Raw shell refusals survive lexical uncertainty
+
+Permission screening enforces path tokens and hard root/home-removal refusals
+from original command text independently of best-effort comment interpretation.
+This deliberately permits conservative refusals for denied paths in comments.
+Fallback shell lines split on literal newline only. Permissions, evidence segment
+splitting and read-only inspection share one lexical quote/escape implementation;
+none is described as a complete shell parser or confinement boundary.
+
+Managed tmux panes launch Bash without startup files, with history expansion off
+and no user history file. Smart-mode history references require approval even
+behind allow prefixes, protecting against later pane-state changes. Completion
+framing evaluates the safely quoted original command before its separate marker.

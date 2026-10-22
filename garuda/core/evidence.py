@@ -15,7 +15,8 @@ propagate failure, and knows nothing about any particular task or benchmark.
 """
 
 import re
-import shlex
+
+from garuda.core.shell_syntax import SHELL_BLANKS, scan_shell, shell_lexer, split_segments
 
 # Reports existence or content but exits 0 regardless of correctness.
 INSPECTION_COMMANDS = frozenset(
@@ -72,59 +73,6 @@ _STRENGTH = {NOOP: 0, INSPECTION: 1, SYNTAX: 2, EXECUTION: 3, ASSERTION: 4}
 
 # Below this, a command cannot distinguish a correct result from a wrong one.
 DISCRIMINATING_THRESHOLD = _STRENGTH[EXECUTION]
-
-_SEGMENT_OPERATORS = ("&&", "||", "|", ";", "\n")
-
-
-def split_segments(command: str) -> list[str]:
-    """Split on shell control operators, ignoring any that appear inside quotes.
-
-    A quote-blind split is not merely imprecise, it is exploitable in the
-    direction that matters: `echo "run x && grep -q y"` splits into a fragment
-    containing `grep -q y`, which grades as an assertion, so a command that only
-    prints a string passes the gate. It also silently disabled the `python -c`
-    guard below, because the `;` separating statements inside the quoted body
-    tore the one-liner into fragments that no longer looked like `python -c`.
-    """
-    segments: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    index = 0
-    text = command or ""
-    while index < len(text):
-        char = text[index]
-        if quote is not None:
-            current.append(char)
-            # Only double quotes honour backslash escapes in the shell.
-            if char == "\\" and quote == '"' and index + 1 < len(text):
-                current.append(text[index + 1])
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in "\"'":
-            quote = char
-            current.append(char)
-            index += 1
-            continue
-        if char == "\\" and index + 1 < len(text):
-            current.append(char)
-            current.append(text[index + 1])
-            index += 2
-            continue
-        operator = next((op for op in _SEGMENT_OPERATORS if text.startswith(op, index)), None)
-        if operator is not None:
-            segments.append("".join(current))
-            current = []
-            index += len(operator)
-            continue
-        current.append(char)
-        index += 1
-    segments.append("".join(current))
-    return [segment for segment in segments if segment.strip()]
-
 
 _PYTHON_ONELINER = re.compile(r"""^python3?\s+-c\s+["'](?P<body>.*)["']$""", re.DOTALL)
 _PY_IMPORT = re.compile(r"^(import|from)\s+\w")
@@ -214,9 +162,9 @@ def classify_segment(segment: str) -> str:
     if oneliner is not None:
         return oneliner
     try:
-        tokens = shlex.split(segment)
+        tokens = list(shell_lexer(segment))
     except ValueError:
-        tokens = segment.split()
+        tokens = re.split(r"[ \t\n]+", segment)
     if not tokens:
         return NOOP
     # Skip leading env assignments and common prefixes so `cd /app && X` and
@@ -314,30 +262,24 @@ _INSPECTION_BIN_DIRS = frozenset({"/bin", "/usr/bin", "/usr/local/bin", "/opt/ho
 
 def _literal_inspection_segment(segment: str) -> bool:
     """Reject shell expansions whose resulting argv we cannot inspect."""
-    quote = None
-    index = 0
-    while index < len(segment):
-        char = segment[index]
-        if char == "\\" and quote != "'":
-            index += 2
+    scan = scan_shell(segment)
+    for item in scan.characters:
+        char = item.char
+        if item.escaped or char == "\\" and item.quote != "'":
             continue
-        if quote:
-            if char == quote:
-                quote = None
-            elif char == "$" and quote == '"':
+        if item.quote:
+            if char == "$" and item.quote == '"':
                 return False
         elif char in "\"'":
-            quote = char
+            continue
         elif char in "$*?{}()":
             return False
         elif char in "[]":
-            # Keep the shell's [ / [[ test commands, but refuse filename globs.
-            before = segment[index - 1] if index else " "
-            after = segment[index + 1] if index + 1 < len(segment) else " "
-            if not (before.isspace() or before == char) or not (after.isspace() or after == char):
+            before = segment[item.index - 1] if item.index else " "
+            after = segment[item.index + 1] if item.index + 1 < len(segment) else " "
+            if not (before in SHELL_BLANKS or before == char) or not (after in SHELL_BLANKS or after == char):
                 return False
-        index += 1
-    return quote is None
+    return scan.complete
 
 
 def _inspection_argv(segment: str) -> list[str] | None:
@@ -345,7 +287,7 @@ def _inspection_argv(segment: str) -> list[str] | None:
     if not _literal_inspection_segment(segment):
         return None
     try:
-        tokens = shlex.split(segment)
+        tokens = list(shell_lexer(segment))
     except ValueError:
         return None
     while tokens:
