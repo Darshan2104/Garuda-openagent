@@ -78,7 +78,9 @@ Large output: `buffer_tools.py`. Discovery: `discovery.py` (token-lean MCP),
 `local.py`, `docker.py`, `remote.py`, `tmux.py` (persistent panes with marker
 polling), selected by `factory.py`. Managed tmux panes use Bash without startup
 files, disable history expansion and avoid user history files. Safely quoted
-`eval` framing keeps completion markers outside user comments.
+`eval` framing keeps completion markers outside user comments, so only raw-key
+requests (`marker_polling: false`) need smart-mode history approval in
+`core/permissions.py`. `parse_tmux_version` gates pane start on tmux 3.0 or newer.
 
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it
