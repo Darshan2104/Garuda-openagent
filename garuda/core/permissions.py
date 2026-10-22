@@ -154,7 +154,8 @@ def _without_shell_comments(text: str) -> str:
             index = len(text) if end < 0 else end
             continue
         else:
-            word_start = char.isspace() or char in ";&|()<>"
+            # Use Bash word separators, not Python's broader Unicode whitespace.
+            word_start = char in " \t\n;&|()<>"
         output.append(char)
         index += 1
     return "".join(output)

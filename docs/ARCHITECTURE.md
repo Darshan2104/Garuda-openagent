@@ -51,8 +51,9 @@ Path rules compare normalized workspace-relative paths, including physical alias
 of the workspace root and operands relative to a command's explicit `cwd`.
 Relative patterns never match ancestor directories above an in-workspace path;
 absolute patterns still match absolute paths, and outside paths retain literal
-and absolute screening. Simple shell comments start only at word boundaries;
-expansions, shell-specific quoting and heredocs retain conservative scanning.
+and absolute screening. Simple shell comments start at Bash word boundaries:
+space, tab, newline or shell operators. Other whitespace stays literal. Expansions,
+shell-specific quoting and heredocs retain conservative scanning.
 The active root is scoped to each async run and restored on exit, so concurrent
 runs can share a policy without changing each other's path decisions.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the

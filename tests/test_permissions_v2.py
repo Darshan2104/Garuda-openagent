@@ -416,3 +416,36 @@ async def test_absolute_and_outside_rules_remain_effective(tmp_path):
     engine = PermissionEngine(workspace_root=root, path_rules={"deny": [str(root / "key"), "**/private/**"]})
     for path in ["key", str(root / "key"), str(outside), "../private/key"]:
         assert not (await engine.evaluate_tool_call("read_file", {"path": path}))[0]
+
+
+@pytest.mark.parametrize("separator,comment", [
+    (" ", True), ("\t", True), ("\n", True),
+    ("\v", False), ("\f", False), ("\r", False), ("\xa0", False),
+])
+def test_comment_word_boundaries_match_bash(tmp_path, separator, comment):
+    import shutil
+    import subprocess
+
+    from garuda.core.permissions import PermissionDecision
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    (tmp_path / ".env").write_text("DENIED-PATH-CANARY")
+    command = f"printf '%s\\n' x{separator}#; cat .env"
+    actual = subprocess.run([bash, "--noprofile", "--norc", "-c", command],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert ("DENIED-PATH-CANARY" in actual.stdout) is not comment
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={"deny": ["**/.env"]})
+    decision, _ = engine.decide("bash", {"command": command})
+    assert decision == (PermissionDecision.ALLOW if comment else PermissionDecision.DENY)
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\r", "\xa0"])
+def test_non_shell_whitespace_cannot_downgrade_root_removal_to_approval(separator):
+    from garuda.core.permissions import PermissionDecision
+
+    # Screen only: never execute a root-removal command. The normalized literal
+    # target exercises the token guard instead of a built-in deny regex.
+    command = f"echo x{separator}#; rm -rf -- /."
+    assert PermissionEngine().check_command(command) == PermissionDecision.DENY
