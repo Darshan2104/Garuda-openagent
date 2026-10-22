@@ -190,9 +190,10 @@ tokenization, including heredoc bodies that confuse the command scanner, require
 approval even with an allow prefix; detectable dangerous commands still refuse.
 An allow prefix must match both command spellings; a multiline command may still
 need approval under an ask rule. A `#` inside a word cannot hide later commands;
-at the start of a word it begins a comment, so apostrophes in ordinary comments
-do not require approval. Commands with substitutions, shell-specific quoting or
-heredocs retain conservative scanning.
+after space, tab, newline or a shell operator it begins a comment. Vertical tab,
+form feed, carriage return and non-breaking space stay literal, matching Bash.
+Apostrophes in ordinary comments do not require approval. Commands with
+substitutions, shell-specific quoting or heredocs retain conservative scanning.
 Path rules normalize `./`, `..`, absolute paths and physical workspace aliases
 against the workspace root. Relative patterns apply to workspace contents: a
 `**/build/**` rule refuses `build/key` but permits `src/a.py` even when the
