@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from garuda.core.permissions import PermissionEngine
 from garuda.tools import build_toolkit
 from garuda.tools.discovery import SearchToolTool, UseToolTool
@@ -303,10 +305,11 @@ async def test_lazy_target_hook_cannot_reenter_the_dispatcher(tmp_path):
 
 async def test_lazy_permission_errors_remain_bounded_and_attributable(tmp_path):
     from garuda.core.events import EventType
+    from garuda.workspace.protocol import WorkspaceAccessDenied
 
     class RefusedTool(FakeTool):
         async def execute(self, arguments, env, ctx):
-            raise PermissionError("access refused\n" + "x" * 100_000 + "\nend of refusal")
+            raise WorkspaceAccessDenied("access refused\n" + "x" * 100_000 + "\nend of refusal")
 
     tool = RefusedTool("document_reader", "Read document")
     runner = _runner(tmp_path, [tool])
@@ -318,3 +321,51 @@ async def test_lazy_permission_errors_remain_bounded_and_attributable(tmp_path):
     event = next(event for event in runner.events.get_all() if event["type"] == EventType.TOOL_RESULT.value)
     assert event["payload"]["permission_denied"] is True
     assert event["payload"]["content"] == result.content
+
+
+async def test_null_lazy_arguments_remain_a_no_argument_call(tmp_path):
+    tool = RecordingTool("no_args", "No arguments")
+    result = await _dispatch(_runner(tmp_path, [tool]), tool.name, None)
+    assert not result.is_error and tool.ran
+
+
+@pytest.mark.parametrize("denied", [False, True])
+async def test_lazy_resolution_does_not_expose_the_target_directly(tmp_path, denied):
+    from garuda.types import ToolCall
+
+    tool = RecordingTool("hidden", "Lazy target")
+    runner = _runner(tmp_path, [tool])
+    if denied:
+        runner.permissions = PermissionEngine(tool_rules={tool.name: "deny"})
+    await _dispatch(runner, tool.name, {})
+    runner.permissions = PermissionEngine()
+    result = await runner.run_one(ToolCall(id="direct", name=tool.name, arguments={}), 2)
+    assert result.is_error and "Unknown tool" in result.content
+
+
+async def test_os_permission_error_is_logged_without_policy_denial(tmp_path, caplog):
+    class UnreadableTool(FakeTool):
+        async def execute(self, arguments, env, ctx):
+            raise PermissionError(13, "Permission denied", "unreadable")
+
+    runner = _runner(tmp_path, [UnreadableTool("os_read", "Read")])
+    result = await _dispatch(runner, "os_read", {})
+    assert result.is_error and not result.metadata.get("permission_denied")
+    assert "PermissionError" in caplog.text
+
+
+async def test_lazy_target_hooks_can_supply_arguments_without_exposing_tool(tmp_path):
+    from garuda.plugins.hooks import HookRegistry
+    from garuda.types import ToolCall
+
+    tool = RecordingTool("hidden", "Lazy target")
+    hooks = HookRegistry()
+
+    async def rewrite(call, context):
+        if call.name == tool.name:
+            return ToolCall(id=call.id, name=call.name, arguments={"title": "from hook"})
+        return call
+
+    hooks.register_before_tool(rewrite)
+    result = await _dispatch(_runner(tmp_path, [tool], hooks), tool.name, {})
+    assert not result.is_error and "from hook" in result.content

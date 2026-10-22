@@ -15,9 +15,9 @@ _active_workspace: ContextVar[str | None] = ContextVar("permission_workspace", d
 
 
 @contextmanager
-def permission_workspace(workspace_root: str):
+def permission_workspace(workspace_root: str | None):
     """Bind path screening to this async run without mutating shared policies."""
-    token = _active_workspace.set(os.path.abspath(workspace_root))
+    token = _active_workspace.set(os.path.abspath(workspace_root) if workspace_root else None)
     try:
         yield
     finally:
@@ -124,6 +124,42 @@ READONLY_DENIED_TOOLS = {
 }
 
 
+def _without_shell_comments(text: str) -> str:
+    """Remove comments at word boundaries, preserving quoted/escaped hashes."""
+    # Nested shell parsers have their own quoting rules. Preserve the original
+    # conservative tokenization when substitution makes word boundaries unclear.
+    if any(marker in text for marker in ("$(", "${", "$'", '$"', "`", "<<")):
+        return text
+    output = []
+    quote = None
+    word_start = True
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and quote != "'" and index + 1 < len(text):
+            following = text[index + 1]
+            output.extend((char, following))
+            if following != "\n":
+                word_start = False
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+            word_start = False
+        elif char == "#" and word_start:
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+            continue
+        else:
+            word_start = char.isspace() or char in ";&|()<>"
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
 def command_path_tokens(command: str) -> list[str]:
     """Best-effort extraction of path-like operands from a shell command.
 
@@ -138,7 +174,7 @@ def command_path_tokens(command: str) -> list[str]:
     # while the original preserves literal backslash-newlines inside quotes.
     for text in {command, command.replace("\\\n", "")}:
         try:
-            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
+            lexer = shlex.shlex(_without_shell_comments(text), posix=True, punctuation_chars=";&|()<>")
             lexer.whitespace_split = True
             lexer.commenters = ""
             tokens.extend(lexer)
@@ -153,6 +189,7 @@ def _root_removal_decision(command: str) -> PermissionDecision:
     Keep the regex guards for expansion-shaped text; this token check covers
     literal operands, `--`, and normalized spellings without executing a shell.
     """
+    command = _without_shell_comments(command)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -292,11 +329,24 @@ class PermissionEngine:
     def _path_matches(self, path: str, pattern: str, cwd: str | None = None) -> bool:
         base = os.path.join(self._workspace_root, cwd or "")
         absolute = os.path.normpath(os.path.join(base, path))
-        # Retain the literal spelling for glob arguments and absolute rules.
-        forms = {path, absolute, os.path.relpath(absolute, self._workspace_root)}
+        root = self._workspace_root
+        real_root = os.path.realpath(root)
+        physical = os.path.realpath(absolute)
+        forms = set()
+        for candidate, anchor in ((absolute, root), (physical, real_root)):
+            if os.path.commonpath((candidate, anchor)) == anchor:
+                # Relative rules describe workspace contents, never its parents.
+                forms.add(os.path.relpath(candidate, anchor))
+                if os.path.isabs(pattern):
+                    forms.add(candidate)
+            elif os.path.commonpath((physical, real_root)) != real_root:
+                forms.update((path, candidate))
         normalized = pattern.removeprefix("**/")
-        return any(fnmatch.fnmatch(form, pattern) or fnmatch.fnmatch(form, normalized)
-                   or Path(form).name == normalized for form in forms)
+        patterns = {pattern, normalized}
+        if os.path.isabs(pattern):
+            patterns.add(os.path.realpath(pattern))
+        return any(fnmatch.fnmatch(form, rule) or Path(form).name == normalized
+                   for form in forms for rule in patterns)
 
     def _match_path_rules(self, path: str, cwd: str | None = None) -> PermissionDecision | None:
         for pattern in self._deny_paths:

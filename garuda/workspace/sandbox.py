@@ -25,6 +25,7 @@ from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.local import LocalEnvironment
+from garuda.workspace.protocol import WorkspaceAccessDenied
 from garuda.workspace.sandbox_policy import (
     SandboxPolicy,
     SandboxUnavailableError,
@@ -161,7 +162,7 @@ class SandboxEnvironment:
         full = candidate if candidate.is_absolute() else root / candidate
         resolved = full.resolve()
         if resolved != root and not resolved.is_relative_to(root):
-            raise PermissionError(
+            raise WorkspaceAccessDenied(
                 f"Path {path!r} resolves outside the sandboxed workspace root {root} "
                 "(possibly via a symlink); refusing."
             )

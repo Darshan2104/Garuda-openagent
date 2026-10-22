@@ -12,6 +12,8 @@ targets is the OS sandbox's job, not the resolver's.)
 import os
 from pathlib import Path
 
+from garuda.workspace.protocol import WorkspaceAccessDenied
+
 
 def resolve_workspace_path(workspace_root: Path, path: str, confine: bool) -> Path:
     candidate = Path(path)
@@ -20,7 +22,7 @@ def resolve_workspace_path(workspace_root: Path, path: str, confine: bool) -> Pa
     else:
         full = Path(os.path.normpath(str(workspace_root / candidate)))
     if confine and full != workspace_root and not full.is_relative_to(workspace_root):
-        raise PermissionError(
+        raise WorkspaceAccessDenied(
             f"Path {path} is outside the workspace root {workspace_root}. "
             "Pass an explicit workspace or disable confinement."
         )

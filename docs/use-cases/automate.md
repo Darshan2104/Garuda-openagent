@@ -238,6 +238,10 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
 Custom environments implement `read_bytes(path)` alongside `read_file(path)` and
 `write_file(path, content)`; image, PDF and spreadsheet tools use it under the
 same backend file-path policy.
+For workspace-policy refusals, raise `WorkspaceAccessDenied` from
+`garuda.workspace.protocol` so the run records denial evidence. Ordinary OS
+`PermissionError` stays a tool error. Environments that omit `workspace_root`
+retain the permission engine's configured root.
 
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an

@@ -1,6 +1,6 @@
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
-from garuda.workspace.protocol import Environment
+from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_CHARS = 2000
@@ -53,7 +53,7 @@ class ReadFileTool:
                 tool_call_id="",
                 content=f"Cannot read {path}: {exc}",
                 is_error=True,
-                metadata={"permission_denied": True} if isinstance(exc, PermissionError) else {},
+                metadata={"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {},
             )
 
         lines = content.splitlines()

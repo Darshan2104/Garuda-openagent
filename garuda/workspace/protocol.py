@@ -3,6 +3,10 @@ from typing import Protocol, runtime_checkable
 from garuda.types import ExecResult
 
 
+class WorkspaceAccessDenied(PermissionError):
+    """A workspace policy refused access, independently of OS file permissions."""
+
+
 @runtime_checkable
 class Environment(Protocol):
     async def execute(

@@ -292,7 +292,9 @@ Set `on_failure: allow` on a hook in your global file to make it advisory; a
 project's hooks always fail closed. If a guard rewrites a call, the rewritten
 call is permission-checked again before it runs. A discovered target invoked
 through `use_tool` receives the same target hooks, argument checks, memo and
-side-effect accounting as a direct call. If a hook changes a parallel read into
+side-effect accounting as a direct call. The resolved target remains available
+through `use_tool` without being added to the direct tool list; `arguments: null`
+is accepted as an empty arguments object. If a hook changes a parallel read into
 a mutating tool, the batch runs sequentially.
 
 Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in

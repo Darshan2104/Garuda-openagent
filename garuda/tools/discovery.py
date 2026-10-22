@@ -13,7 +13,7 @@ small meta-tools:
 threshold, so the prompt stays lean without losing any capability.
 """
 
-from garuda.tools.protocol import Tool, ToolContext, ToolEffect, tool_effect
+from garuda.tools.protocol import Tool, ToolContext, ToolDispatcher, ToolEffect, tool_effect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -150,7 +150,9 @@ class UseToolTool:
                 ),
                 is_error=True,
             )
-        tool_args = arguments.get("arguments", {})
+        tool_args = arguments.get("arguments")
+        if tool_args is None:
+            tool_args = {}
         if not isinstance(tool_args, dict):
             return ToolResult(
                 tool_call_id="",
@@ -173,7 +175,7 @@ class UseToolTool:
         if name in getattr(ctx, "removed_tools", frozenset()):
             return ToolResult(tool_call_id="", is_error=True,
                               content=f"{name} was removed from this agent's tools")
-        if isinstance(tool, UseToolTool):
+        if isinstance(tool, ToolDispatcher):
             return ToolResult(tool_call_id="", content="Nested use_tool dispatch is not supported.", is_error=True)
         return tool, tool_args
 

@@ -3,7 +3,7 @@ import mimetypes
 
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
-from garuda.workspace.protocol import Environment
+from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 # Cap the encoded size we attach so a giant image can't blow the request.
 MAX_IMAGE_B64_CHARS = 8_000_000  # ~6 MB raw
@@ -46,7 +46,7 @@ class ImageReadTool:
         # Read bytes through the environment (portable across docker/remote).
         try:
             data = await env.read_bytes(path)
-        except PermissionError as exc:
+        except WorkspaceAccessDenied as exc:
             return ToolResult(tool_call_id="", content=str(exc), is_error=True,
                               metadata={"permission_denied": True})
         except (FileNotFoundError, IsADirectoryError):

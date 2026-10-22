@@ -189,14 +189,25 @@ Smart mode screens both original and joined shell continuations. Incomplete
 tokenization, including heredoc bodies that confuse the command scanner, requires
 approval even with an allow prefix; detectable dangerous commands still refuse.
 An allow prefix must match both command spellings; a multiline command may still
-need approval under an ask rule. A `#` inside a word cannot hide later commands.
-Path rules normalize `./`, `..`, and absolute paths against the workspace root.
+need approval under an ask rule. A `#` inside a word cannot hide later commands;
+at the start of a word it begins a comment, so apostrophes in ordinary comments
+do not require approval. Commands with substitutions, shell-specific quoting or
+heredocs retain conservative scanning.
+Path rules normalize `./`, `..`, absolute paths and physical workspace aliases
+against the workspace root. Relative patterns apply to workspace contents: a
+`**/build/**` rule refuses `build/key` but permits `src/a.py` even when the
+workspace itself lives beneath a directory named `build`. Absolute rules still
+apply to absolute paths, and outside paths retain literal and absolute checks.
 Image and document readers follow the environment's file-path policy, including
 local workspace confinement. Web fetches reject non-global addresses, including
 shared address space (`100.64.0.0/10`), on initial requests and redirects.
-Cancelling a persistent-shell command closes its process group before the next
-call, which starts with fresh shell state. A per-call `cwd` also accepts trailing
-shell comments without losing the session's state.
+Cancelling a persistent-shell command signals its live process group, reaps the
+shell and closes its pipes before the next call, which starts with fresh state.
+A per-call `cwd` also accepts trailing shell comments without losing the session's
+state. Incomplete cleanup is retried
+before reuse. After confirmed shell exit, retained pipes are closed after the
+drain deadline. Process groups are signaled only while the shell has no recorded
+exit status.
 Cancelling a stateless local command attempts process-group cleanup and settles
 its pipe readers before returning cancellation. If process cleanup fails, the
 original cancellation retains that failure as its cause. These checks remain

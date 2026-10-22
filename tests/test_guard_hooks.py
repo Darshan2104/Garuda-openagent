@@ -259,3 +259,17 @@ async def test_concurrent_runs_keep_shared_path_policy_bound_to_each_workspace(t
     async with asyncio.timeout(10):
         await asyncio.gather(run_in("first"), run_in("second"))
     assert permissions.snapshot_policy() == original_policy
+
+
+async def test_custom_environment_without_root_can_still_run(tmp_path):
+    class CustomEnvironment:
+        async def read_file(self, path):
+            return "custom content"
+
+    result = await DefaultAgent().run(
+        task="Read the file", model=ScriptModel([_call("read_file", path="a.txt"), _done()]),
+        env=CustomEnvironment(), tools=default_tools(),
+        config=AgentConfig(max_turns=4, enable_verifier=False),
+    )
+    assert any(message.role.value == "tool" and "custom content" in message.content
+               for message in result.messages)
