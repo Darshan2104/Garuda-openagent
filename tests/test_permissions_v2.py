@@ -485,9 +485,17 @@ def test_home_wide_removal_is_a_hard_refusal(target):
     ("echo '!-1'", PermissionDecision.ALLOW),
     (r"echo \!", PermissionDecision.ALLOW),
 ])
-def test_tmux_history_references_require_approval_even_with_allow_prefix(command, expected):
+def test_raw_tmux_history_references_require_approval_even_with_allow_prefix(command, expected):
     engine = PermissionEngine(bash_rules={"allow_prefixes": ["cat", "echo"]})
-    assert engine.decide("tmux_exec", {"command": command})[0] == expected
+    arguments = {"command": command, "marker_polling": False}
+    assert engine.decide("tmux_exec", arguments)[0] == expected
+
+
+@pytest.mark.parametrize("command", ["[ ! -d build ] && mkdir build", 'echo "done!"', "cat !-2:1!-1:1"])
+def test_framed_tmux_commands_with_exclamation_marks_run_without_approval(command):
+    # Framing single-quotes the command for eval, so the pane never expands it.
+    for arguments in ({"command": command}, {"command": command, "marker_polling": True}):
+        assert PermissionEngine().decide("tmux_exec", arguments)[0] == PermissionDecision.ALLOW
 
 
 @pytest.mark.parametrize("command", ["cat .env", "rm -rf -- /."])

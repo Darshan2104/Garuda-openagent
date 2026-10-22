@@ -1,10 +1,15 @@
 """Unit tests for tmux marker logic — no tmux binary required."""
 
+import pytest
+
 from garuda.workspace.tmux import (
     MARKER_PREFIX,
+    MIN_TMUX_VERSION,
+    TmuxEnvironment,
     build_marker_payload,
     find_marker,
     pane_delta,
+    parse_tmux_version,
     strip_marker_output,
 )
 
@@ -74,3 +79,28 @@ def test_pane_delta_scrolled_pane_falls_back_to_full_capture():
     before = "line1\nline2\n$ "
     after = "totally different pane content\n"
     assert pane_delta(before, after) == after
+
+
+@pytest.mark.parametrize("reported,supported", [
+    ("tmux 2.6", False), ("tmux 1.8", False), ("tmux 3.0a", True),
+    ("tmux 3.7c", True), ("tmux next-3.4", True),
+])
+def test_tmux_version_gate(reported, supported):
+    assert (parse_tmux_version(reported) >= MIN_TMUX_VERSION) is supported
+
+
+def test_unversioned_tmux_build_is_not_rejected_by_parsing():
+    assert parse_tmux_version("tmux master") is None
+
+
+async def test_start_refuses_tmux_without_session_environment_support(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_tmux(self, args, capture=False):
+        calls.append(args)
+        return "tmux 2.6\n" if args == ["-V"] else ""
+
+    monkeypatch.setattr(TmuxEnvironment, "_run_tmux", fake_tmux)
+    with pytest.raises(RuntimeError, match="require tmux 3.0 or newer; found 'tmux 2.6'"):
+        await TmuxEnvironment(tmp_path / "workspace").start()
+    assert calls == [["-V"]]

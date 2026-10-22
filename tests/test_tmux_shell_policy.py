@@ -86,3 +86,22 @@ async def test_tmux_frame_preserves_shell_state_after_a_comment(tmp_path, privat
         assert str((workspace / "sub").resolve()) in result.stdout
     finally:
         await env.stop()
+
+
+async def test_framed_commands_stay_literal_after_history_expansion_is_reenabled(tmp_path, private_tmux_server):
+    private_tmux_server("bash")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".env").write_text("DENIED-HISTORY-CANARY")
+    (workspace / "!-2:1!-1:1").write_text("LITERAL-HISTORY-OPERAND")
+    env = TmuxEnvironment(workspace)
+    try:
+        await env.send_command("set -H", timeout=3)
+        await env.send_command("echo .e", timeout=3)
+        await env.send_command("echo nv", timeout=3)
+        result = await env.send_command("cat !-2:1!-1:1", timeout=3)
+        assert result.exit_code == 0, result.stderr
+        assert "LITERAL-HISTORY-OPERAND" in result.stdout
+        assert "DENIED-HISTORY-CANARY" not in result.stdout
+    finally:
+        await env.stop()
