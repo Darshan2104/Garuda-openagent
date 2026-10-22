@@ -37,6 +37,7 @@ a behaviour.
 | `modes.py` | Run postures. The presets that map one `mode` onto a coherent gate set. |
 | `rigorous.py` | `RigorousAgent`: plan → execute → critic, with repair rounds. `create_agent()` picks between this and `DefaultAgent`. |
 | `verifier.py` | The completion gate. Decides whether `task_complete` is accepted. |
+| `shell_syntax.py` | Shared quote, escape and Bash separator annotations for permissions, evidence segment splitting and read-only inspection. Raw permission refusals remain independent of comment interpretation. |
 | `evidence.py` | Two independent classifications of a shell command: whether it can actually fail (a check that cannot fail is not proof), and whether it writes anything (`is_side_effect_free`, which gates concurrency at the gate). Close to opposites in practice — the commands that prove the most are the ones that write. |
 | `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
@@ -75,7 +76,9 @@ Large output: `buffer_tools.py`. Discovery: `discovery.py` (token-lean MCP),
 `protocol.py` is the `Environment` interface every tool talks to, including
 `read_bytes` for image/document reads under the backend's file-path policy. Implementations:
 `local.py`, `docker.py`, `remote.py`, `tmux.py` (persistent panes with marker
-polling), selected by `factory.py`.
+polling), selected by `factory.py`. Managed tmux panes use Bash without startup
+files, disable history expansion and avoid user history files. Safely quoted
+`eval` framing keeps completion markers outside user comments.
 
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it

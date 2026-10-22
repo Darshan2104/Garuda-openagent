@@ -2,11 +2,14 @@
 write classification, workspace path confinement, and verifier command
 screening."""
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from garuda.core.permissions import PermissionEngine
+import garuda.core.permissions as permissions
+from garuda.core.permissions import PermissionDecision, PermissionEngine
 from garuda.core.verifier import CompletionVerifier
 from garuda.types import AgentConfig
 from garuda.workspace.local import LocalEnvironment
@@ -339,13 +342,11 @@ async def test_hash_inside_word_does_not_hide_denied_paths(command):
 
 
 async def test_hash_inside_word_does_not_hide_root_removal():
-    from garuda.core.permissions import PermissionDecision
 
     assert PermissionEngine().check_command("echo a#; rm -rf -- /*") == PermissionDecision.DENY
 
 
 async def test_allow_prefix_cannot_hide_a_command_after_an_escaped_backslash():
-    from garuda.core.permissions import PermissionDecision
 
     command = "pytest x" + "\\" * 2 + "\nrm -rf build"
     engine = PermissionEngine(bash_rules={"allow_prefixes": ["pytest"]})
@@ -374,7 +375,6 @@ async def test_multiline_allow_prefix_still_obeys_ask_rules(approved):
 
 
 async def test_acceptance_path_ceiling_resolves_operands_against_check_cwd(tmp_path):
-    from garuda.core.permissions import PermissionDecision
 
     engine = PermissionEngine(mode="auto", path_rules={"deny": ["secrets/**"]}, workspace_root=tmp_path)
     decision, _ = engine.decide_acceptance({"command": "cat key", "cwd": "secrets"})
@@ -422,12 +422,7 @@ async def test_absolute_and_outside_rules_remain_effective(tmp_path):
     (" ", True), ("\t", True), ("\n", True),
     ("\v", False), ("\f", False), ("\r", False), ("\xa0", False),
 ])
-def test_comment_word_boundaries_match_bash(tmp_path, separator, comment):
-    import shutil
-    import subprocess
-
-    from garuda.core.permissions import PermissionDecision
-
+def test_raw_path_screening_keeps_comment_text_visible(tmp_path, separator, comment):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
@@ -438,14 +433,72 @@ def test_comment_word_boundaries_match_bash(tmp_path, separator, comment):
     assert ("DENIED-PATH-CANARY" in actual.stdout) is not comment
     engine = PermissionEngine(workspace_root=tmp_path, path_rules={"deny": ["**/.env"]})
     decision, _ = engine.decide("bash", {"command": command})
-    assert decision == (PermissionDecision.ALLOW if comment else PermissionDecision.DENY)
+    # Raw path refusals also apply to literal paths mentioned inside comments.
+    assert decision == PermissionDecision.DENY
 
 
 @pytest.mark.parametrize("separator", ["\v", "\f", "\r", "\xa0"])
 def test_non_shell_whitespace_cannot_downgrade_root_removal_to_approval(separator):
-    from garuda.core.permissions import PermissionDecision
 
     # Screen only: never execute a root-removal command. The normalized literal
     # target exercises the token guard instead of a built-in deny regex.
     command = f"echo x{separator}#; rm -rf -- /."
     assert PermissionEngine().check_command(command) == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("prefix", [
+    "(( 1 #))", "for (( i=0; i<1 #; i++ )); do :; done", "[[ a =~ ( #) ]]",
+])
+def test_raw_path_rules_survive_shell_comment_contexts(tmp_path, prefix):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not installed")
+    (tmp_path / ".env").write_text("RAW-PATH-CANARY")
+    command = prefix + "; cat .env"
+    actual = subprocess.run([bash, "--noprofile", "--norc", "-c", command],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert "RAW-PATH-CANARY" in actual.stdout
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={"deny": ["**/.env"]})
+    assert engine.decide("bash", {"command": command})[0] == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("separator", ["", "\v", "\f", "\r", "\x1c", "\x85", "\u2028"])
+def test_heredoc_root_guard_splits_only_at_shell_newlines(separator):
+    # Permission query only: never execute a destructive command.
+    command = "cat <<'EOF'\nit's text\nEOF\necho x" + separator + "#; rm -rf -- /."
+    assert PermissionEngine().check_command(command) == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("prefix", ["(( 1 #))", "[[ a =~ ( #) ]]"])
+def test_raw_root_refusals_survive_shell_comment_contexts(prefix):
+    assert PermissionEngine().check_command(prefix + "; rm -rf -- /.") == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("target", ["~/*", "~/./*", "$HOME/*", "${HOME}/*", '"$HOME"/*'])
+def test_home_wide_removal_is_a_hard_refusal(target):
+    assert PermissionEngine().check_command("rm -rf -- " + target) == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("cat !-2:1!-1:1", PermissionDecision.ASK),
+    ('echo "!-1"', PermissionDecision.ASK),
+    ("echo '!-1'", PermissionDecision.ALLOW),
+    (r"echo \!", PermissionDecision.ALLOW),
+])
+def test_tmux_history_references_require_approval_even_with_allow_prefix(command, expected):
+    engine = PermissionEngine(bash_rules={"allow_prefixes": ["cat", "echo"]})
+    assert engine.decide("tmux_exec", {"command": command})[0] == expected
+
+
+@pytest.mark.parametrize("command", ["cat .env", "rm -rf -- /."])
+def test_comment_guess_cannot_remove_raw_refusals(tmp_path, monkeypatch, command):
+    monkeypatch.setattr(permissions, "_without_shell_comments", lambda text: "echo harmless")
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={"deny": ["**/.env"]})
+    assert engine.decide("bash", {"command": command})[0] == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("separator", [" ", "\t", "\v", "\f", "\r", "\xa0"])
+def test_allow_prefix_uses_bash_word_separators(separator):
+    engine = PermissionEngine(bash_rules={"allow_prefixes": ["cat"], "ask": [".*"]})
+    expected = PermissionDecision.ALLOW if separator in " \t" else PermissionDecision.ASK
+    assert engine.check_command("cat" + separator + "file") == expected

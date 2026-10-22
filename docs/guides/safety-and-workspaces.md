@@ -91,7 +91,12 @@ quarantine work is described for contributors in
 
 `local` runs tools as you, in the selected directory. `tmux` does the same
 through a visible tmux session. Both can reach anything your user can, unless
-a permission rule refuses the literal request.
+a permission rule refuses the literal request. Managed tmux panes use Bash with
+startup profiles and rc files skipped, history expansion disabled, and no user
+history file. Smart-mode `tmux_exec` requests containing unquoted or double-quoted
+history references require approval even if an allow prefix matches. Literal
+single-quoted or escaped exclamation marks remain usable in simple commands;
+complex syntax containing `!` conservatively asks for approval.
 
 - Keep the workspace in version control and check existing changes before a
   run.
@@ -185,15 +190,17 @@ as program names. Output-file arguments, program-execution options and unsafe
 loader or executable-search overrides are refused. Command working directories
 also obey path rules; persistent-shell directories are passed as literal paths.
 Tree's recursive HTML output (`-R`) is refused alongside explicit output paths.
-Smart mode screens both original and joined shell continuations. Incomplete
-tokenization, including heredoc bodies that confuse the command scanner, requires
-approval even with an allow prefix; detectable dangerous commands still refuse.
+Smart mode screens both original and joined shell continuations. Raw path tokens
+and raw root/home-removal checks are enforced independently of comment parsing.
+A denied `.env` path mentioned in a comment can therefore refuse the request;
+comment interpretation never hides a raw refusal. Heredoc fallback screening
+splits only at literal newlines, preserving other whitespace inside shell words.
+Recursive force-removal of root or home-wide targets such as `~/*` and `$HOME/*`
+is refused rather than offered for approval.
+Incomplete tokenization still requires approval when no hard refusal applies.
 An allow prefix must match both command spellings; a multiline command may still
-need approval under an ask rule. A `#` inside a word cannot hide later commands;
-after space, tab, newline or a shell operator it begins a comment. Vertical tab,
-form feed, carriage return and non-breaking space stay literal, matching Bash.
-Apostrophes in ordinary comments do not require approval. Commands with
-substitutions, shell-specific quoting or heredocs retain conservative scanning.
+need approval under an ask rule. Apostrophes in ordinary comments remain usable
+when the raw command does not contain a denied path or hard refusal.
 Path rules normalize `./`, `..`, absolute paths and physical workspace aliases
 against the workspace root. Relative patterns apply to workspace contents: a
 `**/build/**` rule refuses `build/key` but permits `src/a.py` even when the

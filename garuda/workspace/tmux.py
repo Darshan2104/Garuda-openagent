@@ -1,6 +1,7 @@
 import asyncio
 import re
 import shlex
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -36,18 +37,9 @@ def build_marker_payload(command: str, seq: int) -> str:
     The typed line shows ``printf '__CMD''END__%s__%s__\\n' <seq> $?`` which never
     contains the literal ``__CMDEND__`` marker; only the printf output does.
     """
-    stripped = command.rstrip()
-    # `cmd &` backgrounds the job and is already a complete statement: appending
-    # `; printf` produces `cmd &; printf`, which is a bash syntax error, so the
-    # marker never printed and the poll hung until timeout. `&` also separates
-    # commands, so no `;` is needed after it. A trailing `;` is likewise redundant.
-    if stripped.endswith("&") and not stripped.endswith("&&"):
-        separator = " "
-    elif stripped.endswith(";"):
-        separator = " "
-    else:
-        separator = "; "
-    return f"{stripped}{separator}printf '__CMD''END__%s__%s__\\n' {seq} $?"
+    # Quote the command as one eval argument: a user comment cannot swallow
+    # the marker command, and background operators cannot change its syntax.
+    return f"eval -- {shlex.quote(command)}; printf '__CMD''END__%s__%s__\\n' {seq} $?"
 
 
 def marker_regex(seq: int) -> re.Pattern[str]:
@@ -132,6 +124,9 @@ class TmuxEnvironment:
     async def start(self) -> None:
         if self._started:
             return
+        bash = shutil.which("bash")
+        if bash is None:
+            raise RuntimeError("tmux workspaces require bash; refusing a different shell")
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         await self._run_tmux(
             [
@@ -141,6 +136,8 @@ class TmuxEnvironment:
                 self._session_name,
                 "-c",
                 str(self._workspace_root),
+                "-e", "HISTFILE=/dev/null",
+                "--", bash, "--noprofile", "--norc", "-i", "+H",
             ]
         )
         await self._run_tmux(["set-option", "-t", self._session_name, "history-limit", str(self._history_limit)])

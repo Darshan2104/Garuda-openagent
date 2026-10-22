@@ -12,7 +12,6 @@ from garuda.workspace.tmux import (
 def test_typed_payload_never_contains_assembled_marker():
     payload = build_marker_payload("echo hello", 42)
     assert MARKER_PREFIX not in payload
-    assert payload.startswith("echo hello; ")
 
 
 def test_find_marker_matches_only_assembled_output():

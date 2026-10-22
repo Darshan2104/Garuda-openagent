@@ -797,7 +797,8 @@ def test_container_read_file_bypasses_the_login_shell(module):
 
 
 @pytest.mark.parametrize(
-    "command", ["echo hi", "sleep 0.1 &", "echo a && echo b", "echo x;", "ls -la"]
+    "command", ["echo hi", "sleep 0.1 &", "echo a && echo b", "echo x;", "ls -la",
+                "printf no-newline", "echo before # trailing comment"]
 )
 def test_marker_is_emitted_for_every_command_shape(command):
     """`cmd &` + `; printf` is a bash syntax error, so the marker never printed and

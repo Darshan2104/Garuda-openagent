@@ -2,12 +2,14 @@ import fnmatch
 import os
 import posixpath
 import re
-import shlex
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable
+
+from garuda.core.shell_syntax import SHELL_BLANKS, has_history_reference, shell_lexer
+from garuda.core.shell_syntax import strip_simple_comments as _without_shell_comments
 
 ApprovalHandler = Callable[[str], Awaitable[bool]]
 
@@ -54,7 +56,7 @@ _SHELL_CHAIN_RE = re.compile(r"[;|&\n<>]|\$\(|`")
 _RM_RECURSIVE = r"(?:-[a-z]*r[a-z]*\b|--recursive\b|-[a-z]*R[a-z]*\b)"
 _RM_FORCE = r"(?:-[a-z]*f[a-z]*\b|--force\b)"
 # Root, or a variable/glob that expands to it (`rm -rf "$DIR"/` with DIR unset).
-_ROOT_TARGET = r"(?:/|/\*|\$\{?\w+\}?/?|~/?)\s*$"
+_ROOT_TARGET = r"(?:/|/\*|\$(?:\w+|\{\w+\})(?:/\*?)?|~(?:/\*?)?)\s*$"
 
 DENY_COMMAND_PATTERNS = [
     # rm, with recursive+force in any order/spelling, targeting root. `git rm` is
@@ -124,43 +126,6 @@ READONLY_DENIED_TOOLS = {
 }
 
 
-def _without_shell_comments(text: str) -> str:
-    """Remove comments at word boundaries, preserving quoted/escaped hashes."""
-    # Nested shell parsers have their own quoting rules. Preserve the original
-    # conservative tokenization when substitution makes word boundaries unclear.
-    if any(marker in text for marker in ("$(", "${", "$'", '$"', "`", "<<")):
-        return text
-    output = []
-    quote = None
-    word_start = True
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if char == "\\" and quote != "'" and index + 1 < len(text):
-            following = text[index + 1]
-            output.extend((char, following))
-            if following != "\n":
-                word_start = False
-            index += 2
-            continue
-        if quote:
-            if char == quote:
-                quote = None
-        elif char in {"'", '"'}:
-            quote = char
-            word_start = False
-        elif char == "#" and word_start:
-            end = text.find("\n", index)
-            index = len(text) if end < 0 else end
-            continue
-        else:
-            # Use Bash word separators, not Python's broader Unicode whitespace.
-            word_start = char in " \t\n;&|()<>"
-        output.append(char)
-        index += 1
-    return "".join(output)
-
-
 def command_path_tokens(command: str) -> list[str]:
     """Best-effort extraction of path-like operands from a shell command.
 
@@ -171,29 +136,37 @@ def command_path_tokens(command: str) -> list[str]:
     whitespace split rather than failing open.
     """
     tokens = []
-    # Inspect both forms: joining continuations exposes split names/operands,
-    # while the original preserves literal backslash-newlines inside quotes.
+    # Always inspect raw text and raw shell lines. Comment interpretation and
+    # heredoc quoting must never hide a literal denied operand.
     for text in {command, command.replace("\\\n", "")}:
-        try:
-            lexer = shlex.shlex(_without_shell_comments(text), posix=True, punctuation_chars=";&|()<>")
-            lexer.whitespace_split = True
-            lexer.commenters = ""
-            tokens.extend(lexer)
-        except ValueError:
-            tokens.extend(text.split())
+        sources = {text, _without_shell_comments(text), *text.split("\n")}
+        for source in sources:
+            try:
+                lexer = shell_lexer(source, punctuation_chars=";&|()<>")
+                tokens.extend(lexer)
+            except ValueError:
+                tokens.extend(re.split(r"[ \t\n]+", source))
     return [t for t in tokens if t and not t.startswith("-")]
 
 
-def _root_removal_decision(command: str) -> PermissionDecision:
+def _removes_root_or_home(path: str) -> bool:
+    normalized = posixpath.normpath(path)
+    if normalized.startswith("/") and not normalized.strip("/"):
+        return True
+    if normalized in {"/*", "~", "~/*"}:
+        return True
+    return re.fullmatch(r"\$(?:\w+|\{\w+\})(?:/\*)?", normalized) is not None
+
+
+def _root_removal_decision(command: str, *, strip_comments: bool = True) -> PermissionDecision:
     """Deny literal root removal; require approval for incomplete tokenization.
 
     Keep the regex guards for expansion-shaped text; this token check covers
     literal operands, `--`, and normalized spellings without executing a shell.
     """
-    command = _without_shell_comments(command)
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
+    if strip_comments:
+        command = _without_shell_comments(command)
+    lexer = shell_lexer(command, punctuation_chars=";&|()<>")
     tokens = []
     incomplete = False
     try:
@@ -221,15 +194,14 @@ def _root_removal_decision(command: str) -> PermissionDecision:
             else:
                 operands.append(argument)
         if recursive and force and any(
-                path.startswith("/") and posixpath.normpath(path).strip("/") == ""
-                or path in {"/*", "~", "~/"} for path in operands):
+                _removes_root_or_home(path) for path in operands):
             return PermissionDecision.DENY
     if "\n" in command:
         # A heredoc body can confuse shlex without invalidating later commands.
         # Check each line for a hard refusal even if unrelated quotes happen to
         # balance across the body. Per-line uncertainty adds no further refusal.
-        if any(_root_removal_decision(line) == PermissionDecision.DENY
-               for line in command.splitlines()):
+        if any(_root_removal_decision(line, strip_comments=strip_comments) == PermissionDecision.DENY
+               for line in command.split("\n")):
             return PermissionDecision.DENY
     return PermissionDecision.ASK if incomplete else PermissionDecision.ALLOW
 
@@ -403,6 +375,10 @@ class PermissionEngine:
             )
         joined = command.replace("\\\n", "")
         forms = {command, joined}
+        # The raw hard refusal is independent of our best-effort comment view.
+        if any(_root_removal_decision(text, strip_comments=False) == PermissionDecision.DENY
+               for text in forms):
+            return PermissionDecision.DENY
         decision = _strictest(*(_root_removal_decision(text) for text in forms))
         if decision == PermissionDecision.DENY:
             return PermissionDecision.DENY
@@ -420,11 +396,11 @@ class PermissionEngine:
         return PermissionDecision.ALLOW
 
     def _matches_allow_prefix(self, command: str) -> bool:
-        stripped = command.lstrip()
+        stripped = command.lstrip(SHELL_BLANKS)
         for prefix in self._allow_prefixes:
             if stripped == prefix:
                 return True
-            if stripped.startswith(prefix) and stripped[len(prefix)].isspace():
+            if stripped.startswith(prefix) and stripped[len(prefix)] in SHELL_BLANKS:
                 # Only fast-path an allow-prefix when the remainder is plain args.
                 # A chained/redirected/substituted tail (git status && curl … | bash)
                 # must fall through to the deny/ask patterns instead of being allowed.
@@ -456,6 +432,9 @@ class PermissionEngine:
                 self._check_paths(command_path_tokens(command), "read", cwd=arguments.get("cwd")),
                 self.check_path(str(arguments.get("cwd") or ""), "read"),
             )
+            if (tool_name == "tmux_exec" and self._mode not in {"auto", "yolo"}
+                    and has_history_reference(command)):
+                detail_decision = _strictest(detail_decision, PermissionDecision.ASK)
         elif tool_name in SEARCH_TOOLS:
             detail_decision = self._check_paths(
                 [str(arguments.get(arg)) for arg in SEARCH_TOOLS[tool_name] if arguments.get(arg)],
