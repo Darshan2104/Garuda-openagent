@@ -50,11 +50,10 @@ async def execute(payload, control):
             session_record={**workspace_record, "flow_step": request["flow"]},
             external_approvals=request.get("external_approvals", False),
             approval=deny_all if request["no_edits"] else control.approve, emit=lambda *_a: None)
-        meta = store.load_meta(session_id)
         if workspace_record:
             store.update_meta(session_id, workspace_record)
         return {"session_id": session_id, "success": summary.get("status") == "completed",
-                "output": str(meta.get("final_message") or "")}
+                "output": str(summary.get("reply") or "")}
     raise ValueError("unsupported role kind")
 
 

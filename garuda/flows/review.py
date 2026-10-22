@@ -29,6 +29,13 @@ from dataclasses import dataclass, field
 SEVERITIES = ("blocker", "major", "minor", "nit")
 MAX_FINDINGS = 50
 MAX_FINDING_CHARS = 500
+#: How a reviewer is asked to write its block; :func:`parse` accepts nothing else.
+FORMAT = (
+    "The review block holds only plain lines, no Markdown: first `verdict: approve` "
+    "or `verdict: changes`, then `findings:`, then one finding per line as "
+    f"`- [{'|'.join(SEVERITIES)}] what is wrong and where`. "
+    "`verdict: changes` needs at least one finding; a blocker or major finding "
+    "requests changes.")
 _FINDING = re.compile(r"^-\s*\[(blocker|major|minor|nit)\]\s*(.+)$")
 
 

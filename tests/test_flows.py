@@ -454,6 +454,8 @@ def test_resuming_a_failed_flow_through_cli_runs_a_new_attempt(repo, monkeypatch
                       "--workspace", str(repo))
     assert code == 3 and "flow.step_failed" in out
     flow_id = next(m["session_id"] for m in SessionStore().list_sessions() if m.get("flow"))
+    assert json.dumps({"flow_session": flow_id, "state": "stopped",
+                       "code": "flow.step_failed"}) in out  # what `flow resume` needs
 
     async def build(launch):
         assert launch.attempt == 2

@@ -146,6 +146,9 @@ def _minimal_env() -> dict[str, str]:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", ""),
+        # The account name, not a credential: Claude Code on macOS keys its
+        # Keychain login by it and reports logged out without it.
+        "USER": os.environ.get("USER", ""),
         "LANG": "C.UTF-8",
     }
     return {k: v for k, v in env.items() if v}

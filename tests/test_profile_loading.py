@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from garuda.agents.loader import AgentProfile, list_profiles, load_profile, resolve_system_prompt
+from garuda.agents.loader import (
+    AgentProfile,
+    _defaults_dir,
+    _profile_names_in_dir,
+    load_profile,
+    resolve_system_prompt,
+)
 from garuda.agents.setup import prepare_agent_run
 from garuda.model.config import ConfigError
 from garuda.model.script_model import ScriptModel
@@ -197,7 +203,9 @@ def test_an_ambiguous_security_policy_refuses(tmp_path, body, fmt):
         load_profile("d", extra_dir=tmp_path)
 
 
-@pytest.mark.parametrize("name", list_profiles())
+# Packaged only: collection runs before the hermetic home, so a user's own
+# agents would otherwise be collected and then not found.
+@pytest.mark.parametrize("name", sorted(_profile_names_in_dir(_defaults_dir())))
 def test_packaged_profiles_load_cleanly_and_as_written(name, caplog):
     with caplog.at_level(logging.WARNING, logger="garuda.agents.loader"):
         profile = load_profile(name)

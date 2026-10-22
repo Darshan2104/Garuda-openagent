@@ -90,6 +90,17 @@ def test_invalid_reviews(text):
         rv.parse(text)
 
 
+async def test_the_reviewer_is_told_the_format_the_parser_accepts(repo):
+    script = Script([APPROVE])
+    await _run(repo, script, _config(max_rounds=0)).run()
+
+    prompt = script.prompts[("review", 1)]
+    assert rv.FORMAT in prompt
+    assert all(f"verdict: {v}" in rv.FORMAT for v in ("approve", "changes"))
+    assert all(severity in rv.FORMAT for severity in rv.SEVERITIES)
+    assert rv.FORMAT not in script.prompts[("build", 1)]
+
+
 async def test_only_the_reviewed_step_retries_until_approval(repo):
     script = Script([CHANGES, APPROVE])
     result = await _run(repo, script, _config(max_rounds=2)).run()
@@ -109,6 +120,41 @@ async def test_only_the_reviewed_step_retries_until_approval(repo):
             assert receipt["role_plan"]["runtime_id"] == "native"
             assert receipt["role_plan"]["model_id"] == "r/1"
     assert meta["state"]["verification"]["status"] == "unavailable"  # a review is not verification
+
+
+@pytest.mark.parametrize("reviews, stopped", [
+    (["looks good to me"], "flow.review_invalid"),
+    ([CHANGES], "flow.review_changes_requested"),
+])
+async def test_a_resume_never_completes_a_review_that_did_not_approve(repo, reviews, stopped):
+    first = await _run(repo, Script(reviews), _config(max_rounds=0)).run()
+    assert first.stopped.code == stopped
+
+    async def must_not_run(launch):
+        raise AssertionError(f"{launch.step_id} was replayed")
+
+    config = _config(max_rounds=0)
+    resolved = gy.resolve(gy.parse(config), None)
+    resumed = await FlowRunner(SessionStore(), repo, "pbr", resolved.config["flows"]["pbr"],
+                               resolved, task="t", launcher=must_not_run,
+                               flow_session=first.flow_session).run(resume=True)
+
+    assert resumed.stopped.code == "flow.review_unresolved"
+    assert SessionStore().load_meta(first.flow_session)["status"] == "failed"
+
+
+async def test_a_resume_after_approval_runs_nothing_again(repo):
+    first = await _run(repo, Script([APPROVE]), _config(max_rounds=0)).run()
+    assert first.completed
+
+    async def must_not_run(launch):
+        raise AssertionError(f"{launch.step_id} was replayed")
+
+    resolved = gy.resolve(gy.parse(_config(max_rounds=0)), None)
+    resumed = await FlowRunner(SessionStore(), repo, "pbr", resolved.config["flows"]["pbr"],
+                               resolved, task="t", launcher=must_not_run,
+                               flow_session=first.flow_session).run(resume=True)
+    assert resumed.completed
 
 
 async def test_max_rounds_two_means_at_most_three_pairs(repo):

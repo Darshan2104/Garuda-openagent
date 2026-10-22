@@ -859,7 +859,8 @@ async def run_acp_task(
                 store=store, events=events, selection=fallback
             ) from start_error
         if role_plan is not None:
-            applied = await runtime.set_config_options(role_options)
+            applied = await runtime.set_config_options(
+                role_options, adapter_version=getattr(record, "version", "unknown"))
             store.update_meta(session_id, {"role": role_plan.record(
                 adapter={"runtime_id": manifest.runtime_id,
                          "version": getattr(record, "version", "unknown")},
@@ -892,6 +893,9 @@ async def run_acp_task(
             "native_session_id": info.native_session_id,
             "turn": turn,
             "events": len(events),
+            # In memory only: flow artifacts and consult answers sit at the end
+            # of replies longer than the stored summary.
+            "reply": reply,
         }
     except asyncio.CancelledError:
         if began:

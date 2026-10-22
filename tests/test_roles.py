@@ -132,7 +132,7 @@ def fake_acp(tmp_path, monkeypatch):
     shim = bin_dir / "fake-acp-shim"
     shim.write_text(f"#!/bin/sh\nPYTHONPATH={shlex.quote(str(REPO))} exec "
                     f"{shlex.quote(sys.executable)} -m garuda.acp.fake_agent "
-                    '--profile config-options "$@"\n')
+                    '--profile config-options --agent-info \'{"version": "1"}\' "$@"\n')
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
@@ -142,10 +142,9 @@ def fake_acp(tmp_path, monkeypatch):
     return _repo(tmp_path / "ws")
 
 
-def _prove(monkeypatch):
-    for version in ("1", "unknown"):
-        monkeypatch.setitem(roles.PROVEN_OPTIONS, ("fakecfg", version),
-                            {"model_id": "model", "effort": "effort"})
+def _prove(monkeypatch, version="1"):
+    monkeypatch.setitem(roles.PROVEN_OPTIONS, ("fakecfg", version),
+                        {"model_id": "model", "effort": "effort"})
 
 
 def _run(monkeypatch, capsys, ws, *extra):
@@ -181,6 +180,19 @@ def test_a_model_the_agent_does_not_offer_refuses_before_the_prompt(fake_acp, mo
     assert "done:" not in out  # nothing was prompted
     (meta,) = SessionStore().list_sessions()
     assert meta["status"] == "failed"
+
+
+def test_an_adapter_reporting_another_version_refuses_before_the_prompt(
+        fake_acp, monkeypatch, capsys):
+    _prove(monkeypatch)
+    shim = fake_acp.parent / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace('"version": "1"', '"version": "2"'))
+    _user_file(ROLE.format(model="fake-large"))
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 1 and "role.adapter_mismatch" in out
+    assert "done:" not in out  # nothing was prompted
 
 
 def test_an_unproven_adapter_refuses_before_launch(fake_acp, monkeypatch, capsys):

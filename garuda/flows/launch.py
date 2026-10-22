@@ -35,9 +35,8 @@ async def _acp(launch: StepLaunch) -> StepResult:
         approval=deny_all if launch.no_edits else None, emit=lambda *_a: None,
         role_plan=plan, lease_capability=launch.capability, store=store,
     )
-    meta = store.load_meta(summary["session_id"])
     return StepResult(summary["session_id"], summary.get("status") == "completed",
-                      str(meta.get("final_message") or ""))
+                      str(summary.get("reply") or ""))
 
 
 async def _native(launch: StepLaunch) -> StepResult:

@@ -89,7 +89,10 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                         "Configure harnesses.<runtime>.confinement.image in your user garuda.yaml and install Docker; runtime preflight must still prove confinement.",
                         level="error"))
             try:
-                acp_options(plan, manifest.version)
+                # A probed version is known only at launch, which refuses an
+                # unproven one before anything is prompted.
+                if not manifest.version_args:
+                    acp_options(plan, manifest.version)
             except RoleRefused as exc:
                 unchecked.append(exc.code)
                 diagnostics.append(_diagnostic(exc.code, str(exc), "Use a proven adapter or remove unsupported model/effort options.", level="error"))

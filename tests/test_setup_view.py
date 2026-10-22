@@ -24,7 +24,10 @@ CONFIG = {
 
 
 @pytest.fixture
-def configured(tmp_path):
+def configured(tmp_path, monkeypatch):
+    # The roles' harnesses are absent here even on a machine where they are installed.
+    (tmp_path / "empty-bin").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
     path = gy.user_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(CONFIG))

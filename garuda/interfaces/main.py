@@ -1328,6 +1328,9 @@ def run_flow(args) -> int:
         print(f"[garuda] verification: {verification.get('status', 'unavailable')}{authority}")
     if result.stopped:
         print(f"[garuda] flow stopped: {result.stopped}", file=sys.stderr)
+        # The id `garuda flow show` and `garuda flow resume` need.
+        print(json.dumps({"flow_session": result.flow_session, "state": "stopped",
+                          "code": result.stopped.code}))
         return 3
     print(json.dumps({"flow_session": result.flow_session, "state": "completed"}))
     return 0

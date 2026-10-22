@@ -26,7 +26,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
-| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed |
+| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Agents | `garuda agent list` | Every agent, where it comes from, what it extends, and which ones a nearer file shadows |

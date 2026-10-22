@@ -503,12 +503,15 @@ class AcpRuntime:
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "resumed"})
         return self._info()
 
-    async def set_config_options(self, options: dict[str, str]) -> dict[str, str]:
+    async def set_config_options(self, options: dict[str, str], *,
+                                 adapter_version: str | None = None) -> dict[str, str]:
         """Apply exact session options before the first prompt (C.3).
 
         Each value must be one the agent offered in ``session/new``, and the
         agent's reply must show it selected; otherwise
         :class:`~garuda.runtime.roles.RoleRefused` and nothing is prompted.
+        ``adapter_version`` is the version the options were proven for; the
+        agent's ``initialize`` identity must report the same one.
         """
         from garuda.runtime.roles import RoleRefused, check_offered
 
@@ -516,6 +519,11 @@ class AcpRuntime:
             return {}
         if self._process is None or self._state is not LifecycleState.IDLE or self._turn:
             raise RuntimeNotActiveError("options are set once, before the first prompt")
+        reported = self._agent_info.get("version")
+        if adapter_version is not None and reported != adapter_version:
+            raise RoleRefused("role.adapter_mismatch",
+                              f"the agent reports version {reported!r} at initialize, but "
+                              f"{adapter_version!r} was checked before launch")
         check_offered(options, getattr(self._process, "session_config_options", []))
         applied = {}
         for config_id, value in options.items():

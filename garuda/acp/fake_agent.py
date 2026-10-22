@@ -151,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Append the session/new cwd to the default reply (launch-path tests).",
     )
+    parser.add_argument("--artifact-padding", type=int, default=0,
+                        help="Lengthen each `artifacts` block body by this many characters.")
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -261,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                     profile, call_id, params,
                     cwd=session_cwd if (args.report_cwd or profile in ("write-anyway",
                                                                         "probe-writes")) else None,
-                    state_file=args.state_file,
+                    state_file=args.state_file, artifact_padding=args.artifact_padding,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -282,7 +284,7 @@ def _options(config: dict) -> list[dict]:
 
 def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
-    state_file: str | None = None,
+    state_file: str | None = None, artifact_padding: int = 0,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
@@ -374,6 +376,8 @@ def _handle_prompt(
         for kind in kinds:
             body = "verdict: approve\nfindings:\n- [nit] fine" if kind == "review" else (
                 f"{kind} for: {text.splitlines()[0][:60]}")
+            if artifact_padding:
+                body += "\n" + "." * artifact_padding
             blocks.append(f'<garuda-artifact type="{kind}">\n{body}\n</garuda-artifact>')
         _update(session_id, {"sessionUpdate": "agent_message_chunk",
                              "content": _text("done.\n" + "\n".join(blocks))})

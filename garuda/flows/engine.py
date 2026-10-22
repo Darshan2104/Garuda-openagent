@@ -653,8 +653,16 @@ class FlowRunner:
             for r in existing:
                 tried[r["step"]] = max(tried.get(r["step"], 0), r.get("attempt", 0))
             steps = _steps(self.flow)
+            prior_review = ((await _settled_sync(self.store.load_meta, self.flow_session))
+                            .get("review") if resume else None) or {}
             for step in steps:
                 if step["id"] in completed_steps:
+                    # A receipt says the step ran, not that its reviewer approved it.
+                    if step.get("review") and prior_review.get("status") != "review_approved":
+                        raise FlowStopped(
+                            "flow.review_unresolved",
+                            f"{step['id']} has no approved review; a resume never treats it "
+                            "as reviewed, so start a new flow", step=steps[-1]["id"])
                     continue  # completed before a resume: never run again
                 if "parallel" in step:
                     attempt = tried.get(step["id"], 0) + 1

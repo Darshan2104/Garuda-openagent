@@ -487,6 +487,22 @@ def test_unavailable_readiness_is_visible_before_admission(configured, problem, 
     assert _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"])) == before
 
 
+def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured):
+    doc = gy.load_file(gy.user_path())
+    settings = {"runtimes": [{"runtime_id": "external", "kind": "acp", "version": "unknown",
+                              "command": [sys.executable],
+                              "version_args": [sys.executable, "--version"]}]}
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump(settings))
+    doc["roles"]["reviewer"]["harness"] = "external"
+    gy.user_path().write_text(gy.dump(doc))
+    rows = {row["id"]: row["readiness"] for row in StarterService().list(configured)}
+    state = rows["build-review"]
+    codes = {d["code"] for d in state["diagnostics"]}
+    assert "role.options_unproven" not in codes
+    assert "harness.not_checked" in codes
+    assert state["status"] == "ready" and state["can_run"] is True
+
+
 def test_single_harness_starters_and_explicit_build_check_keep_truthful_evidence(configured):
     doc = gy.load_file(gy.user_path())
     for role in doc["roles"].values():

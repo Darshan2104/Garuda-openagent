@@ -60,6 +60,10 @@ the local reconnect project; use the existing role/flow owners and your chosen
 harnesses. [Recipes](automate.md#run-a-multi-step-recipe) remain available for
 custom prompt sequences.
 
+[Worked example: Codex and Claude](codex-and-claude.md) runs every packaged
+workflow and two custom cross-vendor flows on two small projects, using only
+Codex and Claude Code subscription logins.
+
 ## Level 1 · Explore safely
 
 Read-only recipes. [Open Level 1 →](explore.md)

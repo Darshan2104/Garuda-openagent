@@ -1929,3 +1929,29 @@ no history approval. Smart-mode raw-key requests (`marker_polling: false`) go to
 whatever is running in the pane, so their history references require approval
 even behind allow prefixes. Panes require tmux 3.2 or newer (`new-session -e`);
 start refuses an older reported version instead of failing on an option error.
+
+
+## 2026-10-22 — Adapter identity for proven role options
+
+Built-in Claude Code and Codex manifests parse the adapter's own `--version`
+output, so launch binds role model/effort options to the version discovered for
+the executable it runs. Before the first prompt, the version the agent reports
+at ACP `initialize` must equal that discovered version, or the role refuses
+with `role.adapter_mismatch`. Starter readiness runs nothing, so for a manifest
+that probes its version it reports the option proof as checked at launch
+rather than refusing on the manifest's declared placeholder.
+
+Adapter subprocesses receive `USER` beside `PATH`, `HOME` and `LANG`. It names
+the account and carries no credential; Claude Code on macOS needs it to find
+its own Keychain login. Garuda still never reads, copies or forwards vendor
+tokens or provider API keys.
+
+
+## 2026-10-22 — A resume never completes an unapproved review
+
+Flow resume skips steps with receipts, but a reviewed step counts as finished
+only when the flow recorded `review_approved`. An invalid review, changes still
+requested after the last round, or a reviewer that never ran stops the resume
+with `flow.review_unresolved`; it is never replayed or treated as reviewed.
+Reviewer prompts state the exact block format the parser accepts, and the parser
+stays strict instead of guessing at Markdown or prose.

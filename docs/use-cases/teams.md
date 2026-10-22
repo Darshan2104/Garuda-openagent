@@ -193,9 +193,11 @@ sequenceDiagram
   `policy: waived`; unresolved configured evidence is labelled unknown, not an
   independent review. Actual launched and consulted identities remain recorded.
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
-  `garuda flow resume FLOW_ID` continues after the last finished step. An
-  unfinished protected check phase is classified without replay; incomplete or
-  uncertain publication requires reconciliation.
+  `garuda flow resume FLOW_ID` continues after the last finished step. A
+  reviewed step counts as finished only once its review approved it; otherwise
+  the resume stops with `flow.review_unresolved`. An unfinished protected check
+  phase is classified without replay; incomplete or uncertain publication
+  requires reconciliation.
 
 !!! warning "Native roles in flows: two current limitations"
     - A native step's output is the summary it passes to `task_complete`, so
@@ -220,6 +222,17 @@ sequenceDiagram
     ```
 
     Then set `agent: flow-plan` on the scout and planner roles.
+
+!!! warning "External roles in flows"
+    - A foreground flow answers no approval requests. Claude Code asks before
+      every edit, so as a coder it changes nothing and the step gives no
+      patch. Use it to plan or review; Codex edits inside its own sandbox and
+      works as a coder.
+    - Codex runs commands without asking, so a no-edits Codex step is only
+      checked afterwards. A test run that updates `.pytest_cache/` stops the
+      flow with `flow.no_edits_changed`. Give such roles instructions to leave
+      the workspace unchanged, as in the
+      [worked example](codex-and-claude.md#1-set-up-once).
 
 ## Write your own flow
 

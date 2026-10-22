@@ -290,9 +290,11 @@ python scripts/capture_usage_sources.py --out tests/fixtures/usage
 
 - Shipped manifests declare no credential-file login probe, so login often
   shows as `unknown`.
-- Adapter subprocesses get a minimal environment: `PATH`, `HOME`, and `LANG`.
-  Provider API-key variables and custom vendor config-directory variables are
-  not forwarded.
+- Adapter subprocesses get a minimal environment: `PATH`, `HOME`, `USER`, and
+  `LANG`. `USER` is the account name, not a credential: Claude Code on macOS
+  finds its Keychain login by it and reports logged out without it. Provider
+  API-key variables and custom vendor config-directory variables are not
+  forwarded.
 - Garuda drives its own ACP subset: initialize, session creation, prompt,
   cancel, normalized updates, and permission requests. Vendor-specific model
   lists, modes, images, and blocking extensions outside that subset aren't

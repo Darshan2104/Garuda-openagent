@@ -92,6 +92,28 @@ def test_version_probed_and_unknown_shown(tmp_path, monkeypatch):
     assert found.version == "unknown"
 
 
+@pytest.mark.parametrize("runtime_id,binary,output,version", [
+    ("codex", "codex-acp", "@agentclientprotocol/codex-acp 2.1.1\n", "2.1.1"),
+    ("claude", "claude-agent-acp", "0.85.0\n", "0.85.0"),
+])
+def test_builtin_manifests_discover_the_proven_adapter_version(
+        tmp_path, monkeypatch, runtime_id, binary, output, version):
+    import json
+
+    from garuda.acp.catalog import BUILTIN_DIR
+    from garuda.runtime.roles import PROVEN_OPTIONS
+
+    _fake_binary(tmp_path, name=binary, version_output=output)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ.get("PATH", ""))
+    with open(os.path.join(BUILTIN_DIR, f"{runtime_id}.json"), encoding="utf-8") as handle:
+        manifests = parse_global_manifests([json.load(handle)])
+
+    (found,) = [d for d in discover(manifests) if d.runtime_id == runtime_id]
+
+    assert found.version == version
+    assert (runtime_id, found.version) in PROVEN_OPTIONS
+
+
 def test_auth_probe_matching_and_unknown(tmp_path, monkeypatch):
     binary = _fake_binary(tmp_path, auth_output="logged in as tester")
     assert binary

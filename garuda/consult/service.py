@@ -524,4 +524,4 @@ async def acp_child(child: ChildRequest) -> ChildOutcome:
                  if key.startswith("approval:") and isinstance(record, dict)
                  and record.get("outcome") == "deny")
     return ChildOutcome(summary["session_id"], summary.get("status") == "completed",
-                        str(meta.get("final_message") or ""), denied)
+                        str(summary.get("reply") or ""), denied)
