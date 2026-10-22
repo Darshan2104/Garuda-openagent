@@ -22,11 +22,10 @@ from garuda.core.metrics import RunMetrics, stopwatch
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.plugins.hooks import HookRegistry
-from garuda.tools.discovery import UseToolTool
-from garuda.tools.protocol import Tool, ToolContext
+from garuda.tools.protocol import Tool, ToolContext, ToolDispatcher
 from garuda.types import Message, Role, ToolCall, ToolResult
 from garuda.workspace.health import EnvironmentUnavailableError
-from garuda.workspace.protocol import Environment
+from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,11 @@ def _missing_required_arguments(tool, arguments) -> str | None:
 
 
 @dataclass
+class _ResolvedToolCall(ToolCall):
+    tool: Tool
+
+
+@dataclass
 class ToolRunner:
     """Executes tool calls against the environment and folds results into the transcript."""
 
@@ -111,7 +115,7 @@ class ToolRunner:
     # -- gating ---------------------------------------------------------------
 
     async def screen(
-        self, call: ToolCall, turn: int, *, _dispatching: bool = False
+        self, call: ToolCall, turn: int, *, _dispatching: bool = False, _resolved_tool: Tool | None = None
     ) -> tuple[ToolCall | None, Message | None]:
         """Run permissions and before-hooks for one call.
 
@@ -139,7 +143,8 @@ class ToolRunner:
         if (hooked_call.name, hooked_call.arguments) != approved:
             # Approval of the original arguments never covers rewritten ones: the
             # final call needs its own decision, and must name a tool this run has.
-            if hooked_call.name not in self.tool_map:
+            if (hooked_call.name not in self.tool_map
+                    and (_resolved_tool is None or hooked_call.name != _resolved_tool.name)):
                 return None, Message(
                     role=Role.TOOL,
                     content=f"Tool call blocked: a hook rewrote it to unknown tool {hooked_call.name!r}",
@@ -149,8 +154,10 @@ class ToolRunner:
             denied = await self._authorize(hooked_call, turn)
             if denied is not None:
                 return None, denied
-        dispatcher = self.tool_map.get(hooked_call.name)
-        if isinstance(dispatcher, UseToolTool):
+        selected = (_resolved_tool if _resolved_tool is not None and hooked_call.name == _resolved_tool.name
+                    else self.tool_map.get(hooked_call.name))
+        dispatcher = selected
+        if isinstance(dispatcher, ToolDispatcher):
             if _dispatching:
                 return None, Message(role=Role.TOOL, content="Nested use_tool dispatch is not supported.",
                                      name=hooked_call.name, tool_call_id=call.id)
@@ -164,9 +171,10 @@ class ToolRunner:
             tool, arguments = resolved
             # Preserve the model's call id while giving hooks, events, memo and
             # side-effect accounting the concrete tool name and arguments.
-            self.tool_map[tool.name] = tool
             return await self.screen(ToolCall(id=call.id, name=tool.name, arguments=arguments),
-                                     turn, _dispatching=True)
+                                     turn, _dispatching=True, _resolved_tool=tool)
+        if _resolved_tool is not None and selected is _resolved_tool:
+            hooked_call = _ResolvedToolCall(hooked_call.id, hooked_call.name, hooked_call.arguments, selected)
         return hooked_call, None
 
     async def _authorize(self, call: ToolCall, turn: int) -> Message | None:
@@ -304,7 +312,7 @@ class ToolRunner:
 
     async def execute(self, call: ToolCall) -> ToolResult:
         """Look up and run one tool, shaping or buffering its output."""
-        tool = self.tool_map.get(call.name)
+        tool = call.tool if isinstance(call, _ResolvedToolCall) else self.tool_map.get(call.name)
         if tool is None:
             return ToolResult(
                 tool_call_id=call.id,
@@ -342,7 +350,7 @@ class ToolRunner:
             # Not a tool failure the model can route around — the workspace is
             # gone. Propagate so the run aborts instead of continuing blind.
             raise
-        except PermissionError as exc:
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(
                 tool_call_id=call.id,
                 content=self.context.shape_observation(str(exc), is_error=True),

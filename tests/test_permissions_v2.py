@@ -327,7 +327,11 @@ async def test_normalized_write_path_still_requires_approval(tmp_path, monkeypat
     assert allowed and len(asked) == 1
 
 
-@pytest.mark.parametrize("command", ["cat x#; cat .env", "cat x# && cat .env", "cat x#|cat .env"])
+@pytest.mark.parametrize("command", ["cat x#; cat .env", "cat x# && cat .env", "cat x#|cat .env",
+                                     "echo \"#\"; cat .env", r"echo \#; cat .env",
+                                     'echo "$(echo " # ")"; cat .env',
+                                     "echo $'a\\' # '; cat .env",
+                                     "echo ${name:- # }; cat .env"])
 async def test_hash_inside_word_does_not_hide_denied_paths(command):
     engine = PermissionEngine(path_rules={"deny": ["**/.env"]})
     allowed, _ = await engine.evaluate_tool_call("bash", {"command": command})
@@ -375,3 +379,40 @@ async def test_acceptance_path_ceiling_resolves_operands_against_check_cwd(tmp_p
     engine = PermissionEngine(mode="auto", path_rules={"deny": ["secrets/**"]}, workspace_root=tmp_path)
     decision, _ = engine.decide_acceptance({"command": "cat key", "cwd": "secrets"})
     assert decision == PermissionDecision.DENY
+
+
+@pytest.mark.parametrize("pattern", ["**/build/**", "*build*", "**/private/**"])
+@pytest.mark.parametrize("tool", ["read_file", "bash"])
+async def test_relative_rules_ignore_workspace_ancestors(tmp_path, pattern, tool):
+    root = tmp_path / "private" / "build" / "repo"
+    engine = PermissionEngine(workspace_root=root, path_rules={"deny": [pattern]})
+    args = {"path": str(root / "src/a.py")} if tool == "read_file" else {"command": "ls"}
+    assert (await engine.evaluate_tool_call(tool, args))[0]
+    denied = {"path": "build/key"} if tool == "read_file" else {"command": "cat build/key"}
+    if "build" in pattern:
+        assert not (await engine.evaluate_tool_call(tool, denied))[0]
+
+
+@pytest.mark.parametrize("command", ["ls # it's fine", "# don't skip\npytest -q", "ls;# it's fine"])
+async def test_apostrophes_in_shell_comments_do_not_require_approval(command):
+    assert (await PermissionEngine().evaluate_tool_call("bash", {"command": command}))[0]
+
+
+@pytest.mark.parametrize("absolute_rule", [False, True])
+async def test_real_workspace_aliases_keep_path_rules(tmp_path, absolute_rule):
+    root = tmp_path / "real"
+    root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    pattern = str(alias / "secrets/**") if absolute_rule else "secrets/**"
+    engine = PermissionEngine(workspace_root=alias, path_rules={"deny": [pattern]})
+    assert not (await engine.evaluate_tool_call("read_file", {"path": str(root / "secrets/k")}))[0]
+    assert (await engine.evaluate_tool_call("read_file", {"path": str(root / "src/a.py")}))[0]
+
+
+async def test_absolute_and_outside_rules_remain_effective(tmp_path):
+    root = tmp_path / "repo"
+    outside = tmp_path / "private/key"
+    engine = PermissionEngine(workspace_root=root, path_rules={"deny": [str(root / "key"), "**/private/**"]})
+    for path in ["key", str(root / "key"), str(outside), "../private/key"]:
+        assert not (await engine.evaluate_tool_call("read_file", {"path": path}))[0]

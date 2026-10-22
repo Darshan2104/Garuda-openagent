@@ -6,8 +6,9 @@ calls — matching how a developer's terminal behaves. Commands are framed with 
 unique end marker so output and the exit code are captured reliably; stderr is
 merged into stdout (a terminal shows both). On timeout the running command is
 interrupted (SIGINT to the process group); if the shell is wedged it is killed
-and respawned (state is lost on that failure path). Cancellation closes the
-process group before another call can run; that next call starts with fresh state.
+and respawned (state is lost on that failure path). Cancellation signals the
+live process group and settles the shell and pipes before another call can run;
+that next call starts with fresh state.
 """
 
 import asyncio
@@ -18,6 +19,7 @@ import time
 import uuid
 
 from garuda.types import ExecResult
+from garuda.workspace.settlement import settle_task
 
 
 class PersistentShell:
@@ -30,7 +32,10 @@ class PersistentShell:
 
     async def _ensure_started(self) -> None:
         if self._cleanup_pending:
-            raise RuntimeError("Previous shell cleanup is incomplete; refusing another command")
+            try:
+                await self.close()
+            except Exception as exc:
+                raise RuntimeError("Previous shell cleanup is incomplete; refusing another command") from exc
         if self._proc is not None and self._proc.returncode is None:
             return
         launch = asyncio.create_task(asyncio.create_subprocess_exec(
@@ -49,12 +54,7 @@ class PersistentShell:
         except asyncio.CancelledError as cancelled:
             # Retain ownership even when cancellation races process creation.
             try:
-                while not launch.done():
-                    try:
-                        await asyncio.shield(launch)
-                    except asyncio.CancelledError:
-                        continue
-                self._proc = launch.result()
+                self._proc = await settle_task(launch)
             except Exception as exc:
                 raise cancelled from exc
             raise
@@ -68,12 +68,7 @@ class PersistentShell:
                 # the lock. The next call starts a fresh shell, never a stale read.
                 cleanup = asyncio.create_task(self.close())
                 try:
-                    while not cleanup.done():
-                        try:
-                            await asyncio.shield(cleanup)
-                        except asyncio.CancelledError:
-                            continue
-                    cleanup.result()
+                    await settle_task(cleanup)
                 except Exception as exc:
                     raise cancelled from exc
                 raise
@@ -138,7 +133,7 @@ class PersistentShell:
             lines.append(line)
 
     def _signal(self, sig: int) -> None:
-        if self._proc is not None:
+        if self._proc is not None and self._proc.returncode is None:
             try:
                 os.killpg(self._proc.pid, sig)
             except (ProcessLookupError, PermissionError):
@@ -161,8 +156,21 @@ class PersistentShell:
         self._signal(signal.SIGKILL)
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+        except TimeoutError:
+            if self._proc.returncode is None:
+                raise  # Exit is still unproved; retain ownership for a retry.
+            # The leader was reaped, but an escaped descendant retains stdout.
+            # asyncio Process.wait() can wait for pipe EOF even after exit.
         except ProcessLookupError:
             pass
+        # Close owned pipes even if the leader exited before close() was called.
+        # Process exposes no public pipe-close API; use its subprocess transport.
+        # A recorded exit prevents signaling the leader's reusable process-group id.
+        transport = self._proc._transport
+        for fd in (0, 1, 2):
+            pipe = transport.get_pipe_transport(fd)
+            if pipe is not None:
+                pipe.close()
         self._proc = None
         self._cleanup_pending = False
 

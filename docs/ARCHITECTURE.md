@@ -47,20 +47,32 @@ Smart command screening checks the original text and a continuation-joined form.
 Tokenization uncertainty requires approval; recognized dangerous commands still
 refuse even when a later heredoc or malformed quote confuses the scanner.
 Read-only screening also refuses tree's recursive HTML file generation (`-R`).
-Path rules compare literal and lexically normalized workspace-relative and
-absolute spellings, including operands relative to a command's explicit `cwd`.
+Path rules compare normalized workspace-relative paths, including physical aliases
+of the workspace root and operands relative to a command's explicit `cwd`.
+Relative patterns never match ancestor directories above an in-workspace path;
+absolute patterns still match absolute paths, and outside paths retain literal
+and absolute screening. Simple shell comments start only at word boundaries;
+expansions, shell-specific quoting and heredocs retain conservative scanning.
 The active root is scoped to each async run and restored on exit, so concurrent
 runs can share a policy without changing each other's path decisions.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.
+`WorkspaceAccessDenied` marks workspace-policy refusals; ordinary OS access errors
+remain tool errors and are not counted as policy denials.
 Lazy `use_tool` calls resolve into the shared runner before target hooks, required
-arguments, memo, ledger and event handling. The parallel runner reclassifies calls
+arguments, memo, ledger and event handling. Resolved tools remain bound to that
+call instead of expanding the run's direct tool map. Null lazy arguments retain
+the no-argument-call behavior. The parallel runner reclassifies calls
 after hooks; a batch containing a rewritten mutation runs sequentially.
 Stateless local cancellation settles readers and retains cleanup failures as the
 original cancellation's cause rather than replacing the cancellation outcome.
-Persistent-shell cancellation closes the process group while holding the command
-lock, discards the interrupted frame and starts a new shell on the next call.
-Failed cleanup refuses further commands until cleanup succeeds.
+Persistent-shell cancellation signals the live process group while holding the
+command lock, reaps the shell, closes its pipes and discards the interrupted
+frame. The next call starts a new shell.
+Cleanup retries before another command when exit is unproved. A reaped shell
+with retained pipes releases those pipes after the drain deadline. Process groups
+are signaled only while the shell has no recorded exit status. Repeated cancellation settles through
+`workspace/settlement.py` in both local execution modes.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.

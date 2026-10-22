@@ -8,6 +8,7 @@ from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.paths import resolve_workspace_path
+from garuda.workspace.settlement import settle_task
 
 
 def _kill_process_tree(process: "asyncio.subprocess.Process") -> None:
@@ -143,14 +144,7 @@ class LocalEnvironment:
         except asyncio.CancelledError as cancelled:
             cleanup = asyncio.create_task(_cancel_execution(launch, readers))
             try:
-                while True:
-                    try:
-                        await asyncio.shield(cleanup)
-                        break
-                    except asyncio.CancelledError:
-                        if cleanup.done():
-                            cleanup.result()
-                            break
+                await settle_task(cleanup)
             except Exception as exc:
                 # Keep cancellation as the public outcome without losing the
                 # evidence that process cleanup could not be confirmed.

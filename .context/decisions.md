@@ -1895,3 +1895,18 @@ engines cannot overwrite another run's root. Symlink targets and broad shell res
 Persistent-shell cancellation closes the owned process group before releasing its
 command lock; the next command gets a fresh shell, and unconfirmed cleanup refuses
 reuse. No permission check is described as a confinement boundary.
+
+
+## 2026-10-22 — Path policy scope and explicit access refusals
+
+Relative path patterns apply to workspace-relative lexical and physical paths,
+including alternate spellings of symlinked workspace roots. Host ancestors of an
+in-workspace file do not participate in relative pattern matching. Explicit
+absolute patterns and outside-path screening retain their scope.
+
+Workspace backends raise `WorkspaceAccessDenied` for their own access policies;
+OS `PermissionError` remains an ordinary tool failure, not policy-denial evidence.
+Lazy dispatch binds the selected tool to one screened call without changing the
+run's direct tool inventory. Persistent shell cleanup retries unproved exit,
+closes retained pipes after confirmed exit, and signals process groups only while
+the shell has no recorded exit status. These remain runtime guardrails, not confinement.

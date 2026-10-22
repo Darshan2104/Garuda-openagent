@@ -134,3 +134,10 @@ def domain_allowed(url: str, domains) -> bool:
 
     host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in domains)
+
+
+@runtime_checkable
+class ToolDispatcher(Tool, Protocol):
+    """A meta-tool whose concrete target must enter the runner lifecycle."""
+
+    def resolve(self, arguments: dict, ctx: ToolContext) -> tuple[Tool, dict] | ToolResult: ...

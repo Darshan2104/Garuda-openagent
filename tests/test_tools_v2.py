@@ -365,3 +365,19 @@ async def test_todo_rejects_bad_status(tmp_path: Path):
         CTX,
     )
     assert result.is_error
+
+
+async def test_os_file_access_error_is_not_a_workspace_policy_refusal(tmp_path):
+    import os
+
+    path = tmp_path / "unreadable.txt"
+    path.write_text("private")
+    path.chmod(0)
+    try:
+        if os.access(path, os.R_OK):
+            pytest.skip("effective user can read chmod 000 files")
+        result = await ReadFileTool().execute({"path": path.name}, LocalEnvironment(tmp_path), CTX)
+        assert result.is_error
+        assert not result.metadata.get("permission_denied")
+    finally:
+        path.chmod(0o600)

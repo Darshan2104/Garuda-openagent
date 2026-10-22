@@ -167,6 +167,8 @@ async def test_cancellation_during_shell_launch_reaps_the_created_process(tmp_pa
         await asyncio.wait_for(launched.wait(), timeout=5)
         task.cancel()
         await asyncio.sleep(0)  # deliver cancellation while launch is still pending
+        task.cancel()  # another cancellation must not abandon the pending launch
+        await asyncio.sleep(0)
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5)
@@ -183,7 +185,7 @@ async def test_cancellation_during_shell_launch_reaps_the_created_process(tmp_pa
                 await proc.wait()
 
 
-async def test_unconfirmed_cancel_cleanup_preserves_cancellation_and_refuses_reuse(tmp_path, monkeypatch):
+async def test_unconfirmed_cleanup_refuses_reuse_until_exit_can_be_confirmed(tmp_path, monkeypatch):
     import asyncio
 
     from garuda.workspace.shell import PersistentShell
@@ -209,9 +211,63 @@ async def test_unconfirmed_cancel_cleanup_preserves_cancellation_and_refuses_reu
         with pytest.raises(RuntimeError, match="cleanup is incomplete"):
             await shell.run("touch must-not-run")
         assert not (tmp_path / "must-not-run").exists()
+        monkeypatch.setattr(proc, "wait", real_wait)
+        assert (await shell.run("echo recovered")).stdout.strip() == "recovered"
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         if real_wait is not None:
-            monkeypatch.setattr(shell._proc, "wait", real_wait)
+            monkeypatch.setattr(proc, "wait", real_wait)
+        await shell.close()
+
+
+async def test_close_reaped_shell_never_signals_its_reusable_group(tmp_path, monkeypatch):
+    import asyncio
+    import os
+
+    from garuda.workspace.shell import PersistentShell
+
+    shell = PersistentShell(str(tmp_path))
+    await shell.run("true")
+    proc = shell._proc
+    proc.stdin.write(b"exit\n")
+    await asyncio.wait_for(proc.wait(), 3)
+    signals = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    await shell.close()
+    assert not signals
+
+
+async def test_close_recovers_when_escaped_child_retains_stdout(tmp_path):
+    import asyncio
+    import os
+    import shlex
+    import signal
+    import sys
+
+    from garuda.workspace.shell import PersistentShell
+
+    # A child in another session can retain stdout after the shell is killed.
+    child_code = (
+        "import os,time; from pathlib import Path; os.setsid(); "
+        "Path('child.pid.tmp').write_text(str(os.getpid())); "
+        "os.replace('child.pid.tmp', 'child.pid'); time.sleep(30)"
+    )
+    shell = PersistentShell(str(tmp_path))
+    child_pid = None
+    try:
+        await shell.run(f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} &")
+        async with asyncio.timeout(5):
+            while not (tmp_path / "child.pid").exists():
+                await asyncio.sleep(0.01)
+        child_pid = int((tmp_path / "child.pid").read_text())
+        await asyncio.wait_for(shell.close(), 8)
+        result = await shell.run("echo recovered")
+        assert result.stdout.strip() == "recovered"
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         await shell.close()

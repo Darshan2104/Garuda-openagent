@@ -113,7 +113,7 @@ class DefaultAgent:
         collection_policy=None,
         allowed_tool_effects=None,
     ) -> AgentResult:
-        with permission_workspace(env.workspace_root):
+        with permission_workspace(getattr(env, "workspace_root", None)):
             state = await prepare_run(
                 task=task,
                 profile_name=self._profile_name,
