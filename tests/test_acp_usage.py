@@ -194,3 +194,23 @@ def test_a_snapshot_never_assigns_an_unreported_model(ledger):
     AcpUsageNormalizer(ledger).ingest(report(1, 100, 10))
     (record,) = ledger.records()
     assert "model" not in record  # the adapter did not name one; the selected role's is not borrowed
+
+
+def test_an_external_turns_usage_report_is_recorded_as_a_snapshot(ledger, tmp_path):
+    from garuda.core.sessions import SessionStore
+    from garuda.observability.usage import record_acp_usage
+
+    store = SessionStore(root=tmp_path / "sessions")
+    store.begin(session_id="acp-1", task="t", model="acp:claude/sonnet", agent="claude",
+                workspace="/tmp")
+    usage = {"context_used": 21224, "context_size": 1000000, "cost_usd": 0.04,
+             "model": "claude-sonnet-5-5"}
+
+    (record,) = record_acp_usage(store, "acp-1", runtime_id="claude", adapter_version="0.85.0",
+                                 segment="native-1", usage=usage, ledger=ledger)
+
+    assert record["kind"] == "acp_usage_snapshot"
+    assert (record["model"], record["context_used"], record["cost_usd"]) == (
+        "claude-sonnet-5-5", 21224, 0.04)
+    summary = totals(list(ledger.records()))
+    assert (summary["snapshots_excluded"], summary["cost_usd"]) == (1, 0.0)  # never summed

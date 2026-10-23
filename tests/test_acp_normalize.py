@@ -161,3 +161,19 @@ def test_diagnostics_are_redacted_and_scoped():
     # Full PEM blocks (not just headers) are scrubbed from diagnostics.
     assert "MIIEpAIBAAKCAQEA7bq3fakekeybody" not in trail[1]["raw"]
     assert "BEGIN RSA PRIVATE KEY" not in trail[1]["raw"]
+
+
+@pytest.mark.parametrize("update, usage", [
+    ({"sessionUpdate": "usage_update", "used": 15197, "size": 258400},
+     {"context_used": 15197, "context_size": 258400}),
+    ({"sessionUpdate": "usage_update", "used": 21224, "size": 1000000,
+      "cost": {"amount": 0.04, "currency": "USD"}, "_meta": {"_claude/model": "claude-sonnet-5-5"}},
+     {"context_used": 21224, "context_size": 1000000, "cost_usd": 0.04,
+      "model": "claude-sonnet-5-5"}),
+    ({"sessionUpdate": "usage_update", "used": -1, "size": "big",
+      "cost": {"amount": 3, "currency": "EUR"}, "_meta": {"_claude/model": ["x"]}}, {}),
+])
+def test_usage_updates_keep_only_plain_numbers_and_the_reported_model(update, usage):
+    (event,) = _normalizer().feed(update)
+    assert event.kind is RuntimeEventKind.MESSAGE
+    assert event.payload == {"text": "", "acp_update": "usage_update", "usage": usage}

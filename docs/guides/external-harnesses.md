@@ -252,7 +252,7 @@ there is no documented source, or proving one needs a prompt.
 | Plan usage windows (used fraction, window, reset) | Unknown: no documented non-interactive interface (`/usage` is interactive) | Supported: `codex app-server` `account/rateLimits/read`, a 300-minute and a 10,080-minute window, each with `usedPercent` and `resetsAt` |
 | Limit-reached signal | Unknown | Declared: `rateLimitReachedType` field (not observed at a limit) |
 | Limit data from the ACP adapter | Unknown: none advertised | Unknown: none advertised |
-| Per-turn or cumulative token usage | Unknown: needs a prompt | Unknown: needs a prompt |
+| Per-turn or cumulative token usage | Unknown: the adapter reports context occupancy, not per-turn tokens | Unknown: the adapter reports context occupancy, not per-turn tokens |
 
 For native API providers, LiteLLM 1.87 forwards provider rate-limit headers
 (`x-ratelimit-*`, and every header as `llm_provider-*`) in a response's
@@ -288,8 +288,10 @@ python scripts/capture_usage_sources.py --out tests/fixtures/usage
 
 ## Environment and protocol limits
 
-- Shipped manifests declare no credential-file login probe, so login often
-  shows as `unknown`.
+- Claude Code and Codex manifests check login with the CLI's own status command
+  (`claude auth status --json`, `codex login status`); only the conclusion is
+  kept. Other shipped manifests declare no login check, so login shows as
+  `unknown`.
 - Adapter subprocesses get a minimal environment: `PATH`, `HOME`, `USER`, and
   `LANG`. `USER` is the account name, not a credential: Claude Code on macOS
   finds its Keychain login by it and reports logged out without it. Provider
@@ -323,11 +325,14 @@ and worked; **declared** means it is advertised but not proven here;
 | `session/resume` | Declared | Declared | Start a linked session from a brief |
 | Stdio MCP servers in `session/new` | Supported (an `mcpServers` list is accepted) | Supported | No MCP tools for that session |
 | HTTP MCP servers | Declared | Declared | Not used |
-| `usage_update` accounting | Unknown: needs a prompt | Unknown: needs a prompt | Usage shows as `unknown` |
+| Permission mode selection | Supported: id `mode`; every value (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) selected and reported back | Supported: id `mode`; every value (`read-only`, `workspace-write`, `agent`, `agent-full-access`) selected and reported back | The harness keeps its own mode; a named mode refuses |
+| `usage_update` accounting | Context snapshot each turn: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt | Context snapshot each turn: `used`, `size` | Recorded as snapshots, never summed or counted as turns |
 
 Both adapters also advertise permission modes that bypass approval (Claude
 `bypassPermissions`, Codex `agent-full-access`). Garuda never selects these
-on its own.
+on its own; a role may name one only under `permissions: yolo`. See
+[A role's harness mode](configuration.md#a-roles-harness-mode) for every mode,
+what it needs and the defaults.
 
 The captures are kept as redacted fixtures under `tests/fixtures/acp/`. To
 record another version, run the opt-in capture. It sends no prompt:

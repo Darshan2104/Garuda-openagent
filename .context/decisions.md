@@ -1955,3 +1955,28 @@ requested after the last round, or a reviewer that never ran stops the resume
 with `flow.review_unresolved`; it is never replayed or treated as reviewed.
 Reviewer prompts state the exact block format the parser accepts, and the parser
 stays strict instead of guessing at Markdown or prose.
+
+
+## 2026-10-23 — External roles run in an authorized harness mode
+
+An ACP role may name one of its harness's own permission modes (`harness_mode`,
+or `garuda run --harness-mode` for one run). Each mode has a minimum Garuda
+ceiling: a mode that cannot write needs `readonly`; one that edits the
+workspace and asks for risky actions (Claude Code `acceptEdits`, Codex
+`workspace-write` and `agent`) needs `smart`; one where the agent decides every
+permission needs `auto`; one that approves everything needs `yolo`. A no-edits
+step admits only a mode that cannot write. Anything above the ceiling, or a mode
+Garuda cannot classify, refuses before launch.
+
+Without a named mode, a proven adapter gets the mode its step allows (Claude
+Code `acceptEdits` and Codex `agent` for `smart` edits; `default` and
+`read-only` for no-edits). Garuda never selects a mode that approves everything,
+and an unproven adapter keeps its own default. Modes are proven per adapter
+version by selecting every advertised value without a prompt. The mode that ran
+is recorded on the session. A harness mode is the vendor's own control, not
+Garuda confinement.
+
+An external harness's `usage_update` is recorded as a ledger snapshot (context
+occupancy, a harness-estimated cost, a reported model); it is never summed or
+counted as a turn. Claude Code and Codex login is read from each CLI's own
+status command, and only the conclusion is kept.

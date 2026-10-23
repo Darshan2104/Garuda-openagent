@@ -55,7 +55,11 @@ with sync_playwright() as p:
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     page.goto(f"{BASE}#/runtimes", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    # Discovery probes each installed harness, so the list can take longer than a fixed wait.
+    try:
+        page.wait_for_selector("#rt-table tbody tr", timeout=15000)
+    except Exception:
+        pass  # the row check below reports it
 
     # --- list renders real rows -------------------------------------------
     rows = page.query_selector_all("#rt-table tbody tr")
@@ -65,31 +69,43 @@ with sync_playwright() as p:
     check("configured offline runtime listed", "offline" in body_text)
     check("disabled runtime listed", "disabled" in body_text)
 
+    def answered(selector, before):
+        """Wait for ``selector`` to change: discovery runs per request, so a fixed wait races it."""
+        for _ in range(75):
+            page.wait_for_timeout(200)
+            if (page.text_content(selector) or "") != before:
+                page.wait_for_timeout(200)  # let the view finish re-rendering
+                return
+
     # --- select swaps the detail pane --------------------------------------
+    before = page.text_content("#rt-detail") or ""
     page.click('#rt-table a[data-rt="native"]')
-    page.wait_for_timeout(800)
+    answered("#rt-detail", before)
     detail = page.text_content("#rt-detail") or ""
     check("detail shows capabilities", "capabilities" in detail.lower(), detail[:80])
 
     # --- handoff preview then prepare ---------------------------------------
     page.fill("#rt-handoff-session", SID)
     page.fill("#rt-handoff-target", "native")
+    before = page.text_content("#rt-handoff-result") or ""
     page.click("#rt-handoff-preview")
-    page.wait_for_timeout(800)
+    answered("#rt-handoff-result", before)
     preview = page.text_content("#rt-handoff-result") or ""
     check("preview shows source and confirm", "native" in preview and "confirm" in preview.lower(),
           preview[:100])
+    before = page.text_content("#rt-handoff-result") or ""
     page.click("#rt-handoff-prepare")
-    page.wait_for_timeout(800)
+    answered("#rt-handoff-result", before)
     prepared = page.text_content("#rt-handoff-result") or ""
     check("prepare reports prepared state", "prepared" in prepared, prepared[:100])
 
     # Invalid targets must be rejected before any handoff package is written.
     for target in ("offline", "missing-runtime"):
         expected_not_found_errors += 1
+        before = page.text_content("#rt-handoff-result") or ""
         page.fill("#rt-handoff-target", target)
         page.click("#rt-handoff-preview")
-        page.wait_for_timeout(800)
+        answered("#rt-handoff-result", before)
         refused = page.text_content("#rt-handoff-result") or ""
         check(f"preview rejects {target}", "request failed" in refused.lower(), refused[:120])
 

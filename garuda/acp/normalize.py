@@ -106,6 +106,7 @@ class AcpNormalizer:
             "agent_thought_chunk": self._on_thought_chunk,
             "tool_call": self._on_tool_call,
             "tool_call_update": self._on_tool_call_update,
+            "usage_update": self._on_usage,
         }.get(kind, self._on_unknown)
         return handler(update)
 
@@ -223,6 +224,29 @@ class AcpNormalizer:
                 )
             )
         return events
+
+    def _on_usage(self, update: dict[str, Any]) -> list[RuntimeEvent]:
+        """Context occupancy, with the cost and model when the harness reports them.
+
+        Only plain numbers and the reported model name are kept: a snapshot to show,
+        never a billable call count (:mod:`garuda.observability.acp_usage`).
+        """
+        usage = {}
+        for field, key in (("used", "context_used"), ("size", "context_size")):
+            value = update.get(field)
+            if type(value) is int and value >= 0:
+                usage[key] = value
+        cost = update.get("cost")
+        if isinstance(cost, dict) and cost.get("currency") == "USD" and isinstance(
+                cost.get("amount"), (int, float)) and not isinstance(cost["amount"], bool) \
+                and cost["amount"] >= 0:
+            usage["cost_usd"] = float(cost["amount"])
+        meta = update.get("_meta")
+        model = meta.get("_claude/model") if isinstance(meta, dict) else None
+        if isinstance(model, str) and 0 < len(model) <= 128:
+            usage["model"] = model
+        return [self._emit(RuntimeEventKind.MESSAGE,
+                           {"text": "", "acp_update": "usage_update", "usage": usage})]
 
     def _on_unknown(self, update: dict[str, Any]) -> list[RuntimeEvent]:
         # `plan`, `available_commands_update`, `current_mode_update`,

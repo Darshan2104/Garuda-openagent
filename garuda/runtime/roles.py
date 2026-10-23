@@ -15,6 +15,12 @@ names are resolved once, in interactive setup, and saved as the exact id).
   must still offer the exact id in its ``session/new`` options; a missing or
   changed id, an unproven adapter, or an unproven effort refuses before the
   prompt.
+- An ACP role also runs in one of its harness's own permission modes
+  (``harness_mode``, :func:`harness_mode`). Each mode needs a minimum Garuda
+  permission ceiling, and a no-edits step only a mode that cannot write. A
+  role that names none gets the mode its ceiling allows (:data:`DEFAULT_MODES`)
+  on a proven adapter, and the adapter's own default elsewhere. Garuda never
+  selects a mode that bypasses approval by itself.
 
 The chosen ids and the adapter identity are recorded on the session.
 """
@@ -34,8 +40,30 @@ if TYPE_CHECKING:
 #: the A.3 captures in tests/fixtures/acp/ where `session/set_config_option`
 #: was exercised and accepted.
 PROVEN_OPTIONS: dict[tuple[str, str], dict[str, str]] = {
-    ("claude", "0.85.0"): {"model_id": "model", "effort": "effort"},
-    ("codex", "2.1.1"): {"model_id": "model", "effort": "reasoning_effort"},
+    ("claude", "0.85.0"): {"model_id": "model", "effort": "effort", "harness_mode": "mode"},
+    ("codex", "2.1.1"): {"model_id": "model", "effort": "reasoning_effort",
+                         "harness_mode": "mode"},
+}
+
+#: Garuda permission ceilings, least to most authority.
+LEVELS = ("readonly", "smart", "auto", "yolo")
+#: Each harness mode and the lowest ceiling that may select it, from the
+#: adapters' own descriptions (tests/fixtures/acp/). A mode that cannot write
+#: needs ``readonly``; one that edits the workspace and asks before risky
+#: actions, ``smart`` (Codex ``agent`` asks only for actions it judges unsafe,
+#: as smart does); one where the agent decides every permission itself,
+#: ``auto``; one that approves everything, ``yolo``.
+MODE_AUTHORITY: dict[str, dict[str, str]] = {
+    "claude": {"default": "readonly", "plan": "readonly", "acceptEdits": "smart",
+               "auto": "auto", "bypassPermissions": "yolo"},
+    "codex": {"read-only": "readonly", "workspace-write": "smart", "agent": "smart",
+              "agent-full-access": "yolo"},
+}
+#: The mode a role gets when it names none, by the most its step may do. Never
+#: a mode that bypasses approval.
+DEFAULT_MODES: dict[str, dict[str, str]] = {
+    "claude": {"readonly": "default", "smart": "acceptEdits", "auto": "auto", "yolo": "auto"},
+    "codex": {"readonly": "read-only", "smart": "agent", "auto": "agent", "yolo": "agent"},
 }
 
 
@@ -55,6 +83,8 @@ class RolePlan:
     permissions: str | None = None
     write_policy: str = "edits"
     profile: str | None = None
+    #: The harness's own permission mode the role asked for; ``None`` for the default.
+    harness_mode: str | None = None
     digest: str = ""
     provenance: dict = field(default_factory=dict)
     #: The user's harness settings (allowed models, confinement image).
@@ -78,7 +108,8 @@ class RolePlan:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
                "model_id": self.model_id, "effort": self.effort,
                "permissions": self.permissions, "write_policy": self.write_policy,
-               "profile": self.profile, "digest": self.digest, "provenance": self.provenance}
+               "profile": self.profile, "harness_mode": self.harness_mode,
+               "digest": self.digest, "provenance": self.provenance}
         if self.fallback is not None:
             out["fallback"] = self.fallback
         if self.agent_digest is not None:
@@ -115,23 +146,54 @@ def plan_role(resolved, catalog) -> RolePlan | None:
         sort_keys=True).encode()).hexdigest()
     keys = [k for k in resolved.provenance if k == f"roles.{resolved.role}"
             or k == "defaults.role" or k == f"harnesses.{spec['harness']}"]
-    return RolePlan(
+    plan = RolePlan(
         role=resolved.role, runtime_id=manifest.runtime_id, kind=kind,
         identity_registry=catalog.registry,
         model_id=spec.get("model_id"), effort=spec.get("effort"),
         permissions=spec.get("permissions"), write_policy=spec.get("write_policy", "edits"),
-        profile=spec.get("profile"), digest=digest,
+        profile=spec.get("profile"), harness_mode=spec.get("harness_mode"), digest=digest,
         provenance={k: resolved.provenance[k] for k in keys},
         harness=resolved.config.get("harnesses", {}).get(spec["harness"], {}),
     )
+    harness_mode(plan)  # a mode the role may not use refuses before anything starts
+    return plan
 
 
-def acp_options(plan: RolePlan, adapter_version: str) -> dict[str, str]:
-    """The ``session/set_config_option`` settings for an ACP role, or a refusal."""
+def harness_mode(plan: RolePlan, *, no_edits: bool = False) -> str | None:
+    """The harness permission mode to select for ``plan``, or ``None`` to leave
+    the adapter's own; refuses a mode the role or step may not use."""
+    ceiling = plan.permissions or "smart"
+    limit = "readonly" if no_edits or plan.write_policy == "no-edits" else ceiling
+    if plan.harness_mode is None:
+        return DEFAULT_MODES.get(plan.runtime_id, {}).get(limit)
+    needed = MODE_AUTHORITY.get(plan.runtime_id, {}).get(plan.harness_mode)
+    if needed is None:
+        raise RoleRefused("role.mode_unknown",
+                          f"Garuda does not know what {plan.harness_mode!r} allows on "
+                          f"{plan.runtime_id}, so it cannot check it against the role")
+    if LEVELS.index(needed) > LEVELS.index(limit):
+        where = "a no-edits step" if limit == "readonly" and ceiling != "readonly" else (
+            f"permissions: {ceiling}")
+        raise RoleRefused("role.mode_exceeds_permissions",
+                          f"{plan.harness_mode} on {plan.runtime_id} needs permissions: "
+                          f"{needed} or higher, more than {where} allows")
+    return plan.harness_mode
+
+
+def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False) -> dict[str, str]:
+    """The ``session/set_config_option`` settings for an ACP role, or a refusal.
+
+    A mode the role names needs a proven adapter like any option; a default
+    mode is applied only where modes are proven.
+    """
     wanted = {k: v for k, v in (("model_id", plan.model_id), ("effort", plan.effort)) if v}
+    proven = PROVEN_OPTIONS.get((plan.runtime_id, adapter_version))
+    mode = harness_mode(plan, no_edits=no_edits)
+    if mode is not None and (plan.harness_mode is not None
+                             or "harness_mode" in (proven or {})):
+        wanted["harness_mode"] = mode
     if not wanted:
         return {}
-    proven = PROVEN_OPTIONS.get((plan.runtime_id, adapter_version))
     if proven is None:
         raise RoleRefused(
             "role.options_unproven",

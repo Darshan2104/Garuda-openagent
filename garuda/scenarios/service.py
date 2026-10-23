@@ -15,7 +15,7 @@ from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import review
 from garuda.runtime.registry import RegistryError
-from garuda.runtime.roles import RoleRefused, acp_options
+from garuda.runtime.roles import RoleRefused, acp_options, harness_mode
 from garuda.scenarios.catalog import load_catalog
 from garuda.scenarios.compile import LaunchContext, compile_with_context, resolve_launch, workspace_path
 from garuda.scenarios.inputs import validate_inputs
@@ -88,11 +88,13 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                         f"{name}: read-only ACP requires a configured confinement image and Docker executable",
                         "Configure harnesses.<runtime>.confinement.image in your user garuda.yaml and install Docker; runtime preflight must still prove confinement.",
                         level="error"))
+            run_no_edits = bool(context.kind == "run" and entry.launch.get("no_edits"))
             try:
+                harness_mode(plan, no_edits=run_no_edits)
                 # A probed version is known only at launch, which refuses an
                 # unproven one before anything is prompted.
                 if not manifest.version_args:
-                    acp_options(plan, manifest.version)
+                    acp_options(plan, manifest.version, no_edits=run_no_edits)
             except RoleRefused as exc:
                 unchecked.append(exc.code)
                 diagnostics.append(_diagnostic(exc.code, str(exc), "Use a proven adapter or remove unsupported model/effort options.", level="error"))

@@ -173,7 +173,8 @@ def _candidate(value, path) -> dict:
 
 def _role(value, path) -> dict:
     data = _mapping(value, path, ("harness", "model_id", "effort", "permissions", "write_policy",
-                                  "profile", "agent", "fallback", "consult", "description"))
+                                  "profile", "agent", "fallback", "consult", "description",
+                                  "harness_mode"))
     out: dict[str, Any] = {"harness": _name(data.get("harness"), f"{path}.harness")}
     if "model_id" in data:
         out["model_id"] = _str(data["model_id"], f"{path}.model_id")
@@ -194,6 +195,8 @@ def _role(value, path) -> dict:
         out["profile"] = agent
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
+    if "harness_mode" in data:  # the harness's own permission mode, checked per harness
+        out["harness_mode"] = _str(data["harness_mode"], f"{path}.harness_mode")
     if "fallback" in data:
         if not isinstance(data["fallback"], list):
             _fail(f"{path}.fallback", "must be a list")

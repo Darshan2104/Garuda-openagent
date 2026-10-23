@@ -460,6 +460,48 @@ changed id, or an unproven adapter, refuses before anything is prompted. A
 role with no model or effort runs on any adapter version. The role, the ids
 set and the adapter version are recorded on the session.
 
+### A role's harness mode
+
+An external harness has its own permission modes. `harness_mode` picks one for
+a role, and `garuda run --role NAME --harness-mode MODE` overrides it for one
+run. Each mode needs a minimum Garuda `permissions` level. A no-edits step only
+allows a mode that cannot write, and Garuda refuses anything above that before
+launch (`role.mode_exceeds_permissions`).
+
+| Needs | Claude Code (`claude`) | Codex (`codex`) |
+|---|---|---|
+| `readonly` (cannot write) | `default` (asks before every change), `plan` | `read-only` (asks before edits) |
+| `smart` (edits the workspace) | `acceptEdits` | `workspace-write`, `agent` (asks only for actions it judges unsafe) |
+| `auto` (the agent decides permissions) | `auto` | — |
+| `yolo` (approves everything) | `bypassPermissions` | `agent-full-access` |
+
+A role that names no mode gets one from what its step may do:
+
+| The step may | Claude Code | Codex |
+|---|---|---|
+| Not edit (`no-edits`, or `permissions: readonly`) | `default` | `read-only` |
+| Edit with `permissions: smart` | `acceptEdits` | `agent` |
+| Edit with `permissions: auto` or `yolo` | `auto` | `agent` |
+
+Garuda never chooses a mode that approves everything; you name it yourself
+under `permissions: yolo`. Defaults apply only on adapter versions where modes
+are proven (Claude Code adapter 0.85.0, Codex adapter 2.1.1); elsewhere the
+harness keeps its own default, and a named mode refuses. The mode that ran is
+recorded on the session with the model and effort.
+
+```yaml
+roles:
+  claude-coder: {harness: claude, model_id: sonnet, permissions: smart}          # acceptEdits
+  careful-coder: {harness: claude, model_id: sonnet, harness_mode: default}      # asks for each edit
+  codex-sandboxed: {harness: codex, model_id: MODEL_ID, harness_mode: workspace-write}
+```
+
+A foreground flow or headless run answers no approval requests, so a mode that
+asks (`default`, `read-only`) denies each edit or command it asks about. Codex
+ends its turn when it is refused a command it needs, which fails the step with
+the denied action named. Use an asking mode when you answer approvals yourself:
+`garuda run --role NAME` in an interactive terminal asks you about each request.
+
 ### A role's agent
 
 `roles.<name>.agent: careful-coder` runs the role under an [agent definition](agents.md)

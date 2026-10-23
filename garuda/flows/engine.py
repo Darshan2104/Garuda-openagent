@@ -76,6 +76,8 @@ class StepResult:
     success: bool
     output: str
     closure: dict | None = None
+    #: Why the step's agent stopped, when it failed rather than finished.
+    error: str = ""
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -1054,7 +1056,8 @@ class FlowRunner:
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
         if stop is None and not outcome.success:
-            stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete",
+            stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete"
+                               + (f": {outcome.error}" if outcome.error else ""),
                                step=step["id"])
         if stop is None:
             produced = art.extract(outcome.output)

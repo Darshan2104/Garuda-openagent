@@ -1,9 +1,5 @@
 {
   "adapter_command": [
-    "npx",
-    "-y",
-    "-p",
-    "@agentclientprotocol/codex-acp",
     "codex-acp"
   ],
   "capabilities": {
@@ -12,11 +8,12 @@
     "load_session": "declared",
     "mcp_http": "declared",
     "mcp_stdio": "supported",
+    "mode_selection": "supported",
     "model_selection": "supported",
     "resume_session": "declared",
     "usage_update": "unknown"
   },
-  "captured_at": "2026-10-01T21:42:16+00:00",
+  "captured_at": "2026-10-22T18:09:40+00:00",
   "client_protocol_version": 1,
   "exercised": {
     "close_session": {
@@ -118,11 +115,6 @@
                 "description": "Older fast and efficient model.",
                 "name": "5.6 Luna",
                 "value": "gpt-5.6-luna"
-              },
-              {
-                "description": "Legacy coding model.",
-                "name": "5.5",
-                "value": "gpt-5.5"
               }
             ],
             "type": "select"
@@ -193,6 +185,17 @@
     "load_session": {
       "ok": false,
       "reply": "AcpProtocolError: agent error -32603: Internal error"
+    },
+    "mode_selection": {
+      "id": "mode",
+      "method": "session/set_config_option",
+      "restored": "agent",
+      "selected": {
+        "agent": true,
+        "agent-full-access": true,
+        "read-only": true,
+        "workspace-write": true
+      }
     },
     "model_selection": {
       "method": "session/set_config_option",
@@ -289,11 +292,6 @@
                 "description": "Older fast and efficient model.",
                 "name": "5.6 Luna",
                 "value": "gpt-5.6-luna"
-              },
-              {
-                "description": "Legacy coding model.",
-                "name": "5.5",
-                "value": "gpt-5.5"
               }
             ],
             "type": "select"
@@ -439,7 +437,7 @@
       "jsonrpc": "2.0",
       "method": "session/update",
       "params": {
-        "sessionId": "01a0f96b-71ae-7c80-b338-ca105c854300",
+        "sessionId": "01a164cd-f9e2-7083-8ba7-cafc88804908",
         "update": {
           "availableCommands": [
             {
@@ -528,6 +526,106 @@
               "name": "$kimi-webbridge"
             },
             {
+              "description": "Create a spreadsheet using the Analytics Dashboard template and its retained reference file. Use when the user selects or names Analytics Dashboard. Monitor acquisition, engagement, retention, revenue, and conversion funnel KPIs with charts.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-analytics-dashboard"
+            },
+            {
+              "description": "Create a presentation using the Business Review template and its retained reference file. Use when the user selects or names Business Review. Review business performance, KPIs, segment results, strategic priorities, decisions, and outlook.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-business-review"
+            },
+            {
+              "description": "Create a document using the Design Report template and its retained reference file. Use when the user selects or names Design Report. Produce design reports with an executive summary, key findings, implications, recommendations, and appendix.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-design-report"
+            },
+            {
+              "description": "Create a document using the Experiment Analysis template and its retained reference file. Use when the user selects or names Experiment Analysis. Analyze experiments with hypotheses, methodology, results, interpretation, limitations, and next steps.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-experiment-analysis"
+            },
+            {
+              "description": "Create a spreadsheet using the Financial Budget template and its retained reference file. Use when the user selects or names Financial Budget. Model actuals, budget and scenario forecasts, variances, cash runway, and departmental plans.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-financial-budget"
+            },
+            {
+              "description": "Create a document using the Investment Committee Memo template and its retained reference file. Use when the user selects or names Investment Committee Memo. Prepare investment committee memos with the thesis, transaction details, financial analysis, risks, and recommendation.",
+              "input": null,
+              "name": "$openai-templates:<redacted>"
+            },
+            {
+              "description": "Create a document using the Legal Memorandum template and its retained reference file. Use when the user selects or names Legal Memorandum. Draft legal memoranda with the issue, brief answer, relevant facts, analysis, and conclusion.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-legal-memorandum"
+            },
+            {
+              "description": "Create a presentation using the Market Trends Report template and its retained reference file. Use when the user selects or names Market Trends Report. Communicate market or industry trends, supporting evidence, implications, and recommended responses.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-market-trends-report"
+            },
+            {
+              "description": "Create a document using the Minimal Letterhead template and its retained reference file. Use when the user selects or names Minimal Letterhead. Write professional business letters with sender, recipient, message, and signature fields in a minimal letterhead layout.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-minimal-letterhead"
+            },
+            {
+              "description": "Create a spreadsheet using the Operating Calendar template and its retained reference file. Use when the user selects or names Operating Calendar. Plan annual and monthly operating milestones, campaigns, launches, deadlines, and recurring events.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-operating-calendar"
+            },
+            {
+              "description": "Create a presentation using the Operating Review template and its retained reference file. Use when the user selects or names Operating Review. Run weekly operating reviews with scorecards, functional updates, risks, decisions, and action items.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-operating-review"
+            },
+            {
+              "description": "Create a presentation using the Project Kickoff template and its retained reference file. Use when the user selects or names Project Kickoff. Align teams on project goals, scope, roles, milestones, risks, and the working model.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-project-kickoff"
+            },
+            {
+              "description": "Create a spreadsheet using the Project Tracker template and its retained reference file. Use when the user selects or names Project Tracker. Manage workstreams, tasks, owners, status, priority, dates, launch pulse, and a Gantt schedule.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-project-tracker"
+            },
+            {
+              "description": "Create a spreadsheet using the Sales Pipeline template and its retained reference file. Use when the user selects or names Sales Pipeline. Track opportunities, stages, owners, deal sizes, probabilities, forecasts, next steps, and risks.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-sales-pipeline"
+            },
+            {
+              "description": "Create a presentation using the Simple Dark Mode template and its retained reference file. Use when the user selects or names Simple Dark Mode. Create clean dark-mode presentations with bold typography, simple sections, charts, and imagery.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-simple-dark-mode"
+            },
+            {
+              "description": "Create a presentation using the Simple Light Mode template and its retained reference file. Use when the user selects or names Simple Light Mode. Create clean light-mode presentations with spacious typography, simple sections, charts, and imagery.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-simple-light-mode"
+            },
+            {
+              "description": "Create a document using the Strategy Memorandum template and its retained reference file. Use when the user selects or names Strategy Memorandum. Present strategic context, choices, rationale, risks, milestones, and a clear recommendation.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-strategy-memorandum"
+            },
+            {
+              "description": "Create a document using the System Design template and its retained reference file. Use when the user selects or names System Design. Document system architecture, requirements, components, data flows, APIs, tradeoffs, and operational considerations.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-system-design"
+            },
+            {
+              "description": "Create a presentation using the Team Alignment template and its retained reference file. Use when the user selects or names Team Alignment. Facilitate team offsites and planning with context, goals, priorities, decisions, and action items.",
+              "input": null,
+              "name": "$openai-templates:artifact-template-team-alignment"
+            },
+            {
+              "description": "Create a spreadsheet using the Three-Statement Forecast template and its retained reference file. Use when the user selects or names Three-Statement Forecast. Build an integrated income statement, balance sheet, and cash flow forecast with assumptions, checks, and an executive summary.",
+              "input": null,
+              "name": "$openai-templates:<redacted>"
+            },
+            {
               "description": "Use when you're operating OpenRig and need the right skill or context for fleet recovery, seat handover, new-seat orientation, a watchdog wake, cross-host reach to an agent on another machine, rig packaging, an OpenRig upgrade, systematic debugging, queue triage, or implementation planning; also use when you don't know what applies or nothing is projected on cold boot.",
               "input": null,
               "name": "$openrig-skills"
@@ -543,19 +641,44 @@
               "name": "$phoenix-tracing"
             },
             {
+              "description": "Discover and suggest relevant plugins, inspect app permissions and dependencies, and manage plugin connections or removal. Use when the user asks about plugins or when a task would materially benefit from an external app, account, service, or data source that available tools cannot access.",
+              "input": null,
+              "name": "$plugin-management:plugin-management"
+            },
+            {
               "description": "Run a pre-merge readiness review that combines standard code-review methods with selector-vs-enforcer checks, adversarial mutation of gates, identity/ manifest coverage, claim-vs-mechanism audits, and CI/acceptance gates. Use when the user asks for pre-merge review, merge readiness, /pre-merge-review, \"is this PR ready to merge\", or a final review before merge after addressing reviewer feedback.",
               "input": null,
               "name": "$pre-merge-review"
             },
             {
-              "description": "Guidance for creating, updating, and optimizing Agent Skills \u2014 modular skill folders (a SKILL.md plus optional scripts/references/assets) that give an agent procedural knowledge for a specific task or domain. Use this whenever someone wants to build a new skill, turn a repeated workflow into a reusable skill, improve or refactor an existing skill, fix a skill that isn't triggering reliably, or write and critique a SKILL.md and its description \u2014 even if they don't say the word \"skill\" explicitly. Prefer updating a closely related existing skill over creating a near-duplicate.",
+              "description": "Use Sites when the user wants a website built for them (including a landing page, portfolio, dashboard, portal, tracker, hub, game, event registration, or tool), requests changes to a website already built with Sites, wants to publish a website with Sites, or wants to manage Sites hosting.",
               "input": null,
-              "name": "$skill-creator"
+              "name": "$sites:sites"
+            },
+            {
+              "description": "Remix a Site built with the Sites plugin into a new Site. Use when the user has identified the source Site and asks to remix it.",
+              "input": null,
+              "name": "$sites:sites-remix"
             },
             {
               "description": "Invoke whenever writing, changing, reviewing, or sweeping tests. Authoring gate for new tests plus audit workflow for low-value, implementation-coupled, or duplicative tests and the test-only production seams they demand.",
               "input": null,
               "name": "$test-audit"
+            },
+            {
+              "description": "Create, repair, validate, preview, upload, or activate an animated v2 pet in ChatGPT Work mode from a character idea, brand cue, or reference image. Use for new ChatGPT Pets, custom mascots, non-pixel styles, and unattached sprite sheets requiring nine animation states plus sixteen look directions. Preserve Library artifacts and Pets MCP lifecycle behavior. Exclude real pets, standalone images, and other-app pets; clarify before invoking.",
+              "input": null,
+              "name": "$work-pets:create-pet"
+            },
+            {
+              "description": "List, inspect, select, download, or delete animated pets in ChatGPT Work mode. Use for an explicit pet in ChatGPT or established ChatGPT Pets context. Exclude real-world and other-app pets; clarify before invoking.",
+              "input": null,
+              "name": "$work-pets:pets"
+            },
+            {
+              "description": "Inspect, validate, preview, repair, or update a custom pet in ChatGPT Work mode, including its name, description, or sprite sheet. Use for a pet in ChatGPT or established ChatGPT Pets context. Exclude real-world and other-app pets; clarify before invoking.",
+              "input": null,
+              "name": "$work-pets:update-pet"
             },
             {
               "description": "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
@@ -571,6 +694,11 @@
               "description": "Perform a read-only, defect-first review of a specified code change and return every actionable finding. Use when another agent delegates review of uncommitted changes, a base-branch diff, a commit, or custom review instructions.",
               "input": null,
               "name": "$review-agent"
+            },
+            {
+              "description": "Create or update a skill",
+              "input": null,
+              "name": "$skill-creator"
             },
             {
               "description": "Install curated skills from openai/skills or other repos",
@@ -677,11 +805,6 @@
             "description": "Older fast and efficient model.",
             "name": "5.6 Luna",
             "value": "gpt-5.6-luna"
-          },
-          {
-            "description": "Legacy coding model.",
-            "name": "5.5",
-            "value": "gpt-5.5"
           }
         ],
         "type": "select"
@@ -948,26 +1071,6 @@
           "description": "Older fast and efficient model. Maximum reasoning depth for the hardest problems",
           "modelId": "gpt-5.6-luna[max]",
           "name": "5.6 Luna (max)"
-        },
-        {
-          "description": "Legacy coding model. Fast responses with lighter reasoning",
-          "modelId": "gpt-5.5[low]",
-          "name": "5.5 (low)"
-        },
-        {
-          "description": "Legacy coding model. Balances speed and reasoning depth for everyday tasks",
-          "modelId": "gpt-5.5[medium]",
-          "name": "5.5 (medium)"
-        },
-        {
-          "description": "Legacy coding model. Greater reasoning depth for complex problems",
-          "modelId": "gpt-5.5[high]",
-          "name": "5.5 (high)"
-        },
-        {
-          "description": "Legacy coding model. Extra high reasoning depth for complex problems",
-          "modelId": "gpt-5.5[xhigh]",
-          "name": "5.5 (xhigh)"
         }
       ],
       "currentModelId": "gpt-5.6-sol[high]"
@@ -997,7 +1100,7 @@
       ],
       "currentModeId": "agent"
     },
-    "sessionId": "01a0f96b-71ae-7c80-b338-ca105c854300"
+    "sessionId": "01a164cd-f9e2-7083-8ba7-cafc88804908"
   },
   "session_summary": {
     "config_options": [
@@ -1035,8 +1138,7 @@
           "gpt-6-luna",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
-          "gpt-5.6-luna",
-          "gpt-5.5"
+          "gpt-5.6-luna"
         ]
       },
       {
@@ -1105,11 +1207,7 @@
         "gpt-5.6-luna[medium]",
         "gpt-5.6-luna[high]",
         "gpt-5.6-luna[xhigh]",
-        "gpt-5.6-luna[max]",
-        "gpt-5.5[low]",
-        "gpt-5.5[medium]",
-        "gpt-5.5[high]",
-        "gpt-5.5[xhigh]"
+        "gpt-5.6-luna[max]"
       ],
       "current": "gpt-5.6-sol[high]"
     },

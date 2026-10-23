@@ -1505,7 +1505,10 @@ class TrajectoryReader:
 
     def __init__(self, path: str | Path) -> None:
         resolved = find_events_file(path)
-        self._path = Path(resolved) if resolved else Path(path)
+        # A session directory with no log yet (a run that has not written one, or
+        # an external harness's session) reads as empty, never as the directory.
+        self._path = (Path(resolved) if resolved else
+                      Path(path) / "events.jsonl" if Path(path).is_dir() else Path(path))
         self._tail = EventTail(self._path)
         self._events: list[dict[str, Any]] = []
         self._run: Run | None = None

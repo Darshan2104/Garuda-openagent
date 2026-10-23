@@ -298,6 +298,13 @@ def build_parser():
         "stop it with `garuda sessions cancel`",
     )
     run_parser.add_argument(
+        "--harness-mode",
+        metavar="MODE",
+        help="Run the selected external role in this mode of its harness for this run, such "
+        "as Claude Code's acceptEdits or Codex's read-only; it must fit the role's "
+        "permissions (needs --role or defaults.role)",
+    )
+    run_parser.add_argument(
         "--no-edits",
         action="store_true",
         help="Ask the run not to change the workspace: edits and commands are refused and any "
@@ -1139,11 +1146,20 @@ def _apply_role(args, resolved, catalog):
     import sys
 
     from garuda.config.garuda_yaml import PERMISSIONS
-    from garuda.runtime.roles import plan_role
+    from garuda.runtime.roles import RoleRefused, harness_mode, plan_role
 
     plan = plan_role(resolved, catalog) if resolved is not None else None
+    requested_mode = getattr(args, "harness_mode", None)
     if plan is None:
+        if requested_mode:
+            raise RoleRefused("role.mode_needs_role",
+                              "--harness-mode applies to a role; select one with --role")
         return None
+    if requested_mode:
+        from dataclasses import replace
+
+        plan = replace(plan, harness_mode=requested_mode)
+        harness_mode(plan, no_edits=bool(getattr(args, "no_edits", False)))
     from garuda.agents.fallbacks import choose
 
     plan = choose(plan, resolved, catalog)  # once, before anything starts (C.9)
@@ -1168,7 +1184,7 @@ def _apply_role(args, resolved, catalog):
         args.permission_mode = plan.permissions if given is None else min(
             given, plan.permissions, key=PERMISSIONS.index)
     out = sys.stderr if getattr(args, "json", False) else sys.stdout
-    detail = " · ".join(str(v) for v in (plan.model_id, plan.effort) if v)
+    detail = " · ".join(str(v) for v in (plan.model_id, plan.effort, plan.harness_mode) if v)
     print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
           file=out)
     for skipped in (plan.fallback or {}).get("skipped", []):
@@ -1787,6 +1803,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             # A no-edits role's requests to edit or run commands are refused
             # (and recorded); its output is held until the workspace is checked.
             approval=deny_all if no_edits else interactive_approval(),
+            no_edits=no_edits,
             emit=held.append if no_edits else print,
             initial_selection=getattr(args, "_initial_selection", None),
             initial_plan=getattr(args, "_initial_plan", None),
@@ -1806,6 +1823,17 @@ async def run_acp_command(args, task: str, catalog) -> int:
         print(f"Error: {exc}")
         return 1
     args._completed_session_id = summary["session_id"]
+    if getattr(args, "trajectory", None):
+        # An external harness's trajectory is the trail Garuda recorded of it: event
+        # kinds, turns and request digests, never the harness's own messages.
+        import shutil
+
+        from garuda.core.sessions import SessionStore
+
+        trail = (getattr(args, "_store", None) or SessionStore()).session_dir(
+            summary["session_id"]) / "acp-events.jsonl"
+        if trail.is_file():
+            shutil.copyfile(trail, args.trajectory)
     if guard is not None:
         if not _finish_no_edits(args, guard, summary.get("session_id")).unchanged:
             return 3

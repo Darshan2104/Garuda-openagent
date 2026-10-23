@@ -19,6 +19,15 @@ function outcomeClass(value) {
   return "chip-off";
 }
 
+/* The engine records `status` (review_approved, review_changes_requested, review_not_independent)
+ * and how many rounds it took. */
+function reviewLabel(review) {
+  if (review.verdict || review.outcome) return review.verdict || review.outcome;
+  if (!review.status) return "recorded";
+  var label = review.status.replace(/^review_/, "").replace(/_/g, " ");
+  return review.rounds ? label + " after " + review.rounds + " round" + (review.rounds === 1 ? "" : "s") : label;
+}
+
 function verificationChip(v) {
   v = v || {};
   var text = v.status || "unknown";
@@ -112,7 +121,7 @@ function flowHtml(flow) {
   return (
     '<section class="flow" id="flow-detail"><h2>Flow ' + esc(flow.name) + " " + chip("flow", flow.state, "chip-off") + "</h2>" +
     // A review is advice about the work. It has its own badge and never says "verified".
-    (review ? '<p id="flow-review">' + chip("review", review.verdict || review.outcome || "recorded", "chip-off") +
+    (review ? '<p id="flow-review">' + chip("review", reviewLabel(review), "chip-off") +
               ' <span class="stat-sub">a review is not verification</span></p>' : "") +
     '<ol class="steps">' + flow.steps.map(function (step) {
       return '<li class="step" data-step="' + esc(step.id) + '"><strong>' + esc(step.id) + "</strong>" +
@@ -414,7 +423,11 @@ function conversationPanelHtml(c) {
             "<th>Calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
           : '<p class="stat-sub">No model calls recorded.</p>') +
     (used.snapshots.length ? '<p class="stat-sub" id="snapshots-note">Context snapshots (occupancy, not billable usage): ' +
-      used.snapshots.map(function (s) { return esc((s.context_used === null ? "?" : s.context_used) + "/" + (s.context_size === null ? "?" : s.context_size)); }).join(", ") + "</p>" : "") +
+      used.snapshots.map(function (s) {
+        return esc((s.context_used === null ? "?" : s.context_used) + "/" + (s.context_size === null ? "?" : s.context_size) +
+          (s.model ? " · reported " + s.model : "") +
+          (typeof s.cost_usd === "number" ? " · harness-estimated $" + s.cost_usd.toFixed(4) : ""));
+      }).join(", ") + "</p>" : "") +
     (c.selected.fallback && c.selected.fallback.taken && c.selected.fallback.taken.index ?
       '<p class="stat-sub" id="fallback-note">Started on ' + esc(c.selected.fallback.taken.harness) + " after " +
       esc((c.selected.fallback.skipped || []).map(function (s) { return s.harness + " (" + s.reason + ")"; }).join(", ")) + ".</p>" : "") +
@@ -508,6 +521,8 @@ function setupView() {
     var roles = s.roles.map(function (r) {
       return '<tr class="role-row" data-role="' + esc(r.role) + '"><td>' + esc(r.role) + "</td><td>" + esc(r.harness) + "</td><td>" +
         esc(r.model_id || "—") + "</td><td>" + esc(r.effort || "—") + "</td><td>" +
+        esc((r.permissions || "smart") + " / " + (r.write_policy || "edits")) + "</td><td>" +
+        esc(r.harness_mode || "by permissions") + "</td><td>" + esc(r.agent || "—") + "</td><td>" +
         (r.fallback.length ? r.fallback.map(function (f) { return esc(f.harness + (f.model_id ? "/" + f.model_id : "")); }).join(" → ") : "—") +
         "</td><td>" + esc(r.source || "") + "</td></tr>";
     }).join("");
@@ -521,7 +536,7 @@ function setupView() {
       '<div id="setup-root"><div class="page-head"><h1>Setup</h1><span class="meta">read-only</span></div>' +
       '<p class="stat-sub">Files: ' + esc(s.files.user) + " (yours), " + esc(s.files.project) + " (this project).</p>" +
       '<div class="card"><h2>Diagnostics</h2><ul class="diagnostics" id="setup-diagnostics">' + diagnostics + "</ul></div>" +
-      '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
+      '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Permissions / writes</th><th>Harness mode</th><th>Agent</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
       setupAgentsHtml(s.agents) + setupConsultsHtml(s.consults) +
       '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +

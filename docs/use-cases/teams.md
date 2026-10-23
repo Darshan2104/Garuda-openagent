@@ -224,14 +224,15 @@ sequenceDiagram
     Then set `agent: flow-plan` on the scout and planner roles.
 
 !!! warning "External roles in flows"
-    - A foreground flow answers no approval requests. Claude Code asks before
-      every edit, so as a coder it changes nothing and the step gives no
-      patch. Use it to plan or review; Codex edits inside its own sandbox and
-      works as a coder.
-    - Codex runs commands without asking, so a no-edits Codex step is only
-      checked afterwards. A test run that updates `.pytest_cache/` stops the
-      flow with `flow.no_edits_changed`. Give such roles instructions to leave
-      the workspace unchanged, as in the
+    - A foreground flow answers no approval requests, so each external step
+      runs in a [harness mode](../guides/configuration.md#a-roles-harness-mode)
+      that fits it: a Claude Code coder in `acceptEdits`, a Codex coder in
+      `agent`, and no-edits steps in Claude Code's `default` and Codex's
+      `read-only`. A mode that asks has each request denied.
+    - Codex ends its turn when it is refused a command it needs, such as a test
+      run in `read-only` mode. The step fails with the denied action named
+      (`flow.step_failed`). Give no-edits roles instructions to read rather
+      than run commands that write, as in the
       [worked example](codex-and-claude.md#1-set-up-once).
 
 ## Write your own flow

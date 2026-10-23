@@ -136,6 +136,8 @@ class AcpRuntime:
         self._quota: dict[str, Any] | None = None
         self._consult_host = None
         self._agent_info: dict[str, Any] = {}
+        #: Actions denied this turn, named when the agent then ends the turn cancelled.
+        self._denied: list[str] = []
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -564,6 +566,7 @@ class AcpRuntime:
         self._normalizer.new_turn()
         self._move(LifecycleState.RUNNING)
         self._turn += 1
+        self._denied = []
         self._record_outbound_prompt(text)
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
@@ -617,7 +620,9 @@ class AcpRuntime:
             await self._close_process()
             self._move(LifecycleState.CANCELLING)
             self._move(LifecycleState.CLOSED)
-            raise AcpCancelledError("agent ended the turn cancelled")
+            denied = ", ".join(dict.fromkeys(self._denied))
+            raise AcpCancelledError("agent ended the turn cancelled" + (
+                f" after Garuda denied: {denied}" if denied else ""))
         self._move(LifecycleState.IDLE)
         return self._turn
 
@@ -727,6 +732,8 @@ class AcpRuntime:
         except (RuntimeProtocolError, RuntimeStartError, AcpError):
             # Already answered, cancelled, or the process is gone.
             return
+        if not allowed:
+            self._denied.append(action)
         # The runtime has the answer: a broker decision records its delivery (B.8).
         acknowledge = getattr(decision, "acknowledge", None)
         if acknowledge is not None:

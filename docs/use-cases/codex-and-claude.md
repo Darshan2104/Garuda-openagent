@@ -1,10 +1,10 @@
 # Worked example: Codex and Claude Code together
 
-This page runs every packaged workflow, plus two custom flows, on two small
+This page runs every packaged workflow, plus three custom flows, on two small
 projects using only subscription logins: Codex (ChatGPT) and Claude Code. A
-bigger Codex model plans and reviews, a smaller one scouts and codes, and Claude
-Sonnet plans or reviews across vendors. Each section shows the command and what
-happened when it was run.
+bigger Codex model plans and reviews, and a smaller one scouts and codes.
+Claude Sonnet plans, builds or reviews across vendors. Each section shows the
+command, what happened when it ran, and where to see it in the dashboard.
 
 !!! note "Tested with"
     Codex adapter `@agentclientprotocol/codex-acp` 2.1.1 (`gpt-6.1-sol` and
@@ -16,8 +16,9 @@ happened when it was run.
 ## 1. Set up once
 
 Install the adapter versions on which Garuda has proven it can set a role's
-model and effort. A newer adapter refuses a role with `model_id` or `effort`
-(`role.options_unproven`) before anything is prompted.
+model, effort and [harness mode](../guides/configuration.md#a-roles-harness-mode).
+A newer adapter refuses a role that names any of them (`role.options_unproven`)
+before anything is prompted.
 
 ```bash
 npm install -g @agentclientprotocol/codex-acp@2.1.1 @agentclientprotocol/claude-agent-acp@0.85.0
@@ -27,9 +28,10 @@ garuda doctor --runtime codex
 garuda doctor --runtime claude
 ```
 
-`garuda doctor` should show `codex 2.1.1` and `claude 0.85.0`. Garuda never reads
-either login. Don't set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when you mean
-to use the subscriptions.
+`garuda doctor` should show `codex 2.1.1 … logged in` and
+`claude 0.85.0 … logged in`. Garuda reads only the status commands' answers,
+never either login. Don't set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when you
+mean to use the subscriptions.
 
 Save the roles and flows below as your user `garuda.yaml`. `garuda doctor`
 prints the path it reads: normally `~/.agent/garuda.yaml`, or
@@ -50,9 +52,10 @@ roles:
   coder:    {harness: codex, model_id: gpt-5.6-sol, effort: high, permissions: smart}
   reviewer: {harness: codex, model_id: gpt-6.1-sol, effort: high, permissions: smart,
              write_policy: no-edits, agent: read-only}
-  # Claude Code: a second vendor that plans or reviews Codex's work.
+  # Claude Code: a second vendor that plans, builds or reviews.
   claude-planner:  {harness: claude, model_id: sonnet, effort: high, permissions: smart,
                     write_policy: no-edits, agent: read-only}
+  claude-coder:    {harness: claude, model_id: sonnet, effort: high, permissions: smart}
   claude-reviewer: {harness: claude, model_id: sonnet, effort: high, permissions: smart,
                     write_policy: no-edits, agent: read-only}
 flows:
@@ -70,12 +73,24 @@ flows:
       - {id: build, role: coder, inputs: [plan], outputs: [patch],
          review: {by: reviewer, max_rounds: 2}}
       - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
+  claude-builds:
+    description: Codex plans, Claude builds, Codex reviews and can send it back.
+    steps:
+      - {id: plan, role: planner, write_policy: no-edits, outputs: [plan]}
+      - {id: build, role: claude-coder, inputs: [plan], outputs: [patch],
+         review: {by: reviewer, max_rounds: 2}}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
 ```
 
 The Claude adapter offers model aliases (`sonnet`, `opus`, `haiku`), not full
 IDs, so `sonnet` is the exact value to use. Each reviewer runs as a different
 harness and model from the role it reviews, so every review is
 [independent](teams.md#run-a-plan-build-review-flow).
+
+No role names a `harness_mode`, so each runs in the mode its step allows: a
+Claude coder in `acceptEdits`, a Codex coder in `agent`, and every no-edits
+step in Claude's `default` or Codex's `read-only`. Section 5 shows how to
+switch.
 
 The no-edits roles use a small [agent definition](../guides/agents.md). Save it
 as `read-only.yaml` in the `agents/` folder next to your `garuda.yaml`:
@@ -93,10 +108,11 @@ instructions:
     Never run builds, formatters, installers or git commands that write.
 ```
 
-Why it's needed: Codex runs commands without asking Garuda first, so a no-edits
-step is checked only after it finishes. A reviewer that ran `pytest` updated
-`.pytest_cache/` and the flow stopped with `flow.no_edits_changed`. That is the
-guardrail working, but it throws the review away.
+Why it's needed: in `read-only` mode Codex asks before a command that writes,
+such as a test run that updates `.pytest_cache/`. Garuda refuses it on a
+no-edits step, and Codex then ends its turn, so the step fails with
+`flow.step_failed: … after Garuda denied: Run command`. Reading instead of
+running keeps the review.
 
 ## 2. Get the two example projects
 
@@ -221,6 +237,13 @@ In a flow, roles pass typed artifacts to each other: notes, a plan, a patch,
 then a review. When a review asks for changes, its findings go back to the
 coder, and the reviewer looks again, up to `max_rounds` more times.
 
+| Flow | Who did what | What happened |
+|---|---|---|
+| `scout-fix-review` | Codex scouts and fixes, Claude reviews | Fixed the counting bug; Claude approved in round 1 with real minor findings |
+| `cross-vendor-build` | Claude plans, Codex builds, Codex reviews | Round 1 requested changes (a real bug); fixed; approved in round 2 |
+| `claude-builds` | Codex plans, Claude builds in `acceptEdits`, Codex reviews | `--stopwords` option, 23 tests, approved in round 1 |
+| `plan-build-review` | Codex plans, builds, reviews | Three rounds of floating-point findings, then `flow.review_changes_requested` |
+
 **Codex fixes, Claude reviews** (in `~/garuda-wordfreq`):
 
 ```bash
@@ -243,11 +266,95 @@ with a `[major]` finding: the diagnostics were cleared before a successful
 connection, contrary to the plan. The coder fixed that and added a test, and
 round 2 approved.
 
-Review approval is not verification. To have Garuda run your tests against the
-result, add `--check "python -m pytest"`. That needs the Linux supervisor; see
-[Level 5](teams.md#run-a-plan-build-review-flow).
+**Codex plans, Claude builds, Codex reviews** (in `~/garuda-wordfreq`):
 
-## 5. Inspect and recover
+```bash
+garuda flow run claude-builds -t "Add a --stopwords FILE option: words listed in FILE (one per line, compared after the same normalization) are not counted. Default behavior is unchanged. Add tests."
+```
+
+Claude edited the files itself in `acceptEdits` mode, and the Codex reviewer
+approved in round 1.
+
+**When the reviewer keeps asking.** A reviewer is not obliged to approve. In
+this run on `~/garuda-reconnect`, the Codex reviewer found a new floating-point
+edge case in each of three rounds, and the flow stopped:
+
+```bash
+garuda flow run plan-build-review -t "Add a max_total_delay option: reconnect() stops retrying once the sum of delays would exceed it, records 'gave up after max_total_delay' as the failure reason, and leaves other behaviour unchanged. Add deterministic tests."
+```
+
+```text
+[garuda] review_changes_requested after 3 round(s) (a review, not verification)
+{"flow_session": "…", "state": "stopped", "code": "flow.review_changes_requested"}
+```
+
+The changes stay in your working tree for you to finish or discard. Review
+approval is not verification either way: to have Garuda run your tests against
+the result, add `--check "python -m pytest"`. That needs the Linux supervisor;
+see [Level 5](teams.md#run-a-plan-build-review-flow).
+
+## 5. Switch harness modes
+
+Name a mode on the role, or switch it for one run with `--harness-mode`. These
+were run in `~/garuda-wordfreq`:
+
+```bash
+garuda run --role claude-coder -t "Create a file NOTE.txt containing the word hello. Do nothing else."
+garuda run --role claude-coder --harness-mode default -t "Create a file NOTE.txt containing the word hello. Do nothing else."
+garuda run --role coder --harness-mode agent-full-access -t "…"
+```
+
+- The first ran in `acceptEdits` and wrote the file.
+- The second ran in Claude Code's ask-first `default`. A headless run answers
+  no approvals, so `Write NOTE.txt` was denied and no file was written. Run it
+  in an interactive terminal to answer the request yourself.
+- The third refused before launch: `role.mode_exceeds_permissions:
+  agent-full-access on codex needs permissions: yolo or higher, more than
+  permissions: smart allows`.
+
+To keep a mode, put it on the role:
+
+```yaml
+roles:
+  careful-coder: {harness: claude, model_id: sonnet, effort: high, harness_mode: default}
+```
+
+See [A role's harness mode](../guides/configuration.md#a-roles-harness-mode)
+for every mode, what it needs and the defaults.
+
+## 6. Watch it in the dashboard
+
+```bash
+garuda web --read-only --allow-workspace ~/garuda-reconnect
+```
+
+Open the printed token URL.
+
+- **Sessions** lists every step session, with its runtime, role and model,
+  such as `codex · role coder · acp:codex/gpt-5.6-sol`. A flow's page shows
+  each step and attempt, the artifacts passed between them, whether each
+  attempt changed the workspace, every recorded identity, and the review
+  outcome, such as **approved after 2 rounds**.
+- **Runs**, for a Codex or Claude session, shows an **External harness** card:
+  harness and adapter version, role, model, effort, the harness mode that
+  ran, the write policy, per-turn counts of message chunks, tool calls, tool
+  results, approval requests and errors, and each approval with its outcome.
+  **Models used** shows the context snapshot each turn reported. For Claude,
+  that includes the model that actually ran (`claude-sonnet-5-5`) and its
+  estimated cost.
+- **Setup** shows each role's permissions and write policy, harness mode and
+  agent.
+- **Usage** counts these snapshots as left out, because they report
+  occupancy, not billable usage.
+
+Garuda never stores Codex's or Claude's own messages or tool calls, only their
+counts. To keep that trail for one run:
+
+```bash
+garuda run --role claude-reviewer --no-edits --trajectory trail.jsonl -t "In one sentence, what does client.py do?"
+```
+
+## 7. Inspect and recover
 
 Every `garuda flow run` ends with a line such as
 `{"flow_session": "…", "state": "completed"}`, or `"state": "stopped"` with a
@@ -264,14 +371,13 @@ the resume stops with `flow.review_unresolved`, and you start a new flow.
 
 ## What to watch for
 
-- **Claude Code can't be the coder in a flow yet.** Foreground flows answer no
-  approval requests, and Claude Code asks before every edit, so each edit is
-  denied and the step returns no patch. Use Claude for planning and review, as
-  above. Codex edits inside its own sandbox without asking, so it works as a
-  coder.
-- **No-edits is a guardrail, not confinement.** Use the `read-only`
-  instructions above. For confinement, an external role with
-  `permissions: readonly` needs a [Docker image](teams.md#keep-a-role-from-changing-anything).
+- **No-edits is a guardrail, not confinement.** The `read-only` mode and
+  instructions above keep a Codex or Claude step from writing. For
+  confinement, an external role with `permissions: readonly` needs a
+  [Docker image](teams.md#keep-a-role-from-changing-anything).
+- **Asking modes need someone to answer.** In a flow or headless run, every
+  request is denied. Codex then ends its turn, and the step fails with the
+  denied action named.
 - **Linux only:** acceptance checks (`--check`), starting flows from the
   dashboard, background runs and worktree isolation.
 - **Not available with subscriptions alone:** recipes run native agents, and

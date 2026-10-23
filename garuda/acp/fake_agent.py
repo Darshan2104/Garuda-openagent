@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sessions = 0
     session_cwd = ""
-    config = {"model": "fake-small", "effort": "medium"}
+    config = {"model": "fake-small", "effort": "medium", "mode": "ask"}
     try:
         while True:
             request = _read_frame()
@@ -279,6 +279,8 @@ def _options(config: dict) -> list[dict]:
          "options": [{"value": v, "name": v} for v in ("fake-small", "fake-large")]},
         {"id": "effort", "category": "thought_level", "currentValue": config["effort"],
          "options": [{"value": v, "name": v} for v in ("low", "medium", "high")]},
+        {"id": "mode", "category": "mode", "currentValue": config["mode"],
+         "options": [{"value": v, "name": v} for v in ("ask", "edit", "everything")]},
     ]
 
 
@@ -343,7 +345,9 @@ def _handle_prompt(
              "content": [{"type": "content",
                           "content": _text("approved" if allowed else "denied")}]},
         )
-        _result(call_id, {"stopReason": "end_turn"})
+        # Like Codex refusing a sandbox escalation: a denial ends the turn.
+        aborted = not allowed and text.startswith("abort")
+        _result(call_id, {"stopReason": "cancelled" if aborted else "end_turn"})
     elif profile == "probe-writes":
         # Tries to write everywhere it should not, and to scratch; reports.
         targets = {"workspace": os.path.join(cwd or os.getcwd(), "planted.txt"),
