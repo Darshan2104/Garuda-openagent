@@ -43,7 +43,8 @@ def main():
             expect(page.locator("#starter-start")).to_be_visible(timeout=10_000)
             page.locator("#starter-start").click()
             if role == "coder":
-                expect(page.locator("[data-flow-approval]")).to_have_count(2, timeout=20_000)
+                # A bounded 20s environment probe plus process/model startup precedes approval.
+                expect(page.locator("[data-flow-approval]")).to_have_count(2, timeout=45_000)
                 page.locator('[data-flow-approval][data-approved="true"]').click()
             expect(page.locator("#starter-operation")).to_contain_text("terminal", timeout=45_000)
             expect(page.locator("#starter-operation")).to_contain_text("completed")
