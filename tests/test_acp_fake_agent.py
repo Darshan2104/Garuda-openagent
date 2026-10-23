@@ -205,6 +205,16 @@ async def test_approval_handler_answers_v1_permission_requests():
     await runtime.close()
 
 
+async def test_a_turn_the_agent_ends_after_a_denial_names_what_was_denied():
+    async def deny(action: str) -> bool:
+        return False
+
+    runtime = _adapter("approval", approval_handler=deny)
+    await runtime.start(task="t", session_id="d1")
+    with pytest.raises(AcpCancelledError, match="after Garuda denied: abort: run pytest"):
+        await asyncio.wait_for(runtime.prompt("abort: run pytest"), 15)
+
+
 async def test_cancel_answers_open_permission_requests_cancelled():
     runtime = _adapter("approval")
     await runtime.start(task="t", session_id="c1")

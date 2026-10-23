@@ -83,6 +83,36 @@ def test_each_packaged_flow_runs_against_fake_runtimes(repo, harnesses, monkeypa
         assert "review_approved after 1 round(s) (a review, not verification)" in out
 
 
+def test_acp_artifacts_longer_than_the_stored_summary_reach_the_next_step(
+        repo, harnesses, tmp_path, monkeypatch, capsys):
+    shim = tmp_path / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace(' "$@"', ' --artifact-padding 5000 "$@"'))
+
+    code, out = _main(monkeypatch, capsys, "flow", "run", "plan-only", "-t", "add a greeting",
+                      "--workspace", str(repo))
+
+    assert code == 0, out
+    assert "[garuda] scout: done" in out and "[garuda] plan: done" in out
+
+
+def test_an_agent_that_ends_its_turn_fails_the_step_instead_of_interrupting_the_flow(
+        repo, harnesses, tmp_path, monkeypatch, capsys):
+    from garuda.flows import engine
+
+    shim = tmp_path / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace("--profile artifacts", "--profile cancel-stop"))
+
+    code, out = _main(monkeypatch, capsys, "flow", "run", "pair", "-t", "add a greeting",
+                      "--workspace", str(repo))
+
+    assert code == 3, out
+    assert "flow.step_failed: step build did not complete: agent ended the turn cancelled" in out
+    (flow,) = [m for m in SessionStore().list_sessions() if m.get("flow")]
+    meta = SessionStore().load_meta(flow["session_id"])
+    assert meta["flow_state"] == "stopped"
+    assert [r["status"] for r in engine.receipts(SessionStore(), flow["session_id"])] == ["stopped"]
+
+
 def test_a_missing_role_refuses_and_lists_what_the_flow_needs(repo, monkeypatch, capsys):
     gy.user_path().parent.mkdir(parents=True, exist_ok=True)
     gy.user_path().write_text("version: 1\nroles: {coder: {harness: native}}\n")

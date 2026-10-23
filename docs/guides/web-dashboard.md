@@ -188,6 +188,14 @@ history. On top of that:
   Older measurements without a recorded execution are labelled
   **Unattributed historical prompts**, and gaps read **runtime tenure
   unknown** rather than being filled in.
+- **External harness** appears for a Claude Code, Codex or other ACP run: the
+  harness and adapter version, role, model, effort, the harness mode that ran,
+  the write policy, a per-turn count of message events, tool calls, tool
+  results, approval requests and errors, prompts sent, and each approval with
+  its outcome. Garuda never stores the harness's own messages or tool calls,
+  so the trace below it says so instead of showing empty turns. **Models used**
+  adds each turn's context snapshot, with the model the harness reported and
+  its estimated cost when it gives them.
 - **Consults** lists each question the session asked another role as a lane:
   who asked whom, the identity that ran, its outcome (`answered`, `withheld`,
   `failed`, `timeout`, `quarantined`, `interrupted`), duration, denied
@@ -206,7 +214,8 @@ page adds:
 - its pending approvals;
 - a live events panel that reconnects without repeating or skipping events;
 - for a flow: steps, attempts, artifacts passed between them, the workspace
-  change per attempt, and the review outcome (never shown as verification);
+  change per attempt, and the review outcome with its rounds, such as
+  **approved after 2 rounds** (never shown as verification);
 - **Stop**, for a background session: it leaves the queue, or its worker is
   stopped once its recorded process identity matches.
 
@@ -280,10 +289,12 @@ and its **limits**.
 
 - **Diagnostics** for configuration, each harness your roles use, leases and
   unpublished worktrees, each with a code and a fix you can copy (the same
-  as `garuda doctor`, but no vendor command is started; a login shows its
-  last recorded check).
+  as `garuda doctor`, except that a login shows its last recorded check
+  instead of running it; the version command of each harness your roles use
+  does run, and no prompt is sent).
 - The **role table**: each role's harness, exact model, effort, permissions
-  and fallback chain.
+  and write policy, harness mode (**by permissions** when the role names
+  none), agent and fallback chain.
 - The **flow list**, marking packaged flows and naming any role a flow needs
   that you haven't defined.
 - **Where each value came from**: package, your file, the project's trusted

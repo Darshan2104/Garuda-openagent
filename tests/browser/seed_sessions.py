@@ -54,7 +54,7 @@ def seed(root: Path, workspace: str) -> dict:
         {"pid": 2_000_000_000, "identity": "gone", "pgid": 1, "epoch": "e"})})
     store.update_meta(IDS["flow"], {
         "kind": "flow", "flow": {"name": "review-loop", "steps": ["code", "review"]},
-        "flow_state": "running", "review": {"verdict": "approved"},
+        "flow_state": "running", "review": {"status": "review_approved", "rounds": 1, "history": []},
         "state": session_state.started()})  # no recorded owner: its process reads unknown
     directory = engine.flow_dir(store, IDS["flow"])
     (directory / "receipts").mkdir(parents=True, exist_ok=True)

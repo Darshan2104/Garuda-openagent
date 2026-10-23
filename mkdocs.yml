@@ -96,6 +96,7 @@ nav:
   - Use cases:
       - use-cases/index.md
       - Ready-to-use workflows: use-cases/workflows.md
+      - "Worked example: Codex and Claude": use-cases/codex-and-claude.md
       - "Level 1 · Explore safely": use-cases/explore.md
       - "Level 2 · Change code": use-cases/change-code.md
       - "Level 3 · Teach it your project": use-cases/customize.md

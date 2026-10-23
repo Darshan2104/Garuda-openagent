@@ -7,7 +7,8 @@ Opt-in and never run by CI. For one adapter command it:
 2. runs ``session/new`` in an empty temporary directory and records the session's
    modes, models and config options (model, effort or reasoning ids);
 3. exercises ``session/set_config_option`` (or the older ``session/set_model``)
-   by re-selecting an advertised value, which changes nothing and costs nothing;
+   by re-selecting an advertised value, which changes nothing and costs nothing,
+   and selects every advertised permission mode in turn before restoring it;
 4. exercises ``session/close`` when the agent advertises it;
 5. if ``loadSession`` is advertised, opens a second process and exercises
    ``session/load`` on the first session id.
@@ -191,6 +192,31 @@ async def capture(argv: list[str], *, timeout: float) -> dict:
             )
             result["exercised"][name] = {"method": "session/set_config_option", "ok": ok, "reply": reply}
             caps[name] = SUPPORTED if ok else DECLARED
+        # A permission mode is proven by switching to every advertised value and
+        # back: each reply must report the value just selected. No prompt runs
+        # in any of them.
+        mode_option = next(
+            (o for o in summary["config_options"] if o.get("category") == "mode"), None)
+        if mode_option is None or mode_option.get("current") is None:
+            caps["mode_selection"] = UNKNOWN
+        else:
+            selected = {}
+            for value in [*mode_option["values"], mode_option["current"]]:
+                ok, reply = await _try(
+                    process._call(
+                        "session/set_config_option",
+                        {"sessionId": session_id, "configId": mode_option["id"], "value": value},
+                        timeout=timeout,
+                    )
+                )
+                current = next((o.get("currentValue") for o in (reply or {}).get("configOptions", [])
+                                if isinstance(o, dict) and o.get("id") == mode_option["id"]),
+                               None) if ok and isinstance(reply, dict) else None
+                selected[value] = ok and current == value
+            result["exercised"]["mode_selection"] = {
+                "method": "session/set_config_option", "id": mode_option["id"],
+                "selected": selected, "restored": mode_option["current"]}
+            caps["mode_selection"] = SUPPORTED if all(selected.values()) else DECLARED
         if model_option is None and summary.get("models", {}).get("current"):
             ok, reply = await _try(
                 process._call(

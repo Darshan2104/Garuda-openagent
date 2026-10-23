@@ -286,7 +286,7 @@ def models_used(store, session_id: str, meta: dict, ledger, consults=()) -> dict
         elif kind == "acp_usage_snapshot":
             snapshots.append({k: record.get(k) for k in (
                 "harness", "model", "context_used", "context_size", "input_tokens",
-                "output_tokens", "cumulative", "delta_unavailable", "time")})
+                "output_tokens", "cost_usd", "cumulative", "delta_unavailable", "time")})
             continue
         else:
             continue

@@ -1929,3 +1929,55 @@ no history approval. Smart-mode raw-key requests (`marker_polling: false`) go to
 whatever is running in the pane, so their history references require approval
 even behind allow prefixes. Panes require tmux 3.2 or newer (`new-session -e`);
 start refuses an older reported version instead of failing on an option error.
+
+
+## 2026-10-22 — Adapter identity for proven role options
+
+Built-in Claude Code and Codex manifests parse the adapter's own `--version`
+output, so launch binds role model/effort options to the version discovered for
+the executable it runs. Before the first prompt, the version the agent reports
+at ACP `initialize` must equal that discovered version, or the role refuses
+with `role.adapter_mismatch`. Starter readiness runs nothing, so for a manifest
+that probes its version it reports the option proof as checked at launch
+rather than refusing on the manifest's declared placeholder.
+
+Adapter subprocesses receive `USER` beside `PATH`, `HOME` and `LANG`. It names
+the account and carries no credential; Claude Code on macOS needs it to find
+its own Keychain login. Garuda still never reads, copies or forwards vendor
+tokens or provider API keys.
+
+
+## 2026-10-22 — A resume never completes an unapproved review
+
+Flow resume skips steps with receipts, but a reviewed step counts as finished
+only when the flow recorded `review_approved`. An invalid review, changes still
+requested after the last round, or a reviewer that never ran stops the resume
+with `flow.review_unresolved`; it is never replayed or treated as reviewed.
+Reviewer prompts state the exact block format the parser accepts, and the parser
+stays strict instead of guessing at Markdown or prose.
+
+
+## 2026-10-23 — External roles run in an authorized harness mode
+
+An ACP role may name one of its harness's own permission modes (`harness_mode`,
+or `garuda run --harness-mode` for one run). Each mode has a minimum Garuda
+ceiling: a mode that cannot write needs `readonly`; one that edits the
+workspace and asks for anything else (Claude Code `acceptEdits`, Codex
+`workspace-write`) needs `smart`; one where the agent's own judgement decides
+what to ask (Claude Code `auto`, Codex `agent`) needs `auto`; one that approves
+everything needs `yolo`. The ceiling is the stricter of the role's and the run's. A no-edits
+step admits only a mode that cannot write. Anything above the ceiling, or a mode
+Garuda cannot classify, refuses before launch.
+
+Without a named mode, a proven adapter gets the mode its step allows (Claude
+Code `acceptEdits` and Codex `workspace-write` for `smart` edits; `default` and
+`read-only` for no-edits). Garuda never selects a mode that approves everything,
+and an unproven adapter keeps its own default. Modes are proven per adapter
+version by selecting every advertised value without a prompt. The mode that ran
+is recorded on the session. A harness mode is the vendor's own control, not
+Garuda confinement.
+
+An external harness's `usage_update` is recorded as a ledger snapshot (context
+occupancy, a harness-estimated cost, a reported model); it is never summed or
+counted as a turn. Claude Code and Codex login is read from each CLI's own
+status command, and only the conclusion is kept.

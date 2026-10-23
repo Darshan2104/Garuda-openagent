@@ -148,6 +148,8 @@ async def test_child_gets_minimal_env_not_parent_secrets():
         child_env = json.loads(raw)
         assert GUARD_VAR not in child_env
         assert child_env.get("GARUDA_CHILD") == "yes"
+        # Claude Code on macOS finds its Keychain login by account name.
+        assert child_env.get("USER") == os.environ.get("USER")
     finally:
         del os.environ[GUARD_VAR]
         await process.close()

@@ -310,7 +310,21 @@ Click a problem to see the fix.
 ??? question "`garuda flow show` says no such file"
 
     `flow show` and `flow resume` need the full flow ID that `garuda flow run`
-    prints at the end (`"flow_session": "…"`), not a prefix or a name.
+    prints at the end (`"flow_session": "…"`, for a stopped flow too), not a
+    prefix or a name.
+
+??? question "`garuda flow resume` stops with `flow.review_unresolved`"
+
+    The reviewed step finished, but its reviewer never approved it: the review
+    was invalid, still asked for changes after the last round, or never ran. A
+    resume never treats such a step as reviewed. Start a new flow.
+
+??? question "A flow stops with `flow.review_invalid`"
+
+    The review block must be plain lines: `verdict: approve` or
+    `verdict: changes`, then `findings:` and one `- [blocker|major|minor|nit] …`
+    line per finding. Garuda gives the reviewer this format; a reviewer that
+    adds Markdown or prose inside the block is refused rather than guessed at.
 
 ??? question "A read-only external role refuses with `workspace.readonly_unenforced`"
 

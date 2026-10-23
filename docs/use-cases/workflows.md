@@ -58,7 +58,9 @@ See [Web dashboard](../guides/web-dashboard.md#starters).
 Install and authenticate an official supported harness using its own CLI, or
 configure a native provider and its credential. Garuda does not import vendor
 subscription credentials. See [External harnesses](../guides/external-harnesses.md)
-and [Configuration](../guides/configuration.md).
+and [Configuration](../guides/configuration.md). For a complete setup on Codex
+and Claude Code logins, with results from every starter, see the
+[worked example](codex-and-claude.md).
 
 Choose a **new directory outside any existing Git repository**. Its parent must
 exist and contain no symlinked path components. The command refuses existing

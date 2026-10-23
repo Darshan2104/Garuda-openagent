@@ -26,7 +26,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
-| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed |
+| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Agents | `garuda agent list` | Every agent, where it comes from, what it extends, and which ones a nearer file shadows |
@@ -76,6 +76,7 @@ every project. A full ID always resolves.
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
     | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |
     | `--no-edits` | Refuse edits and commands, and withhold the output if the workspace changed anyway (exit 3); a guardrail, not confinement |
+    | `--harness-mode MODE` | Run the selected external role in this mode of its harness for this run (Claude Code `acceptEdits`, Codex `read-only`, …); it must fit the role's permissions |
     | `--check COMMAND` | An acceptance check run after the session (repeatable); its result is the session's verification |
     | `--role NAME` | Run as a `garuda.yaml` role: its harness, exact model, effort and permission ceiling |
     | `--with NAME` | Attach the brief of a session in this project (repeatable); `@name` in the task does the same |
@@ -122,7 +123,7 @@ every project. A full ID always resolves.
     | `--max-turns N` | Agent turn limit |
     | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish |
     | `--json` | Print JSONL events instead of the human-readable result |
-    | `--trajectory PATH` | Also save the run's events to a JSONL file |
+    | `--trajectory PATH` | Also save the run's events to a JSONL file; for an external harness, the trail Garuda recorded (event kinds, turns, request digests) |
 
 === "Advanced toggles"
 

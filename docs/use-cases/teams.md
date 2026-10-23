@@ -193,9 +193,11 @@ sequenceDiagram
   `policy: waived`; unresolved configured evidence is labelled unknown, not an
   independent review. Actual launched and consulted identities remain recorded.
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
-  `garuda flow resume FLOW_ID` continues after the last finished step. An
-  unfinished protected check phase is classified without replay; incomplete or
-  uncertain publication requires reconciliation.
+  `garuda flow resume FLOW_ID` continues after the last finished step. A
+  reviewed step counts as finished only once its review approved it; otherwise
+  the resume stops with `flow.review_unresolved`. An unfinished protected check
+  phase is classified without replay; incomplete or uncertain publication
+  requires reconciliation.
 
 !!! warning "Native roles in flows: two current limitations"
     - A native step's output is the summary it passes to `task_complete`, so
@@ -220,6 +222,20 @@ sequenceDiagram
     ```
 
     Then set `agent: flow-plan` on the scout and planner roles.
+
+!!! warning "External roles in flows"
+    - A foreground flow answers no approval requests, so each external step
+      runs in a [harness mode](../guides/configuration.md#a-roles-harness-mode)
+      that fits it: a Claude Code coder in `acceptEdits`, a Codex coder in
+      `workspace-write` (or `agent` with `permissions: auto`), and no-edits
+      steps in Claude Code's `default` and Codex's `read-only`. Whatever a mode
+      asks about is denied, so a Codex coder that runs tests needs
+      `permissions: auto`.
+    - Codex ends its turn when it is refused a command it needs, such as a test
+      run in `read-only` mode. The step fails with the denied action named
+      (`flow.step_failed`). Give no-edits roles instructions to read rather
+      than run commands that write, as in the
+      [worked example](codex-and-claude.md#1-set-up-once).
 
 ## Write your own flow
 

@@ -76,6 +76,8 @@ class StepResult:
     success: bool
     output: str
     closure: dict | None = None
+    #: Why the step's agent stopped, when it failed rather than finished.
+    error: str = ""
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -653,8 +655,16 @@ class FlowRunner:
             for r in existing:
                 tried[r["step"]] = max(tried.get(r["step"], 0), r.get("attempt", 0))
             steps = _steps(self.flow)
+            prior_review = ((await _settled_sync(self.store.load_meta, self.flow_session))
+                            .get("review") if resume else None) or {}
             for step in steps:
                 if step["id"] in completed_steps:
+                    # A receipt says the step ran, not that its reviewer approved it.
+                    if step.get("review") and prior_review.get("status") != "review_approved":
+                        raise FlowStopped(
+                            "flow.review_unresolved",
+                            f"{step['id']} has no approved review; a resume never treats it "
+                            "as reviewed, so start a new flow", step=steps[-1]["id"])
                     continue  # completed before a resume: never run again
                 if "parallel" in step:
                     attempt = tried.get(step["id"], 0) + 1
@@ -1046,7 +1056,8 @@ class FlowRunner:
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
         if stop is None and not outcome.success:
-            stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete",
+            stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete"
+                               + (f": {outcome.error}" if outcome.error else ""),
                                step=step["id"])
         if stop is None:
             produced = art.extract(outcome.output)

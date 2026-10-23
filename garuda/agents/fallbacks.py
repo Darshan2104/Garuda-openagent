@@ -75,7 +75,8 @@ def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
     return (plan, *(
         replace(plan, runtime_id=catalog.registry.get(c["harness"]).runtime_id,
                 kind=catalog.registry.get(c["harness"]).kind.value,
-                model_id=c.get("model_id"), harness=harnesses.get(c["harness"], {}))
+                model_id=c.get("model_id"), harness=harnesses.get(c["harness"], {}),
+                harness_mode=None)  # a primary's mode names nothing on another harness
         for c in chain
     ))
 

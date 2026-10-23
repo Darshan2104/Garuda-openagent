@@ -510,7 +510,8 @@ async def acp_child(child: ChildRequest) -> ChildOutcome:
     try:
         summary = await run_acp_task(
             child.prompt, runtime_id=plan.runtime_id, workspace=child.workspace,
-            approval=deny_all, emit=lambda *_a: None, role_plan=plan, store=child.store,
+            approval=deny_all, no_edits=True, emit=lambda *_a: None, role_plan=plan,
+            store=child.store,
             session_id=child.child_id, capacity_loan=child.capacity_loan)
     except Exception as exc:
         if getattr(exc, "code", "") == "workspace.readonly_unenforced":
@@ -524,4 +525,4 @@ async def acp_child(child: ChildRequest) -> ChildOutcome:
                  if key.startswith("approval:") and isinstance(record, dict)
                  and record.get("outcome") == "deny")
     return ChildOutcome(summary["session_id"], summary.get("status") == "completed",
-                        str(meta.get("final_message") or ""), denied)
+                        str(summary.get("reply") or ""), denied)

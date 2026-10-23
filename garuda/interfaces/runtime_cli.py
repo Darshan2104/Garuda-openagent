@@ -629,6 +629,8 @@ async def run_acp_task(
     admitted_runtime: dict | None = None,
     session_record: dict | None = None,
     external_approvals: bool = False,
+    no_edits: bool = False,
+    permission_ceiling: str | None = None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -698,7 +700,8 @@ async def run_acp_task(
     if role_plan is not None:
         from garuda.runtime.roles import acp_options
 
-        role_options = acp_options(role_plan, getattr(record, "version", "unknown"))
+        role_options = acp_options(role_plan, getattr(record, "version", "unknown"),
+                                   no_edits=no_edits, ceiling=permission_ceiling)
 
     store = store or SessionStore()
     if capacity_loan is not None and lease_capability is not None:
@@ -735,12 +738,15 @@ async def run_acp_task(
         store.begin(
             session_id,
             task=task,
-            model=f"acp:{manifest.runtime_id}",
+            # The exact model a role selects; the harness's default otherwise.
+            model=f"acp:{manifest.runtime_id}" + (
+                f"/{role_plan.model_id}" if role_plan is not None and role_plan.model_id else ""),
             agent=manifest.runtime_id,
             workspace=workspace,
             name=name,
             runtime_segment=RuntimeSegment(
-                runtime_id=manifest.runtime_id, kind="acp", version=manifest.version
+                runtime_id=manifest.runtime_id, kind="acp",
+                version=getattr(record, "version", manifest.version)
             ),
         )
         began = True
@@ -859,7 +865,8 @@ async def run_acp_task(
                 store=store, events=events, selection=fallback
             ) from start_error
         if role_plan is not None:
-            applied = await runtime.set_config_options(role_options)
+            applied = await runtime.set_config_options(
+                role_options, adapter_version=getattr(record, "version", "unknown"))
             store.update_meta(session_id, {"role": role_plan.record(
                 adapter={"runtime_id": manifest.runtime_id,
                          "version": getattr(record, "version", "unknown")},
@@ -887,11 +894,23 @@ async def run_acp_task(
         )
         if reply:
             store.update_meta(session_id, {"final_message": reply[-2000:]})
+        reports = [e.payload["usage"] for e in events  # a report with no valid field is none
+                   if e.kind.value == "message" and isinstance(e.payload.get("usage"), dict)
+                   and e.payload["usage"]]
+        if reports:
+            from garuda.observability.usage import record_acp_usage
+
+            record_acp_usage(store, session_id, runtime_id=manifest.runtime_id,
+                             adapter_version=getattr(record, "version", "unknown"),
+                             segment=info.native_session_id or session_id, usage=reports[-1])
         outcome = {
             "session_id": session_id,
             "native_session_id": info.native_session_id,
             "turn": turn,
             "events": len(events),
+            # In memory only: flow artifacts and consult answers sit at the end
+            # of replies longer than the stored summary.
+            "reply": reply,
         }
     except asyncio.CancelledError:
         if began:

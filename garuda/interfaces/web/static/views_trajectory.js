@@ -115,12 +115,17 @@ function renderTrajectory(payload, sources) {
     runFlagsHtml(payload) +
     '<div id="starter-result-host"></div>' +
     '<div id="conversation-host"></div>' +
+    externalTrailHtml(payload.external) +
     overviewHtml(traj) +
     '<div class="card">' + pressureChartHtml(payload) + "</div>" +
     (hasGates || traj.gate_stack ? '<div class="card">' + gateStackHtml(traj) + "</div>" : "") +
     timelineHeadHtml(turns) +
     '<div class="trajectory' + (hasGates ? " with-lane" : "") + '" id="traj">' +
-    timelineHtml(traj, hasGates) +
+    (externalOnly(payload)
+      ? '<div class="empty span-all"><p>This run was on an external harness.</p>' +
+        "<p>Its turns are summarised in the External harness card above; Garuda does not " +
+        "store the harness's own messages or tool calls.</p></div>"
+      : timelineHtml(traj, hasGates)) +
     "</div>" +
     rawEventsHtml(payload)
   );
@@ -440,6 +445,17 @@ function wireTimelineHead() {
 /* --- tiles and run-level flags -------------------------------------------- */
 
 function detailTilesHtml(payload) {
+  if (externalOnly(payload)) {
+    var ext = payload.external;
+    var calls = (ext.turns || []).reduce(function (n, t) { return n + (t.tool_call || 0); }, 0);
+    var errored = (ext.turns || []).reduce(function (n, t) { return n + (t.error || 0); }, 0);
+    return [
+      tile("Turns", fmt.num((ext.turns || []).length), "external harness"),
+      tile("Tokens", "—", "not reported per call"),
+      tile("Cost", "—", esc((ext.identity || {}).model_id || ext.runtime || "—")),
+      tile("Tool calls", fmt.num(calls), errored ? errored + " errors" : "no errors reported")
+    ].join("");
+  }
   var traj = payload.trajectory;
   var run = payload.run;
   var usage = traj.usage || {};
@@ -458,6 +474,38 @@ function detailTilesHtml(payload) {
   ].join("");
 }
 
+/* An external harness's run: who ran it and the shape Garuda recorded. Its own messages and
+ * tool calls are not stored, so the counts are the whole trail, and the card says so. */
+function externalTrailHtml(ext) {
+  if (!ext) return "";
+  var who = ext.identity || {};
+  var adapter = ext.adapter || {};
+  var facts = [
+    ["Harness", (ext.runtime || "—") + (adapter.version ? " " + adapter.version : "")],
+    ["Role", who.name || "—"],
+    ["Model", who.model_id || "harness default"],
+    ["Effort", who.effort || "—"],
+    ["Harness mode", (ext.options || {}).mode || who.harness_mode || "harness default"],
+    ["Write policy", who.write_policy || "—"]
+  ].map(function (f) {
+    return '<div class="stat-sub"><b>' + esc(f[0]) + ":</b> " + esc(f[1]) + "</div>";
+  }).join("");
+  var rows = (ext.turns || []).map(function (t) {
+    return "<tr><td>" + esc(t.turn) + "</td><td>" + esc(t.message) + "</td><td>" + esc(t.tool_call) +
+      "</td><td>" + esc(t.tool_result) + "</td><td>" + esc(t.approval_request) + "</td><td>" + esc(t.error) + "</td></tr>";
+  }).join("");
+  var approvals = (ext.approvals || []).map(function (a) {
+    return "<li>" + esc(a.action || "permission") + " — " + esc(a.outcome || "unknown") + "</li>";
+  }).join("");
+  return '<div class="card" id="external-trail"><h2>External harness</h2>' + facts +
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Turn</th><th>Message events</th><th>Tool calls</th>' +
+    "<th>Tool results</th><th>Approval requests</th><th>Errors</th></tr></thead><tbody>" +
+    (rows || '<tr><td colspan="6">No turns recorded</td></tr>') + "</tbody></table></div>" +
+    '<div class="stat-sub">Prompts sent: ' + esc(ext.prompts_sent) + "</div>" +
+    (approvals ? "<h3>Approvals</h3><ul>" + approvals + "</ul>" : "") +
+    '<p class="stat-sub">' + esc(ext.note) + "</p></div>";
+}
+
 /* A log with no turn structure at all — the 1.1.0 vintage most archived runs are written in.
  * `finished` is meaningless there, because nothing in the log could ever have set it, so every
  * per-turn completion flag must be suppressed. Raising "TURN NEVER FINISHED" on all of them
@@ -468,7 +516,14 @@ function isLegacyLog(traj) {
 
 /* Everything that says "look here first". A killed run, a rejected gate and an unpriceable
  * cost are all things you want to see before scrolling. */
+/* An external harness's run with no native log: its trail is the External harness card, so
+ * native-log alarms (no session_end, empty log, no turns) would be false here. */
+function externalOnly(payload) {
+  return !!payload.external && !(payload.trajectory.turns || []).length;
+}
+
 function runFlagsHtml(payload) {
+  if (externalOnly(payload)) return "";
   var traj = payload.trajectory;
   var legacy = isLegacyLog(traj);
   var notes = [];

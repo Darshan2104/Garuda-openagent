@@ -74,6 +74,8 @@ def _roles(resolved) -> list[dict]:
         rows.append({
             "role": name, "harness": spec.get("harness"), "model_id": spec.get("model_id"),
             "effort": spec.get("effort"), "permissions": spec.get("permissions"),
+            "write_policy": spec.get("write_policy", "edits"), "agent": spec.get("profile"),
+            "harness_mode": spec.get("harness_mode"),
             "fallback": [{"harness": c.get("harness"), "model_id": c.get("model_id")}
                          for c in spec.get("fallback", [])],
             "source": resolved.provenance.get(f"roles.{name}"),

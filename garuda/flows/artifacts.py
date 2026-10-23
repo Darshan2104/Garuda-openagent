@@ -87,6 +87,10 @@ def instructions(outputs: list[str]) -> str:
     lines = ["End your answer with one block per output, exactly like this:"]
     lines += [f'<garuda-artifact type="{t}">\n...your {t}...\n</garuda-artifact>' for t in outputs]
     lines.append("Only these blocks are passed on; any text outside them is not.")
+    if "review" in outputs:
+        from garuda.flows.review import FORMAT
+
+        lines.append(FORMAT)
     return "\n".join(lines)
 
 

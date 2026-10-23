@@ -24,6 +24,7 @@ from garuda.core.events import SUBAGENT_LOG_DIR
 from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.eval.dashboard import row_from_session_meta
 from garuda.interfaces.web.tail import tail_jsonl
+from garuda.observability.lanes import ACP_EVENTS_FILE
 from garuda.observability.trajectory import Run, TrajectoryReader
 
 logger = logging.getLogger(__name__)
@@ -132,8 +133,12 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
     session_id = meta.get("session_id") or ""
     events_path = store.events_path(session_id) if session_id else None
     has_events = bool(events_path and events_path.is_file())
+    # An external harness's session writes only its own trail; that is its log for liveness.
+    external_path = store.session_dir(session_id) / ACP_EVENTS_FILE if session_id else None
+    has_external = bool(external_path and external_path.is_file())
+    log_path = events_path if has_events else external_path if has_external else None
     claims_running = row.get("status") == "running"
-    written_ago = _seconds_since_write(events_path) if has_events else None
+    written_ago = _seconds_since_write(log_path) if log_path is not None else None
     # Live means "the log is still being written to", not "meta says running". The two only
     # agree for a run that is genuinely in flight; for a killed one the status is a
     # permanent lie, and believing it is what made the UI poll forever.
@@ -163,6 +168,7 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
         **_state_fields(meta),
         "has_events": has_events,
         "events_bytes": events_path.stat().st_size if has_events else 0,
+        "has_external_events": has_external,
     }
 
 
@@ -242,6 +248,60 @@ def read_run(
         "trajectory": run.to_dict(include_events=False),
         "event_count": event_count,
         "condenser_threshold": condenser_threshold((run.config or {}).get("condenser")),
+        "external": external_trail(directory, meta),
+    }
+
+
+#: External event kinds counted per turn, in display order.
+EXTERNAL_KINDS = ("message", "tool_call", "tool_result", "approval_request", "error")
+
+
+def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """What Garuda recorded of an external harness's run: who ran, per-turn event counts,
+    approvals and the last usage report. ``None`` for a session with no external events.
+
+    Garuda keeps only the shape of an external trail (kinds, turns, prompt digests), never
+    the harness's own messages or tool calls, so this is all a trajectory can show.
+    """
+    path = directory / ACP_EVENTS_FILE
+    if not path.is_file():
+        return None
+    turns: dict[int, dict[str, int]] = {}
+    prompts = 0
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or not isinstance(event.get("turn"), int):
+                    continue
+                kind = event.get("kind")
+                if kind == "outbound_prompt":
+                    prompts += 1
+                elif kind in EXTERNAL_KINDS:
+                    row = turns.setdefault(event["turn"], dict.fromkeys(EXTERNAL_KINDS, 0))
+                    row[kind] += 1
+    except OSError:
+        return None
+    role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
+    approvals = [{"action": str(v.get("action") or "")[:200], "outcome": v.get("outcome")}
+                 for k, v in sorted(meta.items())
+                 if k.startswith("approval:") and isinstance(v, dict)]
+    return {
+        "runtime": role.get("runtime_id") or meta.get("agent"),
+        "identity": {key: role.get(key) for key in ("name", "model_id", "effort",
+                                                     "harness_mode", "write_policy",
+                                                     "permissions")} if role else None,
+        "adapter": role.get("adapter"),
+        "options": role.get("acp_options"),
+        "turns": [{"turn": turn, **counts} for turn, counts in sorted(turns.items())],
+        "prompts_sent": prompts,
+        "approvals": approvals,
+        "note": ("The harness's own messages and tool calls are not stored; only their counts. "
+                 "Message events include streamed chunks and informational updates such as "
+                 "usage reports."),
     }
 
 

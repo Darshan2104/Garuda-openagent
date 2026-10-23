@@ -154,7 +154,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "agent_digest": meta.get("agent_digest"),
         "agent_segment": meta.get("agent_segment"),
         "model": meta.get("model"),
-        "runtime": runtime or "native",
+        "runtime": runtime or ("flow" if meta.get("kind") == "flow" else "native"),
         "role": meta.get("role"),
         "status": meta.get("status"),
         "state": {k: state.get(k) for k in ("process", "work", "outcome")},

@@ -194,3 +194,24 @@ def record_fallback_start(store, session_id: str, *, ledger: Ledger | None = Non
     except Exception:
         logger.warning("fallback_start not recorded", exc_info=True)
         return False
+
+
+def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version: str,
+                     segment: str, usage: dict, ledger: Ledger | None = None) -> list[dict]:
+    """Record an external harness's last usage report of a turn as a snapshot (or what its
+    proved policy allows). Never raises: accounting must not stop a run."""
+    from garuda.observability.acp_usage import AcpUsageNormalizer, UsageReport
+
+    try:
+        meta = store.load_meta(session_id)
+        counters = {"cost_usd": usage["cost_usd"]} if "cost_usd" in usage else {}
+        report = UsageReport(
+            source=f"{runtime_id}:{adapter_version}:{segment}"[:128], adapter=runtime_id,
+            adapter_version=adapter_version, counters=counters,
+            context_used=usage.get("context_used"), context_size=usage.get("context_size"),
+            observed_at=time.time(), session_id=session_id, project_id=meta.get("project_id"),
+            harness=runtime_id, model=usage.get("model"))
+        return AcpUsageNormalizer(ledger or Ledger()).ingest(report)
+    except Exception:
+        logger.warning("acp usage not recorded", exc_info=True)
+        return []

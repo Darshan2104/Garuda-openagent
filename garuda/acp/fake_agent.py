@@ -151,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Append the session/new cwd to the default reply (launch-path tests).",
     )
+    parser.add_argument("--artifact-padding", type=int, default=0,
+                        help="Lengthen each `artifacts` block body by this many characters.")
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -160,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sessions = 0
     session_cwd = ""
-    config = {"model": "fake-small", "effort": "medium"}
+    config = {"model": "fake-small", "effort": "medium", "mode": "ask"}
     try:
         while True:
             request = _read_frame()
@@ -261,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                     profile, call_id, params,
                     cwd=session_cwd if (args.report_cwd or profile in ("write-anyway",
                                                                         "probe-writes")) else None,
-                    state_file=args.state_file,
+                    state_file=args.state_file, artifact_padding=args.artifact_padding,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -277,12 +279,14 @@ def _options(config: dict) -> list[dict]:
          "options": [{"value": v, "name": v} for v in ("fake-small", "fake-large")]},
         {"id": "effort", "category": "thought_level", "currentValue": config["effort"],
          "options": [{"value": v, "name": v} for v in ("low", "medium", "high")]},
+        {"id": "mode", "category": "mode", "currentValue": config["mode"],
+         "options": [{"value": v, "name": v} for v in ("ask", "edit", "everything")]},
     ]
 
 
 def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
-    state_file: str | None = None,
+    state_file: str | None = None, artifact_padding: int = 0,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
@@ -341,7 +345,9 @@ def _handle_prompt(
              "content": [{"type": "content",
                           "content": _text("approved" if allowed else "denied")}]},
         )
-        _result(call_id, {"stopReason": "end_turn"})
+        # Like Codex refusing a sandbox escalation: a denial ends the turn.
+        aborted = not allowed and text.startswith("abort")
+        _result(call_id, {"stopReason": "cancelled" if aborted else "end_turn"})
     elif profile == "probe-writes":
         # Tries to write everywhere it should not, and to scratch; reports.
         targets = {"workspace": os.path.join(cwd or os.getcwd(), "planted.txt"),
@@ -374,6 +380,8 @@ def _handle_prompt(
         for kind in kinds:
             body = "verdict: approve\nfindings:\n- [nit] fine" if kind == "review" else (
                 f"{kind} for: {text.splitlines()[0][:60]}")
+            if artifact_padding:
+                body += "\n" + "." * artifact_padding
             blocks.append(f'<garuda-artifact type="{kind}">\n{body}\n</garuda-artifact>')
         _update(session_id, {"sessionUpdate": "agent_message_chunk",
                              "content": _text("done.\n" + "\n".join(blocks))})

@@ -225,9 +225,11 @@ def test_discovery_runs_only_declared_version_probes_and_never_guesses_login():
 
     manifests = _manifests()
     found = {d.runtime_id: d for d in discover(manifests, run_probe=_record)}
-    declared = {tuple(m.version_args) for m in manifests}
-    # Only the manifest's own `--version` argv may run — and only where the
-    # executable exists. No login/auth probe is shipped, so none runs.
+    declared = {tuple(m.version_args) for m in manifests} | {
+        tuple(m.auth_probe.argv) for m in manifests if m.auth_probe is not None}
+    # Only the manifest's own `--version` and documented status argv may run —
+    # and only where the executable exists. A probe that cannot answer leaves
+    # the login unknown; nothing is guessed.
     assert set(calls) <= declared
     for vendor in ("claude", "codex"):
         entry = found[vendor]

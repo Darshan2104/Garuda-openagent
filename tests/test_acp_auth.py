@@ -38,7 +38,8 @@ def test_login_flows_are_user_driven_only():
 
 def test_absent_and_logged_out_states_guide_without_scanning():
     manifests = parse_global_manifests(builtin_manifest_dicts())
-    found = {d.runtime_id: d for d in discover(manifests)}
+    # No vendor CLI answers here, even on a machine where one is installed and logged in.
+    found = {d.runtime_id: d for d in discover(manifests, run_probe=lambda argv, timeout: None)}
     for vendor in ("claude", "codex", "cursor", "opencode", "pi", "goose"):
         auth_lines = found[vendor].describe_auth()
         assert any("unknown" in line or "logged out" in line for line in auth_lines)

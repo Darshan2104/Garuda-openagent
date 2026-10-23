@@ -390,3 +390,61 @@ def test_the_live_window_is_generous_enough_for_a_slow_turn(ctx, store):
     assert reads.LIVE_WINDOW_SECONDS >= 60
     _running_session(store, "slowturn", age_seconds=reads.LIVE_WINDOW_SECONDS - 10)
     assert body(call(ctx, "/api/runs"))["runs"][0]["live"] is True
+
+
+def test_an_external_harness_run_opens_with_its_recorded_trail(ctx, store):
+    sid = "ext-run-1"
+    store.begin(session_id=sid, task="fix it", model="acp:codex/gpt-5.6-sol", agent="codex",
+                workspace="/tmp")
+    store.update_meta(sid, {
+        "role": {"name": "coder", "runtime_id": "codex", "model_id": "gpt-5.6-sol",
+                 "effort": "high", "harness_mode": None, "write_policy": "edits",
+                 "permissions": "smart", "adapter": {"runtime_id": "codex", "version": "2.1.1"},
+                 "acp_options": {"model": "gpt-5.6-sol", "mode": "agent"}},
+        "approval:apr-1": {"action": "Run command", "outcome": "deny"}})
+    trail = [{"kind": "outbound_prompt", "turn": 1, "seq": 1, "payload": {"chars": 3}},
+             {"kind": "message", "turn": 1, "seq": 2}, {"kind": "tool_call", "turn": 1, "seq": 3},
+             {"kind": "tool_result", "turn": 1, "seq": 4},
+             {"kind": "approval_request", "turn": 1, "seq": 5}]
+    (store.session_dir(sid) / "acp-events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in trail))
+
+    response = call(ctx, f"/api/runs/{sid}")
+
+    assert response.status == 200
+    payload = body(response)
+    assert payload["trajectory"]["turn_count"] == 0  # no native log, and no error
+    external = payload["external"]
+    assert external["identity"]["model_id"] == "gpt-5.6-sol"
+    assert external["options"]["mode"] == "agent"
+    assert external["adapter"]["version"] == "2.1.1"
+    assert external["turns"] == [{"turn": 1, "message": 1, "tool_call": 1, "tool_result": 1,
+                                  "approval_request": 1, "error": 0}]
+    assert external["prompts_sent"] == 1
+    assert external["approvals"] == [{"action": "Run command", "outcome": "deny"}]
+
+
+def test_a_native_run_has_no_external_trail(ctx, store):
+    _run(store, "native-1", _turn(1))
+    assert body(call(ctx, "/api/runs/native-1"))["external"] is None
+
+
+def test_a_running_external_session_is_live_not_stale(store):
+    store.begin(session_id="ext-live", task="t", model="acp:claude", agent="claude",
+                workspace="/tmp")
+    (store.session_dir("ext-live") / "acp-events.jsonl").write_text(
+        json.dumps({"kind": "message", "turn": 1, "seq": 1}) + "\n")
+
+    row = reads.summarize_session(store.load_meta("ext-live"), store)
+
+    assert row["status"] == "running"
+    assert (row["live"], row["stale"], row["has_external_events"]) == (True, False, True)
+
+
+def test_a_flow_parent_is_not_labelled_native(store):
+    from garuda.core.read_model import session_row
+
+    store.begin(session_id="flow-1", task="t", model="flow", agent="flow:pair", workspace="/tmp")
+    store.update_meta("flow-1", {"kind": "flow"})
+
+    assert session_row(store, store.load_meta("flow-1"))["runtime"] == "flow"

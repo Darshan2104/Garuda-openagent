@@ -218,7 +218,9 @@ def test_parser_has_runtime_group_with_defaults():
     assert resumed.session == "s" and resumed.task == "again"
 
 
-def test_list_and_inspect_text_and_json():
+def test_list_and_inspect_text_and_json(tmp_path, monkeypatch):
+    # The vendors are absent here even on a machine where they are installed.
+    monkeypatch.setenv("PATH", str(tmp_path))
     text = cmd_list(_manifests())
     assert "native" in text and "claude" in text
     records = json.loads(cmd_list(_manifests(), as_json=True))
