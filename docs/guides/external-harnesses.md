@@ -222,9 +222,6 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
       mode options; see [Install a harness](../use-cases/advanced.md#install-a-harness).
     - Authentication stays in the Codex CLI login.
 
-The exact package metadata and retrieval date behind these Node requirements
-are recorded in [Install a harness](../use-cases/advanced.md#install-a-harness).
-
 === "Cursor Agent"
 
     - Launch command: `agent acp`, a Cursor Agent CLI subcommand.
@@ -248,6 +245,9 @@ are recorded in [Install a harness](../use-cases/advanced.md#install-a-harness).
 
     - Launch command: `goose acp`, a Goose CLI subcommand.
     - Install and authenticate Goose, then verify `goose --version`.
+
+The exact package metadata and retrieval date behind these Node requirements
+are recorded in [Install a harness](../use-cases/advanced.md#install-a-harness).
 
 ## Usage and limit sources
 

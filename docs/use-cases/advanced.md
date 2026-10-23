@@ -61,17 +61,6 @@ never reads, copies, stores, or proxies your vendor login.
     garuda runtime inspect codex
     ```
 
-Node 22+ is recommended for both examples. In primary npm package metadata
-checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
-and the [Claude adapter 0.85.0](https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.85.0)
-both declare Node 22+. The [Codex CLI 0.164.0](https://registry.npmjs.org/%40openai%2Fcodex/0.164.0)
-declares Node 16+, while the [Codex adapter 2.1.1](https://registry.npmjs.org/%40agentclientprotocol%2Fcodex-acp/2.1.1)
-does not declare `engines.node`; its `open` `^11.0.1` runtime dependency
-currently resolves to [open 11.0.4](https://registry.npmjs.org/open/11.0.4),
-which declares Node 20+. Node 20+ is therefore the highest published direct
-runtime requirement for that checked Codex path, rather than a minimum declared
-by the adapter itself. Newer CLI or dependency releases can raise these requirements.
-
 === "OpenCode"
 
     ```bash
@@ -108,6 +97,17 @@ by the adapter itself. Newer CLI or dependency releases can raise these requirem
     goose --version
     garuda runtime inspect goose
     ```
+
+Node 22+ is recommended for both examples. In primary npm package metadata
+checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
+and the [Claude adapter 0.85.0](https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.85.0)
+both declare Node 22+. The [Codex CLI 0.164.0](https://registry.npmjs.org/%40openai%2Fcodex/0.164.0)
+declares Node 16+, while the [Codex adapter 2.1.1](https://registry.npmjs.org/%40agentclientprotocol%2Fcodex-acp/2.1.1)
+does not declare `engines.node`; its `open` `^11.0.1` runtime dependency
+currently resolves to [open 11.0.4](https://registry.npmjs.org/open/11.0.4),
+which declares Node 20+. Node 20+ is therefore the highest published direct
+runtime requirement for that checked Codex path, rather than a minimum declared
+by the adapter itself. Newer CLI or dependency releases can raise these requirements.
 
 The pinned Claude Code and Codex adapter versions are the ones on which Garuda
 has proven a role's `model_id`, `effort`, and `harness_mode`. Garuda refuses
