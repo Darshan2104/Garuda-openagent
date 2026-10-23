@@ -9,7 +9,7 @@ ruff check garuda tests
 python scripts/check_docs.py
 ```
 
-Run narrow tests before broad tests. Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary (3.0 or newer), Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
+Run narrow tests before broad tests. Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary (3.2 or newer), Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
 
 ## Owned ACP Docker lifecycle checks
 

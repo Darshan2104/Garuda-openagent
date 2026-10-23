@@ -82,7 +82,7 @@ while shell state remains persistent. Because a framed command reaches the pane
 single-quoted, it needs no history approval. Raw-key requests
 (`marker_polling: false`) go to whatever runs in the pane, so in smart mode their
 unquoted or double-quoted history references require approval, even behind an
-allow prefix. Pane start refuses a reported tmux older than 3.0
+allow prefix. Pane start refuses a reported tmux older than 3.2
 (`new-session -e`); an unparsable version such as `tmux master` is accepted.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and

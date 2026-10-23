@@ -1927,5 +1927,5 @@ command before its separate marker, so a framed command reaches the pane inside
 single quotes and no later pane-state change can expand `!`; framed commands need
 no history approval. Smart-mode raw-key requests (`marker_polling: false`) go to
 whatever is running in the pane, so their history references require approval
-even behind allow prefixes. Panes require tmux 3.0 or newer (`new-session -e`);
+even behind allow prefixes. Panes require tmux 3.2 or newer (`new-session -e`);
 start refuses an older reported version instead of failing on an option error.

@@ -97,7 +97,7 @@ history file. Ordinary `tmux_exec` commands reach the pane single-quoted, so `!`
 is never history-expanded and needs no approval. Raw keys sent with
 `marker_polling: false` go to whatever is running in the pane, so in smart mode
 those containing unquoted or double-quoted history references require approval
-even if an allow prefix matches. tmux workspaces need tmux 3.0 or newer.
+even if an allow prefix matches. tmux workspaces need tmux 3.2 or newer.
 
 - Keep the workspace in version control and check existing changes before a
   run.

@@ -16,8 +16,8 @@ MARKER_PREFIX = "__CMDEND__"
 # assembled marker, so polling can only match the printf *output* line.
 TYPED_MARKER_FRAGMENT = "'__CMD''END__"
 
-# `new-session -e` (the pane's environment) first shipped in tmux 3.0.
-MIN_TMUX_VERSION = (3, 0)
+# `new-session -e` (the pane's environment) first shipped in tmux 3.2.
+MIN_TMUX_VERSION = (3, 2)
 
 
 def parse_tmux_version(text: str) -> tuple[int, int] | None:

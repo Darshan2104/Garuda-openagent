@@ -82,7 +82,7 @@ def test_pane_delta_scrolled_pane_falls_back_to_full_capture():
 
 
 @pytest.mark.parametrize("reported,supported", [
-    ("tmux 2.6", False), ("tmux 1.8", False), ("tmux 3.0a", True),
+    ("tmux 2.6", False), ("tmux 1.8", False), ("tmux 3.0a", False), ("tmux 3.1c", False), ("tmux 3.2", True),
     ("tmux 3.7c", True), ("tmux next-3.4", True),
 ])
 def test_tmux_version_gate(reported, supported):
@@ -101,6 +101,6 @@ async def test_start_refuses_tmux_without_session_environment_support(tmp_path, 
         return "tmux 2.6\n" if args == ["-V"] else ""
 
     monkeypatch.setattr(TmuxEnvironment, "_run_tmux", fake_tmux)
-    with pytest.raises(RuntimeError, match="require tmux 3.0 or newer; found 'tmux 2.6'"):
+    with pytest.raises(RuntimeError, match="require tmux 3.2 or newer; found 'tmux 2.6'"):
         await TmuxEnvironment(tmp_path / "workspace").start()
     assert calls == [["-V"]]

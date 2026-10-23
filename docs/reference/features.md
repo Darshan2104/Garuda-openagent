@@ -24,7 +24,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Tmux workspace | Persistent Bash pane with history expansion disabled (tmux 3.0+) | `garuda run --workspace-kind tmux -t "Run the tests"` | [Safety guide](../guides/safety-and-workspaces.md#local-and-tmux-workspaces) |
+| Tmux workspace | Persistent Bash pane with history expansion disabled (tmux 3.2+) | `garuda run --workspace-kind tmux -t "Run the tests"` | [Safety guide](../guides/safety-and-workspaces.md#local-and-tmux-workspaces) |
 | Docker workspace | Commands in a container, optionally offline | `garuda run --workspace-kind docker --no-network -t "…"` | [Level 2](../use-cases/change-code.md#run-untrusted-code-in-docker) |
 | OS sandbox | Bubblewrap or Seatbelt limits on writes and network | `garuda run --workspace-kind sandbox -t "…"` | [Level 2](../use-cases/change-code.md#limit-writes-and-network-with-the-os-sandbox) |
 | Remote Docker | A container on another Docker host | `garuda run --workspace-kind remote --docker-host ssh://host -t "…"` | [Safety guide](../guides/safety-and-workspaces.md#remote-docker-workspace) |
