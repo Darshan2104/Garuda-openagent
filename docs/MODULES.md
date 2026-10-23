@@ -714,7 +714,11 @@ garuda run -t "..." --mode eval --model openrouter/deepseek/deepseek-v4-flash-07
 `scenarios/background.py` binds owned background capsules, reserved sessions and
 v2 launch intents to the existing queue before spawning. Its read-only projector
 requires agreeing strict session/launch/queue/closure evidence and never compiles,
-enqueues or launches on a duplicate or restart. `scenarios/background_worker.py`
+enqueues or launches on a duplicate or restart. An exactly bound live claim
+publication projects as nonterminal `admission.pending`; if metadata advances
+during that read, the projector rereads the queue before classifying it. This does
+not establish dispatch or execution, and dead, mismatched, corrupt or separately
+quarantined evidence keeps its fail-closed status. `scenarios/background_worker.py`
 waits without workspace ownership, validates the frozen plan and sources, claims
 and dispatches once, then publishes closure only after workspace and queue release.
 `runtime/queue_capacity.py` lends the activated queue reservation to one actual
