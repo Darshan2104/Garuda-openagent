@@ -9,7 +9,7 @@
   "version_args": ["codex-acp", "--version"],
   "version_pattern": "@agentclientprotocol/codex-acp (\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?)",
   "auth_probe": {"argv": ["codex", "login", "status"], "authenticated_pattern": "Logged in using", "unauthenticated_pattern": "Not logged in"},
-  "setup": "1. Install Node.js 20+ and the Codex CLI, then authenticate with ChatGPT login (codex login); Garuda does not pass CODEX_API_KEY or CODEX_HOME to the adapter. 2. Run: npm install -g @agentclientprotocol/codex-acp. 3. Verify: codex-acp --version. Garuda never reads ~/.codex/auth.json.",
+  "setup": "1. Install Node.js 22+ (recommended; the checked package path has a published direct dependency floor of Node.js 20+) and the Codex CLI, then authenticate with ChatGPT login (codex login); Garuda does not pass CODEX_API_KEY or CODEX_HOME to the adapter. 2. Run: npm install -g @agentclientprotocol/codex-acp@2.1.1. 3. Verify: codex-acp --version. Garuda never reads ~/.codex/auth.json.",
   "login": {
     "flow": "user-cli",
     "instructions": "Run `codex login` with ChatGPT, then select this runtime."

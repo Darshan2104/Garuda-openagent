@@ -7,7 +7,7 @@ jobs, Python programs, and HTTP clients.
 |---|---|---|
 | Recipe | A fixed sequence of steps with parameters | `garuda recipe run file.yaml` |
 | Shell or CI | One task with an exit status and JSON output | `garuda run --json` |
-| Background queue | Many tasks started from a script, polled later | `garuda run --bg`, `garuda sessions show --json` |
+| Background queue | Many tasks started from a script, polled later | `garuda run --bg`, `garuda sessions show SESSION --json` |
 | Python SDK | Embedding the agent in your own program | `SoftwareAgent` |
 | HTTP service | Submitting and polling jobs from another process | `garuda serve` |
 
@@ -134,7 +134,7 @@ flow artifacts, independent review or a new session/resume engine.
     garuda sessions show "$id" --json | jq '{label, verification}'
     ```
 
-    `--bg` prints only the session ID on stdout. `sessions show --json`
+    `--bg` prints only the session ID on stdout. `sessions show SESSION --json`
     returns the same record the dashboard uses: `label`, the four-part
     `state`, `verification`, `self_check`, `queue`, `branch`, `approvals`,
     `flow` and `consults`. `garuda sessions --json` lists every session.
