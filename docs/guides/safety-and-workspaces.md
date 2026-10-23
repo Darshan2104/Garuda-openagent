@@ -93,10 +93,11 @@ quarantine work is described for contributors in
 through a visible tmux session. Both can reach anything your user can, unless
 a permission rule refuses the literal request. Managed tmux panes use Bash with
 startup profiles and rc files skipped, history expansion disabled, and no user
-history file. Smart-mode `tmux_exec` requests containing unquoted or double-quoted
-history references require approval even if an allow prefix matches. Literal
-single-quoted or escaped exclamation marks remain usable in simple commands;
-complex syntax containing `!` conservatively asks for approval.
+history file. Ordinary `tmux_exec` commands reach the pane single-quoted, so `!`
+is never history-expanded and needs no approval. Raw keys sent with
+`marker_polling: false` go to whatever is running in the pane, so in smart mode
+those containing unquoted or double-quoted history references require approval
+even if an allow prefix matches. tmux workspaces need tmux 3.2 or newer.
 
 - Keep the workspace in version control and check existing changes before a
   run.

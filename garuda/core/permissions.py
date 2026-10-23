@@ -432,7 +432,10 @@ class PermissionEngine:
                 self._check_paths(command_path_tokens(command), "read", cwd=arguments.get("cwd")),
                 self.check_path(str(arguments.get("cwd") or ""), "read"),
             )
-            if (tool_name == "tmux_exec" and self._mode not in {"auto", "yolo"}
+            # Framed commands reach the pane single-quoted inside `eval`, so no
+            # pane setting can expand `!`. Raw keys go to whatever is running.
+            raw_keys = not bool(arguments.get("marker_polling", True))
+            if (tool_name == "tmux_exec" and raw_keys and self._mode not in {"auto", "yolo"}
                     and has_history_reference(command)):
                 detail_decision = _strictest(detail_decision, PermissionDecision.ASK)
         elif tool_name in SEARCH_TOOLS:

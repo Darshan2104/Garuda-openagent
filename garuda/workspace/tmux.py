@@ -16,6 +16,15 @@ MARKER_PREFIX = "__CMDEND__"
 # assembled marker, so polling can only match the printf *output* line.
 TYPED_MARKER_FRAGMENT = "'__CMD''END__"
 
+# `new-session -e` (the pane's environment) first shipped in tmux 3.2.
+MIN_TMUX_VERSION = (3, 2)
+
+
+def parse_tmux_version(text: str) -> tuple[int, int] | None:
+    """``(major, minor)`` from ``tmux -V`` output, or None for builds like ``tmux master``."""
+    match = re.search(r"(\d+)\.(\d+)", text)
+    return (int(match[1]), int(match[2])) if match else None
+
 
 def unbalanced_quotes(command: str) -> bool:
     """True if the command has an unterminated quote.
@@ -127,6 +136,13 @@ class TmuxEnvironment:
         bash = shutil.which("bash")
         if bash is None:
             raise RuntimeError("tmux workspaces require bash; refusing a different shell")
+        reported = (await self._run_tmux(["-V"], capture=True)).strip()
+        version = parse_tmux_version(reported)
+        if version is not None and version < MIN_TMUX_VERSION:
+            raise RuntimeError(
+                f"tmux workspaces require tmux {MIN_TMUX_VERSION[0]}.{MIN_TMUX_VERSION[1]} "
+                f"or newer; found {reported!r}. Upgrade tmux or use another workspace kind."
+            )
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         await self._run_tmux(
             [

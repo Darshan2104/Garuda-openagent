@@ -76,10 +76,14 @@ with retained pipes releases those pipes after the drain deadline. Process group
 are signaled only while the shell has no recorded exit status. Repeated cancellation settles through
 `workspace/settlement.py` in both local execution modes.
 Managed tmux panes launch Bash without startup profiles or rc files, with history
-expansion disabled and no user history file. Unquoted or double-quoted history
-references still require approval in smart mode, even behind an allow prefix.
-The completion marker runs outside a safely quoted `eval` argument, so a command's
-trailing comment cannot swallow it while shell state remains persistent.
+expansion disabled and no user history file. The completion marker runs outside a
+safely quoted `eval` argument, so a command's trailing comment cannot swallow it
+while shell state remains persistent. Because a framed command reaches the pane
+single-quoted, it needs no history approval. Raw-key requests
+(`marker_polling: false`) go to whatever runs in the pane, so in smart mode their
+unquoted or double-quoted history references require approval, even behind an
+allow prefix. Pane start refuses a reported tmux older than 3.2
+(`new-session -e`); an unparsable version such as `tmux master` is accepted.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.

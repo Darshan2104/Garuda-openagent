@@ -1922,6 +1922,10 @@ splitting and read-only inspection share one lexical quote/escape implementation
 none is described as a complete shell parser or confinement boundary.
 
 Managed tmux panes launch Bash without startup files, with history expansion off
-and no user history file. Smart-mode history references require approval even
-behind allow prefixes, protecting against later pane-state changes. Completion
-framing evaluates the safely quoted original command before its separate marker.
+and no user history file. Completion framing evaluates the safely quoted original
+command before its separate marker, so a framed command reaches the pane inside
+single quotes and no later pane-state change can expand `!`; framed commands need
+no history approval. Smart-mode raw-key requests (`marker_polling: false`) go to
+whatever is running in the pane, so their history references require approval
+even behind allow prefixes. Panes require tmux 3.2 or newer (`new-session -e`);
+start refuses an older reported version instead of failing on an option error.
