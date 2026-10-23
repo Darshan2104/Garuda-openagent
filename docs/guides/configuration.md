@@ -471,8 +471,8 @@ launch (`role.mode_exceeds_permissions`).
 | Needs | Claude Code (`claude`) | Codex (`codex`) |
 |---|---|---|
 | `readonly` (cannot write) | `default` (asks before every change), `plan` | `read-only` (asks before edits) |
-| `smart` (edits the workspace) | `acceptEdits` | `workspace-write`, `agent` (asks only for actions it judges unsafe) |
-| `auto` (the agent decides permissions) | `auto` | — |
+| `smart` (edits the workspace, asks for anything else) | `acceptEdits` | `workspace-write` |
+| `auto` (the agent's own judgement decides what to ask) | `auto` | `agent` (asks only for actions it judges unsafe) |
 | `yolo` (approves everything) | `bypassPermissions` | `agent-full-access` |
 
 A role that names no mode gets one from what its step may do:
@@ -480,8 +480,11 @@ A role that names no mode gets one from what its step may do:
 | The step may | Claude Code | Codex |
 |---|---|---|
 | Not edit (`no-edits`, or `permissions: readonly`) | `default` | `read-only` |
-| Edit with `permissions: smart` | `acceptEdits` | `agent` |
+| Edit with `permissions: smart` | `acceptEdits` | `workspace-write` |
 | Edit with `permissions: auto` or `yolo` | `auto` | `agent` |
+
+The mode follows the stricter of the role's `permissions` and the run's
+`--permission-mode`.
 
 Garuda never chooses a mode that approves everything; you name it yourself
 under `permissions: yolo`. Defaults apply only on adapter versions where modes
@@ -496,8 +499,11 @@ roles:
   codex-sandboxed: {harness: codex, model_id: MODEL_ID, harness_mode: workspace-write}
 ```
 
-A foreground flow or headless run answers no approval requests, so a mode that
-asks (`default`, `read-only`) denies each edit or command it asks about. Codex
+A foreground flow or headless run answers no approval requests, so whatever a
+mode asks about is denied: every edit in `default` or `read-only`, and in Codex
+`workspace-write` a command that needs more than the sandbox, such as a test
+run. A Codex coder that must run commands in a flow needs `permissions: auto`
+(Codex `agent`). Codex
 ends its turn when it is refused a command it needs, which fails the step with
 the denied action named. Use an asking mode when you answer approvals yourself:
 `garuda run --role NAME` in an interactive terminal asks you about each request.

@@ -49,7 +49,7 @@ roles:
              write_policy: no-edits, agent: read-only}
   planner:  {harness: codex, model_id: gpt-6.1-sol, effort: high, permissions: smart,
              write_policy: no-edits, agent: read-only}
-  coder:    {harness: codex, model_id: gpt-5.6-sol, effort: high, permissions: smart}
+  coder:    {harness: codex, model_id: gpt-5.6-sol, effort: high, permissions: auto}
   reviewer: {harness: codex, model_id: gpt-6.1-sol, effort: high, permissions: smart,
              write_policy: no-edits, agent: read-only}
   # Claude Code: a second vendor that plans, builds or reviews.
@@ -88,9 +88,11 @@ harness and model from the role it reviews, so every review is
 [independent](teams.md#run-a-plan-build-review-flow).
 
 No role names a `harness_mode`, so each runs in the mode its step allows: a
-Claude coder in `acceptEdits`, a Codex coder in `agent`, and every no-edits
-step in Claude's `default` or Codex's `read-only`. Section 5 shows how to
-switch.
+Claude coder in `acceptEdits`, the Codex coder in `agent` (its
+`permissions: auto` lets Codex run tests without asking), and every no-edits
+step in Claude's `default` or Codex's `read-only`. Under `permissions: smart`
+a Codex coder would run in `workspace-write` and be refused the test runs it
+asks for. Section 5 shows how to switch.
 
 The no-edits roles use a small [agent definition](../guides/agents.md). Save it
 as `read-only.yaml` in the `agents/` folder next to your `garuda.yaml`:
@@ -310,7 +312,7 @@ garuda run --role coder --harness-mode agent-full-access -t "…"
   in an interactive terminal to answer the request yourself.
 - The third refused before launch: `role.mode_exceeds_permissions:
   agent-full-access on codex needs permissions: yolo or higher, more than
-  permissions: smart allows`.
+  permissions: auto allows`.
 
 To keep a mode, put it on the role:
 
@@ -337,7 +339,7 @@ Open the printed token URL.
   outcome, such as **approved after 2 rounds**.
 - **Runs**, for a Codex or Claude session, shows an **External harness** card:
   harness and adapter version, role, model, effort, the harness mode that
-  ran, the write policy, per-turn counts of message chunks, tool calls, tool
+  ran, the write policy, per-turn counts of message events, tool calls, tool
   results, approval requests and errors, and each approval with its outcome.
   **Models used** shows the context snapshot each turn reported. For Claude,
   that includes the model that actually ran (`claude-sonnet-5-5`) and its

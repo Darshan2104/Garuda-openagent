@@ -487,7 +487,14 @@ def test_unavailable_readiness_is_visible_before_admission(configured, problem, 
     assert _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"])) == before
 
 
-def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured):
+@pytest.mark.parametrize("proven, status", [(True, "ready"), (False, "not-checked")])
+def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured, monkeypatch,
+                                                                    proven, status):
+    from garuda.runtime import roles
+
+    if proven:  # some version of this harness can set the role's options; launch checks which
+        monkeypatch.setitem(roles.PROVEN_OPTIONS, ("external", "9.9"),
+                            {"model_id": "model", "effort": "effort"})
     doc = gy.load_file(gy.user_path())
     settings = {"runtimes": [{"runtime_id": "external", "kind": "acp", "version": "unknown",
                               "command": [sys.executable],
@@ -498,9 +505,23 @@ def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured):
     rows = {row["id"]: row["readiness"] for row in StarterService().list(configured)}
     state = rows["build-review"]
     codes = {d["code"] for d in state["diagnostics"]}
-    assert "role.options_unproven" not in codes
+    assert ("role.options_unproven" in codes) is not proven
     assert "harness.not_checked" in codes
-    assert state["status"] == "ready" and state["can_run"] is True
+    assert state["status"] == status and state["can_run"] is proven
+
+
+def test_a_flow_no_edits_step_whose_role_names_an_editing_mode_needs_setup(configured):
+    doc = gy.load_file(gy.user_path())
+    settings = {"runtimes": [{"runtime_id": "claude", "kind": "acp", "version": "unknown",
+                              "command": [sys.executable],
+                              "version_args": [sys.executable, "--version"]}]}
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump(settings))
+    doc["roles"]["reviewer"] = {"harness": "claude", "model_id": "sonnet",
+                                "harness_mode": "acceptEdits"}
+    gy.user_path().write_text(gy.dump(doc))
+    state = {row["id"]: row["readiness"] for row in StarterService().list(configured)}["build-review"]
+    assert "role.mode_exceeds_permissions" in {d["code"] for d in state["diagnostics"]}
+    assert state["status"] == "needs-setup" and state["can_run"] is False
 
 
 def test_single_harness_starters_and_explicit_build_check_keep_truthful_evidence(configured):

@@ -1962,14 +1962,15 @@ stays strict instead of guessing at Markdown or prose.
 An ACP role may name one of its harness's own permission modes (`harness_mode`,
 or `garuda run --harness-mode` for one run). Each mode has a minimum Garuda
 ceiling: a mode that cannot write needs `readonly`; one that edits the
-workspace and asks for risky actions (Claude Code `acceptEdits`, Codex
-`workspace-write` and `agent`) needs `smart`; one where the agent decides every
-permission needs `auto`; one that approves everything needs `yolo`. A no-edits
+workspace and asks for anything else (Claude Code `acceptEdits`, Codex
+`workspace-write`) needs `smart`; one where the agent's own judgement decides
+what to ask (Claude Code `auto`, Codex `agent`) needs `auto`; one that approves
+everything needs `yolo`. The ceiling is the stricter of the role's and the run's. A no-edits
 step admits only a mode that cannot write. Anything above the ceiling, or a mode
 Garuda cannot classify, refuses before launch.
 
 Without a named mode, a proven adapter gets the mode its step allows (Claude
-Code `acceptEdits` and Codex `agent` for `smart` edits; `default` and
+Code `acceptEdits` and Codex `workspace-write` for `smart` edits; `default` and
 `read-only` for no-edits). Garuda never selects a mode that approves everything,
 and an unproven adapter keeps its own default. Modes are proven per adapter
 version by selecting every advertised value without a prompt. The mode that ran

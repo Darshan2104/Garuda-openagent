@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 
-from garuda.runtime.role_control import RoleControlClient
+from garuda.runtime.role_control import RoleControlClient, bounded_output
 from garuda.runtime.role_request import catalog_from_document, native_from_document, role_from_document
 
 
@@ -35,27 +35,41 @@ async def execute(payload, control):
             session_record={**workspace_record, "flow_step": request["flow"],
                             **({"role": role.record()} if role else {})},
             collection_model=prepared.collection, collection_policy=prepared.collection_policy)
-        return {"session_id": session_id, "success": bool(result.success), "output": result.final_message or ""}
+        return {"session_id": session_id, "success": bool(result.success),
+                "output": bounded_output(result.final_message or "")}
     if request["kind"] == "acp":
         from garuda.interfaces.runtime_cli import run_acp_task
+        from garuda.runtime.protocol import AgentRuntimeError, RuntimeStartError
         from garuda.workspace.no_edits import deny_all
 
-        summary = await run_acp_task(
-            request["prompt"], runtime_id=request["manifest"]["runtime_id"],
-            workspace=request["workspace"], store=store,
-            catalog=catalog_from_document(request["manifest"]), role_plan=role,
-            lease_capability=control, session_id=session_id,
-            owned_container=request.get("owned_container"),
-            owned_docker=request.get("owned_docker"),
-            admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
-            session_record={**workspace_record, "flow_step": request["flow"]},
-            external_approvals=request.get("external_approvals", False),
-            approval=deny_all if request["no_edits"] else control.approve,
-            emit=lambda *_a: None, no_edits=request["no_edits"])
+        try:
+            summary = await run_acp_task(
+                request["prompt"], runtime_id=request["manifest"]["runtime_id"],
+                workspace=request["workspace"], store=store,
+                catalog=catalog_from_document(request["manifest"]), role_plan=role,
+                lease_capability=control, session_id=session_id,
+                owned_container=request.get("owned_container"),
+                owned_docker=request.get("owned_docker"),
+                admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
+                session_record={**workspace_record, "flow_step": request["flow"]},
+                external_approvals=request.get("external_approvals", False),
+                approval=deny_all if request["no_edits"] else control.approve,
+                emit=lambda *_a: None, no_edits=request["no_edits"])
+        except RuntimeStartError:
+            raise  # a refusal before launch keeps its own code
+        except AgentRuntimeError:
+            # The agent stopped on its own (ended its turn, exited, timed out): a failed
+            # step with a complete result, as in-process launch reports it.
+            if workspace_record:
+                try:
+                    store.update_meta(session_id, workspace_record)
+                except (OSError, ValueError):
+                    pass  # the session may not have begun; the result still closes the step
+            return {"session_id": session_id, "success": False, "output": ""}
         if workspace_record:
             store.update_meta(session_id, workspace_record)
         return {"session_id": session_id, "success": summary.get("status") == "completed",
-                "output": str(summary.get("reply") or "")}
+                "output": bounded_output(str(summary.get("reply") or ""))}
     raise ValueError("unsupported role kind")
 
 

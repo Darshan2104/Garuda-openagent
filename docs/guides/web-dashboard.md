@@ -190,7 +190,7 @@ history. On top of that:
   unknown** rather than being filled in.
 - **External harness** appears for a Claude Code, Codex or other ACP run: the
   harness and adapter version, role, model, effort, the harness mode that ran,
-  the write policy, a per-turn count of message chunks, tool calls, tool
+  the write policy, a per-turn count of message events, tool calls, tool
   results, approval requests and errors, prompts sent, and each approval with
   its outcome. Garuda never stores the harness's own messages or tool calls,
   so the trace below it says so instead of showing empty turns. **Models used**

@@ -498,7 +498,7 @@ function externalTrailHtml(ext) {
     return "<li>" + esc(a.action || "permission") + " — " + esc(a.outcome || "unknown") + "</li>";
   }).join("");
   return '<div class="card" id="external-trail"><h2>External harness</h2>' + facts +
-    '<div class="table-wrap"><table class="table"><thead><tr><th>Turn</th><th>Message chunks</th><th>Tool calls</th>' +
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Turn</th><th>Message events</th><th>Tool calls</th>' +
     "<th>Tool results</th><th>Approval requests</th><th>Errors</th></tr></thead><tbody>" +
     (rows || '<tr><td colspan="6">No turns recorded</td></tr>') + "</tbody></table></div>" +
     '<div class="stat-sub">Prompts sent: ' + esc(ext.prompts_sent) + "</div>" +

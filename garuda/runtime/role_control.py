@@ -17,6 +17,17 @@ from garuda.runtime.process_supervision import CleanupUncertain
 from garuda.workspace.lease import LeaseError
 
 CONTROL_LIMIT = 65_536
+#: The most bytes of step output a role child may hand back.
+MAX_RESULT_OUTPUT = 32_768
+
+
+def bounded_output(text: str) -> str:
+    """The end of ``text`` within :data:`MAX_RESULT_OUTPUT` bytes: flow artifact blocks
+    close an answer, so the tail is what a step's outputs come from."""
+    data = text.encode()
+    if len(data) <= MAX_RESULT_OUTPUT:
+        return text
+    return data[-MAX_RESULT_OUTPUT:].decode(errors="ignore")
 
 
 class RoleControl:
@@ -144,7 +155,7 @@ class RoleControl:
             if (not isinstance(value, dict) or set(value) != {"session_id", "success", "output"}
                     or not isinstance(value["session_id"], str)
                     or type(value["success"]) is not bool or not isinstance(value["output"], str)
-                    or len(value["output"].encode()) > 32_768):
+                    or len(value["output"].encode()) > MAX_RESULT_OUTPUT):
                 raise ValueError("invalid role result")
             from garuda.core.sessions import validate_session_ref
 

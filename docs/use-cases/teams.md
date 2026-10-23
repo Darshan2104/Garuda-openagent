@@ -227,8 +227,10 @@ sequenceDiagram
     - A foreground flow answers no approval requests, so each external step
       runs in a [harness mode](../guides/configuration.md#a-roles-harness-mode)
       that fits it: a Claude Code coder in `acceptEdits`, a Codex coder in
-      `agent`, and no-edits steps in Claude Code's `default` and Codex's
-      `read-only`. A mode that asks has each request denied.
+      `workspace-write` (or `agent` with `permissions: auto`), and no-edits
+      steps in Claude Code's `default` and Codex's `read-only`. Whatever a mode
+      asks about is denied, so a Codex coder that runs tests needs
+      `permissions: auto`.
     - Codex ends its turn when it is refused a command it needs, such as a test
       run in `read-only` mode. The step fails with the denied action named
       (`flow.step_failed`). Give no-edits roles instructions to read rather

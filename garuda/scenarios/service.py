@@ -15,7 +15,7 @@ from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import review
 from garuda.runtime.registry import RegistryError
-from garuda.runtime.roles import RoleRefused, acp_options, harness_mode
+from garuda.runtime.roles import RoleRefused, acp_options, check_provable, harness_mode
 from garuda.scenarios.catalog import load_catalog
 from garuda.scenarios.compile import LaunchContext, compile_with_context, resolve_launch, workspace_path
 from garuda.scenarios.inputs import validate_inputs
@@ -92,8 +92,11 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
             try:
                 harness_mode(plan, no_edits=run_no_edits)
                 # A probed version is known only at launch, which refuses an
-                # unproven one before anything is prompted.
-                if not manifest.version_args:
+                # unproven one before anything is prompted; here only what no
+                # proven version could set refuses.
+                if manifest.version_args:
+                    check_provable(plan)
+                else:
                     acp_options(plan, manifest.version, no_edits=run_no_edits)
             except RoleRefused as exc:
                 unchecked.append(exc.code)
@@ -107,6 +110,18 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
             diagnostics.append(_diagnostic("harness.not_checked", f"{name}: version, offered options and current login checked only at launch",
                                            f"Run `garuda doctor --runtime {plan.runtime_id}` for an explicit check.", level="info"))
         evidence[name] = row
+
+    for step in (context.flow or {}).get("steps", []):
+        plan = context.role_plans.get(step.get("role"))
+        if plan is None or plan.kind != "acp" or step.get("write_policy") != "no-edits":
+            continue
+        try:  # a no-edits step admits only a harness mode that cannot write
+            harness_mode(plan, no_edits=True)
+        except RoleRefused as exc:
+            blockers.append(exc.code)
+            diagnostics.append(_diagnostic(exc.code, f"step {step['id']}: {exc}",
+                                           "Name a mode that cannot write on this role, or "
+                                           "remove its harness_mode.", level="error"))
 
     reviews = []
     for step in (context.flow or {}).get("steps", []):

@@ -285,13 +285,39 @@ def test_a_yolo_role_may_name_a_bypassing_mode_that_is_never_a_default(monkeypat
 
 @pytest.mark.parametrize("runtime, permissions, no_edits, expected", [
     ("claude", "smart", False, "acceptEdits"), ("claude", None, True, "default"),
-    ("claude", "auto", False, "auto"), ("codex", "smart", False, "agent"),
-    ("codex", "smart", True, "read-only"), ("codex", "yolo", False, "agent"),
+    ("claude", "auto", False, "auto"), ("codex", "smart", False, "workspace-write"),
+    ("codex", "smart", True, "read-only"), ("codex", "auto", False, "agent"),
+    ("codex", "yolo", False, "agent"),
     ("native", "smart", False, None),
 ])
 def test_default_modes(runtime, permissions, no_edits, expected):
     plan = roles.RolePlan(role="r", runtime_id=runtime, kind="acp", permissions=permissions)
     assert roles.harness_mode(plan, no_edits=no_edits) == expected
+
+
+def test_a_stricter_run_ceiling_picks_the_mode(fake_acp, monkeypatch, capsys):
+    _modes(monkeypatch, {"readonly": "ask", "smart": "edit"})
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
+                     "--permission-mode", "readonly")
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["role"]["acp_options"] == {"mode": "ask"}
+
+
+def test_codex_auto_review_needs_the_auto_ceiling():
+    smart = roles.RolePlan(role="r", runtime_id="codex", kind="acp", permissions="smart",
+                           harness_mode="agent")
+    with pytest.raises(RoleRefused) as caught:
+        roles.harness_mode(smart)
+    assert caught.value.code == "role.mode_exceeds_permissions"
+    auto = roles.RolePlan(role="r", runtime_id="codex", kind="acp", permissions="auto",
+                          harness_mode="agent")
+    assert roles.harness_mode(auto) == "agent"
+    with pytest.raises(RoleRefused):
+        roles.harness_mode(auto, ceiling="smart")
 
 
 def test_an_unproven_adapter_keeps_its_own_mode_unless_one_is_named():
@@ -551,3 +577,15 @@ def test_an_external_run_saves_its_recorded_trail_as_the_trajectory(fake_acp, mo
     kinds = [json.loads(line)["kind"] for line in target.read_text().splitlines()]
     assert "outbound_prompt" in kinds and "message" in kinds
     assert all("text" not in json.loads(line) for line in target.read_text().splitlines())
+
+
+def test_a_trajectory_that_cannot_be_written_is_reported_after_the_no_edits_check(
+        fake_acp, monkeypatch, capsys, tmp_path):
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, write_policy: no-edits}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
+                     "--trajectory", str(tmp_path / "missing" / "t.jsonl"))
+
+    assert code == 0, out
+    assert "no-edits: no changes detected" in out
+    assert "trajectory not saved" in out

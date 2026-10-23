@@ -24,6 +24,7 @@ from garuda.core.events import SUBAGENT_LOG_DIR
 from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.eval.dashboard import row_from_session_meta
 from garuda.interfaces.web.tail import tail_jsonl
+from garuda.observability.lanes import ACP_EVENTS_FILE
 from garuda.observability.trajectory import Run, TrajectoryReader
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
     events_path = store.events_path(session_id) if session_id else None
     has_events = bool(events_path and events_path.is_file())
     # An external harness's session writes only its own trail; that is its log for liveness.
-    external_path = store.session_dir(session_id) / "acp-events.jsonl" if session_id else None
+    external_path = store.session_dir(session_id) / ACP_EVENTS_FILE if session_id else None
     has_external = bool(external_path and external_path.is_file())
     log_path = events_path if has_events else external_path if has_external else None
     claims_running = row.get("status") == "running"
@@ -262,7 +263,7 @@ def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | No
     Garuda keeps only the shape of an external trail (kinds, turns, prompt digests), never
     the harness's own messages or tool calls, so this is all a trajectory can show.
     """
-    path = directory / "acp-events.jsonl"
+    path = directory / ACP_EVENTS_FILE
     if not path.is_file():
         return None
     turns: dict[int, dict[str, int]] = {}
@@ -298,7 +299,9 @@ def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | No
         "turns": [{"turn": turn, **counts} for turn, counts in sorted(turns.items())],
         "prompts_sent": prompts,
         "approvals": approvals,
-        "note": "The harness's own messages and tool calls are not stored; only their counts.",
+        "note": ("The harness's own messages and tool calls are not stored; only their counts. "
+                 "Message events include streamed chunks and informational updates such as "
+                 "usage reports."),
     }
 
 

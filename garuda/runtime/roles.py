@@ -32,6 +32,8 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from garuda.config.garuda_yaml import PERMISSIONS
+
 if TYPE_CHECKING:
     from garuda.agents.spec_api import AgentSpec
     from garuda.runtime.registry import RuntimeRegistry
@@ -45,25 +47,24 @@ PROVEN_OPTIONS: dict[tuple[str, str], dict[str, str]] = {
                          "harness_mode": "mode"},
 }
 
-#: Garuda permission ceilings, least to most authority.
-LEVELS = ("readonly", "smart", "auto", "yolo")
 #: Each harness mode and the lowest ceiling that may select it, from the
 #: adapters' own descriptions (tests/fixtures/acp/). A mode that cannot write
-#: needs ``readonly``; one that edits the workspace and asks before risky
-#: actions, ``smart`` (Codex ``agent`` asks only for actions it judges unsafe,
-#: as smart does); one where the agent decides every permission itself,
-#: ``auto``; one that approves everything, ``yolo``.
+#: needs ``readonly``; one that edits the workspace and asks before anything
+#: else, ``smart``; one where the agent's own judgement decides what to ask
+#: (Claude Code ``auto``, Codex ``agent``), ``auto``; one that approves
+#: everything, ``yolo``.
 MODE_AUTHORITY: dict[str, dict[str, str]] = {
     "claude": {"default": "readonly", "plan": "readonly", "acceptEdits": "smart",
                "auto": "auto", "bypassPermissions": "yolo"},
-    "codex": {"read-only": "readonly", "workspace-write": "smart", "agent": "smart",
+    "codex": {"read-only": "readonly", "workspace-write": "smart", "agent": "auto",
               "agent-full-access": "yolo"},
 }
 #: The mode a role gets when it names none, by the most its step may do. Never
 #: a mode that bypasses approval.
 DEFAULT_MODES: dict[str, dict[str, str]] = {
     "claude": {"readonly": "default", "smart": "acceptEdits", "auto": "auto", "yolo": "auto"},
-    "codex": {"readonly": "read-only", "smart": "agent", "auto": "agent", "yolo": "agent"},
+    "codex": {"readonly": "read-only", "smart": "workspace-write", "auto": "agent",
+              "yolo": "agent"},
 }
 
 
@@ -159,10 +160,14 @@ def plan_role(resolved, catalog) -> RolePlan | None:
     return plan
 
 
-def harness_mode(plan: RolePlan, *, no_edits: bool = False) -> str | None:
+def harness_mode(plan: RolePlan, *, no_edits: bool = False,
+                 ceiling: str | None = None) -> str | None:
     """The harness permission mode to select for ``plan``, or ``None`` to leave
-    the adapter's own; refuses a mode the role or step may not use."""
-    ceiling = plan.permissions or "smart"
+    the adapter's own; refuses a mode the role or step may not use.
+
+    ``ceiling`` is the run's own permission mode when it is stricter than the role's.
+    """
+    ceiling = min(plan.permissions or "smart", ceiling or "yolo", key=PERMISSIONS.index)
     limit = "readonly" if no_edits or plan.write_policy == "no-edits" else ceiling
     if plan.harness_mode is None:
         return DEFAULT_MODES.get(plan.runtime_id, {}).get(limit)
@@ -171,7 +176,7 @@ def harness_mode(plan: RolePlan, *, no_edits: bool = False) -> str | None:
         raise RoleRefused("role.mode_unknown",
                           f"Garuda does not know what {plan.harness_mode!r} allows on "
                           f"{plan.runtime_id}, so it cannot check it against the role")
-    if LEVELS.index(needed) > LEVELS.index(limit):
+    if PERMISSIONS.index(needed) > PERMISSIONS.index(limit):
         where = "a no-edits step" if limit == "readonly" and ceiling != "readonly" else (
             f"permissions: {ceiling}")
         raise RoleRefused("role.mode_exceeds_permissions",
@@ -180,7 +185,8 @@ def harness_mode(plan: RolePlan, *, no_edits: bool = False) -> str | None:
     return plan.harness_mode
 
 
-def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False) -> dict[str, str]:
+def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False,
+                ceiling: str | None = None) -> dict[str, str]:
     """The ``session/set_config_option`` settings for an ACP role, or a refusal.
 
     A mode the role names needs a proven adapter like any option; a default
@@ -188,7 +194,7 @@ def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False)
     """
     wanted = {k: v for k, v in (("model_id", plan.model_id), ("effort", plan.effort)) if v}
     proven = PROVEN_OPTIONS.get((plan.runtime_id, adapter_version))
-    mode = harness_mode(plan, no_edits=no_edits)
+    mode = harness_mode(plan, no_edits=no_edits, ceiling=ceiling)
     if mode is not None and (plan.harness_mode is not None
                              or "harness_mode" in (proven or {})):
         wanted["harness_mode"] = mode
@@ -205,6 +211,20 @@ def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False)
         raise RoleRefused("role.options_unproven",
                           f"{', '.join(missing)} is not proven for {plan.runtime_id}")
     return {proven[k]: v for k, v in wanted.items()}
+
+
+def check_provable(plan: RolePlan) -> None:
+    """Refuse options no proven adapter version of ``plan``'s harness can set. For a
+    harness whose version is known only at launch, this is all a check that runs
+    nothing can say; launch still checks the exact version."""
+    wanted = [k for k in ("model_id", "effort", "harness_mode") if getattr(plan, k)]
+    proven = [options for (runtime, _version), options in PROVEN_OPTIONS.items()
+              if runtime == plan.runtime_id]
+    if wanted and not any(all(k in options for k in wanted) for options in proven):
+        raise RoleRefused("role.options_unproven",
+                          f"setting {', '.join(wanted)} on {plan.runtime_id} is not proven "
+                          "for any adapter version; remove them from the role or use a "
+                          "proven adapter")
 
 
 def check_offered(options: dict[str, str], offered: list) -> None:

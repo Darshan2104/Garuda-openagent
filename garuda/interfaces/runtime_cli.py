@@ -630,6 +630,7 @@ async def run_acp_task(
     session_record: dict | None = None,
     external_approvals: bool = False,
     no_edits: bool = False,
+    permission_ceiling: str | None = None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -700,7 +701,7 @@ async def run_acp_task(
         from garuda.runtime.roles import acp_options
 
         role_options = acp_options(role_plan, getattr(record, "version", "unknown"),
-                                   no_edits=no_edits)
+                                   no_edits=no_edits, ceiling=permission_ceiling)
 
     store = store or SessionStore()
     if capacity_loan is not None and lease_capability is not None:
@@ -893,8 +894,9 @@ async def run_acp_task(
         )
         if reply:
             store.update_meta(session_id, {"final_message": reply[-2000:]})
-        reports = [e.payload["usage"] for e in events
-                   if e.kind.value == "message" and isinstance(e.payload.get("usage"), dict)]
+        reports = [e.payload["usage"] for e in events  # a report with no valid field is none
+                   if e.kind.value == "message" and isinstance(e.payload.get("usage"), dict)
+                   and e.payload["usage"]]
         if reports:
             from garuda.observability.usage import record_acp_usage
 

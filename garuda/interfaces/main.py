@@ -1140,6 +1140,26 @@ def _accept_session(args, session_id: str | None) -> None:
               + (f" [{verification['code']}]" if verification.get("code") else ""), file=out)
 
 
+def _save_external_trajectory(args, session_id: str) -> None:
+    """An external harness's trajectory is the trail Garuda recorded of it: event kinds,
+    turns and request digests, never the harness's own messages. A failed copy is
+    reported, not raised: the run itself is already over."""
+    import shutil
+    import sys
+
+    from garuda.core.sessions import SessionStore
+    from garuda.observability.lanes import ACP_EVENTS_FILE
+
+    trail = (getattr(args, "_store", None) or SessionStore()).session_dir(
+        session_id) / ACP_EVENTS_FILE
+    try:
+        if trail.is_file():
+            shutil.copyfile(trail, args.trajectory)
+    except OSError as exc:
+        print(f"[garuda] trajectory not saved to {args.trajectory}: {exc.strerror or exc}",
+              file=sys.stderr)
+
+
 def _apply_role(args, resolved, catalog):
     """Turn the selected role into the run's runtime, model, effort and
     permissions (C.3); returns the plan, or ``None`` without a role."""
@@ -1159,7 +1179,6 @@ def _apply_role(args, resolved, catalog):
         from dataclasses import replace
 
         plan = replace(plan, harness_mode=requested_mode)
-        harness_mode(plan, no_edits=bool(getattr(args, "no_edits", False)))
     from garuda.agents.fallbacks import choose
 
     plan = choose(plan, resolved, catalog)  # once, before anything starts (C.9)
@@ -1183,6 +1202,9 @@ def _apply_role(args, resolved, catalog):
         given = getattr(args, "permission_mode", None)
         args.permission_mode = plan.permissions if given is None else min(
             given, plan.permissions, key=PERMISSIONS.index)
+    if requested_mode:  # refused here, before anything starts, against the run's own ceiling
+        harness_mode(plan, no_edits=bool(getattr(args, "no_edits", False)),
+                     ceiling=getattr(args, "permission_mode", None))
     out = sys.stderr if getattr(args, "json", False) else sys.stdout
     detail = " · ".join(str(v) for v in (plan.model_id, plan.effort, plan.harness_mode) if v)
     print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
@@ -1804,6 +1826,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             # (and recorded); its output is held until the workspace is checked.
             approval=deny_all if no_edits else interactive_approval(),
             no_edits=no_edits,
+            permission_ceiling=getattr(args, "permission_mode", None),
             emit=held.append if no_edits else print,
             initial_selection=getattr(args, "_initial_selection", None),
             initial_plan=getattr(args, "_initial_plan", None),
@@ -1823,22 +1846,13 @@ async def run_acp_command(args, task: str, catalog) -> int:
         print(f"Error: {exc}")
         return 1
     args._completed_session_id = summary["session_id"]
-    if getattr(args, "trajectory", None):
-        # An external harness's trajectory is the trail Garuda recorded of it: event
-        # kinds, turns and request digests, never the harness's own messages.
-        import shutil
-
-        from garuda.core.sessions import SessionStore
-
-        trail = (getattr(args, "_store", None) or SessionStore()).session_dir(
-            summary["session_id"]) / "acp-events.jsonl"
-        if trail.is_file():
-            shutil.copyfile(trail, args.trajectory)
     if guard is not None:
         if not _finish_no_edits(args, guard, summary.get("session_id")).unchanged:
             return 3
         for line in held:
             print(line)
+    if getattr(args, "trajectory", None):
+        _save_external_trajectory(args, summary["session_id"])
     print(
         f"session {summary['session_id']}: {summary['status']} "
         f"(turn {summary['turn']}, {summary['events']} normalized events; "
