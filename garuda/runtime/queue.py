@@ -33,7 +33,8 @@ including process identity and epoch. Implicit heartbeat/release use only this
 instance's successfully claimed owners in the claiming process; a newly opened
 store or fork cannot infer that authority from the persisted document.
 
-**Inspection** (:meth:`QueueStore.entries` and :meth:`QueueStore.snapshot`)
+**Inspection** (:meth:`QueueStore.entries`, :meth:`QueueStore.snapshot` and
+:meth:`QueueStore.inspect`)
 reads without the lock and writes nothing, including at construction. Missing
 stores stay missing; existing permissions and legacy records stay untouched.
 Older records remain readable for diagnosis. Version 1 work and version 2
@@ -429,6 +430,15 @@ class QueueStore:
         """Queued and running entries with their position — read without the lock,
         writing nothing (a read of the atomically replaced document is consistent)."""
         state, _migrated = self._read()
+        return self._entries(state, scope)
+
+    def inspect(self, scope: str | None = None) -> tuple[dict[str, Any], list[dict]]:
+        """Return one validated state publication and its projected entries."""
+        state, _migrated = self._read()
+        return state, self._entries(state, scope)
+
+    @staticmethod
+    def _entries(state: dict, scope: str | None = None) -> list[dict]:
         out = []
         pending = {record["entry"]["id"]: record for record in state.get("pending", {}).values()}
         for name, entry in sorted(state["scopes"].items()):

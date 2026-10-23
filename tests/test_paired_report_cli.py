@@ -4,10 +4,10 @@ import json
 import sys
 
 import pytest
-from test_paired_report import _manifest, _refs
 
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.main import build_parser, main
+from tests.test_paired_report import _manifest, _refs
 
 
 def _main(monkeypatch, capsys, *argv):
