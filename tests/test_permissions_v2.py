@@ -186,6 +186,52 @@ async def test_path_deny_rule_covers_search_tools():
         assert not allowed, f"{tool} must honor the path deny rule"
 
 
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+@pytest.mark.parametrize("pattern", ["secrets/**", "**/secrets/**", "absolute"])
+@pytest.mark.parametrize("tool,args", [
+    ("grep", {"pattern": "", "path": "secrets"}),
+    ("ls", {"path": "secrets/"}),
+    ("glob", {"pattern": "*", "path": "secrets"}),
+    ("bash", {"command": "grep -r . secrets"}),
+])
+def test_directory_glob_rule_covers_the_directory_itself(tmp_path, rule, pattern, tool, args):
+    if pattern == "absolute":
+        pattern = str(tmp_path / "secrets/**")
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={rule: [pattern]})
+    decision, _ = engine.decide(tool, args)
+    assert decision == PermissionDecision(rule)
+    assert engine.decide("ls", {"path": "src"})[0] == PermissionDecision.ALLOW
+
+
+@pytest.mark.parametrize(
+    "pattern,path",
+    [
+        ("**/secrets/**", "packages/app/secrets"),
+        ("secrets/**", "./temp/../secrets"),
+        ("absolute", "absolute"),
+    ],
+)
+def test_directory_glob_rule_covers_equivalent_directory_operands(tmp_path, pattern, path):
+    if pattern == "absolute":
+        pattern = str(tmp_path / "secrets/**")
+        path = str(tmp_path / "secrets")
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={"deny": [pattern]})
+    assert engine.decide("ls", {"path": path})[0] == PermissionDecision.DENY
+    assert engine.decide("ls", {"path": f"{path}-backup"})[0] == PermissionDecision.ALLOW
+
+
+def test_directory_glob_rule_covers_explicit_command_cwd(tmp_path):
+    engine = PermissionEngine(
+        workspace_root=tmp_path, path_rules={"deny": ["secrets/**"]}
+    )
+    # Keep the command empty so the decision proves the cwd itself is screened,
+    # rather than a command operand resolving to a denied descendant.
+    assert engine.decide("bash", {"command": "", "cwd": "secrets"})[0] == PermissionDecision.DENY
+    assert engine.decide(
+        "bash", {"command": "", "cwd": "secrets-backup"}
+    )[0] == PermissionDecision.ALLOW
+
+
 async def test_path_deny_rule_covers_glob_pattern_argument():
     """The denied path can arrive as a *pattern* rather than a base dir."""
     engine = PermissionEngine(mode="smart", path_rules={"deny": ["**/*.env"]})

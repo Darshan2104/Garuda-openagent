@@ -318,6 +318,8 @@ class PermissionEngine:
         patterns = {pattern, normalized}
         if os.path.isabs(pattern):
             patterns.add(os.path.realpath(pattern))
+        # A directory rule covers the directory itself, including searches rooted there.
+        patterns |= {p[:-3] for p in list(patterns) if p.endswith("/**") and len(p) > 3}
         return any(fnmatch.fnmatch(form, rule) or Path(form).name == normalized
                    for form in forms for rule in patterns)
 
