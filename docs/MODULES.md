@@ -531,7 +531,10 @@ dispatcher. Flow plans enter `FlowExecutionService.run_prepared`; run plans ente
 with exactly one plain role step and the exact previewed task. Either way:
 it reserves an intent, recompiles, verifies both digests, schedules one task on
 the server loop, projects the authoritative session and drains it at shutdown.
-Existing or restarted operations are read/reconciled without replay.
+Foreground projection requires the matching intent to publish terminal before a
+terminal parent becomes terminal in public status; stale admitted reads remain
+nonterminal and status reads never advance or replay the operation. Existing or
+restarted operations are read/reconciled without replay.
 `interfaces/web/scenarios.py` serves the installed library/detail, pure POST
 preview, shared selected results, POST start and operation status behind existing
 dashboard authorization.
