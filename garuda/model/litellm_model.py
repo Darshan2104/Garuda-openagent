@@ -414,6 +414,10 @@ class LitellmModel:
             "model": self._model_name,
             "messages": litellm_messages,
             "timeout": self._request_timeout,
+            # Garuda owns tool and MCP execution. LiteLLM 1.87+ consumes this
+            # integration flag before provider kwargs are built, keeping its
+            # separate MCP gateway out of this inference-only transport path.
+            "_skip_mcp_handler": True,
         }
         if self._api_key:
             kwargs["api_key"] = self._api_key
