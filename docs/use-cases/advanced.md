@@ -33,10 +33,14 @@ never reads, copies, stores, or proxies your vendor login.
 
 === "Claude Code"
 
-    Needs Node.js 20+ and Claude Code, installed and logged in.
+    Install [Node.js 22+](https://nodejs.org/en/download) (including npm), then
+    [Claude Code](https://code.claude.com/docs/en/setup#install-with-npm) and its adapter:
 
     ```bash
-    npm install -g @agentclientprotocol/claude-agent-acp
+    npm install -g @anthropic-ai/claude-code
+    claude   # first run: log in with your Claude Pro/Max account, then exit
+    claude auth status
+    npm install -g @agentclientprotocol/claude-agent-acp@0.85.0
     claude-agent-acp --version
     garuda runtime inspect claude
     ```
@@ -45,11 +49,14 @@ never reads, copies, stores, or proxies your vendor login.
 
 === "Codex"
 
-    Needs Node.js 20+ and the Codex CLI.
+    Install [Node.js 22+](https://nodejs.org/en/download) (including npm), then
+    the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and its adapter:
 
     ```bash
-    codex login
-    npm install -g @agentclientprotocol/codex-acp
+    npm install -g @openai/codex
+    codex login   # sign in with ChatGPT
+    codex login status
+    npm install -g @agentclientprotocol/codex-acp@2.1.1
     codex-acp --version
     garuda runtime inspect codex
     ```
@@ -90,6 +97,24 @@ never reads, copies, stores, or proxies your vendor login.
     goose --version
     garuda runtime inspect goose
     ```
+
+Node 22+ is recommended for both examples. In primary npm package metadata
+checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
+and the [Claude adapter 0.85.0](https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.85.0)
+both declare Node 22+. The [Codex CLI 0.164.0](https://registry.npmjs.org/%40openai%2Fcodex/0.164.0)
+declares Node 16+, while the [Codex adapter 2.1.1](https://registry.npmjs.org/%40agentclientprotocol%2Fcodex-acp/2.1.1)
+does not declare `engines.node`; its `open` `^11.0.1` runtime dependency
+currently resolves to [open 11.0.4](https://registry.npmjs.org/open/11.0.4),
+which declares Node 20+. Node 20+ is therefore the highest published direct
+runtime requirement for that checked Codex path, rather than a minimum declared
+by the adapter itself. Newer CLI or dependency releases can raise these requirements.
+
+The pinned Claude Code and Codex adapter versions are the ones on which Garuda
+has proven a role's `model_id`, `effort`, and `harness_mode`. Garuda refuses
+roles that set these options on an unproven adapter (`role.options_unproven`)
+before sending a prompt. Omit the version pin only if your roles leave all
+three unset. Run `garuda doctor --runtime claude` (or `--runtime codex`) to
+check the install and login.
 
 Details and limits for each vendor are in the
 [External harnesses guide](../guides/external-harnesses.md#vendor-setup).

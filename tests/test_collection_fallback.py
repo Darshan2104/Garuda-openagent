@@ -1,10 +1,10 @@
 import json
 
 import pytest
-from test_collection_budget import _coordinator, _submission
 
 from garuda.model.config import CollectionBudget
 from garuda.model.script_model import ScriptModel
+from tests.test_collection_budget import _coordinator, _submission
 
 
 class FailingModel(ScriptModel):

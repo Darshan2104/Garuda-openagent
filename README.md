@@ -33,10 +33,13 @@ MCP, and observability.
 
 ## Quick start
 
+Needs Python 3.12+, Git, and macOS or Linux (on Windows, use WSL 2).
+
 ```bash
 git clone https://github.com/Darshan2104/Garuda-openagent.git
 cd Garuda-openagent
-pip install -e ".[dev]"
+python3.12 -m venv .venv && source .venv/bin/activate
+python -m pip install -e .
 
 export OPENROUTER_API_KEY=sk-or-...
 garuda run -t "List all Python files in the current directory" --mode readonly
@@ -45,6 +48,9 @@ garuda run -t "List all Python files in the current directory" --mode readonly
 Model-backed runs can incur provider charges. The built-in default is DeepSeek
 through OpenRouter; choose another supported model and matching credential with
 `--model` or `GARUDA_MODEL`.
+
+Using a Claude Code or Codex subscription instead of an API key? See
+[Install a harness](docs/use-cases/advanced.md#install-a-harness).
 
 ```bash
 garuda chat --agent build
@@ -59,7 +65,7 @@ confine host file reads.
 
 ## Documentation
 
-Read the searchable documentation at
+Start with the [documentation index](docs/index.md), or read the searchable site at
 [darshan2104.github.io/Garuda-openagent](https://darshan2104.github.io/Garuda-openagent/).
 
 | Start here | Then |
@@ -95,6 +101,7 @@ pip install -e ".[observability]"   # OpenTelemetry export
 ## Development
 
 ```bash
+python -m pip install -e ".[dev]"
 pytest -q
 pip install ruff   # not part of the dev extra
 ruff check garuda tests
@@ -105,4 +112,7 @@ checks and optional live integration tests.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) ·
+Security reports: [SECURITY.md](SECURITY.md).

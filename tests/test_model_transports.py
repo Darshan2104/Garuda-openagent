@@ -5,8 +5,12 @@ records are refused; the opt-in live test spends nothing unless asked.
 """
 
 import importlib
+import json
 import os
 import pathlib
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -19,6 +23,128 @@ from garuda.model.transports import (
     assert_repository_admission,
     registry,
 )
+from garuda.types import Message, Role
+
+
+@contextmanager
+def _openai_tool_endpoint():
+    requests = []
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(request)
+            tool_call = {
+                "index": 0,
+                "id": "call_local",
+                "type": "function",
+                "function": {"name": "local_tool", "arguments": '{"value":7}'},
+            }
+            if request.get("stream"):
+                chunks = [
+                    {
+                        "id": "local-stream",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "transport-fixture",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "tool_calls": [tool_call]},
+                            "finish_reason": None,
+                        }],
+                    },
+                    {
+                        "id": "local-stream",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "transport-fixture",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    },
+                ]
+                raw = b"".join(
+                    f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks
+                ) + b"data: [DONE]\n\n"
+                content_type = "text/event-stream"
+            else:
+                raw = json.dumps({
+                    "id": "local-completion",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "transport-fixture",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [tool_call],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+async def test_litellm_transports_function_schemas_without_owning_tools(stream):
+    """Ordinary tools cross real LiteLLM HTTP while Garuda retains execution."""
+    from garuda.model.litellm_model import LitellmModel
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "local_tool",
+            "description": "Return a local value",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        },
+    }]
+    with _openai_tool_endpoint() as (server, requests):
+        model = LitellmModel(
+            "openai/transport-fixture",
+            api_key="local-protocol-fixture",
+            api_base=f"http://127.0.0.1:{server.server_port}/v1",
+            max_retries=1,
+        )
+        messages = [Message(role=Role.USER, content="Call the local tool")]
+        if stream:
+            response = await model.complete_streaming(messages, tools=tools)
+        else:
+            response = await model.complete(messages, tools=tools)
+
+    assert len(requests) == 1
+    assert requests[0].get("stream", False) is stream
+    assert "_skip_mcp_handler" not in requests[0]
+    assert requests[0]["tools"] == tools
+    assert requests[0]["tool_choice"] == "auto"
+    assert response.content in (None, "")
+    assert [(call.id, call.name, call.arguments) for call in response.tool_calls] == [
+        ("call_local", "local_tool", {"value": 7})
+    ]
 
 
 def test_registered_transports_are_fully_admitted():

@@ -150,7 +150,7 @@ Run Garuda from files, scripts, and programs. [Open Level 6 →](automate.md)
 |---|---|
 | [Chain steps (plan → build → test)](automate.md#run-a-multi-step-recipe) | `garuda recipe run fix-and-test.yaml` |
 | [Run in a script or CI job](automate.md#use-garuda-in-scripts-and-ci) | `garuda run --json -t "…"` |
-| [Start many and poll them](automate.md#use-garuda-in-scripts-and-ci) | `garuda run --bg`, `garuda sessions show --json` |
+| [Start many and poll them](automate.md#use-garuda-in-scripts-and-ci) | `garuda run --bg`, `garuda sessions show SESSION --json` |
 | [Embed in a Python program](automate.md#call-garuda-from-python) | `SoftwareAgent` |
 | [Submit jobs over HTTP](automate.md#call-garuda-over-http) | `garuda serve` |
 
