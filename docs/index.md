@@ -21,9 +21,13 @@ Code or Codex. Every run is recorded so you can inspect or continue it.
 
 ## Try it
 
+Needs Python 3.12+, Git, and macOS or Linux (on Windows, use WSL 2).
+For a subscription login instead of an API key, see
+[Install a harness](use-cases/advanced.md#install-a-harness).
+
 ```bash
 git clone https://github.com/Darshan2104/Garuda-openagent.git && cd Garuda-openagent
-python3.12 -m venv .venv && source .venv/bin/activate && pip install -e .
+python3.12 -m venv .venv && source .venv/bin/activate && python -m pip install -e .
 export OPENROUTER_API_KEY=sk-or-...   # placeholder: use your own key
 garuda run --mode readonly -t "Summarize this repository"
 ```
@@ -153,3 +157,7 @@ with the
 [contributor guide](https://github.com/Darshan2104/Garuda-openagent/blob/main/AGENTS.md).
 Open work is in the [backlog](BACKLOG.md); dated designs and plans are under
 **Project history**.
+
+See [Contributing](https://github.com/Darshan2104/Garuda-openagent/blob/main/CONTRIBUTING.md)
+for setup and checks, and [Security](https://github.com/Darshan2104/Garuda-openagent/blob/main/SECURITY.md)
+for vulnerability reporting instructions.

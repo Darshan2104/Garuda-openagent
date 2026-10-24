@@ -9,6 +9,20 @@ description = "Universal provider-agnostic agent harness for terminal and softwa
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
+authors = [{ name = "Darshan Tank" }]
+keywords = ["ai", "coding-agent", "agent-harness", "llm", "litellm", "acp", "mcp", "claude-code", "codex"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
+]
 dependencies = [
     # >=1.87: consumes the private _skip_mcp_handler integration flag before
     # provider kwargs are built. Garuda owns tool/MCP execution and uses LiteLLM
@@ -59,6 +73,13 @@ observability = [
     "opentelemetry-exporter-otlp>=1.20.0",
 ]
 server = []
+
+[project.urls]
+Homepage = "https://github.com/Darshan2104/Garuda-openagent"
+Documentation = "https://darshan2104.github.io/Garuda-openagent/"
+Repository = "https://github.com/Darshan2104/Garuda-openagent"
+Issues = "https://github.com/Darshan2104/Garuda-openagent/issues"
+Changelog = "https://darshan2104.github.io/Garuda-openagent/major-changes/"
 
 [project.scripts]
 garuda = "garuda.interfaces.main:main"

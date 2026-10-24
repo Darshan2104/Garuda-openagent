@@ -201,16 +201,25 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
 
     - Launch command: `claude-agent-acp` from
       `@agentclientprotocol/claude-agent-acp`.
-    - Install Node.js 20+, install and log in to Claude Code, then install the
-      ACP package globally and verify `claude-agent-acp --version`.
+    - Install Node.js 22+, install and log in to Claude Code
+      (`npm install -g @anthropic-ai/claude-code`, then run `claude` once),
+      then install the pinned ACP package globally and verify
+      `claude-agent-acp --version`.
+    - Pin the ACP package to `@0.85.0` to use role model, effort, and harness
+      mode options; see [Install a harness](../use-cases/advanced.md#install-a-harness).
     - Authentication stays in the Claude Code login. Don't set
       `ANTHROPIC_API_KEY` when you intend to use subscription billing.
 
 === "Codex"
 
     - Launch command: `codex-acp` from `@agentclientprotocol/codex-acp`.
-    - Install Node.js 20+ and the Codex CLI, run `codex login`, install the ACP
-      package, and verify `codex-acp --version`.
+    - Install Node.js 22+ (recommended) and the Codex CLI
+      (`npm install -g @openai/codex`), run `codex login`, install the pinned ACP
+      package globally, and verify `codex-acp --version`. The checked package
+      path's highest published direct runtime requirement is Node 20+; the
+      adapter itself does not declare `engines.node`.
+    - Pin the ACP package to `@2.1.1` to use role model, effort, and harness
+      mode options; see [Install a harness](../use-cases/advanced.md#install-a-harness).
     - Authentication stays in the Codex CLI login.
 
 === "Cursor Agent"
@@ -236,6 +245,9 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
 
     - Launch command: `goose acp`, a Goose CLI subcommand.
     - Install and authenticate Goose, then verify `goose --version`.
+
+The exact package metadata and retrieval date behind these Node requirements
+are recorded in [Install a harness](../use-cases/advanced.md#install-a-harness).
 
 ## Usage and limit sources
 

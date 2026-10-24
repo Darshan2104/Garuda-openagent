@@ -24,6 +24,23 @@ Click a problem to see the fix.
     python -m pip show garuda-openagent
     ```
 
+??? question "`requires a different Python` or `python3.12: command not found`"
+
+    Garuda needs Python 3.12+. Install it and recreate the virtual environment
+    with that interpreter, following [Install](../guides/getting-started.md#1-install).
+    After activating the environment, check `python --version`.
+
+??? question "`error: externally-managed-environment`"
+
+    Install into a virtual environment as shown in the
+    [Quickstart](../guides/getting-started.md#1-install).
+    Don't use `--break-system-packages` to override your system Python's protections.
+
+??? question "Installing on Windows"
+
+    Native Windows is not supported or tested. Use WSL 2 and follow the
+    [Linux install steps](../guides/getting-started.md#1-install) inside it.
+
 ??? question "Missing credential or provider authentication error"
 
     The key must match the selected model. The default model needs

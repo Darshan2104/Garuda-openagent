@@ -4,7 +4,7 @@ Go from nothing to your first Garuda run in about five minutes. You will
 install Garuda, add a model key, run a read-only task, and open the saved
 session.
 
-<p class="gd-facts">Needs: Python 3.12+, Git, and an API key for a model provider ·
+<p class="gd-facts">Needs: Python 3.12+, Git, macOS or Linux, and an API key for a model provider ·
 Runs read-only</p>
 
 ```mermaid
@@ -14,27 +14,23 @@ flowchart LR
 
 ## 1. Install
 
-=== "macOS / Linux"
+```bash
+git clone https://github.com/Darshan2104/Garuda-openagent.git
+cd Garuda-openagent
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+garuda --help
+```
 
-    ```bash
-    git clone https://github.com/Darshan2104/Garuda-openagent.git
-    cd Garuda-openagent
-    python3.12 -m venv .venv
-    source .venv/bin/activate
-    python -m pip install -e .
-    garuda --help
-    ```
+!!! note "Windows"
+    Native Windows is not supported or tested in CI. Garuda relies on POSIX
+    process control, so run these steps inside WSL 2.
 
-=== "Windows (PowerShell)"
-
-    ```powershell
-    git clone https://github.com/Darshan2104/Garuda-openagent.git
-    cd Garuda-openagent
-    py -3.12 -m venv .venv
-    .venv\Scripts\Activate.ps1
-    python -m pip install -e .
-    garuda --help
-    ```
+!!! tip "Python and virtual environments"
+    If `python3.12` isn't found, install Python 3.12 or newer and use that
+    interpreter to create the virtual environment. The virtual environment
+    also avoids `externally-managed-environment` errors from system Python.
 
 If `garuda --help` lists the commands, you are ready.
 
@@ -50,6 +46,15 @@ If `garuda --help` lists the commands, you are ready.
     | `pip install -e ".[dev]"` | pytest, for contributors |
 
 ## 2. Add a model key
+
+!!! tip "Only have a Claude Code or Codex subscription?"
+    Garuda's native runtime needs a provider API key. To use a subscription,
+    install Node.js 22+ (recommended for either harness), the vendor CLI
+    (logged in), and its ACP adapter. Node 22+ is required by the checked Claude
+    packages; the checked Codex package path has a published floor of Node 20+.
+    Follow [Install a harness](../use-cases/advanced.md#install-a-harness),
+    then the [Codex and Claude Code example](../use-cases/codex-and-claude.md).
+    Garuda never reads or converts the vendor login.
 
 The built-in default model is `openrouter/deepseek/deepseek-v4-flash-0731`, so
 the simplest start is an [OpenRouter](https://openrouter.ai/) key:
@@ -136,6 +141,9 @@ session ID, or a unique prefix from `garuda sessions`. Garuda starts a new sessi
 original record is never overwritten.
 
 ## 6. Optional: name your roles
+
+For CLI, login, and ACP adapter prerequisites, see
+[Install a harness](../use-cases/advanced.md#install-a-harness).
 
 If you use Claude Code or Codex alongside Garuda, `garuda init` proposes a
 `garuda.yaml` with `scout`, `planner`, `coder` and `reviewer` roles on the
