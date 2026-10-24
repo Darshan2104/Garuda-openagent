@@ -121,6 +121,33 @@ def test_whole_definition_replacement_and_ceiling_intersection():
     assert resolved.provenance["roles.reviewer"] == USER
 
 
+def test_project_cannot_exceed_ceiling_when_user_role_sets_no_permissions():
+    user = _user(roles={"coder": {"harness": "codex"}})
+    project = _user(roles={"coder": {"harness": "codex", "permissions": "yolo"}})
+    with pytest.raises(GarudaConfigError) as caught:
+        gy.resolve(user, project)
+    assert (caught.value.code, caught.value.path) == (
+        "config.project_widening", "roles.coder.permissions")
+
+
+@pytest.mark.parametrize("ceiling,permissions", [("smart", "auto"), ("readonly", "smart")])
+def test_project_permissions_cannot_exceed_configured_ceiling(ceiling, permissions):
+    user = _user(roles={"coder": {"harness": "codex"}})
+    project = _user(roles={"coder": {"harness": "codex", "permissions": permissions}})
+    with pytest.raises(GarudaConfigError) as caught:
+        gy.resolve(user, project, project_ceiling=ceiling)
+    assert (caught.value.code, caught.value.path) == (
+        "config.project_widening", "roles.coder.permissions")
+
+
+@pytest.mark.parametrize("ceiling, permissions", [("smart", "readonly"), ("yolo", "yolo")])
+def test_project_permissions_within_ceiling_when_user_role_sets_none(ceiling, permissions):
+    user = _user(roles={"coder": {"harness": "codex"}})
+    project = _user(roles={"coder": {"harness": "codex", "permissions": permissions}})
+    config = gy.resolve(user, project, project_ceiling=ceiling).config
+    assert config["roles"]["coder"]["permissions"] == permissions
+
+
 @pytest.mark.parametrize("project, path", [
     ({"roles": {"coder": {"harness": "codex", "fallback": [{"harness": "aider"}]}}},
      "roles.coder.fallback"),

@@ -225,7 +225,13 @@ def _apply_whitespace_flexible(
             f"a whitespace-insensitive match for old_string occurs {len(starts)} times in "
             f"{path}; add more surrounding context, or set replace_all to true.",
         )
-    targets = starts if replace_all else starts[:1]
+    if replace_all:
+        targets = []
+        for start in starts:
+            if not targets or start >= targets[-1] + window:
+                targets.append(start)
+    else:
+        targets = starts[:1]
     result_lines = list(content_lines)
     model_indent = _leading_ws(old_lines[0])
     for start in sorted(targets, reverse=True):

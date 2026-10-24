@@ -467,6 +467,12 @@ def _check_key(check: dict) -> tuple:
             tuple(sorted((check.get("env") or {}).items())), check.get("mode", "host"))
 
 
+def _check_project_ceiling(path: str, wanted: str | None, ceiling: str) -> None:
+    if wanted and PERMISSIONS.index(wanted) > PERMISSIONS.index(ceiling):
+        _fail(f"{path}.permissions", f"{wanted} is above the project ceiling {ceiling} "
+              "(agents.project_ceiling in settings.yaml)", code="config.project_widening")
+
+
 def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> dict:
     path = f"roles.{name}"
     if user is None:
@@ -474,12 +480,11 @@ def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> d
             if project.get(key):
                 _fail(f"{path}.{key}", f"{key} grants are user-only; a project cannot add them",
                       code="config.project_widening")
-        wanted = project.get("permissions")
-        if wanted and PERMISSIONS.index(wanted) > PERMISSIONS.index(ceiling):
-            _fail(f"{path}.permissions", f"{wanted} is above the project ceiling {ceiling} "
-                  "(agents.project_ceiling in settings.yaml)", code="config.project_widening")
+        _check_project_ceiling(path, project.get("permissions"), ceiling)
         return project
     role = dict(project)
+    if user.get("permissions") is None:
+        _check_project_ceiling(path, project.get("permissions"), ceiling)
     role["permissions"] = _stricter(user.get("permissions"), project.get("permissions"))
     if role["permissions"] is None:
         role.pop("permissions")
