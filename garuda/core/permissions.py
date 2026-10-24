@@ -106,10 +106,10 @@ SEARCH_TOOLS = {
     "ls": ("path",),
 }
 
-# File-operation tools that modify the filesystem. `notebook_edit` is listed for
-# consistency with `side_effects._WRITE_TOOLS`, which already treats it as mutating;
-# no such tool ships today, so this is here so that the sets agree in advance rather
-# than to close a live hole.
+# Canonical classification of file-operation tools that modify the filesystem.
+# The side-effect ledger takes an immutable import-time snapshot of this set.
+# `notebook_edit` does not ship today; retaining it preserves the existing
+# classification for a future implementation.
 WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
 
 # File-operation tools that only read.
