@@ -1981,3 +1981,18 @@ An external harness's `usage_update` is recorded as a ledger snapshot (context
 occupancy, a harness-estimated cost, a reported model); it is never summed or
 counted as a turn. Claude Code and Codex login is read from each CLI's own
 status command, and only the conclusion is kept.
+
+
+## 2026-10-24 — Inference transports leave MCP execution to Garuda
+
+The LiteLLM adapter passes ordinary function schemas and returns model tool
+calls; Garuda owns their permission checks and execution, including MCP tools.
+It sets LiteLLM's private `_skip_mcp_handler` integration flag to bypass that
+library's separate MCP gateway. LiteLLM 1.106.2 otherwise imports MCP 2-only
+types even for ordinary functions, breaking the supported MCP 1 transport.
+
+The supported LiteLLM minimum is 1.87.0, a verified version that consumes the
+flag before building provider requests. Real local HTTP completion and SSE
+tests cover schema forwarding, returned tool calls and absence of the flag on
+the provider wire. Pinned and newest dependency jobs must retain this proof
+because the flag is an upstream integration detail.

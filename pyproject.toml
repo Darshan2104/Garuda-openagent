@@ -24,9 +24,10 @@ classifiers = [
     "Topic :: Software Development",
 ]
 dependencies = [
-    # >=1.63: reasoning_effort, thinking param, and assistant thinking_blocks
-    # round-trip must exist or extended thinking silently no-ops.
-    "litellm>=1.63.0",
+    # >=1.87: consumes the private _skip_mcp_handler integration flag before
+    # provider kwargs are built. Garuda owns tool/MCP execution and uses LiteLLM
+    # only to transport inference and ordinary function schemas.
+    "litellm>=1.87.0",
     "pyyaml>=6.0",
     # >=4.18: the `referencing` library, so a $ref never triggers a lookup on its own.
     "jsonschema>=4.18",
