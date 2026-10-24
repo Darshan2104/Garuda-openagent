@@ -101,10 +101,23 @@ def test_tab_vs_space_bails_to_error():
 
 def test_replace_all_indentation_flexible():
     content = "  x\n    x\n"  # same token at two indents
-    out = resolve_edit(content, "x", "y", "f.txt", True)
+    out = resolve_edit(content, "      x", "      y", "f.txt", True)
     assert out.ok
     assert out.updated == "  y\n    y\n"
     assert out.replacements == 2
+    assert "indentation" in out.note
+
+
+def test_replace_all_flexible_matches_do_not_overlap():
+    content = "  a\n" * 6
+    out = resolve_edit(content, "a\na", "X\nY\nZ", "f.txt", True)
+    assert out.ok
+    assert out.updated == "  X\n  Y\n  Z\n" * 3
+    assert out.replacements == 3
+
+    ambiguous = resolve_edit(content, "a\na", "X\nY\nZ", "f.txt", False)
+    assert not ambiguous.ok
+    assert "occurs 5 times" in ambiguous.error
 
 
 # --- end-to-end through EditTool + a real file -------------------------------

@@ -142,6 +142,45 @@ def matches(row, receipt):
             and row.get("config_digest") == receipt["config_digest"])
 
 
+def _matches_projection_meta(meta, record, request, binding, receipt):
+    return (meta.get("background_operation") == {"binding": binding, "queue": receipt}
+            and meta.get("session_id") == record["reserved_session"]
+            and meta.get("config_digest") == receipt["config_digest"]
+            and digest(request) == receipt["config_digest"]
+            and meta.get("publication_policy", {}).get("kind") in {"owned-flow", "flow-verification"}
+            and meta.get("publication_policy", {}).get("session_id") == record["reserved_session"]
+            and meta.get("starter", {}).get("plan_digest") == record["plan_digest"]
+            and request["plan"]["workspace"] == record["workspace"]
+            and request["plan"]["digest"] == record["plan_digest"]
+            and all(binding.get(key) == record[key] for key in (
+                "operation_id", "plan_digest", "authority_digest", "request_digest",
+                "workspace_identity", "owner")))
+
+
+def _live_pending_claim(state, row, receipt, worker):
+    """Recognize only the two durable publications of this worker's claim."""
+    pending = [(transaction, operation) for transaction, operation in state["pending"].items()
+               if operation["entry"]["id"] == receipt["item_id"]]
+    if len(pending) != 1:
+        return False
+    transaction, operation = pending[0]
+    if (operation["operation"] != "claim" or operation["scope"] != receipt["scope"]
+            or operation["phase"] not in {"intent", "published"}
+            or operation["ticket"]["owner"] != worker
+            or not matches({"scope": operation["scope"], **operation["entry"]}, receipt)):
+        return False
+    scope = state["scopes"][receipt["scope"]]
+    waiting = [entry for entry in scope["waiting"] if entry["id"] == receipt["item_id"]]
+    claim = scope["claims"].get(receipt["item_id"])
+    if operation["phase"] == "intent":
+        return (row["state"] == "queued" and len(waiting) == 1 and claim is None
+                and matches({"scope": receipt["scope"], **waiting[0]}, receipt))
+    return (row["state"] == "running" and not waiting and claim is not None
+            and not claim.get("quarantined") and claim["owner"] == worker
+            and claim["transaction"] == transaction
+            and matches({"scope": receipt["scope"], "id": receipt["item_id"], **claim}, receipt))
+
+
 def project(store, record, *, duplicate=False):
     """Inspect evidence only. Neither server death nor a missing row permits replay."""
     from garuda.interfaces.bg_sessions import _load_launch
@@ -161,23 +200,29 @@ def project(store, record, *, duplicate=False):
         meta = store.load_meta(record["reserved_session"])
         request = checked_request(_load_launch(store, record["reserved_session"]))
         binding = request["binding"]
-        if (meta.get("background_operation") != {"binding": binding, "queue": receipt}
-                or meta.get("session_id") != record["reserved_session"]
-                or meta.get("config_digest") != receipt["config_digest"]
-                or digest(request) != receipt["config_digest"]
-                or meta.get("publication_policy", {}).get("kind") not in {"owned-flow", "flow-verification"}
-                or meta.get("publication_policy", {}).get("session_id") != record["reserved_session"]
-                or meta.get("starter", {}).get("plan_digest") != record["plan_digest"]
-                or request["plan"]["workspace"] != record["workspace"]
-                or request["plan"]["digest"] != record["plan_digest"]
-                or any(binding.get(key) != record[key] for key in (
-                    "operation_id", "plan_digest", "authority_digest", "request_digest", "workspace_identity", "owner"))):
+        if not _matches_projection_meta(meta, record, request, binding, receipt):
             return payload
-        payload["flow_state"] = meta.get("flow_state")
         queue = QueueStore(receipt["queue_root"], capacity=CapacityStore(request["capacity_root"]))
-        rows = [row for row in queue.entries() if row["id"] == record["reserved_session"]]
+        queue_state, entries = queue.inspect()
+        rows = [row for row in entries if row["id"] == record["reserved_session"]]
         if rows and (len(rows) != 1 or not matches(rows[0], receipt)):
             return payload
+        if rows and rows[0].get("pending_operation") == "claim":
+            # Worker identity is published before its claim. If the first meta
+            # read raced that publication, re-read after the queue snapshot and
+            # validate the entire binding again. If the worker advanced while
+            # this reader held the pending snapshot, pair that metadata with a
+            # newer queue publication before projecting any status.
+            refreshed_meta = store.load_meta(record["reserved_session"])
+            if not _matches_projection_meta(refreshed_meta, record, request, binding, receipt):
+                return payload
+            if refreshed_meta != meta:
+                queue_state, entries = queue.inspect()
+                rows = [row for row in entries if row["id"] == record["reserved_session"]]
+                if rows and (len(rows) != 1 or not matches(rows[0], receipt)):
+                    return payload
+            meta = refreshed_meta
+        payload["flow_state"] = meta.get("flow_state")
         final_binding = meta.get("flow_operation")
         if final_binding is not None:
             if (type(final_binding) is not dict or set(final_binding) != set(binding) | {"session_id", "lease_epoch"}
@@ -213,7 +258,11 @@ def project(store, record, *, duplicate=False):
                 payload.update(status="admitted", reason="cleanup.pending")
             return payload
         row = rows[0]
-        if row.get("pending_operation") == "release" and worker_live is True:
+        if (row.get("pending_operation") == "claim" and worker_live is True
+                and meta.get("flow_state") == "queued"
+                and _live_pending_claim(queue_state, row, receipt, worker)):
+            payload.update(status="admitted", reason="admission.pending")
+        elif row.get("pending_operation") == "release" and worker_live is True:
             payload.update(status="admitted", reason="cleanup.pending")
         elif row.get("quarantined") or meta.get("flow_state") == "quarantined":
             payload.update(status="quarantined", reason="background.quarantined")
