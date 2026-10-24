@@ -707,7 +707,7 @@ async def test_large_configuration_snapshot_only_bounds_requested_checks(
 
 @LINUX
 async def test_checked_flow_start_projects_its_committed_verification(tmp_path, monkeypatch):
-    """A checked start publishes under the verification policy and still projects terminal."""
+    """A checked start projects terminal only after its intent publishes terminal."""
     monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -730,6 +730,24 @@ async def test_checked_flow_start_projects_its_committed_verification(tmp_path, 
     ctx = build_context(DashboardConfig(
         port=PORT, token=TOKEN, allow_run=True, sessions_dir=tmp_path / "sessions",
         workspaces=(workspace,), open_browser=False), loop=asyncio.get_running_loop())
+    terminal_write_entered = threading.Event()
+    release_terminal_write = threading.Event()
+    terminal_write_published = threading.Event()
+    advance_calls = []
+    advance = ctx.flow_starts.intents.advance
+
+    def pause_terminal_write(*args, **kwargs):
+        advance_calls.append((args, kwargs))
+        terminal = kwargs.get("expected") == "admitted" and kwargs.get("phase") == "terminal"
+        if terminal:
+            terminal_write_entered.set()
+            assert release_terminal_write.wait(60), "terminal intent write was not released"
+        result = advance(*args, **kwargs)
+        if terminal:
+            terminal_write_published.set()
+        return result
+
+    monkeypatch.setattr(ctx.flow_starts.intents, "advance", pause_terminal_write)
     try:
         inputs = {"goal": "build one checked change"}
         preview = await _preview(ctx, starter="build-review", inputs=inputs)
@@ -738,14 +756,38 @@ async def test_checked_flow_start_projects_its_committed_verification(tmp_path, 
         response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start_body(
             preview, operation_id, starter="build-review", inputs=inputs))
         assert response.status in {201, 202}, _body(response)
+        assert await asyncio.to_thread(terminal_write_entered.wait, 60), \
+            "checked flow did not reach terminal intent publication"
+        record = ctx.flow_starts.intents.read(operation_id)
+        assert record["phase"] == "admitted" and record["outcome"] is None
+        parent = ctx.store.load_meta(record["session_id"])
+        assert parent["flow_state"] == "completed"
+        assert parent["publication_policy"]["kind"] == "flow-verification"
+        assert parent["state"]["verification"]["status"] == "passed"
+
+        calls_before_status = tuple(advance_calls)
+        requests_before_status = len(requests)
+        for _ in range(2):
+            pending = await _call(ctx, f"/api/scenario-operations/{operation_id}")
+            assert pending.status == 200, _body(pending)
+            pending_payload = _body(pending)
+            assert pending_payload["status"] == "admitted", pending_payload
+            assert pending_payload["outcome"] is None, pending_payload
+            assert pending_payload["phase"] == "admitted"
+            assert pending_payload["flow_state"] == "completed"
+        assert ctx.flow_starts.intents.read(operation_id) == record
+        assert tuple(advance_calls) == calls_before_status
+        assert len(requests) == requests_before_status
+
+        release_terminal_write.set()
+        assert await asyncio.to_thread(terminal_write_published.wait, 60), \
+            "terminal intent was not durably published"
+        assert ctx.flow_starts.intents.read(operation_id)["phase"] == "terminal"
         terminal = await _status(ctx, operation_id, {"terminal", "uncertain", "quarantined"},
                                  timeout=60)
         assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
-        parent = ctx.store.load_meta(terminal["session_id"])
-        assert parent["publication_policy"]["kind"] == "flow-verification"
-        assert parent["state"]["verification"]["status"] == "passed"
-        assert ctx.flow_starts.intents.read(operation_id)["phase"] == "terminal"
     finally:
+        release_terminal_write.set()
         await ctx.flow_starts.aclose()
         await ctx.live.aclose()
         server.shutdown()
