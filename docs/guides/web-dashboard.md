@@ -132,7 +132,10 @@ background requests in the **Approval inbox**, or with `garuda approvals`.
 **Stop** uses the recorded worker identity and waits for owned cleanup; uncertain
 closure retains capacity. Queued cancellation removes work before dispatch.
 Missing or conflicting publication is shown as uncertainty and is never retried
-automatically. Permissions above `--max-permission` still refuse before any
+automatically. A foreground operation remains nonterminal while its completed
+parent awaits the matching terminal intent publication; status reads only project
+the durable record and do not advance or replay it. Permissions above
+`--max-permission` still refuse before any
 operation is recorded; copy the equivalent command if that ceiling is unsuitable. An unchecked native ask-role takes a read-only parent lease,
 so it can inspect alongside an editor. Configured acceptance checks retain a
 mutating parent lease because checks may write. The authority preview discloses

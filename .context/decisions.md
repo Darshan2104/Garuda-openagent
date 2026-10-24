@@ -1996,3 +1996,12 @@ flag before building provider requests. Real local HTTP completion and SSE
 tests cover schema forwarding, returned tool calls and absence of the flag on
 the provider wire. Pinned and newest dependency jobs must retain this proof
 because the flag is an upstream integration detail.
+
+
+## 2026-10-24 — Foreground completion waits for operation publication
+
+A foreground starter projects terminal completion only when its bound launch
+intent has published the terminal phase. Parent completion metadata can precede
+that publication and does not alone finish the operation. Stale admitted reads
+remain nonterminal; a missing or unproved owner retains uncertainty. Status
+reads project existing evidence without advancing intents or replaying work.
