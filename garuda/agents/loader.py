@@ -280,10 +280,6 @@ def profile_from_mapping(
     )
 
 
-def _profile_from_yaml(data: dict, name: str, source: Path | None = None) -> AgentProfile:
-    return profile_from_mapping(data, name, source)
-
-
 def load_profile(name: str, extra_dir: Path | list[Path] | None = None) -> AgentProfile:
     """Load an agent by name through the one resolver (H.1).
 
@@ -300,10 +296,6 @@ def load_profile(name: str, extra_dir: Path | list[Path] | None = None) -> Agent
 
 # Maximum characters of AGENTS.md/GARUDA.md content injected into the system prompt.
 PROJECT_MEMORY_MAX_CHARS = 8000
-
-# Project-memory file names checked in the workspace root; first found wins.
-PROJECT_MEMORY_FILENAMES = ("AGENTS.md", "GARUDA.md")
-
 
 MEMORY_TRUNCATED = "memory.truncated"
 

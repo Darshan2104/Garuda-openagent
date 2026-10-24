@@ -20,12 +20,13 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
+from garuda.core.permissions import WRITE_TOOLS
 from garuda.types import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
 # Tools whose successful execution mutates the workspace.
-_WRITE_TOOLS = frozenset({"write_file", "edit", "multi_edit", "notebook_edit"})
+_WRITE_TOOLS = frozenset(WRITE_TOOLS)
 
 # A command is backgrounded by a trailing `&` (not `&&`), or by a launcher that
 # detaches. Matching the trailing form requires care: `a && b` must not match.

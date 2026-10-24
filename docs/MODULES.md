@@ -41,7 +41,7 @@ a behaviour.
 | `evidence.py` | Two independent classifications of a shell command: whether it can actually fail (a check that cannot fail is not proof), and whether it writes anything (`is_side_effect_free`, which gates concurrency at the gate). Close to opposites in practice — the commands that prove the most are the ones that write. |
 | `contract.py` | Acceptance criteria derived from the task statement, pinned across compaction. |
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
-| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command. Normalizes path spellings against the workspace and explicit command cwd. Screens original and joined continuations without treating in-word hashes as comments; allow prefixes must match both forms. Incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
+| `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command, plus the canonical file-write tool classification consumed by the side-effect ledger. Normalizes path spellings against the workspace and explicit command cwd. Screens original and joined continuations without treating in-word hashes as comments; allow prefixes must match both forms. Incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
@@ -531,7 +531,10 @@ dispatcher. Flow plans enter `FlowExecutionService.run_prepared`; run plans ente
 with exactly one plain role step and the exact previewed task. Either way:
 it reserves an intent, recompiles, verifies both digests, schedules one task on
 the server loop, projects the authoritative session and drains it at shutdown.
-Existing or restarted operations are read/reconciled without replay.
+Foreground projection requires the matching intent to publish terminal before a
+terminal parent becomes terminal in public status; stale admitted reads remain
+nonterminal and status reads never advance or replay the operation. Existing or
+restarted operations are read/reconciled without replay.
 `interfaces/web/scenarios.py` serves the installed library/detail, pure POST
 preview, shared selected results, POST start and operation status behind existing
 dashboard authorization.
@@ -714,7 +717,11 @@ garuda run -t "..." --mode eval --model openrouter/deepseek/deepseek-v4-flash-07
 `scenarios/background.py` binds owned background capsules, reserved sessions and
 v2 launch intents to the existing queue before spawning. Its read-only projector
 requires agreeing strict session/launch/queue/closure evidence and never compiles,
-enqueues or launches on a duplicate or restart. `scenarios/background_worker.py`
+enqueues or launches on a duplicate or restart. An exactly bound live claim
+publication projects as nonterminal `admission.pending`; if metadata advances
+during that read, the projector rereads the queue before classifying it. This does
+not establish dispatch or execution, and dead, mismatched, corrupt or separately
+quarantined evidence keeps its fail-closed status. `scenarios/background_worker.py`
 waits without workspace ownership, validates the frozen plan and sources, claims
 and dispatches once, then publishes closure only after workspace and queue release.
 `runtime/queue_capacity.py` lends the activated queue reservation to one actual

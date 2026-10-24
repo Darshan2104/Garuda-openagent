@@ -510,7 +510,10 @@ class FlowStartGateway:
         payload.update(session_id=meta["session_id"], flow_state=flow_state)
         if flow_state == "quarantined":
             payload.update(status="quarantined", reason="flow.quarantined")
-        elif flow_state in {"completed", "stopped", "interrupted"}:
+        # Parent metadata commits before the foreground operation record. Public
+        # terminal status must wait for that operation's terminal publication.
+        elif (durable_terminal
+              and flow_state in {"completed", "stopped", "interrupted"}):
             payload["status"] = "terminal"
             payload["outcome"] = ("completed" if flow_state == "completed" else
                                   "stopped" if flow_state == "stopped" else "interrupted")
