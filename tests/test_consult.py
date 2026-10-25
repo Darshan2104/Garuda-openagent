@@ -444,7 +444,7 @@ async def test_a_timeout_reaps_the_child_before_anything_is_released(world, monk
 
     async def slow(child):
         try:
-            await asyncio.sleep(30)
+            await asyncio.Event().wait()
         finally:
             events.append("reaped")  # the child's cleanup runs on cancellation
 
@@ -458,7 +458,10 @@ async def test_a_timeout_reaps_the_child_before_anything_is_released(world, monk
 
     monkeypatch.setattr(CapacityStore, "release", spy)
     with pytest.raises(ConsultRefused) as caught:
-        await ConsultService(world.store, resolved, runner=slow).consult(request(world))
+        # This owns already-dispatched child settlement; preparation-budget expiry has its
+        # own test above. The real asyncio one-second timeout still expires the child.
+        await ConsultService(world.store, resolved, runner=slow, clock=lambda: 100.0).consult(
+            request(world))
     assert caught.value.code == "consult.timeout"
     assert events == ["reaped", "released"]  # in that order
     assert ConsultState(world.store, world.asker).snapshot()["count"] == 1  # a launched consult counts
