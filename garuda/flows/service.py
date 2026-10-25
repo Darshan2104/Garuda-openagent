@@ -251,7 +251,7 @@ class FlowExecutionService:
             raise engine.FlowStopped(
                 code, f"protected flow check phase is {classification}"
                       f"{f' ({states})' if states else ''}; checks are never replayed automatically")
-        from garuda.runtime.quota_recovery import FlowRecovery, project, publish
+        from garuda.flows.quota_recovery import FlowRecovery, project, publish
 
         recovery = FlowRecovery(self.store,
                                 root=recovery_root or meta.get("quota_recovery_root"),
@@ -289,7 +289,7 @@ class FlowExecutionService:
                        recovery=None) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
-        from garuda.runtime.quota_recovery import FlowRecovery
+        from garuda.flows.quota_recovery import FlowRecovery
 
         request = permissions = None
         with SourceCapture() as capture:

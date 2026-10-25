@@ -421,7 +421,7 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
 
     meta = store.load_meta(session_id)
     if meta.get("quota_recovery"):
-        from garuda.runtime.quota_recovery import RecoveryStore, project
+        from garuda.flows.quota_recovery import RecoveryStore, project
 
         records = RecoveryStore(meta.get("quota_recovery_root"))
         row = records.get(session_id)

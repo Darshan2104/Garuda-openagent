@@ -18,10 +18,10 @@ from garuda.config.garuda_yaml import user_path
 from garuda.core import read_model
 from garuda.core.sessions import SessionStore
 from garuda.flows.engine import FlowRunner, StepResult
+from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root
 from garuda.flows.service import FlowExecutionService
 from garuda.observability.limits import LimitObservation, Window
 from garuda.runtime import strict_store as ss
-from garuda.runtime.quota_recovery import FlowRecovery, RecoveryStore, default_root
 from garuda.runtime.roles import RolePlan
 from tests.test_flow_review import APPROVE, CHANGES, _config
 from tests.test_flows import _block
@@ -39,7 +39,7 @@ def harness(repo, monkeypatch):
     ss.write_document(records.root / "settings.json", {
         "version": 1, "enabled": True, "codex_executable": "/usr/bin/codex"})
     clock = SimpleNamespace(now=1_800_000_000.0)
-    monkeypatch.setattr("garuda.runtime.quota_recovery.time", SimpleNamespace(time=lambda: clock.now))
+    monkeypatch.setattr("garuda.flows.quota_recovery.time", SimpleNamespace(time=lambda: clock.now))
     script = SimpleNamespace(sequence=[], fail=("review", 1), failures=1,
                              exhausted=False, reviews=[APPROVE], error="usage limit reached",
                              account="acct:test", version="0.163.0", closure="closed")
@@ -214,7 +214,7 @@ async def test_a_lost_dispatch_reservation_is_uncertain_and_never_replayed(harne
     first = await h.service.run("pbr", "ship it", str(h.repo))
     sid = first.flow.flow_session
     h.records.claim(sid, automatic=True)
-    monkeypatch.setattr("garuda.runtime.quota_recovery.owner_liveness", lambda owner: False)
+    monkeypatch.setattr("garuda.flows.quota_recovery.owner_liveness", lambda owner: False)
     before = list(h.script.sequence)
     await FlowRecovery().tick()
     assert h.records.get(sid)["state"] == "uncertain"
@@ -304,7 +304,7 @@ def test_dispatch_claim_is_exclusive_across_independent_processes(tmp_path):
     script = '''
 import sys, time
 from pathlib import Path
-from garuda.runtime.quota_recovery import RecoveryStore
+from garuda.flows.quota_recovery import RecoveryStore
 from garuda.runtime import strict_store as ss
 original = ss.write_locked_document
 def delayed(*args):

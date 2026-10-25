@@ -132,7 +132,7 @@ fastest way to learn the system.
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
    Quota recovery is an opt-in operator service around this same flow owner,
-   never a second execution engine. `runtime/quota_recovery.py` captures
+   never a second execution engine. `flows/quota_recovery.py` captures
    configuration/source facts at admission, checkpoints receipts, review-loop
    state and workspace content at settled boundaries under the flow's retained
    lease, and enrolls only future sequential CLI flows with eligible Codex

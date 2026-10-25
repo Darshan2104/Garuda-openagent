@@ -8,8 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, project
 from garuda.runtime import strict_store as ss
-from garuda.runtime.quota_recovery import FlowRecovery, RecoveryStore, default_root, project
 
 
 def run_recovery(args) -> int:

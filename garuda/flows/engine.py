@@ -563,7 +563,7 @@ class FlowRunner:
         if self.quota_recovery_status is not None:
             self.store.update_meta(self.flow_session, {"quota_recovery": self.quota_recovery_status})
         elif self.require_owned:
-            from garuda.runtime.quota_recovery import RecoveryStore
+            from garuda.flows.quota_recovery import RecoveryStore
 
             if RecoveryStore().settings().get("enabled") is True:
                 self.store.update_meta(self.flow_session, {"quota_recovery": {
@@ -634,7 +634,7 @@ class FlowRunner:
                     await self.on_admitted(
                         self.flow_session, self.operation_binding["lease_epoch"])
             if self.quota_recovery is not None:
-                from garuda.runtime.quota_recovery import RecoveryWaiting
+                from garuda.flows.quota_recovery import RecoveryWaiting
 
                 try:
                     await self.quota_recovery.admit(self)
@@ -1068,7 +1068,7 @@ class FlowRunner:
             if review_admission is not None:
                 await review_admission(plan)
             if self.quota_recovery is not None:
-                from garuda.runtime.quota_recovery import RecoveryWaiting
+                from garuda.flows.quota_recovery import RecoveryWaiting
 
                 try:
                     await self.quota_recovery.before_launch(self, plan)

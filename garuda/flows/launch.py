@@ -28,8 +28,8 @@ async def _acp(launch: StepLaunch) -> StepResult:
 
     from garuda.acp.protocol import AcpError
     from garuda.core.sessions import SessionStore
+    from garuda.flows.quota_recovery import RecoveryWaiting
     from garuda.interfaces.runtime_cli import run_acp_task
-    from garuda.runtime.quota_recovery import RecoveryWaiting
     from garuda.workspace.no_edits import deny_all
 
     plan = launch.role_plan

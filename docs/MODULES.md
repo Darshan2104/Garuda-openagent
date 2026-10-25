@@ -279,20 +279,6 @@ configuration without constructing provider clients or starting tools;
 
 ## `runtime/` — harness boundary
 
-`quota_recovery.py` owns the private versioned continuation records for
-quota-stopped sequential CLI flows. It enrolls only after operator enablement,
-captures configuration and source facts at admission, validates settled
-receipts plus a workspace-content checkpoint under the flow lease, preserves
-review-loop progress, and uses `FlowExecutionService.resume` for the claimed
-continuation. Fresh same-account quota evidence from proved Codex versions must
-clear every reported window before dispatch. Claim and owner records prevent a
-cron/manual race; resumed admission probes quota again after the claim and a
-typed `RecoveryWaiting` transition returns a quota race to
-`waiting-for-quota`. Missing or unavailable quota evidence remains waiting with
-a reason and future check, while changed configuration/source/workspace/receipt
-or account/version identity blocks. A lost dispatch becomes `uncertain` and is
-not replayed. `interfaces/bg_sessions.py::cancel` shares the pending-record
-cancellation path with recovery controls and refuses claimed/running work.
 `recovery_schedule.py` atomically publishes the owner-only wrapper and version-1
 settings under `strict_store.exclusive_lock`, keeps the absolute current Python
 entrypoint (including a virtualenv symlink), resolves Codex and operator
@@ -300,7 +286,7 @@ authority paths, and owns only the exact marked user-cron block at minute 27.
 The wrapper enters through `garuda.interfaces.main`, preserves
 `GARUDA_RECOVERY_ROOT`, and passes the absolute selected root to `tick`. Enable,
 disable, and status are idempotent; disable publishes `enabled: false` before
-cron removal and never signals a live flow. `quota_recovery.default_root()`
+cron removal and never signals a live flow. `flows/quota_recovery.default_root()`
 uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
 `--root` remains a one-command control override.
 
@@ -474,6 +460,21 @@ including cleanup after revocation. Ordinary reaped completion releases as
 before; supervised recovery receipts remain separate work).
 
 ## `flows/` — sequential role steps (C.6a)
+
+`quota_recovery.py` owns private versioned continuation records for quota-stopped
+sequential CLI flows. This flow orchestration service may use the ACP quota
+reader; the generic runtime contract stays independent of ACP transports.
+Operator enablement authorizes enrollment. Admission captures configuration and
+source facts; continuation validates settled receipts and a workspace checkpoint
+under the flow lease, preserves review-loop progress, and dispatches through
+`FlowExecutionService.resume`. Fresh same-account Codex quota must clear every
+reported window after step preparation and immediately before ACP prompt
+delivery. Durable claims prevent cron/manual races; a typed `RecoveryWaiting`
+transition retains the pending step when availability disappears. Missing quota
+evidence remains waiting, changed authority/workspace/receipts block, and a lost
+owner becomes `uncertain` without replay. The shared session Stop path revokes
+the same pending record as recovery controls. `default_root()` honors the
+operator's `GARUDA_RECOVERY_ROOT`; a CLI `--root` overrides only that command.
 
 `service.py::FlowExecutionService` is the shared in-process run/resume facade.
 It resolves effective packaged/configured flows, refuses unknown flows and

@@ -8,8 +8,8 @@ import pytest
 
 from garuda.core.sessions import SessionStore
 from garuda.flows.launch import _acp
+from garuda.flows.quota_recovery import RecoveryWaiting
 from garuda.interfaces.runtime_cli import run_acp_task
-from garuda.runtime.quota_recovery import RecoveryWaiting
 from tests.test_quota_acp_cleanup import QUOTA_AGENT, _launch
 from tests.test_runtime_cli import _git_workspace, _on_path, _pid_gone, _trusted_settings
 
