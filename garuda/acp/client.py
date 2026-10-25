@@ -12,8 +12,10 @@ allowlist, wired by a later adapter issue) — this module never searches PATH
 beyond what execvp already does and never inherits the parent environment.
 The child gets a minimal explicit environment plus caller-supplied extras, so
 no secret crosses the boundary by accident. Processes launch in their own
-session (`start_new_session`) and close() always reaps: SIGTERM to the group,
-a grace period, SIGKILL, then wait.
+session (`start_new_session`) and close() always reaps the processes that stay
+in that group: SIGTERM, a grace period, SIGKILL, then bounded verification.
+This is a cleanup guardrail, not confinement; a descendant that starts a new
+session or otherwise leaves the group is outside this module's ownership proof.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
+import time
 from collections import deque
 from typing import Any
 
@@ -41,8 +45,75 @@ logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0
 TERM_GRACE = 5.0
+KILL_GRACE = 3.0
+GROUP_POLL_INTERVAL = 0.05
+PIPE_DRAIN_TIMEOUT = 2.0
 STDERR_RING = 50
 _MISSING = object()
+_PS_CANDIDATES = ("/bin/ps", "/usr/bin/ps")
+
+
+def child_environment(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Minimal explicit environment shared by ACP and trusted ACP probes.
+
+    Ambient vendor configuration such as ``CODEX_HOME`` is intentionally not
+    inherited. A caller that needs one executable override supplies it in
+    ``extra_env`` (for example ``CODEX_PATH``).
+    """
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        # The account name, not a credential: Claude Code on macOS keys its
+        # Keychain login by it and reports logged out without it.
+        "USER": os.environ.get("USER", ""),
+        "LANG": "C.UTF-8",
+    }
+    env.update(extra_env or {})
+    return {key: value for key, value in env.items() if value}
+
+
+def _live_group_members(process_group: int) -> tuple[int, ...]:
+    """Return live, non-zombie members of one process group.
+
+    An unavailable or malformed process-table answer is uncertainty, not
+    evidence of closure. ``ps`` is used because its pid/pgid/stat columns are
+    available on both Linux and macOS, where Garuda runs.
+    """
+    ps = next((path for path in _PS_CANDIDATES if os.path.exists(path)), None)
+    if ps is None:
+        raise AcpProtocolError("cannot verify ACP process-group cleanup: ps is unavailable")
+    try:
+        result = subprocess.run(
+            [ps, "-Ao", "pid=,pgid=,stat="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AcpProtocolError(
+            f"cannot verify ACP process-group cleanup: ps failed: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip()[-300:]
+        raise AcpProtocolError(
+            "cannot verify ACP process-group cleanup: "
+            f"ps exited {result.returncode}{': ' + detail if detail else ''}"
+        )
+    members: list[int] = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3:
+            if line.strip():
+                raise AcpProtocolError("cannot parse process table during ACP cleanup")
+            continue
+        try:
+            pid, pgid = int(fields[0]), int(fields[1])
+        except ValueError as exc:
+            raise AcpProtocolError("cannot parse process table during ACP cleanup") from exc
+        if pgid == process_group and not fields[2].startswith("Z"):
+            members.append(pid)
+    return tuple(members)
 
 
 class AcpProcess:
@@ -72,6 +143,9 @@ class AcpProcess:
         self._requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._stderr_ring: deque[str] = deque(maxlen=STDERR_RING)
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._process_group: int | None = None
+        self._leader_identity: str | None = None
 
     @property
     def pid(self) -> int | None:
@@ -82,16 +156,7 @@ class AcpProcess:
         return "\n".join(self._stderr_ring)
 
     def _child_env(self) -> dict[str, str]:
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": os.environ.get("HOME", ""),
-            # The account name, not a credential: Claude Code on macOS keys its
-            # Keychain login by it and reports logged out without it.
-            "USER": os.environ.get("USER", ""),
-            "LANG": "C.UTF-8",
-        }
-        env.update(self._extra_env)
-        return {k: v for k, v in env.items() if v}
+        return child_environment(self._extra_env)
 
     async def launch(self) -> None:
         """Spawn the process and start the reader + stderr-drain tasks."""
@@ -108,8 +173,66 @@ class AcpProcess:
             cwd=self._cwd,
             start_new_session=True,
         )
+        try:
+            self._bind_process_group()
+        except Exception:
+            try:
+                await self._abort_unbound_launch(self._process)
+            except Exception as cleanup_error:
+                raise AcpProtocolError(
+                    "ACP launch identity failed and process cleanup was unproved"
+                ) from cleanup_error
+            raise
         self._reader_task = asyncio.ensure_future(self._read_loop())
         self._stderr_task = asyncio.ensure_future(self._drain_stderr())
+
+    def _bind_process_group(self) -> None:
+        """Retain the isolated group's PID-reuse-resistant launch identity."""
+        assert self._process is not None
+        pid = self._process.pid
+        try:
+            process_group = os.getpgid(pid)
+        except OSError as exc:
+            raise AcpProtocolError(
+                f"cannot bind ACP process group for pid {pid}: {exc}"
+            ) from exc
+        if process_group != pid or process_group in {os.getpid(), os.getpgrp()}:
+            raise AcpProtocolError(
+                f"ACP child {pid} did not lead a private process group"
+            )
+        from garuda.runtime.recovery import _process_identity
+
+        try:
+            identity = _process_identity(pid)
+        except Exception as exc:
+            raise AcpProtocolError(
+                f"cannot bind ACP process identity for pid {pid}: {exc}"
+            ) from exc
+        if not identity:
+            raise AcpProtocolError(f"cannot bind ACP process identity for pid {pid}")
+        self._process_group = process_group
+        self._leader_identity = identity
+
+    @staticmethod
+    async def _abort_unbound_launch(process: asyncio.subprocess.Process) -> None:
+        """Reap a just-spawned child when its durable group identity cannot bind."""
+        try:
+            if os.getpgid(process.pid) == process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            raise AcpProtocolError(
+                f"could not stop unbound ACP child {process.pid}: {exc}"
+            ) from exc
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), KILL_GRACE)
+        except TimeoutError as exc:
+            raise AcpProtocolError(
+                f"unbound ACP child {process.pid} did not exit"
+            ) from exc
 
     async def _read_loop(self) -> None:
         assert self._process is not None and self._process.stdout is not None
@@ -438,44 +561,165 @@ class AcpProcess:
         return self._process is not None and self._process.returncode is None
 
     async def close(self) -> None:
-        """Terminate the group, escalate, and reap. Idempotent and total."""
-        if self._closed:
-            if self._process is not None:
-                await self._process.wait()
-            return
-        self._closed = True
-        for task in (self._reader_task, self._stderr_task):
-            if task is not None and not task.done():
-                task.cancel()
-        process, self._process = self._process, None
-        if process is None:
-            return
-        if process.returncode is None:
-            self._kill_group(process.pid)
-            try:
-                await asyncio.wait_for(process.wait(), TERM_GRACE)
-            except TimeoutError:
-                self._kill_group(process.pid, force=True)
-                await process.wait()
-        else:
-            await process.wait()
-        for task in (self._reader_task, self._stderr_task):
-            if task is not None:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-        self._fail_all_pending(AcpCancelledError("process closed"))
+        """Terminate, verify, and reap the owned process group.
 
-    def _kill_group(self, pid: int, *, force: bool = False) -> None:
-        sig = signal.SIGKILL if force else signal.SIGTERM
+        Repeated calls share one cleanup receipt. Caller cancellation is
+        delayed until that cleanup settles, so a cancelled close cannot release
+        higher-level ownership while a same-group writer remains alive.
+        """
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close())
         try:
-            os.killpg(pid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError as cancelled:
+            from garuda.workspace.settlement import settle_task
+
             try:
-                os.kill(pid, sig)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+                await settle_task(self._close_task)
+            except asyncio.CancelledError as cleanup_cancelled:
+                # shield() also raises CancelledError when the shared cleanup
+                # task itself was cancelled. That is not a cleanup receipt and
+                # must reach strict callers as an ordinary failure they can
+                # quarantine, never as caller cancellation that releases the
+                # lease.
+                raise AcpProtocolError(
+                    "ACP cleanup task was cancelled; process-group closure is unproved"
+                ) from cleanup_cancelled
+            except Exception as exc:
+                # Cleanup uncertainty outranks cancellation: strict callers
+                # must quarantine ownership instead of releasing on a bare
+                # CancelledError whose chained cause is easy to overlook.
+                raise exc from cancelled
+            raise
+        self._close_task.result()
+
+    async def _close(self) -> None:
+        process = self._process
+        tasks = tuple(
+            task for task in (self._reader_task, self._stderr_task) if task is not None
+        )
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        try:
+            if process is not None:
+                await self._close_process_group(process)
+                self._close_process_pipes(process)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(process.wait()), PIPE_DRAIN_TIMEOUT
+                    )
+                except TimeoutError as exc:
+                    raise AcpProtocolError(
+                        "ACP group closed but its leader could not be reaped"
+                    ) from exc
+            self._process = None
+        finally:
+            try:
+                if tasks:
+                    drain = asyncio.gather(*tasks, return_exceptions=True)
+                    try:
+                        await asyncio.wait_for(drain, PIPE_DRAIN_TIMEOUT)
+                    except TimeoutError as exc:
+                        raise AcpProtocolError(
+                            "ACP protocol readers did not settle after process cleanup"
+                        ) from exc
+            finally:
+                self._fail_all_pending(AcpCancelledError("process closed"))
+
+    async def _close_process_group(self, process: asyncio.subprocess.Process) -> None:
+        if self._process_group is None or self._leader_identity is None:
+            if process.returncode is None:
+                raise AcpProtocolError("ACP process-group ownership was not recorded")
+            return
+        await asyncio.to_thread(self._signal_owned_group, signal.SIGTERM)
+        if await self._wait_group_gone(TERM_GRACE):
+            return
+        # Escalation is based on the group's live members, never merely on the
+        # leader's return code. A prompt leader exit must not orphan a child.
+        await asyncio.to_thread(self._signal_owned_group, signal.SIGKILL)
+        if not await self._wait_group_gone(KILL_GRACE):
+            members = await asyncio.to_thread(
+                self._owned_group_members, self._process_group
+            )
+            raise AcpProtocolError(
+                "ACP process group survived SIGKILL: "
+                + ", ".join(str(pid) for pid in members)
+            )
+
+    async def _wait_group_gone(self, timeout: float) -> bool:
+        assert self._process_group is not None
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            members = await asyncio.to_thread(
+                self._owned_group_members, self._process_group
+            )
+            if not members:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(GROUP_POLL_INTERVAL)
+
+    def _owned_group_members(self, process_group: int) -> tuple[int, ...]:
+        """Verify that a live group still belongs to this launch, then return it."""
+        members = _live_group_members(process_group)
+        if not members:
+            return ()
+        from garuda.runtime.recovery import _process_identity, same_process
+
+        try:
+            current_identity = _process_identity(process_group)
+        except Exception as exc:
+            raise AcpProtocolError(
+                f"cannot verify ACP group leader {process_group}: {exc}"
+            ) from exc
+        if current_identity is not None:
+            if not same_process(self._leader_identity, current_identity):
+                raise AcpProtocolError(
+                    f"ACP group id {process_group} was reused; refusing to signal it"
+                )
+            try:
+                current_group = os.getpgid(process_group)
+            except ProcessLookupError:
+                # The leader exited between the identity and group probes. Any
+                # remaining members still retain the launch's group id.
+                return _live_group_members(process_group)
+            except OSError as exc:
+                raise AcpProtocolError(
+                    f"cannot verify ACP group leader {process_group}: {exc}"
+                ) from exc
+            if current_group != process_group:
+                raise AcpProtocolError(
+                    f"ACP leader {process_group} joined a foreign process group"
+                )
+        # If the leader is gone but members remain, POSIX retains its group id;
+        # a new group cannot reuse that id until these descendants are gone.
+        return members
+
+    def _signal_owned_group(self, sig: signal.Signals) -> None:
+        assert self._process_group is not None
+        if not self._owned_group_members(self._process_group):
+            return
+        try:
+            os.killpg(self._process_group, sig)
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            raise AcpProtocolError(
+                f"could not signal ACP process group {self._process_group}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _close_process_pipes(process: asyncio.subprocess.Process) -> None:
+        """Close local transports after group proof; detached holders cannot hang us."""
+        transport = getattr(process, "_transport", None)
+        if transport is None:
+            return
+        for fd in (0, 1, 2):
+            pipe = transport.get_pipe_transport(fd)
+            if pipe is not None:
+                pipe.close()
 
     async def __aenter__(self) -> "AcpProcess":
         await self.launch()

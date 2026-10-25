@@ -839,7 +839,13 @@ class AcpRuntime:
                 logger.warning("Could not persist ACP cancellation", exc_info=True)
                 audit_error = exc
         await self._cancel_pending_approvals()
-        if self._process is not None:
+        # The in-flight prompt can observe its ACP error and finish verified
+        # process cleanup while cancellation is crossing lease.race(). In that
+        # terminal race there is no peer left to notify; close() below remains
+        # responsible for the idempotent group-cleanup receipt. Do not turn the
+        # caller's cancellation into a protocol failure merely because the
+        # already-closed transport cannot accept session/cancel.
+        if self._process is not None and self._process.is_running:
             await self._process.session_cancel(self._agent_session_id or "")
         if self._state is not LifecycleState.RUNNING:
             # While RUNNING the in-flight prompt owns the transition to

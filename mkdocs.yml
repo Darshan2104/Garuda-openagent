@@ -151,6 +151,7 @@ nav:
           - Owned one-click flow starts: design/2026-10-08-owned-one-click-flow-starts-design.md
       - Implementation plans:
           - plans/index.md
+          - Quota-aware workflow continuation: plans/2026-10-24-quota-auto-resume-implementation.md
           - Dashboard run extensions: plans/2026-10-17-dashboard-run-extensions-implementation.md
           - Ready-to-use workflow scenarios: plans/2026-10-06-ready-to-use-workflow-scenarios.md
           - Starter P0 contracts: plans/2026-10-07-starter-p0-contracts.md

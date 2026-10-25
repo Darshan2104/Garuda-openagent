@@ -32,6 +32,7 @@ which drops a repeat.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
@@ -42,7 +43,11 @@ from garuda.runtime import strict_store as ss
 
 FALLBACK_TTL = 60.0
 #: Sources proved by A.6, per harness: the exact versions they were proved for.
-PROVED_SOURCES: dict[str, tuple[str, ...]] = {"codex": ("0.159.3",)}
+PROVED_SOURCES: dict[str, tuple[str, ...]] = {"codex": ("0.159.3", "0.163.0")}
+PROVED_LIMIT_SOURCES: dict[tuple[str, str], str] = {
+    ("codex", "0.159.3"): "codex.account.rateLimits.read",
+    ("codex", "0.163.0"): "codex.account.rateLimits.read",
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,7 @@ class LimitObservation:
     limit_id: str | None = None
     reached: bool | None = None
     reset_at: float | None = None
+    ordinary_usage_allowed: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -92,6 +98,132 @@ def exact_version(text: str | None) -> str | None:
 
     found = re.findall(r"\d+\.\d+\.\d+(?:[-+.\w]*)?", text or "")
     return found[-1] if found else None
+
+
+def recovery_availability(
+    current: LimitObservation | None,
+    *,
+    account_digest: str | None,
+    harness_version: str | None,
+    now: float,
+) -> tuple[bool, str]:
+    """Whether fresh quota evidence permits an automatic continuation.
+
+    Unlike fallback selection, recovery is fail-closed: it requires the exact
+    enrolled account and harness version, an affirmative ordinary-usage flag,
+    and every reported quota window to be valid and below exhaustion.
+    """
+    if current is None:
+        return False, "quota observation is unavailable"
+    if not account_digest or not current.account_digest:
+        return False, "quota observation has no account digest"
+    if current.account_digest != account_digest:
+        return False, "quota account changed"
+    if not harness_version or current.harness_version != harness_version:
+        return False, "quota harness version changed"
+    error = _recovery_evidence_error(current, now=now)
+    if error:
+        return False, error
+    if current.ordinary_usage_allowed is None:
+        return False, "ordinary usage availability was not reported"
+    for window in current.windows:
+        if window.used_fraction >= 1.0:
+            return False, f"quota window {window.name} is exhausted"
+    if current.ordinary_usage_allowed is not True:
+        return False, "ordinary usage is not allowed"
+    if current.reached is not False:
+        return False, "quota exhaustion state is not affirmatively clear"
+    return True, "fresh quota observation affirmatively allows ordinary usage"
+
+
+def recovery_exhausted(
+    current: LimitObservation | None,
+    *,
+    now: float,
+) -> tuple[bool, str]:
+    """Whether fresh official evidence proves a quota-stopped recovery step."""
+    if current is None:
+        return False, "quota observation is unavailable"
+    error = _recovery_evidence_error(current, now=now)
+    if error:
+        return False, error
+    if current.ordinary_usage_allowed is None:
+        return False, "ordinary usage availability was not reported"
+    if current.ordinary_usage_allowed is not False:
+        return False, "ordinary usage is allowed"
+    if current.reached is not True:
+        return False, "quota exhaustion was not reported"
+    exhausted = tuple(window for window in current.windows if window.used_fraction >= 1.0)
+    if not exhausted:
+        return False, "no quota window is exhausted"
+    for window in exhausted:
+        if window.resets_at is None:
+            return False, f"quota window {window.name} has no reset time"
+        if window.resets_at <= now:
+            return False, f"quota window {window.name} reset has passed"
+    expected_reset = min(window.resets_at for window in exhausted)
+    if current.reset_at is None:
+        return False, "exhaustion has no reset time"
+    if current.reset_at != expected_reset:
+        return False, "exhaustion reset does not match the exhausted windows"
+    if current.reset_at <= now:
+        return False, "exhaustion reset has passed"
+    return True, "fresh quota observation proves exhaustion until a future reset"
+
+
+def _recovery_evidence_error(current: LimitObservation, *, now: float) -> str | None:
+    if current.harness_version not in PROVED_SOURCES.get(current.harness, ()):
+        return "quota source is not proved for this exact harness version"
+    if current.source != PROVED_LIMIT_SOURCES.get((current.harness, current.harness_version)):
+        return "quota observation did not come from the proved source"
+    if not current.account_digest:
+        return "quota observation has no account digest"
+    if not _finite_number(now) or now < 0:
+        return "current time is malformed"
+    if not _finite_number(current.observed_at) or current.observed_at < 0:
+        return "malformed observation time"
+    age = now - current.observed_at
+    if age < 0:
+        return "quota observation is from the future"
+    if age > FALLBACK_TTL:
+        return "quota observation is stale"
+    if not current.windows:
+        return "quota windows are unavailable"
+    names: set[str] = set()
+    for window in current.windows:
+        if not isinstance(window.name, str) or not window.name or window.name in names:
+            return "quota window identity is malformed"
+        names.add(window.name)
+        if not _finite_number(window.used_fraction):
+            return f"quota window {window.name} has a malformed used fraction"
+        if not 0.0 <= window.used_fraction <= 1.0:
+            return f"quota window {window.name} has an out-of-range used fraction"
+        if window.resets_at is not None:
+            if not _finite_number(window.resets_at):
+                return f"quota window {window.name} has a malformed reset"
+            if window.resets_at < 0:
+                return f"quota window {window.name} has an out-of-range reset"
+        if window.window_minutes is not None and (
+            isinstance(window.window_minutes, bool)
+            or not isinstance(window.window_minutes, int)
+            or window.window_minutes <= 0
+        ):
+            return f"quota window {window.name} has a malformed duration"
+    if current.reset_at is not None:
+        if not _finite_number(current.reset_at):
+            return "quota exhaustion reset is malformed"
+        if current.reset_at < 0:
+            return "quota exhaustion reset is out of range"
+    return None
+
+
+def _finite_number(value: object) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 class LimitStore:

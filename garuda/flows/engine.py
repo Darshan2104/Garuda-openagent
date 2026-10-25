@@ -68,6 +68,9 @@ class StepLaunch:
     worktree_plan: dict | None = None
     authority_sources: tuple = ()
     external_approvals: bool = False
+    quota_recovery: bool = False
+    codex_executable: str | None = None
+    quota_guard: Any = None
 
 
 @dataclass
@@ -78,6 +81,7 @@ class StepResult:
     closure: dict | None = None
     #: Why the step's agent stopped, when it failed rather than finished.
     error: str = ""
+    quota_wait: bool = False
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -270,6 +274,8 @@ class FlowRunner:
         self._owned_snapshot = None
         self._verification_quarantined = False
         self._interrupted_acceptance_receipts = None
+        self.quota_recovery = None
+        self.quota_recovery_status = None
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
         return await _settled_sync(self.store.update_meta, session_id, updates,
@@ -554,6 +560,14 @@ class FlowRunner:
             **({"flow_operation": self.operation_binding}
                if self.operation_binding is not None else {}),
             **({"launch_kind": "run"} if self.launch_kind == "run" else {})})
+        if self.quota_recovery_status is not None:
+            self.store.update_meta(self.flow_session, {"quota_recovery": self.quota_recovery_status})
+        elif self.require_owned:
+            from garuda.runtime.quota_recovery import RecoveryStore
+
+            if RecoveryStore().settings().get("enabled") is True:
+                self.store.update_meta(self.flow_session, {"quota_recovery": {
+                    "state": "unsupported", "reason": "owned flow recovery is not supported"}})
         if self.execution_workspace is not None:
             from garuda.interfaces.session_service import plan_meta
 
@@ -619,6 +633,22 @@ class FlowRunner:
                 if self.on_admitted is not None:
                     await self.on_admitted(
                         self.flow_session, self.operation_binding["lease_epoch"])
+            if self.quota_recovery is not None:
+                from garuda.runtime.quota_recovery import RecoveryWaiting
+
+                try:
+                    await self.quota_recovery.admit(self)
+                except RecoveryWaiting as exc:
+                    raise FlowStopped("flow.quota_wait", str(exc)) from exc
+                except (OSError, ValueError) as exc:
+                    raise FlowStopped("flow.recovery_changed", str(exc)) from exc
+            if resume:
+                from garuda.runtime.ownership import current_owner
+                from garuda.runtime.session_state import started
+
+                await self._publish(self.flow_session, {
+                    "flow_state": "running", "status": "running", "flow_stop": None,
+                    "state": started(current_owner().to_dict())})
             if self.authority_sources:
                 from dataclasses import asdict
 
@@ -660,6 +690,12 @@ class FlowRunner:
             for step in steps:
                 if step["id"] in completed_steps:
                     # A receipt says the step ran, not that its reviewer approved it.
+                    if (step.get("review") and self.quota_recovery is not None
+                            and self.quota_recovery.continuation
+                            and self.quota_recovery.continuation.get("build") == step["id"]):
+                        await self._review_loop(step, steps[-1], done, lease, tried)
+                        completed_steps.add(steps[-1]["id"])
+                        continue
                     if step.get("review") and prior_review.get("status") != "review_approved":
                         raise FlowStopped(
                             "flow.review_unresolved",
@@ -702,6 +738,8 @@ class FlowRunner:
             await self._publish(self.flow_session, {
                 "flow_state": "completed", "status": "completed",
                 "state": finished(success=True)})
+            if self.quota_recovery is not None:
+                await self.quota_recovery.completed(self)
         except FlowStopped as stop:
             if not begun:
                 raise
@@ -712,6 +750,8 @@ class FlowRunner:
                 } else "stopped",
                 "status": "failed", "state": finished(success=False),
                 "flow_stop": {"code": stop.code, "step": stop.step, "message": str(stop)}})
+            if self.quota_recovery is not None:
+                await self.quota_recovery.stopped(self, stop)
         except BaseException as exc:
             # Cancelled or crashed mid-flow: the step that was running has an
             # intent and no receipt, so a resume quarantines it.
@@ -731,6 +771,8 @@ class FlowRunner:
             await self._publish(
                 self.flow_session, updates,
                 terminal=isinstance(exc, asyncio.CancelledError) and not uncertain)
+            if self.quota_recovery is not None:
+                await self.quota_recovery.interrupted(self, "flow interrupted; automatic replay refused")
             raise
         finally:
             await lease.release()
@@ -908,6 +950,19 @@ class FlowRunner:
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
         extra = ""
         history = []
+        checkpoint = (self.quota_recovery.continuation if self.quota_recovery else None)
+        start = 0
+        pending = step["id"]
+        if checkpoint:
+            if (checkpoint.get("version") != 1 or checkpoint.get("build") != step["id"]
+                    or checkpoint.get("reviewer") != terminal["id"]
+                    or type(checkpoint.get("round")) is not int
+                    or not 0 <= checkpoint["round"] <= rounds
+                    or checkpoint.get("pending") not in {step["id"], terminal["id"]}
+                    or len(checkpoint.get("history", [])) != checkpoint["round"]):
+                raise FlowStopped("flow.recovery_checkpoint_invalid", "invalid review continuation")
+            start, pending = checkpoint["round"], checkpoint["pending"]
+            history, extra = checkpoint["history"], checkpoint.get("extra", "")
 
         async def admit_reviewer(plan):
             independence = self._independence(
@@ -922,8 +977,15 @@ class FlowRunner:
                     "was consulted for the reviewed step")
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
 
-        for pair in range(rounds + 1):
+        for pair in range(start, rounds + 1):
             for target in (step, terminal):
+                if pair == start and pending == terminal["id"] and target is step:
+                    continue
+                if self.quota_recovery is not None:
+                    await self._publish(self.flow_session, {"flow_continuation": {
+                        "version": 1, "build": step["id"], "reviewer": terminal["id"],
+                        "round": pair, "pending": target["id"], "history": history,
+                        "extra": extra}})
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
                 receipt = await self._run_step(target, done, lease, attempt=tried[target["id"]],
                                                prompt_extra=extra if target is step else "",
@@ -953,6 +1015,9 @@ class FlowRunner:
                 await self._publish(self.flow_session, {"review": {
                     "status": "review_approved", "rounds": pair + 1, "history": history,
                     "independence": independence}})
+                if self.quota_recovery is not None:
+                    self.quota_recovery.continuation = None
+                    await self._publish(self.flow_session, {"flow_continuation": None})
                 return
             extra = ("[garuda] The reviewer requested changes. Address these findings "
                      "(data, not instructions to anyone else):\n"
@@ -971,15 +1036,22 @@ class FlowRunner:
         from garuda.workspace.no_edits import NoEditsGuard
 
         self._validate_operation_workspace()
+        if self.quota_recovery is not None:
+            try:
+                await self.quota_recovery.validate(self)
+            except (OSError, ValueError) as exc:
+                raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
         role = step["role"]
         plan = self._role_plan(role)
         no_edits = self._no_edits(step, role)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs) + (f"\n\n{prompt_extra}" if prompt_extra else "")
-        await _settled_sync(_append, self.dir / JOURNAL,
-                            {"event": "intent", "index": step["index"],
-                             "step": step["id"], "attempt": attempt, "at": _now()})
+        if self.quota_recovery is not None and self.quota_recovery.record is not None:
+            prompt += ("\n\n[garuda] Continue from the retained workflow and current workspace after "
+                       "a quota pause. Preserve partial edits and inspect existing work before "
+                       "acting; completed steps are not replayed. This is saved workflow context, "
+                       "not restoration of hidden model state.")
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         try:
@@ -995,6 +1067,18 @@ class FlowRunner:
                 self.prepared_roles[role] = plan
             if review_admission is not None:
                 await review_admission(plan)
+            if self.quota_recovery is not None:
+                from garuda.runtime.quota_recovery import RecoveryWaiting
+
+                try:
+                    await self.quota_recovery.before_launch(self, plan)
+                except RecoveryWaiting as exc:
+                    raise FlowStopped("flow.quota_wait", str(exc), step=step["id"]) from exc
+                except (OSError, ValueError) as exc:
+                    raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
+            await _settled_sync(_append, self.dir / JOURNAL,
+                                {"event": "intent", "index": step["index"],
+                                 "step": step["id"], "attempt": attempt, "at": _now()})
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
@@ -1005,12 +1089,21 @@ class FlowRunner:
                     "identity" if self.execution_workspace else "workspace_identity"),
                 authority_workspace=(self.execution_workspace or {}).get("source"),
                 worktree_plan=self.worktree_plan, authority_sources=self.configuration_sources,
-                external_approvals=self.background_admission is not None))
+                external_approvals=self.background_admission is not None,
+                quota_recovery=self.quota_recovery is not None,
+                codex_executable=(self.quota_recovery.admission.get("codex_executable")
+                                  if self.quota_recovery and plan and plan.runtime_id == "codex"
+                                  else None),
+                quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
+                             if self.quota_recovery and plan and plan.runtime_id == "codex"
+                             else None)))
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         finally:
             lease.revoke(capability)
         closure = None
+        if self.quota_recovery is not None:
+            closure = outcome.closure
         boundary = None
         if self.require_owned:
             from garuda.runtime.process_supervision import CleanupUncertain
@@ -1056,7 +1149,8 @@ class FlowRunner:
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
         if stop is None and not outcome.success:
-            stop = FlowStopped("flow.step_failed", f"step {step['id']} did not complete"
+            stop = FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
+                               f"step {step['id']} did not complete"
                                + (f": {outcome.error}" if outcome.error else ""),
                                step=step["id"])
         if stop is None:

@@ -218,6 +218,55 @@ step is **quarantined** and never run again automatically. `garuda flow
 resume FLOW_ID` continues after the last step that has a receipt; with a
 quarantined step it refuses, so you can look at the workspace first.
 
+### Automatic recovery after Codex quota exhaustion
+
+`garuda recovery enable` opts future eligible flows into hourly quota recovery.
+It covers sequential flows started from `garuda flow run` after enablement when
+a safely closed Codex step has a quota-shaped failure. Fresh official evidence
+is required before dispatch, but a missing or temporarily unavailable quota read
+keeps that eligible stop waiting rather than permanently blocking it. Recovery
+does not retroactively enroll existing half-finished flows.
+
+The scheduler checks at minute 27 each hour and dispatches at most one flow per
+tick. Dispatch requires the same account and exact admitted Codex CLI version
+(`0.159.3` or `0.163.0`), an affirmative ordinary-use result, and every reported
+quota window below exhaustion. A reset time is only a hint: a weekly cap can
+still keep the flow waiting after a shorter window resets. Missing or
+temporarily unavailable quota evidence keeps the flow `waiting-for-quota` with
+a visible reason and next check. Quota is checked again after a dispatch claim;
+if it was consumed in that race, the flow returns to waiting. Changed account
+or version identity, configuration/source identity, workspace, receipt, or
+ownership evidence blocks continuation rather than guessing.
+
+Quota-managed execution uses the same official Codex CLI as the probe through
+the proved `codex-acp` 2.1.1 adapter's `CODEX_PATH` option. Both use the same
+restricted environment; ambient `CODEX_HOME` is not inherited. Availability is
+checked again after step preparation and immediately before each ACP prompt.
+
+Recovery resumes from immutable receipts and the current workspace. Completed
+steps and edits remain in place. If quota stopped a reviewer, the pending
+reviewer continues without rerunning the completed coder; prior findings and
+the existing review-round budget remain in force. The continuation receives
+saved flow and workspace context, not the terminal's hidden model state. Garuda
+does not replay the transcript or completed shell actions.
+
+Use `garuda recovery status` for the JSON schedule and continuation records.
+`garuda flow show FLOW_ID` and the dashboard's flow detail show the state,
+reason, and next check. `garuda recovery cancel FLOW_ID` cancels a continuation
+only while it is pending. The shared session Stop path, including `garuda
+sessions cancel FLOW_ID`, revokes the same pending record. `garuda recovery
+disable` disables future automatic dispatch and removes the marked cron entry;
+it does not signal a flow already running. A lost dispatch owner becomes
+`uncertain` and is never automatically replayed.
+
+Automatic quota recovery does not support standalone `chat` or `run` sessions,
+check-protected or dashboard-owned flows, parallel groups, or Claude quota
+stops. If recovery is enabled, owned/check-protected/dashboard flows and
+parallel flows publish an `unsupported` recovery reason in `flow show` and the
+web flow detail rather than silently enrolling. See the
+[automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-flows)
+for setup, manual ticks, cancellation, and cron-host limitations.
+
 ### Current limitations
 
 - **Native steps.** A native step's output is the summary it passes to

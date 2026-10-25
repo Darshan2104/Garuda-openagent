@@ -2005,3 +2005,70 @@ intent has published the terminal phase. Parent completion metadata can precede
 that publication and does not alone finish the operation. Stale admitted reads
 remain nonterminal; a missing or unproved owner retains uncertainty. Status
 reads project existing evidence without advancing intents or replaying work.
+
+
+## 2026-10-24 — Quota continuation is an opt-in, evidence-gated flow owner
+
+Only sequential CLI flows admitted after `garuda recovery enable` can enroll a
+settled Codex quota stop. Standalone chat/run, protected or dashboard-owned
+flows, parallel groups, Claude, and older half-finished flows remain outside
+this boundary. The private operator store and exact marked user-cron block are
+not project-authorized state. Cron runs at minute 27, dispatches at most one
+flow per tick, and depends on the host being awake and the absolute installed
+Python/Codex paths remaining available. The wrapper retains the current Python
+entrypoint instead of resolving a virtualenv symlink to an uninstalled base
+interpreter. `GARUDA_RECOVERY_ROOT` is the durable operator environment choice
+for both future flow enrollment and controls; `--root` selects only one control
+invocation. The installed wrapper preserves that environment override and also
+passes its selected absolute root to `tick`. Disablement prevents future automatic
+dispatch; pending cancellation is separate and neither operation signals live
+work.
+
+Automatic dispatch requires a fresh read from the proved official Codex
+account/rate-limit interface (`0.159.3` or `0.163.0`), the admitted account and
+version, affirmative ordinary-use availability, and every reported window
+below exhaustion, including a weekly cap. Missing or temporarily unavailable
+quota evidence keeps the record waiting with its reason and next check. Resume
+probes again after the durable dispatch reservation; quota consumed in that
+race returns to waiting without step launch. Changed account/version identity,
+configuration/source facts, workspace checkpoint, receipts, or ownership
+blocks execution. Loss of a dispatch owner becomes `uncertain` and never
+authorizes replay.
+
+The existing flow engine remains the execution owner. It captures admission
+facts and settled continuation/review checkpoints under its retained lease,
+then resumes through the ordinary service with existing operation, workspace,
+capacity, role, receipt, review-independence, and review-budget guards. Existing
+edits and completed steps remain; a pending reviewer does not rerun its coder.
+Continuation supplies saved flow and workspace context only—never a claim of
+restored hidden model state, transcript replay, or repeated completed actions.
+CLI status, flow show, and web flow detail project persisted reason/next-check
+evidence without probing quota or launching work. The shared session Stop path
+and `recovery cancel` revoke the same pending record, but cannot cancel a
+claimed/running continuation. With recovery enabled, owned/check-protected,
+dashboard-owned, and parallel flows publish `unsupported` recovery status
+rather than silently disappearing from the feature boundary.
+
+## 2026-10-25 — Quota evidence matches Codex execution and prompt dispatch
+
+Quota-managed Codex flows select their admitted official CLI through the
+documented `CODEX_PATH` option of the proved `codex-acp` 2.1.1 adapter. The
+read-only quota probe and the adapter use the same minimal environment;
+ambient `CODEX_HOME`, API keys and vendor tokens are not forwarded. This avoids
+probing a PATH-selected CLI while executing the adapter's bundled CLI or
+another account context.
+
+The engine refreshes quota after step inputs and review admission, before an
+execution intent. The ACP entry also refreshes immediately before prompt
+delivery, after startup and option negotiation. Missing availability waits;
+changed account/version identity refuses. A waiting check that launched no
+prompt can close its idle adapter and retain the pending step without consuming
+a review round. Concurrent tick failure may update only its own dispatch token;
+it never adopts a competing tick's reservation token.
+
+ACP cleanup proves absence of live members in its issued process group, with
+bounded TERM/KILL escalation even when the leader exits first. Missing group
+identity or closure evidence retains quarantine. This is a cleanup guardrail,
+not confinement or proof about already detached daemons that left the group.
+Protected owned-process-tree flows retain their separate supervision boundary
+and remain unsupported by automatic quota continuation.

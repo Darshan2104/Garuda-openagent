@@ -127,7 +127,7 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
     return {"name": (meta.get("flow") or {}).get("name"), "state": meta.get("flow_state"),
             "steps": steps, "edges": edges,
             # Own field: a review verdict is advice about the work, not verification of it.
-            "review": meta.get("review")}
+            "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
 
 
 def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=None) -> dict[str, Any]:
@@ -168,6 +168,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "queue": queue,
         "worker": {"pid": worker.get("pid")} if worker else None,
         "resumed_from": meta.get("resumed_from"),
+        "quota_recovery": meta.get("quota_recovery"),
         "usage": UNKNOWN,
         "cost": UNKNOWN,
         "created_at": meta.get("created_at"),

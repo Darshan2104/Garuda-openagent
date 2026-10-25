@@ -629,6 +629,21 @@ def build_parser():
     flow_resume.add_argument("flow_session")
     flow_resume.add_argument("--workspace", default=".")
 
+    recovery_parser = subparsers.add_parser(
+        "recovery", help="Automatically continue Codex flows after a quota reset")
+    recovery_sub = recovery_parser.add_subparsers(dest="recovery_command")
+    for command, help_text in (
+        ("enable", "Install hourly quota recovery in your user crontab"),
+        ("disable", "Disable automatic dispatch and remove its hourly cron entry"),
+        ("status", "Show the schedule and saved flow continuations"),
+        ("tick", "Check quota and continue at most one eligible flow"),
+        ("cancel", "Cancel a waiting continuation"),
+    ):
+        command_parser = recovery_sub.add_parser(command, help=help_text)
+        command_parser.add_argument("--root", help="Private recovery store (operator override)")
+        if command == "cancel":
+            command_parser.add_argument("flow_session")
+
     approvals_parser = subparsers.add_parser(
         "approvals", help="List or answer a running session's parked approvals"
     )
@@ -1337,6 +1352,11 @@ def run_flow(args) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
         print(f"flow {meta.get('flow', {}).get('name')}: {meta.get('flow_state')}")
+        recovery = meta.get("quota_recovery")
+        if recovery:
+            print(f"  quota recovery: {recovery.get('state')}; {recovery.get('reason', '')}")
+            if recovery.get("next_check"):
+                print(f"  next quota check (epoch): {recovery['next_check']}")
         for receipt in engine.receipts(store, args.flow_session):
             outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
@@ -2141,6 +2161,12 @@ def main() -> None:
         if args.flow_command is None:
             parser.parse_args(["flow", "--help"])
         raise SystemExit(run_flow(args))
+    if args.command == "recovery":
+        if args.recovery_command is None:
+            parser.parse_args(["recovery", "--help"])
+        from garuda.interfaces.recovery_cli import run_recovery
+
+        raise SystemExit(run_recovery(args))
     if args.command == "approvals":
         if args.approvals_command is None:
             parser.parse_args(["approvals", "--help"])

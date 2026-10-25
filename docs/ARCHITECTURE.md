@@ -131,6 +131,44 @@ fastest way to learn the system.
    resolves the effective flow and missing-role preflight, then delegates to
    `FlowRunner`; the CLI renders the returned outcome and recorded review/state
    evidence. Lease ownership, typed artifacts and recovery stay in the engine.
+   Quota recovery is an opt-in operator service around this same flow owner,
+   never a second execution engine. `runtime/quota_recovery.py` captures
+   configuration/source facts at admission, checkpoints receipts, review-loop
+   state and workspace content at settled boundaries under the flow's retained
+   lease, and enrolls only future sequential CLI flows with eligible Codex
+   steps. The hourly `runtime/recovery_schedule.py` user-cron wrapper invokes
+   `-m garuda.interfaces.main recovery tick` outside any workspace, using the
+   absolute current interpreter path without resolving away a virtualenv
+   entrypoint. One tick can reserve and dispatch at most one continuation
+   through `FlowExecutionService.resume`. Existing
+   workspace, capacity, role, lease, review-budget, receipt and operation-owner
+   guards remain authoritative. Completed steps are not replayed, a pending
+   reviewer does not rerun its completed coder, and continuation supplies saved
+   flow/workspace context rather than claiming restoration of hidden model state.
+   A lost dispatch owner is `uncertain`, never replay authority.
+
+   Recovery records and version-1 scheduler settings live in a strict private
+   user store. `GARUDA_RECOVERY_ROOT` selects a custom store consistently for
+   flow enrollment and controls; a CLI `--root` selects only that control
+   invocation, while the installed wrapper preserves the environment override
+   and passes its absolute root explicitly. Automatic dispatch requires fresh
+   evidence from the proved official Codex interface for the exact enrolled
+   version and account, with every reported window below exhaustion; changed
+   authentication, configuration, source, workspace, receipt or ownership
+   evidence fails closed. Schedule disablement prevents
+   future automatic dispatch but does not signal running work. Status, flow
+   show, and the web flow detail project persisted state, reason and next-check
+   evidence without probing quota or launching a continuation.
+   Missing or temporarily unavailable quota evidence is not permanent authority
+   failure: the record stays `waiting-for-quota` with a future check. Admission
+   probes again after the durable dispatch claim; a quota race takes the typed
+   wait transition and returns the same record to waiting without running the
+   step. Changed account/version, configuration/source identity, workspace,
+   receipts, or ownership instead blocks. Shared session cancellation revokes a
+   pending recovery record through the same store; it cannot cancel a claimed or
+   running continuation. When recovery is enabled, owned/check-protected,
+   dashboard-owned, and parallel flow owners publish `unsupported` status rather
+   than silently omitting recovery state.
    The facade accepts public `flow run --check` selections: it freezes the effective
    configured and explicit checks with their parsed source identities before
    admission. `build-review` automatically selects authorized configured checks;

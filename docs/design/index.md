@@ -5,7 +5,7 @@ status; a proposed record has not been approved or implemented. They are
 kept for rationale and review history; current behavior belongs in the user,
 reference, and architecture documentation.
 
-- [Quota-aware workflow continuation](2026-10-24-quota-auto-resume-design.md) — proposed hourly quota monitoring and continuation of interrupted Codex-backed flows.
+- [Quota-aware workflow continuation](2026-10-24-quota-auto-resume-design.md) — approved hourly quota monitoring and continuation of interrupted Codex-backed flows.
 
 - [Dashboard run extensions](2026-10-17-dashboard-run-extensions-design.md) — full #337 design approved on 2026-10-17; implemented through owned queue/workspace/container/probe lifetimes and Linux Chrome checks.
 

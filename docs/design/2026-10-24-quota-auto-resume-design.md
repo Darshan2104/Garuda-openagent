@@ -1,6 +1,6 @@
 # Quota-aware workflow continuation
 
-Status: proposed; implementation awaits design review.
+Status: approved on 2026-10-24; implementation in progress.
 
 ## Problem and outcome
 
