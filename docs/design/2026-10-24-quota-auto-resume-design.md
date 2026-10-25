@@ -1,6 +1,6 @@
 # Quota-aware workflow continuation
 
-Status: approved on 2026-10-24; implementation in progress.
+Status: approved on 2026-10-24; implemented on 2026-10-25.
 
 ## Problem and outcome
 
