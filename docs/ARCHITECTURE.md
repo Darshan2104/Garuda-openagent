@@ -338,6 +338,10 @@ fastest way to learn the system.
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
    (`core/buffer.py`), not destroyed.
+   New buffer captures become discoverable only after a complete UTF-8 write
+   and atomic replacement; interrupted staging files stay out of discovery.
+   This publication contract does not establish power-loss durability or
+   validate the historical completeness of legacy `.txt` captures.
 7. **Completion gate** — `task_complete` does not end a run by itself.
    `core/verifier.py` decides, consulting `core/evidence.py`,
    `core/contract.py`, and `core/side_effects.py` per the mode's gates. A
