@@ -193,6 +193,7 @@ def test_schedule_changes_require_successful_crontab_readback(
     [
         ("api_key=sk-example-secret-value", "sk-example-secret-value"),
         ("sk-abcdefg\x7fhijklmnop", "sk-abcdefghijklmnop"),
+        ("prefix\x7fsk-abcdefghijklmnop", "sk-abcdefghijklmnop"),
     ],
 )
 def test_enable_cli_explains_crontab_failure_without_enabling_recovery(

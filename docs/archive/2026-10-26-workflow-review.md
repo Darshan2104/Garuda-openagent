@@ -271,6 +271,8 @@ demonstrate a live quota-exhaustion-and-reset continuation.
 
 The final self-review found that removing control characters after redaction
 could reassemble a recognizable token in CLI diagnostics. An added case in the
-existing CLI boundary test reproduced the leak with synthetic input. The repair
-normalizes bounded stderr before applying the existing secret redactor, retaining
-the original OS failure detail and disabled-on-failure behavior.
+existing CLI boundary test reproduced the leak with synthetic input. A second
+case showed that normalization can also erase a token's original word boundary.
+The repair applies the existing secret redactor before and after normalizing
+bounded stderr, retaining the original OS failure detail and disabled-on-failure
+behavior. Both cases failed before their repair and pass with the final ordering.

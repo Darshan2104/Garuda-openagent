@@ -47,8 +47,9 @@ def run_recovery(args) -> int:
         detail = exc.stderr or ""
         if isinstance(detail, bytes):
             detail = detail.decode("utf-8", errors="replace")
-        # Normalize before redaction so stripping controls cannot reassemble a token.
-        detail = "".join(c for c in detail[:4096] if c.isprintable() or c in "\n\t")
+        # Redact both shapes: stripping controls can join tokens or erase their boundaries.
+        detail, _ = redact_text(detail[:4096])
+        detail = "".join(c for c in detail if c.isprintable() or c in "\n\t")
         detail, _ = redact_text(detail)
         detail = summarize_command_output(detail.strip(), limit=1024)
         print(f"Error: recovery command failed (exit {exc.returncode})"
