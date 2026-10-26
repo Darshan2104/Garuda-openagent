@@ -11,7 +11,7 @@ MCP, and observability.
 
 ## What it does
 
-- Runs LiteLLM-supported providers with retries, streaming, reasoning support,
+- Runs LiteLLM-supported providers with retries, streaming APIs, reasoning support,
   prompt caching, concurrency control, and reproducible cost accounting.
 - Gives agents safe, inspectable tools for shell, files, edits, search, documents,
   tmux, web access, MCP, skills, custom tools, and subagents.

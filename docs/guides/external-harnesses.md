@@ -12,8 +12,9 @@ and `goose`.
       permission rules, Docker and sandbox workspaces, and completion checks do
       not confine it.
     - Garuda records the session, approvals, lease, baseline, and workspace
-      changes. "Completed" means the harness ended its turn, not that Garuda
-      verified the result.
+      changes. "Completed" means the harness ended its turn. Explicit post-run
+      acceptance checks can independently verify selected criteria; the native
+      completion gate does not run inside the external harness.
     - Quick recipes: [Level 7 · Advanced](../use-cases/advanced.md).
 
 ## Native and ACP behavior differ
@@ -22,7 +23,8 @@ and `goose`.
 |---|---|---|
 | Controller | Garuda model loop | External harness |
 | Tool permissions | Enforced by Garuda's permission engine | Harness requests can flow through the approval broker, but native tool rules don't confine the harness |
-| Completion | Garuda's completion checks for the selected mode | The harness ended its turn; Garuda does not verify the result |
+| Completion | Garuda's completion checks for the selected mode | The harness ended its turn; no native completion gate runs inside it |
+| Acceptance | Authorized checks record candidate-bound verification separately from self-check | Explicit post-run checks can verify selected criteria on standalone runs; completion alone is not verification |
 | Session evidence | Messages, events, baseline, delta, metrics | Normalized events, runtime segment, child record, baseline, and delta where available |
 | Credentials | Provider API key for the selected model | Your vendor CLI login |
 
@@ -53,6 +55,17 @@ garuda runtime inspect opencode
 ```bash
 garuda run --workspace . --runtime opencode -t "Inspect the failing tests"
 ```
+
+For a standalone ACP task, select an acceptance check explicitly:
+
+```bash
+garuda run --workspace . --runtime opencode -t "Fix the failing tests" --check "pytest -q"
+```
+
+The check runs after the harness turn and records its authority, workspace
+fingerprint and outcome. A passing model review or a harness's own test claim
+does not replace that receipt. Checks do not confine the harness, and selecting
+them does not make check-protected flows eligible for automatic quota recovery.
 
 ```mermaid
 sequenceDiagram

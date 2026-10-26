@@ -114,6 +114,11 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
+   The loop calls `Model.complete()`; model streaming APIs and renderer delta
+   hooks do not yet provide native token-by-token loop rendering. External
+   harness streaming is a separate runtime path. Standalone ACP runs can use
+   explicit post-run acceptance checks even though the native completion gate
+   does not run inside the external harness.
    An enabled collection client does not own this loop: the reasoning model must
    call `delegate_collection`. `prepare_run` then constructs a bounded
    `CollectionCoordinator` from the live environment, parent context, buffer,

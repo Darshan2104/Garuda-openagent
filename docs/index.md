@@ -54,8 +54,9 @@ flowchart LR
 
 With Garuda's native agent, every tool call in step 3 is screened by
 permission rules. With an external harness such as Claude Code, the harness
-does step 3 with its own authority and step 4 is skipped: Garuda records the
-result but does not verify it.
+does step 3 with its own authority and Garuda's native completion gate is
+skipped. Explicit post-run acceptance checks can independently verify selected
+criteria on a standalone ACP run; completion alone is not verification.
 
 ## Find your way
 
@@ -137,7 +138,7 @@ Start with the runnable reconnect example and inspect readiness before launch.
 
 | Capability | Details |
 |---|---|
-| **Any model** | Any LiteLLM provider, with retries, streaming, reasoning settings, prompt caching, and cost accounting |
+| **Any model** | Any LiteLLM provider, with retries, streaming APIs, reasoning settings, prompt caching, and cost accounting; the native loop renders completed model turns rather than live tokens |
 | **Real tools** | Shell, files, edits, search, PDFs and spreadsheets, web fetch, MCP servers, skills, subagents, hooks, and your own Python tools |
 | **Your own agents** | Version 1 agent definitions that extend packaged ones, inspected with `garuda agent show`, with structured JSON output and reviewed memory notes |
 | **Guardrails** | Permission rules, read-only and no-edits runs, approvals for risky actions (answerable from anywhere), and trust prompts for project-supplied code |
