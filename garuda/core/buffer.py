@@ -11,8 +11,10 @@ so retrieval works in-process regardless of the execution environment.
 
 import hashlib
 import logging
+import os
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,13 +123,25 @@ class ToolOutputBuffer:
     def store(self, buffer_id: str, content: str, tool_name: str = "", is_error: bool = False) -> BufferRef:
         self._root.mkdir(parents=True, exist_ok=True)
         path = self._path(buffer_id)
-        path.write_text(content, encoding="utf-8")
+        size_bytes = len(content.encode("utf-8"))
+        # Readers discover only *.txt. An interrupted capture must never become
+        # discoverable, nor truncate the last complete value for the same id.
+        fd, name = tempfile.mkstemp(prefix=".capture-", suffix=".tmp", dir=self._root)
+        staging = Path(name)
+        try:
+            os.close(fd)
+            written = staging.write_text(content, encoding="utf-8", newline="")
+            if written != len(content) or staging.stat().st_size != size_bytes:
+                raise OSError("Incomplete tool-output buffer capture")
+            os.replace(staging, path)
+        finally:
+            staging.unlink(missing_ok=True)
         lines = content.splitlines()
         preview = "\n".join(lines[:PREVIEW_LINES])[:PREVIEW_MAX_CHARS]
         ref = BufferRef(
             buffer_id=buffer_id,
             path=str(path),
-            size_bytes=len(content.encode("utf-8", errors="ignore")),
+            size_bytes=size_bytes,
             line_count=len(lines),
             preview=preview,
             tool_name=tool_name,

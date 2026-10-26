@@ -45,7 +45,7 @@ a behaviour.
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
-| `buffer.py` | Session buffers holding large tool output and compacted history. |
+| `buffer.py` | Session buffers holding large tool output and compacted history. Captures use unique same-directory staging files, validate character and UTF-8 byte counts after close, then atomically replace the discoverable file. Failed writes/replacements retain the prior capture; abandoned staging files are not discoverable. Legacy `.txt` captures remain readable without a new integrity claim. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. |
 | `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports its own exits so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |

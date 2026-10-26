@@ -52,10 +52,71 @@ def test_buffer_list_includes_disk_on_resume(tmp_path: Path):
     root = tmp_path / "buffers"
     buf1 = ToolOutputBuffer(session_id="s1", threshold_bytes=10, root=root)
     buf1.store("c1", "a\n" * 50)
+    (root / ".capture-abandoned.tmp").write_text("partial")
+    (root / "legacy.txt").write_text("older complete output\n")
     # A fresh buffer object (simulating resume) still sees the on-disk buffer.
     buf2 = ToolOutputBuffer(session_id="s1", threshold_bytes=10, root=root)
     ids = {r.buffer_id for r in buf2.list_buffers()}
-    assert "c1" in ids
+    assert ids == {"c1", "legacy"}
+    assert buf2.read("legacy") == "older complete output\n"
+
+
+@pytest.mark.parametrize("replace_existing", [False, True])
+@pytest.mark.parametrize("failure", ["write-error", "short-write"])
+def test_failed_capture_never_publishes_partial_output(tmp_path, monkeypatch, replace_existing, failure):
+    """An interrupted capture is absent, or leaves the last complete capture readable."""
+    buf = _buffer(tmp_path)
+    previous = "previous complete output\n"
+    if replace_existing:
+        buf.store("capture", previous)
+    original_write = Path.write_text
+
+    def interrupted_write(path, content, *args, **kwargs):
+        original_write(path, content[:3], *args, **kwargs)
+        # Even while the writer is active, fresh readers see only committed data.
+        reader = _buffer(tmp_path)
+        if replace_existing:
+            assert reader.read("capture") == previous
+        else:
+            assert reader.list_buffers() == []
+        if failure == "write-error":
+            raise OSError("capture interrupted")
+        return 3
+
+    monkeypatch.setattr(Path, "write_text", interrupted_write)
+    with pytest.raises(OSError):
+        buf.store("capture", "complete replacement output\n")
+
+    for reader in (buf, _buffer(tmp_path)):
+        refs = reader.list_buffers()
+        if replace_existing:
+            assert len(refs) == 1
+            assert reader.read("capture") == previous
+            assert refs[0].size_bytes == len(previous.encode("utf-8"))
+        else:
+            assert refs == []
+            with pytest.raises(KeyError):
+                reader.read("capture")
+    assert {path.name for path in (tmp_path / "buffers").iterdir()} == (
+        {"capture.txt"} if replace_existing else set()
+    )
+
+
+def test_buffer_replacement_failure_retains_complete_unicode_output(tmp_path, monkeypatch):
+    buf = _buffer(tmp_path)
+    previous = "🦅 complete\r\noutput\n"
+    ref = buf.store("capture", previous)
+    assert ref.size_bytes == len(previous.encode("utf-8"))
+    assert Path(ref.path).read_bytes() == previous.encode("utf-8")
+
+    def replace_failed(source, destination):
+        raise OSError("publication refused")
+
+    monkeypatch.setattr("garuda.core.buffer.os.replace", replace_failed)
+    with pytest.raises(OSError, match="publication refused"):
+        buf.store("capture", "new output")
+    assert Path(ref.path).read_bytes() == previous.encode("utf-8")
+    assert {path.name for path in (tmp_path / "buffers").iterdir()} == {"capture.txt"}
 
 
 async def test_large_tool_output_is_buffered_not_truncated(tmp_path: Path):
