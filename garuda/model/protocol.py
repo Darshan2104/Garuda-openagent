@@ -56,6 +56,8 @@ class StreamDelta:
     ``content_delta`` carries newly generated assistant text; ``tool_call_delta``
     carries a partial tool-call fragment (with, e.g., ``index``, ``id``, ``name``,
     ``arguments`` keys as they arrive); ``done`` marks the terminal chunk.
+    ``finish_reason`` and ``status`` carry provider-reported terminal metadata
+    when available.  They remain ``None`` when a provider does not report them.
     """
 
     content_delta: str = ""
@@ -64,6 +66,8 @@ class StreamDelta:
     reasoning_delta: str = ""
     thinking_blocks: list[dict] | None = None
     done: bool = False
+    finish_reason: str | None = None
+    status: str | None = None
 
 
 @runtime_checkable

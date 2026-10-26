@@ -279,6 +279,34 @@ garuda run --reasoning-effort high -t "Find the race condition in the job queue"
 
 To change the default for every run, see [Configuration](../guides/configuration.md#models).
 
+### Inspect why a model response ended
+
+Callers using the model helpers can distinguish a token limit from a normal
+stop without examining the generated text:
+
+```python
+from garuda.model import LitellmModel
+from garuda.types import Message, Role
+
+model = LitellmModel("anthropic/MODEL_ID")
+messages = [Message(role=Role.USER, content="Summarize the repository")]
+
+ordinary = await model.complete(messages)
+streamed = await model.complete_streaming(messages)
+print(ordinary.raw["finish_reason"], streamed.raw["finish_reason"])
+```
+
+Both response paths expose the provider's `finish_reason` and `status` in
+`ModelResponse.raw`. The lower-level `model.stream()` exposes the same optional
+values on `StreamDelta`. A provider that omits a value produces `None`; Garuda
+does not guess from content, tool calls, stream exhaustion, or `done=True`.
+Empty terminal chunks and later usage-only chunks preserve an observed value.
+
+These are model-helper APIs. Native `garuda run` and `garuda chat` still call
+`complete()` and render completed turns; this does not add live token rendering
+to the native loop. External harness streaming follows its separate runtime
+path.
+
 ---
 
 **Next:** make every run understand your project in

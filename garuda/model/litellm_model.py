@@ -184,34 +184,38 @@ def _stream_deltas_from_chunk(chunk) -> list[StreamDelta]:
     """Translate one litellm streaming chunk into zero or more StreamDeltas."""
     deltas: list[StreamDelta] = []
     choices = getattr(chunk, "choices", None) or []
-    if not choices:
-        return deltas
-    delta = getattr(choices[0], "delta", None)
-    if delta is None:
-        return deltas
-    content = getattr(delta, "content", None)
-    if content:
-        deltas.append(StreamDelta(content_delta=content))
-    reasoning = getattr(delta, "reasoning_content", None)
-    if reasoning:
-        deltas.append(StreamDelta(reasoning_delta=reasoning))
-    tblocks = _normalize_thinking_blocks(getattr(delta, "thinking_blocks", None))
-    if tblocks:
-        deltas.append(StreamDelta(thinking_blocks=tblocks))
-    for tc in getattr(delta, "tool_calls", None) or []:
-        fn = getattr(tc, "function", None)
-        deltas.append(
-            StreamDelta(
-                tool_call_delta={
-                    # Preserve a missing index as None rather than coercing to 0 —
-                    # coercion is what merged every index-less call into one slot.
-                    "index": getattr(tc, "index", None),
-                    "id": getattr(tc, "id", None),
-                    "name": getattr(fn, "name", None) if fn is not None else None,
-                    "arguments": getattr(fn, "arguments", None) if fn is not None else None,
-                }
+    choice = choices[0] if choices else None
+    delta = getattr(choice, "delta", None)
+    if delta is not None:
+        content = getattr(delta, "content", None)
+        if content:
+            deltas.append(StreamDelta(content_delta=content))
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            deltas.append(StreamDelta(reasoning_delta=reasoning))
+        tblocks = _normalize_thinking_blocks(getattr(delta, "thinking_blocks", None))
+        if tblocks:
+            deltas.append(StreamDelta(thinking_blocks=tblocks))
+        for tc in getattr(delta, "tool_calls", None) or []:
+            fn = getattr(tc, "function", None)
+            deltas.append(
+                StreamDelta(
+                    tool_call_delta={
+                        # Preserve a missing index as None rather than coercing to 0 —
+                        # coercion is what merged every index-less call into one slot.
+                        "index": getattr(tc, "index", None),
+                        "id": getattr(tc, "id", None),
+                        "name": getattr(fn, "name", None) if fn is not None else None,
+                        "arguments": getattr(fn, "arguments", None) if fn is not None else None,
+                    }
+                )
             )
-        )
+    finish_reason = getattr(choice, "finish_reason", None)
+    status = getattr(chunk, "status", None)
+    if status is None:
+        status = getattr(choice, "status", None)
+    if finish_reason is not None or status is not None:
+        deltas.append(StreamDelta(finish_reason=finish_reason, status=status))
     return deltas
 
 
@@ -504,6 +508,7 @@ class LitellmModel:
             raw={
                 "model": self._model_name,
                 "finish_reason": getattr(choice, "finish_reason", None),
+                "status": getattr(response, "status", None),
             },
             usage=_extract_usage(response),
             reasoning_content=reasoning_content,
@@ -609,6 +614,8 @@ class LitellmModel:
         thinking_blocks: list[dict] | None = None
         tool_frags: dict = {}
         usage: dict[str, int] = {}
+        finish_reason: str | None = None
+        status: str | None = None
         try:
             async for delta in self.stream(messages, tools, temperature, max_tokens):
                 if delta.content_delta:
@@ -627,6 +634,12 @@ class LitellmModel:
                     _merge_tool_fragment(tool_frags, delta.tool_call_delta)
                 if delta.usage:
                     usage = delta.usage
+                observed_finish_reason = getattr(delta, "finish_reason", None)
+                if observed_finish_reason is not None:
+                    finish_reason = observed_finish_reason
+                observed_status = getattr(delta, "status", None)
+                if observed_status is not None:
+                    status = observed_status
         except Exception:
             # A stream that dies mid-response cannot be safely resumed; fall back to
             # a fresh non-streaming completion rather than returning a partial answer.
@@ -644,7 +657,12 @@ class LitellmModel:
         return ModelResponse(
             content=content,
             tool_calls=_parse_tool_calls(raw_calls),
-            raw={"model": self._model_name, "streamed": True},
+            raw={
+                "model": self._model_name,
+                "streamed": True,
+                "finish_reason": finish_reason,
+                "status": status,
+            },
             usage=usage,
             reasoning_content="".join(reasoning_parts) or None,
             thinking_blocks=thinking_blocks,

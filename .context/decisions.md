@@ -2086,3 +2086,18 @@ installation leaves disabled settings, and the CLI exposes bounded, redacted OS
 stderr. Existing flow continuation, account/version and ownership gates remain
 authoritative. A native macOS scheduler and periodic tick health remain separate
 work.
+
+## 2026-10-26 — Model streams preserve provider terminal metadata
+
+`StreamDelta` carries optional `finish_reason` and `status` values reported by a
+provider. LiteLLM streaming emits them independently of content, tools and usage,
+including on empty terminal chunks, and assembled streaming responses retain the
+latest non-null observation in `ModelResponse.raw`. Ordinary responses publish
+the same keys. Missing values remain explicitly unknown; Garuda does not infer a
+reason from response content, tool presence, stream exhaustion, or its synthetic
+done marker.
+
+The fields are additive and default to `None`, so existing stream implementations
+and positional `StreamDelta` construction remain compatible. The native agent
+loop continues to use `Model.complete()`; live native loop streaming remains a
+separate feature.
