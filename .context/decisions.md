@@ -2072,3 +2072,17 @@ identity or closure evidence retains quarantine. This is a cleanup guardrail,
 not confinement or proof about already detached daemons that left the group.
 Protected owned-process-tree flows retain their separate supervision boundary
 and remain unsupported by automatic quota continuation.
+
+## 2026-10-26 — Recovery installation is observed separately from enablement
+
+The scheduler publishes enablement only after reading back the exact managed
+cron entry for the selected private root and observing an owner-only regular
+executable wrapper. Disablement precedes removal and removal is read back before
+success is reported. Status keeps persisted `enabled` separate from observed
+`installed`, with a `reason` for missing or mismatched installation; comments
+alone never establish installation. Status does not execute the wrapper, prove
+interpreter availability, query quota, or rewrite enablement on drift. Failed
+installation leaves disabled settings, and the CLI exposes bounded, redacted OS
+stderr. Existing flow continuation, account/version and ownership gates remain
+authoritative. A native macOS scheduler and periodic tick health remain separate
+work.

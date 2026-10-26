@@ -1,6 +1,19 @@
 # Quota-aware workflow continuation
 
-Status: approved on 2026-10-24; implemented on 2026-10-25.
+Status: approved on 2026-10-24; implemented on 2026-10-25. Scheduler readiness
+repair approved on 2026-10-26 following the local workflow review.
+
+## Scheduler readiness repair — 26 October 2026
+
+The [workflow review](../archive/2026-10-26-workflow-review.md) found that cron
+markers alone established installation status, and a failed crontab write hid
+the useful OS error. The approved repair validates the exact managed command and
+schedule for the selected root and its owner-only executable regular wrapper.
+Installation readback precedes enablement; disablement precedes verified removal.
+Read-only status reports an installation reason separately from persisted
+enablement. CLI error details are bounded and redacted. Existing recovery scope,
+dispatch ownership, account/version checks and unrelated cron entries remain
+unchanged. Native macOS scheduling and tick-health persistence are follow-ups.
 
 ## Problem and outcome
 

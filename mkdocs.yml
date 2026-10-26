@@ -168,6 +168,7 @@ nav:
           - Agent definitions: plans/2026-10-01-agent-definitions-implementation.md
       - Archive:
           - archive/index.md
+          - October workflow review: archive/2026-10-26-workflow-review.md
           - Harness RFC: archive/2026-07-02-GARUDA_OPEN_AGENT_RFC.md
           - Configuration and scalability: archive/2026-07-08-CONFIG_SCALABILITY_PLAN.md
           - Engineering plan: archive/2026-07-17-ENGINEERING_PLAN.md

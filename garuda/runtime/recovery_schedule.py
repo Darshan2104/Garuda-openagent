@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import uuid
@@ -127,29 +128,32 @@ def _block(script_path: Path) -> str:
     return f"{_BEGIN}\n{_SCHEDULE} {_cron_quote(script_path)}\n{_END}\n"
 
 
-def _without_managed_blocks(crontab: str) -> tuple[str, int]:
+def _split_crontab(crontab: str) -> tuple[str, list[list[str]]]:
     lines = crontab.splitlines(keepends=True)
     kept: list[str] = []
     inside = False
-    count = 0
+    blocks: list[list[str]] = []
     for line in lines:
         marker = line.rstrip("\r\n")
         if marker == _BEGIN:
             if inside:
                 raise RuntimeError("nested garuda quota-recovery crontab block")
             inside = True
-            count += 1
+            blocks.append([])
             continue
         if marker == _END:
             if not inside:
                 raise RuntimeError("garuda quota-recovery crontab end marker has no beginning")
             inside = False
             continue
-        if not inside:
+        if inside:
+            if line.strip():
+                blocks[-1].append(line.strip())
+        else:
             kept.append(line)
     if inside:
         raise RuntimeError("garuda quota-recovery crontab block has no end marker")
-    return "".join(kept), count
+    return "".join(kept), blocks
 
 
 def _read_crontab() -> str:
@@ -197,11 +201,28 @@ def _metadata(
     }
 
 
-def _status(metadata: dict, *, installed: bool, jobs: int) -> dict:
-    result = dict(metadata)
-    result["installed"] = installed
-    result["job_count"] = jobs
-    return result
+def _status(metadata: dict, root: Path, blocks: list[list[str]]) -> dict:
+    """Readiness is observed locally, separately from persisted enablement."""
+    _, script_path, _ = _paths(root)
+    reason = None
+    if not blocks:
+        reason = "managed cron entry is missing"
+    elif len(blocks) != 1:
+        reason = "multiple managed cron entries are present; run garuda recovery enable to repair"
+    elif blocks[0] != [f"{_SCHEDULE} {_cron_quote(script_path)}"]:
+        reason = "managed cron entry does not match the schedule and wrapper for this recovery root"
+    elif metadata.get("script_path") != str(script_path):
+        reason = "stored wrapper path does not match this recovery root"
+    else:
+        try:
+            info = script_path.stat(follow_symlinks=False)
+        except OSError as exc:
+            reason = f"recovery wrapper is unavailable: {exc.strerror}"
+        else:
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) not in (0o500, 0o700)):
+                reason = "recovery wrapper must be an owner-only executable regular file"
+    return {**metadata, "installed": reason is None, "job_count": len(blocks), "reason": reason}
 
 
 def install(root: Path) -> dict:
@@ -218,7 +239,7 @@ def install(root: Path) -> dict:
 
     with ss.exclusive_lock(root) as directory_fd:
         current = _read_crontab()
-        unrelated, _ = _without_managed_blocks(current)
+        unrelated, _ = _split_crontab(current)
         if unrelated and not unrelated.endswith(("\n", "\r")):
             unrelated += "\n"
         desired = unrelated + block
@@ -228,9 +249,14 @@ def install(root: Path) -> dict:
         ss.write_locked_document(directory_fd, settings_path, disabled)
         if desired != current:
             _write_crontab(desired)
+        _, observed = _split_crontab(_read_crontab())
+        status = _status(disabled, root, observed)
+        if not status["installed"]:
+            raise RuntimeError(f"quota recovery installation could not be verified: {status['reason']}; "
+                               "recovery remains disabled")
         enabled = _metadata(root, enabled=True, codex_executable=codex)
         ss.write_locked_document(directory_fd, settings_path, enabled)
-        return _status(enabled, installed=True, jobs=1)
+        return {**status, **enabled}
 
 
 def disable(root: Path) -> dict:
@@ -248,10 +274,13 @@ def disable(root: Path) -> dict:
         ss.write_locked_document(directory_fd, settings_path, disabled)
 
         current = _read_crontab()
-        desired, _ = _without_managed_blocks(current)
+        desired, _ = _split_crontab(current)
         if desired != current:
             _write_crontab(desired)
-        return _status(disabled, installed=False, jobs=0)
+        _, observed = _split_crontab(_read_crontab())
+        if observed:
+            raise RuntimeError("quota recovery cron removal could not be verified; recovery remains disabled")
+        return _status(disabled, root, observed)
 
 
 def schedule_status(root: Path) -> dict:
@@ -263,5 +292,5 @@ def schedule_status(root: Path) -> dict:
         if metadata is None:
             metadata = _metadata(root, enabled=False, codex_executable=None)
         current = _read_crontab()
-        _, jobs = _without_managed_blocks(current)
-        return _status(metadata, installed=jobs == 1, jobs=jobs)
+        _, blocks = _split_crontab(current)
+        return _status(metadata, root, blocks)

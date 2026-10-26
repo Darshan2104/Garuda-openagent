@@ -5,3 +5,6 @@ This directory holds dated RFCs, plans, and closed review ledgers retained for p
 Current documentation starts at [docs/index.md](../index.md). Open work belongs
 in [BACKLOG.md](../BACKLOG.md); durable engineering decisions belong in
 [.context/decisions.md](https://github.com/Darshan2104/Garuda-openagent/blob/main/.context/decisions.md).
+
+[Workflow review, 19–26 October 2026](2026-10-26-workflow-review.md) records local
+flow outcomes, quota-recovery activation evidence and proposed improvements.

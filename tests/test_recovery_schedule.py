@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from garuda.interfaces.recovery_cli import run_recovery
 from garuda.runtime import recovery_schedule
 
 
@@ -76,6 +79,7 @@ def test_install_is_idempotent_and_preserves_unrelated_entries(tmp_path, monkeyp
         "log_path": str(root / "quota-recovery.log"),
         "installed": True,
         "job_count": 1,
+        "reason": None,
     }
     assert cron.content.startswith(old)
     assert cron.content.count("# BEGIN garuda-quota-recovery") == 1
@@ -99,6 +103,110 @@ def test_install_is_idempotent_and_preserves_unrelated_entries(tmp_path, monkeyp
     assert "echo " not in wrapper
     assert (root / "quota-recovery.sh").stat().st_mode & 0o777 == 0o700
     assert root.stat().st_mode & 0o777 == 0o700
+    assert recovery_schedule.schedule_status(root) == first
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["schedule", "command", "root", "metadata", "extra-command", "duplicate", "missing-wrapper",
+     "non-executable", "public-wrapper", "symlink", "directory"],
+)
+def test_status_requires_the_selected_entry_and_private_wrapper(
+    tmp_path, monkeypatch, fake_codex, damage
+):
+    root = tmp_path / "recovery"
+    cron = FakeCrontab()
+    monkeypatch.setattr(recovery_schedule.subprocess, "run", cron.run)
+    installed = recovery_schedule.install(root)
+    wrapper = root / "quota-recovery.sh"
+    if damage == "schedule":
+        cron.content = cron.content.replace("27 * * * *", "0 0 * * *")
+    elif damage == "command":
+        cron.content = cron.content.replace(str(wrapper), "/nonexistent/unrelated-script")
+    elif damage == "root":
+        # An entry for one private store must not establish readiness for another.
+        root = tmp_path / "other-recovery"
+    elif damage == "metadata":
+        settings = root / "settings.json"
+        metadata = json.loads(settings.read_text())
+        metadata["script_path"] = str(tmp_path / "other-recovery" / "quota-recovery.sh")
+        settings.write_text(json.dumps(metadata))
+    elif damage == "extra-command":
+        cron.content = cron.content.replace("# END", "* * * * * /another-command\n# END")
+    elif damage == "duplicate":
+        cron.content += cron.content
+    elif damage == "missing-wrapper":
+        wrapper.unlink()
+    elif damage == "non-executable":
+        wrapper.chmod(0o600)
+    elif damage == "public-wrapper":
+        wrapper.chmod(0o777)
+    elif damage == "symlink":
+        saved = wrapper.rename(root / "saved-wrapper")
+        wrapper.symlink_to(saved)
+    elif damage == "directory":
+        wrapper.unlink()
+        wrapper.mkdir(mode=0o700)
+
+    settings = Path(installed["script_path"]).parent / "settings.json"
+    before = settings.read_bytes()
+    writes = sum(call[0] == ["crontab", "-"] for call in cron.calls)
+    status = recovery_schedule.schedule_status(root)
+
+    assert status["installed"] is False
+    assert status["reason"]
+    assert settings.read_bytes() == before
+    assert sum(call[0] == ["crontab", "-"] for call in cron.calls) == writes
+
+
+@pytest.mark.parametrize("command", ["enable", "disable"])
+def test_schedule_changes_require_successful_crontab_readback(
+    tmp_path, monkeypatch, fake_codex, command
+):
+    root = tmp_path / "recovery"
+    original = "11 * * * * /private/watchdog\n"
+    cron = FakeCrontab(original)
+    monkeypatch.setattr(recovery_schedule.subprocess, "run", cron.run)
+    if command == "disable":
+        recovery_schedule.install(root)
+        original = cron.content
+
+    def discard_install(argv, **kwargs):
+        if list(argv) == ["crontab", "-"]:
+            # The OS boundary reports success but the entry never becomes visible.
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return cron.run(argv, **kwargs)
+
+    monkeypatch.setattr(recovery_schedule.subprocess, "run", discard_install)
+    with pytest.raises(RuntimeError, match="verif"):
+        operation = recovery_schedule.install if command == "enable" else recovery_schedule.disable
+        operation(root)
+
+    assert json.loads((root / "settings.json").read_text())["enabled"] is False
+    assert cron.content == original
+
+
+def test_enable_cli_explains_crontab_failure_without_enabling_recovery(
+    tmp_path, monkeypatch, fake_codex, capsys
+):
+    root = tmp_path / "recovery"
+    cron = FakeCrontab()
+    cron.install_error = subprocess.CalledProcessError(
+        1, ["crontab", "-"], stderr="crontab: Operation not permitted\napi_key=sk-example-secret-value\n"
+        + "x" * 10_000,
+    )
+    monkeypatch.setattr(recovery_schedule.subprocess, "run", cron.run)
+
+    result = run_recovery(SimpleNamespace(recovery_command="enable", root=str(root)))
+
+    output = capsys.readouterr()
+    assert result == 2
+    assert "Operation not permitted" in output.err
+    assert "sk-example-secret-value" not in output.err
+    assert len(output.err) < 2000
+    assert output.out == ""
+    assert json.loads((root / "settings.json").read_text())["enabled"] is False
+    assert cron.content == ""
 
 
 def test_install_replaces_duplicate_managed_blocks_but_not_similar_comments(
