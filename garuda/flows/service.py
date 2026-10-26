@@ -194,7 +194,8 @@ class FlowExecutionService:
             raise engine.FlowStopped("flow.check_request_invalid",
                                      "select at most 16 bounded check commands")
 
-    async def resume(self, flow_session: str) -> FlowExecutionResult:
+    async def resume(self, flow_session: str, *, recovery_record=None,
+                     recovery_root=None) -> FlowExecutionResult:
         meta = self.store.load_meta(flow_session)
         policy = meta.get("publication_policy")
         if isinstance(policy, dict) and policy.get("kind") == "owned-flow":
@@ -250,26 +251,57 @@ class FlowExecutionService:
             raise engine.FlowStopped(
                 code, f"protected flow check phase is {classification}"
                       f"{f' ({states})' if states else ''}; checks are never replayed automatically")
-        return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
-                                   flow_session=flow_session)
+        from garuda.flows.quota_recovery import FlowRecovery, project, publish
+
+        recovery = FlowRecovery(self.store,
+                                root=recovery_root or meta.get("quota_recovery_root"),
+                                record=recovery_record)
+        pending = recovery.records.get(flow_session)
+        if pending is not None:
+            if recovery_record is None:
+                recovery_record = recovery.records.claim(flow_session)
+                recovery.record = recovery_record
+            elif (pending.get("token") != recovery_record.get("token")
+                  or pending.get("state") != "dispatch-reserved"):
+                raise engine.FlowStopped("flow.recovery_claim_invalid", "continuation claim changed")
+            running = recovery.records.update(flow_session, {"state": "running",
+                "dispatches": pending.get("dispatches", 0) + 1}, token=recovery_record["token"])
+            publish(running)
+        elif recovery_record is not None:
+            raise engine.FlowStopped("flow.recovery_claim_invalid", "continuation claim is missing")
+        try:
+            return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+                                       flow_session=flow_session,
+                                       recovery=recovery if pending is not None else None)
+        except Exception as exc:
+            if pending is not None:
+                row = recovery.records.get(flow_session)
+                if row["state"] in {"running", "dispatch-reserved"}:
+                    row = recovery.records.update(flow_session, {"state": "blocked", "reason": str(exc)},
+                                                  token=recovery_record["token"])
+                    self.store.update_meta(flow_session, {"quota_recovery": project(row)})
+            raise
 
     async def _execute(self, name: str, task: str, workspace: str, *,
                        flow_session: str | None = None,
                        starter_record: dict | None = None,
-                       checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+                       checks: tuple[str, ...] | None = None,
+                       recovery=None) -> FlowExecutionResult:
+        from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
+        from garuda.flows.quota_recovery import FlowRecovery
 
         request = permissions = None
-        if checks is None:
-            resolved = load_effective(workspace)
-        else:
-            from garuda.config_sources import SourceCapture
+        with SourceCapture() as capture:
+            if checks is None:
+                resolved = load_effective(workspace)
+            else:
+                self._validate_checks(checks)
+                resolved = load_effective(workspace, cli_checks=checks)
+        if checks is not None:
             from garuda.core.permissions import PermissionEngine
 
-            self._validate_checks(checks)
             permissions = PermissionEngine(mode="smart")
-            with SourceCapture() as capture:
-                resolved = load_effective(workspace, cli_checks=checks)
             request = self._freeze_checks(resolved, workspace, capture.facts(), permissions)
         flows = packaged.available(resolved)
         if name not in flows:
@@ -295,7 +327,18 @@ class FlowExecutionService:
                                    launcher=launch_step, flow_session=flow_session,
                                    starter_record=starter_record,
                                    verification_request=request,
-                                   verification_permissions=permissions)
+                                   verification_permissions=permissions,
+                                   configuration_sources=capture.facts())
+        if recovery is not None:
+            runner.quota_recovery = recovery
+        elif flow_session is None:
+            candidate = FlowRecovery(self.store)
+            if candidate.records.settings().get("enabled") is True:
+                if request is not None or any("parallel" in step for step in flow["steps"]):
+                    runner.quota_recovery_status = {"state": "unsupported", "reason":
+                        "quota recovery does not support protected/check-enabled or parallel flows"}
+                else:
+                    runner.quota_recovery = candidate
         result = await runner.run(resume=flow_session is not None)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))

@@ -17,7 +17,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda starter result SESSION [--workspace DIR] [--json] [--limit N] [--offset N]` | Read selected session evidence, coverage, and an explicit next action |
 | Sessions | `garuda sessions [--json]` | List recent sessions with state and queue position; `--json` is the same model the dashboard serves |
 | | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
-| | `garuda sessions cancel S` | Stop a background session: remove it from the queue before it starts, or stop its running worker |
+| | `garuda sessions cancel S` | Stop a background session, or revoke a pending quota continuation through the shared session Stop path |
 | | `garuda sessions merge S --check CMD [--into BRANCH] [--image IMAGE] [--timeout SEC]` | Check a worktree session merged into a branch (in Docker, no network; default image `python:3.12-slim`, 600 s per check) and publish `refs/garuda/integration/<S>`; never changes your checkout |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda approvals list S` | List a running session's parked approvals |
@@ -27,6 +27,11 @@ for your installed version. For ready-made examples, see the
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
 | | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
+| Quota recovery | `garuda recovery enable [--root PATH]` | Enable future eligible flows and install the hourly user-cron entry; `--root` selects the store for this command only |
+| | `garuda recovery disable [--root PATH]` | Disable future automatic dispatch and remove Garuda's cron block; does not stop live work |
+| | `garuda recovery status [--root PATH]` | Print JSON schedule and continuation status without launching work |
+| | `garuda recovery tick [--root PATH]` | Check quota now and dispatch at most one eligible continuation; exits 3 when a checked flow is blocked or uncertain |
+| | `garuda recovery cancel FLOW_ID [--root PATH]` | Cancel one pending continuation; refuses work that already dispatched |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Agents | `garuda agent list` | Every agent, where it comes from, what it extends, and which ones a nearer file shadows |
@@ -203,6 +208,53 @@ isolation boundary.
     `garuda recipe run FILE [--param KEY=VALUE]...` runs a recipe. It takes the
     model, workspace, `--agents-dir`, and `--mcp-config` flags. See
     [Run a multi-step recipe](../use-cases/automate.md#run-a-multi-step-recipe).
+
+=== "recovery"
+
+    The `enable`, `disable`, `status`, and `tick` forms of `garuda recovery`,
+    plus `garuda recovery cancel FLOW_ID`, manage quota continuation for
+    eligible Codex-backed sequential CLI flows. Every subcommand accepts
+    `--root PATH`, but that flag selects the private store for that invocation
+    only. It does not change where later `flow run` commands enroll.
+
+    To use a custom store for both automatic enrollment and scheduler controls,
+    export the operator setting before enabling recovery and before starting
+    covered flows:
+
+    ```bash
+    export GARUDA_RECOVERY_ROOT=/srv/garuda/private-quota-recovery
+    garuda recovery enable
+    garuda flow run plan-build-review -t "Add bounded retry handling"
+    ```
+
+    The installed wrapper preserves `GARUDA_RECOVERY_ROOT` and also passes the
+    same absolute root to its tick. A one-off command such as `garuda recovery
+    status --root PATH` inspects only that store; it does not persist the choice
+    for flow enrollment.
+
+    `enable` records the current Python environment's absolute entry point and
+    the absolute Codex executable, then installs one user-cron job at minute 27
+    each hour. It enrolls only future flows; it does not adopt old unfinished
+    work. `status` and `tick` emit JSON.
+    A tick dispatches at most one flow and requires a fresh, same-account
+    observation from the verified Codex `0.159.3` or `0.163.0` interface, with
+    every reported quota window below exhaustion. `cancel` affects only a
+    pending continuation; `garuda sessions cancel FLOW_ID` reaches the same
+    cancellation path. `disable` prevents future automatic dispatch and removes
+    the cron entry, but neither command stops an already dispatched flow.
+
+    Missing or temporarily unavailable quota evidence remains
+    `waiting-for-quota`, records the reason and next check, and is checked again.
+    The resumed flow rechecks quota after the dispatch claim, so quota consumed
+    in that race returns to waiting rather than becoming permanently blocked.
+    Changed account/version identity, configuration or source identity,
+    workspace, or receipts blocks continuation. With recovery enabled,
+    owned/check-protected/dashboard flows and parallel flows project an explicit
+    `unsupported` state and reason.
+
+    See [Continue quota-stopped Codex flows](../use-cases/automate.md#continue-quota-stopped-codex-flows)
+    for installation lifetime, continuation guarantees, visibility, and the
+    unsupported flow types.
 
 ## ACP runs and handoffs
 

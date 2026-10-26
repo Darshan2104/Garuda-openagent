@@ -631,6 +631,9 @@ async def run_acp_task(
     external_approvals: bool = False,
     no_edits: bool = False,
     permission_ceiling: str | None = None,
+    require_cleanup: bool = False,
+    codex_executable: str | None = None,
+    before_prompt=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -650,6 +653,9 @@ async def run_acp_task(
     from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
 
     workspace = os.path.abspath(workspace)
+    if codex_executable is not None and (
+            runtime_id != "codex" or not os.path.isabs(codex_executable)):
+        raise ValueError("a quota-bound Codex executable must be an absolute Codex path")
     if catalog is None:
         catalog = configured_catalog(workspace)
     # A read-only ACP role runs only in proven Docker confinement (C.8a); its
@@ -706,6 +712,8 @@ async def run_acp_task(
     store = store or SessionStore()
     if capacity_loan is not None and lease_capability is not None:
         raise ValueError("capacity and workspace delegations cannot be combined")
+    if codex_executable is not None and (confinement is not None or record.version != "2.1.1"):
+        raise ValueError("quota-bound Codex execution requires the proved host codex-acp 2.1.1 adapter")
     events = EventStore(session_id)
     session_id = events.session_id
     from garuda.interfaces.session_service import choose_workspace, discard_new_worktree, plan_meta
@@ -816,6 +824,7 @@ async def run_acp_task(
                 approval_handler=handler,
                 persist_dir=str(store.session_dir(session_id)),
                 agent_definition=definition,
+                **({"extra_env": {"CODEX_PATH": codex_executable}} if codex_executable else {}),
             )
 
         runtime = make_runtime()
@@ -880,6 +889,8 @@ async def run_acp_task(
 
         first_message = (task if resume_plan is not None and resume_plan.mode == "acp"
                          else with_instructions(role_plan, task))  # a reattached session has them
+        if before_prompt is not None:
+            await before_prompt()
         turn = await lease.race(
             runtime.prompt(prompt_with(attached, first_message), timeout=prompt_timeout)
         )
@@ -926,8 +937,13 @@ async def run_acp_task(
             if runtime is not None:
                 try:
                     await runtime.close()
-                except Exception:
+                except Exception as exc:
                     logger.warning("ACP runtime close failed", exc_info=True)
+                    if require_cleanup:
+                        from garuda.runtime.process_supervision import CleanupUncertain
+
+                        await lease.stop_heartbeat()
+                        raise CleanupUncertain("ACP cleanup failed; quota continuation refused") from exc
             if began and not transferred_to_native:
                 status = "failed"
                 if outcome is not None:

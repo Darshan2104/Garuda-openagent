@@ -633,6 +633,7 @@ def adapter_for_discovered(
     persist_dir: str | None = None,
     metrics=None,
     agent_definition: dict | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> AcpRuntime:
     """Launch exactly what a discovery record accepted — the production factory.
 
@@ -658,6 +659,7 @@ def adapter_for_discovered(
         persist_dir=persist_dir,
         metrics=metrics,
         agent_definition=agent_definition,
+        extra_env=extra_env,
     )
 
 

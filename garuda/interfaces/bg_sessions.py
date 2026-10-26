@@ -420,6 +420,15 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
     from garuda.runtime.recovery import ProcessIdentityUnavailable, _process_identity, same_process
 
     meta = store.load_meta(session_id)
+    if meta.get("quota_recovery"):
+        from garuda.flows.quota_recovery import RecoveryStore, project
+
+        records = RecoveryStore(meta.get("quota_recovery_root"))
+        row = records.get(session_id)
+        if row and row.get("state") in {"waiting-for-quota", "blocked", "uncertain", "cancelled"}:
+            row = records.cancel(session_id)
+            store.update_meta(session_id, {"quota_recovery": project(row)})
+            return "cancelled quota continuation"
     if queue is None and meta.get("background_operation") is not None:
         queue = QueueStore(meta["background_operation"]["queue"]["queue_root"])
     queue = queue or QueueStore()

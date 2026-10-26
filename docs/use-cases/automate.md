@@ -8,6 +8,7 @@ jobs, Python programs, and HTTP clients.
 | Recipe | A fixed sequence of steps with parameters | `garuda recipe run file.yaml` |
 | Shell or CI | One task with an exit status and JSON output | `garuda run --json` |
 | Background queue | Many tasks started from a script, polled later | `garuda run --bg`, `garuda sessions show SESSION --json` |
+| Quota recovery | Continue eligible Codex flow steps after quota returns | `garuda recovery enable` |
 | Python SDK | Embedding the agent in your own program | `SoftwareAgent` |
 | HTTP service | Submitting and polling jobs from another process | `garuda serve` |
 
@@ -146,6 +147,95 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
     `garuda agent check NAME --json`, `garuda memory list --json` and
     `garuda runtime list --json` are all meant for scripts. `doctor` and
     `agent check` exit `1` when they find an error.
+
+## Continue quota-stopped Codex flows
+
+<p class="gd-facts">Changes user crontab: enable/disable · Schedule: minute 27 each hour · Output: JSON</p>
+
+**Use it when** a sequential CLI flow uses Codex and should continue after a
+proved subscription-quota reset even when the original Garuda process has
+exited.
+
+Enable the user-owned schedule once, before starting the flows you want it to
+cover:
+
+```bash
+garuda recovery enable
+garuda flow run plan-build-review -t "Add bounded retry handling"
+```
+
+`enable` installs one marked user-cron entry for `27 * * * *`. It preserves
+unrelated entries and uses the current Python environment's absolute entry
+point and the absolute Codex executable found at installation. Keep that Python
+environment available; if you move or remove it, reinstall Garuda and run
+`enable` again. Cron runs only while the host is awake and does not catch up a
+check missed during sleep.
+
+Only eligible sequential CLI flows started after recovery was enabled are
+enrolled. Enabling it does not scan or adopt old half-finished flows. A Codex
+step must be safely closed and have a quota-shaped failure; permission denials
+and generic failures do not become quota retries. If the official quota read is
+missing or temporarily unavailable, the eligible stop remains waiting with that
+reason—it does not claim exhaustion or dispatch work.
+
+Inspect the schedule and all saved continuations:
+
+```bash
+garuda recovery status
+garuda flow show FLOW_ID
+```
+
+`recovery status` prints JSON. `flow show` and the dashboard's flow detail show
+the recovery state, reason, and next check. You can also run a check immediately:
+
+```bash
+garuda recovery tick
+```
+
+Each tick uses the official Codex read-only account/rate-limit interface. The
+automatic path is limited to the verified Codex CLI versions `0.159.3` and
+`0.163.0`; it requires the enrolled account and version to match, ordinary use
+to be affirmatively allowed, and every reported window—including a weekly
+window—to be below exhaustion. Evidence that cannot affirm availability never
+launches work. A missing or temporarily unavailable quota observation leaves
+the continuation `waiting-for-quota` with its reason and next check; later ticks
+try again. A changed account/version identity, configuration or source identity,
+workspace, or receipt blocks the continuation instead. A tick dispatches at
+most one eligible flow; later flows wait for later ticks.
+
+Quota is checked again after the dispatch claim and before the resumed step. If
+another process consumes the available quota in that gap, the flow returns to
+`waiting-for-quota`; it is not treated as a permanent failure or replayed.
+
+Continuation keeps existing workspace edits and completed step receipts. A
+quota-stopped reviewer continues as the pending reviewer without rerunning its
+completed coder, and the existing review-round budget is preserved. Garuda
+uses saved flow and workspace context; it does not promise restoration of the
+terminal's exact model state and never replays a transcript or completed shell
+actions. If dispatch ownership is lost, the continuation becomes `uncertain`
+and is not replayed automatically.
+
+Cancel one continuation that has not dispatched, or disable future automatic
+checks:
+
+```bash
+garuda recovery cancel FLOW_ID
+# The shared session cancellation path reaches the same pending continuation:
+garuda sessions cancel FLOW_ID
+garuda recovery disable
+```
+
+`cancel` revokes that pending continuation and refuses one already dispatched;
+the shared session Stop/cancel action uses the same rule. Neither is a stop for
+an already dispatched flow. `disable` first disables automatic dispatch and
+then removes only Garuda's marked cron block. It does not cancel or signal a
+live flow.
+
+This release does not recover standalone `chat` or `run` sessions,
+check-protected or dashboard-owned flows, parallel groups, or Claude quota
+stops. When recovery is enabled, an owned/check-protected/dashboard flow or a
+parallel flow projects an `unsupported` recovery state and reason in flow
+status instead of appearing enrolled.
 
 ## Call Garuda from Python
 

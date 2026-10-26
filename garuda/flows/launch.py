@@ -28,6 +28,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
 
     from garuda.acp.protocol import AcpError
     from garuda.core.sessions import SessionStore
+    from garuda.flows.quota_recovery import RecoveryWaiting
     from garuda.interfaces.runtime_cli import run_acp_task
     from garuda.workspace.no_edits import deny_all
 
@@ -40,13 +41,21 @@ async def _acp(launch: StepLaunch) -> StepResult:
             approval=deny_all if launch.no_edits else None, emit=lambda *_a: None,
             role_plan=plan, lease_capability=launch.capability, store=store,
             no_edits=launch.no_edits, session_id=session_id,
+            require_cleanup=launch.quota_recovery,
+            codex_executable=launch.codex_executable,
+            before_prompt=launch.quota_guard,
         )
+    except RecoveryWaiting as exc:
+        return StepResult(session_id, False, "", error=str(exc), quota_wait=True,
+                          closure={"status": "closed"})
     except AcpError as exc:
         # The agent stopped (ended its turn, exited, timed out): a failed step
         # with its reason, not an interrupted flow.
-        return StepResult(session_id, False, "", error=str(exc))
+        return StepResult(session_id, False, "", error=str(exc),
+                          closure={"status": "closed"} if launch.quota_recovery else None)
     return StepResult(summary["session_id"], summary.get("status") == "completed",
-                      str(summary.get("reply") or ""))
+                      str(summary.get("reply") or ""),
+                      closure={"status": "closed"} if launch.quota_recovery else None)
 
 
 async def _native(launch: StepLaunch) -> StepResult:

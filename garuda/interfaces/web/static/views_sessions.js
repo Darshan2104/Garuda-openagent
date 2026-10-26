@@ -120,6 +120,10 @@ function flowHtml(flow) {
   var review = flow.review;
   return (
     '<section class="flow" id="flow-detail"><h2>Flow ' + esc(flow.name) + " " + chip("flow", flow.state, "chip-off") + "</h2>" +
+    (flow.quota_recovery ? '<p id="flow-quota-recovery">Quota recovery: ' +
+      esc(flow.quota_recovery.state) + ' · ' + esc(flow.quota_recovery.reason || '') +
+      (flow.quota_recovery.next_check ? ' · next check ' +
+        esc(new Date(flow.quota_recovery.next_check * 1000).toLocaleString()) : '') + '</p>' : '') +
     // A review is advice about the work. It has its own badge and never says "verified".
     (review ? '<p id="flow-review">' + chip("review", reviewLabel(review), "chip-off") +
               ' <span class="stat-sub">a review is not verification</span></p>' : "") +

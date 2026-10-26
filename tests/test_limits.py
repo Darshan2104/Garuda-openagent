@@ -17,6 +17,7 @@ from garuda.observability.limits import (
     LimitObservation,
     LimitStore,
     event_state,
+    recovery_availability,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,14 @@ NOW = 1_790_000_000.0
 RAW_ACCOUNT = "acct-RAW-12345"
 FAKE = '''#!{python}
 import json, os, sys
+if os.environ.get("FAKE_ENV_LOG"):
+    with open(os.environ["FAKE_ENV_LOG"], "a") as env_log:
+        env_log.write(json.dumps({
+            "argv": sys.argv[1:],
+            "codex_home": os.environ.get("CODEX_HOME"),
+            "api_key": os.environ.get("CODEX_API_KEY"),
+            "marker": os.environ.get("PROBE_MARKER"),
+        }) + "\\n")
 if sys.argv[1:] == ["--version"]:
     print(os.environ["FAKE_VERSION"]); raise SystemExit(0)
 log = open(os.environ["FAKE_LOG"], "a")
@@ -87,8 +96,116 @@ def test_known_windows_are_recorded_with_their_source_and_time(store, fake):
     assert [(w.name, w.used_fraction, w.window_minutes) for w in observation.windows] == [
         ("primary", 0.2, 300), ("secondary", 0.09, 10080)]
     assert observation.harness_version == "0.159.3" and observation.reached is False
+    assert observation.ordinary_usage_allowed is True
     assert store.latest("codex") == observation
     assert list(store.ledger.records()) == []  # no limit was reached: no event
+
+
+def test_codex_0163_response_preserves_affirmative_ordinary_usage(store, fake, monkeypatch):
+    monkeypatch.setenv("FAKE_VERSION", "codex-cli 0.163.0")
+
+    observation = read(store, fake)
+
+    assert observation.harness_version == "0.163.0"
+    assert observation.ordinary_usage_allowed is True
+    assert [(window.name, window.used_fraction, window.resets_at)
+            for window in observation.windows] == [
+        ("primary", 0.2, NOW + 3600),
+        ("secondary", 0.09, NOW + 86400),
+    ]
+
+
+def test_explicit_probe_environment_is_used_for_version_and_app_server(
+    store, fake, tmp_path, monkeypatch,
+):
+    env_log = tmp_path / "probe-environments.jsonl"
+    monkeypatch.setenv("CODEX_HOME", "/host/bogus-codex-home")
+    monkeypatch.setenv("CODEX_API_KEY", "host-fake-api-key-sentinel")
+    environment = {
+        "FAKE_LOG": str(fake.log),
+        "FAKE_STATE": os.environ["FAKE_STATE"],
+        "FAKE_VERSION": "codex-cli 0.163.0",
+        "FAKE_ENV_LOG": str(env_log),
+        "PROBE_MARKER": "supplied-environment",
+    }
+
+    observation = refresh_codex(
+        fake.exe,
+        store,
+        environment=environment,
+        now=lambda: NOW,
+    )
+
+    assert observation.harness_version == "0.163.0"
+    seen = [json.loads(line) for line in env_log.read_text().splitlines()]
+    assert [entry["argv"] for entry in seen] == [["--version"], ["app-server"]]
+    assert all(entry["marker"] == "supplied-environment" for entry in seen)
+    assert all(entry["codex_home"] is None and entry["api_key"] is None for entry in seen)
+
+
+def test_every_reported_bucket_blocks_recovery_when_its_window_is_exhausted(
+    store, fake, monkeypatch,
+):
+    monkeypatch.setenv("FAKE_VERSION", "codex-cli 0.163.0")
+    state = Path(os.environ["FAKE_STATE"])
+    payload = json.loads(state.read_text())
+    canonical = payload["limits"]["rateLimits"]
+    payload["limits"]["rateLimitsByLimitId"] = {
+        "codex": canonical,
+        "codex-mini": {
+            "limitId": "codex-mini",
+            "primary": {
+                "usedPercent": 100,
+                "windowDurationMins": 10080,
+                "resetsAt": NOW + 86400,
+            },
+            "secondary": None,
+            "rateLimitReachedType": None,
+        },
+    }
+    state.write_text(json.dumps(payload))
+
+    observation = read(store, fake)
+    available, reason = recovery_availability(
+        observation,
+        account_digest=observation.account_digest,
+        harness_version="0.163.0",
+        now=NOW,
+    )
+
+    assert observation.ordinary_usage_allowed is True
+    assert [(window.name, window.used_fraction) for window in observation.windows] == [
+        ("primary", 0.2),
+        ("secondary", 0.09),
+        ("codex-mini:primary", 1.0),
+    ]
+    assert available is False and "codex-mini:primary" in reason
+
+
+@pytest.mark.parametrize("malformed", [
+    [],
+    {"other": {"limitId": "other"}},
+    {"codex": {"limitId": "different"}},
+    {"codex": {"limitId": "codex"}, "other": "not-a-bucket"},
+    {"codex": {"limitId": "codex"},
+     "other": {"limitId": "other", "secondary": "not-a-window"}},
+])
+def test_malformed_multi_bucket_status_is_unknown(store, fake, malformed):
+    state = Path(os.environ["FAKE_STATE"])
+    payload = json.loads(state.read_text())
+    payload["limits"]["rateLimitsByLimitId"] = malformed
+    state.write_text(json.dumps(payload))
+
+    assert read(store, fake) is None
+    assert store.latest("codex") is None
+
+
+@pytest.mark.parametrize("reset", [float("inf"), 10**400])
+def test_a_malformed_reset_cannot_be_normalized_into_available_quota(store, fake, reset):
+    fake.configure(reset=reset)
+
+    assert read(store, fake) is None
+    assert store.latest("codex") is None
 
 
 def test_a_reached_limit_is_one_event_however_often_it_is_observed(store, fake):
@@ -107,6 +224,22 @@ def test_only_a_fresh_account_bound_exhausted_reading_with_a_future_reset_may_tr
     again = store.assess("codex", lambda: refresh_codex(fake.exe, store, now=lambda: NOW + 30),
                          now=NOW + 30)
     assert again.eligible_exhausted is True  # the same account confirmed on the next refresh
+
+
+def test_legacy_observations_without_an_ordinary_usage_flag_keep_fallback_behavior(store):
+    current = LimitObservation(
+        harness="codex",
+        harness_version="0.159.3",
+        observed_at=NOW,
+        source="codex.account.rateLimits.read",
+        account_digest="acct:legacy",
+        windows=(),
+        limit_id="codex",
+        reached=True,
+        reset_at=NOW + 1800,
+    )
+
+    assert store.decide("codex", current, now=NOW).eligible_exhausted is True
 
 
 def _prior(store, fake, **kwargs):
@@ -305,4 +438,39 @@ def test_partial_limit_line_respects_status_deadline_without_proving_exhaustion(
     started = time.monotonic()
     assert refresh_codex(fake.exe, store, version="0.159.3") is None
     assert time.monotonic() - started < 1.0
+    assert store.latest("codex") is None
+
+
+def test_unresponsive_limit_probe_is_killed_and_reaped(store, fake, monkeypatch):
+    import select
+    import signal
+
+    from garuda.acp import limit_probe
+
+    path = Path(fake.exe)
+    path.write_text(path.read_text().replace(
+        "import json, os, sys",
+        "import json, os, signal, sys\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print(os.environ['FAKE_READY_MARKER'], flush=True)",
+    ).replace(
+        '    print(json.dumps(reply), flush=True)',
+        '    sys.stdout.write(json.dumps(reply)[:4]); sys.stdout.flush()\n'
+        '    signal.pause()'))
+    ready_marker = "signal-handler-ready"
+    monkeypatch.setenv("FAKE_READY_MARKER", ready_marker)
+    monkeypatch.setattr(limit_probe, "TIMEOUT", 0.05)
+    monkeypatch.setattr(limit_probe, "CLEANUP_TIMEOUT", 0.05, raising=False)
+    spawned = []
+
+    def spawn(argv):
+        process = limit_probe._spawn(argv)
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
+        assert ready and process.stdout.readline() == ready_marker + "\n"
+        spawned.append(process)
+        return process
+
+    assert refresh_codex(fake.exe, store, spawn=spawn, version="0.163.0") is None
+    assert len(spawned) == 1
+    assert spawned[0].returncode == -signal.SIGKILL
     assert store.latest("codex") is None

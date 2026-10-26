@@ -279,6 +279,17 @@ configuration without constructing provider clients or starting tools;
 
 ## `runtime/` — harness boundary
 
+`recovery_schedule.py` atomically publishes the owner-only wrapper and version-1
+settings under `strict_store.exclusive_lock`, keeps the absolute current Python
+entrypoint (including a virtualenv symlink), resolves Codex and operator
+authority paths, and owns only the exact marked user-cron block at minute 27.
+The wrapper enters through `garuda.interfaces.main`, preserves
+`GARUDA_RECOVERY_ROOT`, and passes the absolute selected root to `tick`. Enable,
+disable, and status are idempotent; disable publishes `enabled: false` before
+cron removal and never signals a live flow. `flows/quota_recovery.default_root()`
+uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
+`--root` remains a one-command control override.
+
 `runtime/process_supervision.py` owns one prepared Linux subreaper worker from
 `runtime/process_worker.py`. Activation follows durable authorization; bounded
 stream draining, cancellation and descendant reaping precede terminal evidence.
@@ -428,7 +439,9 @@ with `router.py` (P2 #49) and exposes no handoff API.
 
 `main.py` (CLI argument surface), `headless.py` (`garuda run`), `cli.py` + `tui.py`
 (interactive chat), `runtime_cli.py` (`garuda runtime list|inspect|handoff|recover`
-plus the `run --runtime <acp>` launch path), `run_guard.py` (run invariants shared
+plus the `run --runtime <acp>` launch path), `recovery_cli.py` (`garuda recovery
+enable|disable|status|tick|cancel`, with an operator-only private-root override),
+`run_guard.py` (run invariants shared
 by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat and
 race, complete issuing-parent validation before delegation and borrowed
 capability creation/acquisition/start/race, and the P0.17 broker approval path), `server.py` + `jobs.py` (job-queue server: submit/status/
@@ -447,6 +460,21 @@ including cleanup after revocation. Ordinary reaped completion releases as
 before; supervised recovery receipts remain separate work).
 
 ## `flows/` — sequential role steps (C.6a)
+
+`quota_recovery.py` owns private versioned continuation records for quota-stopped
+sequential CLI flows. This flow orchestration service may use the ACP quota
+reader; the generic runtime contract stays independent of ACP transports.
+Operator enablement authorizes enrollment. Admission captures configuration and
+source facts; continuation validates settled receipts and a workspace checkpoint
+under the flow lease, preserves review-loop progress, and dispatches through
+`FlowExecutionService.resume`. Fresh same-account Codex quota must clear every
+reported window after step preparation and immediately before ACP prompt
+delivery. Durable claims prevent cron/manual races; a typed `RecoveryWaiting`
+transition retains the pending step when availability disappears. Missing quota
+evidence remains waiting, changed authority/workspace/receipts block, and a lost
+owner becomes `uncertain` without replay. The shared session Stop path revokes
+the same pending record as recovery controls. `default_root()` honors the
+operator's `GARUDA_RECOVERY_ROOT`; a CLI `--root` overrides only that command.
 
 `service.py::FlowExecutionService` is the shared in-process run/resume facade.
 It resolves effective packaged/configured flows, refuses unknown flows and
@@ -477,7 +505,13 @@ never replayed; `resume` continues past receipted steps only, and past a reviewe
 stores bounded artifacts once (owner-only, no symlinks) and refuses forged,
 escaping, symlinked or stale inputs. `review.py` (C.7) parses the bounded review block whose `FORMAT` every reviewer prompt states (`verdict:` plus `- [severity]` findings; invalid output stops the flow, a blocker or major finding requests changes), drives the retry loop — only the reviewed step reruns with the findings, `max_rounds: N` meaning at most N+1 pairs — and enforces independence: the reviewer's actual runtime and model may not match the reviewed role's, its fallbacks' or its consults'. Results read `review_approved` / `review_changes_requested`, never verification. A `parallel` group (C.8b) runs every member at once on one detached A.5 snapshot repository, never the workspace: native members run `readonly`, external ones must be `readonly` roles whose Docker confinement is preflighted before any member launches, and the source and snapshot must both be unchanged afterwards. `packaged.py` (C.6b) ships `plan-only`, `pair` and `plan-build-review` (scout, planner and reviewer steps `no-edits`), lets a same-name configured flow replace one, and lists the roles a flow needs when some are missing. `launch.py` starts native steps through
 `run_agent_task` and ACP steps through `run_acp_task`, each borrowing the flow's
-lease.
+lease. The engine's quota-recovery hooks capture settled review checkpoints,
+classify only proved Codex quota stops after child closure, and validate the
+admitted source, configuration, workspace, and receipt evidence before each
+resumed step. Completed receipts and review rounds remain authoritative; no
+transcript or completed action is replayed. With recovery enabled, the engine
+projects explicit `unsupported` state for owned flows; the service does the
+same for check-protected and parallel flows.
 
 ## `scenarios/` — packaged starters, compilation and owned flow admission
 
