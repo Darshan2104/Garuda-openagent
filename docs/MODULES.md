@@ -292,7 +292,8 @@ regular wrapper, refusing symlinks and unsafe permissions. Removal also reads
 back before reporting success. Status retains the persisted enablement flag,
 reports observed installation separately, and includes a failure `reason`
 without calling providers. The recovery CLI reports bounded, redacted subprocess
-stderr so an OS crontab refusal remains actionable.
+stderr so an OS crontab refusal remains actionable. Control characters are removed
+before redaction so normalization cannot reassemble a recognized token afterward.
 `flows/quota_recovery.default_root()`
 uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
 `--root` remains a one-command control override.

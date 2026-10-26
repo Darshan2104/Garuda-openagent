@@ -266,3 +266,11 @@ reported windows below exhaustion; no model prompt was sent.
 Enrollment still covers future eligible sequential CLI flows only. Installation
 does not retroactively adopt old sessions, enroll the external Codex chat, or
 demonstrate a live quota-exhaustion-and-reset continuation.
+
+## Final self-review before merge
+
+The final self-review found that removing control characters after redaction
+could reassemble a recognizable token in CLI diagnostics. An added case in the
+existing CLI boundary test reproduced the leak with synthetic input. The repair
+normalizes bounded stderr before applying the existing secret redactor, retaining
+the original OS failure detail and disabled-on-failure behavior.

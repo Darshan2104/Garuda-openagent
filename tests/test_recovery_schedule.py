@@ -188,13 +188,20 @@ def test_schedule_changes_require_successful_crontab_readback(
     assert cron.content == original
 
 
+@pytest.mark.parametrize(
+    ("diagnostic", "exposed_value"),
+    [
+        ("api_key=sk-example-secret-value", "sk-example-secret-value"),
+        ("sk-abcdefg\x7fhijklmnop", "sk-abcdefghijklmnop"),
+    ],
+)
 def test_enable_cli_explains_crontab_failure_without_enabling_recovery(
-    tmp_path, monkeypatch, fake_codex, capsys
+    tmp_path, monkeypatch, fake_codex, capsys, diagnostic, exposed_value
 ):
     root = tmp_path / "recovery"
     cron = FakeCrontab()
     cron.install_error = subprocess.CalledProcessError(
-        1, ["crontab", "-"], stderr="crontab: Operation not permitted\napi_key=sk-example-secret-value\n"
+        1, ["crontab", "-"], stderr=f"crontab: Operation not permitted\n{diagnostic}\n"
         + "x" * 10_000,
     )
     monkeypatch.setattr(recovery_schedule.subprocess, "run", cron.run)
@@ -204,7 +211,7 @@ def test_enable_cli_explains_crontab_failure_without_enabling_recovery(
     output = capsys.readouterr()
     assert result == 2
     assert "Operation not permitted" in output.err
-    assert "sk-example-secret-value" not in output.err
+    assert exposed_value not in output.err
     assert len(output.err) < 2000
     assert output.out == ""
     assert json.loads((root / "settings.json").read_text())["enabled"] is False
