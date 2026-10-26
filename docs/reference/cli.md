@@ -29,7 +29,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
 | Quota recovery | `garuda recovery enable [--root PATH]` | Enable future eligible flows and install the hourly user-cron entry; `--root` selects the store for this command only |
 | | `garuda recovery disable [--root PATH]` | Disable future automatic dispatch and remove Garuda's cron block; does not stop live work |
-| | `garuda recovery status [--root PATH]` | Print JSON schedule and continuation status without launching work |
+| | `garuda recovery status [--root PATH]` | Print persisted enablement, verified local installation and mismatch reason, plus continuation status; does not launch work |
 | | `garuda recovery tick [--root PATH]` | Check quota now and dispatch at most one eligible continuation; exits 3 when a checked flow is blocked or uncertain |
 | | `garuda recovery cancel FLOW_ID [--root PATH]` | Cancel one pending continuation; refuses work that already dispatched |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |

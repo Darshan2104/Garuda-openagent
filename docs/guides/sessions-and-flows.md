@@ -251,6 +251,13 @@ saved flow and workspace context, not the terminal's hidden model state. Garuda
 does not replay the transcript or completed shell actions.
 
 Use `garuda recovery status` for the JSON schedule and continuation records.
+The schedule's `enabled` field records operator configuration; `installed`
+requires the exact cron entry for that private root and an owner-only executable
+regular wrapper. Missing or mismatched installation has a `reason`; a single
+pair of Garuda comments does not establish readiness. These checks do not run
+the wrapper or verify interpreter availability. Enablement is published only
+after installation readback succeeds, and a failed write or readback leaves
+recovery disabled. Crontab OS errors are shown by the CLI.
 `garuda flow show FLOW_ID` and the dashboard's flow detail show the state,
 reason, and next check. `garuda recovery cancel FLOW_ID` cancels a continuation
 only while it is pending. The shared session Stop path, including `garuda

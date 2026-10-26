@@ -147,6 +147,14 @@ fastest way to learn the system.
    flow/workspace context rather than claiming restoration of hidden model state.
    A lost dispatch owner is `uncertain`, never replay authority.
 
+   Scheduler installation is established by reading back the exact managed
+   cron entry for the selected private root and checking its owner-only regular
+   executable wrapper. Marker presence alone is insufficient. Enablement is
+   published only after that check; disablement precedes verified cron removal.
+   Status reports persisted `enabled` separately from observed `installed` and
+   supplies a `reason` when installation is missing or mismatched. These local
+   checks do not execute the wrapper or probe provider quota.
+
    Recovery records and version-1 scheduler settings live in a strict private
    user store. `GARUDA_RECOVERY_ROOT` selects a custom store consistently for
    flow enrollment and controls; a CLI `--root` selects only that control

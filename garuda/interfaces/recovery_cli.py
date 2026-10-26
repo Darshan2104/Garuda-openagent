@@ -41,6 +41,23 @@ def run_recovery(args) -> int:
             print("Quota recovery requires attention; see the reported flow reason.", file=sys.stderr)
             return 3
         return 0
+    except subprocess.CalledProcessError as exc:
+        from garuda.context.redact import redact_text, summarize_command_output
+
+        detail = exc.stderr or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        # Redact both shapes: stripping controls can join tokens or erase their boundaries.
+        detail, _ = redact_text(detail[:4096])
+        detail = "".join(c for c in detail if c.isprintable() or c in "\n\t")
+        detail, _ = redact_text(detail)
+        detail = summarize_command_output(detail.strip(), limit=1024)
+        print(f"Error: recovery command failed (exit {exc.returncode})"
+              + (f": {detail}" if detail else "."), file=sys.stderr)
+        if args.recovery_command in {"enable", "disable"}:
+            print("Check user crontab permissions and run `garuda recovery status` "
+                  "to inspect persisted enablement and installation.", file=sys.stderr)
+        return 2
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, ss.StorageError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

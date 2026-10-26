@@ -286,7 +286,15 @@ authority paths, and owns only the exact marked user-cron block at minute 27.
 The wrapper enters through `garuda.interfaces.main`, preserves
 `GARUDA_RECOVERY_ROOT`, and passes the absolute selected root to `tick`. Enable,
 disable, and status are idempotent; disable publishes `enabled: false` before
-cron removal and never signals a live flow. `flows/quota_recovery.default_root()`
+cron removal and never signals a live flow. Installation requires readback of
+one exact schedule/command for the selected root and an owner-only executable
+regular wrapper, refusing symlinks and unsafe permissions. Removal also reads
+back before reporting success. Status retains the persisted enablement flag,
+reports observed installation separately, and includes a failure `reason`
+without calling providers. The recovery CLI reports bounded, redacted subprocess
+stderr so an OS crontab refusal remains actionable. Redaction runs before and
+after control-character normalization to cover original and reassembled token shapes.
+`flows/quota_recovery.default_root()`
 uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
 `--root` remains a one-command control override.
 

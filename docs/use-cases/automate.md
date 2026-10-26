@@ -186,7 +186,20 @@ garuda flow show FLOW_ID
 ```
 
 `recovery status` prints JSON. `flow show` and the dashboard's flow detail show
-the recovery state, reason, and next check. You can also run a check immediately:
+the recovery state, reason, and next check. In the schedule object, `enabled`
+is persisted operator configuration, while `installed` validates the exact cron
+schedule and command for this private root and its owner-only executable regular
+wrapper. If installation is missing or mismatched, `reason` explains why;
+`reason` is null when installation is verified. Status does not run the wrapper
+or check whether its interpreter and packages remain usable.
+
+Enablement is published only after successful installation readback. If
+`enable` fails with an OS error such as `Operation not permitted`, recovery
+stays disabled. Resolve the reported user-crontab error before retrying
+`garuda recovery enable`, then inspect `garuda recovery status`. An existing
+private watcher for old flows does not enroll future flows in built-in recovery.
+
+You can also run a check immediately:
 
 ```bash
 garuda recovery tick
