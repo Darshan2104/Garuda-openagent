@@ -247,3 +247,22 @@ the CLI. Recovery remains disabled and the legacy cron block is preserved.
 This repair does not resolve that host permission issue or implement a native
 macOS scheduler. No additional live model, Chrome, Docker, tmux, Harbor or
 OS-sandbox integration was run.
+
+## Operational activation during PR review
+
+A subsequent real enable attempt on 26 October succeeded. Crontab readback
+confirmed one built-in recovery entry at `27 * * * *` for the selected private
+store; status reported `enabled: true`, `installed: true` and `reason: null`.
+The installed Codex 0.163.0 executable remains pinned and the legacy fixed-list
+watcher is preserved. The earlier OS refusal is historical evidence; this
+activation does not establish why OS permission behavior changed. The host
+scheduling blocker was removed from the open backlog.
+
+The installed wrapper also executed successfully from outside the repository,
+returning an enabled tick with no pending flows. A fresh official read-only quota
+probe through the pinned binary returned account-bound availability with both
+reported windows below exhaustion; no model prompt was sent.
+
+Enrollment still covers future eligible sequential CLI flows only. Installation
+does not retroactively adopt old sessions, enroll the external Codex chat, or
+demonstrate a live quota-exhaustion-and-reset continuation.

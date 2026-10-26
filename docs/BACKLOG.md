@@ -24,17 +24,6 @@ looking actionable.
 
 ---
 
-## Host scheduling follow-up — verified 26 October 2026
-
-The audit host refuses user-crontab installation with `Operation not permitted`,
-so automatic recovery is not active there. Resolve operator cron permissions or
-design an explicitly selected native macOS scheduler invoking the same tick
-owner. The existing fixed-list watcher does not cover new flows. Recovery must
-remain disabled when installation fails.
-
-Evidence and broader scheduler/continuation proposals are in the
-[October workflow review](archive/2026-10-26-workflow-review.md).
-
 ## Accepted limitations
 
 These are not going to be fixed as stated. They are here so nobody re-derives
