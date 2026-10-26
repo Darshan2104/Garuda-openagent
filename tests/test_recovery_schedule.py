@@ -109,7 +109,7 @@ def test_install_is_idempotent_and_preserves_unrelated_entries(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "damage",
     ["schedule", "command", "root", "metadata", "extra-command", "duplicate", "missing-wrapper",
-     "non-executable", "public-wrapper", "symlink", "directory"],
+     "non-executable", "public-wrapper", "foreign-owner", "symlink", "directory"],
 )
 def test_status_requires_the_selected_entry_and_private_wrapper(
     tmp_path, monkeypatch, fake_codex, damage
@@ -141,6 +141,8 @@ def test_status_requires_the_selected_entry_and_private_wrapper(
         wrapper.chmod(0o600)
     elif damage == "public-wrapper":
         wrapper.chmod(0o777)
+    elif damage == "foreign-owner":
+        monkeypatch.setattr(recovery_schedule.os, "getuid", lambda: wrapper.stat().st_uid + 1)
     elif damage == "symlink":
         saved = wrapper.rename(root / "saved-wrapper")
         wrapper.symlink_to(saved)
