@@ -8,3 +8,11 @@ in [BACKLOG.md](../BACKLOG.md); durable engineering decisions belong in
 
 [Workflow review, 19–26 October 2026](2026-10-26-workflow-review.md) records local
 flow outcomes, quota-recovery activation evidence and proposed improvements.
+
+[Agent feature study, 26 October 2026](2026-10-26-agent-feature-study.md) compares
+oh-my-pi and mini-swe-agent with Garuda, with ranked proposals, implementation
+tradeoffs and validation criteria.
+
+[Existing feature comparison, 26 October 2026](2026-10-26-existing-feature-comparison.md)
+assesses 22 implemented areas against the same agents, including focused checks,
+demonstrated weaknesses and guarantees worth preserving.

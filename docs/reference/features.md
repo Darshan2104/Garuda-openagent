@@ -107,6 +107,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Runtime catalog | Which harnesses are installed and ready | `garuda runtime list` | [Level 7](../use-cases/advanced.md#see-which-external-harnesses-are-ready) |
 | ACP runs | Claude Code, Codex and others on your login | `garuda run --runtime claude -t "…"` | [Level 7](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
+| Standalone ACP acceptance | Explicit post-run checks verify selected criteria separately from harness completion | `garuda run --runtime codex -t "…" --check "pytest -q"` | [Harness acceptance checks](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
 | Handoff | Move a native session to a harness | `garuda runtime handoff --session latest --to codex` | [Level 7](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
 | Recover and reclaim | Repair ownership after an interruption | `garuda runtime recover --session latest` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Continue elsewhere | Resume on another runtime from a brief | `garuda run --resume latest --as claude -t "…"` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |

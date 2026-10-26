@@ -258,6 +258,8 @@ OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,
 
 `protocol.py` is the `Model` interface. `litellm_model.py` is the real
 implementation (streaming, tool calls, reasoning effort, prompt caching, retries);
+the streaming API is available to callers, while the native loop currently uses
+`complete()` and renders completed turns rather than token deltas.
 `governor.py` caps per-provider concurrency; `script_model.py` is the deterministic
 test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost

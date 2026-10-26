@@ -144,6 +144,19 @@ works in your checkout. To pin the harness's model and effort, run it as a
 [role](teams.md#run-a-task-as-a-role); Garuda sets them before the first prompt
 on adapter versions where that was proven, and refuses otherwise.
 
+To verify selected criteria after a standalone harness run, supply an explicit
+acceptance check:
+
+```bash
+garuda run --runtime codex -t "Fix the failing tests" --check "pytest -q"
+```
+
+The harness ending its turn and the check passing are separate outcomes.
+Garuda records the check's authority, workspace fingerprint and result. This
+post-run verification does not enforce the native completion gate inside the
+harness or confine the harness's tools. Checked flows have separate recovery
+eligibility rules; this standalone example does not enroll a flow in recovery.
+
 If an installed harness fails to **start** and the workspace is unchanged,
 Garuda moves the session once to `fallback_runtime` (native by default) and
 records why in the session. The native run then uses your model API key.
