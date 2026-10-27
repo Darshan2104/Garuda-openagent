@@ -11,6 +11,17 @@ python scripts/check_docs.py
 
 Run narrow tests before broad tests. Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary (3.2 or newer), Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
 
+The autouse test isolation gives settings, sessions, leases, and the derived
+recovery store a fresh owner for every test. It removes an inherited
+`GARUDA_RECOVERY_ROOT`, so ordinary pytest cannot write fixture recovery records
+or settings into an operator-selected store. The regression creates its own
+owner-private canary and runs the complete recovery owner suite against the
+inherited override:
+
+```bash
+pytest tests/test_store_isolation.py -q -p no:cacheprovider
+```
+
 ## Owned ACP Docker lifecycle checks
 
 On Linux with a reachable Docker daemon, build the stdlib-only protocol fixture
