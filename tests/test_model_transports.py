@@ -27,7 +27,7 @@ from garuda.types import Message, Role
 
 
 @contextmanager
-def _openai_tool_endpoint():
+def _openai_tool_endpoint(finish_reason: str):
     requests = []
 
     class Endpoint(BaseHTTPRequestHandler):
@@ -40,7 +40,14 @@ def _openai_tool_endpoint():
                 "type": "function",
                 "function": {"name": "local_tool", "arguments": '{"value":7}'},
             }
+            message_content = None if finish_reason == "tool_calls" else "partial answer"
+            message_tool_calls = [tool_call] if finish_reason == "tool_calls" else None
             if request.get("stream"):
+                first_delta = (
+                    {"role": "assistant", "tool_calls": [tool_call]}
+                    if message_tool_calls
+                    else {"role": "assistant", "content": message_content}
+                )
                 chunks = [
                     {
                         "id": "local-stream",
@@ -49,7 +56,7 @@ def _openai_tool_endpoint():
                         "model": "transport-fixture",
                         "choices": [{
                             "index": 0,
-                            "delta": {"role": "assistant", "tool_calls": [tool_call]},
+                            "delta": first_delta,
                             "finish_reason": None,
                         }],
                     },
@@ -58,7 +65,19 @@ def _openai_tool_endpoint():
                         "object": "chat.completion.chunk",
                         "created": 1,
                         "model": "transport-fixture",
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                        "status": "completed",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": finish_reason,
+                        }],
+                    },
+                    {
+                        "id": "local-stream",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "transport-fixture",
+                        "choices": [],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                     },
                 ]
@@ -72,14 +91,15 @@ def _openai_tool_endpoint():
                     "object": "chat.completion",
                     "created": 1,
                     "model": "transport-fixture",
+                    "status": "completed",
                     "choices": [{
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": None,
-                            "tool_calls": [tool_call],
+                            "content": message_content,
+                            "tool_calls": message_tool_calls,
                         },
-                        "finish_reason": "tool_calls",
+                        "finish_reason": finish_reason,
                     }],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                 }).encode()
@@ -106,7 +126,10 @@ def _openai_tool_endpoint():
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
-async def test_litellm_transports_function_schemas_without_owning_tools(stream):
+@pytest.mark.parametrize("finish_reason", ["length", "stop", "tool_calls"])
+async def test_litellm_transports_function_schemas_without_owning_tools(
+    stream, finish_reason
+):
     """Ordinary tools cross real LiteLLM HTTP while Garuda retains execution."""
     from garuda.model.litellm_model import LitellmModel
 
@@ -123,7 +146,7 @@ async def test_litellm_transports_function_schemas_without_owning_tools(stream):
             },
         },
     }]
-    with _openai_tool_endpoint() as (server, requests):
+    with _openai_tool_endpoint(finish_reason) as (server, requests):
         model = LitellmModel(
             "openai/transport-fixture",
             api_key="local-protocol-fixture",
@@ -141,10 +164,17 @@ async def test_litellm_transports_function_schemas_without_owning_tools(stream):
     assert "_skip_mcp_handler" not in requests[0]
     assert requests[0]["tools"] == tools
     assert requests[0]["tool_choice"] == "auto"
-    assert response.content in (None, "")
-    assert [(call.id, call.name, call.arguments) for call in response.tool_calls] == [
-        ("call_local", "local_tool", {"value": 7})
-    ]
+    assert response.raw["finish_reason"] == finish_reason
+    assert response.raw["status"] == "completed"
+    assert response.usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    if finish_reason == "tool_calls":
+        assert response.content in (None, "")
+        assert [(call.id, call.name, call.arguments) for call in response.tool_calls] == [
+            ("call_local", "local_tool", {"value": 7})
+        ]
+    else:
+        assert response.content == "partial answer"
+        assert response.tool_calls == []
 
 
 def test_registered_transports_are_fully_admitted():

@@ -61,7 +61,11 @@ class ScriptModel:
                     "arguments": json.dumps(call.arguments),
                 }
             )
-        yield StreamDelta(done=True)
+        yield StreamDelta(
+            done=True,
+            finish_reason=response.raw.get("finish_reason"),
+            status=response.raw.get("status"),
+        )
 
     def count_tokens(self, messages: list[Message]) -> int:
         return sum(len(m.content) for m in messages) // 4

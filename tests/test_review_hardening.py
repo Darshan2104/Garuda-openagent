@@ -218,6 +218,8 @@ async def test_complete_streaming_captures_usage(monkeypatch):
     assert response.content == "hello world"
     assert response.usage["prompt_tokens"] == 12
     assert response.usage["total_tokens"] == 15
+    assert response.raw["finish_reason"] is None
+    assert response.raw["status"] is None
 
 
 # --- P2-7: truncation surfaced to the loop ----------------------------------

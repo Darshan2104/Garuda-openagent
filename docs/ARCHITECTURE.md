@@ -119,6 +119,12 @@ fastest way to learn the system.
    harness streaming is a separate runtime path. Standalone ACP runs can use
    explicit post-run acceptance checks even though the native completion gate
    does not run inside the external harness.
+   `Model.complete()` and LiteLLM's `complete_streaming()` preserve the
+   provider's finish reason and status in `ModelResponse.raw`. The lower-level
+   `stream()` helper carries observed values on `StreamDelta`, including empty
+   terminal chunks; absent metadata remains `None`, and content or tool calls
+   never imply a reason. Usage-only trailing chunks cannot clear an observed
+   value. This is model-helper behavior, not native loop streaming.
    An enabled collection client does not own this loop: the reasoning model must
    call `delegate_collection`. `prepare_run` then constructs a bounded
    `CollectionCoordinator` from the live environment, parent context, buffer,

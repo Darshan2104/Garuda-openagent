@@ -100,16 +100,23 @@ async def test_complete_streaming_falls_back_on_midstream_error(monkeypatch):
     async def dying_stream(*args, **kwargs):
         from garuda.model.protocol import StreamDelta
 
-        yield StreamDelta(content_delta="par")
+        yield StreamDelta(
+            content_delta="par", finish_reason="length", status="incomplete"
+        )
         raise litellm.APIConnectionError("dropped", llm_provider="p", model="m")
 
     async def fake_complete(messages, tools=None, temperature=None, max_tokens=None):
-        return ModelResponse(content="full answer", tool_calls=[])
+        return ModelResponse(
+            content="full answer",
+            tool_calls=[],
+            raw={"finish_reason": "stop", "status": "completed"},
+        )
 
     monkeypatch.setattr(model, "stream", dying_stream)
     monkeypatch.setattr(model, "complete", fake_complete)
     resp = await model.complete_streaming([Message(role=Role.USER, content="hi")])
     assert resp.content == "full answer"  # fell back to non-streaming complete
+    assert resp.raw == {"finish_reason": "stop", "status": "completed"}
 
 
 def _fake_response(text):

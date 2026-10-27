@@ -17,7 +17,11 @@ from garuda.types import Message, Role, ToolCall
 
 
 async def test_script_model_stream_accumulates_content():
-    model = ScriptModel(responses=[ModelResponse(content="hello world", tool_calls=[])])
+    model = ScriptModel(responses=[ModelResponse(
+        content="hello world",
+        tool_calls=[],
+        raw={"finish_reason": "stop", "status": "completed"},
+    )])
     chunks: list[StreamDelta] = []
     async for delta in model.stream([Message(role=Role.USER, content="hi")]):
         chunks.append(delta)
@@ -25,6 +29,8 @@ async def test_script_model_stream_accumulates_content():
     assembled = "".join(c.content_delta for c in chunks)
     assert assembled == "hello world"
     assert chunks[-1].done is True
+    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].status == "completed"
     # The content should arrive in more than one chunk.
     content_chunks = [c for c in chunks if c.content_delta]
     assert len(content_chunks) >= 2
@@ -39,10 +45,13 @@ async def test_script_model_stream_emits_tool_call_fragments():
             )
         ]
     )
-    frags = [d.tool_call_delta async for d in model.stream([]) if d.tool_call_delta]
+    chunks = [d async for d in model.stream([])]
+    frags = [d.tool_call_delta for d in chunks if d.tool_call_delta]
     assert len(frags) == 1
     assert frags[0]["name"] == "write_file"
     assert json.loads(frags[0]["arguments"]) == {"path": "a.txt"}
+    assert chunks[-1].finish_reason is None
+    assert chunks[-1].status is None
 
 
 def test_supports_streaming_true_for_impls():
@@ -104,21 +113,52 @@ def test_litellm_build_kwargs_parity(monkeypatch):
 def test_litellm_complete_streaming_assembles_response(monkeypatch):
     """complete_streaming consumes stream() into a ModelResponse and fires on_delta."""
 
-    def _chunk(content=None, tool_call=None):
-        delta = SimpleNamespace(content=content, tool_calls=tool_call)
-        return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+    def _chunk(
+        content=None,
+        tool_call=None,
+        reasoning_content=None,
+        thinking_blocks=None,
+        finish_reason=None,
+        status=None,
+    ):
+        delta = SimpleNamespace(
+            content=content,
+            tool_calls=tool_call,
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)],
+            status=status,
+        )
 
-    tc = SimpleNamespace(
+    tc_start = SimpleNamespace(
         index=0,
         id="c1",
-        function=SimpleNamespace(name="bash", arguments='{"command": "ls"}'),
+        function=SimpleNamespace(name="bash", arguments='{"command":'),
+    )
+    tc_end = SimpleNamespace(
+        index=0,
+        id=None,
+        function=SimpleNamespace(name=None, arguments=' "ls"}'),
     )
 
     async def fake_acompletion(**kwargs):
         async def _gen():
             yield _chunk(content="Hel")
             yield _chunk(content="lo")
-            yield _chunk(tool_call=[tc])
+            yield _chunk(reasoning_content="Think carefully.")
+            yield _chunk(
+                thinking_blocks=[{
+                    "type": "thinking",
+                    "thinking": "Check the command.",
+                    "signature": "sig",
+                }]
+            )
+            yield _chunk(tool_call=[tc_start])
+            yield _chunk(tool_call=[tc_end])
+            yield _chunk(finish_reason="tool_calls")
+            yield SimpleNamespace(choices=[], status="completed", usage=None)
 
         return _gen()
 
@@ -138,7 +178,15 @@ def test_litellm_complete_streaming_assembles_response(monkeypatch):
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0].name == "bash"
     assert response.tool_calls[0].arguments == {"command": "ls"}
+    assert response.reasoning_content == "Think carefully."
+    assert response.thinking_blocks == [{
+        "type": "thinking",
+        "thinking": "Check the command.",
+        "signature": "sig",
+    }]
     assert response.raw["streamed"] is True
+    assert response.raw["finish_reason"] == "tool_calls"
+    assert response.raw["status"] == "completed"
 
 
 def test_litellm_stream_retries_connection_then_iterates(monkeypatch):

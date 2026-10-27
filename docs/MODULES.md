@@ -259,7 +259,13 @@ OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,
 `protocol.py` is the `Model` interface. `litellm_model.py` is the real
 implementation (streaming, tool calls, reasoning effort, prompt caching, retries);
 the streaming API is available to callers, while the native loop currently uses
-`complete()` and renders completed turns rather than token deltas.
+`complete()` and renders completed turns rather than token deltas. `StreamDelta`
+has optional provider terminal fields. `litellm_model.py` emits them even when a
+terminal chunk has no content, retains the latest non-null values across trailing
+usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is
+reported as `None`; Garuda does not infer it from content, tools, exhaustion, or
+the synthetic `done` delta. `script_model.py` carries explicitly scripted
+metadata through the same public stream contract.
 `governor.py` caps per-provider concurrency; `script_model.py` is the deterministic
 test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost
