@@ -122,6 +122,23 @@ tools:
   `reviewer`) is enforced when a child starts and can only narrow further down.
   A run's whole tree is limited to two levels deep, eight launches, one child
   at a time, and never past the parent's remaining turns or deadline.
+- A child with `output.schema` returns its accepted value to the parent through
+  the ordinary `invoke_subagent` result. The tool metadata names the schema,
+  producer session/profile and delivery state; the tool message contains the
+  same value so the parent model can consume it. Producer identity uses the
+  resolved profile name, including when selected as `project/NAME` or `user/NAME`.
+  Up to 8 KiB is inline (less
+  when the context budget is tight). Larger values use the parent's output
+  buffer only when `buffer_slice` is admitted; otherwise delivery is explicitly
+  unavailable. Receipt-aware character retrieval passes the complete reference
+  as `child_result_reference`; legacy buffer-id-only reads remain available but
+  do not establish typed-result integrity. Delegation does not add a retrieval
+  tool or widen permissions.
+- The complete rendered handoff, including schema, producer, delivery and
+  workspace identity, stays inside the live tool-output byte budget. The typed
+  envelope is capped at 64 KiB. Optional summary and workspace path detail can
+  be explicitly omitted; the accepted JSON value and authoritative identities
+  are never clipped and described as complete.
 - Only the MCP servers you name in `tools.mcp` start.
 
 ## What goes into the prompt
@@ -151,6 +168,9 @@ output:
   Draft 2020-12). A wrong shape gets up to two repair turns from the run's own
   budget; then the run fails with `agent.output_invalid` and returns no
   output.
+- Validation establishes the JSON shape. The normal completion and verification
+  gates still decide whether that value is accepted. A value with a valid shape
+  that fails verification is withheld, as are invalid repair attempts.
 - The schema is checked when the definition loads: at most 64 KiB, 32 levels
   deep and 64 references, with `$ref` only inside the same file. `format`,
   `pattern`, `patternProperties`, `content*`, `$id`, `$anchor` and `$dynamic*`

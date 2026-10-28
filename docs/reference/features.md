@@ -57,6 +57,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Agent check | Catch mistakes before a run | `garuda agent check NAME` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Profile migration | Move an old profile to version 1 | `garuda agent migrate PATH` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Structured output | A JSON result checked against a schema | `output.schema` in an agent | [Level 3](../use-cases/customize.md#get-structured-json-back) |
+| Typed child results | Accepted schema output survives an ordinary subagent handoff, inline or by verified buffer reference | `invoke_subagent` with a schema-bound child | [Level 3](../use-cases/customize.md#delegate-a-typed-result) |
 | Memory notes | The agent proposes; you accept | `garuda memory review` | [Level 3](../use-cases/customize.md#let-the-agent-propose-notes-to-remember) |
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
 | Tool options | Bash timeouts, web domain allowlists, subagent limits | `tools.options` in an agent | [Agents guide](../guides/agents.md#tools) |

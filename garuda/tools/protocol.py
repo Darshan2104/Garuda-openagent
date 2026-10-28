@@ -76,6 +76,9 @@ class ToolContext:
     notes: Any = None
     # Consult context when the session may ask other roles (G.2).
     consult: Any = None
+    # Appended to preserve the existing positional construction contract.
+    # Retrieval tools size exact frames against this live byte allowance.
+    output_budget: Any = None
 
     def option(self, tool: str, name: str, default=None):
         return (self.tool_options.get(tool) or {}).get(name, default)

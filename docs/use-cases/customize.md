@@ -253,6 +253,49 @@ asyncio.run(main())
 - A valid shape isn't proof the content is right. Add
   [checks](change-code.md#verify-the-result-with-your-own-check) for that.
 
+### Delegate a typed result
+
+Let a coordinator start the schema-bound agent:
+
+```yaml
+# .agent/agents/coordinator.yaml
+version: 1
+extends: garuda/build
+tools:
+  subagents: [api-summary]
+```
+
+```bash
+garuda run --agent coordinator -t "Ask @api-summary to inspect src/calc, then use its result"
+```
+
+When the coordinator calls `invoke_subagent`, the ordinary tool result keeps the
+child's readable summary and carries its accepted JSON with schema and producer
+identity. Small values arrive inline. Large values carry a parent-buffer
+reference for exact `buffer_slice` character-range retrieval. A failed child,
+exhausted schema repair or rejected completion supplies no validated value. If
+the coordinator's admitted tools omit `buffer_slice`, a large value reports
+delivery as unavailable instead of presenting clipped JSON as complete.
+
+For a referenced result, pass the complete receipt back on every slice:
+
+```json
+{
+  "buffer_id": "child-result-…",
+  "start_char": 0,
+  "end_char": 8192,
+  "child_result_reference": {"…": "the complete reference from the handoff"}
+}
+```
+
+Character offsets are zero-based and `end_char` is exclusive. The returned
+header reports the exact retained range and either `next_start=N` or `complete`.
+Frames shrink in UTF-8 bytes to the live output budget and are never recursively
+buffered. A missing or changed buffer, mismatched identity, byte count or digest,
+or non-canonical JSON returns an explicit retrieval error. Buffer-id-only calls
+remain supported for ordinary tool-output retrieval but do not verify a typed
+child-result receipt. Buffer files follow the normal session retention policy.
+
 ## Let the agent propose notes to remember
 
 <p class="gd-facts">Changes memory: only after you accept · Needs: a terminal to review</p>

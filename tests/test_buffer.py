@@ -1,5 +1,6 @@
 """G1: RLM-style tool-output buffer — store full output, stub in context, retrieve."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -181,6 +182,133 @@ async def test_buffer_tools_via_context(tmp_path: Path):
     assert "row 1" in s.content and "row 2" in s.content
     lst = await BufferListTool().execute({}, env, ctx)
     assert "c1" in lst.content
+
+
+async def test_character_slices_reconstruct_a_long_unicode_line(tmp_path: Path):
+    content = json.dumps(
+        {"text": "🦅" + "long-line" * 2000},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    buf = ToolOutputBuffer(session_id="s1", threshold_bytes=10, root=tmp_path / "b")
+    buf.store("child-result", content)
+    ctx = ToolContext(session_id="s1", buffer=buf)
+    env = LocalEnvironment(workspace_root=tmp_path)
+    rebuilt = ""
+    start = 0
+    while True:
+        result = await BufferSliceTool().execute(
+            {"buffer_id": "child-result", "start_char": start, "end_char": start + 5000},
+            env,
+            ctx,
+        )
+        header, chunk = result.content.split("\n--- content ---\n", 1)
+        rebuilt += chunk
+        if "complete]" in header:
+            break
+        start = int(header.split("next_start=", 1)[1].split("]", 1)[0])
+    assert rebuilt == content
+
+
+@pytest.mark.parametrize("arguments", [
+    {"buffer_id": "child-result", "start_char": True, "end_char": 2},
+    {"buffer_id": "child-result", "start_char": 0, "end_char": False},
+    {"buffer_id": "child-result", "start_char": 4, "end_char": 3},
+    {"buffer_id": "child-result", "start_char": 0},
+    {"buffer_id": "child-result", "start_char": 0, "end_char": 1,
+     "start_line": 1, "end_line": 1},
+])
+async def test_character_slices_reject_malformed_ranges(tmp_path: Path, arguments):
+    buf = ToolOutputBuffer(session_id="s1", threshold_bytes=10, root=tmp_path / "b")
+    buf.store("child-result", "abcdef")
+    result = await BufferSliceTool().execute(
+        arguments, LocalEnvironment(workspace_root=tmp_path), ToolContext(session_id="s1", buffer=buf)
+    )
+    assert result.is_error
+
+
+async def test_repeated_character_reads_preserve_the_exact_frame(tmp_path: Path):
+    content = "🦅漢字" * 20
+    buffer = ToolOutputBuffer("parent", threshold_bytes=100, root=tmp_path / "buffers")
+    buffer.store("child-result", content)
+    arguments = {"buffer_id": "child-result", "start_char": 0, "end_char": len(content)}
+    result = await DefaultAgent().run(
+        task="read the same frame twice then finish",
+        model=ScriptModel([
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                id=call_id, name="buffer_slice", arguments=arguments,
+            )]) for call_id in ("first", "second")
+        ] + [ModelResponse(content=None, tool_calls=[ToolCall(
+            id="done", name="task_complete", arguments={"summary": "done"},
+        )])]),
+        env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
+        config=AgentConfig(enable_verifier=False, max_turns=4, max_output_bytes=2048),
+        buffer=buffer,
+    )
+    frames = [message.content for message in result.messages
+              if message.role == Role.TOOL and message.name == "buffer_slice"]
+    assert len(frames) == 2
+    for frame in frames:
+        header, chunk = frame.split("\n--- content ---\n", 1)
+        assert "complete]" in header
+        assert chunk == content
+
+
+async def test_post_tool_rewrite_cannot_corrupt_a_character_frame(tmp_path: Path):
+    from garuda.plugins.hooks import HookRegistry
+    from garuda.types import ToolResult
+
+    content = "🦅" * 2000
+    buffer = ToolOutputBuffer("parent", threshold_bytes=100, root=tmp_path / "buffers")
+    buffer.store("child-result", content)
+    hooks = HookRegistry()
+
+    async def rewrite_slice(call, result, _context):
+        if call.name != "buffer_slice":
+            return result
+        return ToolResult(
+            tool_call_id=result.tool_call_id,
+            content="[rewritten] " + result.content,
+            is_error=result.is_error,
+        )
+
+    hooks.register_after_tool(rewrite_slice)
+    result = await DefaultAgent().run(
+        task="read the buffer then finish",
+        model=ScriptModel([
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                id="slice", name="buffer_slice",
+                arguments={"buffer_id": "child-result", "start_char": 0, "end_char": 8192},
+            )]),
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                id="done", name="task_complete", arguments={"summary": "done"},
+            )]),
+        ]),
+        env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(),
+        config=AgentConfig(enable_verifier=False, max_turns=3, max_output_bytes=2048),
+        buffer=buffer,
+        hooks=hooks,
+    )
+    frame = next(
+        message for message in result.messages
+        if message.role == Role.TOOL and message.name == "buffer_slice"
+    )
+    assert frame.content.startswith("buffer_slice delivery failed:")
+    assert "--- content ---" not in frame.content
+
+
+async def test_character_slice_reports_when_even_an_empty_frame_cannot_fit(tmp_path: Path):
+    buf = ToolOutputBuffer(session_id="s1", threshold_bytes=10, root=tmp_path / "b")
+    buf.store("child-result", "abcdef")
+    result = await BufferSliceTool().execute(
+        {"buffer_id": "child-result", "start_char": 6, "end_char": 6},
+        LocalEnvironment(workspace_root=tmp_path),
+        ToolContext(session_id="s1", buffer=buf, output_budget=lambda _error=False: 10),
+    )
+    assert result.is_error
+    assert result.content == "Character frame cannot fit the current output budget."
 
 
 async def test_buffer_tools_disabled_when_no_buffer(tmp_path: Path):

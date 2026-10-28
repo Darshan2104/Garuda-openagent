@@ -195,7 +195,9 @@ def validation_errors(schema: Any, instance: Any) -> list[str]:
     from jsonschema import Draft202012Validator
 
     try:
-        encoded = json.dumps(instance)
+        encoded = json.dumps(
+            instance, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
     except (TypeError, ValueError):
         return ["the result is not valid JSON data"]
     if len(encoded) > MAX_RESULT_BYTES:

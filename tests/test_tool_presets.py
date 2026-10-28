@@ -136,6 +136,24 @@ async def test_a_refused_launch_does_not_spend_the_budget(tmp_path):
     assert budget.launches == 0
 
 
+async def test_workspace_observation_cannot_start_a_child_after_its_deadline(tmp_path, monkeypatch):
+    from garuda.workspace import evidence
+
+    runner = _runner(tmp_path, deadline_monotonic=time.monotonic() + 60, parent_tools=[])
+    capture = evidence.begin_workspace_observation
+
+    def observation_at_deadline(*args, **kwargs):
+        observed = capture(*args, **kwargs)
+        runner.deadline_monotonic = time.monotonic() - 1
+        return observed
+
+    monkeypatch.setattr(evidence, "begin_workspace_observation", observation_at_deadline)
+    result = await runner.run("plan", "a task", fork_parent_context="none")
+
+    assert not result.success
+    assert result.metadata.get("refused") == "agent.delegation_deadline"
+
+
 def test_the_tool_schema_enumerates_exactly_the_allowed_agents():
     from garuda.tools.subagent import InvokeSubagentTool
 

@@ -137,6 +137,13 @@ class SubagentRunner:
     busy: bool = False
     # The root task's reviewed-notes ledger, shared with every descendant (H.9).
     notes: Any = None
+    # New fields follow the legacy positional constructor arguments. Sampled
+    # after the child returns so delivery fits the next parent request.
+    parent_output_budget: Any = None
+    # The root-selected backend kind. Child definitions may narrow behavior but
+    # cannot redefine which workspace implementation is actually executing.
+    workspace_kind: str | None = None
+    workspace_evidence_root: str | None = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -228,6 +235,10 @@ class SubagentRunner:
 
         profile = resolve_profile(profile_name, self.workspace_root or ".", self.agents_dir)
         config = profile.to_agent_config()
+        config.agent_name = profile.name
+        config.agent_digest = profile.spec_digest
+        if self.workspace_kind is not None:
+            config.workspace_kind = self.workspace_kind
         parent_left = self.turns_left() if callable(self.turns_left) else self.max_turns
         config.max_turns = max(1, min(config.max_turns, self.max_turns, parent_left))
         if remaining is not None:
@@ -280,8 +291,27 @@ class SubagentRunner:
                 # Share the parent buffer so inherited stubs are retrievable.
                 shared_buffer = self.parent_buffer
 
+        from garuda.workspace.evidence import begin_workspace_observation
+
+        if config.workspace_kind == "docker":
+            evidence_root = self.workspace_evidence_root
+        else:
+            evidence_root = (
+                self.workspace_evidence_root
+                or self.workspace_root
+                or getattr(self.env, "workspace_root", None)
+            )
+        observation = begin_workspace_observation(evidence_root, config.workspace_kind)
+
         self.busy = True
         try:
+            if self.deadline_monotonic is not None:
+                remaining = self.deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    return _refused(
+                        "agent.delegation_deadline", "the run's deadline passed during child preparation"
+                    )
+                config.deadline_sec = min(config.deadline_sec or remaining, remaining)
             result = await agent.run(
                 task=task,
                 model=self.model,
@@ -299,6 +329,14 @@ class SubagentRunner:
             if mcp_manager is not None:
                 await mcp_manager.close()
 
+        from garuda.workspace.evidence import finish_workspace_observation
+
+        workspace_evidence = finish_workspace_observation(observation)
+        result.metadata["workspace_evidence"] = workspace_evidence
+        result.metadata["parent_resolvable_buffers"] = (
+            shared_buffer is not None and shared_buffer is self.parent_buffer
+        )
+
         self.events.append(
             EventType.USER_MESSAGE,
             {
@@ -312,10 +350,12 @@ class SubagentRunner:
                 "session_id": sub_events.session_id,
                 "turns": result.turns,
                 "task": task,
+                "workspace": workspace_evidence,
             },
         )
         result.metadata["subagent_session_id"] = sub_events.session_id
         result.metadata["subagent_profile"] = profile_name
+        result.metadata["subagent_resolved_profile"] = profile.name
         return result
 
 
@@ -368,14 +408,25 @@ def format_subagent_summary(profile_name: str, result: AgentResult) -> str:
     ids, so the parent can act on the subagent's work without re-discovering it.
     """
     files: list[str] = []
+    attempts: list[str] = []
     buffers: list[str] = []
+    workspace = result.metadata.get("workspace_evidence") or {}
+    if workspace.get("attribution") == "captured":
+        for item in workspace.get("files") or []:
+            path = item.get("path") if isinstance(item, dict) else None
+            if isinstance(path, str) and path and path not in files:
+                files.append(path)
     for message in result.messages:
         for call in message.tool_calls or []:
-            if call.name in ("write_file", "edit"):
+            if call.name in ("write_file", "edit", "multi_edit"):
                 path = call.arguments.get("path")
-                if path and path not in files:
-                    files.append(path)
-        if message.role == Role.TOOL and message.content:
+                if path and path not in attempts:
+                    attempts.append(path)
+        if (
+            result.metadata.get("parent_resolvable_buffers") is True
+            and message.role == Role.TOOL
+            and message.content
+        ):
             for bid in _SUMMARY_BUFFER_RE.findall(message.content):
                 if bid not in buffers:
                     buffers.append(bid)
@@ -383,6 +434,9 @@ def format_subagent_summary(profile_name: str, result: AgentResult) -> str:
     parts = [f"Subagent @{profile_name} finished (success={result.success}, turns={result.turns})."]
     if files:
         parts.append("Files changed: " + ", ".join(files[:30]))
+    elif attempts:
+        parts.append("Edit attempts (workspace evidence did not confirm changes): "
+                     + ", ".join(attempts[:30]))
     if buffers:
         parts.append(
             "Retrievable buffers (buffer_grep/buffer_slice): " + ", ".join(buffers[:10])

@@ -8,7 +8,7 @@ from garuda.types import AgentResult, Message, Role, ToolCall
 
 # --- #3: structured subagent summary ----------------------------------------
 
-def test_subagent_summary_lists_files_and_buffers():
+def test_subagent_summary_labels_tool_calls_as_attempts_without_workspace_evidence():
     messages = [
         Message(role=Role.ASSISTANT, content="", tool_calls=[
             ToolCall(id="1", name="write_file", arguments={"path": "src/a.py", "content": "x"}),
@@ -20,9 +20,16 @@ def test_subagent_summary_lists_files_and_buffers():
         Message(role=Role.TOOL, content="[buffer:buf_deadbeef | 90000 bytes | 900 lines tool=bash]\npreview",
                 tool_call_id="2b", name="bash"),
     ]
-    result = AgentResult(success=True, final_message="Refactored the module.", messages=messages, turns=4)
+    result = AgentResult(
+        success=True,
+        final_message="Refactored the module.",
+        messages=messages,
+        turns=4,
+        metadata={"parent_resolvable_buffers": True},
+    )
     summary = format_subagent_summary("explore", result)
-    assert "Files changed: src/a.py, src/b.py" in summary
+    assert "Files changed" not in summary
+    assert "Edit attempts (workspace evidence did not confirm changes): src/a.py, src/b.py" in summary
     assert "buf_deadbeef" in summary
     assert "Refactored the module." in summary
 
@@ -32,6 +39,26 @@ def test_subagent_summary_minimal_when_no_evidence():
     summary = format_subagent_summary("explore", result)
     assert "Files changed" not in summary
     assert "Nothing to change." in summary
+
+
+def test_subagent_summary_lists_only_authoritative_workspace_changes():
+    result = AgentResult(
+        success=True,
+        final_message="Changed the measured files.",
+        messages=[],
+        turns=1,
+        metadata={
+            "workspace_evidence": {
+                "attribution": "captured",
+                "files": [
+                    {"path": "src/a.py", "kind": "modified"},
+                    {"path": "src/renamed.py", "kind": "renamed", "renamed_from": "src/old.py"},
+                ],
+            }
+        },
+    )
+    summary = format_subagent_summary("build", result)
+    assert "Files changed: src/a.py, src/renamed.py" in summary
 
 
 # --- #4: incremental structured summarizer ----------------------------------

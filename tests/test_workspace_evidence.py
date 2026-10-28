@@ -168,7 +168,9 @@ async def test_host_backed_kinds_really_run_on_the_host_path(tmp_path, monkeypat
         return _Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-    await DockerWorkspace(root).start()
+    docker_workspace = DockerWorkspace(root)
+    await docker_workspace.start()
+    assert docker_workspace.get_environment().host_workspace_root == str(root)
     await RemoteWorkspace(root, docker_host="tcp://far:2375").start()
     docker_argv, remote_argv = launched
     assert f"{root}:/workspace" in docker_argv
