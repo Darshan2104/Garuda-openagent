@@ -19,7 +19,7 @@ from garuda.core.subagent import SubagentRunner
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
-from garuda.types import AgentConfig, ToolCall
+from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -89,9 +89,15 @@ async def test_a_readonly_parent_denies_a_childs_write(tmp_path):
     ]
     (tmp_path / "sentinel.txt").write_text("original")
 
-    await _run_parent(tmp_path, script, parent)
+    result = await _run_parent(tmp_path, script, parent)
 
     assert (tmp_path / "sentinel.txt").read_text() == "original"
+    handoff = next(
+        message for message in result.messages
+        if message.role == Role.TOOL and message.name == "invoke_subagent"
+    )
+    assert "Files changed" not in handoff.content
+    assert "Edit attempts" in handoff.content
 
 
 async def test_a_parent_path_deny_and_tool_deny_hold_in_the_child(tmp_path):
@@ -165,19 +171,23 @@ async def test_the_root_ceiling_holds_for_a_grandchild(tmp_path):
     assert not (tmp_path / "marker").exists()
 
 
-async def test_the_runner_enforces_the_ceiling_without_the_tool_schema(tmp_path):
+@pytest.mark.parametrize("construction", ["keywords", "legacy-positional"])
+async def test_the_runner_enforces_the_ceiling_without_the_tool_schema(tmp_path, construction):
     """Entering the runner directly, not through ``invoke_subagent``, is still capped."""
     approvals = _Approvals(False)
     parent = PermissionEngine(mode="smart", bash_rules={"ask": [r"^touch "]}, approval_handler=approvals)
-    runner = SubagentRunner(
-        model=ScriptModel([_call("bash", "b1", command="touch marker"), _done()]),
-        env=LocalEnvironment(workspace_root=tmp_path),
-        events=EventStore(),
-        workspace_root=str(tmp_path),
-        approval_handler=approvals,
-        parent_permissions=parent,
-        parent_tools=default_tools(),
-    )
+    model = ScriptModel([_call("bash", "b1", command="touch marker"), _done()])
+    env = LocalEnvironment(workspace_root=tmp_path)
+    if construction == "legacy-positional":
+        runner = SubagentRunner(
+            model, env, EventStore(), None, None, str(tmp_path), 50, False,
+            None, None, approvals, None, None, parent, default_tools(),
+        )
+    else:
+        runner = SubagentRunner(
+            model=model, env=env, events=EventStore(), workspace_root=str(tmp_path),
+            approval_handler=approvals, parent_permissions=parent, parent_tools=default_tools(),
+        )
 
     await runner.run("harbor", "do it")
 

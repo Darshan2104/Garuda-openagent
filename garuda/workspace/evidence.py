@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.workspace.diff import (
@@ -51,6 +52,116 @@ FINAL_STATE_KEY = "final_workspace_state"
 META_PATH_LIMIT = 200
 
 DeltaLoader = Callable[[], SessionDelta]
+
+# A child handoff is intentionally smaller than persisted session evidence.  The
+# complete Git view remains available to the child trace; the parent gets enough
+# authoritative path identity to act without an unbounded metadata payload.
+CHILD_PATH_LIMIT = 30
+CHILD_PATH_CHARS = 300
+
+
+@dataclass(frozen=True)
+class WorkspaceObservation:
+    """A child-scoped start boundary against the actual execution workspace."""
+
+    workspace: str | None
+    workspace_kind: str
+    baseline: Baseline | None = None
+    attribution: str = BASELINE_CAPTURED
+    error: str | None = None
+
+
+def begin_workspace_observation(
+    workspace: str | Path | None, workspace_kind: str
+) -> WorkspaceObservation:
+    """Capture a non-mutating child baseline, retaining unsupported/error states."""
+    try:
+        local = host_backed(workspace_kind)
+    except BaselineError as exc:
+        return WorkspaceObservation(
+            None,
+            workspace_kind,
+            attribution="error",
+            error=f"{type(exc).__name__}: {exc}"[:500],
+        )
+    if not local:
+        return WorkspaceObservation(
+            str(workspace) if workspace is not None else None,
+            workspace_kind,
+            attribution=BASELINE_UNSUPPORTED_NONLOCAL,
+        )
+    if workspace is None:
+        return WorkspaceObservation(
+            None, workspace_kind, attribution="unavailable_host_root"
+        )
+    resolved = _resolved_workspace(workspace)
+    try:
+        baseline = capture_baseline(workspace)
+        return WorkspaceObservation(
+            resolved, workspace_kind, baseline=baseline, attribution=baseline.state
+        )
+    except (BaselineError, DiffError, OSError) as exc:
+        return WorkspaceObservation(
+            resolved,
+            workspace_kind,
+            attribution="error",
+            error=f"{type(exc).__name__}: {exc}"[:500],
+        )
+
+
+def finish_workspace_observation(observation: WorkspaceObservation) -> dict:
+    """Return bounded authoritative child evidence; emptiness never masks failure."""
+    evidence: dict = {
+        "kind": observation.workspace_kind,
+        "attribution": observation.attribution,
+    }
+    if observation.workspace is not None:
+        if len(observation.workspace) <= CHILD_PATH_CHARS:
+            evidence["root"] = observation.workspace
+        else:
+            evidence["root_omitted"] = True
+    if observation.error:
+        evidence["error"] = observation.error
+        return evidence
+    if observation.baseline is None:
+        return evidence
+    try:
+        delta = session_delta(observation.baseline, observation.workspace)
+    except (DiffError, OSError) as exc:
+        return {
+            **evidence,
+            "attribution": "error",
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
+    evidence["attribution"] = delta.attribution
+    if not delta.attributable:
+        return evidence
+    evidence["baseline_commit"] = delta.baseline_commit
+    if delta.head_commit:
+        evidence["head_commit"] = delta.head_commit
+    changed = [file for file in delta.files if not file.preexisting]
+    evidence["changed_count"] = len(changed)
+    files = []
+    omitted = 0
+    for file in changed:
+        if len(files) >= CHILD_PATH_LIMIT or len(file.path) > CHILD_PATH_CHARS:
+            omitted += 1
+            continue
+        record = {
+            "path": file.path,
+            "kind": file.kind,
+            **({"preexisting_at_start": True} if file.preexisting_at_start else {}),
+        }
+        if file.renamed_from:
+            if len(file.renamed_from) <= CHILD_PATH_CHARS:
+                record["renamed_from"] = file.renamed_from
+            else:
+                record["renamed_from_omitted"] = True
+        files.append(record)
+    evidence["files"] = files
+    if omitted:
+        evidence["files_omitted"] = omitted
+    return evidence
 
 
 def host_backed(workspace_kind: str) -> bool:

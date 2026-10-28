@@ -56,7 +56,11 @@ class DockerWorkspace:
         if process.returncode != 0:
             raise RuntimeError(stderr.decode(errors="replace").strip())
         self._container_id = stdout.decode().strip()
-        self._environment = DockerEnvironment(self._container_name, workspace_root="/workspace")
+        self._environment = DockerEnvironment(
+            self._container_name,
+            workspace_root="/workspace",
+            host_workspace_root=self._workspace_host,
+        )
 
     async def stop(self) -> None:
         if not self._container_id:
@@ -80,13 +84,25 @@ class DockerWorkspace:
 
 
 class DockerEnvironment:
-    def __init__(self, container_name: str, workspace_root: str = "/workspace"):
+    def __init__(
+        self,
+        container_name: str,
+        workspace_root: str = "/workspace",
+        host_workspace_root: str | Path | None = None,
+    ):
         self._container_name = container_name
         self._workspace_root = workspace_root
+        self._host_workspace_root = (
+            str(Path(host_workspace_root).resolve()) if host_workspace_root is not None else None
+        )
 
     @property
     def workspace_root(self) -> str:
         return self._workspace_root
+
+    @property
+    def host_workspace_root(self) -> str | None:
+        return self._host_workspace_root
 
     async def execute(
         self,

@@ -132,6 +132,24 @@ fastest way to learn the system.
    separate model context, read-only toolkit, sibling trace, and
    `submit_collection` terminal strategy; that terminal can never complete the
    parent run.
+   Ordinary native `invoke_subagent` calls preserve an accepted schema result
+   through `core/child_result.py`. The tool keeps its human summary and adds a
+   versioned `child_result` metadata envelope; deterministic JSON in the tool
+   message gives the next parent request the same value. Values up to 8 KiB
+   (or the smaller current output budget) are inline. Larger values are
+   atomically published to the parent's existing output buffer and carry a
+   byte-counted, SHA-256 reference retrievable in character ranges. If parent
+   storage or `buffer_slice` is absent, delivery says `unavailable` and exposes
+   neither a clipped value nor a reference. `ToolRunner` retains only this
+   validated metadata contract, rather than arbitrary tool metadata.
+   Schema validation remains separate from task verification: only a child
+   accepted by every configured completion gate gets an output. A child-scoped
+   workspace baseline/delta supplies changed paths where the actual backend is
+   host-backed; non-repository, non-local and unreadable workspaces remain
+   explicit attribution states. Docker attribution additionally requires the
+   environment's proved host bind root; container `/workspace` is never treated
+   as a host evidence path when that identity is absent. Long paths are omitted
+   with counts rather than presented as truncated filenames.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source
    identity across named definition changes and snapshot workspace execution.
@@ -351,6 +369,12 @@ fastest way to learn the system.
    (`core/buffer.py`), not destroyed.
    New buffer captures become discoverable only after a complete UTF-8 write
    and atomic replacement; interrupted staging files stay out of discovery.
+   `buffer_slice` retains its line-range API and also supports bounded exact
+   character ranges with continuation offsets, so a referenced one-line JSON
+   value can be reconstructed without line rendering changing its contents.
+   Supplying `child_result_reference` makes that ordinary tool path verify the
+   parent/producer/buffer binding, byte count, digest and canonical JSON from
+   the same read snapshot. Buffer-id-only retrieval remains the legacy path.
    This publication contract does not establish power-loss durability or
    validate the historical completeness of legacy `.txt` captures.
 7. **Completion gate** — `task_complete` does not end a run by itself.

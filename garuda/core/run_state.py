@@ -209,6 +209,23 @@ class RunState:
             }
         if error_code:
             metadata["error_code"] = error_code
+        if self.config.output_schema is not None:
+            from garuda.core.child_result import (
+                accepted_output_contract,
+                declared_output_contract,
+            )
+
+            output_contract = (
+                accepted_output_contract(self.config.output_schema, output)
+                if success
+                else declared_output_contract(self.config.output_schema)
+            )
+            output_contract["agent_name"] = (
+                self.config.agent_name or self.agent_segment.get("name")
+            )
+            if self.config.agent_digest:
+                output_contract["agent_digest"] = self.config.agent_digest
+            metadata["output_contract"] = output_contract
         return AgentResult(
             success=success,
             final_message=final_message,
@@ -224,20 +241,31 @@ class RunState:
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
+        metadata = {
+            "session_id": self.events.session_id,
+            "events": self.events.get_all(),
+            "usage": dict(self.usage_totals),
+            "mode": self.config.mode,
+            # Included even here: how long a run spent before dying on a model
+            # error or a dead workspace is exactly what you want to see.
+            "metrics": metric_summary,
+        }
+        if self.config.output_schema is not None:
+            from garuda.core.child_result import declared_output_contract
+
+            output_contract = declared_output_contract(self.config.output_schema)
+            output_contract["agent_name"] = (
+                self.config.agent_name or self.agent_segment.get("name")
+            )
+            if self.config.agent_digest:
+                output_contract["agent_digest"] = self.config.agent_digest
+            metadata["output_contract"] = output_contract
         return AgentResult(
             success=success,
             final_message=final_message,
             messages=self.context.get_messages(),
             turns=turns,
-            metadata={
-                "session_id": self.events.session_id,
-                "events": self.events.get_all(),
-                "usage": dict(self.usage_totals),
-                "mode": self.config.mode,
-                # Included even here: how long a run spent before dying on a model
-                # error or a dead workspace is exactly what you want to see.
-                "metrics": metric_summary,
-            },
+            metadata=metadata,
         )
 
     @property
@@ -837,6 +865,7 @@ async def prepare_run(
             workspace_root=getattr(env, "workspace_root", None),
             parent_context=context,
             parent_buffer=buffer,
+            parent_output_budget=lambda: context.output_budget(False),
             approval_handler=permissions.approval_handler,
             hooks=hooks,
             parent_permissions=permissions,
@@ -846,6 +875,12 @@ async def prepare_run(
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
             deadline_monotonic=deadline_at,
+            workspace_kind=config.workspace_kind,
+            workspace_evidence_root=(
+                getattr(env, "host_workspace_root", None)
+                if config.workspace_kind == "docker"
+                else getattr(env, "workspace_root", None)
+            ),
         )
 
     ctx = ToolContext(
@@ -855,6 +890,7 @@ async def prepare_run(
         subagent_runner=subagent_runner,
         collection_coordinator=collection_coordinator,
         buffer=buffer,
+        output_budget=lambda is_error=False: context.output_budget(is_error),
         post_edit_diagnostics=config.post_edit_diagnostics,
         post_edit_lint=config.post_edit_lint,
         persistent_shell=config.persistent_shell,

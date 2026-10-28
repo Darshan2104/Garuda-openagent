@@ -2101,3 +2101,31 @@ The fields are additive and default to `None`, so existing stream implementation
 and positional `StreamDelta` construction remain compatible. The native agent
 loop continues to use `Model.complete()`; live native loop streaming remains a
 separate feature.
+
+## 2026-10-27 — Ordinary subagents preserve accepted typed results (#357)
+
+An accepted native child output crosses `invoke_subagent` in a versioned,
+bounded `ToolResult.metadata["child_result"]` envelope and in deterministic tool
+message JSON. The completion owner creates validation provenance only after the
+schema and every configured completion gate accept; invalid repairs, failed
+children and verification rejections expose no output. The envelope binds the
+schema dialect/digest and producer session/profile/definition identity.
+
+Values are inline up to 8 KiB and the current parent output budget. Larger
+canonical JSON is atomically published into the existing parent-owned tool
+output buffer only when the parent admitted `buffer_slice`; its reference binds
+parent and producer identity, byte count and SHA-256. Resolution checks those
+fields and canonical JSON on the ordinary receipt-aware `buffer_slice` path,
+and exact character-range slices make one long line retrievable. Each frame is
+sized in UTF-8 bytes against the live parent budget and cannot be recursively
+buffered. Missing storage/tooling, failed integrity or publication failure is an
+explicit unavailable/error state, never a clipped value or invented reference.
+`ToolRunner` persists only this validated metadata contract.
+
+Changed-file claims use a baseline captured immediately before that child and a
+delta from the actual root-selected workspace kind. Preexisting dirt remains
+separate; non-repository, non-local and unreadable workspaces stay explicit. A
+Docker child requires the environment's proved host bind root; absent host
+identity remains unavailable and never falls back to container `/workspace`.
+Existing delegated permissions, admitted tools, launch/depth/turn/deadline
+budgets, handoff modes, textual summaries and sibling traces remain authoritative.

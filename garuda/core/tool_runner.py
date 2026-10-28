@@ -9,6 +9,7 @@ for a step and gets a transcript-ready result.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -260,6 +261,54 @@ class ToolRunner:
         both in-tree callers pass it. When it is absent a trajectory reader falls
         back to positional segmentation, so the event is degraded, never wrong.
         """
+        message_metadata: dict = {}
+        if call.name == "invoke_subagent":
+            from garuda.core.child_result import canonical_json, validate_child_result_envelope
+
+            child_result = validate_child_result_envelope(
+                (tool_result.metadata or {}).get("child_result")
+            )
+            if (
+                child_result is not None
+                and tool_result.content.endswith(canonical_json(child_result))
+                and len(tool_result.content.encode("utf-8"))
+                    <= self.context.output_budget(tool_result.is_error)
+            ):
+                message_metadata["child_result"] = child_result
+            elif child_result is not None or "Validated child result:\n" in tool_result.content:
+                tool_result.content = self.context.shape_observation(
+                    "Child result delivery unavailable: post-tool processing changed "
+                    "the typed handoff or exceeded its output budget.", is_error=True,
+                )
+                tool_result.is_error = True
+                tool_result.metadata.pop("child_result", None)
+        if call.name == "buffer_slice":
+            frame = (tool_result.metadata or {}).get("buffer_slice_frame")
+            receipt_error = (tool_result.metadata or {}).get("buffer_slice_receipt_error")
+            receipt = frame if isinstance(frame, dict) else receipt_error
+            expected = receipt.get("content_sha256") if isinstance(receipt, dict) else None
+            actual = hashlib.sha256(tool_result.content.encode("utf-8")).hexdigest()
+            character_mode = "start_char" in (call.arguments or {}) or "end_char" in (
+                call.arguments or {}
+            )
+            receipt_mode = "child_result_reference" in (call.arguments or {})
+            missing_contract = (
+                character_mode
+                and not tool_result.is_error
+                and not isinstance(frame, dict)
+            ) or (
+                receipt_mode
+                and tool_result.is_error
+                and not isinstance(receipt_error, dict)
+            )
+            if missing_contract or (expected is not None and expected != actual):
+                tool_result.content = (
+                    "buffer_slice delivery failed: post-tool processing changed the "
+                    "verified character frame."
+                )
+                tool_result.is_error = True
+                tool_result.metadata.pop("buffer_slice_frame", None)
+                tool_result.metadata.pop("buffer_slice_receipt_error", None)
         payload = {
             "tool_call_id": call.id,
             "name": call.name,
@@ -267,6 +316,11 @@ class ToolRunner:
             "is_error": tool_result.is_error,
             "turn": turn,
         }
+        child_result = message_metadata.get("child_result")
+        if child_result is not None:
+            # This is the sole additive tool metadata contract retained in
+            # transcripts and events. Arbitrary tool metadata stays private.
+            payload["child_result"] = child_result
         if tool_result.is_error and tool_result.metadata.get("permission_denied") is True:
             payload["permission_denied"] = True
         # Consumers previously had to difference the tool_call/tool_result event
@@ -282,6 +336,7 @@ class ToolRunner:
                 content=tool_result.content,
                 name=call.name,
                 tool_call_id=call.id,
+                metadata=message_metadata,
             )
         )
 
@@ -339,7 +394,7 @@ class ToolRunner:
         try:
             result = await tool.execute(call.arguments, self.env, self.ctx)
             content = result.content if isinstance(result.content, str) else str(result.content)
-            result.content = self._shape_or_buffer(content, call, result.is_error)
+            result.content = self._shape_or_buffer(content, call, result)
             # Access refusals must be evaluated and recorded on each attempt.
             if (self.memo is not None and signature is not None
                     and result.metadata.get("permission_denied") is not True):
@@ -368,7 +423,7 @@ class ToolRunner:
         result.tool_call_id = call.id
         return result
 
-    def _shape_or_buffer(self, content, call: ToolCall, is_error: bool) -> str:
+    def _shape_or_buffer(self, content, call: ToolCall, result: ToolResult) -> str:
         """Large output → store full body in the buffer + return a stub; else shape inline.
 
         One budget drives both decisions, and it shrinks as the window fills (see
@@ -378,16 +433,65 @@ class ToolRunner:
 
         Never lets a buffer failure crash the turn — falls back to head/tail shaping.
         """
+        is_error = result.is_error
         budget = self.context.output_budget(is_error)
         buffer = getattr(self.ctx, "buffer", None)
+        # These two harness-owned contracts have already selected a truthful
+        # delivery for this exact live budget. Re-buffering either one would turn
+        # a usable reference/frame into another promise to retrieve it.
+        if call.name == "invoke_subagent":
+            from garuda.core.child_result import canonical_json, validate_child_result_envelope
+
+            envelope = validate_child_result_envelope(
+                (result.metadata or {}).get("child_result")
+            )
+            if envelope is not None:
+                if (
+                    len(content.encode("utf-8")) <= budget
+                    and content.endswith(canonical_json(envelope))
+                ):
+                    return content
+                result.metadata.pop("child_result", None)
+                return self.context.shape_observation(
+                    "Child result delivery unavailable: the typed handoff did not fit "
+                    "the current output budget.",
+                    is_error=True,
+                )
+        if (
+            call.name == "buffer_slice"
+            and is_error
+            and isinstance((result.metadata or {}).get("buffer_slice_receipt_error"), dict)
+            and type((result.metadata or {})["buffer_slice_receipt_error"].get("version")) is int
+            and (result.metadata or {})["buffer_slice_receipt_error"]["version"] == 1
+            and (result.metadata or {})["buffer_slice_receipt_error"].get("content_sha256")
+                == hashlib.sha256(content.encode("utf-8")).hexdigest()
+            and len(content.encode("utf-8")) <= budget
+        ):
+            return content
+        if call.name == "buffer_slice" and not is_error:
+            frame = (result.metadata or {}).get("buffer_slice_frame")
+            if (
+                isinstance(frame, dict)
+                and set(frame) == {
+                    "version", "start", "end", "total", "complete", "content_sha256"
+                }
+                and type(frame.get("version")) is int
+                and frame["version"] == 1
+                and all(type(frame.get(key)) is int for key in ("start", "end", "total"))
+                and type(frame.get("complete")) is bool
+                and 0 <= frame["start"] <= frame["end"] <= frame["total"]
+                and frame["complete"] is (frame["end"] == frame["total"])
+                and frame.get("content_sha256")
+                    == hashlib.sha256(content.encode("utf-8")).hexdigest()
+                and len(content.encode("utf-8")) <= budget
+            ):
+                return content
         # The adaptive budget may only pull the buffering threshold *in*, never push
         # it out: buffer_threshold_bytes is a configured ceiling on what may sit
         # inline, and a run that asked for a small one meant it.
         threshold = min(buffer.threshold_bytes, budget) if buffer is not None else budget
         if buffer is not None and content and buffer.exceeds(content, threshold):
             try:
-                import hashlib
-
                 from garuda.core.buffer import format_buffer_stub
 
                 # Short, provider-agnostic id (some providers' tool_call ids are ~1KB).

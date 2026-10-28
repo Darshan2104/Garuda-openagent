@@ -82,8 +82,29 @@ class InvokeSubagentTool:
             handoff = "brief"
         result = await ctx.subagent_runner.run(profile, task, fork_parent_context=handoff)
         summary = format_subagent_summary(profile, result)
+        from garuda.core.child_result import (
+            build_child_result_envelope,
+            render_child_result_handoff,
+        )
+
+        budget_source = getattr(ctx.subagent_runner, "parent_output_budget", None)
+        output_budget = budget_source() if callable(budget_source) else None
+        envelope = build_child_result_envelope(
+            result,
+            profile,
+            storage=getattr(ctx.subagent_runner, "parent_buffer", None),
+            parent_tools=getattr(ctx.subagent_runner, "parent_tools", None),
+            output_budget=output_budget,
+            workspace=result.metadata.get("workspace_evidence"),
+        )
+        metadata = (
+            {"child_result": envelope}
+            if envelope.get("outcome", {}).get("validation") != "not_declared"
+            else {}
+        )
         return ToolResult(
             tool_call_id="",
-            content=summary,
+            content=render_child_result_handoff(summary, envelope, output_budget),
             is_error=not result.success,
+            metadata=metadata,
         )

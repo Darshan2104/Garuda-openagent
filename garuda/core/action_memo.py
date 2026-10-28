@@ -175,6 +175,13 @@ class ActionMemo:
         """Cached (content, is_error) for a repeated read-only call, else None."""
         if call.name not in CACHEABLE_TOOLS:
             return None
+        if call.name == "buffer_slice" and any(
+            key in (call.arguments or {})
+            for key in ("child_result_reference", "start_char", "end_char")
+        ):
+            # Framed reads require exact bytes and metadata. Receipt-aware reads
+            # also re-check the current stored bytes on every call.
+            return None
         if self.filesystem_is_volatile and call.name in WORKSPACE_READ_TOOLS:
             return None
         entry = self._entries.get(signature)
@@ -203,6 +210,11 @@ class ActionMemo:
                 )
             return
         if call.name in BUFFER_READ_TOOLS:
+            if call.name == "buffer_slice" and any(
+                key in (call.arguments or {})
+                for key in ("child_result_reference", "start_char", "end_char")
+            ):
+                return
             self._entries.setdefault(
                 signature, _Entry(content=content, is_error=is_error, first_step=self.step)
             )

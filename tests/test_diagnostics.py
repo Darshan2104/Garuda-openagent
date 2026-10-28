@@ -60,10 +60,14 @@ async def test_edit_surfaces_syntax_error(tmp_path: Path):
     assert "Syntax check failed" in result.content
 
 
-async def test_write_surfaces_syntax_error(tmp_path: Path):
+@pytest.mark.parametrize("context", [
+    CTX,
+    ToolContext("t", "build", None, None, None, None, True, False),
+], ids=["keyword-context", "legacy-positional-context"])
+async def test_write_surfaces_syntax_error(tmp_path: Path, context):
     env = LocalEnvironment(workspace_root=tmp_path)
     result = await WriteFileTool().execute(
-        {"path": "new.py", "content": "def broken(\n"}, env, CTX
+        {"path": "new.py", "content": "def broken(\n"}, env, context
     )
     assert "Syntax check failed" in result.content
 
