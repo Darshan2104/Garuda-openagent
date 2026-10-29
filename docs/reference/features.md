@@ -8,6 +8,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
+| Bounded file pages and tails | Inspect UTF-8 ranges with bounded allocation and scan limits on local/sandbox backends | `read_file` tool: `offset`, `limit`, `tail`, `bounded` | [Bounded inspection](../use-cases/automate.md#read-a-bounded-file-page-or-tail) |
 | Packaged starters | Five goal-oriented journeys using existing roles and flows | `garuda starter list` | [Workflows](../use-cases/workflows.md) |
 | Harness modes | Run an external role in one of its harness's own permission modes, with defaults from the role's permissions | `garuda run --role coder --harness-mode workspace-write -t "…"` | [Configuration](../guides/configuration.md#a-roles-harness-mode) |
 | Codex and Claude worked example | Every packaged workflow plus custom cross-vendor flows on subscription logins | `garuda flow run cross-vendor-build -t "…"` | [Worked example](../use-cases/codex-and-claude.md) |
