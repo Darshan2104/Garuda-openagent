@@ -71,6 +71,33 @@ def _finished_session(store, session_id, *, task="do the thing", status_success=
     )
 
 
+def test_failure_evidence_preview_and_export_share_the_bounded_reader(ctx, store):
+    from garuda.core.failure_evidence import append_causal_record, causal_record
+
+    _finished_session(store, "failed-evidence", status_success=False)
+    append_causal_record(
+        store.session_dir("failed-evidence"),
+        causal_record(RuntimeError("synthetic failure"), phase="execution"),
+    )
+
+    evidence = body(call(ctx, "/api/sessions/failed-evidence/failure-evidence"))
+    preview = body(call(
+        ctx,
+        "/api/sessions/failed-evidence/diagnostics/preview",
+        query="select=causes,identities",
+    ))
+    exported = call(
+        ctx,
+        "/api/sessions/failed-evidence/diagnostics/export",
+        query="select=causes,identities",
+    )
+
+    assert evidence["original_cause"]["value"]["code"] == "runtime.unknown"
+    assert json.loads(preview["json"])["original_cause"] == evidence["original_cause"]
+    assert json.loads(exported.body)["original_cause"] == evidence["original_cause"]
+    assert exported.headers["Content-Disposition"].endswith("garuda-diagnostic.json")
+
+
 # --- health and config -------------------------------------------------------
 
 

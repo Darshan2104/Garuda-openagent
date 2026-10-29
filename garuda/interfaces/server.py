@@ -200,8 +200,6 @@ class JsonRpcServer:
                 result = await self._runtime_recover(params)
             elif method == "runtime_support":
                 result = await self._runtime_support(params)
-            elif method == "runtime_support":
-                result = await self._runtime_support(params)
             else:
                 raise ValueError(f"Unknown method: {method}")
             return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -335,7 +333,29 @@ class JsonRpcServer:
         session_id = params.get("session")
         if not session_id:
             raise ValueError("params.session is required")
-        payload = support_bundle_dict(SessionStore(), session_id)
+        store = SessionStore()
+        categories = params.get("categories")
+        if categories is not None and (
+            not isinstance(categories, list)
+            or any(not isinstance(item, str) for item in categories)
+        ):
+            raise ValueError("params.categories must be a list of category names")
+        mode = params.get("mode", "support")
+        if mode == "support":
+            payload = support_bundle_dict(store, session_id)
+        elif mode in {"preview", "export"}:
+            from garuda.core.failure_evidence import DiagnosticService
+
+            service = DiagnosticService(store)
+            preview = service.preview(session_id, categories=categories)
+            payload = preview if mode == "preview" else {
+                "session_id": preview["session_id"],
+                "json": preview["json"],
+                "bytes": preview["bytes"],
+                "digest": preview["digest"],
+            }
+        else:
+            raise ValueError("runtime_support mode must be support, preview, or export")
         payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
         return payload
 

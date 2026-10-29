@@ -64,6 +64,16 @@ with sync_playwright() as p:
     check("verification does not borrow the review", "verification: unavailable" in facts, facts)
     page.screenshot(path=str(SHOTS / "sessions-flow.png"))
 
+    page.goto(f"{BASE}#/sessions/00000000-0000-0000-0000-000000000008", wait_until="load")
+    page.wait_for_selector("#failure-evidence")
+    evidence = page.locator("#failure-evidence")
+    check("original failure remains separate from later recovery refusal",
+          "model_error" in evidence.inner_text() and "flow.quota_wait" in evidence.inner_text())
+    check("failure details are redacted and rendered as text",
+          "synthetic failure" in evidence.inner_text() and "seed-failure-secret" not in evidence.inner_text()
+          and page.locator("img[src='x']").count() == 0
+          and page.evaluate("window.__pwned === undefined"))
+
     page.goto(f"{BASE}#/sessions/{WAITING}", wait_until="load")
     page.wait_for_selector("#session-approvals")
     check("pending approval is listed", "rm -rf build" in page.locator("#session-approvals").inner_text())

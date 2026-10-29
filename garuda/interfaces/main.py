@@ -795,6 +795,17 @@ def build_parser():
     runtime_reclaim.add_argument("--session", required=True, help="Session id")
     runtime_support = runtime_sub.add_parser("support", help="Print a redacted support bundle")
     runtime_support.add_argument("--session", required=True, help="Session id")
+    runtime_support.add_argument(
+        "--select",
+        help="Comma-separated diagnostic categories: causes,identities,workspace,approvals,review,acceptance",
+    )
+    support_mode = runtime_support.add_mutually_exclusive_group()
+    support_mode.add_argument("--preview", action="store_true", help="Preview selected diagnostic JSON")
+    support_mode.add_argument("--capture", action="store_true", help="Capture a confirmed selected preview")
+    support_mode.add_argument("--export", action="store_true", help="Export selected diagnostic JSON")
+    runtime_support.add_argument(
+        "--confirm-digest", help="Exact digest returned by --preview; required by --capture"
+    )
 
     return parser
 
@@ -1719,7 +1730,14 @@ async def _run_runtime_command(args) -> int:
     store = SessionStore()
     if command in {"handoff", "resume", "reclaim", "recover", "support"}:
         try:
-            session_id = store.resolve(args.session)
+            if command == "support":
+                from garuda.core.session_records import BoundedSessionRecords
+
+                session_id = BoundedSessionRecords(
+                    store.root, byte_budget=16 * 1024 * 1024
+                ).resolve_ref(args.session)
+            else:
+                session_id = store.resolve(args.session)
         except (FileNotFoundError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
@@ -1818,7 +1836,18 @@ async def _run_runtime_command(args) -> int:
         from garuda.interfaces.runtime_cli import cmd_support_bundle
 
         try:
-            print(cmd_support_bundle(store, session_id), end="")
+            categories = [item.strip() for item in (args.select or "").split(",") if item.strip()]
+            mode = "capture" if args.capture else "preview" if args.preview else \
+                "export" if args.export else "support"
+            if mode == "capture" and (not categories or not args.confirm_digest):
+                raise ValueError("--capture requires --select and --confirm-digest")
+            print(cmd_support_bundle(
+                store,
+                session_id,
+                mode=mode,
+                categories=categories or None,
+                preview_digest=args.confirm_digest,
+            ), end="")
         except ValueError as exc:
             print(f"Error: {exc}")
             return 2

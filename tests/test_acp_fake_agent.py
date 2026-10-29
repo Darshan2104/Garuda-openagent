@@ -43,6 +43,8 @@ def test_public_profile_sets_are_pinned():
         "exit-early",
         "resume",
         "version-mismatch",
+        "remote-error",
+        "malformed-result",
         "odd-stop",
         "cancel-stop",
         "strict-v1",

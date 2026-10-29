@@ -256,6 +256,45 @@ async def test_adapter_records_retires_and_refuses_misuse(tmp_path):
         backed.record_launch_with(PreparedChildRecorder(store, "s1", "x"))
 
 
+async def test_failed_start_retains_prepared_ownership_until_cleanup_is_proved(tmp_path, monkeypatch):
+    from garuda.acp.client import AcpProcess
+    from garuda.acp.protocol import AcpProtocolError
+    from garuda.core.failure_evidence import SessionFailureEvidence
+    from garuda.runtime.recovery import PreparedChildRecorder
+
+    store = SessionStore(tmp_path / "sessions")
+    _session(store, "uncertain-start", target="fake-uncertain")
+    recorder = PreparedChildRecorder(store, "uncertain-start", "fake-uncertain")
+    runtime = AcpRuntime(
+        FAKE + ["--profile", "version-mismatch"], runtime_id="fake-uncertain",
+        persist_dir=str(store.session_dir("uncertain-start")),
+    )
+    runtime.record_launch_with(recorder)
+    real_close = AcpProcess.close
+    processes = []
+
+    async def uncertain_close(process):
+        processes.append(process)
+        raise AcpProtocolError("cleanup could not prove child exit")
+
+    monkeypatch.setattr(AcpProcess, "close", uncertain_close)
+    try:
+        with pytest.raises(AcpProtocolError, match="cleanup could not prove"):
+            await runtime.start(task="t", session_id="uncertain-start")
+        assert store.load_meta("uncertain-start")["runtime_children"][0]["state"] == "prepared"
+        projection = SessionFailureEvidence(store).project("uncertain-start")
+        assert projection["original_cause"]["value"]["code"] == "acp.protocol.version_mismatch"
+        assert projection["subsequent_failures"]["value"][0]["code"] == "cleanup.uncertain"
+        monkeypatch.setattr(AcpProcess, "close", real_close)
+        await runtime.close()
+        assert store.load_meta("uncertain-start")["runtime_children"][0]["state"] == "exited"
+    finally:
+        for process in processes:
+            await real_close(process)
+        for child in store.load_meta("uncertain-start").get("runtime_children", []):
+            recorder.exited(child["pid"])
+
+
 async def test_cancelled_start_reaps_and_retires_the_child(tmp_path):
     from garuda.runtime.recovery import _process_live
 

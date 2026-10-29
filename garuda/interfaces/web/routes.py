@@ -305,6 +305,49 @@ def _session(request: Request, ctx: DashboardContext, match) -> Response:
         return not_found(f"No session {match['sid']!r}.")
 
 
+def _diagnostic_categories(request: Request) -> list[str] | None:
+    raw = request.first("select")
+    return [item.strip() for item in raw.split(",") if item.strip()] if raw else None
+
+
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)/failure-evidence")
+def _failure_evidence(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.failure_evidence import FailureEvidenceError
+
+    try:
+        return ok(read_model.failure_evidence(ctx.store, validate_session_ref(match["sid"])))
+    except FailureEvidenceError as exc:
+        return error("evidence_unavailable", str(exc), status=409)
+    except (FileNotFoundError, ValueError):
+        return not_found(f"No session {match['sid']!r}.")
+
+
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)/diagnostics/preview")
+def _diagnostic_preview(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.failure_evidence import DiagnosticService
+
+    try:
+        return ok(DiagnosticService(ctx.store).preview(
+            validate_session_ref(match["sid"]), categories=_diagnostic_categories(request)
+        ))
+    except (FileNotFoundError, ValueError) as exc:
+        return invalid(str(exc))
+
+
+@route("GET", r"/api/sessions/(?P<sid>[^/]+)/diagnostics/export")
+def _diagnostic_export(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.core.failure_evidence import DiagnosticService
+
+    try:
+        raw = DiagnosticService(ctx.store).export(
+            validate_session_ref(match["sid"]), categories=_diagnostic_categories(request)
+        )
+        return Response(body=raw.encode("utf-8"), content_type="application/json; charset=utf-8",
+                        headers={"Content-Disposition": "attachment; filename=garuda-diagnostic.json"})
+    except (FileNotFoundError, ValueError) as exc:
+        return invalid(str(exc))
+
+
 @route("GET", r"/api/inbox")
 def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     """Pending approvals across active sessions, with the digest each answer must bind."""

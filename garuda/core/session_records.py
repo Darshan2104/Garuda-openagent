@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -15,6 +17,29 @@ MAX_RECORD_FILES = 10_000
 
 class RecordError(ValueError):
     pass
+
+
+def session_reference_digest(store, session_id: str, *, root_fd=None, session_fd=None) -> str:
+    """Opaque binding to the actual store/session directories, including aliases."""
+    session_id = validate_session_ref(session_id)
+    opened = []
+    try:
+        if root_fd is None:
+            root_fd = _directory(store, ())
+            opened.append(root_fd)
+        if session_fd is None:
+            session_fd = os.open(session_id, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                                 dir_fd=root_fd)
+            opened.append(session_fd)
+        root_info, session_info = os.fstat(root_fd), os.fstat(session_fd)
+        binding = {"reference": session_id, "store": [root_info.st_dev, root_info.st_ino],
+                   "session": [session_info.st_dev, session_info.st_ino]}
+        return hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    except OSError as exc:
+        raise RecordError("selected session reference identity is unavailable") from exc
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
 
 
 def _directory(store, parts):
@@ -77,8 +102,15 @@ def parse_json(data):
     def invalid_constant(value):
         raise ValueError(f"invalid JSON constant {value}")
 
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("nonfinite JSON number")
+        return number
+
     try:
-        result = json.loads(data, object_pairs_hook=unique, parse_constant=invalid_constant)
+        result = json.loads(data, object_pairs_hook=unique, parse_constant=invalid_constant,
+                            parse_float=finite_float)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise RecordError('record is not valid unique-key JSON') from exc
     if not isinstance(result, dict):
@@ -90,13 +122,15 @@ def read_json(store, relative):
     return parse_json(read_bytes(store, relative))
 
 
-def list_json(store, relative):
+def list_json(store, relative, *, entry_limit=MAX_RECORD_FILES):
     directory = None
     try:
         directory = _directory(store, _parts(relative))
         names = []
         with os.scandir(directory) as entries:
-            for entry in entries:
+            for index, entry in enumerate(entries):
+                if index >= entry_limit:
+                    raise RecordError("selected records exceed the directory entry budget")
                 if entry.name.endswith('.json'):
                     names.append(entry.name)
                     if len(names) > MAX_RECORD_FILES:
@@ -121,3 +155,75 @@ class ReadOnlySessions(SessionStore):
         if session_id not in self._records:
             self._records[session_id] = read_json(self, Path(session_id) / 'meta.json')
         return self._records[session_id]
+
+
+class BoundedSessionRecords(ReadOnlySessions):
+    """A read-only metadata snapshot with one shared allowance for every source."""
+
+    def __init__(self, root, *, byte_budget: int):
+        super().__init__(root)
+        self.remaining = byte_budget
+
+    def read(self, relative: Path, limit: int = MAX_RECORD_BYTES) -> bytes:
+        # Oversize detection can consume one extra 64 KiB chunk. Reserve it
+        # before reading, including failures, to keep the aggregate bound real.
+        allowance = min(limit, self.remaining - 65536)
+        if allowance <= 0:
+            raise RecordError("aggregate source read budget exhausted")
+        reserved = allowance + 65536
+        self.remaining -= reserved
+        data = read_bytes(self, relative, limit=allowance)
+        self.remaining += reserved - len(data)
+        return data
+
+    def load_meta(self, session_id):
+        session_id = validate_session_ref(session_id)
+        if session_id not in self._records:
+            self._records[session_id] = parse_json(self.read(Path(session_id) / "meta.json"))
+        return self._records[session_id]
+
+    def resolve_ref(self, reference: str) -> str:
+        """Select an id/prefix/latest without following session directory links."""
+        validate_session_ref(reference)
+        directory = None
+        names = []
+        try:
+            directory = _directory(self, ())
+            with os.scandir(directory) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= MAX_RECORD_FILES:
+                        raise RecordError("session selection exceeds its file-count budget")
+                    if entry.name == reference and not entry.is_dir(follow_symlinks=False):
+                        raise RecordError("selected session directory is not a regular directory")
+                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                        names.append(entry.name)
+        except OSError as exc:
+            raise RecordError("selected session store is unavailable") from exc
+        finally:
+            if directory is not None:
+                os.close(directory)
+        if reference != "latest":
+            matching = [name for name in names if name == reference]
+            if not matching:
+                matching = [name for name in names if name.startswith(reference)]
+            if len(matching) != 1:
+                raise RecordError("selected session reference is missing or ambiguous")
+            meta = self.load_meta(matching[0])
+            if meta.get("session_id") != matching[0]:
+                raise RecordError("selected session identity conflicts with its directory")
+            return matching[0]
+        latest = None
+        for name in names:
+            try:
+                meta = self.load_meta(name)
+            except (RecordError, ValueError) as exc:
+                if self.remaining <= 65536:
+                    raise RecordError("session selection read budget exhausted") from exc
+                continue
+            timestamp = meta.get("updated_at")
+            if meta.get("session_id") == name and isinstance(timestamp, str) \
+                    and (latest is None or timestamp > latest[0]):
+                latest = (timestamp, name)
+        if latest is None:
+            raise RecordError("no readable saved session was found")
+        return latest[1]

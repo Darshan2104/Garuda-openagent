@@ -1,5 +1,41 @@
 # Durable decisions
 
+## 2026-10-28 — Failure evidence is a bounded read projection (#360)
+
+- ACP and native execution failures retain an allowlisted causal envelope at
+  their existing owners. Remote JSON-RPC errors remain catch-compatible with
+  protocol errors but carry their remote code separately; malformed framing,
+  permission denial, confirmed quota refusal, invalid review and cleanup
+  uncertainty keep distinct codes and phases.
+- `core/failure_evidence.py` is the shared CLI, JSON-RPC and dashboard reader.
+  It uses descriptor-bound session reads, validates linked flow children and
+  project identity, labels absent/clipped/withheld fields, and never fills
+  missing historical payloads from counts or current configuration.
+- Diagnostic preview and export are read-only and grant no launch, replay,
+  provider, Git, process or workspace authority. Explicit capture binds a
+  selected category set to the preview digest and publishes only an expiring,
+  owner-private sanitized snapshot. Raw transcripts, reasoning, credentials,
+  protocol frames and arbitrary configuration values are outside the schema.
+- The read budget is shared across linked sessions and all selected sources.
+  Capture serializes revalidation/retention/publication under a directory lock
+  and uses verified no-follow descriptors rather than reopening session paths.
+  Failed ACP cleanup retains process ownership until actual exit is proved.
+- Diagnostic selection also bounds `latest`/prefix resolution. Exported session
+  references and source labels are redacted; captures retain an opaque session
+  reference digest so redaction does not weaken their binding.
+- Confirmation commits the store/session directory reference, selected categories
+  and exact preview JSON together. Causal identity fields preserve their original
+  withholding/clipping states rather than converting bounded text into exact IDs.
+- Sparse native failed outcomes are observations, not synthesized explanations.
+  Runtime and workspace references retain per-field coverage. Reasoning-marked
+  support subtrees are withheld in full, and JSON reads reject numeric overflow.
+  Capture bounds directory enumeration and reconciles abandoned private staging
+  files under its existing lock before publishing another snapshot.
+- The shared permission response owner retains effective denials for SDK and
+  handler callers alike. Response ID types are validated before pending lookup,
+  so Python boolean/float key aliases cannot become reported remote errors.
+  Execution references preserve the writer's clipping/withholding provenance.
+
 ## 2026-10-21 — Shell parsing uncertainty uses approval without weakening refusals
 
 Smart command and operand screening checks both original text and a form with

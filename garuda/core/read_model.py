@@ -199,7 +199,22 @@ def session(store, session_id: str, *, queue=None) -> dict:
     consults = conversation.consult_rows(store, session_id, meta)
     row["consults"] = {"summary": view.summary(consults), "line": view.line(consults),
                        "entries": consults}
+    try:
+        row["failure_evidence"] = failure_evidence(store, session_id)
+    except ValueError as exc:
+        from garuda.core.failure_evidence import unavailable_projection
+
+        row["failure_evidence"] = unavailable_projection(str(exc))
     return row
+
+
+def failure_evidence(store, session_id: str, *, expected_project_id: str | None = None) -> dict:
+    """The one bounded causal projection used by every public interface."""
+    from garuda.core.failure_evidence import SessionFailureEvidence
+
+    return SessionFailureEvidence(store).project(
+        session_id, expected_project_id=expected_project_id
+    )
 
 
 def starter_result(store, session_id: str, *, limit: int = 50, offset: int = 0) -> dict:

@@ -44,6 +44,83 @@ _TERMINAL_REASONS = {
     "failed": "failed",
 }
 
+def _evidence_scalar(value: Any, statuses: dict, key: str) -> Any:
+    if not isinstance(value, str):
+        return value if isinstance(value, (int, float, bool, type(None))) else None
+    from garuda.core.failure_evidence import identity_evidence
+
+    selected = identity_evidence(value)
+    if selected["status"] != "present":
+        statuses[key] = selected["status"]
+        return None  # Partial identifiers must never masquerade as exact names.
+    return selected["value"]
+
+
+def evidence_payload(event: RuntimeEvent) -> dict[str, Any]:
+    """Allowlisted ACP event metadata safe for the durable diagnostic trail.
+
+    Message/thought text, tool content, arguments, diffs and arbitrary protocol
+    metadata are intentionally absent.  This is evidence selection, not a raw
+    transcript export.
+    """
+    statuses = {}
+    allowed: dict[RuntimeEventKind, tuple[str, ...]] = {
+        RuntimeEventKind.OUTBOUND_PROMPT: (
+            "digest", "chars", "kind", "status", "agent_segment"
+        ),
+        RuntimeEventKind.TOOL_CALL: ("tool_call_id", "kind", "status"),
+        RuntimeEventKind.TOOL_RESULT: ("tool_call_id", "status"),
+        RuntimeEventKind.APPROVAL_REQUEST: ("approval_id", "tool_call_id"),
+        RuntimeEventKind.LIFECYCLE: ("state", "stop_reason", "reason"),
+        RuntimeEventKind.ERROR: (),
+    }
+    if event.kind is RuntimeEventKind.MESSAGE \
+            and event.payload.get("acp_update") == "usage_update":
+        usage = event.payload.get("usage")
+        if not isinstance(usage, dict):
+            return {}
+        selected_usage = {
+            key: safe for key in (
+                "context_used", "context_size", "cost_usd", "model"
+            ) if (safe := _evidence_scalar(usage.get(key), statuses, "usage." + key)) is not None
+        }
+        prior_status = event.payload.get("evidence_status")
+        if isinstance(prior_status, dict) and isinstance(prior_status.get("usage.model"), str) \
+                and prior_status["usage.model"] in {"clipped", "withheld"}:
+            statuses["usage.model"] = prior_status["usage.model"]
+        return {"acp_update": "usage_update", "usage": selected_usage,
+                **({"evidence_status": statuses} if statuses else {})}
+    keys = allowed.get(event.kind)
+    if keys is None:
+        return {}
+    selected = {
+        key: safe
+        for key in keys
+        if key != "agent_segment"
+        and key in event.payload
+        and (safe := _evidence_scalar(event.payload[key], statuses, key)) is not None
+    }
+    # The outbound agent segment is already a bounded identity mapping.  Keep
+    # only its public scalar identity fields rather than arbitrary nested data.
+    segment = event.payload.get("agent_segment")
+    if isinstance(segment, dict):
+        selected["agent_segment"] = {
+            key: value for key in (
+                "id", "name", "digest", "runtime", "kind", "native_session_id",
+                "reported_agent", "reported_version",
+            ) if (value := _evidence_scalar(segment.get(key), statuses, "agent_segment." + key)) is not None
+        }
+        tenure = segment.get("runtime_tenure")
+        if isinstance(tenure, dict) and type(tenure.get("index")) is int and tenure["index"] >= 0:
+            selected["agent_segment"]["runtime_tenure"] = {
+                key: value for key in ("index", "runtime_id", "kind", "native_session_id")
+                if (value := _evidence_scalar(tenure.get(key), statuses,
+                                              "agent_segment.runtime_tenure." + key)) is not None
+            }
+    if statuses:
+        selected["evidence_status"] = statuses
+    return selected
+
 
 class AcpNormalizer:
     """Stateful per-session normalizer. One instance, one session."""
@@ -243,10 +320,14 @@ class AcpNormalizer:
             usage["cost_usd"] = float(cost["amount"])
         meta = update.get("_meta")
         model = meta.get("_claude/model") if isinstance(meta, dict) else None
+        statuses = {}
         if isinstance(model, str) and 0 < len(model) <= 128:
             usage["model"] = model
+        elif isinstance(model, str) and model:
+            statuses["usage.model"] = "withheld"
         return [self._emit(RuntimeEventKind.MESSAGE,
-                           {"text": "", "acp_update": "usage_update", "usage": usage})]
+                           {"text": "", "acp_update": "usage_update", "usage": usage,
+                            **({"evidence_status": statuses} if statuses else {})})]
 
     def _on_unknown(self, update: dict[str, Any]) -> list[RuntimeEvent]:
         # `plan`, `available_commands_update`, `current_mode_update`,

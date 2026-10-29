@@ -34,6 +34,19 @@ class AcpProtocolError(AcpError):
     """Framing, JSON, or envelope violated the contract."""
 
 
+class AcpRemoteError(AcpProtocolError):
+    """The peer returned a JSON-RPC error response.
+
+    It remains an ``AcpProtocolError`` for catch compatibility, while carrying
+    the remote code separately so evidence never confuses it with malformed
+    framing or a locally detected protocol violation.
+    """
+
+    def __init__(self, message: str, *, remote_code: int | None):
+        super().__init__(message)
+        self.remote_code = remote_code
+
+
 class AcpExitError(AcpError):
     """The agent process exited unexpectedly. Carries code + stderr tail."""
 

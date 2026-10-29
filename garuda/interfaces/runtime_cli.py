@@ -570,8 +570,34 @@ def support_bundle_dict(store, session_id: str) -> dict[str, Any]:
     return build_support_bundle(session_dir, garuda_version=_version)
 
 
-def cmd_support_bundle(store, session_id: str) -> str:
-    return json.dumps(support_bundle_dict(store, session_id), indent=2)
+def cmd_support_bundle(
+    store,
+    session_id: str,
+    *,
+    mode: str = "support",
+    categories: list[str] | None = None,
+    preview_digest: str | None = None,
+) -> str:
+    """Render support, preview, capture receipt, or selected JSON export."""
+    if mode == "support":
+        payload: Any = support_bundle_dict(store, session_id)
+    else:
+        from garuda.core.failure_evidence import DiagnosticService
+
+        service = DiagnosticService(store)
+        if mode == "preview":
+            payload = service.preview(session_id, categories=categories)
+        elif mode == "capture":
+            payload = service.capture(
+                session_id,
+                categories=categories or [],
+                preview_digest=preview_digest or "",
+            )
+        elif mode == "export":
+            return service.export(session_id, categories=categories) + "\n"
+        else:
+            raise ValueError(f"unknown diagnostic mode {mode!r}")
+    return json.dumps(payload, indent=2) + "\n"
 
 
 def recover_dict(store, session_id: str) -> dict[str, Any]:

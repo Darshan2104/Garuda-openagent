@@ -1,6 +1,6 @@
 # Roadmap: ACP orchestration and unified context
 
-**Status:** P0, P1 and P2 delivered; P3 foreground starts support worktrees, owned read-only ACP and fallback probes; background starts remain
+**Status:** P0, P1 and P2 delivered; bounded causal failure evidence and selected diagnostic export delivered; P3 foreground starts support worktrees, owned read-only ACP and fallback probes; background starts remain
 
 **Owner:** Garuda maintainers
 **Planning date:** 2026-08-31
@@ -113,6 +113,9 @@ ACP negotiation assigns each tool family to exactly one owner. Garuda brokers ap
 6. First-party configuration/discovery for Claude ACP, Codex ACP, Cursor Agent, OpenCode, Pi, and Goose; no automatic installation or secret import.
 7. Unified UI/CLI/SDK runtime selection, health, switch preview, approval cards, normalized trace, and recovery controls.
 8. Reliability, observability, and benchmark/conformance coverage across fake agents and opt-in real harnesses.
+   Runtime support includes a versioned bounded failure projection shared by
+   CLI, JSON-RPC and dashboard, plus explicit selected preview/capture/export.
+   Sparse historical ACP trails remain sparse; no transcript migration occurs.
 9. P1 routing scope is initial runtime selection (explicit > profile > deterministic rule > optional classifier > default) plus explicit transactional handoff at a safe boundary. Autonomous mid-run policy routing stays in P2 and must not block P1 initial-only routing.
 
 ### P2 — platform expansion
