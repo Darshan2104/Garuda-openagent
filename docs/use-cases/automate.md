@@ -422,3 +422,41 @@ garuda serve --workspace . --agent build --allow-agent build --allow-agent revie
 
 **Next:** use external harnesses, handoffs, and routing in
 [Level 7 · Advanced](advanced.md).
+
+## Read a bounded file page or tail
+
+For deterministic inspection without a model call:
+
+```python
+import asyncio
+from garuda.tools.files import ReadFileTool
+from garuda.tools.protocol import ToolContext
+from garuda.workspace.local import LocalEnvironment
+
+async def inspect():
+    tool = ReadFileTool()
+    env = LocalEnvironment(".")
+    ctx = ToolContext(session_id="inspection")
+    page = await tool.execute(
+        {"path": "README.md", "offset": 20, "limit": 10, "bounded": True}, env, ctx)
+    tail = await tool.execute(
+        {"path": "README.md", "tail": True, "limit": 5}, env, ctx)
+    print(page.content, tail.content)
+
+asyncio.run(inspect())
+```
+
+Local and sandbox reads scan UTF-8 in 8 KiB chunks, retain at most 2000 lines
+and 2000 displayed characters per line, and stop at a 64 MiB scan ceiling.
+Offsets scan the preceding bytes; tail scans to EOF within that ceiling. This
+bounds allocation, but does not promise constant-time late pages or tail access.
+A scan-ceiling error returns no partial page. Counts are exact only after EOF;
+otherwise `total_lines` is unknown. Concurrent changes are not a file snapshot.
+Newline handling retains existing `str.splitlines()` semantics.
+
+Docker and remote backends explicitly do not support bounded text reads yet.
+`bounded=True` or `tail=True` refuses there; ordinary reads keep their existing
+whole-file compatibility path. Custom environments can implement the optional
+`BoundedTextEnvironment` protocol from `garuda.workspace.text_reads`. This
+capability must use the backend's existing path policy; it grants no new file
+access. Existing `read_file()` callers keep their original contract.

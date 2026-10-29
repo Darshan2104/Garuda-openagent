@@ -793,3 +793,8 @@ issued child; ordinary capacity loans still refuse queue slots. The coordinator
 checks completed retained loan ownership before returning capacity. Background
 children install their session broker with an external file answerer; native and
 ACP requests can outlive the server and retain existing timeout/audit delivery.
+
+`workspace/text_reads.py` owns the optional bounded UTF-8 range/tail protocol,
+page evidence, and chunked local scanner. `LocalEnvironment` owns asynchronous
+cancellation settlement; sandbox delegates after checking its ordinary real-path
+policy. `tools/files.py` renders bounded pages or the explicit legacy fallback.

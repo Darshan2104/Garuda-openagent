@@ -558,3 +558,14 @@ ACP accepts appended instructions only as labelled task context.
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live
   Docker and Seatbelt checks are opt-in so CI stays deterministic.
+
+## Bounded workspace text inspection
+
+`workspace/text_reads.py` defines the optional `BoundedTextEnvironment` capability
+and immutable `TextPage` result. Local reads resolve through the ordinary path
+policy and settle their worker thread before propagating cancellation; sandbox
+reads additionally keep the existing real-path check. Docker/remote adapters
+explicitly refuse this capability. The file tool may use their legacy whole-file
+read only when bounded I/O was not required. Unknown totals are never inferred
+from a displayed page. See [bounded inspection](use-cases/automate.md#read-a-bounded-file-page-or-tail)
+for encoding, scan/output limits and supported backends.

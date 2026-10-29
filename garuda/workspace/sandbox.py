@@ -37,6 +37,7 @@ from garuda.workspace.sandbox_policy import (
     detect_sandbox_backend,
     to_shell_string,
 )
+from garuda.workspace.text_reads import TextPage
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,11 @@ class SandboxEnvironment:
     async def read_file(self, path: str) -> str:
         self._confine_real_path(path)
         return await self._inner.read_file(path)
+
+    async def read_text_page(self, path: str, *, offset: int = 1,
+                             limit: int = 2000, tail: bool = False) -> TextPage:
+        self._confine_real_path(path)
+        return await self._inner.read_text_page(path, offset=offset, limit=limit, tail=tail)
 
     async def read_bytes(self, path: str) -> bytes:
         self._confine_real_path(path)

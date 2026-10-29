@@ -7,6 +7,8 @@ class WorkspaceAccessDenied(PermissionError):
     """A workspace policy refused access, independently of OS file permissions."""
 
 
+# Optional bounded UTF-8 range/tail capability: workspace.text_reads.BoundedTextEnvironment.
+# It is separate so existing Environment implementations remain compatible.
 @runtime_checkable
 class Environment(Protocol):
     async def execute(

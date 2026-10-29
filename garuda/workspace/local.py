@@ -9,6 +9,7 @@ from pathlib import Path
 from garuda.types import ExecResult
 from garuda.workspace.paths import resolve_workspace_path
 from garuda.workspace.settlement import settle_task
+from garuda.workspace.text_reads import TextPage
 
 
 def _kill_process_tree(process: "asyncio.subprocess.Process") -> None:
@@ -180,6 +181,28 @@ class LocalEnvironment:
     async def read_file(self, path: str) -> str:
         target = self._resolve_path(path)
         return await asyncio.to_thread(target.read_text, encoding="utf-8")
+
+    async def read_text_page(self, path: str, *, offset: int = 1,
+                             limit: int = 2000, tail: bool = False) -> TextPage:
+        import threading
+
+        from garuda.workspace.text_reads import read_local_page
+
+        target = self._resolve_path(path)
+        cancelled = threading.Event()
+        task = asyncio.create_task(asyncio.to_thread(
+            read_local_page, target, offset, limit, tail, cancelled))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError as cancellation:
+            cancelled.set()
+            try:
+                await settle_task(task)
+            except InterruptedError:
+                pass
+            except Exception as exc:
+                raise cancellation from exc
+            raise
 
     async def read_bytes(self, path: str) -> bytes:
         target = self._resolve_path(path)
