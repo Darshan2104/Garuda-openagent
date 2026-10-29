@@ -171,7 +171,13 @@ garuda runtime support --session latest
 | `recover` | Classifies interrupted state as `resumable`, `rolled_back`, or `external`. An `external` session refuses native resume and another handoff while the target may still be acting |
 | `reclaim` | Returns ownership to native. Refuses while a workspace lease, a live recorded child, or an active target state says the harness may still be running. It repairs ownership; it does not roll back external changes |
 | `resume` | Continues a native session through the normal run lifecycle |
-| `support` | Prints a redacted bundle (runtime lanes, kind tallies, timing metrics, scrubbed metadata) without raw event payloads |
+| `support` | Prints a redacted bundle with the bounded causal projection, runtime lanes, kind tallies and timing metrics. `--preview`, digest-confirmed `--capture`, and `--export` select diagnostic categories without raw transcripts |
+
+ACP remote errors, malformed protocol, permission denial and cleanup uncertainty
+retain distinct causal codes for new sessions. A later quota recovery refusal is
+shown beside the original failure when both records exist. Historical trails
+whose payloads were never saved remain explicitly unavailable. Inspection and
+export never launch a harness or query its login/quota state.
 
 ## Dashboard, SDK, and service surfaces
 

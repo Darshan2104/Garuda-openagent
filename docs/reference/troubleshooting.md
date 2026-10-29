@@ -387,3 +387,16 @@ Generate a redacted support bundle and attach it to an
 ```bash
 garuda runtime support --session latest
 ```
+
+For a smaller attachment, preview selected categories first and inspect the
+exact JSON before exporting it:
+
+```bash
+garuda runtime support --session latest --select causes,identities,review,acceptance --preview
+garuda runtime support --session latest --select causes,identities,review,acceptance --export > diagnostic.json
+```
+
+`unavailable` means the selected session never retained that fact or its bounded
+record could not be read. It is not evidence that the event did not happen.
+`clipped` and `withheld` are similarly explicit; support output never fills
+those gaps with a transcript, current configuration, or a provider probe.

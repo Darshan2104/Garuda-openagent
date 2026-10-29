@@ -239,8 +239,31 @@ session reload only on adapter versions where that was proven; otherwise it
 also starts a linked session from the brief. A session whose owner is still
 running refuses.
 
-Need help from someone else? `garuda runtime support --session latest` prints a
-redacted diagnostic bundle without raw event payloads.
+Need help from someone else? The default command prints a redacted diagnostic
+bundle with a versioned failure projection:
+
+```bash
+garuda runtime support --session latest
+garuda runtime support --session latest \
+  --select causes,identities,review,acceptance --preview
+# Review the exact JSON and copy its digest, then capture only if wanted:
+garuda runtime support --session latest \
+  --select causes,identities,review,acceptance \
+  --capture --confirm-digest DIGEST_FROM_PREVIEW
+garuda runtime support --session latest \
+  --select causes,identities,review,acceptance --export > diagnostic.json
+```
+
+Preview and export only read the selected session. They do not probe a
+provider, inspect credentials, run Git, replay work, repair records or prune
+snapshots. Capture revalidates the preview digest and publishes an owner-private
+snapshot. A session keeps at most eight snapshots and 2 MiB for seven days.
+Capture removes abandoned private staging files under its lock and refuses a
+directory with more than 64 entries or unsupported files. Inspection reports a
+sparse recorded failure separately from an unavailable explanation.
+Raw transcripts, reasoning, tool arguments, protocol frames and vendor auth are
+outside the schema. Older sessions can therefore show `unavailable`; Garuda
+does not infer a cause from event counts or a later quota refusal.
 
 ## Route tasks to runtimes automatically
 

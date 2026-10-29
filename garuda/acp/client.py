@@ -35,6 +35,7 @@ from garuda.acp.protocol import (
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
+    AcpRemoteError,
     AcpTimeoutError,
     decode_frame,
     encode_frame,
@@ -292,6 +293,22 @@ class AcpProcess:
 
     def _route(self, message: dict[str, Any]) -> None:
         if "id" in message and ("result" in message or "error" in message):
+            # Python bool/float keys can alias our integer request IDs. Only
+            # exact protocol ID types may reach the pending-request mapping.
+            if type(message["id"]) not in (int, str):
+                self._on_transport_error(AcpProtocolError("malformed JSON-RPC response id"))
+                return
+            response_error = None
+            if "error" in message:
+                error = message["error"]
+                if ("result" in message or not isinstance(error, dict)
+                        or type(error.get("code")) is not int
+                        or not isinstance(error.get("message"), str)):
+                    self._on_transport_error(AcpProtocolError("malformed JSON-RPC error response"))
+                    return
+                response_error = AcpRemoteError(
+                    f"agent error {error['code']}: {error['message']}", remote_code=error["code"]
+                )
             future = self._pending.pop(message["id"], None)
             if future is not None and not future.done():
                 # Resolve only after the current read callback returns. An
@@ -300,15 +317,12 @@ class AcpProcess:
                 # that notification is routed, making drain_notifications()
                 # timing-dependent across event-loop implementations.
                 loop = asyncio.get_running_loop()
-                if "error" in message:
-                    error = message["error"] or {}
+                if response_error is not None:
                     loop.call_soon(
                         self._settle_future,
                         future,
                         _MISSING,
-                        AcpProtocolError(
-                            f"agent error {error.get('code')}: {error.get('message')}"
-                        ),
+                        response_error,
                     )
                 else:
                     loop.call_soon(

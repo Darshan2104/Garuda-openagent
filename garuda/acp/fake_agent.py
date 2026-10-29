@@ -61,6 +61,8 @@ BASE_PROFILES = frozenset(
         "exit-early",
         "resume",
         "version-mismatch",
+        "remote-error",
+        "malformed-result",
         "odd-stop",
         "cancel-stop",
         "strict-v1",
@@ -290,9 +292,14 @@ def _handle_prompt(
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
-    if profile == "malformed":
+    if profile == "malformed-result":
+        _result(call_id, {"content": "<thin\x1b[0mking>private protocol thought</thinking>"})
+    elif profile == "malformed":
         sys.stdout.buffer.write(b"not-json\n")
         sys.stdout.buffer.flush()
+    elif profile == "remote-error":
+        _send({"jsonrpc": "2.0", "id": call_id,
+               "error": {"code": -32603, "message": "synthetic internal failure"}})
     elif profile == "slow":
         import time
 

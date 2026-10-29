@@ -789,3 +789,42 @@ async def test_shared_acp_launch_binds_the_compiled_role_and_complete_wire_reque
     assert segment["runtime"] == "fakeacp" and segment["kind"] == "acp_execution"
     assert segment["prompts"] == [{"digest": hashlib.sha256(wire_text.encode()).hexdigest(),
                                     "chars": len(wire_text)}]
+
+
+@pytest.mark.parametrize("reference", ["diagnostic-cli", "latest"])
+def test_selected_diagnostics_use_the_public_cli_without_execution_setup(tmp_path, monkeypatch, capsys, reference):
+    from garuda.core.events import EventStore, EventType
+    from garuda.core.failure_evidence import DIAGNOSTIC_DIR
+
+    store = SessionStore(tmp_path / "sessions")
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    store.begin("diagnostic-cli", task="not exported", model="m", agent="a", workspace=str(tmp_path))
+    foreign = SessionStore(tmp_path / "foreign")
+    foreign.begin("foreign", task="t", model="m", agent="a", workspace=str(tmp_path / "other"))
+    foreign.update_meta("foreign", {"updated_at": "9999-01-01"})
+    (store.root / "foreign").symlink_to(foreign.session_dir("foreign"), target_is_directory=True)
+    EventStore(session_id="diagnostic-cli", persist_path=store.events_path("diagnostic-cli")).append(
+        EventType.SESSION_END,
+        {"success": False, "reason": "model_error", "error": "token=cli-secret failed safely"},
+    )
+    def no_execution_setup(*_args, **_kwargs):
+        raise AssertionError("diagnostic inspection must not configure runtimes or models")
+
+    monkeypatch.setattr("garuda.interfaces.main._configured_catalog", no_execution_setup)
+    monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", no_execution_setup)
+    session_dir = store.session_dir("diagnostic-cli")
+    before = {p.relative_to(session_dir): p.read_bytes() for p in session_dir.rglob("*") if p.is_file()}
+    args = ("runtime", "support", "--session", reference, "--select", "causes")
+    code, text = _main(monkeypatch, capsys, *args, "--preview")
+    assert code == 0
+    preview = json.loads(text)
+    code, text = _main(monkeypatch, capsys, *args, "--export")
+    assert code == 0 and json.loads(text) == json.loads(preview["json"])
+    assert "cli-secret" not in text and "not exported" not in text
+    assert before == {p.relative_to(session_dir): p.read_bytes()
+                      for p in session_dir.rglob("*") if p.is_file()}
+    code, text = _main(monkeypatch, capsys, *args, "--capture", "--confirm-digest", preview["digest"])
+    assert code == 0
+    capture = json.loads(text)
+    snapshot = session_dir / DIAGNOSTIC_DIR / (capture["snapshot_id"] + ".json")
+    assert json.loads(snapshot.read_text())["preview"]["json"] == preview["json"]

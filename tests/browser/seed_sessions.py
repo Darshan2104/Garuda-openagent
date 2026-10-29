@@ -37,10 +37,20 @@ HOSTILE = '"><img src=x onerror="window.__pwned=1">'
 
 
 def seed(root: Path, workspace: str) -> dict:
+    from garuda.core.events import EventStore, EventType
+
     store = SessionStore(root)
     for name, sid in IDS.items():
         store.begin(sid, task=f"task {name}", model="m/x", agent="build", workspace=workspace,
                     name=f"{name}-session")
+    EventStore(session_id=IDS["failed"], persist_path=store.events_path(IDS["failed"])).append(
+        EventType.SESSION_END,
+        {"success": False, "reason": "model_error",
+         "error": "synthetic failure " + HOSTILE + " token=seed-failure-secret"},
+    )
+    store.update_meta(IDS["failed"], {"flow_stop": {
+        "code": "flow.quota_wait", "message": "later recovery refusal",
+    }})
     store.finish(IDS["done"], AgentResult(success=True, final_message="ok", messages=[], turns=2,
                                           metadata={"completion_gate": {"verifier": True}}))
     store.update_meta(IDS["queued"], {"status": "queued", "state": session_state.queued(),
@@ -85,7 +95,6 @@ def seed(root: Path, workspace: str) -> dict:
                                             turns=1, metadata={}))
     # a conversation with several kinds of calls and hostile names, through the production
     # writers: an event store with the ledger observer attached
-    from garuda.core.events import EventStore, EventType
     from garuda.observability import usage as usage_ledger
 
     earlier = EventStore(IDS["done"], persist_path=store.events_path(IDS["done"]))

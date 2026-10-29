@@ -46,6 +46,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Capacity | At most N runs per runtime; the rest queue | `capacity:` in `~/.agent/settings.yaml` | [Level 4](../use-cases/parallel.md#limit-how-many-runs-happen-at-once) |
 | Approvals from elsewhere | Answer a waiting prompt from another terminal | `garuda approvals answer latest ID --allow` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
 | Trajectories | Export a run's events | `garuda run --trajectory run.jsonl -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
+| Failure evidence | Inspect original and later failures with explicit coverage; preview/capture/export selected sanitized diagnostics | `garuda runtime support --session latest --select causes,identities --preview` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 
 ## Agents and project knowledge
 

@@ -130,8 +130,8 @@ class AcpRuntime:
         self._agent_session_id: str | None = None
         self._turn = 0
         self._events: list[RuntimeEvent] = []
-        # approval_id -> (JSON-RPC request id, offered options)
-        self._pending_approvals: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
+        # approval_id -> (JSON-RPC request id, offered options, action)
+        self._pending_approvals: dict[str, tuple[Any, list[dict[str, Any]], str]] = {}
         self._answer_tasks: set[asyncio.Task] = set()
         self._quota: dict[str, Any] | None = None
         self._consult_host = None
@@ -148,6 +148,9 @@ class AcpRuntime:
         means no tool; it never fails the session."""
         info = handshake.get("agentInfo")
         self._agent_info = info if isinstance(info, dict) else {}
+        for source, target in (("name", "reported_agent"), ("version", "reported_version")):
+            if isinstance(self._agent_info.get(source), str):
+                self._agent_segment[target] = self._agent_info[source]
         if self._consult_host is None:
             return []
         try:
@@ -231,6 +234,7 @@ class AcpRuntime:
                 payload=dict(payload or {}),
             )
         )
+        self._persist(self._events[-1])
 
     def _absorb(self, normalized: list[RuntimeEvent]) -> None:
         for event in normalized:
@@ -246,10 +250,12 @@ class AcpRuntime:
             self._persist(self._events[-1])
 
     def _persist(self, event: RuntimeEvent) -> None:
-        """Append normalized external events with their immutable ACP session id."""
+        """Append selected normalized metadata, never ACP transcript content."""
         if self._persist_dir is None:
             return
         try:
+            from garuda.acp.normalize import evidence_payload
+
             path = Path(self._persist_dir) / "acp-events.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as handle:
@@ -261,8 +267,7 @@ class AcpRuntime:
                             "session_id": event.session_id,
                             "turn": event.turn,
                             "seq": event.seq,
-                            **({"payload": event.payload}
-                               if event.kind is RuntimeEventKind.OUTBOUND_PROMPT else {}),
+                            **({"payload": selected} if (selected := evidence_payload(event)) else {}),
                         },
                         default=str,
                     )
@@ -271,6 +276,71 @@ class AcpRuntime:
         except OSError:
             # Observability must not turn a running external agent into a failure.
             return
+
+    def _record_failure(
+        self,
+        exc: BaseException,
+        *,
+        phase: str,
+        kind: str = "execution_failure",
+        code: str | None = None,
+        boundary: str | None = None,
+    ) -> None:
+        """Best-effort causal evidence; it can never replace ``exc`` or outcome."""
+        if self._persist_dir is None:
+            return
+        try:
+            from garuda.core.failure_evidence import append_causal_record, causal_record
+
+            append_causal_record(
+                self._persist_dir,
+                causal_record(
+                    exc,
+                    phase=phase,
+                    runtime_id=self._runtime_id,
+                    adapter_version=self._agent_info.get("version"),
+                    reported_agent=self._agent_info.get("name"),
+                    protocol_version=self.version,
+                    kind=kind,
+                    code=code,
+                    boundary=boundary,
+                ),
+            )
+        except Exception:
+            logger.debug("Could not retain ACP causal evidence", exc_info=True)
+
+    async def _settle_failed_start(self, process: AcpProcess) -> Exception | None:
+        """Close startup resources while retaining any cleanup uncertainty."""
+        cleanup_error: Exception | None = None
+        try:
+            await process.close()
+        except Exception as exc:
+            # Preserve the actual process handle and prepared ownership so a
+            # later close/recovery can prove cleanup rather than assume it.
+            self._process = process
+            cleanup_error = exc
+            self._record_failure(
+                exc,
+                phase="cleanup",
+                kind="cleanup_uncertainty",
+                code="cleanup.uncertain",
+                boundary="agent-process",
+            )
+        try:
+            await self._close_consult()
+        except Exception as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+            self._record_failure(
+                exc,
+                phase="cleanup",
+                kind="cleanup_uncertainty",
+                code="cleanup.uncertain",
+                boundary="consult-host",
+            )
+        if self._process is not process:
+            self._retire_prepared_child()
+        return cleanup_error
 
     async def start(self, *, task: str, session_id: str | None = None) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:
@@ -311,27 +381,29 @@ class AcpRuntime:
                 self._persist_identity(process)
         except AcpProtocolError as exc:
             self._note_error(exc)
-            await process.close()
-            await self._close_consult()
-            self._retire_prepared_child()
+            self._record_failure(exc, phase="startup")
+            cleanup_error = await self._settle_failed_start(process)
             self._move(LifecycleState.FAILED)
+            if cleanup_error is not None:
+                raise cleanup_error from exc
             if "version mismatch" in str(exc) and self._setup_hint:
                 raise AcpProtocolError(f"{exc} Upgrade the adapter: {self._setup_hint}") from exc
             raise
         except Exception as exc:
             self._note_error(exc)
-            await process.close()
-            await self._close_consult()
-            self._retire_prepared_child()
+            self._record_failure(exc, phase="startup")
+            cleanup_error = await self._settle_failed_start(process)
             self._move(LifecycleState.FAILED)
+            if cleanup_error is not None:
+                raise cleanup_error from exc
             raise
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             # A cancelled start must not leave a launched child running with
             # no runtime that owns it: reap it, retire it, then propagate.
-            await process.close()
-            await self._close_consult()
-            self._retire_prepared_child()
+            cleanup_error = await self._settle_failed_start(process)
             self._move(LifecycleState.FAILED)
+            if cleanup_error is not None:
+                raise cleanup_error from cancelled
             raise
         self._process = process
         self._normalizer = AcpNormalizer(self._agent_session_id or self._garuda_session_id)
@@ -494,10 +566,11 @@ class AcpRuntime:
         except BaseException as exc:
             if isinstance(exc, Exception):
                 self._note_error(exc)
-            await process.close()
-            await self._close_consult()
-            self._retire_prepared_child()
+                self._record_failure(exc, phase="resume")
+            cleanup_error = await self._settle_failed_start(process)
             self._move(LifecycleState.FAILED)
+            if cleanup_error is not None:
+                raise cleanup_error from exc
             raise
         self._process = process
         self._normalizer = AcpNormalizer(self._agent_session_id)
@@ -550,7 +623,6 @@ class AcpRuntime:
             "agent_segment": {**self._agent_segment,
                               "native_session_id": self._agent_session_id},
         })
-        self._persist(self._events[-1])
 
     async def prompt(self, text: str, *, timeout: float | None = None) -> int:
         if self._process is None or self._normalizer is None:
@@ -579,11 +651,12 @@ class AcpRuntime:
                     result = await self._drain_until_done(prompt_task)
         except TimeoutError as exc:
             prompt_task.cancel()
+            timeout_error = AcpTimeoutError("prompt exceeded its deadline")
+            self._note_error(timeout_error)
+            self._record_failure(timeout_error, phase="prompt")
             await self._close_process()
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed", "reason": "timeout"})
             self._move(LifecycleState.FAILED)
-            timeout_error = AcpTimeoutError("prompt exceeded its deadline")
-            self._note_error(timeout_error)
             raise timeout_error from exc
         except AcpCancelledError:
             self._finish_turn("cancelled")
@@ -594,6 +667,7 @@ class AcpRuntime:
             raise
         except AcpError as exc:
             self._note_error(exc)
+            self._record_failure(exc, phase="prompt")
             self._finish_turn("failed", detail=str(exc))
             await self._close_process()
             self._move(LifecycleState.FAILED)
@@ -601,13 +675,14 @@ class AcpRuntime:
         stop = result.get("stopReason") if isinstance(result, dict) else None
         try:
             if not isinstance(stop, str):
-                raise AcpProtocolError(f"session/prompt returned no stopReason: {result!r}")
+                raise AcpProtocolError("session/prompt returned no valid stopReason")
             closing = self._normalizer.finish(stop)
         except AcpProtocolError as exc:
             # An unknown stop reason or an orphaned tool_call_update means the
             # trail cannot be closed truthfully: fail and reap, never stay
             # RUNNING with a live process.
             self._emit(RuntimeEventKind.ERROR, {"message": str(exc)})
+            self._record_failure(exc, phase="prompt-normalization")
             await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
@@ -617,10 +692,17 @@ class AcpRuntime:
             # was answered `cancelled`). The normalizer has closed the
             # session, so the runtime closes too instead of idling on a trail
             # that can take no further turn.
+            denied = ", ".join(dict.fromkeys(self._denied))
+            if denied:
+                self._record_failure(
+                    PermissionError("Garuda denied a requested action"),
+                    phase="approval",
+                    code="permission.denied",
+                    boundary="permission-broker",
+                )
             await self._close_process()
             self._move(LifecycleState.CANCELLING)
             self._move(LifecycleState.CLOSED)
-            denied = ", ".join(dict.fromkeys(self._denied))
             raise AcpCancelledError("agent ended the turn cancelled" + (
                 f" after Garuda denied: {denied}" if denied else ""))
         self._move(LifecycleState.IDLE)
@@ -685,7 +767,8 @@ class AcpRuntime:
                 error={"code": _INVALID_PARAMS, "message": "malformed permission request"},
             )
             return
-        self._pending_approvals[approval_id] = (request_id, options)
+        action = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")
+        self._pending_approvals[approval_id] = (request_id, options, action)
         if self._consult_host is not None and self._consult_host.allows_permission(
                 params, self._agent_info, agent_session_id=self._agent_session_id):
             try:
@@ -694,7 +777,6 @@ class AcpRuntime:
                 return  # already answered, cancelled, or the process is gone
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "consult_tool_allowed"})
             return
-        action = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")
         self._emit(
             RuntimeEventKind.APPROVAL_REQUEST,
             {
@@ -732,8 +814,6 @@ class AcpRuntime:
         except (RuntimeProtocolError, RuntimeStartError, AcpError):
             # Already answered, cancelled, or the process is gone.
             return
-        if not allowed:
-            self._denied.append(action)
         # The runtime has the answer: a broker decision records its delivery (B.8).
         acknowledge = getattr(decision, "acknowledge", None)
         if acknowledge is not None:
@@ -750,7 +830,7 @@ class AcpRuntime:
         pending, self._pending_approvals = self._pending_approvals, {}
         if self._process is None:
             return
-        for request_id, _options in pending.values():
+        for request_id, _options, _action in pending.values():
             try:
                 await self._process.respond(
                     request_id, result={"outcome": {"outcome": "cancelled"}}
@@ -762,11 +842,21 @@ class AcpRuntime:
         # No interactive answerer outlives the process it would answer.
         for task in list(self._answer_tasks):
             task.cancel()
-        if self._process is not None:
-            await self._process.close()
-        if self._consult_host is not None:
-            await self._consult_host.close()
-        self._mark_child_exited()
+        try:
+            if self._process is not None:
+                await self._process.close()
+            if self._consult_host is not None:
+                await self._consult_host.close()
+            self._mark_child_exited()
+        except Exception as exc:
+            self._record_failure(
+                exc,
+                phase="cleanup",
+                kind="cleanup_uncertainty",
+                code="cleanup.uncertain",
+                boundary="agent-process",
+            )
+            raise
 
     def _mark_child_exited(self) -> None:
         """Retire the recorded child once `AcpProcess.close` has reaped it.
@@ -809,7 +899,7 @@ class AcpRuntime:
         entry = self._pending_approvals.pop(approval_id, None)
         if entry is None:
             raise RuntimeProtocolError(f"no pending approval {approval_id!r}")
-        request_id, options = entry
+        request_id, options, action = entry
         option_id = _pick_option(options, allow)
         outcome = (
             {"outcome": "selected", "optionId": option_id}
@@ -818,6 +908,8 @@ class AcpRuntime:
         )
         with self._timed("approval"):
             await self._process.respond(request_id, result={"outcome": outcome})
+        if not allow or option_id is None:
+            self._denied.append(action)
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):

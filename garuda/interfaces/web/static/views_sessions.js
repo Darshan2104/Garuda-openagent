@@ -138,6 +138,23 @@ function flowHtml(flow) {
   );
 }
 
+function failureEvidenceHtml(evidence) {
+  if (!evidence) return "";
+  var original = evidence.original_cause || {status: "unavailable"};
+  var value = original.value || {};
+  var detail = value.detail && value.detail.value ? value.detail.value : original.reason;
+  var later = evidence.subsequent_failures && evidence.subsequent_failures.value || [];
+  return '<section class="failure-evidence" id="failure-evidence"><h2>Failure evidence</h2>' +
+    '<p>' + chip("original cause", original.status, original.status === "present" ? "chip-on" : "chip-off") +
+    (value.code ? ' <code>' + esc(value.code) + '</code> · ' + esc(value.phase) + ' · ' + esc(value.boundary) : '') + '</p>' +
+    (detail ? '<pre class="failure-detail">' + esc(detail) + '</pre>' : '') +
+    (later.length ? '<h3>Later failures and refusals</h3><ul>' + later.map(function (item) {
+      return '<li><code>' + esc(item.code) + '</code> · ' + esc(item.phase) + ' · ' +
+        esc(item.kind || "failure") + '</li>';
+    }).join("") + '</ul>' : '') +
+    '<p class="stat-sub">Coverage labels describe retained evidence. Inspection is read-only and never replays work.</p></section>';
+}
+
 function sessionDetailView(id) {
   render('<div class="loading">Loading session…</div>');
   return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
@@ -160,6 +177,7 @@ function sessionDetailView(id) {
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
         return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
       }).join("") + "</ul>" : "") +
+      failureEvidenceHtml(row.failure_evidence) +
       flowHtml(row.flow) +
       '<div id="starter-result-host"></div>' +
       '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>'

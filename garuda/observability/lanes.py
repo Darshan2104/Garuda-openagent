@@ -90,12 +90,17 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
         meta = json.loads((root / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    session_id = meta.get("session_id", root.name) if isinstance(meta, dict) else root.name
-    segments = meta.get("runtime_segments", []) if isinstance(meta, dict) else []
-    handoff = meta.get("handoff", {}) if isinstance(meta, dict) else {}
-
     native_count = len(_read_jsonl(root / "events.jsonl"))
     external = _read_jsonl(root / ACP_EVENTS_FILE)
+    return build_cross_runtime(meta, native_count, external, fallback_session_id=root.name)
+
+
+def build_cross_runtime(meta: dict, native_count: int, external: list[dict], *,
+                        fallback_session_id: str) -> CrossRuntimeTrace:
+    """Project already selected records; callers retain their source coverage."""
+    session_id = meta.get("session_id", fallback_session_id) if isinstance(meta, dict) else fallback_session_id
+    segments = meta.get("runtime_segments", []) if isinstance(meta, dict) else []
+    handoff = meta.get("handoff", {}) if isinstance(meta, dict) else {}
     kinds: dict[str, int] = {}
     for record in external:
         kind = record.get("kind", "unknown")
@@ -145,7 +150,7 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
     elif state == "failed":
         hint = "last switch failed; source resumable"
     return CrossRuntimeTrace(
-        session_id=session_id if isinstance(session_id, str) else root.name,
+        session_id=session_id if isinstance(session_id, str) else fallback_session_id,
         lanes=lanes,
         handoff=dict(handoff) if isinstance(handoff, dict) else {},
         recovery_hint=hint,

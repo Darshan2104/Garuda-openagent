@@ -385,6 +385,40 @@ fastest way to learn the system.
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.
 
+Failure inspection is a separate read boundary. `core/failure_evidence.py`
+combines bounded native events, allowlisted ACP causal records, flow receipts,
+approval records, review and acceptance summaries through
+`core/session_records.py` descriptor reads. The version-1 projection labels
+each field `present`, `unavailable`, `clipped`, or `withheld`; it never recovers
+missing transcripts or substitutes current runtime/configuration identity.
+CLI, JSON-RPC and dashboard session views call this one reader. Inspection does
+not construct setup, probe a provider, open a stored workspace reference, run
+Git, authorize recovery or launch work. Selected diagnostic capture is an
+explicit digest-confirmed write of sanitized session-local evidence, bounded to
+eight snapshots and 2 MiB for seven days. Directory scans stop at 64 entries;
+capture reconciles abandoned private staging files under the same lock. A sparse
+native failed outcome remains separate from an unavailable original explanation.
+Partial runtime/workspace references keep per-field coverage, and JSON reads
+reject nonfinite numbers, including overflowing exponents.
+One aggregate source-read allowance includes linked children, approvals and
+snapshot metadata. Capture holds a session-directory lock across preview
+revalidation and retention, and publishes through no-follow directory descriptors;
+changed session/directory identity refuses publication. Cleanup uncertainty keeps
+the original process handle and prepared ownership available for reconciliation.
+The legacy support summary also uses bounded no-follow reads and a 1 MiB output
+limit. Its summary sources and failure projection each have a 16 MiB aggregate
+allowance; unavailable/partial sources retain explicit coverage labels. Lane
+projection shares the existing pure builder rather than reopening source files.
+Reported identities that are withheld or too large retain those states on disk;
+partial names are not published as exact identities. Snapshot coverage checks the
+stored preview byte count, digest, format and expiry before counting a capture.
+CLI diagnostic reference selection has its own 16 MiB/10,000-entry allowance and
+skips symlinked sessions. Exported references are redacted while capture ownership
+is bound to an opaque session-reference digest. Confirmation commits that digest,
+the selected categories and the exact diagnostic JSON together. The reference
+digest includes the actual store and session directory identities, preventing
+cross-session/store confirmation when redaction makes two previews identical.
+
 ## Where to change what
 
 | Goal | Start here |

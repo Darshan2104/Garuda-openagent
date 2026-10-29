@@ -54,7 +54,10 @@ for your installed version. For ready-made examples, see the
 | | `garuda runtime resume --session S -t TASK` | Resume a native session through the normal run lifecycle; refuses a session an external runtime owns |
 | | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external` |
 | | `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped |
-| | `garuda runtime support --session S` | Print a redacted support bundle (lanes, tallies, metrics) |
+| | `garuda runtime support --session S` | Print a redacted support bundle with versioned failure evidence |
+| | `garuda runtime support --session S --select causes,identities --preview` | Preview the exact bounded diagnostic JSON, byte count, expiry and digest |
+| | `garuda runtime support --session S --select causes,identities --capture --confirm-digest DIGEST` | Capture the unchanged preview in the session-private seven-day snapshot store |
+| | `garuda runtime support --session S --select causes,identities --export` | Write selected sanitized JSON to stdout; choose any destination with shell redirection |
 | Evaluation | `garuda eval dual-model report ...` | Build a paired rollout report from completed native sessions |
 
 `--resume` continues a native session from its transcript. A session of an

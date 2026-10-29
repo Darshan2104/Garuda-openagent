@@ -112,6 +112,23 @@ async def test_handshake_session_prompt_and_notifications():
     assert not process.is_running
 
 
+@pytest.mark.parametrize("error", [None, {}, "not an error object", {"code": True, "message": "m"},
+                                   {"code": -32603}, {"code": -32603, "message": []}])
+async def test_malformed_error_response_settles_its_request_as_a_protocol_failure(error):
+    script = (
+        "import json,sys; request=json.loads(sys.stdin.readline()); "
+        "print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':json.loads(sys.argv[1])}),flush=True); "
+        "sys.stdin.read()"
+    )
+    process = await _launched([sys.executable, "-c", script, json.dumps(error)])
+    try:
+        with pytest.raises(AcpProtocolError) as failed:
+            await asyncio.wait_for(process.initialize(), 1)
+        assert type(failed.value) is AcpProtocolError
+    finally:
+        await process.close()
+
+
 async def test_handshake_rejects_missing_or_mismatched_version():
     for result in ({}, {"protocolVersion": 99}):
         process = await _launched(_argv({"initialize": result}))

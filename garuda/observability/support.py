@@ -1,122 +1,150 @@
-"""Redacted support bundles (P1.13, issue #45).
-
-`build_support_bundle` packs what triage needs and nothing it must not hold:
-redacted session metadata, lane structure with counts, event-kind tallies,
-versions, and a metrics snapshot. Raw prompts, transcripts, tokens, and
-secrets never enter the bundle — every string passes through redaction, and
-payloads are counted, never copied.
-"""
-
+"""Bounded, redacted support summaries over selected session records."""
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
-from garuda.context.redact import redact_text
-
-_PUBLIC_META_FIELDS = frozenset(
-    {
-        "session_id", "schema_version", "status", "created_at", "updated_at",
-        "turns", "runtime_segments", "handoff", "mode", "metrics", "acceptance",
-    }
+from garuda.core.failure_evidence import (
+    MAX_AGGREGATE_SOURCE_BYTES,
+    SessionFailureEvidence,
+    _jsonl,
+    _safe_text,
+    unavailable_projection,
 )
+from garuda.core.session_records import BoundedSessionRecords, RecordError, parse_json
+
+MAX_BUNDLE_BYTES = 1024 * 1024
+_PUBLIC_META_FIELDS = frozenset({
+    "session_id", "schema_version", "status", "created_at", "updated_at",
+    "turns", "runtime_segments", "handoff", "mode", "metrics", "acceptance",
+})
+
+
+def _bounded_scrub(value: Any, depth: int = 0) -> tuple[Any, bool]:
+    if depth >= 6:
+        return "[withheld: structure limit]", True
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, dict):
+        out = {}
+        clipped = len(value) > 128
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 128:
+                break
+            safe_key, key_clipped = _safe_text(str(key))
+            if key_clipped:
+                out["[withheld diagnostic subtree]"] = None
+                clipped = True
+                continue
+            safe, item_clipped = _bounded_scrub(item, depth + 1)
+            out[safe_key] = safe
+            clipped = clipped or key_clipped or item_clipped
+        return out, clipped
+    if isinstance(value, (list, tuple)):
+        items = [_bounded_scrub(item, depth + 1) for item in value[:128]]
+        return [item for item, _ in items], len(value) > 128 or any(flag for _, flag in items)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None, True
+    if value is None or isinstance(value, (int, float, bool)):
+        return value, False
+    return None, True
 
 
 def _scrub(value: Any) -> Any:
-    """Recursively secret-scrub every string *and* mapping key.
-
-    Tuples become lists (JSON has no tuples); anything else passes through
-    untouched. Scrubbing keys too, because metric names, session ids, and
-    unknown meta fields are all attacker-influenced strings in adversarial
-    sessions.
-    """
-    if isinstance(value, str):
-        cleaned, _ = redact_text(value)
-        return cleaned
-    if isinstance(value, dict):
-        return {_scrub_key(key): _scrub(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_scrub(item) for item in value]
-    return value
+    return _bounded_scrub(value)[0]
 
 
-def _scrub_key(key: Any) -> Any:
-    if isinstance(key, str):
-        cleaned, _ = redact_text(key)
-        return cleaned
-    return key
-
-
-def _tally(path: Path) -> dict[str, int]:
+def _tally(records: list[dict], coverage: dict) -> tuple[dict[str, int], dict]:
     kinds: dict[str, int] = {}
-    if not path.exists():
-        return kinds
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
+    clipped = False
+    for record in records:
+        raw = record.get("type", record.get("kind", "unknown"))
+        kind, limited = _safe_text(raw if isinstance(raw, str) else "malformed")
+        clipped = clipped or limited
+        if len(kinds) >= 128 and kind not in kinds:
+            clipped = True
             continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            kinds["malformed"] = kinds.get("malformed", 0) + 1
-            continue
-        if isinstance(record, dict):
-            kind = _scrub_key(str(record.get("type", record.get("kind", "unknown"))))
-            kinds[kind] = kinds.get(kind, 0) + 1
-        else:
-            kinds["malformed"] = kinds.get("malformed", 0) + 1
-    return kinds
+        kinds[kind] = kinds.get(kind, 0) + 1
+    if clipped:
+        coverage = {**coverage, "status": "clipped", "reason": "event-kind summary limit reached"}
+    return kinds, coverage
 
 
-def build_support_bundle(
-    session_dir: str | Path,
-    *,
-    metrics: dict | None = None,
-    garuda_version: str = "unknown",
-) -> dict[str, Any]:
-    """Assemble the bundle dict. Pure read of the session dir plus redaction."""
+def build_support_bundle(session_dir: str | Path, *, metrics: dict | None = None,
+                         garuda_version: str = "unknown") -> dict[str, Any]:
+    """Read bounded no-follow sources; unavailable coverage never becomes a zero claim."""
     root = Path(session_dir)
+    records = BoundedSessionRecords(root.parent, byte_budget=MAX_AGGREGATE_SOURCE_BYTES)
     try:
-        meta = json.loads((root / "meta.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        meta = {}
-    if not isinstance(meta, dict):
-        meta = {}
-    lanes: list[dict[str, Any]] = []
-    try:
-        from garuda.observability.lanes import export_trace, read_cross_runtime
+        meta = records.load_meta(root.name)
+    except (RecordError, ValueError) as exc:
+        raise ValueError("selected support metadata is unavailable") from exc
+    if meta.get("session_id") != root.name:
+        raise ValueError("selected support session identity conflicts with its directory")
+    native, native_coverage = _jsonl(records, Path(root.name) / "events.jsonl", limit=4 * 1024 * 1024)
+    external, external_coverage = _jsonl(records, Path(root.name) / "acp-events.jsonl", limit=4 * 1024 * 1024)
+    native_kinds, native_coverage = _tally(native, native_coverage)
+    external_kinds, external_coverage = _tally(external, external_coverage)
+    lanes = []
+    lane_coverage = {"status": "unavailable", "reason": "lane count sources are unavailable"}
+    if native_coverage["status"] != "unavailable" and external_coverage["status"] != "unavailable":
+        try:
+            from garuda.observability.lanes import build_cross_runtime, export_trace
 
-        exported = export_trace(read_cross_runtime(root))
-        lanes = exported["lanes"]
-    except Exception:
-        lanes = []
-    metrics_payload: dict[str, Any] = {}
+            selected_meta, _ = _bounded_scrub(meta)
+            segments = selected_meta.get("runtime_segments")
+            if isinstance(segments, list):
+                selected_meta["runtime_segments"] = segments[:32]
+            lanes = export_trace(build_cross_runtime(
+                selected_meta, len(native), external, fallback_session_id=root.name,
+            ))["lanes"]
+            complete = native_coverage["status"] == external_coverage["status"] == "present"
+            lane_coverage = {"status": "present" if complete else "clipped", "source": "selected records"}
+        except (TypeError, ValueError, AttributeError):
+            lane_coverage = {"status": "unavailable", "reason": "unsupported lane metadata"}
+    metrics_payload = {}
+    metrics_coverage = {"status": "present", "source": "caller"}
     if metrics is not None:
-        if isinstance(metrics, dict):
-            metrics_payload = metrics
-        elif hasattr(metrics, "to_dict"):
-            try:
-                metrics_payload = metrics.to_dict()
-            except Exception:
-                metrics_payload = {}
+        try:
+            metrics_payload = metrics if isinstance(metrics, dict) else metrics.to_dict()
+        except (AttributeError, TypeError, ValueError):
+            metrics_coverage = {"status": "unavailable", "source": "caller"}
     else:
-        metrics_path = root / "metrics.json"
-        if metrics_path.is_file():
-            try:
-                loaded = json.loads(metrics_path.read_text(encoding="utf-8"))
-                metrics_payload = loaded if isinstance(loaded, dict) else {}
-            except (OSError, ValueError):
-                metrics_payload = {}
-    public_meta = {
-        key: value for key, value in meta.items() if key in _PUBLIC_META_FIELDS
+        try:
+            metrics_payload = parse_json(records.read(Path(root.name) / "metrics.json"))
+            metrics_coverage["source"] = "metrics.json"
+        except (RecordError, ValueError):
+            metrics_coverage = {"status": "unavailable", "source": "metrics.json"}
+    metrics_payload, clipped_metrics = _bounded_scrub(metrics_payload)
+    public_meta, clipped_meta = _bounded_scrub({key: value for key, value in meta.items()
+                                             if key in _PUBLIC_META_FIELDS})
+    if clipped_metrics:
+        metrics_coverage["status"] = "clipped"
+    try:
+        failure = SessionFailureEvidence(records).project(root.name)
+    except ValueError as exc:
+        failure = unavailable_projection(str(exc))
+    bundle = {
+        "session_id": _scrub(root.name), "meta": public_meta, "lanes": _scrub(lanes),
+        "native_event_kinds": native_kinds, "external_event_kinds": external_kinds,
+        "metrics": metrics_payload, "garuda_version": _scrub(garuda_version),
+        "failure_evidence": failure,
+        "coverage": {
+            "meta": {"status": "clipped" if clipped_meta else "present", "source": "meta.json"},
+            "native_events": native_coverage, "external_events": external_coverage,
+            "lanes": lane_coverage, "metrics": metrics_coverage,
+        },
+        "limits": {"bundle_bytes": MAX_BUNDLE_BYTES,
+                   "summary_source_bytes": MAX_AGGREGATE_SOURCE_BYTES,
+                   "failure_source_bytes": MAX_AGGREGATE_SOURCE_BYTES},
     }
-    return {
-        "session_id": _scrub(meta.get("session_id", root.name)),
-        "meta": _scrub(public_meta),
-        "lanes": lanes,
-        "native_event_kinds": _tally(root / "events.jsonl"),
-        "external_event_kinds": _tally(root / "acp-events.jsonl"),
-        "metrics": _scrub(metrics_payload),
-        "garuda_version": _scrub(garuda_version),
-    }
+    for field in ("metrics", "meta", "lanes"):
+        if len(json.dumps(bundle, ensure_ascii=False).encode("utf-8")) <= MAX_BUNDLE_BYTES:
+            break
+        bundle[field] = [] if field == "lanes" else {}
+        bundle["coverage"][field] = {"status": "clipped", "reason": "support bundle byte limit reached"}
+    if len(json.dumps(bundle, ensure_ascii=False).encode("utf-8")) > MAX_BUNDLE_BYTES:
+        raise ValueError("support bundle exceeds its serialized byte limit")
+    return bundle
