@@ -151,6 +151,98 @@ button.b.pri{background:var(--accent);color:#fff;border-color:var(--accent)}
 .ri p{margin:0;font-size:.92rem;color:var(--muted)}
 .ri .iss{font-family:"JetBrains Mono",monospace;font-size:.75rem;color:var(--muted)}
 
+
+/* harness-core additions */
+.h4{font-family:Fraunces,Georgia,serif;font-size:1.05rem;margin:1.2em 0 .5em}
+.lbl{font-size:.72rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+ul.tight{padding-left:1.1em;margin:0 0 1.2em}ul.tight li{margin:0 0 .45em;font-size:.95rem}
+.term{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:150px;margin:0;font-size:.78rem;white-space:pre-wrap;word-break:break-word}
+.term.small{min-height:0;margin-top:10px}
+.term .ok{color:var(--ok)}.term .bad{color:var(--bad)}.term .acc{color:var(--accent)}.term .blue{color:var(--blue)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:720px){.split{grid-template-columns:1fr}}
+.card-pre{font-size:.74rem;margin:8px 0;padding:10px;white-space:pre-wrap}
+.chips .mini p{font-size:.86rem}
+
+.stack{display:flex;flex-direction:column;gap:6px}
+.layer{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface-2);font-size:.88rem;opacity:0;transform:translateX(-16px);transition:all .45s}
+.layer.in{opacity:1;transform:none}
+.layer i{font-style:normal;font-weight:700;color:var(--accent);font-size:.8rem}
+.layer small{color:var(--muted);font-family:"JetBrains Mono",monospace;font-size:.76rem}
+.layer .lb{height:4px;border-radius:9px;background:var(--accent);margin-top:5px;transition:width .6s}
+.layer.trim{border-color:var(--warn);background:var(--warn-soft)}
+.layer.fixed{border-style:dashed}
+.stack-total{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:.88rem}
+
+.gauge{position:relative;height:22px;border-radius:99px;background:linear-gradient(90deg,var(--ok-soft) 0 75%,var(--warn-soft) 75% 92%,var(--bad-soft) 92%);border:1px solid var(--line);overflow:visible;margin:18px 0 6px}
+.gfill{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent);opacity:.75;width:30%;transition:width .15s}
+.gmark{position:absolute;top:-18px;transform:translateX(-50%);font-size:.7rem;color:var(--muted);font-family:"JetBrains Mono",monospace}
+.gmark:after{content:"";position:absolute;left:50%;top:16px;width:1px;height:24px;background:var(--muted);opacity:.5}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.gstage{background:var(--surface-2);border-radius:12px;padding:12px 14px;margin-top:8px;min-height:98px}
+.gstage p{margin:.3em 0 0;font-size:.92rem}
+
+.mpipe{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+@media (max-width:720px){.mpipe{grid-template-columns:repeat(3,1fr)}}
+.mnode{border:1.5px solid var(--line);border-radius:12px;padding:10px 6px;text-align:center;background:var(--surface);transition:all .35s;font-size:.82rem}
+.mnode b{display:block;font-size:.88rem}.mnode span{color:var(--muted);font-size:.74rem}
+.mnode.on{border-color:var(--accent);background:var(--accent-soft);transform:translateY(-3px)}
+.mnode.ok{border-color:var(--ok);background:var(--ok-soft)}
+.mnode.bad{border-color:var(--bad);background:var(--bad-soft)}
+
+.skcols{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media (max-width:620px){.skcols{grid-template-columns:1fr}}
+.skcol{border:1px dashed var(--line);border-radius:12px;padding:10px;min-height:96px}
+.sk{font-family:"JetBrains Mono",monospace;font-size:.78rem;padding:6px 9px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line);margin:6px 0;transition:all .4s}
+.sk.win{border-color:var(--ok);background:var(--ok-soft)}
+.sk.shadow{text-decoration:line-through;opacity:.45}
+.sk.shadow:after{content:"shadowed";margin-left:8px;display:inline-block;font-family:Inter;font-size:.7rem;color:var(--bad);text-decoration:none}
+.sk.hot{border-color:var(--accent);background:var(--accent-soft)}
+
+.ladder6{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 1.2em}
+@media (max-width:720px){.ladder6{grid-template-columns:1fr 1fr}}
+.l6{display:block;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:10px 12px;transition:border-color .2s}
+.l6:hover{border-color:var(--accent)}
+.l6 i{font-style:normal;font-weight:700;color:var(--accent);margin-right:6px}
+.l6 span{display:block;color:var(--muted);font-size:.8rem}
+
+.ho{display:flex;gap:4px;align-items:stretch;min-height:64px}
+.hob{border-radius:8px;padding:8px;font-size:.76rem;display:flex;align-items:center;justify-content:center;text-align:center;transition:all .45s;overflow:hidden;white-space:nowrap}
+.hob.sys{background:var(--surface-2);border:1px solid var(--line)}
+.hob.scard{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue);margin:0;box-shadow:none}
+.hob.buf{background:var(--ok-soft);border:1px solid var(--ok);color:var(--ok)}
+.hob.hist{background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn)}
+.hob.task{background:var(--accent-soft);border:1px solid var(--accent);color:var(--accent)}
+
+.csteps{counter-reset:c;list-style:none;padding:0;margin:0}
+.csteps li{counter-increment:c;position:relative;padding:8px 10px 8px 40px;border-radius:10px;margin:0 0 4px;transition:background .3s;opacity:.55}
+.csteps li:before{content:counter(c);position:absolute;left:10px;top:9px;width:20px;height:20px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line);font-size:.72rem;font-weight:700;text-align:center;line-height:19px}
+.csteps li b{display:block;font-size:.92rem}
+.csteps li span{display:none;font-size:.86rem;color:var(--muted)}
+.csteps li.on{background:var(--accent-soft);opacity:1}
+.csteps li.on span,.csteps li.done span{display:block}
+.csteps li.done{opacity:1}
+.csteps li.done:before{content:"✓";background:var(--ok);color:#fff;border-color:var(--ok)}
+.csteps li.on:before{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+.fsim{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.fsim{grid-template-columns:1fr}}
+.lanes{display:flex;flex-direction:column;gap:8px}
+.lane{display:grid;grid-template-columns:1fr auto;gap:4px 8px;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--surface);transition:all .35s}
+.lane b{display:block;font-size:.95rem}.lane span{color:var(--muted);font-size:.76rem}
+.lane .st{font-style:normal;font-size:.72rem;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--surface-2);color:var(--muted);align-self:start}
+.lane.work{border-color:var(--accent);background:var(--accent-soft)}
+.lane.work .st{background:var(--accent);color:#fff}
+.lane.ok .st{background:var(--ok-soft);color:var(--ok)}
+.lane.chg .st{background:var(--bad-soft);color:var(--bad)}
+.lane.dead{border-color:var(--bad);background:var(--bad-soft)}
+.lane.dead .st{background:var(--bad);color:#fff}
+.arts{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px}
+.art{font-family:"JetBrains Mono",monospace;font-size:.7rem;padding:2px 7px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);animation:pop .4s}
+.art.stale{text-decoration:line-through;opacity:.5}
+@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.journal{max-height:290px;overflow-y:auto;min-height:290px}
+
 .reveal{opacity:0;transform:translateY(14px);transition:opacity .7s,transform .7s}
 .reveal.in{opacity:1;transform:none}
 footer{padding:40px 0 60px;border-top:1px solid var(--line);color:var(--muted);font-size:.88rem}
@@ -172,8 +264,8 @@ footer{padding:40px 0 60px;border-top:1px solid var(--line);color:var(--muted);f
     <span class="brand">Garuda</span>
     <nav class="toc" id="toc">
       <a href="#why">Why</a><a href="#tour">Tour</a><a href="#runtimes">Runtimes</a><a href="#permissions">Permissions</a>
-      <a href="#workspaces">Workspaces</a><a href="#done">“Done”</a><a href="#context">Context</a><a href="#sessions">Sessions</a>
-      <a href="#teams">Teams</a><a href="#extend">Extend</a><a href="#compare">Compare</a><a href="#verdict">Verdict</a><a href="#next">Next</a>
+      <a href="#workspaces">Workspaces</a><a href="#done">“Done”</a><a href="#context">Context</a><a href="#memory">Memory</a><a href="#skills">Skills</a><a href="#sessions">Sessions</a>
+      <a href="#teams">Multi-agent</a><a href="#extend">Extend</a><a href="#compare">Compare</a><a href="#verdict">Verdict</a><a href="#next">Next</a>
     </nav>
     <button class="theme" id="themeBtn" aria-label="Toggle theme">◐</button>
   </div>
@@ -352,21 +444,153 @@ garuda sessions merge NAME --check "pytest -q"   <span class="c"># merges only o
 
 <!-- CONTEXT -->
 <section id="context"><div class="wrap reveal">
-  <div class="kicker">07 · Feature</div>
-  <h2>Context: keeping long runs in the window</h2>
-  <p>Long tasks produce huge tool outputs. Garuda's <code>ContextManager</code> handles three things:</p>
-  <div class="grid3">
-    <div class="mini"><h4>Adaptive shaping</h4><p>A single tool result may take up to ~25% of the <em>remaining</em> window, with floors so an error message is never cut down to nothing.</p></div>
-    <div class="mini"><h4>Output buffers</h4><p>The full output is saved to a buffer and the model gets a pointer. It can read slices on demand, and buffers are published atomically, so a half-written capture can't look complete.</p></div>
-    <div class="mini"><h4>Condensing</h4><p>Microcompaction and recent-window condensers summarize old turns, and token counts are calibrated against what the provider actually reports.</p></div>
+  <div class="kicker">07 · Harness core</div>
+  <h2>The context engine: managing what the model sees</h2>
+  <p>A model only knows what's in its context window. Most agents put the conversation in and hope it fits. Garuda treats the window as a <strong>budget it manages every turn</strong>, in four layers: the prompt the agent starts with, the size of each tool result, notes between turns, and compaction when the window fills up.</p>
+
+  <h3>Layer 1 · What the agent sees at turn zero</h3>
+  <p>The system prompt is assembled in a fixed order, and each part is labelled so the model knows where it came from. Press <b>Assemble</b>, then <b>Tighten budget</b> to see what gets trimmed first when it doesn't fit.</p>
+  <div class="card">
+    <div class="stack" id="stack"></div>
+    <div class="stack-total"><span>Memory &amp; instructions: <b id="stackTotal">0</b> / <span id="stackCap">32,000</span> chars</span><span class="muted" id="stackNote"></span></div>
+    <div class="ctrl"><button class="b pri" id="stackBtn">▶ Assemble</button><button class="b" id="stackTrim">Tighten budget</button><span class="muted" style="font-size:.8rem">Sizes are illustrative.</span></div>
   </div>
-  <p style="margin-top:1em">Project knowledge comes from <code>AGENTS.md</code>, skills (<code>SKILL.md</code> loaded on demand), and a committed <code>.context/</code> pack of architecture, decisions and conventions. <strong>Memory</strong> works as a proposal: the agent suggests a note and you accept it with <code>garuda memory review</code>. Nothing is remembered silently.</p>
-  <p>Optionally, a cheaper <strong>collection model</strong> can do read-only investigation for the main model, which pays for search and reading with a smaller model while the expensive one keeps the decisions.</p>
+  <p>The agent's own instructions are never cut. If they don't fit, the run is refused. Each memory file is capped at 8,000 characters and the total at 32,000. When the total is too big, the <code>.context</code> pack is trimmed first, then project memory. <code>garuda agent prompt NAME</code> prints the exact result with sizes, token estimates and a digest, so nothing reaches the model that you can't see.</p>
+
+  <h3>Layer 2 · Big outputs don't flood the window</h3>
+  <p>A single <code>pytest</code> or build log can be bigger than the whole window. Garuda puts the full body in a <strong>buffer</strong> on the host and gives the model a short stub with a pointer. The model then pulls just the lines it needs.</p>
+  <div class="card">
+    <div class="split">
+      <div><div class="lbl">Terminal</div><pre class="term" id="bufTerm"><span class="c">$ press Run</span></pre></div>
+      <div><div class="lbl">What lands in the model's window</div><pre class="term" id="bufCtx"><span class="c">(empty)</span></pre></div>
+    </div>
+    <div class="ctrl"><button class="b pri" id="bufBtn">▶ Run a noisy test suite</button></div>
+  </div>
+  <ul class="tight">
+    <li>Output over <b>30 KB</b> goes to <code>&lt;session&gt;/buffers/</code>. Buffers stay on the host even when commands run in Docker or on a remote host, so retrieval always works.</li>
+    <li>Smaller outputs are <b>shaped</b> to fit: one result may take at most ~25% of the <em>remaining</em> free window, with floors of 2 KB, or 6 KB for errors, so a stack trace is never cut down to nothing.</li>
+    <li>The model reads buffers with <code>buffer_grep</code>, <code>buffer_slice</code> and <code>buffer_query</code>. Buffers are published atomically, so a half-written capture never looks complete.</li>
+  </ul>
+
+  <h3>Layer 3 · Steering between turns</h3>
+  <p>The harness also talks to the model, but never in the middle of a turn. Notes are <strong>queued</strong> and flushed at the start of the next turn. Inserting a message between a tool call and its result is something providers reject with an HTTP 400.</p>
+  <div class="grid3 chips">
+    <div class="mini"><h4>No tool call?</h4><p>“If the task is finished, call <code>task_complete</code>; otherwise continue.”</p></div>
+    <div class="mini"><h4>Same call 3×</h4><p>“Repeating it again is unlikely to change the outcome. Step back.”</p></div>
+    <div class="mini"><h4>3 failures in a row</h4><p>“Re-check your assumptions, or try a different tool or path.”</p></div>
+    <div class="mini"><h4>Gate keeps rejecting</h4><p>“Address the specific verifier feedback before resubmitting.”</p></div>
+    <div class="mini"><h4>Window 80% full</h4><p>A one-time warning to finish up or save state.</p></div>
+    <div class="mini"><h4>Turn / time budget</h4><p>Notices as the run nears <code>--max-turns</code> or the deadline.</p></div>
+  </div>
+
+  <h3>Layer 4 · When the window fills up: compaction</h3>
+  <p>Drag the slider, or press <b>Simulate a long run</b>, to see what Garuda does at each level of usage.</p>
+  <div class="card">
+    <div class="gauge"><div class="gfill" id="gFill"></div>
+      <span class="gmark" style="left:75%">75</span><span class="gmark" style="left:80%">80</span><span class="gmark" style="left:92%">92</span></div>
+    <input type="range" min="0" max="100" value="30" id="gRange" aria-label="Context usage percent">
+    <div class="gstage"><b id="gTitle"></b><p id="gText"></p></div>
+    <div class="ctrl"><button class="b pri" id="gBtn">▶ Simulate a long run</button></div>
+  </div>
+  <p>Pruning comes before summarizing because it needs no model call, and it's done in batches so the prompt cache isn't invalidated every turn. Nothing is lost for good: messages dropped by a summary go into a <code>context_archive</code> buffer, and the summary includes a pointer to it.</p>
+
+  <h3>What survives compaction: state card + notes</h3>
+  <p>When most agents summarize, they ask the model to restate everything, so it can forget a file it edited or invent a test result. Garuda splits memory in two. Facts the harness already knows exactly go on a <strong>state card</strong> built from its own ledgers. The model only writes what no ledger can record.</p>
+  <div class="grid2">
+    <div class="mini"><div class="tag t-blue">harness-maintained · exact</div>
+<pre class="card-pre">[working state — survives compaction]
+objective: Fix flaky retry in http/client.py
+files changed: http/client.py, tests/test_retry.py
+checks: pytest -q tests/test_retry.py → exit 0
+todos: [x] reproduce  [x] fix  [ ] docs
+criteria: retry gives up after 3 attempts</pre>
+      <p>Built from the side-effect ledger, the todo/goal tools, the acceptance contract and the tool runner. Bounded (40 files, 20 checks, 30 todos) to a few hundred tokens, and pinned again after every compaction.</p></div>
+    <div class="mini"><div class="tag t-warn">model-written · judgement</div>
+<pre class="card-pre">## Key findings
+Backoff used wall clock; tests mock monotonic.
+## Failed approaches
+Patching sleep() — hid the bug, didn't fix it.
+## Rationale
+Switched to time.monotonic for testability.</pre>
+      <p>The model is told not to restate the card. It keeps only findings, dead ends and reasons, so the summary call is smaller and costs less.</p></div>
+  </div>
+</div></section>
+
+<!-- MEMORY -->
+<section id="memory"><div class="wrap reveal">
+  <div class="kicker">08 · Harness core</div>
+  <h2>Memory: what carries over between runs</h2>
+  <p>“Memory” in Garuda means four different things, each with its own author and its own trust level:</p>
+  <div class="tbl"><table>
+    <tr><th>Kind</th><th>Written by</th><th>Lives in</th><th>Loaded</th></tr>
+    <tr><td><b>Instructions</b></td><td>You</td><td><code>AGENTS.md</code>, <code>GARUDA.md</code>, <code>~/.agent/AGENTS.md</code></td><td>Every run, labelled, capped</td></tr>
+    <tr><td><b>Reviewed notes</b></td><td>Agent proposes, <b>you accept</b></td><td><code>.agent/memory.md</code> (project) · <code>~/.agent/memory.md</code> (user)</td><td>Every run, as data</td></tr>
+    <tr><td><b>Context pack</b></td><td>Reviewed repo content + <code>ContextPackManager</code></td><td><code>.context/</code> (durable) · session dir (generated)</td><td>With <code>memory.context_pack: true</code></td></tr>
+    <tr><td><b>Session briefs</b></td><td>The harness</td><td>Session store</td><td>Only when you tag <code>@name</code></td></tr>
+  </table></div>
+
+  <h3>How a reviewed note gets remembered</h3>
+  <p>An agent with <code>memory.notes: propose</code> gets a <code>remember</code> tool. Calling it doesn't write to memory. It creates a <em>proposal</em>, and only you, at a terminal, can turn that into memory. Try both:</p>
+  <div class="card">
+    <div class="mpipe" id="mpipe">
+      <div class="mnode" data-i="0"><b>Agent</b><span>remember()</span></div>
+      <div class="mnode" data-i="1"><b>Secret scan</b><span>scrub first</span></div>
+      <div class="mnode" data-i="2"><b>Proposal</b><span>pending</span></div>
+      <div class="mnode" data-i="3"><b>You</b><span>memory review</span></div>
+      <div class="mnode" data-i="4"><b>memory.md</b><span>appended</span></div>
+      <div class="mnode" data-i="5"><b>Next run</b><span>loads as data</span></div>
+    </div>
+    <pre class="term small" id="mlog"><span class="c">pick a scenario below</span></pre>
+    <div class="ctrl" id="mctrl"><button class="b pri" id="mGood">▶ Propose a useful note</button><button class="b" id="mBad">▶ Propose a secret</button>
+      <span id="mAsk" style="display:none"><button class="b" id="mAcc" style="border-color:var(--ok)">✓ Accept</button> <button class="b" id="mRej" style="border-color:var(--bad)">✗ Reject</button></span></div>
+  </div>
+  <ul class="tight">
+    <li><b>Bounded:</b> one line, ≤500 characters, at most 10 proposals per root task, shared with every subagent and child run.</li>
+    <li><b>The model can't choose the file.</b> The target comes from the scope's binding (<code>user</code> or <code>project</code>), never from a path the model wrote. Symlinked targets and other projects' proposals are refused.</li>
+    <li><b>Crash-safe:</b> acceptance is locked, journaled and idempotent. Each note carries a marker, so a replay after a crash can't append it twice.</li>
+    <li><b>Fails closed:</b> if locking, redaction or the store is unavailable, <code>remember</code> is disabled. It's never silently skipped. A headless run can propose but never accept.</li>
+    <li><b>Data, not authority:</b> accepted notes are loaded as labelled, reviewed information, never as configuration. An agent can never write its own instructions.</li>
+  </ul>
+
+  <h3>The context pack: durable project knowledge</h3>
+  <p>The committed <code>.context/</code> folder (architecture, decisions, discoveries, conventions) is reviewed like any other repository content. Two run-time files, <code>current-task.md</code> and <code>handoff.md</code>, are generated by a single writer, <code>ContextPackManager</code>, into the session's own directory, never into your workspace. They're compiled deterministically from the state card, the session record, git and check records, so every fact cites its source and recompiling gives byte-identical output. Secrets are redacted and the model's reasoning is never included.</p>
+</div></section>
+
+<!-- SKILLS -->
+<section id="skills"><div class="wrap reveal">
+  <div class="kicker">09 · Harness core</div>
+  <h2>Skills: procedures loaded on demand</h2>
+  <p>A skill is a folder with a <code>SKILL.md</code>: frontmatter (name, description, optional <code>allowed-tools</code>) plus step-by-step instructions. The format is compatible with Anthropic and OpenCode skills, so existing skills just work.</p>
+<pre><code>---
+name: release-notes
+description: Draft release notes from merged PRs since the last tag
+allowed-tools: bash, read_file, write_file
+---
+1. Find the last tag: git describe --tags --abbrev=0
+2. List merged PRs since then …
+3. Group by feature / fix / docs, write CHANGELOG section</code></pre>
+  <p>Skills come from three places. When two define the same name, the nearer one wins. Then the agent sees only an <strong>index</strong>, one line per skill, and opens a full body only when the task calls for it.</p>
+  <div class="card">
+    <div class="skcols" id="skcols">
+      <div class="skcol"><div class="lbl">1 · Project <span class="muted">.agent/skills</span></div><div class="sk" data-n="release-notes">release-notes</div><div class="sk" data-n="db-migrate">db-migrate</div></div>
+      <div class="skcol"><div class="lbl">2 · User <span class="muted">~/.agent/skills</span></div><div class="sk" data-n="pr-review">pr-review</div></div>
+      <div class="skcol"><div class="lbl">3 · Packaged</div><div class="sk" data-n="release-notes" data-shadow="1">release-notes</div><div class="sk" data-n="debugging">debugging</div></div>
+    </div>
+    <div class="lbl" style="margin-top:12px">Skills index in the system prompt</div>
+    <pre class="term small" id="skIndex"><span class="c">(not resolved yet)</span></pre>
+    <pre class="term small" id="skRun" style="display:none"></pre>
+    <div class="ctrl"><button class="b pri" id="skBtn">▶ Resolve skills</button><button class="b" id="skTask">▶ Run “Draft notes for v1.3”</button></div>
+  </div>
+  <ul class="tight">
+    <li><b>Per-agent selection:</b> <code>skills.from</code> limits the sources, <code>include</code>/<code>exclude</code> filter by name, and <code>load: index | full</code> chooses between the on-demand index and putting every body in the prompt.</li>
+    <li><b><code>allowed-tools</code> is advisory.</b> It's an instruction to the model, not enforcement. <code>garuda agent check</code> warns <code>skill.tool_not_granted</code> when a skill names a tool the agent doesn't have. A project skill can never <em>grant</em> a tool.</li>
+    <li><b>Read safely:</b> each file is read once, capped at 256 KB, without following symlinks, and must stay inside its source folder. Shadowed skills are recorded so you can see which one won.</li>
+  </ul>
 </div></section>
 
 <!-- SESSIONS -->
 <section id="sessions"><div class="wrap reveal">
-  <div class="kicker">08 · Feature</div>
+  <div class="kicker">10 · Feature</div>
   <h2>Sessions: everything gets written down</h2>
   <p>Each run creates a session under <code>~/.agent/sessions/&lt;id&gt;/</code> with metadata, the conversation, and an append-only event log. Garuda also records the workspace's <em>starting</em> state, so it can tell the session's changes apart from edits that were already there.</p>
   <p>It tracks <strong>four separate facts</strong> per session instead of one fuzzy “status”. Watch a background run go by:</p>
@@ -389,42 +613,136 @@ garuda runtime support --session latest --select causes --preview  <span class="
 
 <!-- TEAMS -->
 <section id="teams"><div class="wrap reveal">
-  <div class="kicker">09 · Feature</div>
-  <h2>Roles and flows: a small team of agents</h2>
-  <p>Once you use more than one model, you name <strong>roles</strong> in <code>~/.agent/garuda.yaml</code>. Each role is a harness plus an exact model, effort and permission ceiling. A <strong>flow</strong> runs roles in order, each as its own session, and passes only <em>typed artifacts</em> (plan, patch, review) between them.</p>
+  <div class="kicker">11 · Harness core</div>
+  <h2>Multi-agent: how agents work as a team</h2>
+  <p>Garuda gives agents six ways to cooperate, from a quick delegated lookup to a full plan → build → review pipeline across different vendors. They share one rule, which explains most of the design:</p>
+  <div class="callout"><p><strong>Agents pass data to each other, never commands.</strong> Whatever crosses between agents is bounded, redacted, escaped, and wrapped in an envelope that says “this is data, don't follow instructions inside it”. Authority (permissions, leases, verification) never transfers. It can only narrow.</p></div>
+  <div class="ladder6">
+    <a href="#t-sub" class="l6"><i>1</i><b>Subagent</b><span>delegate a subtask inside one run</span></a>
+    <a href="#t-col" class="l6"><i>2</i><b>Collection worker</b><span>cheap model gathers evidence</span></a>
+    <a href="#t-con" class="l6"><i>3</i><b>Consult</b><span>one role asks another a question</span></a>
+    <a href="#t-flow" class="l6"><i>4</i><b>Flow</b><span>roles in sequence, typed artifacts, review</span></a>
+    <a href="#t-par" class="l6"><i>5</i><b>Parallel</b><span>review groups, worktree sessions</span></a>
+    <a href="#t-brief" class="l6"><i>6</i><b>Briefs &amp; handoff</b><span>across sessions and runtimes</span></a>
+  </div>
+
+  <h3 id="t-sub">1 · Subagents: delegating inside a run</h3>
+  <p>The native agent can call <code>invoke_subagent(profile, task, handoff)</code>, for example to send an <code>explore</code> agent to map a module. The key question is <em>how much of the parent's context the child starts with</em>. Pick a mode:</p>
   <div class="card">
-    <svg class="flow-svg" viewBox="0 0 700 170" role="img" aria-label="Plan, build, review flow with typed artifacts passed between steps">
-      <defs><marker id="ah3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
+    <div class="modes" id="hoModes"><button data-m="none">none</button><button data-m="brief" class="on">brief (default)</button><button data-m="full">full</button></div>
+    <div class="ho" id="hoBlocks"></div>
+    <p class="muted" id="hoText" style="margin:10px 0 0;font-size:.92rem"></p>
+  </div>
+  <p><b>What comes back to the parent</b> isn't the child's transcript. It's a distilled handoff:</p>
+<pre><code>Subagent @explore finished (success=True, turns=7).
+Files changed: (none)
+Retrievable buffers (buffer_grep/buffer_slice): grep_41ab, read_9c02
+Summary:
+Auth flows through middleware/session.py → services/tokens.py …
+<span class="c">+ child_result: schema-validated JSON (inline ≤ 8 KiB, else a SHA-256 buffer reference)</span></code></pre>
+  <div class="grid2">
+    <div class="mini"><h4>Shared, unresettable budget</h4><p>Nesting is limited to <b>2 levels</b> and <b>8 launches</b> across the whole tree. One budget object is shared, so a child can't reset it by delegating again.</p></div>
+    <div class="mini"><h4>Only narrower, never wider</h4><p>A child gets only tools its parent has, and every call must pass <em>both</em> the child's and the parent's permission rules.</p></div>
+    <div class="mini"><h4>Changed files come from evidence</h4><p>The “Files changed” list comes from a workspace baseline/delta taken around the child, not from what the child says it edited.</p></div>
+    <div class="mini"><h4>Its own trace</h4><p>Each child writes its own event log next to the parent's, linked by session id, so you can always see what a subagent actually did.</p></div>
+  </div>
+
+  <h3 id="t-col">2 · Collection worker: a cheaper model does the reading</h3>
+  <p>Reading code and docs uses a lot of tokens but needs little judgement. With a <code>collection:</code> model configured, the main (reasoning) model can hand that off:</p>
+  <div class="card">
+    <svg class="flow-svg" viewBox="0 0 700 200" role="img" aria-label="Reasoning model delegates a read-only job to a cheaper collection model which returns a structured report">
+      <defs><marker id="ah5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
       <g font-family="Inter" text-anchor="middle">
-        <rect x="20" y="45" width="150" height="70" rx="14" fill="var(--blue-soft)" stroke="var(--blue)"/>
-        <text x="95" y="75" font-size="14" font-weight="600" fill="var(--blue)">planner</text><text x="95" y="95" font-size="11" fill="var(--muted)">claude · readonly</text>
-        <rect x="275" y="45" width="150" height="70" rx="14" fill="var(--accent-soft)" stroke="var(--accent)"/>
-        <text x="350" y="75" font-size="14" font-weight="600" fill="var(--accent)">coder</text><text x="350" y="95" font-size="11" fill="var(--muted)">codex · workspace-write</text>
-        <rect x="530" y="45" width="150" height="70" rx="14" fill="var(--ok-soft)" stroke="var(--ok)"/>
-        <text x="605" y="75" font-size="14" font-weight="600" fill="var(--ok)">reviewer</text><text x="605" y="95" font-size="11" fill="var(--muted)">native · independent</text>
+        <rect x="20" y="55" width="170" height="80" rx="14" fill="var(--blue-soft)" stroke="var(--blue)"/>
+        <text x="105" y="88" font-size="14" font-weight="600" fill="var(--blue)">Reasoning model</text><text x="105" y="108" font-size="11" fill="var(--muted)">owns edits &amp; completion</text>
+        <rect x="510" y="55" width="170" height="80" rx="14" fill="var(--ok-soft)" stroke="var(--ok)"/>
+        <text x="595" y="88" font-size="14" font-weight="600" fill="var(--ok)">Collection model</text><text x="595" y="108" font-size="11" fill="var(--muted)">cheap · read-only tools</text>
       </g>
-      <path class="flowline" d="M170,80 L273,80" stroke="var(--accent)" stroke-width="2" marker-end="url(#ah3)"/>
-      <path class="flowline" d="M425,80 L528,80" stroke="var(--accent)" stroke-width="2" marker-end="url(#ah3)"/>
+      <path class="flowline" d="M190,78 L508,78" stroke="var(--accent)" stroke-width="2" marker-end="url(#ah5)"/>
+      <path class="flowline" d="M510,115 L192,115" stroke="var(--ok)" stroke-width="2" marker-end="url(#ah5)"/>
       <g font-family="JetBrains Mono" font-size="11" text-anchor="middle">
-        <rect id="art1" x="192" y="20" width="60" height="22" rx="6" fill="var(--surface)" stroke="var(--line)"/><text x="222" y="35" fill="var(--ink)">plan</text>
-        <rect id="art2" x="446" y="20" width="60" height="22" rx="6" fill="var(--surface)" stroke="var(--line)"/><text x="476" y="35" fill="var(--ink)">patch</text>
+        <text x="350" y="68" fill="var(--ink)">delegate_collection(objective, questions, allowed_paths)</text>
+        <text x="350" y="138" fill="var(--ink)">report { summary, findings, evidence[], unknowns, buffer_ids }</text>
       </g>
-      <path d="M605,115 C605,160 350,160 350,117" stroke="var(--bad)" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#ah3)"/>
-      <text x="478" y="160" text-anchor="middle" font-family="Inter" font-size="11" fill="var(--bad)">changes requested → bounded repair loop</text>
+      <text x="350" y="178" text-anchor="middle" font-family="Inter" font-size="11" fill="var(--muted)">tools: read_file · grep · glob · ls · pdf/sheet/image · buffer_* · web — no write, edit, bash or delegation</text>
+      <circle r="5" fill="var(--accent)"><animateMotion dur="2.8s" repeatCount="indefinite" path="M190,78 L508,78 L510,115 L192,115 Z"/></circle>
     </svg>
   </div>
-  <pre><code>garuda flow run plan-build-review -t "Add rate limiting" --check "pytest -q"
-garuda flow resume FLOW_ID        <span class="c"># continue after the last finished step</span>
-garuda recovery enable            <span class="c"># auto-continue Codex flows after a quota reset</span></code></pre>
-  <div class="grid2">
-    <div class="mini"><h4>Consults</h4><p>A role can ask another role one question mid-task. The answer comes from a read-only session on a <em>snapshot</em> of the workspace.</p></div>
-    <div class="mini"><h4>Fallbacks and quotas</h4><p>If a harness is missing, logged out, or over its plan limit, a role can fall back to another. Quota recovery continues eligible flows hourly and never replays finished work.</p></div>
+  <p>The worker answers every question or explicitly marks it <em>unknown</em>, and backs each finding with evidence (kind, location, detail). Its terminal tool is <code>submit_collection</code>, which can <b>never complete the parent run</b>. Jobs have token, cost and deadline limits and their own trace. The reasoning model stays responsible for every edit and for <code>task_complete</code>.</p>
+
+  <h3 id="t-con">3 · Consults: one role asks another</h3>
+  <p>A role with <code>consult: [planner]</code> can ask the planner a single question mid-task. It isn't a chat with a live agent. It's a bounded, read-only child session on a <em>snapshot</em> of the asker's work. Step through it:</p>
+  <div class="card">
+    <ol class="csteps" id="csteps">
+      <li><b>Authorize &amp; bound</b><span>The asker must be a real session of this task. The target role must be granted in <em>your</em> config (a project can only narrow it). The question and brief must fit the limits.</span></li>
+      <li><b>Reserve atomically</b><span>A durable request id binds the payload digest. A replay returns the same answer, a changed payload is refused, and a second concurrent consult gets <code>consult.busy</code>.</span></li>
+      <li><b>Resolve &amp; take capacity</b><span>The exact target (including its fallback) takes a slot at once. If the harness is full the consult is refused rather than queued, so it can never deadlock on a slot the parent holds.</span></li>
+      <li><b>Quiesce &amp; snapshot</b><span>No live asker process may be running. The work is copied into an independent repository, and the asker carries on.</span></li>
+      <li><b>Launch read-only child</b><span>Native: file and search tools only. External harness: runs inside Docker confinement, never on the host.</span></li>
+      <li><b>Enforce the deadline</b><span>On timeout, work is cancelled and cleaned up <em>before</em> anything is released. Anything that can't be cleaned up is quarantined and keeps its slot.</span></li>
+      <li><b>Validate &amp; answer</b><span>The snapshot must be unchanged, or the answer is withheld. The answer comes back escaped, quoted line by line and labelled as advice.</span></li>
+    </ol>
+    <div class="ctrl"><button class="b pri" id="cBtn">▶ Walk through a consult</button><span class="muted" style="font-size:.85rem">Defaults: 5 per session · 600 s · 4 turns · 8,000-char answer</span></div>
   </div>
+  <p>A consult never marks a task as verified. Its answer is advice, and the receipt records ids, counts and digests, never the question or answer text.</p>
+
+  <h3 id="t-flow">4 · Flows: a pipeline of roles</h3>
+  <p>A <strong>flow</strong> runs roles in order on one task. Each step is a separate session, under its own role (harness + exact model + permission ceiling), and steps pass only <strong>typed artifacts</strong> to each other. Here's the packaged <code>plan-build-review</code>:</p>
+<pre><code>flows:
+  plan-build-review:
+    steps:
+      - {id: plan,   role: planner,  write_policy: no-edits, outputs: [plan]}
+      - {id: build,  role: coder,    inputs: [plan], outputs: [patch],
+         review: {by: reviewer, max_rounds: 2}}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}</code></pre>
+  <p>Press <b>Play</b> to watch it run, with Claude Code planning, Codex coding and a native model reviewing. Then try <b>Play with a crash</b>.</p>
+  <div class="card">
+    <div class="fsim">
+      <div class="lanes" id="lanes">
+        <div class="lane" data-r="planner"><div><b>planner</b><span>claude · no-edits</span></div><em class="st">idle</em><div class="arts"></div></div>
+        <div class="lane" data-r="coder"><div><b>coder</b><span>codex · workspace-write</span></div><em class="st">idle</em><div class="arts"></div></div>
+        <div class="lane" data-r="reviewer"><div><b>reviewer</b><span>native deepseek · no-edits</span></div><em class="st">idle</em><div class="arts"></div></div>
+      </div>
+      <div><div class="lbl">Flow journal <span class="muted">(fsynced, append-only)</span></div><pre class="term small journal" id="journal"><span class="c">press play</span></pre></div>
+    </div>
+    <div class="ctrl"><button class="b pri" id="fBtn">▶ Play</button><button class="b" id="fCrash">▶ Play with a crash</button></div>
+  </div>
+  <h4 class="h4">How the pieces fit</h4>
+  <div class="grid2">
+    <div class="mini"><h4>One lease, lent per step</h4><p>The flow takes the workspace lease once and holds it from first step to last. Each step borrows it through a capability that's revoked when the step ends. Nothing outside the flow can get in between steps, and no step can keep the lease.</p></div>
+    <div class="mini"><h4>Artifacts, not chat</h4><p>A step produces output only through an envelope at the end of its answer: <code>&lt;garuda-artifact type="plan"&gt;…&lt;/garuda-artifact&gt;</code>. Free text doesn't count. Garuda chooses the storage path, and records the digest, size, producer and workspace version.</p></div>
+    <div class="mini"><h4>Inputs are re-checked</h4><p>Before a step runs, each input must still match its recorded digest and size and must not be a symlink. A <code>patch</code>, <code>review</code> or <code>findings</code> artifact is <em>stale</em> once the workspace changes. A forged or stale input is refused.</p></div>
+    <div class="mini"><h4>Intent → receipt</h4><p>Intent is journaled and fsynced <em>before</em> a step launches, and an immutable receipt is written after. A step with intent but no receipt (the worker died) is <b>quarantined, never replayed</b>. <code>garuda flow resume</code> continues only past receipted steps.</p></div>
+    <div class="mini"><h4>Structured, independent review</h4><p>Reviews use a strict format: <code>verdict: approve|changes</code> plus <code>[blocker|major|minor|nit]</code> findings. A blocker or major finding forces changes even under “approve”. The reviewer's runtime and model must differ from the coder's, its fallbacks, and anyone it consulted.</p></div>
+    <div class="mini"><h4>Bounded repair loop</h4><p>On “changes”, only the reviewed step runs again, with the findings as input, then the reviewer. <code>max_rounds: 2</code> means at most three coder/reviewer pairs. A review is never verification: your <code>--check</code> is.</p></div>
+  </div>
+  <p>If a harness hits its subscription limit partway through, <code>garuda recovery enable</code> installs an hourly, evidence-gated continuation for eligible sequential Codex flows. It checkpoints at settled boundaries and never replays completed work.</p>
+
+  <h3 id="t-par">5 · Parallel work without collisions</h3>
+  <div class="grid2">
+    <div class="mini"><h4>Parallel review groups</h4><p>A flow step can list several reviewers under <code>parallel:</code>. They all review the same <em>detached snapshot</em>, never the live workspace. Native members run read-only, external ones must be read-only roles inside proven Docker confinement, and both the source and the snapshot must be unchanged afterwards.</p></div>
+    <div class="mini"><h4>Parallel independent sessions</h4><p><code>--bg --isolation worktree</code> gives each run its own Git branch. Leases prevent overlapping edits, per-runtime <code>capacity</code> (e.g. <code>max_parallel: 2</code>) queues the rest, and <code>sessions merge --check</code> merges only on green.</p></div>
+  </div>
+
+  <h3 id="t-brief">6 · Across sessions and runtimes</h3>
+  <p><b>Briefs.</b> Tag <code>@fix-tests</code> in a task, or pass <code>--with fix-tests</code>, and the new run gets that session's <em>brief</em>: task, state, changed files, checks and the end of its final answer, within a 6,000-character budget. It never gets the transcript. Checks that ran against a different tree are marked <b>stale</b>, so inherited results don't count as current evidence. Another project's session needs <code>--with-id</code> plus your explicit grant, and model or project text can never grant it.</p>
+  <p><b>Runtime handoff.</b> <code>garuda runtime handoff --session latest --to codex --confirm</code> moves a native session to an external harness in one transaction: pause the source, checkpoint and capture the delta, start the exact target binary, persist its acknowledgement, close the source, then send a bounded package as the target's first prompt. A failure before acknowledgement rolls back. After it, the session belongs to the target.</p>
+
+  <h3>Summary: what crosses each boundary</h3>
+  <div class="tbl"><table>
+    <tr><th>Mechanism</th><th>Receiver gets</th><th>Receiver never gets</th></tr>
+    <tr><td>Subagent</td><td>none / state card + buffer ids / full copy</td><td>wider tools or permissions; a fresh budget</td></tr>
+    <tr><td>Collection</td><td>objective + questions → evidence report</td><td>write tools; the power to finish the run</td></tr>
+    <tr><td>Consult</td><td>question + brief, snapshot to read</td><td>the live workspace; any way to steer the asker</td></tr>
+    <tr><td>Flow step</td><td>typed, digest-checked artifacts</td><td>free-text instructions; stale patches</td></tr>
+    <tr><td>Brief</td><td>bounded summary, stale-marked checks</td><td>the transcript; cross-project data without a grant</td></tr>
+    <tr><td>Handoff</td><td>bounded task state + evidence refs</td><td>vendor credentials, secrets, unbounded transcript</td></tr>
+  </table></div>
 </div></section>
 
 <!-- EXTEND -->
 <section id="extend"><div class="wrap reveal">
-  <div class="kicker">10 · Feature</div>
+  <div class="kicker">12 · Feature</div>
   <h2>Tools and extension points</h2>
   <p>The built-in toolkit covers what a coding agent needs: <code>bash</code>, file read/write, <code>edit</code> and <code>multi_edit</code>, search, PDF and spreadsheet readers, image reading, tmux, web fetch and search (public network only), todos, subagents, and output-buffer slicing. Reads run in parallel (up to 8), and a write splits the batch so ordering stays correct.</p>
   <div class="tbl"><table>
@@ -442,7 +760,7 @@ garuda recovery enable            <span class="c"># auto-continue Codex flows af
 <!-- COMPARE -->
 <section id="compare"><div class="wide reveal">
   <div class="wrap" style="padding:0">
-    <div class="kicker">11 · Context</div>
+    <div class="kicker">13 · Context</div>
     <h2>How Garuda compares</h2>
     <p>Garuda overlaps with three groups: vendor coding agents (Claude Code, Codex CLI), open multi-provider agents (OpenCode, Aider, oh-my-pi), and minimal research agents (mini-swe-agent). Its own October 2026 source study of oh-my-pi and mini-swe-agent is careful to say that “stronger contract” doesn't mean a measured end-to-end win. Read the table the same way: it compares <em>design focus</em>, not accuracy.</p>
   </div>
@@ -464,7 +782,7 @@ garuda recovery enable            <span class="c"># auto-continue Codex flows af
 
 <!-- VERDICT -->
 <section id="verdict"><div class="wrap reveal">
-  <div class="kicker">12 · Honest assessment</div>
+  <div class="kicker">14 · Honest assessment</div>
   <h2>The good and the not-so-good</h2>
   <div class="pc">
     <div class="card good">
@@ -495,7 +813,7 @@ garuda recovery enable            <span class="c"># auto-continue Codex flows af
 
 <!-- NEXT -->
 <section id="next"><div class="wrap reveal">
-  <div class="kicker">13 · What's next</div>
+  <div class="kicker">15 · What's next</div>
   <h2>The road ahead</h2>
   <p>Open work is tracked in a single campaign (<a href="https://github.com/Darshan2104/Garuda-openagent/issues/355">#355</a>) built from the October comparative study. The approach: <em>improve existing features before adding new ones</em>, and don't add a capability until the budget and evidence plumbing under it is in place. Six items have shipped (atomic output buffers, typed child results, streaming finish reasons, failure bundles and more). These are the ones still open:</p>
   <h3 style="margin-top:.8em"><span class="tag t-bad">P1</span> Next up: tighten what already exists</h3>
@@ -526,7 +844,7 @@ garuda run -t "Map the authentication flow" --mode readonly   <span class="c"># 
 </main>
 
 <footer><div class="wrap">
-  Based on Garuda-openagent <code>main</code> at <code>eaf6702</code> (v1.2.0) and its open GitHub issues as of 2 November 2026. Comparisons describe design focus, not measured performance. ·
+  Based on Garuda-openagent <code>main</code> at <code>c052c6c</code> (v1.2.0) and its open GitHub issues as of 2 November 2026. Comparisons describe design focus, not measured performance. ·
   <a href="https://github.com/Darshan2104/Garuda-openagent">GitHub</a> · <a href="https://darshan2104.github.io/Garuda-openagent/">Docs</a>
 </div></footer>
 
@@ -628,6 +946,198 @@ garuda run -t "Map the authentication flow" --mode readonly   <span class="c"># 
     tok.setAttribute('fill','var(--ok)'); msg.textContent='✓ Evidence accepted'; await moveTo(605,98,600);
     busy=false;
   };
+
+
+  // ---------- harness core ----------
+  function sleep(ms){return new Promise(function(r){setTimeout(r,reduce?1:ms);});}
+  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+
+  // prompt stack
+  var layers=[
+    {n:'Agent instructions',s:'build profile prompt',c:2400,note:'never cut'},
+    {n:'~/.agent/AGENTS.md',s:'memory.user',c:1800},
+    {n:'Skills index',s:'one line per skill',c:900},
+    {n:'Project memory',s:'AGENTS.md, GARUDA.md',c:8000,note:'capped at 8,000'},
+    {n:'Accepted notes',s:'.agent/memory.md',c:600},
+    {n:'.context pack',s:'architecture · decisions · …',c:16000},
+    {n:'Tool schemas',s:'outside the memory cap',c:0,fixed:1},
+    {n:'Your task',s:'first user message, kept verbatim forever',c:0,fixed:1}
+  ];
+  var stackEl=document.getElementById('stack'), totEl=document.getElementById('stackTotal'), capEl=document.getElementById('stackCap'), noteEl=document.getElementById('stackNote');
+  stackEl.innerHTML=layers.map(function(l,i){return '<div class="layer'+(l.fixed?' fixed':'')+'"><i>'+(l.fixed?'·':i+1)+'</i><div>'+esc(l.n)+' <small>'+esc(l.s)+'</small>'+(l.c?'<div class="lb" style="width:'+(l.c/16000*100)+'%"></div>':'')+'</div><small>'+(l.c?l.c.toLocaleString()+' ch':'')+(l.note?' · '+l.note:'')+'</small></div>';}).join('');
+  var lEls=[].slice.call(stackEl.children), cur=layers.map(function(l){return l.c;}), stackBusy=false;
+  function total(){return cur.reduce(function(a,b){return a+b;},0);}
+  document.getElementById('stackBtn').onclick=async function(){
+    if(stackBusy) return; stackBusy=true; cur=layers.map(function(l){return l.c;}); capEl.textContent='32,000'; noteEl.textContent='';
+    lEls.forEach(function(e,i){e.classList.remove('in','trim'); var b=e.querySelector('.lb'); if(b) b.style.width=(layers[i].c/16000*100)+'%'; e.lastChild.textContent=(layers[i].c?layers[i].c.toLocaleString()+' ch':'')+(layers[i].note?' · '+layers[i].note:'');});
+    var run=0; totEl.textContent='0';
+    for(var i=0;i<lEls.length;i++){ await sleep(380); lEls[i].classList.add('in'); run+=layers[i].c; totEl.textContent=run.toLocaleString(); }
+    noteEl.textContent='fits ✓'; stackBusy=false;
+  };
+  document.getElementById('stackTrim').onclick=async function(){
+    if(stackBusy) return; stackBusy=true;
+    if(!lEls[0].classList.contains('in')) lEls.forEach(function(e){e.classList.add('in');});
+    var cap=24000; capEl.textContent=cap.toLocaleString();
+    var over=total()-cap; noteEl.textContent='over by '+over.toLocaleString()+' → trimming';
+    var order=[5,3];
+    for(var k=0;k<order.length && over>0;k++){
+      var i=order[k], cut=Math.min(over,cur[i]-(i===3?2000:0)); await sleep(700);
+      cur[i]-=cut; over-=cut; lEls[i].classList.add('trim');
+      var b=lEls[i].querySelector('.lb'); if(b) b.style.width=(cur[i]/16000*100)+'%';
+      lEls[i].lastChild.textContent=cur[i].toLocaleString()+' ch · trimmed '+(k===0?'first':'second');
+      totEl.textContent=total().toLocaleString();
+    }
+    noteEl.textContent='fits ✓ (instructions untouched)'; stackBusy=false;
+  };
+
+  // buffer demo
+  var bufBusy=false, bt=document.getElementById('bufTerm'), bc=document.getElementById('bufCtx');
+  document.getElementById('bufBtn').onclick=async function(){
+    if(bufBusy) return; bufBusy=true;
+    bt.innerHTML='$ pytest -q\n'; bc.innerHTML='<span class="c">waiting for the tool result…</span>';
+    var n=0, lines=['tests/test_api.py ........................','tests/test_retry.py ..F.....','tests/test_db.py ..........................'];
+    for(var i=0;i<14;i++){ n=i===13?41882:n+2990; bt.innerHTML='$ pytest -q\n'+lines[i%3]+'\n'+'<span class="c">… '+n.toLocaleString()+' lines</span>'; await sleep(90); }
+    bt.innerHTML+='\n\n<span class="acc">1.9 MB &gt; 30 KB threshold</span>\n→ full body saved to\n  sessions/…/buffers/<b>bash_7c1e</b>';
+    await sleep(800);
+    bc.innerHTML='[buffer:bash_7c1e | 41,882 lines | 1.9 MB]\n<span class="c">preview (first 20 lines)…</span>\ntests/test_api.py ........\n…\n<span class="c">use buffer_grep / buffer_slice</span>';
+    await sleep(1100);
+    bc.innerHTML+='\n\n<span class="blue">model ▸ buffer_grep(buffer_id="bash_7c1e",\n          pattern="FAILED|Error")</span>';
+    await sleep(900);
+    bc.innerHTML+='\n<span class="bad">FAILED tests/test_retry.py::test_gives_up\nAssertionError: 4 attempts != 3</span>\n<span class="ok">→ 2 lines in context instead of 41,882</span>';
+    bufBusy=false;
+  };
+
+  // compaction gauge
+  var gR=document.getElementById('gRange'), gF=document.getElementById('gFill'), gT=document.getElementById('gTitle'), gX=document.getElementById('gText');
+  function gStage(v){
+    gF.style.width=v+'%';
+    var t,x;
+    if(v<75){t='Below 75%: nothing happens';x='History stays exactly as it is, so the provider\'s prompt cache stays warm and every turn is cheap.';}
+    else if(v<80){t='75%: microcompact (prune old outputs)';x='Bulky tool outputs older than the last few turns are pruned in place. No model call, and message structure and tool-call ids stay valid. Buffered outputs keep their <code>buffer:&lt;id&gt;</code> pointer, so the model can still fetch them.';}
+    else if(v<92){t='80%: prune + warn the model';x='Pruning continues, and steering queues a one-time warning: the window is 80% full. If there\'s nothing left to prune and free space drops below ~8k tokens, Garuda <b>summarizes</b>: system + task + state card + notes + recent turns. Dropped messages are archived to a buffer.';}
+    else if(v<100){t='92%+: critical';x='Normally a re-summarize waits until history has grown by 8+ messages, to avoid paying for a summary every turn. Above 92% that wait is skipped.';}
+    else {t='Provider says “too long”: force compact';x='Every threshold is tripped at once. If even that frees nothing, a last-resort recent-window pass keeps the system prompt, the task and the last turns. The task is never dropped.';}
+    gT.textContent=t; gX.innerHTML=x;
+  }
+  gR.oninput=function(){gStage(+gR.value);}; gStage(30);
+  var gBusy=false;
+  document.getElementById('gBtn').onclick=async function(){
+    if(gBusy) return; gBusy=true;
+    var stops=[[10,0],[74,1400],[77,2200],[86,2400],[95,2400],[100,2400]];
+    for(var i=0;i<stops.length;i++){ var from=+gR.value, to=stops[i][0], steps=12;
+      for(var s=1;s<=steps;s++){ gR.value=from+(to-from)*s/steps; gStage(+gR.value); await sleep(35); }
+      await sleep(stops[i][1]); }
+    gBusy=false;
+  };
+
+  // memory pipeline
+  var mN=[].slice.call(document.querySelectorAll('#mpipe .mnode')), mL=document.getElementById('mlog'), mAsk=document.getElementById('mAsk'), mBusy=false, mResolve=null;
+  function mReset(){mN.forEach(function(n){n.classList.remove('on','ok','bad');}); mAsk.style.display='none';}
+  function mLog(h){mL.innerHTML+= (mL.innerHTML?'\n':'')+h; mL.scrollTop=1e6;}
+  async function mRun(secret){
+    if(mBusy) return; mBusy=true; mReset(); mL.innerHTML='';
+    mN[0].classList.add('on');
+    mLog(secret?'<span class="blue">agent ▸ remember("deploy key is sk-live-9f2c…", scope="project")</span>':'<span class="blue">agent ▸ remember("Integration tests need REDIS_URL; use docker compose up redis", scope="project")</span>');
+    await sleep(900); mN[0].classList.replace('on','ok'); mN[1].classList.add('on');
+    mLog('scan ▸ secret-shaped text? arguments scrubbed before event log & transcript');
+    await sleep(900);
+    if(secret){ mN[1].classList.replace('on','bad'); mLog('<span class="bad">✗ rejected: secret-shaped text. Nothing stored, nothing logged.</span>'); mBusy=false; return; }
+    mN[1].classList.replace('on','ok'); mN[2].classList.add('on');
+    mLog('store ▸ proposal p-31 recorded (pending) · digest 4be1… · 1/10 used for this task'); await sleep(900);
+    mN[2].classList.replace('on','ok'); mN[3].classList.add('on');
+    mLog('<span class="acc">you ▸ garuda memory review</span>  — accept or reject?');
+    mAsk.style.display='inline';
+    var ok=await new Promise(function(r){mResolve=r;});
+    mAsk.style.display='none';
+    if(!ok){ mN[3].classList.replace('on','bad'); mLog('<span class="bad">✗ rejected by you: nothing written</span>'); mBusy=false; return; }
+    mN[3].classList.replace('on','ok'); mN[4].classList.add('on');
+    mLog('write ▸ locked + journaled append to .agent/memory.md (marker p-31, idempotent)'); await sleep(1000);
+    mN[4].classList.replace('on','ok'); mN[5].classList.add('on');
+    mLog('next run ▸ loaded under “accepted notes” as reviewed <i>information</i>, not instructions'); await sleep(700);
+    mN[5].classList.replace('on','ok'); mBusy=false;
+  }
+  document.getElementById('mGood').onclick=function(){mRun(false);};
+  document.getElementById('mBad').onclick=function(){mRun(true);};
+  document.getElementById('mAcc').onclick=function(){ if(mResolve){mResolve(true);mResolve=null;} };
+  document.getElementById('mRej').onclick=function(){ if(mResolve){mResolve(false);mResolve=null;} };
+
+  // skills
+  var skAll=[].slice.call(document.querySelectorAll('#skcols .sk')), skIdx=document.getElementById('skIndex'), skRun=document.getElementById('skRun'), skResolved=false, skBusy=false;
+  async function skResolve(){
+    skAll.forEach(function(s){s.classList.remove('win','shadow','hot');}); skIdx.innerHTML=''; skRun.style.display='none';
+    var seen={};
+    for(var i=0;i<skAll.length;i++){ var s=skAll[i]; await sleep(420);
+      if(seen[s.dataset.n]){ s.classList.add('shadow'); continue; }
+      seen[s.dataset.n]=1; s.classList.add('win');
+      var src=s.closest('.skcol').querySelector('.lbl').textContent.split('·')[1].trim().split(' ')[0].toLowerCase();
+      skIdx.innerHTML+=(skIdx.innerHTML?'\n':'')+'- '+s.dataset.n+' ('+src+'): …';
+    }
+    skResolved=true;
+  }
+  document.getElementById('skBtn').onclick=async function(){ if(skBusy) return; skBusy=true; await skResolve(); skBusy=false; };
+  document.getElementById('skTask').onclick=async function(){
+    if(skBusy) return; skBusy=true; if(!skResolved) await skResolve();
+    skRun.style.display='block'; skRun.innerHTML='<span class="acc">task ▸ Draft release notes for v1.3</span>';
+    await sleep(800); skAll[0].classList.add('hot');
+    skRun.innerHTML+='\nmodel ▸ index matches “release-notes” → open it';
+    await sleep(800); skRun.innerHTML+='\n<span class="blue">model ▸ read_file(".agent/skills/release-notes/SKILL.md")</span>';
+    await sleep(800); skRun.innerHTML+='\n<span class="c">   (body enters context only now: other skills cost one line each)</span>';
+    var st=['git describe --tags --abbrev=0 → v1.2.0','list merged PRs since v1.2.0 → 14','group: 6 features · 5 fixes · 3 docs','write CHANGELOG section'];
+    for(var i=0;i<st.length;i++){ await sleep(650); skRun.innerHTML+='\n<span class="ok">✓</span> '+st[i]; }
+    skBusy=false;
+  };
+
+  // handoff modes
+  var hoData={
+    none:{b:[['sys','system prompt',12],['task','subtask',10]],t:'<b>none</b>: the child starts with no context and rediscovers what it needs. Cheapest per call, but it may repeat work the parent already did.'},
+    brief:{b:[['sys','system prompt',12],['scard','state card ~300 tok',22],['buf','buffer ids',12],['task','subtask',10]],t:'<b>brief</b> (recommended): the parent\'s state card (goal, files changed, checks run, criteria) plus the retrievable buffer ids. A couple of KB. This is what a delegated subtask usually needs, and the child can pull details from buffers.'},
+    full:{b:[['sys','system prompt',8],['hist','entire parent transcript (deep copy)',78],['task','subtask',8]],t:'<b>full</b>: a deep copy of the whole conversation. Use it only when the child must reason about <em>how</em> the conversation got here. The parent\'s history is often the biggest object in a run.'}
+  };
+  var hoB=document.getElementById('hoBlocks'), hoT=document.getElementById('hoText');
+  function hoShow(m){ hoB.innerHTML=hoData[m].b.map(function(x){return '<div class="hob '+x[0]+'" style="flex:'+x[2]+' 1 0">'+x[1]+'</div>';}).join(''); hoT.innerHTML=hoData[m].t; }
+  document.querySelectorAll('#hoModes button').forEach(function(b){ b.onclick=function(){ document.querySelectorAll('#hoModes button').forEach(function(x){x.classList.remove('on');}); b.classList.add('on'); hoShow(b.dataset.m); }; });
+  hoShow('brief');
+
+  // consult stepper
+  var cS=[].slice.call(document.querySelectorAll('#csteps li')), cBusy=false;
+  document.getElementById('cBtn').onclick=async function(){
+    if(cBusy) return; cBusy=true; cS.forEach(function(l){l.classList.remove('on','done');});
+    for(var i=0;i<cS.length;i++){ cS[i].classList.add('on'); await sleep(1700); cS[i].classList.replace('on','done'); }
+    cBusy=false;
+  };
+
+  // flow simulator
+  var lanes={}; document.querySelectorAll('#lanes .lane').forEach(function(l){lanes[l.dataset.r]=l;});
+  var jr=document.getElementById('journal'), fBusy=false;
+  function lane(r,cls,txt){ var l=lanes[r]; l.classList.remove('work','ok','chg','dead'); if(cls) l.classList.add(cls); l.querySelector('.st').textContent=txt; }
+  function art(r,txt,id){ var a=document.createElement('span'); a.className='art'; a.textContent=txt; if(id) a.id=id; lanes[r].querySelector('.arts').appendChild(a); }
+  function jl(h){ jr.innerHTML+=(jr.innerHTML?'\n':'')+h; jr.scrollTop=1e6; }
+  function fReset(){ Object.keys(lanes).forEach(function(r){lane(r,'','idle'); lanes[r].querySelector('.arts').innerHTML='';}); jr.innerHTML=''; }
+  async function fPlay(crash){
+    if(fBusy) return; fBusy=true; fReset();
+    jl('<span class="acc">flow 7f3a</span> lease acquired · held until the last step'); await sleep(700);
+    lane('planner','work','working'); jl('intent  plan#1 <span class="c">(journaled + fsynced before launch)</span>'); await sleep(1200);
+    lane('planner','ok','done'); art('planner','plan · sha 91c4'); jl('receipt plan#1 → <span class="ok">artifact plan</span> 2.1 KB sha256 91c4…'); await sleep(800);
+    jl('inputs  build ← plan: digest ✓ size ✓ not-symlink ✓'); lane('coder','work','working'); jl('intent  build#1'); await sleep(1300);
+    if(crash){
+      lane('coder','dead','worker died'); jl('<span class="bad">✗ build#1: intent recorded, no receipt</span>'); await sleep(900);
+      jl('recover → build#1 <span class="bad">quarantined</span> (it may have half-edited files)'); await sleep(900);
+      jl('<span class="c">never replayed automatically. Inspect the delta, then</span>'); jl('<span class="acc">$ garuda flow resume 7f3a</span> → continues after plan#1 (its receipt is intact)');
+      fBusy=false; return;
+    }
+    lane('coder','ok','done'); art('coder','patch v1','p1'); jl('receipt build#1 → <span class="ok">patch</span> @ tree a81e'); await sleep(800);
+    lane('reviewer','work','reviewing'); jl('intent  review#1 · independence ✓ native/deepseek ≠ codex'); await sleep(1300);
+    lane('reviewer','chg','changes'); art('reviewer','review: changes'); jl('review#1 <span class="bad">verdict: changes</span>\n  - [major] retry loop never ends in client.py:88\n  - [nit] typo in docstring'); await sleep(1200);
+    lane('coder','work','round 2'); jl('intent  build#2 ← input: review findings'); await sleep(1300);
+    document.getElementById('p1').classList.add('stale'); lane('coder','ok','done'); art('coder','patch v2'); jl('receipt build#2 → patch @ tree c07d <span class="c">(patch v1 now stale)</span>'); await sleep(800);
+    lane('reviewer','work','reviewing'); jl('intent  review#2'); await sleep(1200);
+    lane('reviewer','ok','approved'); art('reviewer','review: approve'); jl('review#2 <span class="ok">verdict: approve</span>\n  - [nit] typo in docstring'); await sleep(900);
+    jl('check   pytest -q → <span class="ok">passed</span> <span class="c">(receipt: who asked, command, tree c07d)</span>'); await sleep(900);
+    jl('<span class="acc">lease released</span> · outcome review_approved · verification <span class="ok">passed</span>');
+    fBusy=false;
+  }
+  document.getElementById('fBtn').onclick=function(){fPlay(false);};
+  document.getElementById('fCrash').onclick=function(){fPlay(true);};
 
   // session facts
   var seq=[
