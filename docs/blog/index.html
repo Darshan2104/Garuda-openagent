@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inside Garuda</title>
+<meta name="description" content="How Garuda, a provider-agnostic coding-agent runtime, works: the loop, permissions, workspaces, completion evidence, sessions, roles and flows, how it compares, and what's next.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#fbf8f3; --surface:#ffffff; --surface-2:#f3eee6; --ink:#1d1a16; --muted:#6b645a; --line:#e4ddd1;
+  --accent:#c2551b; --accent-soft:#f7e3d6; --ok:#2f7d4f; --ok-soft:#dcefe3; --warn:#a46a00; --warn-soft:#f6ebcf;
+  --bad:#b2362b; --bad-soft:#f6dcd8; --blue:#2c5d9e; --blue-soft:#dde7f5; --code-bg:#f1ece3;
+  --shadow:0 1px 2px rgba(40,30,20,.06),0 8px 24px rgba(40,30,20,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15130f; --surface:#1e1b17; --surface-2:#26221d; --ink:#efe9df; --muted:#a59d90; --line:#36312a;
+    --accent:#f08a4b; --accent-soft:#3a2518; --ok:#62c08a; --ok-soft:#1b3326; --warn:#e2ac3f; --warn-soft:#382c12;
+    --bad:#ec7b6f; --bad-soft:#3b1d19; --blue:#7fa8e0; --blue-soft:#1b2738; --code-bg:#24201b;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15130f; --surface:#1e1b17; --surface-2:#26221d; --ink:#efe9df; --muted:#a59d90; --line:#36312a;
+  --accent:#f08a4b; --accent-soft:#3a2518; --ok:#62c08a; --ok-soft:#1b3326; --warn:#e2ac3f; --warn-soft:#382c12;
+  --bad:#ec7b6f; --bad-soft:#3b1d19; --blue:#7fa8e0; --blue-soft:#1b2738; --code-bg:#24201b;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.7 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:0 16px}
+.wide{max-width:1040px;margin:0 auto;padding:0 16px}
+h1,h2,h3{font-family:Fraunces,Georgia,serif;line-height:1.2;letter-spacing:-.01em}
+h1{font-size:clamp(2.3rem,6vw,3.6rem);margin:.2em 0 .3em}
+h2{font-size:clamp(1.6rem,4vw,2.1rem);margin:0 0 .4em}
+h3{font-size:1.2rem;margin:1.6em 0 .4em}
+p{margin:0 0 1em}
+a{color:var(--accent)}
+code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.86em;background:var(--code-bg);padding:.1em .35em;border-radius:5px}
+pre{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.84rem;line-height:1.6;background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto;margin:0 0 1.2em}
+pre code{background:none;padding:0}
+.c{color:var(--muted)}
+.muted{color:var(--muted)}
+.kicker{font:600 .78rem/1 Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+
+/* top bar */
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.topbar .wide{display:flex;align-items:center;gap:12px;height:52px}
+.brand{font-family:Fraunces,serif;font-weight:700;font-size:1.05rem}
+.progress{position:absolute;left:0;bottom:-1px;height:2px;background:var(--accent);width:0}
+.toc{display:flex;gap:4px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+.toc::-webkit-scrollbar{display:none}
+.toc a{white-space:nowrap;font-size:.8rem;color:var(--muted);text-decoration:none;padding:5px 9px;border-radius:999px}
+.toc a.on{background:var(--accent-soft);color:var(--accent)}
+.theme{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;width:32px;height:32px;cursor:pointer;flex:none}
+@media (max-width:720px){.toc{display:none}.theme{margin-left:auto}}
+
+/* hero */
+.hero{padding:56px 0 24px}
+.lede{font-size:1.2rem;color:var(--muted);max-width:640px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0}
+.pill{font-size:.8rem;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 10px;color:var(--muted)}
+.hero-svg{width:100%;height:auto;margin:28px 0 8px;display:block}
+
+section{padding:44px 0;border-top:1px solid var(--line)}
+section:first-of-type{border-top:none}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:var(--shadow);margin:0 0 1.2em}
+.callout{border-left:4px solid var(--accent);background:var(--accent-soft);padding:14px 18px;border-radius:0 12px 12px 0;margin:0 0 1.2em}
+.callout.ok{border-color:var(--ok);background:var(--ok-soft)}
+.callout.warn{border-color:var(--warn);background:var(--warn-soft)}
+.callout p:last-child{margin:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media (max-width:720px){.grid2,.grid3{grid-template-columns:1fr}}
+.mini{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px}
+.mini h4{margin:0 0 6px;font-size:1rem}
+.mini p{margin:0;font-size:.92rem;color:var(--muted)}
+.tag{display:inline-block;font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:999px;margin-right:4px}
+.t-ok{background:var(--ok-soft);color:var(--ok)}.t-warn{background:var(--warn-soft);color:var(--warn)}.t-bad{background:var(--bad-soft);color:var(--bad)}.t-blue{background:var(--blue-soft);color:var(--blue)}
+
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin:0 0 1.2em}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);margin:0 0 1.2em}
+.tbl table{margin:0}
+.tbl tr:last-child td{border-bottom:none}
+
+/* animated pipeline */
+.pipe{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:8px 0 12px}
+.step{background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:12px 10px;text-align:center;font-size:.84rem;transition:all .35s;cursor:pointer;position:relative}
+.step b{display:block;font-size:.95rem;margin-bottom:2px}
+.step span{color:var(--muted);font-size:.78rem}
+.step.on{border-color:var(--accent);background:var(--accent-soft);transform:translateY(-3px)}
+.step .n{position:absolute;top:-10px;left:10px;background:var(--accent);color:#fff;font-size:.7rem;font-weight:700;width:20px;height:20px;border-radius:50%;line-height:20px}
+@media (max-width:720px){.pipe{grid-template-columns:1fr 1fr}}
+.pipe-detail{min-height:96px;background:var(--surface-2);border-radius:12px;padding:14px 16px;font-size:.93rem}
+.ctrl{display:flex;gap:8px;align-items:center;margin:10px 0 0;flex-wrap:wrap}
+button.b{font:500 .85rem Inter,sans-serif;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:7px 14px;border-radius:999px;cursor:pointer}
+button.b:hover{border-color:var(--accent)}
+button.b.pri{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* permission demo */
+.perm{display:grid;grid-template-columns:1fr;gap:10px}
+.cmdrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-family:"JetBrains Mono",monospace;font-size:.82rem;transition:all .4s;opacity:.35}
+.cmdrow.live{opacity:1}
+.cmdrow .verdict{margin-left:auto;font-family:Inter,sans-serif;font-weight:600;font-size:.75rem;padding:3px 9px;border-radius:999px;opacity:0;transition:opacity .3s}
+.cmdrow.live .verdict{opacity:1}
+.modes{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.modes button{font:500 .82rem Inter,sans-serif;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer}
+.modes button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+/* workspace ladder */
+.ladder{display:flex;flex-direction:column;gap:8px}
+.rung{display:grid;grid-template-columns:110px 1fr 120px;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:.9rem}
+.rung .bar{height:8px;background:var(--surface-2);border-radius:99px;overflow:hidden}
+.rung .bar i{display:block;height:100%;width:0;border-radius:99px;transition:width 1.2s cubic-bezier(.2,.8,.2,1)}
+.rung code{font-size:.82rem}
+.rung small{color:var(--muted);text-align:right}
+@media (max-width:620px){.rung{grid-template-columns:1fr}.rung small{text-align:left}}
+
+/* gate */
+.gate-svg{width:100%;height:auto;display:block}
+.flow-svg{width:100%;height:auto;display:block}
+
+/* session facts */
+.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media (max-width:720px){.facts{grid-template-columns:1fr 1fr}}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
+.fact h5{margin:0 0 6px;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.fact .val{font-weight:600;font-family:"JetBrains Mono",monospace;font-size:.9rem;transition:color .3s}
+
+/* pros/cons */
+.pc{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:720px){.pc{grid-template-columns:1fr}}
+.pc ul{margin:0;padding-left:1.1em}
+.pc li{margin:0 0 .55em;font-size:.94rem}
+.pc .good{border-top:4px solid var(--ok)}
+.pc .bad{border-top:4px solid var(--bad)}
+
+/* roadmap */
+.road{position:relative;padding-left:26px}
+.road:before{content:"";position:absolute;left:8px;top:6px;bottom:6px;width:2px;background:var(--line)}
+.ri{position:relative;margin:0 0 18px}
+.ri:before{content:"";position:absolute;left:-23px;top:7px;width:12px;height:12px;border-radius:50%;background:var(--surface);border:2px solid var(--accent)}
+.ri.p2:before{border-color:var(--blue)}
+.ri h4{margin:0 0 2px;font-size:1rem}
+.ri p{margin:0;font-size:.92rem;color:var(--muted)}
+.ri .iss{font-family:"JetBrains Mono",monospace;font-size:.75rem;color:var(--muted)}
+
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .7s,transform .7s}
+.reveal.in{opacity:1;transform:none}
+footer{padding:40px 0 60px;border-top:1px solid var(--line);color:var(--muted);font-size:.88rem}
+
+@keyframes dash{to{stroke-dashoffset:-24}}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.flowline{stroke-dasharray:6 6;animation:dash 1s linear infinite}
+@media (prefers-reduced-motion: reduce){
+  .flowline{animation:none}
+  .reveal{opacity:1;transform:none;transition:none}
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wide">
+    <span class="brand">Garuda</span>
+    <nav class="toc" id="toc">
+      <a href="#why">Why</a><a href="#tour">Tour</a><a href="#runtimes">Runtimes</a><a href="#permissions">Permissions</a>
+      <a href="#workspaces">Workspaces</a><a href="#done">“Done”</a><a href="#context">Context</a><a href="#sessions">Sessions</a>
+      <a href="#teams">Teams</a><a href="#extend">Extend</a><a href="#compare">Compare</a><a href="#verdict">Verdict</a><a href="#next">Next</a>
+    </nav>
+    <button class="theme" id="themeBtn" aria-label="Toggle theme">◐</button>
+  </div>
+  <div class="progress" id="progress"></div>
+</header>
+
+<main>
+<div class="wrap hero">
+  <div class="kicker">Engineering deep-dive · November 2026</div>
+  <h1>Garuda: the runtime <em>around</em> a coding agent</h1>
+  <p class="lede">Most coding agents are a model in a loop with a shell. Garuda is about everything around that loop: where commands run, what the agent may touch, when work counts as finished, and what gets written down. This post walks through how each part works, how it compares with other tools, and where it's going next.</p>
+  <div class="meta">
+    <span class="pill">v1.2.0</span><span class="pill">Python 3.12+</span><span class="pill">MIT</span><span class="pill">macOS · Linux · WSL 2</span><span class="pill">~81k lines · 470 test files</span>
+  </div>
+  <svg class="hero-svg" viewBox="0 0 720 230" role="img" aria-label="A model loop surrounded by Garuda's layers: permissions, workspace, evidence, and session">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker>
+    </defs>
+    <rect x="10" y="10" width="700" height="210" rx="22" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="30" y="38" font-family="Inter" font-size="12" font-weight="600" fill="var(--muted)" letter-spacing="1.5">SESSION RECORD · EVENTS · BASELINE · METRICS</text>
+    <rect x="40" y="55" width="640" height="145" rx="18" fill="var(--surface)" stroke="var(--line)"/>
+    <text x="60" y="80" font-family="Inter" font-size="12" font-weight="600" fill="var(--muted)" letter-spacing="1.5">WORKSPACE · PERMISSIONS · COMPLETION GATE</text>
+    <g font-family="Inter" font-size="14" font-weight="600" text-anchor="middle">
+      <rect x="80" y="105" width="120" height="58" rx="12" fill="var(--blue-soft)" stroke="var(--blue)"/>
+      <text x="140" y="139" fill="var(--blue)">Model</text>
+      <rect x="300" y="105" width="120" height="58" rx="12" fill="var(--accent-soft)" stroke="var(--accent)"/>
+      <text x="360" y="130" fill="var(--accent)">Permission</text><text x="360" y="148" fill="var(--accent)">check</text>
+      <rect x="520" y="105" width="120" height="58" rx="12" fill="var(--ok-soft)" stroke="var(--ok)"/>
+      <text x="580" y="139" fill="var(--ok)">Tool runs</text>
+    </g>
+    <path class="flowline" d="M200,122 L298,122" stroke="var(--accent)" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <path class="flowline" d="M420,122 L518,122" stroke="var(--accent)" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <path class="flowline" d="M580,163 C580,192 140,192 140,165" stroke="var(--accent)" stroke-width="2" fill="none" marker-end="url(#ah)"/>
+    <circle r="5" fill="var(--accent)"><animateMotion dur="3.2s" repeatCount="indefinite" path="M200,122 L300,122 L420,122 L520,122 L580,140 L580,163 C580,192 140,192 140,165 L140,140 L200,122"/></circle>
+    <text x="360" y="186" text-anchor="middle" font-family="Inter" font-size="11" fill="var(--muted)">tool result fed back → next turn</text>
+  </svg>
+  <p class="muted" style="font-size:.88rem">The inner loop is the part every agent has. The layers around it are Garuda.</p>
+</div>
+
+<!-- WHY -->
+<section id="why"><div class="wrap reveal">
+  <div class="kicker">01 · The problem</div>
+  <h2>Why build a runtime instead of another agent?</h2>
+  <p>A model plus a shell gets surprisingly far. The trouble shows up once you rely on it: the agent says “all tests pass” when it never ran them, two runs edit the same files, a benchmark score moves and nobody can say why, or you switch from Claude to Codex and lose every safety setting you had.</p>
+  <p>Garuda's view is that these are <strong>runtime</strong> problems, not model problems. So it doesn't try to be the smartest agent. It tries to be the most dependable place for any agent to work, whether that's its own built-in loop on any LiteLLM model or an external harness like Claude Code or Codex.</p>
+  <div class="grid3">
+    <div class="mini"><h4>Provider-agnostic</h4><p>Any LiteLLM <code>provider/model</code>, or a subscription harness over ACP. Swapping models doesn't change your safety settings.</p></div>
+    <div class="mini"><h4>Evidence over claims</h4><p>“Done” has to be backed by checks, and verification by <em>your</em> checks is recorded separately from the agent's own.</p></div>
+    <div class="mini"><h4>Honest boundaries</h4><p>The docs say which layer actually confines code (Docker) and which are only guardrails, and the runtime warns you too.</p></div>
+  </div>
+</div></section>
+
+<!-- TOUR -->
+<section id="tour"><div class="wrap reveal">
+  <div class="kicker">02 · The big picture</div>
+  <h2>A task's journey in five steps</h2>
+  <p>Every <code>garuda run</code> follows the same path. Press <b>Play</b>, or click a step.</p>
+  <div class="pipe" id="pipe">
+    <div class="step" data-i="0"><i class="n">1</i><b>Runtime</b><span>who works</span></div>
+    <div class="step" data-i="1"><i class="n">2</i><b>Permissions</b><span>what's allowed</span></div>
+    <div class="step" data-i="2"><i class="n">3</i><b>Workspace</b><span>where it runs</span></div>
+    <div class="step" data-i="3"><i class="n">4</i><b>Completion</b><span>is it done?</span></div>
+    <div class="step" data-i="4"><i class="n">5</i><b>Session</b><span>what's kept</span></div>
+  </div>
+  <div class="pipe-detail" id="pipeDetail">Press Play to walk through a run.</div>
+  <div class="ctrl"><button class="b pri" id="playBtn">▶ Play</button><span class="muted" style="font-size:.85rem">Steps 2–4 repeat each turn until the gate accepts.</span></div>
+  <h3>Under the hood</h3>
+  <p>All entry points (CLI, JSON-RPC server, Python SDK, web dashboard) funnel into one shared function, <code>agents/setup.py::prepare_agent_run</code>. It loads the agent profile, applies the mode preset, and builds the toolkit and permission engine. That one chokepoint is why a rule you set in the CLI also holds in the dashboard.</p>
+  <pre><code><span class="c"># the run path, top to bottom</span>
+interfaces/main.py        → entry (CLI / server / SDK)
+agents/setup.py           → profile + mode + tools + permissions
+workspace/factory.py      → local | tmux | sandbox | docker | remote
+core/loop.py              → model ⇄ tools, turn by turn
+  ├─ steering.py          → what the harness tells the model between turns
+  ├─ tool_runner.py       → executing calls (parallel reads, ordered writes)
+  └─ completion.py        → the gate that decides “done”
+core/sessions.py          → append-only record of all of it</code></pre>
+</div></section>
+
+<!-- RUNTIMES -->
+<section id="runtimes"><div class="wrap reveal">
+  <div class="kicker">03 · Feature</div>
+  <h2>Two kinds of runtime: native and external</h2>
+  <p><strong>Native</strong> is Garuda's own loop. It calls a model through LiteLLM (DeepSeek on OpenRouter by default), with retries, prompt caching, reasoning effort, concurrency limits and cost tracking. Garuda owns every tool call, so it can enforce every rule.</p>
+  <p><strong>External</strong> runtimes are coding harnesses you already pay for (Claude Code, Codex, Cursor, OpenCode, Pi, Goose), launched through the <em>Agent Client Protocol</em> (ACP). Garuda starts the official CLI you're already logged into. It never reads or proxies your vendor OAuth tokens.</p>
+  <div class="tbl"><table>
+    <tr><th></th><th>Native</th><th>External (ACP)</th></tr>
+    <tr><td>Who drives</td><td>Garuda's loop</td><td>Claude Code, Codex, …</td></tr>
+    <tr><td>Credentials</td><td>Your API key</td><td>Your CLI login</td></tr>
+    <tr><td>Permission rules</td><td><span class="tag t-ok">enforced per call</span></td><td><span class="tag t-warn">harness's own authority</span></td></tr>
+    <tr><td>“Done” means</td><td>Completion gate accepted</td><td>Harness ended its turn</td></tr>
+    <tr><td>Recorded</td><td>Messages, events, baseline, delta, metrics</td><td>Normalized events, baseline, delta</td></tr>
+  </table></div>
+  <pre><code>garuda run -t "Fix the failing test"                   <span class="c"># native</span>
+garuda run --runtime claude -t "Fix the failing test"  <span class="c"># Claude Code on your login</span>
+garuda run --runtime codex -t "…" --check "pytest -q"  <span class="c"># your check still verifies it</span>
+garuda runtime handoff --session latest --to codex     <span class="c"># move a native session over</span></code></pre>
+  <div class="callout warn"><p><strong>Being upfront about it:</strong> Garuda records ACP runs and can run your <code>--check</code> afterwards, but it does not apply its native completion gate inside an external harness. The harness acts with its own authority.</p></div>
+</div></section>
+
+<!-- PERMISSIONS -->
+<section id="permissions"><div class="wrap reveal">
+  <div class="kicker">04 · Feature</div>
+  <h2>Permissions: every tool call gets screened</h2>
+  <p>A <strong>profile</strong> (<code>build</code>, <code>plan</code>, <code>explore</code>, <code>reviewer</code>, or one of your own) bundles tools, rules and a system prompt. A <strong>permission mode</strong> decides what happens to each call. Pick a mode to see the same five commands judged differently:</p>
+  <div class="card">
+    <div class="modes" id="modes">
+      <button data-m="smart" class="on">smart</button><button data-m="readonly">readonly</button><button data-m="yolo">yolo</button>
+    </div>
+    <div class="perm" id="perm"></div>
+    <p class="muted" style="font-size:.85rem;margin:10px 0 0">In headless <code>garuda run</code> nobody can answer an “ask”, so it becomes a recorded deny. <code>garuda chat</code> and the dashboard show you the prompt, and you can answer from another terminal with <code>garuda approvals answer</code>.</p>
+  </div>
+  <h3>How the screening works</h3>
+  <p>Smart mode tokenizes the shell command (quotes, escapes, separators, continuation lines) and normalizes paths, including symlinked aliases of the workspace root. When it can't parse something confidently it <em>asks</em> rather than allowing. Hard refusals such as <code>rm -rf /</code> always win.</p>
+  <p><strong>Subagents can't escalate.</strong> A child started with <code>invoke_subagent</code> must pass both its own rules and its parent's, and the stricter answer wins. Roles in flows have a permission <em>ceiling</em> that nothing below can raise.</p>
+  <div class="callout"><p><strong>Guardrail, not sandbox.</strong> Rules screen a command's <em>arguments</em>, not its results. <code>grep '' .</code> can still print a file a path rule denies, and shell indirection can get past a regex. Garuda's docs say this plainly and point to Docker when you need real confinement.</p></div>
+</div></section>
+
+<!-- WORKSPACES -->
+<section id="workspaces"><div class="wrap reveal">
+  <div class="kicker">05 · Feature</div>
+  <h2>Workspaces: where commands actually run</h2>
+  <p>The agent never calls <code>subprocess</code> directly. Everything goes through one <code>Environment</code> protocol, so the same loop runs on your laptop, in a tmux pane, or in a container on another host. Bars show how strongly each kind confines code:</p>
+  <div class="ladder" id="ladder">
+    <div class="rung"><code>local</code><div class="bar"><i data-w="6" style="background:var(--bad)"></i></div><small>guardrails only</small></div>
+    <div class="rung"><code>tmux</code><div class="bar"><i data-w="8" style="background:var(--bad)"></i></div><small>visible, persistent</small></div>
+    <div class="rung"><code>sandbox</code><div class="bar"><i data-w="45" style="background:var(--warn)"></i></div><small>limits writes + net</small></div>
+    <div class="rung"><code>docker</code><div class="bar"><i data-w="90" style="background:var(--ok)"></i></div><small>real boundary</small></div>
+    <div class="rung"><code>remote</code><div class="bar"><i data-w="90" style="background:var(--ok)"></i></div><small>Docker on other host</small></div>
+  </div>
+  <p style="margin-top:1em">The <code>sandbox</code> kind uses Bubblewrap on Linux and Seatbelt on macOS. Seatbelt can stop writes and network, but it <em>can't</em> stop reads of host files. Garuda tests this, records it as an accepted limitation, and warns you when it applies.</p>
+  <h3>Worktrees and leases: safe parallel edits</h3>
+  <p>Every editing session takes a <strong>lease</strong> on the workspace, so two runs can't make overlapping changes. Pass <code>--isolation worktree</code> and each session gets its own Git branch (<code>garuda/&lt;session&gt;</code>). You merge it back only if your checks pass, inside Docker:</p>
+  <pre><code>garuda run --bg --isolation worktree -t "Add retry to the HTTP client"
+garuda run --bg --isolation worktree -t "Write tests for the parser"
+garuda sessions merge NAME --check "pytest -q"   <span class="c"># merges only on green</span></code></pre>
+  <p class="muted">Model calls, MCP servers, web tools and your hooks always run on the host, whichever workspace kind you choose.</p>
+</div></section>
+
+<!-- DONE -->
+<section id="done"><div class="wrap reveal">
+  <div class="kicker">06 · The core idea</div>
+  <h2>When does work count as “done”?</h2>
+  <p>This is what makes Garuda different. A native agent can't just say “I'm done”: it has to call <code>task_complete</code>, and a <strong>completion gate</strong> decides whether to accept. If the evidence is missing or a check fails, the agent gets told why and goes back to work.</p>
+  <div class="card">
+    <svg class="gate-svg" viewBox="0 0 680 210" role="img" aria-label="Agent works, claims done, gate checks; failure loops back, pass is accepted">
+      <defs><marker id="ah2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--muted)"/></marker></defs>
+      <g font-family="Inter" font-size="13" font-weight="600" text-anchor="middle">
+        <rect x="20" y="70" width="120" height="56" rx="12" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="80" y="103" fill="var(--blue)">Agent works</text>
+        <rect x="190" y="70" width="130" height="56" rx="12" fill="var(--surface-2)" stroke="var(--line)"/><text x="255" y="94" fill="var(--ink)">task_complete</text><text x="255" y="112" fill="var(--muted)" font-weight="400" font-size="11">“I'm done”</text>
+        <polygon id="gateShape" points="430,48 500,98 430,148 360,98" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/><text x="430" y="103" fill="var(--accent)">Gate</text>
+        <rect x="550" y="70" width="110" height="56" rx="12" fill="var(--ok-soft)" stroke="var(--ok)"/><text x="605" y="103" fill="var(--ok)">Accepted</text>
+      </g>
+      <path d="M140,98 L188,98" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah2)"/>
+      <path d="M320,98 L358,98" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah2)"/>
+      <path d="M500,98 L548,98" stroke="var(--ok)" stroke-width="1.5" marker-end="url(#ah2)"/>
+      <path d="M430,148 C430,195 80,195 80,128" stroke="var(--bad)" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#ah2)"/>
+      <text x="255" y="192" text-anchor="middle" font-family="Inter" font-size="11" fill="var(--bad)">rejected with feedback: “no test was run”</text>
+      <circle id="token" r="7" fill="var(--accent)" cx="80" cy="98"/>
+      <text id="gateMsg" x="430" y="30" text-anchor="middle" font-family="Inter" font-size="12" fill="var(--muted)"></text>
+    </svg>
+    <div class="ctrl"><button class="b pri" id="gateBtn">▶ Run the gate</button><span class="muted" style="font-size:.85rem">First attempt has no evidence; second has a passing test.</span></div>
+  </div>
+  <h3>How strict? You pick the mode</h3>
+  <div class="tbl"><table>
+    <tr><th>--mode</th><th>What the gate checks</th><th>Extra cost</th></tr>
+    <tr><td><code>interactive</code> <span class="muted">(default)</span></td><td>Local structural checks</td><td>none</td></tr>
+    <tr><td><code>readonly</code></td><td>Same, with permissions forced read-only</td><td>none</td></tr>
+    <tr><td><code>eval</code></td><td>Acceptance contract, LLM judge, <em>discriminating</em> and <em>stable</em> evidence (it re-runs your test), side-effect sweep</td><td>~2 model calls per attempt</td></tr>
+    <tr><td><code>rigorous</code></td><td><code>eval</code> plus plan → execute → critique → repair</td><td>more</td></tr>
+  </table></div>
+  <h3>Self-check vs. verification</h3>
+  <p>Garuda keeps two things apart that most tools blur together. Passing the gate is a <strong>self-check</strong>: the agent graded its own homework. A session is <strong>verified</strong> only by a check <em>you</em> trust, from <code>--check</code>, your <code>garuda.yaml</code>, or a project file you explicitly trusted. Each check leaves a receipt: who asked for it, the exact command, the code it ran against, and the result.</p>
+  <div class="callout ok"><p><strong>Anti-cheating detail:</strong> a check that modifies the code it's checking can't pass. Neither can one that depends on test infrastructure the session itself changed, for example an agent editing <code>conftest.py</code> to make <code>pytest</code> go green.</p></div>
+</div></section>
+
+<!-- CONTEXT -->
+<section id="context"><div class="wrap reveal">
+  <div class="kicker">07 · Feature</div>
+  <h2>Context: keeping long runs in the window</h2>
+  <p>Long tasks produce huge tool outputs. Garuda's <code>ContextManager</code> handles three things:</p>
+  <div class="grid3">
+    <div class="mini"><h4>Adaptive shaping</h4><p>A single tool result may take up to ~25% of the <em>remaining</em> window, with floors so an error message is never cut down to nothing.</p></div>
+    <div class="mini"><h4>Output buffers</h4><p>The full output is saved to a buffer and the model gets a pointer. It can read slices on demand, and buffers are published atomically, so a half-written capture can't look complete.</p></div>
+    <div class="mini"><h4>Condensing</h4><p>Microcompaction and recent-window condensers summarize old turns, and token counts are calibrated against what the provider actually reports.</p></div>
+  </div>
+  <p style="margin-top:1em">Project knowledge comes from <code>AGENTS.md</code>, skills (<code>SKILL.md</code> loaded on demand), and a committed <code>.context/</code> pack of architecture, decisions and conventions. <strong>Memory</strong> works as a proposal: the agent suggests a note and you accept it with <code>garuda memory review</code>. Nothing is remembered silently.</p>
+  <p>Optionally, a cheaper <strong>collection model</strong> can do read-only investigation for the main model, which pays for search and reading with a smaller model while the expensive one keeps the decisions.</p>
+</div></section>
+
+<!-- SESSIONS -->
+<section id="sessions"><div class="wrap reveal">
+  <div class="kicker">08 · Feature</div>
+  <h2>Sessions: everything gets written down</h2>
+  <p>Each run creates a session under <code>~/.agent/sessions/&lt;id&gt;/</code> with metadata, the conversation, and an append-only event log. Garuda also records the workspace's <em>starting</em> state, so it can tell the session's changes apart from edits that were already there.</p>
+  <p>It tracks <strong>four separate facts</strong> per session instead of one fuzzy “status”. Watch a background run go by:</p>
+  <div class="facts" id="facts">
+    <div class="fact"><h5>Process</h5><div class="val" data-k="p">—</div></div>
+    <div class="fact"><h5>Work</h5><div class="val" data-k="w">—</div></div>
+    <div class="fact"><h5>Outcome</h5><div class="val" data-k="o">—</div></div>
+    <div class="fact"><h5>Verification</h5><div class="val" data-k="v">—</div></div>
+  </div>
+  <div class="ctrl"><button class="b pri" id="factBtn">▶ Simulate a run</button><span class="muted" style="font-size:.85rem" id="factNote"></span></div>
+  <h3>What you can do with a session</h3>
+  <pre><code>garuda sessions show latest --json          <span class="c"># all four facts, machine-readable</span>
+garuda run --resume latest -t "Now add docs"  <span class="c"># continue the conversation</span>
+garuda run -t "Review the change from @fix-tests"   <span class="c"># attach another run's brief</span>
+garuda run --trajectory run.jsonl -t "…"     <span class="c"># export events for evaluation</span>
+garuda runtime support --session latest --select causes --preview  <span class="c"># failure evidence</span></code></pre>
+  <p>A <strong>brief</strong> (<code>@name</code>) passes another session's task, state, changed files, checks and final answer, but never its raw transcript. Failure bundles keep bounded, sanitized causal evidence, so you can see the original failure and not only the last one.</p>
+  <p>All of this is also in the local <strong>web dashboard</strong> (<code>garuda web</code>): runs, approvals, a usage ledger of tokens and known cost by model and role, provider quota readings, and one-click starters. Traces can be exported through OpenTelemetry.</p>
+</div></section>
+
+<!-- TEAMS -->
+<section id="teams"><div class="wrap reveal">
+  <div class="kicker">09 · Feature</div>
+  <h2>Roles and flows: a small team of agents</h2>
+  <p>Once you use more than one model, you name <strong>roles</strong> in <code>~/.agent/garuda.yaml</code>. Each role is a harness plus an exact model, effort and permission ceiling. A <strong>flow</strong> runs roles in order, each as its own session, and passes only <em>typed artifacts</em> (plan, patch, review) between them.</p>
+  <div class="card">
+    <svg class="flow-svg" viewBox="0 0 700 170" role="img" aria-label="Plan, build, review flow with typed artifacts passed between steps">
+      <defs><marker id="ah3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--accent)"/></marker></defs>
+      <g font-family="Inter" text-anchor="middle">
+        <rect x="20" y="45" width="150" height="70" rx="14" fill="var(--blue-soft)" stroke="var(--blue)"/>
+        <text x="95" y="75" font-size="14" font-weight="600" fill="var(--blue)">planner</text><text x="95" y="95" font-size="11" fill="var(--muted)">claude · readonly</text>
+        <rect x="275" y="45" width="150" height="70" rx="14" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="350" y="75" font-size="14" font-weight="600" fill="var(--accent)">coder</text><text x="350" y="95" font-size="11" fill="var(--muted)">codex · workspace-write</text>
+        <rect x="530" y="45" width="150" height="70" rx="14" fill="var(--ok-soft)" stroke="var(--ok)"/>
+        <text x="605" y="75" font-size="14" font-weight="600" fill="var(--ok)">reviewer</text><text x="605" y="95" font-size="11" fill="var(--muted)">native · independent</text>
+      </g>
+      <path class="flowline" d="M170,80 L273,80" stroke="var(--accent)" stroke-width="2" marker-end="url(#ah3)"/>
+      <path class="flowline" d="M425,80 L528,80" stroke="var(--accent)" stroke-width="2" marker-end="url(#ah3)"/>
+      <g font-family="JetBrains Mono" font-size="11" text-anchor="middle">
+        <rect id="art1" x="192" y="20" width="60" height="22" rx="6" fill="var(--surface)" stroke="var(--line)"/><text x="222" y="35" fill="var(--ink)">plan</text>
+        <rect id="art2" x="446" y="20" width="60" height="22" rx="6" fill="var(--surface)" stroke="var(--line)"/><text x="476" y="35" fill="var(--ink)">patch</text>
+      </g>
+      <path d="M605,115 C605,160 350,160 350,117" stroke="var(--bad)" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#ah3)"/>
+      <text x="478" y="160" text-anchor="middle" font-family="Inter" font-size="11" fill="var(--bad)">changes requested → bounded repair loop</text>
+    </svg>
+  </div>
+  <pre><code>garuda flow run plan-build-review -t "Add rate limiting" --check "pytest -q"
+garuda flow resume FLOW_ID        <span class="c"># continue after the last finished step</span>
+garuda recovery enable            <span class="c"># auto-continue Codex flows after a quota reset</span></code></pre>
+  <div class="grid2">
+    <div class="mini"><h4>Consults</h4><p>A role can ask another role one question mid-task. The answer comes from a read-only session on a <em>snapshot</em> of the workspace.</p></div>
+    <div class="mini"><h4>Fallbacks and quotas</h4><p>If a harness is missing, logged out, or over its plan limit, a role can fall back to another. Quota recovery continues eligible flows hourly and never replays finished work.</p></div>
+  </div>
+</div></section>
+
+<!-- EXTEND -->
+<section id="extend"><div class="wrap reveal">
+  <div class="kicker">10 · Feature</div>
+  <h2>Tools and extension points</h2>
+  <p>The built-in toolkit covers what a coding agent needs: <code>bash</code>, file read/write, <code>edit</code> and <code>multi_edit</code>, search, PDF and spreadsheet readers, image reading, tmux, web fetch and search (public network only), todos, subagents, and output-buffer slicing. Reads run in parallel (up to 8), and a write splits the batch so ordering stays correct.</p>
+  <div class="tbl"><table>
+    <tr><th>Extension</th><th>How</th><th>Safety posture</th></tr>
+    <tr><td>Agent definitions</td><td><code>garuda agent new NAME --from garuda/build</code></td><td><code>agent check</code> before running; <code>agent prompt</code> shows the exact prompt</td></tr>
+    <tr><td>Skills</td><td><code>.agent/skills/NAME/SKILL.md</code></td><td>Filtered per agent, loaded on demand</td></tr>
+    <tr><td>MCP servers</td><td><code>garuda mcp list</code> / <code>trust</code></td><td>Trusted per entry, not all at once</td></tr>
+    <tr><td>Hooks</td><td><code>hooks:</code> in settings</td><td>Your script can block any tool call</td></tr>
+    <tr><td>Python tools</td><td><code>--load-project-tools</code></td><td>Off unless you opt in</td></tr>
+    <tr><td>Structured output</td><td><code>output.schema</code></td><td>JSON validated, and preserved through subagent handoffs</td></tr>
+  </table></div>
+  <p>For automation there's an SDK (<code>await SoftwareAgent(...).run("…")</code>), a JSON-RPC job server with an agent allowlist, YAML recipes, <code>--json</code> output for CI, and an ACP <em>server</em> so editors can use Garuda as their agent.</p>
+</div></section>
+
+<!-- COMPARE -->
+<section id="compare"><div class="wide reveal">
+  <div class="wrap" style="padding:0">
+    <div class="kicker">11 · Context</div>
+    <h2>How Garuda compares</h2>
+    <p>Garuda overlaps with three groups: vendor coding agents (Claude Code, Codex CLI), open multi-provider agents (OpenCode, Aider, oh-my-pi), and minimal research agents (mini-swe-agent). Its own October 2026 source study of oh-my-pi and mini-swe-agent is careful to say that “stronger contract” doesn't mean a measured end-to-end win. Read the table the same way: it compares <em>design focus</em>, not accuracy.</p>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>Dimension</th><th>Garuda</th><th>Vendor agents<br><span class="muted" style="text-transform:none;font-weight:400">Claude Code, Codex</span></th><th>Open agents<br><span class="muted" style="text-transform:none;font-weight:400">OpenCode, Aider, oh-my-pi</span></th><th>Minimal<br><span class="muted" style="text-transform:none;font-weight:400">mini-swe-agent</span></th></tr>
+    <tr><td>Primary goal</td><td>Runtime + evidence around any agent</td><td>Best experience with one vendor's models</td><td>Rich interactive coding, many providers</td><td>Simple, readable baseline</td></tr>
+    <tr><td>Models</td><td>Any LiteLLM model <em>and</em> those harnesses via ACP</td><td>Vendor's own</td><td>Many providers</td><td>Many via LiteLLM</td></tr>
+    <tr><td>“Done” check</td><td><span class="tag t-ok">gate + your receipts</span></td><td>Agent's judgement, user reviews</td><td>Mostly agent's judgement</td><td>Agent submits; graded outside</td></tr>
+    <tr><td>Confinement story</td><td>Explicit: Docker = boundary, rest = guardrails</td><td>Built-in sandboxes, vary by OS</td><td>Varies</td><td>Delegated to environment</td></tr>
+    <tr><td>Multi-agent</td><td>Typed flows, independent review, consults</td><td>Subagents</td><td>Varies; oh-my-pi is rich here</td><td>None by design</td></tr>
+    <tr><td>Editor experience</td><td><span class="tag t-warn">CLI + dashboard; no live token stream yet</span></td><td><span class="tag t-ok">polished</span></td><td><span class="tag t-ok">rich</span>: LSP, debugger, AST (oh-my-pi)</td><td>Minimal</td></tr>
+    <tr><td>Learning curve</td><td><span class="tag t-bad">steep</span> roles, flows, leases, modes…</td><td>Low</td><td>Low–medium</td><td><span class="tag t-ok">tiny</span></td></tr>
+  </table></div>
+  <div class="wrap" style="padding:0">
+    <p>Garuda's study found that oh-my-pi has richer coding interaction (language servers, semantic edits, AST codemods, debugger tools), while Garuda had stronger guarantees on acceptance checks, permission ceilings, reviewed memory and workspace ownership. mini-swe-agent is far easier to understand, and its conversation history maps directly onto its trajectory.</p>
+    <p>The interesting part is that Garuda <strong>doesn't compete with Claude Code or Codex. It wraps them.</strong> Run Codex as your <code>coder</code> and Claude as your <code>planner</code> on your own subscriptions, with Garuda handling the leases, the record and the final <code>--check</code>.</p>
+  </div>
+</div></section>
+
+<!-- VERDICT -->
+<section id="verdict"><div class="wrap reveal">
+  <div class="kicker">12 · Honest assessment</div>
+  <h2>The good and the not-so-good</h2>
+  <div class="pc">
+    <div class="card good">
+      <h3 style="margin-top:0">Where it shines</h3>
+      <ul>
+        <li><b>“Done” means something.</b> Separating self-check from verification, with receipts, is rare and valuable for CI and benchmarks.</li>
+        <li><b>Honest about safety.</b> It says what's a boundary and what's a guardrail, and fails closed when it isn't sure.</li>
+        <li><b>Brings your own agent.</b> Mix API models and subscription harnesses in one flow, without handing over tokens.</li>
+        <li><b>Parallel without collisions.</b> Leases, worktrees and merges gated on Docker checks.</li>
+        <li><b>Inspectable.</b> Four-fact session state, event logs, trajectories, cost ledger, failure bundles.</li>
+        <li><b>Cheap by default.</b> <code>interactive</code> mode adds no extra model calls. You opt into stricter gates.</li>
+      </ul>
+    </div>
+    <div class="card bad">
+      <h3 style="margin-top:0">Where it hurts</h3>
+      <ul>
+        <li><b>Lots of concepts.</b> Profiles, modes, permission modes, roles, flows, leases, briefs. New users can feel lost.</li>
+        <li><b>ACP runs aren't gated.</b> External harnesses get recorded and can be <code>--check</code>ed, but don't go through the native gate.</li>
+        <li><b>No live token streaming</b> in the native loop yet, so the terminal feels less alive than in vendor tools.</li>
+        <li><b>Local isolation is limited.</b> Seatbelt can't block host reads, and real confinement needs Docker.</li>
+        <li><b>No Windows</b> outside WSL 2, and a ~81k-line codebase to maintain.</li>
+        <li><b>Unproven quality gains.</b> Benchmark scores are single-trial. The project says so, and avoids claiming wins it can't measure.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout"><p><strong>Who should use it?</strong> Teams running agents in CI or on benchmarks, people who switch between providers or subscriptions, and anyone who wants a trustworthy record of what an agent actually did. If you just want a fast chat-in-your-editor experience, a vendor agent is simpler, and Garuda can still wrap it later.</p></div>
+</div></section>
+
+<!-- NEXT -->
+<section id="next"><div class="wrap reveal">
+  <div class="kicker">13 · What's next</div>
+  <h2>The road ahead</h2>
+  <p>Open work is tracked in a single campaign (<a href="https://github.com/Darshan2104/Garuda-openagent/issues/355">#355</a>) built from the October comparative study. The approach: <em>improve existing features before adding new ones</em>, and don't add a capability until the budget and evidence plumbing under it is in place. Six items have shipped (atomic output buffers, typed child results, streaming finish reasons, failure bundles and more). These are the ones still open:</p>
+  <h3 style="margin-top:.8em"><span class="tag t-bad">P1</span> Next up: tighten what already exists</h3>
+  <div class="road">
+    <div class="ri"><h4>One spend budget for the whole run tree</h4><p>A shared dollar cap across parent, subagents and flows, and cost attribution even for failed calls.</p><span class="iss">#363</span></div>
+    <div class="ri"><h4>Evidence packets for reviewers</h4><p>Reviewers get evidence tied to the exact candidate, and findings carry structured provenance.</p><span class="iss">#362 · #361</span></div>
+    <div class="ri"><h4>Consistent approvals everywhere</h4><p>The same approval provenance and permission-ceiling enforcement across CLI, dashboard, server and SDK.</p><span class="iss">#375</span></div>
+    <div class="ri"><h4>Bounded reads and fair search</h4><p>Range and tail reads that don't load whole files, and search results with honest paging and limits.</p><span class="iss">#365 · #367</span></div>
+    <div class="ri"><h4>A frozen evaluation baseline</h4><p>A small, fixed eval set plus a regression corpus built from real workflow incidents, so changes can be measured.</p><span class="iss">#364</span></div>
+    <div class="ri"><h4>Recovery health you can see</h4><p>Quota-recovery tick health stored separately from whether the scheduler is installed.</p><span class="iss">#378</span></div>
+  </div>
+  <h3><span class="tag t-blue">P2</span> Later: a richer coding experience</h3>
+  <div class="road">
+    <div class="ri p2"><h4>Live token streaming in the native loop</h4><p>Without weakening lifecycle and completion semantics.</p><span class="iss">#389</span></div>
+    <div class="ri p2"><h4>Language servers, semantic edits and AST codemods</h4><p>Go-to-definition and fresh diagnostics, version-bound <code>WorkspaceEdit</code>s, codemods with preview before apply.</p><span class="iss">#381 · #382 · #383 · #368 · #369</span></div>
+    <div class="ri p2"><h4>Debugger and code-cell tools</h4><p>Optional DAP tools for processes the agent owns, and confined code cells that call tools through the normal runner.</p><span class="iss">#388 · #387</span></div>
+    <div class="ri p2"><h4>Parallel editing workers and a read-only advisor</h4><p>Independently owned workers whose results are integrated only after checks, and an opt-in advisor at review checkpoints.</p><span class="iss">#384 · #385 · #376</span></div>
+    <div class="ri p2"><h4>Smarter memory and context</h4><p>Memory retrieval with provenance and freshness, investigation scopes, context forks, and conditional reminders.</p><span class="iss">#371 · #370 · #386 · #366</span></div>
+    <div class="ri p2"><h4>Wider ecosystem</h4><p>MCP readiness, reconnects, resources and prompts; oh-my-pi as an ACP runtime; reading other tools' instruction formats; better web provenance; a macOS LaunchAgent for recovery.</p><span class="iss">#372 · #373 · #380 · #374 · #377 · #379</span></div>
+  </div>
+  <div class="callout ok"><p>The direction is clear: keep the evidence and authority model strict, and close the gap on interactive coding features over time without adding complexity the plumbing can't support.</p></div>
+  <h3>Try it in two minutes</h3>
+  <pre><code>git clone https://github.com/Darshan2104/Garuda-openagent.git && cd Garuda-openagent
+python3.12 -m venv .venv && source .venv/bin/activate && pip install -e .
+export OPENROUTER_API_KEY=sk-or-...
+garuda run -t "Map the authentication flow" --mode readonly   <span class="c"># safe first run</span></code></pre>
+</div></section>
+</main>
+
+<footer><div class="wrap">
+  Based on Garuda-openagent <code>main</code> at <code>eaf6702</code> (v1.2.0) and its open GitHub issues as of 2 November 2026. Comparisons describe design focus, not measured performance. ·
+  <a href="https://github.com/Darshan2104/Garuda-openagent">GitHub</a> · <a href="https://darshan2104.github.io/Garuda-openagent/">Docs</a>
+</div></footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // theme toggle
+  var root=document.documentElement;
+  try{var t=localStorage.getItem('garuda-theme'); if(t) root.setAttribute('data-theme',t);}catch(e){}
+  document.getElementById('themeBtn').onclick=function(){
+    var dark = root.getAttribute('data-theme')==='dark' || (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+    var next = dark?'light':'dark'; root.setAttribute('data-theme',next);
+    try{localStorage.setItem('garuda-theme',next);}catch(e){}
+  };
+
+  // progress + toc highlight
+  var bar=document.getElementById('progress'), links=[].slice.call(document.querySelectorAll('#toc a'));
+  var secs=links.map(function(a){return document.querySelector(a.getAttribute('href'));});
+  function onScroll(){
+    var h=document.documentElement; bar.style.width=(h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+'%';
+    var cur=0; secs.forEach(function(s,i){ if(s && s.getBoundingClientRect().top<120) cur=i; });
+    links.forEach(function(a,i){a.classList.toggle('on',i===cur);});
+  }
+  addEventListener('scroll',onScroll,{passive:true}); onScroll();
+
+  // reveal + ladder bars
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){
+    if(!e.isIntersecting) return; e.target.classList.add('in');
+    if(e.target.querySelector('#ladder')) e.target.querySelectorAll('.bar i').forEach(function(i){i.style.width=i.dataset.w+'%';});
+    io.unobserve(e.target);
+  });},{threshold:.12});
+  document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+
+  // pipeline tour
+  var steps=[].slice.call(document.querySelectorAll('#pipe .step')), detail=document.getElementById('pipeDetail');
+  var text=[
+    '<b>Runtime.</b> <code>--runtime</code> picks who does the work: Garuda\'s <em>native</em> loop (any LiteLLM model) or an <em>external</em> harness over ACP. Trusted routing rules can choose for you.',
+    '<b>Permissions.</b> The profile (<code>build</code>, <code>plan</code>, <code>explore</code>…) and permission mode screen every tool call: allow, ask, or refuse. Subagents can never exceed their parent.',
+    '<b>Workspace.</b> The allowed call runs through the <code>Environment</code> protocol: on the host, in tmux, under an OS sandbox, or inside Docker (local or remote). A lease stops overlapping edits.',
+    '<b>Completion.</b> When the agent calls <code>task_complete</code>, the gate checks evidence for the chosen mode. Missing evidence sends the agent back to step 2 with feedback.',
+    '<b>Session.</b> Messages, events, the starting baseline, the workspace delta, metrics, and your trusted check receipts are saved under <code>~/.agent/sessions/</code>.'
+  ];
+  function show(i){steps.forEach(function(s,j){s.classList.toggle('on',j===i);}); detail.innerHTML=text[i];}
+  steps.forEach(function(s,i){s.onclick=function(){stop();show(i);};});
+  var timer=null, playBtn=document.getElementById('playBtn');
+  function stop(){clearInterval(timer);timer=null;playBtn.textContent='▶ Play';}
+  playBtn.onclick=function(){
+    if(timer){stop();return;}
+    var i=0; show(0); playBtn.textContent='❚❚ Pause';
+    timer=setInterval(function(){i++; if(i>=steps.length){stop();return;} show(i);},2600);
+  };
+
+  // permission demo
+  var cmds=[
+    ['cat src/app.py',            {smart:'allow',readonly:'allow',yolo:'allow'}],
+    ['pytest -q',                 {smart:'allow',readonly:'allow',yolo:'allow'}],
+    ['edit_file src/app.py',      {smart:'allow',readonly:'deny',yolo:'allow'}],
+    ['sudo apt install jq',       {smart:'ask',readonly:'deny',yolo:'allow'}],
+    ['rm -rf /',                  {smart:'refuse',readonly:'deny',yolo:'allow'}]
+  ];
+  var cls={allow:'t-ok',ask:'t-warn',deny:'t-bad',refuse:'t-bad'};
+  var perm=document.getElementById('perm');
+  perm.innerHTML=cmds.map(function(c){return '<div class="cmdrow"><span>$ '+c[0]+'</span><span class="verdict"></span></div>';}).join('');
+  var rows=[].slice.call(perm.children), pt=[];
+  function runPerm(m){
+    pt.forEach(clearTimeout); pt=[];
+    rows.forEach(function(r){r.classList.remove('live');});
+    rows.forEach(function(r,i){
+      pt.push(setTimeout(function(){
+        var v=cmds[i][1][m], el=r.querySelector('.verdict');
+        el.className='verdict tag '+cls[v]; el.textContent=v; r.classList.add('live');
+      }, reduce?0:i*380));
+    });
+  }
+  document.querySelectorAll('#modes button').forEach(function(b){
+    b.onclick=function(){document.querySelectorAll('#modes button').forEach(function(x){x.classList.remove('on');}); b.classList.add('on'); runPerm(b.dataset.m);};
+  });
+  var permSeen=false;
+  new IntersectionObserver(function(es,o){ if(es[0].isIntersecting && !permSeen){permSeen=true; runPerm('smart'); o.disconnect();} },{threshold:.4}).observe(perm);
+
+  // gate animation
+  var tok=document.getElementById('token'), msg=document.getElementById('gateMsg'), gateBtn=document.getElementById('gateBtn'), busy=false;
+  function moveTo(x,y,ms){return new Promise(function(res){
+    var sx=+tok.getAttribute('cx'), sy=+tok.getAttribute('cy'), t0=performance.now(); if(reduce) ms=1;
+    (function f(now){var k=Math.min(1,(now-t0)/ms), e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+      tok.setAttribute('cx',sx+(x-sx)*e); tok.setAttribute('cy',sy+(y-sy)*e); k<1?requestAnimationFrame(f):res();})(t0);
+  });}
+  function wait(ms){return new Promise(function(r){setTimeout(r,reduce?1:ms);});}
+  gateBtn.onclick=async function(){
+    if(busy) return; busy=true; tok.setAttribute('fill','var(--accent)');
+    tok.setAttribute('cx',80); tok.setAttribute('cy',98); msg.textContent='Attempt 1: “tests pass” (none run)';
+    await moveTo(255,98,700); await moveTo(430,98,600);
+    tok.setAttribute('fill','var(--bad)'); msg.textContent='✗ Rejected: no discriminating evidence'; await wait(700);
+    await moveTo(430,180,400); await moveTo(80,180,800); await moveTo(80,98,400);
+    tok.setAttribute('fill','var(--accent)'); msg.textContent='Agent runs pytest → 12 passed'; await wait(900);
+    msg.textContent='Attempt 2: done, with evidence';
+    await moveTo(255,98,700); await moveTo(430,98,600);
+    tok.setAttribute('fill','var(--ok)'); msg.textContent='✓ Evidence accepted'; await moveTo(605,98,600);
+    busy=false;
+  };
+
+  // session facts
+  var seq=[
+    {p:'running',w:'queued',o:'—',v:'—',n:'Waiting for a capacity slot…'},
+    {p:'running',w:'working',o:'—',v:'—',n:'Agent is editing in its worktree.'},
+    {p:'running',w:'waiting',o:'—',v:'—',n:'An approval is pending, answer it from any terminal.'},
+    {p:'running',w:'working',o:'—',v:'—',n:'Approved, back to work.'},
+    {p:'exited',w:'done',o:'completed',v:'—',n:'The agent passed its self-check…'},
+    {p:'exited',w:'done',o:'completed',v:'passed',n:'…and your trusted pytest check passed. Now it\'s verified.'}
+  ];
+  var colors={running:'var(--blue)',working:'var(--accent)',waiting:'var(--warn)',queued:'var(--muted)',done:'var(--ok)',completed:'var(--ok)',passed:'var(--ok)',exited:'var(--muted)'};
+  var vals={}; document.querySelectorAll('#facts .val').forEach(function(v){vals[v.dataset.k]=v;});
+  var note=document.getElementById('factNote'), ft=null;
+  document.getElementById('factBtn').onclick=function(){
+    clearInterval(ft); var i=0;
+    function paint(s){['p','w','o','v'].forEach(function(k){vals[k].textContent=s[k]; vals[k].style.color=colors[s[k]]||'var(--muted)';}); note.textContent=s.n;}
+    paint(seq[0]); ft=setInterval(function(){i++; if(i>=seq.length){clearInterval(ft);return;} paint(seq[i]);}, reduce?400:1500);
+  };
+})();
+</script>
+</body>
+</html>

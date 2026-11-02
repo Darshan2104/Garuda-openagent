@@ -89,6 +89,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Blog: https://darshan2104.github.io/Garuda-openagent/blog/
   - Get started:
       - Quickstart: guides/getting-started.md
       - How Garuda works: guides/how-garuda-works.md
