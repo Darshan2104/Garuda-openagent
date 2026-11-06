@@ -274,6 +274,13 @@ async def test_context_overflow_compacts_and_retries_instead_of_dying(tmp_path: 
         and e["payload"].get("reason") == "context_overflow"
     ]
     assert recovery and recovery[0]["recovered"] is True
+    failed_calls = [e["payload"] for e in result.metadata["events"]
+                    if e["type"] == "model_response" and e["payload"].get("outcome") == "failed"]
+    assert len(failed_calls) == 1
+    assert failed_calls[0]["usage"] == {}
+    assert failed_calls[0]["usage_unknown"] == [
+        "completion_tokens", "cost_usd", "prompt_tokens", "total_tokens",
+    ]
 
 
 async def test_overflow_books_compaction_time_as_compaction_not_model(tmp_path: Path):

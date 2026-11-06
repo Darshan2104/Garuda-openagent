@@ -19,6 +19,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
+from garuda.model.usage import usage_metadata
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
 
@@ -36,7 +37,7 @@ def current() -> EventStore | None:
     return _events.get()
 
 
-def record(purpose: str, model: Any, response: Any, duration_ms: float) -> None:
+def record(purpose: str, model: Any, response: Any, duration_ms: float, *, failed: bool = False) -> None:
     events = _events.get()
     if events is None:
         return
@@ -47,14 +48,19 @@ def record(purpose: str, model: Any, response: Any, duration_ms: float) -> None:
         "duration_ms": round(duration_ms, 3),
         "model": getattr(model, "model_name", None),
         "accounting": "auxiliary",
+        **usage_metadata(response, failed=failed),
+        **({"outcome": "failed"} if failed else {}),
     })
 
 
 async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwargs: Any):
-    """``await model.complete(...)``, recorded as a ``purpose`` call. A failed call is
-    not recorded: it produced no usage to count."""
+    """Record one logical call, including known usage and unknown coverage on failure."""
     started = time.monotonic()
-    response = await model.complete(messages, *args, **kwargs)
+    try:
+        response = await model.complete(messages, *args, **kwargs)
+    except Exception as exc:
+        record(purpose, model, exc, (time.monotonic() - started) * 1000, failed=True)
+        raise
     record(purpose, model, response, (time.monotonic() - started) * 1000)
     return response
 

@@ -47,6 +47,7 @@ from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
 from garuda.model import accounting
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import ContextOverflowError, Model
+from garuda.model.usage import usage_metadata
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig, AgentResult, Message, Role
@@ -253,7 +254,9 @@ class DefaultAgent:
         if record is not None:
             record.model_ms = model_ms[0]
         state.accumulate_usage(response.usage)
-        state.context.note_usage(response.usage)
+        state.context.note_usage(
+            response.attempt_usage[-1]["usage"] if response.attempt_usage else response.usage
+        )
         self._record_response(state, response, turn, model_ms[0])
 
         call = next(
@@ -337,6 +340,18 @@ class DefaultAgent:
                     # config that reads as tightening it.
                     max_tokens=state.config.max_tokens,
                 )
+        except Exception as exc:
+            usage = getattr(exc, "usage", {})
+            usage = usage if isinstance(usage, dict) else {}
+            state.accumulate_usage(usage)
+            state.events.append(EventType.MODEL_RESPONSE, {
+                "turn": state.metrics.current.turn if state.metrics.current else None,
+                "usage": usage,
+                "duration_ms": elapsed[0],
+                "outcome": "failed",
+                **usage_metadata(exc, failed=True),
+            })
+            raise
         finally:
             # Runs after the stopwatch's own exit has filled the holder, so this is
             # correct on the raising path too — which is the one that matters here.
@@ -449,7 +464,9 @@ class DefaultAgent:
         if record is not None:
             record.model_ms = model_ms[0]
         state.accumulate_usage(response.usage)
-        state.context.note_usage(response.usage)
+        state.context.note_usage(
+            response.attempt_usage[-1]["usage"] if response.attempt_usage else response.usage
+        )
         self._scrub(response)
         self._record_response(state, response, turn, model_ms[0])
 
@@ -543,6 +560,7 @@ class DefaultAgent:
                 for call in response.tool_calls
             ],
             "usage": response.usage,
+            **usage_metadata(response),
         }
         # Gives observability/tracing.py the extent its `llm` spans lacked: they were
         # emitted with start_time == end_time, so every model call in a trace showed
