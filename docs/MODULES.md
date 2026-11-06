@@ -722,7 +722,8 @@ reviewer runs. P1a flows still have no acceptance-check phase.
 `harbor_adapter.py` (Harbor benchmark integration; pins `mode="eval"`),
 `harbor_environment.py`, `answer_checks.py` (decidable deliverable checks
 derived from the task statement, such as a named result file existing and
-parsing), `ablation.py` (per-variant config matrix),
+parsing), `ablation.py` (per-variant config matrix; `run_minimal_pair` replays
+one ScriptModel script with one selected boolean mechanism changed),
 `atif_export.py`, `dashboard.py`, `costs.py` (four-tier cost resolution),
 `pricing.py` (the versioned price snapshot `costs.py` resolves against, so a
 reported cost does not move when an upstream table does).
@@ -748,6 +749,16 @@ provenance, emits aggregate trial records without raw events, and refuses
 incomplete pairs or an accidental report overwrite. Its input validation and
 session-to-record projection deliberately share this one 338-line trust
 boundary, rather than allowing a second entry point to bypass the refusals).
+
+`minimal.py` loads the frozen, digest-identified `fixtures/minimal-v1.json`;
+schema drift requires a reviewed evaluation revision rather than inheriting new
+`AgentConfig` defaults. `incidents.py` drives synthetic fixture repositories
+through the existing native loop, Environment, config, permission, no-edits,
+edit, flow recovery and quota claim owners. Its opt-in contract-matrix entry
+records known unguarded behavior as expected-fail. `evidence.py` validates the
+additive matrix provenance: task/model/runtime/prompt/tool/environment/check,
+configuration and authority identities, explicit unknowns, model completion,
+authorized acceptance and contract coverage. Ordinary matrix output is unchanged.
 
 ## Everything else
 

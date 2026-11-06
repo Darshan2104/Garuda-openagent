@@ -381,3 +381,19 @@ garuda run --mode eval --trajectory run.jsonl -t "Make the failing tests pass"
 `--trajectory` saves the run's events for analysis. For benchmark setups and
 paired dual-model reports (`garuda eval dual-model report ...`), see
 [Evaluation](../evaluation/index.md).
+
+## Run offline incident regressions
+
+```bash
+python -m garuda.eval.contract_matrix --incidents --out incident-reports
+```
+
+This opt-in corpus creates temporary synthetic Git repositories and runs
+ScriptModel responses without provider calls or credentials. Inspect
+`incident-reports/incidents-v1.json` for separate model completion, authorized
+acceptance, coverage and unknown cost. Six contracts currently pass; partial
+tool arguments are explicitly expected-fail because a well-formed prefix on
+a length-truncated response can execute. Exit zero means the corpus recorded
+its expected outcomes, including that gap. It does not mean every guard exists.
+See [Evaluation](../evaluation/index.md#offline-incident-evidence) for scope and
+controlled comparisons.
