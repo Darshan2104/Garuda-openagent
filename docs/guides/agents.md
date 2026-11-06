@@ -118,6 +118,9 @@ tools:
   `web_fetch` and `web_search` take `allowed_domains` (a host and its
   subdomains, redirects included). That is a guardrail on what the tool
   requests, not network confinement.
+- `edit` and `multi_edit` take `contract: legacy | versioned` (default
+  `legacy`). See [Refuse edits to files that changed since they were read](../use-cases/change-code.md#refuse-edits-to-files-that-changed-since-they-were-read).
+  Any other value refuses the definition.
 - **Delegation is bounded.** `tools.subagents` (default `explore`, `plan`,
   `reviewer`) is enforced when a child starts and can only narrow further down.
   A run's whole tree is limited to two levels deep, eight launches, one child

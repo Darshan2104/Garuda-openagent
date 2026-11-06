@@ -65,7 +65,10 @@ tool authorized by the user-owned global config. Project tools cannot self-bless
 Execution: `bash.py` (a command that backgrounds something also records the
 process group it leaves behind, so the pre-completion sweep has an exact handle
 on it), `background.py`, `tmux.py`.
-Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
+Files: `files.py`, `edit.py`, `multi_edit.py` (with `source_version.py`: reads
+report a session-, path- and content-bound version token; edits honour an
+optional `expected_version`, required under the `tools.options` edit contract
+`versioned` (#368)), `search.py` (ripgrep-backed),
 `diagnostics.py` (post-edit syntax + lint).
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.

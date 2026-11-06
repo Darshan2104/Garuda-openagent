@@ -1,4 +1,5 @@
 from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.source_version import version_token, versioned_reads
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
@@ -84,7 +85,11 @@ class ReadFileTool:
                 f"\n(file has {total} lines total; showing {shown_start}-{shown_end}"
                 " — use offset/limit to read more)"
             )
-        return ToolResult(tool_call_id="", content=output)
+        # The token names the full content, not just the lines shown.
+        token = version_token(ctx, env, path, content)
+        if versioned_reads(ctx):
+            output += f"\n(version: {token})"
+        return ToolResult(tool_call_id="", content=output, metadata={"source_version": token})
 
 
 class WriteFileTool:

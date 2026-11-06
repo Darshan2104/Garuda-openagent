@@ -11,6 +11,7 @@ too.
 
 from garuda.tools.edit import _first_diff, _snippet_around, resolve_edit
 from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.source_version import contract_option, precondition_error
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -56,9 +57,15 @@ class MultiEditTool:
                     "required": ["old_string", "new_string"],
                 },
             },
+            "expected_version": {
+                "type": "string",
+                "description": "The version read_file reported; the edit is refused if the "
+                "file changed since (required under the versioned edit contract)",
+            },
         },
         "required": ["path", "edits"],
     }
+    options_schema = {"contract": contract_option}
 
     async def execute(
         self,
@@ -86,6 +93,10 @@ class MultiEditTool:
                 ),
                 is_error=True,
             )
+
+        refusal = precondition_error(arguments, ctx, env, path, content, self.name)
+        if refusal:
+            return self._abort(refusal)
 
         working = content
         total_replacements = 0
@@ -120,7 +131,9 @@ class MultiEditTool:
         from garuda.tools.diagnostics import post_edit_report
 
         message += await post_edit_report(env, path, ctx)
-        return ToolResult(tool_call_id="", content=message)
+        from garuda.tools.edit import _with_version
+
+        return _with_version(message, ctx, env, path, working)
 
     @staticmethod
     def _validate(edit: object, index: int) -> str | None:
