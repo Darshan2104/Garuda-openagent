@@ -575,6 +575,8 @@ def build_parser():
     agent_show.add_argument("--workspace", default=".")
     agent_show.add_argument("--json", action="store_true")
     agent_show.add_argument("--raw", action="store_true", help="Show text unredacted (local only)")
+    agent_show.add_argument("--instruction-sources", action="store_true",
+                            help="Inspect instruction discovery and loading without importing configuration")
     agent_prompt = agent_sub.add_parser(
         "prompt", help="The static system prompt, section by section, with sizes and a digest")
     agent_prompt.add_argument("name")
@@ -1261,8 +1263,9 @@ def run_agent(args) -> int:
                     print(f"{r['qualified']:<28} {r['source']:<9}{ext} {r['description']}{shadow}")
             return 0
         if command == "show":
-            data = inspect.show(args.name, args.workspace, raw=args.raw)
-            if args.json:
+            data = inspect.show(args.name, args.workspace, raw=args.raw,
+                                instruction_sources=args.instruction_sources)
+            if args.json or args.instruction_sources:
                 print(json.dumps(data, indent=2, default=str))
             else:
                 print(f"{data['name']}  ({data['source']}: {data['path']})")

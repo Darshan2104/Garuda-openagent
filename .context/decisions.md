@@ -2361,3 +2361,19 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Foreign instruction discovery grants no authority (#374)
+
+The existing `agent show` API/CLI exposes an opt-in instruction-source report.
+This slice maps only repository-proven text sources: `AGENTS.md`, `GARUDA.md`
+and `CLAUDE.md`, plus explicitly configured memory/instruction paths. Final
+native static prompt sections determine load status and order, preserving all
+default loading, inheritance bounds, prompt caps and activation refusals.
+The resolver retains structural ignored legacy keys and effective instruction
+references without values or a second source read. Inspection reports bounded
+discovery, contained file aliases, duplicate bytes/identity and overlapping
+different text; semantic conflicts and external harness loading remain unknown.
+Foreign executable configuration is always not imported. No subprocess,
+workspace interpreter, vendor settings/credentials, trust grant or runtime
+activation is introduced; directory symlinks are not traversed and unsafe or
+incomplete sources remain refused/unknown.
