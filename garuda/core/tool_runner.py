@@ -24,6 +24,7 @@ from garuda.core.metrics import RunMetrics, stopwatch
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
 from garuda.plugins.hooks import HookRegistry
+from garuda.plugins.reminders import ReminderObserver
 from garuda.tools.protocol import Tool, ToolContext, ToolDispatcher
 from garuda.types import Message, Role, ToolCall, ToolResult
 from garuda.workspace.health import EnvironmentUnavailableError
@@ -113,6 +114,7 @@ class ToolRunner:
     # The run's working state. The runner is the only place that sees every command
     # and every error, so it is where checks and failures get recorded.
     state: WorkingState | None = None
+    reminders: ReminderObserver | None = None
 
     # -- gating ---------------------------------------------------------------
 
@@ -217,6 +219,7 @@ class ToolRunner:
             "turn": turn,
             "session_id": self.events.session_id,
             "deadline_monotonic": getattr(self.ctx, "deadline_monotonic", None),
+            **({"reminders": self.reminders} if self.reminders is not None else {}),
         }
 
     # -- single call ----------------------------------------------------------

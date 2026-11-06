@@ -53,6 +53,8 @@ import yaml
 
 from garuda.types import ToolCall, ToolResult
 
+from .reminders import ReminderConfig, ReminderObserver, load_reminders
+
 logger = logging.getLogger(__name__)
 
 BeforeToolHook = Callable[[ToolCall, dict[str, Any]], Awaitable[ToolCall | None]]
@@ -233,6 +235,7 @@ class HookRegistry:
     after_tool: list[AfterToolHook] = field(default_factory=list)
     session_start: list[SessionHook] = field(default_factory=list)
     session_end: list[SessionHook] = field(default_factory=list)
+    reminders: ReminderConfig = field(default_factory=ReminderConfig)
 
     def register_before_tool(self, hook: BeforeToolHook, *, on_failure: str = "block") -> None:
         """Add a guard. It fails closed unless registered with ``on_failure="allow"``."""
@@ -302,6 +305,9 @@ class HookRegistry:
                 continue
             if updated is not None:
                 current = updated
+        reminders: ReminderObserver | None = context.get("reminders")
+        if reminders is not None:
+            reminders.observe_tool(call, current)
         return current
 
     async def on_session_start(self, task: str, session_id: str) -> None:
@@ -408,7 +414,9 @@ def global_settings_path() -> Path:
     return _global_settings_path()
 
 
-def build_hook_registry(workspace_root: str | Path | None = None) -> HookRegistry:
+def build_hook_registry(
+    workspace_root: str | Path | None = None, *, strict_reminders: bool = False
+) -> HookRegistry:
     """Build a HookRegistry from the global settings file, plus project settings
     files if the user has explicitly trusted them.
 
@@ -424,7 +432,7 @@ def build_hook_registry(workspace_root: str | Path | None = None) -> HookRegistr
     """
     from garuda.config.agent_home import resolve_agent_home
 
-    registry = HookRegistry()
+    registry = HookRegistry(reminders=load_reminders(workspace_root, strict=strict_reminders))
     global_path = global_settings_path()
     if global_path.is_file():
         try:

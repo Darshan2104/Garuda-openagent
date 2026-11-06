@@ -65,6 +65,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Tool options | Bash timeouts, web domain allowlists, subagent limits | `tools.options` in an agent | [Agents guide](../guides/agents.md#tools) |
 | MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | Hooks | Your script guards every direct or discovered target call | `hooks:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#block-or-log-tool-calls-with-a-hook) |
+| Conditional reminders | Trusted declarative rules queue bounded advisory notes after tool results, with inspectable source and counts | `reminders:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#remind-the-agent-after-relevant-tool-calls) |
 | Python tools | Your own tools, opt-in | `garuda run --load-project-tools -t "…"` | [Level 3](../use-cases/customize.md#add-your-own-python-tools) |
 
 ## Roles, flows and teams

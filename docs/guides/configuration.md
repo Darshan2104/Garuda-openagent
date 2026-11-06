@@ -299,6 +299,71 @@ a mutating tool, the batch runs sequentially.
 
 Profile rule syntax (`tool_rules`, `path_rules`, `bash_rules`) is shown in
 [Create your own agent](../use-cases/customize.md#create-your-own-agent).
+
+### Conditional reminders
+
+`reminders` in the global settings file accepts `rules`, `max_injections`
+(default 8, range 1–64), and `strict` (default false). A project settings file
+may supply only `rules`, enabled by the existing global boolean
+`trust_project_hooks: true`. This is the same broad opt-in that enables project
+shell hooks, not a new file-specific content grant. A project cannot trust
+itself or set strictness/the shared run cap. Both `.agent/settings.yaml` and
+legacy `.garuda/settings.yaml` are supported; rules from different files retain
+separate source identities. `garuda config trust` binds `garuda.yaml`, which is
+a separate format and does not authorize these settings-file reminders.
+
+Each rule accepts only:
+
+| Field | Contract |
+|---|---|
+| `id` | 1–64 ASCII letters, digits, `_`, `.` or `-`; unique in its source |
+| `text` | 1–2048 characters of advisory text, never executed |
+| `max_injections` | 1–8, default 1, per native run |
+| `when.tool` | Case-sensitive tool-name glob, at most 256 characters |
+| `when.event` | Only `tool_result` in this slice; requires this or `tool` |
+| `when.outcome` | Optional `success` or `error`, from the completed result |
+| `when.arguments` | With `tool` only: up to 8 top-level argument names, each mapping to exactly one `literal` string (at most 8192 characters) or `glob` string (at most 256); all must match |
+
+Patterns compare full strings, not substrings. Glob syntax is `*`, `?`, and
+character classes; regexes, callables, commands, unknown fields and a missing
+tool/event selector are invalid. Matching sees the final resolved tool call and
+post-hook result, including parallel calls and cached deliveries. Permission
+denials, guard-blocked calls, and the separately owned completion gate do not
+produce after-tool observations. Event-only rules can match result outcomes
+without inspecting arguments or result text.
+
+At most 32 rules load across all sources, from unique-key YAML settings files
+of at most 1 MiB each. A tool rule matches only when its complete JSON arguments
+fit within 16,384 aggregate string characters, 256 tree nodes and depth 8;
+integers must fit 64 bits and floats must be finite. Over-limit arguments are
+skipped whole. Nothing matches a clipped prefix.
+
+Only one reminder per rule can wait in the queue. Already delivered identical
+tool-name/complete-arguments/outcome triggers are deduplicated for that rule;
+different triggers can repeat within its budget. Counters and deduplication
+survive compaction. Native phases sharing a run, including rigorous mode's
+planner and repair attempts, share the cap. A new native run gets a new budget,
+including on resume; historical messages do not authorize new rules. Event-only
+triggers with over-limit arguments rely on pending deduplication and caps.
+Pending notes at termination
+are not injected and cannot extend the run. External ACP harnesses do not use
+native steering and do not receive these reminders.
+
+Invalid rules warn with their source and index and are omitted while valid
+siblings continue. A malformed block/file is omitted. Set global
+`reminders.strict: true`, or call `build_hook_registry(..., strict_reminders=True)`
+in Python, to refuse loading on errors. Untrusted project rules are reported as
+`reminder.untrusted` and ignored. Duplicate ids in one source are refused.
+
+The event trail records only rule/run ids, source, action and cumulative counts,
+with at most 256 diagnostic events plus one final snapshot per loaded rule.
+Snapshots retain exact counts when diagnostic events are omitted (up to the
+signed 64-bit counter ceiling). The existing dashboard run JSON's
+`trajectory.reminders` exposes the latest snapshot, including whether it is
+final and how many diagnostic records were omitted. Absent historical records
+stay absent rather than reporting a known zero. Reminder text is present only
+in delivered conversation notes, not these audit records. See the
+[reminder demonstration](../use-cases/customize.md#remind-the-agent-after-relevant-tool-calls).
 Read [Safety and workspaces](safety-and-workspaces.md) before enabling project
 code, permissive modes, network access, or host-backed execution.
 

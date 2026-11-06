@@ -175,6 +175,8 @@ class DefaultAgent:
 
                 return await self._final_submission(state, model, turn)
             finally:
+                if state.emit_session_events and state.steering.reminders is not None:
+                    state.steering.reminders.finish()
                 accounting.reset(accounting_token)
 
     async def _final_submission(

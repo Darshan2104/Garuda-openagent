@@ -2361,3 +2361,28 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+
+## 2026-11-06 — Trusted declarative reminders use native steering (#386)
+
+Reminder rules live in global settings or project settings enabled through the
+existing global `trust_project_hooks: true` mechanism. That is the existing broad
+project-hook opt-in, not a new content-bound file grant; a project cannot opt
+itself in or set the shared run cap. The `garuda.yaml` content-trust mechanism
+remains separate. Invalid rules warn and are omitted, or refuse loading when the
+user selects strict mode. Defaults contain no rules.
+
+The shared after-tool hook point observes completed resolved calls/results;
+there is no workspace execution, stream matcher, user regex or callable. Matching
+has explicit rule, tree, string and pattern limits. Per-run state queues advisory
+notes through steering, deduplicates pending and delivered identical triggers,
+and bounds injections per rule and across the run. Compaction cannot reset these
+budgets, reminders add no turns, and permission/tool/completion owners retain
+all authority. Native phases sharing a session span share their budget; a fresh
+native run, including resume, starts a fresh budget.
+
+Bounded audit records contain source, rule/run identity and counters, never
+reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
+snapshots preserve cumulative counts and disclose omissions through existing
+trajectory inspection. External harnesses retain their own loop and do not
+receive native reminders.

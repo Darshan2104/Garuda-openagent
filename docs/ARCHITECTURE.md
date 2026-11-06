@@ -114,6 +114,17 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
+   Optional declarative reminders (`plugins/reminders.py`) observe completed
+   tool results through the existing after-tool hook point, including parallel
+   and discovered calls. Only global settings and project settings enabled by
+   the existing global `trust_project_hooks: true` opt-in supply rules. The
+   matcher reads complete, bounded arguments or the observed result outcome;
+   rules cannot supply regexes, callables or commands. Per-run state queues
+   source-labelled advisory text for `steering.flush`, with pending and repeated
+   trigger deduplication, per-rule limits and a shared injection ceiling. It
+   survives compaction, adds no turns, and never changes permissions, schemas or
+   completion gates. Bounded text-free audit snapshots retain trigger, injection
+   and suppression counts for trajectory inspection. No rules is the default.
    The loop calls `Model.complete()`; model streaming APIs and renderer delta
    hooks do not yet provide native token-by-token loop rendering. External
    harness streaming is a separate runtime path. Standalone ACP runs can use

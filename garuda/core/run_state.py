@@ -182,6 +182,8 @@ class RunState:
         established are on the result so a caller can see them without replaying
         the event log.
         """
+        if self.emit_session_events and self.steering.reminders is not None:
+            self.steering.reminders.finish()
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
@@ -238,6 +240,8 @@ class RunState:
     def bare_result(self, success: bool, final_message: str, turns: int) -> AgentResult:
         """Result without run-behaviour metadata, for failures that happened before
         the run produced any: a model error or a dead workspace."""
+        if self.emit_session_events and self.steering.reminders is not None:
+            self.steering.reminders.finish()
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
@@ -993,6 +997,12 @@ async def prepare_run(
         # which only exist once the run is assembled — and passing a callable keeps
         # garuda/context from having to import garuda/core to read them.
         context.set_state_provider(run_state.render_state_card)
+    if hooks.reminders.rules:
+        from garuda.plugins.reminders import bind_reminders
+
+        reminders = bind_reminders(hooks.reminders, events)
+        run_state.runner.reminders = reminders
+        run_state.steering.reminders = reminders
     if built_runner:
         # A child never outruns the turns its parent has left.
         subagent_runner.turns_left = lambda: max(1, config.max_turns - run_state.turn)
