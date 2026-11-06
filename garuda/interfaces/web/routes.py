@@ -841,11 +841,19 @@ def _resolve_approval(request: Request, ctx: DashboardContext, match) -> Respons
     body = request.json_body()
     if not isinstance(body, dict) or not isinstance(body.get("approved"), bool):
         return invalid("`approved` must be true or false.")
+    if not isinstance(body.get("owner"), str) or not isinstance(body.get("digest"), str):
+        return invalid("`owner` and `digest` from the pending approval are required.")
     outcome = ctx.live.approvals.resolve_from_thread(
-        match["ask_id"], body["approved"], loop=ctx.loop
+        match["ask_id"], body["approved"], loop=ctx.loop,
+        owner=body["owner"], digest=body["digest"],
     )
     if outcome == "unknown":
         return not_found(f"No pending approval {match['ask_id']!r}.")
+    if outcome == "mismatch":
+        # Another chat's ask, or a card for an action that is not the one pending.
+        return error("approval_mismatch",
+                     "That answer does not match the pending approval's owner and request.",
+                     status=409)
     if outcome == "already_resolved":
         # Answered by the other tab, the timeout, or the reaper. A 409 rather than a 200,
         # because the caller's answer is not what the agent acted on.

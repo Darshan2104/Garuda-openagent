@@ -245,9 +245,13 @@ async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch
     parse = build_parser().parse_args
 
     assert run_approvals(parse(["approvals", "list", SID, "--workspace", str(tmp_path)])) == 0
-    assert "bash(make release)" in capsys.readouterr().out
+    listed = capsys.readouterr().out
+    assert "bash(make release)" in listed and f"digest={request['digest']}" in listed
+    stale = parse(["approvals", "answer", SID, request["approval_id"], "--allow",
+                   "--digest", "0" * 64, "--workspace", str(tmp_path)])
+    assert run_approvals(stale) == 2  # not the request the answerer was shown
     answer = parse(["approvals", "answer", SID, request["approval_id"], "--deny",
-                    "--workspace", str(tmp_path)])
+                    "--digest", request["digest"], "--workspace", str(tmp_path)])
     assert run_approvals(answer) == 0
     assert bool(await task) is False
     assert run_approvals(answer) == 2  # one answer only

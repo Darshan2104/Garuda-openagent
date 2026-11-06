@@ -660,6 +660,8 @@ def build_parser():
     decision.add_argument("--allow", action="store_true")
     decision.add_argument("--deny", action="store_true")
     approvals_answer.add_argument("--workspace", default=".")
+    approvals_answer.add_argument(
+        "--digest", help="Refuse unless the pending request has this digest (from `approvals list`)")
 
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
@@ -1422,7 +1424,8 @@ def run_approvals(args) -> int:
     directory = store.session_dir(session_id) / "approvals"
     if args.approvals_command == "answer":
         try:
-            write_answer(directory, session_id, args.approval_id, allow=args.allow)
+            write_answer(directory, session_id, args.approval_id, allow=args.allow,
+                         expect_digest=getattr(args, "digest", None))
         except FileExistsError:
             print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
             return 2
@@ -1437,7 +1440,8 @@ def run_approvals(args) -> int:
         print("No parked approvals.")
         return 0
     for request in pending:
-        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
+        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
+              f"  digest={request.get('digest')}")
     return 0
 
 
