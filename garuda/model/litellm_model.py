@@ -3,6 +3,7 @@ import email.utils
 import inspect
 import json
 import logging
+import math
 import random
 import time
 import uuid
@@ -17,6 +18,7 @@ from garuda.model.protocol import (
     StreamDelta,
     estimate_tools_tokens,
 )
+from garuda.model.usage import attach_usage, attempts_for, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -263,6 +265,10 @@ def _merge_slot(slot: dict, frag: dict) -> None:
         slot["arguments"] += frag["arguments"]
 
 
+def _field(value, name, default=None):
+    return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
 def _provider_cost(response, raw_usage) -> float | None:
     """The cost the provider billed for this call, when it says so.
 
@@ -271,34 +277,51 @@ def _provider_cost(response, raw_usage) -> float | None:
     reports `usage.cost`; others expose it through litellm's hidden params.
     """
     for candidate in (
-        getattr(raw_usage, "cost", None),
-        (getattr(response, "_hidden_params", None) or {}).get("response_cost"),
+        _field(raw_usage, "cost"),
+        _field(raw_usage, "cost_usd"),
+        _field(_field(response, "_hidden_params") or {}, "response_cost"),
     ):
-        if isinstance(candidate, (int, float)) and candidate >= 0:
+        if (isinstance(candidate, (int, float)) and not isinstance(candidate, bool)
+                and math.isfinite(candidate) and candidate >= 0):
             return float(candidate)
     return None
 
 
-def _extract_usage(response) -> dict[str, float]:
-    usage: dict[str, float] = {}
-    if not getattr(response, "usage", None):
-        return usage
-    raw = response.usage
-    usage["prompt_tokens"] = raw.prompt_tokens or 0
-    usage["completion_tokens"] = raw.completion_tokens or 0
-    usage["total_tokens"] = getattr(raw, "total_tokens", None) or (
-        usage["prompt_tokens"] + usage["completion_tokens"]
-    )
-    details = getattr(raw, "prompt_tokens_details", None)
-    cached = getattr(details, "cached_tokens", None) if details else None
-    if cached:
-        usage["cache_read_tokens"] = cached
-    cache_creation = getattr(raw, "cache_creation_input_tokens", None)
-    if cache_creation:
-        usage["cache_creation_tokens"] = cache_creation
+def _extract_usage(response) -> dict[str, int | float]:
+    usage: dict[str, int | float] = {}
+    raw = _field(response, "usage")
+    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = _field(raw, name)
+        # LiteLLM fills omitted token fields with zero before Garuda sees them.
+        # Without wire provenance those zeros are ambiguous; explicit dict zeros
+        # remain known, while normalized zeros stay unknown.
+        if isinstance(raw, litellm.Usage) and value == 0:
+            continue
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            usage[name] = value
+    if not usage.get("total_tokens") and {"prompt_tokens", "completion_tokens"} <= usage.keys():
+        usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+    for name, value in (
+        ("cache_read_tokens", _field(_field(raw, "prompt_tokens_details"), "cached_tokens")),
+        ("cache_creation_tokens", _field(raw, "cache_creation_input_tokens")),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            usage[name] = value
     cost = _provider_cost(response, raw)
     if cost is not None:
         usage["cost_usd"] = cost
+    return usage
+
+
+def _error_usage(exc: Exception) -> dict:
+    response = getattr(exc, "response", None)
+    usage = _extract_usage(response)
+    if callable(getattr(response, "json", None)):
+        try:
+            usage.update(_extract_usage(response.json()))
+        except (ValueError, TypeError, RuntimeError):
+            pass
+    usage.update(_extract_usage(exc))
     return usage
 
 
@@ -494,13 +517,19 @@ class LitellmModel:
     ) -> ModelResponse:
         kwargs = self._build_kwargs(messages, tools, temperature, max_tokens)
 
-        response = await self._complete_with_retries(kwargs)
-        choice = response.choices[0]
-        message = choice.message
-        content = message.content
-        tool_calls = _parse_tool_calls(message.tool_calls or [])
-        reasoning_content = getattr(message, "reasoning_content", None)
-        thinking_blocks = _normalize_thinking_blocks(getattr(message, "thinking_blocks", None))
+        attempts: list[dict] = []
+        response = await self._complete_with_retries(kwargs, attempts)
+        try:
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content
+            tool_calls = _parse_tool_calls(message.tool_calls or [])
+            reasoning_content = getattr(message, "reasoning_content", None)
+            thinking_blocks = _normalize_thinking_blocks(getattr(message, "thinking_blocks", None))
+        except Exception as exc:
+            attempts[-1]["outcome"] = "failed"
+            attach_usage(exc, attempts)
+            raise
 
         return ModelResponse(
             content=content,
@@ -510,22 +539,29 @@ class LitellmModel:
                 "finish_reason": getattr(choice, "finish_reason", None),
                 "status": getattr(response, "status", None),
             },
-            usage=_extract_usage(response),
+            usage=sum_usage(attempts),
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks,
+            attempt_usage=attempts,
         )
 
-    async def _complete_with_retries(self, kwargs: dict):
+    async def _complete_with_retries(self, kwargs: dict, attempts: list[dict] | None = None):
+        if attempts is None:
+            attempts = []
         try:
-            return await self._attempt_with_retries(kwargs)
+            return await self._attempt_with_retries(kwargs, attempts)
         except litellm.ContextWindowExceededError as exc:
             # Re-raised as a provider-agnostic type so the loop can recognise the
             # one model failure it can act on — shrink the prompt and try again —
             # without importing litellm. Translated here rather than in `complete`
             # so the streaming path gets it too.
-            raise ContextOverflowError(str(exc)) from exc
+            error = ContextOverflowError(str(exc))
+            attach_usage(error, attempts)
+            raise error from exc
 
-    async def _attempt_with_retries(self, kwargs: dict):
+    async def _attempt_with_retries(self, kwargs: dict, attempt_usage: list[dict] | None = None):
+        if attempt_usage is None:
+            attempt_usage = []
         # At least one attempt even if max_retries is 0 (otherwise the loop body
         # never runs and we would `raise None`).
         attempts = max(1, self._max_retries)
@@ -538,10 +574,15 @@ class LitellmModel:
                 # Acquire the slot per attempt so a request sleeping on backoff
                 # releases its slot instead of starving the rest of the fleet.
                 async with governor.slot(provider):
-                    return await litellm.acompletion(**kwargs)
+                    response = await litellm.acompletion(**kwargs)
+                if not kwargs.get("stream"):
+                    attempt_usage.append(usage_attempt(_extract_usage(response), "success"))
+                return response
             except Exception as exc:
+                attempt_usage.append(usage_attempt(_error_usage(exc), "failed"))
                 # Non-transient errors (400/401/404, context-window, etc.) fail fast.
                 if not _is_retryable(exc):
+                    attach_usage(exc, list(attempt_usage))
                     raise
                 last_exc = exc
                 if attempt == attempts:
@@ -565,6 +606,7 @@ class LitellmModel:
                 )
                 await asyncio.sleep(wait)
                 delay = min(delay * 2, _MAX_RETRY_SLEEP)
+        attach_usage(last_exc, list(attempt_usage))
         raise last_exc  # type: ignore[misc]
 
     async def stream(
@@ -586,14 +628,26 @@ class LitellmModel:
         # Ask the provider to emit a final usage chunk so streamed runs still get
         # token/cost accounting (otherwise usage is lost for TUI sessions).
         kwargs["stream_options"] = {"include_usage": True}
-        response_stream = await self._complete_with_retries(kwargs)
-        async for chunk in response_stream:
-            for delta in _stream_deltas_from_chunk(chunk):
-                yield delta
-            usage = _extract_usage(chunk)
-            if usage:
-                yield StreamDelta(usage=usage)
-        yield StreamDelta(done=True)
+        attempts: list[dict] = []
+        response_stream = await self._complete_with_retries(kwargs, attempts)
+        usage: dict = {}
+        try:
+            async for chunk in response_stream:
+                # Usage chunks are cumulative snapshots of this attempt, not deltas.
+                reported = _extract_usage(chunk)
+                usage.update(reported)
+                current = attempts + [usage_attempt(usage, "success")]
+                if reported:
+                    yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
+                for delta in _stream_deltas_from_chunk(chunk):
+                    yield delta
+        except Exception as exc:
+            usage.update(_error_usage(exc))
+            attach_usage(exc, attempts + [usage_attempt(usage, "failed")])
+            raise
+        current = attempts + [usage_attempt(usage, "success")]
+        yield StreamDelta(done=True, usage=sum_usage(current) if not usage and attempts else None,
+                          attempt_usage=current)
 
     async def complete_streaming(
         self,
@@ -613,7 +667,8 @@ class LitellmModel:
         reasoning_parts: list[str] = []
         thinking_blocks: list[dict] | None = None
         tool_frags: dict = {}
-        usage: dict[str, int] = {}
+        usage: dict = {}
+        attempts: list[dict] = []
         finish_reason: str | None = None
         status: str | None = None
         try:
@@ -634,17 +689,29 @@ class LitellmModel:
                     _merge_tool_fragment(tool_frags, delta.tool_call_delta)
                 if delta.usage:
                     usage = delta.usage
+                if delta.attempt_usage is not None:
+                    attempts = delta.attempt_usage
                 observed_finish_reason = getattr(delta, "finish_reason", None)
                 if observed_finish_reason is not None:
                     finish_reason = observed_finish_reason
                 observed_status = getattr(delta, "status", None)
                 if observed_status is not None:
                     status = observed_status
-        except Exception:
+        except Exception as exc:
             # A stream that dies mid-response cannot be safely resumed; fall back to
             # a fresh non-streaming completion rather than returning a partial answer.
             logger.warning("Streaming failed mid-response; retrying without streaming", exc_info=True)
-            return await self.complete(messages, tools, temperature, max_tokens)
+            failed = getattr(exc, "attempt_usage", None) or attempts or [usage_attempt(usage, "failed")]
+            failed = [dict(a) for a in failed]
+            failed[-1]["outcome"] = "failed"
+            try:
+                response = await self.complete(messages, tools, temperature, max_tokens)
+            except Exception as fallback_exc:
+                attach_usage(fallback_exc, failed + attempts_for(fallback_exc, "failed"))
+                raise
+            response.attempt_usage = failed + attempts_for(response, "success")
+            response.usage = sum_usage(response.attempt_usage)
+            return response
 
         content = "".join(content_parts) or None
         raw_calls = [
@@ -666,6 +733,7 @@ class LitellmModel:
             usage=usage,
             reasoning_content="".join(reasoning_parts) or None,
             thinking_blocks=thinking_blocks,
+            attempt_usage=attempts,
         )
 
     def count_tokens(self, messages: list[Message]) -> int:

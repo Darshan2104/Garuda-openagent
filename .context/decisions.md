@@ -2361,3 +2361,19 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+
+## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
+
+- Model responses and original raised exception types carry `attempt_usage` and
+  known `usage` subtotals. Stream snapshots update one attempt; fallback is a
+  separate attempt in the same logical call. Retry policy remains unchanged.
+- Missing telemetry stays unknown. LiteLLM's normalized zero token defaults are
+  ambiguous and withheld; explicit raw dictionary zeros remain known. Reported
+  cost survives absent token usage, with no inferred provider prices.
+- The timed loop boundary and auxiliary accounting emit one `model_response`
+  per logical call, including failures, with `outcome: failed` and per-field
+  unknown coverage. Existing event identities make ledger replay idempotent.
+  Known subtotals and unknown coverage coexist in aggregates and usage views;
+  ordinary legacy model responses need no new fields. Context gauges use the
+  final request's usage rather than repeated-prompt spend totals.

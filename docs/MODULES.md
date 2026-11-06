@@ -271,6 +271,33 @@ usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is
 reported as `None`; Garuda does not infer it from content, tools, exhaustion, or
 the synthetic `done` delta. `script_model.py` carries explicitly scripted
 metadata through the same public stream contract.
+
+`usage.py` owns logical-call usage subtotals and coverage. LiteLLM responses and
+raised errors expose `attempt_usage`: one `{usage, outcome}` entry per provider
+attempt, including failed retries and interrupted streams. `usage` sums known
+reported fields once; absent fields remain unknown. Stream snapshots update the
+same attempt, and non-streaming fallback adds a new attempt. Original exception
+types, retry policy and fallback behavior are retained. LiteLLM-normalized zero
+token fields cannot distinguish omitted telemetry from genuine zeros, so those
+ambiguous values remain unknown; explicit zeros in raw usage dictionaries remain
+known. Cost-only reports survive without token telemetry. The context gauge uses
+the last attempt's usage, not the sum of repeated prompts.
+
+The loop records failed calls at its timed model boundary (including recovered
+context overflow and final submission); `accounting.complete` records auxiliary
+failures. Each emits one `model_response` event per logical call, with
+`outcome: failed`, known `usage`, `attempt_usage`, and `usage_unknown` listing
+fields missing from any attempt. Successful calls carry the same additive
+coverage metadata. No per-attempt accounting events are emitted.
+`aggregate_model_metrics`, the usage ledger and usage views retain known
+subtotals while counting incomplete costs as unknown. Metrics add
+`usage_unknown_calls` and ledger totals add `usage_unknown_records` when needed;
+these map field names to counts of incomplete calls. Ledger rows retain
+`usage_unknown` and failure outcome, and reconciliation uses the existing event
+identity to avoid counting a call twice. Legacy models may omit attempt metadata.
+The fixed CSV/JSON usage export retains its historical columns; detailed coverage
+is available in session events and ledger rows.
+
 `governor.py` caps per-provider concurrency; `script_model.py` is the deterministic
 test double — prefer it over mocks. `transports.py` is the admission registry
 for direct transports: citation, capabilities, double, opt-in test, cost
