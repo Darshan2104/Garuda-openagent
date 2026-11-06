@@ -2361,3 +2361,29 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — MCP servers declare readiness and reconnect only proved losses (#372)
+
+An MCP entry may set `required: true`; the default stays optional. Every server
+starts concurrently in its own owner task behind one startup barrier
+(`MCP_STARTUP_DEADLINE`). A server not ready by the deadline is stopped, never
+left to register tools late. A required server that is not ready closes all
+servers and raises `McpStartupError`, a `ConfigError`, from the shared
+`build_toolkit` path before any prompt work; an untrusted project server marked
+required refuses like one a profile names. A non-boolean `required` counts as
+required so a typo cannot drop a critical server silently.
+
+Per-server state (starting, ready, failed, reconnecting, closed) with a
+redacted reason, counts and timestamps is a pure read of manager memory, shown
+by `garuda mcp list` and recorded in session meta as `mcp_servers`; it never
+probes a server.
+
+Only a stdio read stream ending by itself is a proved connection loss. The
+owner relaunches the configuration admitted at startup at most
+`MCP_RECONNECT_ATTEMPTS` times with capped backoff, and only while its source
+entry still has the same `spec_digest` and, for a project server, the trust
+grant still holds. Remote transports are not reconnected. A call in flight on a
+lost connection fails with the transport's error and is never replayed; calls
+while the server is not ready fail without being queued. Admitted tool objects
+keep their effect and trust; schemas refresh in place, tools the server drops
+refuse, and newly listed tools wait for a new run.
