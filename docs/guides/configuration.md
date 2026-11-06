@@ -191,6 +191,15 @@ about the remote implementation. Side-effecting and unknown tools stay
 unavailable to collection workers, and lazy `use_tool` calls re-check the
 selected tool.
 
+Resource and prompt access is separately opt-in: add
+`"context_access": ["resources", "prompts"]` to the exact server's **global**
+entry (either interface can be enabled alone). This grants the generated context
+tool a trusted read-only effect through the same MCP authority path. Project
+entries, including project overrides of global names, cannot grant or inherit
+this access. The default remains tools only. See the
+[resource and prompt example](../use-cases/customize.md#read-mcp-resources-and-prompts)
+for calls, bounds and unsupported capabilities.
+
 ## Initial runtime selection
 
 `garuda run` picks the runtime a session starts on from the first source that

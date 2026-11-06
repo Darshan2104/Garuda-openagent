@@ -61,6 +61,12 @@ conservative `ToolEffect` vocabulary. Missing declarations resolve to `UNKNOWN`;
 collection policy trusts declarations only from actual built-ins or an exact MCP
 tool authorized by the user-owned global config. Project tools cannot self-bless.
 `registry.py` + `__init__.py::build_toolkit` assemble the set a profile asks for.
+The MCP manager also admits a read-only context tool when the user-owned global
+entry opts into `context_access`. It follows the existing direct/lazy tool path
+without another connection or workspace command. `mcp/content.py` projects
+bounded resource/prompt text and metadata as untrusted data, with provenance,
+explicit omissions and `artifact_source` facts for the shared artifact owner.
+Upstream completeness and omitted source bytes remain unknown.
 
 Execution: `bash.py` (a command that backgrounds something also records the
 process group it leaves behind, so the pre-completion sweep has an exact handle
