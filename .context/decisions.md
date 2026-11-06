@@ -2374,3 +2374,19 @@ runs the wrapper; an attempt without its own result is `running` or `uncertain`.
 Health never authorizes dispatch: account, version, workspace, receipt and
 exclusive-claim gates stay authoritative. A health-write failure on the error
 path never masks the tick's own exception.
+
+## 2026-11-06 — Opt-in verified macOS recovery scheduling (#379)
+
+- Cron remains the default. `recovery enable --backend launchd` selects a
+  per-user GUI-domain LaunchAgent whose label is derived from the absolute
+  recovery root. Status and disable use the saved backend; switching requires
+  disabled settings and verified prior removal.
+- The `0600` plist under `~/Library/LaunchAgents` invokes the existing private
+  wrapper with the installed interpreter and Codex binding. Exact plist bytes,
+  private wrapper content and loaded-job identity/state must read back before
+  publishing enabled. Non-macOS, OS errors and unknown diagnostics fail closed.
+- Disable publishes disabled before unloading only the exact matching label,
+  verifies absence and removes only its matching plist. Status never runs a
+  tick or probes quota; unobserved job counts stay unknown. Tick health from
+  #378 remains independent execution evidence. No sleep/login/reboot catch-up
+  guarantee is inferred without live platform observations.
