@@ -13,6 +13,7 @@ from pathlib import Path
 
 from garuda.types import ExecResult
 from garuda.workspace.sandbox_policy import DockerLimits
+from garuda.workspace.text_reads import TextPage
 
 
 class RemoteWorkspace:
@@ -207,6 +208,10 @@ class RemoteEnvironment:
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
         return result.stdout
+
+    async def read_text_page(self, path: str, *, offset: int = 1,
+                             limit: int = 2000, tail: bool = False) -> TextPage:
+        raise NotImplementedError('Bounded text reads are not supported by this backend')
 
     async def read_bytes(self, path: str) -> bytes:
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
