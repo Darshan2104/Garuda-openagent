@@ -108,11 +108,25 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
     rel = f"artifacts/{step}-{attempt}-{type}.txt"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(flow_dir / rel, flags, 0o400)
+    complete = False
     try:
-        os.write(fd, data)
+        written = 0
+        while written < len(data):
+            count = os.write(fd, data[written:])
+            if count <= 0:
+                raise OSError("flow artifact write made no progress")
+            written += count
         os.fsync(fd)
+        if os.fstat(fd).st_size != len(data):
+            raise OSError("incomplete flow artifact write")
+        complete = True
     finally:
         os.close(fd)
+        if not complete:
+            try:
+                os.unlink(flow_dir / rel)
+            except OSError:
+                pass
     return ArtifactRef(type=type, digest=hashlib.sha256(data).hexdigest(), producer_step=step,
                        producer_session=session_id, attempt=attempt, size=len(data),
                        workspace_version=workspace_version, path=rel)
@@ -120,7 +134,7 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
 
 def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> str:
     """The artifact's content, after every check in the module docstring."""
-    if ref.version != ARTIFACT_VERSION:
+    if type(ref.version) is not int or ref.version != ARTIFACT_VERSION:
         raise ArtifactError("flow.input_version",
                             f"{ref.type} from {ref.producer_step} is artifact version "
                             f"{ref.version!r}; this Garuda reads version {ARTIFACT_VERSION}")
@@ -161,6 +175,13 @@ def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> 
     finally:
         if directory is not None:
             os.close(directory)
+    return validate_content(ref, data, workspace_version=workspace_version)
+
+
+def validate_content(ref: ArtifactRef, data: bytes, *, workspace_version: str | None) -> str:
+    """The owner's byte/identity checks for granted reads and execution inputs."""
+    if type(ref.version) is not int or ref.version != ARTIFACT_VERSION:
+        raise ArtifactError("flow.input_version", "unsupported artifact version")
     if len(data) != ref.size or hashlib.sha256(data).hexdigest() != ref.digest:
         raise ArtifactError("flow.input_forged",
                             f"{ref.path} does not match the digest its step recorded")

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from garuda.context.condenser import (
@@ -14,7 +15,12 @@ from garuda.context.condenser import (
     make_condenser,
     reset_condenser,
 )
-from garuda.context.shaper import DEFAULT_MAX_OUTPUT_BYTES, shape_observation
+from garuda.context.shaper import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    ObservationShape,
+    shape_observation,
+    shape_observation_evidence,
+)
 from garuda.model.protocol import Model, count_request_tokens, estimate_tools_tokens
 from garuda.types import Message, Role
 
@@ -215,7 +221,18 @@ def local_request_estimate(messages: list[Message], tools: list[dict] | None) ->
     return sum(_estimate_tokens(m) for m in messages) + estimate_tools_tokens(tools)
 
 
+@dataclass(frozen=True)
+class _ArchiveRendering:
+    content: str
+    omitted_source_bytes: int | None
+
+
 def render_archive_transcript(messages: list[Message]) -> str:
+    """Compatibility view of the grep-friendly archive's text."""
+    return _render_archive_transcript(messages).content
+
+
+def _render_archive_transcript(messages: list[Message]) -> _ArchiveRendering:
     """Render dropped messages as a grep-friendly plain-text transcript.
 
     Line-oriented on purpose (one header per message, raw content below) so
@@ -223,10 +240,13 @@ def render_archive_transcript(messages: list[Message]) -> str:
     """
     lines = [
         "Conversation segment compacted out of the live context.",
-        "Format: one '--- [n] <role> ---' header per message, full content below.",
+        "Format: one '--- [n] <role> ---' header per message, retained text below.",
         "",
     ]
+    omitted: int | None = 0
     for index, message in enumerate(messages, start=1):
+        if message.metadata.get("args_pruned"):
+            omitted = None
         header = f"--- [{index}] {message.role.value}"
         if message.name:
             header += f" tool={message.name}"
@@ -239,12 +259,15 @@ def render_archive_transcript(messages: list[Message]) -> str:
             except (TypeError, ValueError):
                 args = str(call.arguments)
             lines.append(f"[tool call] {call.name}({args[:2000]})")
+            if omitted is not None:
+                omitted += len(args[2000:].encode("utf-8"))
         if message.images:
+            omitted = None
             lines.append(f"[{len(message.images)} image(s) omitted from archive]")
         if message.content:
             lines.append(message.content)
         lines.append("")
-    return "\n".join(lines)
+    return _ArchiveRendering("\n".join(lines), omitted)
 
 
 class ContextManager:
@@ -425,6 +448,9 @@ class ContextManager:
     def shape_observation(self, output: str, is_error: bool = False) -> str:
         return shape_observation(output, self.output_budget(is_error), is_error=is_error)
 
+    def shape_observation_evidence(self, output: str, is_error: bool = False) -> ObservationShape:
+        return shape_observation_evidence(output, self.output_budget(is_error), is_error=is_error)
+
     def set_tools(self, tools_schema: list[dict] | None) -> None:
         """Record the tool schemas that ride on every request.
 
@@ -564,7 +590,7 @@ class ContextManager:
         card = self.working_state()
         buffers = self._buffer_ids()
         if buffers:
-            card = f"{card}\n\n## Retrievable buffers\n" + "\n".join(
+            card = f"{card}\n\n## Buffer references (availability unverified)\n" + "\n".join(
                 f"  - buffer:{bid}" for bid in buffers
             ) + (
                 "\nRetrieve with buffer_grep(buffer_id=..., pattern=...) or "
@@ -582,22 +608,57 @@ class ContextManager:
             )
         return handoff
 
-    def _buffer_ids(self) -> list[str]:
-        """Buffer ids referenced anywhere in the live history, in first-seen order."""
+    def _buffer_ids(self, storage_session_id: str | None = None) -> list[str]:
+        """Owned references first; text compatibility is limited to legacy facts."""
+        from garuda.core.artifact_read_model import validate_descriptor
+        from garuda.core.child_result import (
+            artifact_from_child_result_reference,
+            validate_child_result_envelope,
+        )
+
+        attached = getattr(self._buffer, "session_id", None)
+        if storage_session_id is not None and attached is not None and storage_session_id != attached:
+            return []
+        selected = storage_session_id or attached
         seen: list[str] = []
         for message in self._messages:
-            for bid in _BUFFER_ID_RE.findall(message.content or ""):
+            metadata = message.metadata if message.metadata is not None else {}
+            if not isinstance(metadata, dict):
+                continue
+            candidates = []
+            if "child_result" in metadata:
+                try:
+                    child = validate_child_result_envelope(metadata["child_result"])
+                except (ValueError, TypeError, RecursionError):
+                    continue
+                if child is not None and child["delivery"]["state"] == "referenced":
+                    reference = child["delivery"]["reference"]
+                    try:
+                        artifact_from_child_result_reference(reference)
+                    except ValueError:
+                        continue
+                    if selected and reference["parent_session_id"] == selected:
+                        candidates = [reference["buffer_id"]]
+            else:
+                capture = validate_descriptor(metadata.get("artifact_capture"))
+                if capture is None:
+                    if "artifact_capture" not in metadata:
+                        candidates = _BUFFER_ID_RE.findall(message.content or "")
+                elif (capture["owner"]["kind"] == "buffer" and selected
+                      and capture["storage_session_id"] == selected):
+                    candidates = [capture["owner"]["reference"]]
+            for bid in candidates:
                 if bid not in seen:
                     seen.append(bid)
         return seen[:MAX_HANDOFF_BUFFERS]
 
-    def referenced_buffer_ids(self) -> tuple[str, ...]:
+    def referenced_buffer_ids(self, *, storage_session_id: str | None = None) -> tuple[str, ...]:
         """Buffer ids safe to expose in a bounded brief handoff.
 
         This is intentionally the same capped, transcript-derived set used by
         :meth:`fork`; it does not reveal every buffer in the session directory.
         """
-        return tuple(self._buffer_ids())
+        return tuple(self._buffer_ids(storage_session_id))
 
     def _used_tokens(self) -> int:
         """Tokens the next request will carry, as well as we can know it.
@@ -796,21 +857,57 @@ class ContextManager:
         dropped = [m for m in self._messages if id(m) not in kept_ids]
         if not dropped:
             return
+        from garuda.core.artifact_read_model import (
+            failed_descriptor,
+            inherited_source_capture,
+            source_capture,
+        )
+
+        capture = source_capture(kind="context_archive", completeness="unknown")
         try:
-            rendered = render_archive_transcript(dropped)
+            rendering = _render_archive_transcript(dropped)
+            rendered = rendering.content
             digest = hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:8]
             self._archive_seq += 1
             buffer_id = f"archive_{self._archive_seq}_{digest}"
-            self._buffer.store(buffer_id, rendered, tool_name="context_archive")
+            capture = inherited_source_capture(
+                [message.metadata.get("artifact_capture") for message in dropped
+                 if message.role == Role.TOOL or "artifact_capture" in message.metadata],
+                kind="context_archive",
+                identity=buffer_id,
+            )
+            if rendering.omitted_source_bytes != 0:
+                previous_omitted = capture["omitted_source_bytes"]
+                if capture["completeness"] == "complete":
+                    capture["completeness"] = "partial"
+                    if previous_omitted is None:
+                        previous_omitted = 0
+                capture["omitted_source_bytes"] = (
+                    previous_omitted + rendering.omitted_source_bytes
+                    if previous_omitted is not None and rendering.omitted_source_bytes is not None else None
+                )
+            ref = self._buffer.store(
+                buffer_id, rendered, tool_name="context_archive", capture=capture
+            )
         except Exception:
             logger.warning("Failed to archive compacted context", exc_info=True)
-            return
-        pointer = (
-            f"[context-archive] {len(dropped)} earlier messages were compacted out of "
-            f"context. Their full transcript is archived in buffer:{buffer_id} — recover "
-            f'details with buffer_grep(buffer_id="{buffer_id}", pattern="...") or '
-            f'buffer_slice(buffer_id="{buffer_id}", start_line=N, end_line=M).'
-        )
+            artifact_capture = failed_descriptor(
+                storage_session_id=self._buffer.session_id, producer="context_archive",
+                source=capture, reason="capture_failed",
+            )
+            pointer = (
+                f"[context-archive] {len(dropped)} earlier messages were compacted out of "
+                "context, but their capture failed. The archive is unavailable."
+            )
+        else:
+            artifact_capture = ref.artifact
+            qualifier = "full" if ref.completeness == "complete" else ref.completeness
+            pointer = (
+                f"[context-archive] {len(dropped)} earlier messages were compacted out of "
+                f"context. Their {qualifier} captured transcript is archived in buffer:{buffer_id} — recover "
+                f'details with buffer_grep(buffer_id="{buffer_id}", pattern="...") or '
+                f'buffer_slice(buffer_id="{buffer_id}", start_line=N, end_line=M).'
+            )
         # Attach the pointer to the message the condenser just created (the summary),
         # or, for condensers that drop without summarizing, insert it after the task.
         old_ids = {id(m) for m in self._messages}
@@ -819,6 +916,7 @@ class ContextManager:
         )
         if summary is not None:
             summary.content = f"{summary.content}\n\n{pointer}"
+            summary.metadata["artifact_capture"] = artifact_capture
             return
         insert_at = 0
         for index, message in enumerate(new_messages):
@@ -827,4 +925,6 @@ class ContextManager:
                 break
             if message.role == Role.SYSTEM:
                 insert_at = index + 1
-        new_messages.insert(insert_at, Message(role=Role.USER, content=pointer))
+        new_messages.insert(insert_at, Message(
+            role=Role.USER, content=pointer, metadata={"artifact_capture": artifact_capture},
+        ))

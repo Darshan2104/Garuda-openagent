@@ -33,10 +33,11 @@ has already invalidated, and the cost of being wrong is not symmetric.
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from garuda.core.side_effects import is_backgrounding
-from garuda.types import ToolCall
+from garuda.types import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class _Entry:
     content: str
     is_error: bool
     first_step: int
+    artifact_capture: dict | None = None
 
 
 @dataclass
@@ -172,7 +174,12 @@ class ActionMemo:
         return signature, count
 
     def lookup(self, call: ToolCall, signature: str) -> tuple[str, bool] | None:
-        """Cached (content, is_error) for a repeated read-only call, else None."""
+        """Compatibility view of a cached observation without its metadata."""
+        result = self.lookup_result(call, signature)
+        return (result.content, result.is_error) if result is not None else None
+
+    def lookup_result(self, call: ToolCall, signature: str) -> ToolResult | None:
+        """Return cached content with its bounded capture evidence, if eligible."""
         if call.name not in CACHEABLE_TOOLS:
             return None
         if call.name == "buffer_slice" and any(
@@ -188,7 +195,13 @@ class ActionMemo:
         if entry is None:
             return None
         self.hits += 1
-        return entry.content + CACHE_HIT_SUFFIX.format(first=entry.first_step), entry.is_error
+        return ToolResult(
+            tool_call_id=call.id,
+            content=entry.content + CACHE_HIT_SUFFIX.format(first=entry.first_step),
+            is_error=entry.is_error,
+            metadata={"artifact_capture": deepcopy(entry.artifact_capture)}
+                if entry.artifact_capture is not None else {},
+        )
 
     def record(
         self,
@@ -200,13 +213,16 @@ class ActionMemo:
     ) -> None:
         """Store a result and, if the call mutated anything, drop cached reads."""
         self._note_background(call, metadata)
+        from garuda.core.artifact_read_model import validate_descriptor
+
+        capture = validate_descriptor((metadata or {}).get("artifact_capture"))
         if call.name in WORKSPACE_READ_TOOLS:
             # Not stored at all while a background task runs: storing it now and
             # declining to serve it is the same thing until the task ends, at
             # which point the stale entry would become servable again.
             if not self.filesystem_is_volatile:
                 self._entries.setdefault(
-                    signature, _Entry(content=content, is_error=is_error, first_step=self.step)
+                    signature, _Entry(content=content, is_error=is_error, first_step=self.step, artifact_capture=capture)
                 )
             return
         if call.name in BUFFER_READ_TOOLS:
@@ -216,7 +232,7 @@ class ActionMemo:
             ):
                 return
             self._entries.setdefault(
-                signature, _Entry(content=content, is_error=is_error, first_step=self.step)
+                signature, _Entry(content=content, is_error=is_error, first_step=self.step, artifact_capture=capture)
             )
             return
         if call.name not in NON_MUTATING_TOOLS:

@@ -720,12 +720,7 @@ class DefaultAgent:
 
             if TOOL_ARG_PARSE_ERROR_KEY in call.arguments:
                 state.context.append(
-                    Message(
-                        role=Role.TOOL,
-                        content=call.arguments[TOOL_ARG_PARSE_ERROR_KEY],
-                        name=call.name,
-                        tool_call_id=call.id,
-                    )
+                    state.runner.error_message(call, call.arguments[TOOL_ARG_PARSE_ERROR_KEY])
                 )
                 continue
 

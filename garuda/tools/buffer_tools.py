@@ -399,6 +399,7 @@ class BufferListTool:
         lines = [
             f"{r.buffer_id} | {r.size_bytes} bytes | {r.line_count} lines"
             + (f" | tool={r.tool_name}" if r.tool_name else "")
+            + f" | completeness={r.completeness} | {r.availability}"
             for r in refs
         ]
         return ToolResult(tool_call_id="", content="\n".join(lines))

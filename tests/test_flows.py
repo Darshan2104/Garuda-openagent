@@ -271,6 +271,7 @@ async def test_a_stale_input_refuses(repo):
 
 @pytest.mark.parametrize("attack, code", [
     ("forged", "flow.input_forged"), ("symlink", "flow.input_not_regular"),
+    ("parent-symlink", "flow.input_not_regular"),
     ("escape", "flow.input_escapes"), ("missing", "flow.input_missing"),
 ])
 def test_artifact_inputs_are_checked(tmp_path, attack, code):
@@ -285,6 +286,11 @@ def test_artifact_inputs_are_checked(tmp_path, attack, code):
         path.unlink()
         (tmp_path / "elsewhere").write_text("the plan")
         path.symlink_to(tmp_path / "elsewhere")
+    elif attack == "parent-symlink":
+        artifacts = path.parent
+        moved = flow / "moved-artifacts"
+        artifacts.rename(moved)
+        artifacts.symlink_to(moved, target_is_directory=True)
     elif attack == "escape":
         ref = art.ArtifactRef(**{**ref.to_dict(), "path": "../outside.txt"})
     elif attack == "missing":
@@ -292,6 +298,27 @@ def test_artifact_inputs_are_checked(tmp_path, attack, code):
     with pytest.raises(art.ArtifactError) as caught:
         art.load(flow, ref, workspace_version="v1")
     assert caught.value.code == code
+
+
+def test_flow_artifact_store_retries_short_writes_before_publishing(tmp_path, monkeypatch):
+    original_write = os.write
+    shortened = False
+
+    def short_once(fd, data):
+        nonlocal shortened
+        if not shortened and len(data) > 3:
+            shortened = True
+            return original_write(fd, data[:3])
+        return original_write(fd, data)
+
+    monkeypatch.setattr(os, "write", short_once)
+    flow = tmp_path / "flow"
+    ref = art.store(
+        flow, type="plan", content="the complete plan", step="plan",
+        session_id="s", attempt=1, workspace_version=None,
+    )
+    assert shortened
+    assert art.load(flow, ref, workspace_version=None) == "the complete plan"
 
 
 def test_a_capability_is_issued_not_constructed_and_dies_with_the_step(repo):

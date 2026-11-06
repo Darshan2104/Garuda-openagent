@@ -109,6 +109,29 @@ def test_a_review_outcome_is_never_verification(world):
         {"from_step": "code", "to_step": "review", "type": "diff", "digest": "d" * 64}]
 
 
+def test_session_detail_uses_the_authorized_bounded_artifact_projection(world):
+    from garuda.core.artifact_read_model import project_session_artifacts
+    from garuda.core.buffer import ToolOutputBuffer
+
+    store, _queue, ids = world
+    sid = ids["done"]
+    meta = store.load_meta(sid)
+    buffer = ToolOutputBuffer(sid, root=store.session_dir(sid) / "buffers")
+    buffer.store("result", "complete", tool_name="bash")
+
+    detail = read_model.session(store, sid)
+    result_ref = next(ref for ref in detail["artifacts"]["references"]
+                      if ref["owner"]["reference"] == "result")
+    assert result_ref["owner"] == {
+        "kind": "buffer", "reference": "result"
+    }
+    assert result_ref["availability"]["state"] == "available"
+    with pytest.raises(ValueError, match="different project"):
+        project_session_artifacts(
+            store, sid, expected_project_id=meta["project_id"] + "-foreign"
+        )
+
+
 def test_pending_approvals_are_listed_and_redacted(world):
     store, queue, ids = world
     detail = read_model.session(store, ids["waiting"], queue=queue)
@@ -142,10 +165,46 @@ def _web(store, path):
     return body(response)
 
 
-def test_cli_json_and_the_web_api_expose_the_same_state(world, monkeypatch, capsys):
+@pytest.mark.parametrize("flow_declaration", [
+    "valid", [1], {"steps": 1}, {"steps": "code"},
+    {"steps": [{}]}, {"steps": ["code", "code"]},
+    "receipt-input", "receipt-output", "receipt-member", "receipt-no-edits", "receipt-container",
+    "receipt-child-id", "receipt-member-id", "receipt-status",
+])
+def test_cli_json_and_the_web_api_expose_the_same_state(
+    world, monkeypatch, capsys, flow_declaration,
+):
     from tests.test_runtime_cli import _main
 
     store, _queue, ids = world
+    from garuda.core.buffer import ToolOutputBuffer
+    from garuda.core.failure_evidence import append_causal_record, causal_record
+
+    directory = store.session_dir(ids["flow"])
+    ToolOutputBuffer(ids["flow"], root=directory / "buffers").store("retained", "known bytes")
+    assert append_causal_record(directory, causal_record(
+        RuntimeError("retained failure"), phase="execution", code="execution.failed",
+    ))
+    receipt_fields = {"receipt-input": "inputs", "receipt-output": "outputs",
+                      "receipt-member": "members", "receipt-no-edits": "no_edits"}
+    receipt_bad = isinstance(flow_declaration, str) and flow_declaration.startswith("receipt-")
+    if receipt_bad:
+        path = directory / "flow/receipts/code-1.json"
+        receipt = json.loads(path.read_text())
+        if flow_declaration == "receipt-container":
+            receipt = []
+        elif flow_declaration == "receipt-child-id":
+            receipt["session_id"] = {"invalid": "child"}
+        elif flow_declaration == "receipt-member-id":
+            receipt["members"] = [{"session_id": ["invalid-child"]}]
+        elif flow_declaration == "receipt-status":
+            receipt["status"] = []
+        else:
+            receipt[receipt_fields[flow_declaration]] = [None]
+        path.unlink()
+        path.write_text(json.dumps(receipt))
+    elif flow_declaration != "valid":
+        store.update_meta(ids["flow"], {"flow": flow_declaration})
     code, out = _main(monkeypatch, capsys, "sessions", "--json")
     assert code == 0
     cli = json.loads(out)["sessions"]
@@ -156,8 +215,18 @@ def test_cli_json_and_the_web_api_expose_the_same_state(world, monkeypatch, caps
         assert [r[key] for r in cli] == [r[key] for r in web]
 
     code, out = _main(monkeypatch, capsys, "sessions", "show", ids["flow"], "--json")
-    assert code == 0 and json.loads(out) == json.loads(
-        json.dumps(_web(store, f"/api/sessions/{ids['flow']}")))
+    assert code == 0
+    detail = json.loads(out)
+    assert detail == json.loads(json.dumps(_web(store, f"/api/sessions/{ids['flow']}")))
+    assert detail["flow"].get("coverage", {}).get("declarations", "complete") == (
+        "complete" if flow_declaration == "valid" or receipt_bad else "unknown"
+    )
+    if receipt_bad:
+        review = next(step for step in detail["flow"]["steps"] if step["id"] == "review")
+        assert len(review["attempts"]) == 1
+        assert detail["flow"]["coverage"].get("receipts", "complete") == "unknown"
+    assert any(ref["owner"]["reference"] == "retained" for ref in detail["artifacts"]["references"])
+    assert detail["failure_evidence"]["original_cause"]["value"]["code"] == "execution.failed"
 
 
 def test_the_plain_table_shows_queue_position(world, monkeypatch, capsys):

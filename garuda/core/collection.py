@@ -485,6 +485,10 @@ class CollectionBufferView:
         self._allowed_ids = allowed_ids
         self.threshold_bytes = parent.threshold_bytes
 
+    @property
+    def session_id(self):
+        return self._parent.session_id
+
     def exceeds(self, content: str, threshold: int | None = None) -> bool:
         return self._parent.exceeds(content, threshold)
 
@@ -855,7 +859,9 @@ class CollectionCoordinator:
         if request.handoff != FORK_BRIEF or self.parent_buffer is None:
             return set()
         valid: list[str] = []
-        for buffer_id in self.parent_context.referenced_buffer_ids():
+        for buffer_id in self.parent_context.referenced_buffer_ids(
+            storage_session_id=getattr(self.parent_buffer, "session_id", None),
+        ):
             try:
                 self.parent_buffer.read(buffer_id)
             except (AttributeError, KeyError):

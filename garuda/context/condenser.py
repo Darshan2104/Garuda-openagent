@@ -190,32 +190,127 @@ def microcompact_messages(
             and not message.metadata.get("pruned")
         ):
             original_len = len(message.content)
+            if message.name == "invoke_subagent" and "child_result" in message.metadata:
+                from garuda.core.child_result import (
+                    canonical_json,
+                    render_child_result_handoff,
+                    validate_child_result_envelope,
+                )
+
+                child = validate_child_result_envelope(message.metadata["child_result"])
+                if child is not None and message.content.endswith(canonical_json(child)):
+                    # The typed owner already bounded this handoff. Drop its
+                    # prose while retaining the canonical envelope needed for
+                    # retrieval and authorized resume, under the same byte cap.
+                    content = render_child_result_handoff("", child, len(message.content.encode("utf-8")))
+                    if content.endswith(canonical_json(child)):
+                        message.content = content
+                        message.metadata["pruned"] = True
+                        pruned += 1
+                        continue
+            from garuda.core.artifact_read_model import validate_descriptor
+
+            retained_capture = validate_descriptor(message.metadata.get("artifact_capture"))
+            literal_output = retained_capture is not None and retained_capture["owner"]["kind"] in {
+                "inline-tool-result", "capture-attempt",
+            }
+            failed_capture = (
+                retained_capture is not None
+                and retained_capture["owner"]["kind"] == "capture-attempt"
+            )
             # If this output was captured in the tool-output buffer, keep the
             # retrieval pointer so the agent can still pull it back after pruning
             # (losing it would strand data that IS still available on disk).
-            buffer_id = message.metadata.get("buffer_id")
-            if not buffer_id:
+            buffer_id = None if literal_output else message.metadata.get("buffer_id")
+            if not buffer_id and not literal_output:
                 match = _BUFFER_ID_RE.search(message.content or "")
                 buffer_id = match.group(1) if match else None
             if not buffer_id and buffer is not None:
+                from garuda.core.artifact_read_model import validate_descriptor
+
+                capture = validate_descriptor(message.metadata.get("artifact_capture"))
+                if (capture is not None and capture["owner"]["kind"] == "buffer"
+                        and capture["storage_session_id"] == buffer.session_id):
+                    # Hooks may replace a stub's text. Its retained owner facts
+                    # still identify the original bytes; never republish the view
+                    # over that payload using the same call-derived buffer id.
+                    buffer_id = capture["owner"]["reference"]
+            if not buffer_id and buffer is not None and not failed_capture:
                 # Demote, don't destroy: outputs below the live buffering threshold
                 # were never stored, and re-running the tool is not always possible
                 # (stateful commands). Same id derivation as the loop's stubs, so
                 # ids stay short and can never collide with an already-stored one.
+                from garuda.core.artifact_read_model import (
+                    failed_descriptor,
+                    inherited_source_capture,
+                    source_capture,
+                )
+
+                capture = source_capture(kind="context_archive", completeness="unknown")
                 try:
                     seed = message.tool_call_id or message.content
                     store_id = "buf_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
-                    buffer.store(store_id, message.content, tool_name=message.name or "")
+                    capture = inherited_source_capture(
+                        [message.metadata.get("artifact_capture")],
+                        kind="context_archive",
+                        identity=message.tool_call_id,
+                    )
+                    ref = buffer.store(
+                        store_id, message.content, tool_name=message.name or "", capture=capture
+                    )
                     buffer_id = store_id
+                    message.metadata["artifact_capture"] = ref.artifact
                 except Exception:
                     logger.warning("Prune-time buffer store failed", exc_info=True)
+                    message.metadata["artifact_capture"] = failed_descriptor(
+                        storage_session_id=buffer.session_id, producer=message.name or "context_archive",
+                        source=capture, reason="capture_failed",
+                    )
             if buffer_id:
+                from garuda.core.artifact_read_model import validate_descriptor
+
+                capture = validate_descriptor(message.metadata.get("artifact_capture"))
+                bound = (
+                    capture is not None and buffer is not None
+                    and capture["owner"] == {"kind": "buffer", "reference": buffer_id}
+                    and capture["storage_session_id"] == buffer.session_id
+                )
+                if capture is None:
+                    message.metadata["artifact_capture"] = None
+                else:
+                    # Matching ids establish binding, not current retention.
+                    # Neither uncertainty erases historical source facts.
+                    capture["availability"] = {
+                        "state": "unknown", "integrity": "unverified",
+                        "reason": "retention_not_checked" if bound else "reference_binding_unknown",
+                    }
+                    message.metadata["artifact_capture"] = capture
                 message.content = (
                     f"[tool output pruned to save context: was {original_len} chars. "
-                    f'Full output retained in buffer:{buffer_id} — retrieve with '
+                    f'Captured output reference: buffer:{buffer_id} '
+                    '(current availability unverified) — retrieve with '
                     f'buffer_grep/buffer_slice(buffer_id="{buffer_id}").]'
                 )
             else:
+                if buffer is None:
+                    from garuda.core.artifact_read_model import validate_descriptor
+
+                    capture = validate_descriptor(message.metadata.get("artifact_capture"))
+                    if capture is not None and capture["owner"]["kind"] == "inline-tool-result":
+                        # Retain the source commitment while recording that its
+                        # entire inline representation has now been discarded.
+                        omitted, size = capture["omitted_view_bytes"], capture["size"]["bytes"]
+                        capture["omitted_view_bytes"] = (
+                            omitted + size if omitted is not None and size is not None else None
+                        )
+                        capture["redaction"]["representation"] = "pruned-tool-result"
+                        capture["availability"] = {
+                            "state": "unavailable", "integrity": "unknown",
+                            "reason": "inline_payload_pruned",
+                        }
+                    # Failed captures retain their own failure facts. Only
+                    # absent or invalid legacy facts become explicit unknown.
+                    message.metadata["artifact_capture"] = capture
                 message.content = (
                     f"[tool output pruned to save context: was {original_len} chars. "
                     "Re-run the tool if this output is needed again.]"

@@ -379,6 +379,16 @@ class SessionStore:
             json.dumps([message_to_dict(m) for m in messages], indent=2, default=str),
         )
 
+    def checkpoint_artifact_inheritance(self, session_id: str, record: dict) -> None:
+        """Publish the resume owner's bounded lineage facts independently of messages."""
+        from garuda.core.artifact_read_model import validate_artifact_inheritance
+
+        checked = validate_artifact_inheritance(record, session_id)
+        if checked is None:
+            raise ValueError("invalid artifact inheritance record")
+        _atomic_write_text(self.session_dir(session_id) / "artifact-inheritance.json",
+                           json.dumps(checked, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+
     def checkpoint_state(self, session_id: str, state: dict) -> None:
         """Atomically persist the run's working state alongside its messages.
 
@@ -580,11 +590,18 @@ class SessionStore:
 
     def load_messages(self, session_id: str) -> list[Message]:
         path = self.session_dir(session_id) / "messages.json"
-        if not path.exists():
+        try:
+            path.lstat()
+        except FileNotFoundError:
             raise FileNotFoundError(
                 f"Session {session_id} has no saved messages at {path}."
-            )
-        return [message_from_dict(p) for p in json.loads(path.read_text(encoding="utf-8"))]
+            ) from None
+        from garuda.core.session_records import parse_json_value, read_bytes
+
+        values = parse_json_value(read_bytes(self, Path(session_id) / "messages.json", limit=None))
+        if not isinstance(values, list):
+            raise ValueError("saved messages must be a JSON list")
+        return [message_from_dict(value) for value in values]
 
     def load_meta(self, session_id: str) -> dict:
         path = self.session_dir(session_id) / "meta.json"

@@ -4,6 +4,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from garuda.context.manager import ContextManager
 from garuda.core.loop import DefaultAgent
 from garuda.model.protocol import ModelResponse
@@ -32,12 +34,240 @@ async def test_background_task_lifecycle(tmp_path: Path):
     polled = await output_tool.execute({"task_id": task_id}, env, ctx)
     assert "still running" in polled.content
     assert "begin" in polled.content
+    assert polled.metadata["artifact_source"]["completeness"] == "partial"
+    assert polled.metadata["artifact_source"]["kind"] == "background_tail"
 
     killed = await kill_tool.execute({"task_id": task_id}, env, ctx)
     assert "Killed" in killed.content
 
     gone = await output_tool.execute({"task_id": task_id}, env, ctx)
     assert gone.is_error
+
+
+async def test_background_capture_waits_for_inherited_output_writers(tmp_path, monkeypatch):
+    from garuda.tools import background
+
+    monkeypatch.setattr(background, "TASKS_DIR", str(tmp_path / "logs"))
+    env = LocalEnvironment(workspace_root=tmp_path)
+    ctx = ToolContext(session_id="bg-descendant-output")
+    started = await BashBackgroundTool().execute({
+        "command": "(while [ ! -e release-output ]; do sleep 0.02; done; echo late) & echo early",
+    }, env, ctx)
+    assert not started.is_error
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    key = (ctx.session_id, task_id)
+    task = background._TASKS[key]
+    try:
+        # An exited shell is insufficient: a descendant still holds stdout.
+        try:
+            await asyncio.wait_for(task.process.wait(), timeout=0.3)
+        except TimeoutError:
+            pass
+        early = await TaskOutputTool().execute({"task_id": task_id}, env, ctx)
+        assert "early" in early.content
+        assert early.metadata["artifact_source"]["completeness"] == "partial"
+        assert early.metadata["background_tasks"] == 1
+        (tmp_path / "release-output").touch()
+        await asyncio.wait_for(task.process.wait(), timeout=10)
+        settled = await TaskOutputTool().execute({"task_id": task_id}, env, ctx)
+        assert not settled.is_error
+        assert "early" in settled.content and "late" in settled.content
+        assert settled.metadata["artifact_source"]["completeness"] == "complete"
+        assert settled.metadata["background_tasks"] == 0
+    finally:
+        (tmp_path / "release-output").touch()
+        await background._deliver_kill(env, task.pid, "KILL")
+        await asyncio.wait_for(task.process.wait(), timeout=5)
+        background._TASKS.pop(key, None)
+
+
+@pytest.mark.parametrize("transport_kind", ["local", "portable"])
+@pytest.mark.parametrize("change", ["replacement", "directory", "symlink", "unbound"])
+async def test_running_background_capture_retains_its_launch_identity(tmp_path, monkeypatch, transport_kind, change):
+    import os
+
+    from garuda.tools import background
+
+    local = LocalEnvironment(workspace_root=tmp_path)
+
+    class ExecuteTransport:
+        async def execute(self, command, timeout=None):
+            return await local.execute(command, timeout=timeout)
+
+    env = local if transport_kind == "local" else ExecuteTransport()
+    monkeypatch.setattr(background, "TASKS_DIR", str(tmp_path / "active-logs"))
+    ctx = ToolContext(session_id="active-capture-identity")
+    started = await BashBackgroundTool().execute({
+        "command": "printf ORIGINAL; while [ ! -e release-output ]; do sleep 0.02; done",
+    }, env, ctx)
+    assert not started.is_error
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    task = background._TASKS[(ctx.session_id, task_id)]
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                initial = await TaskOutputTool().execute({"task_id": task_id}, env, ctx)
+                assert not initial.is_error
+                if "ORIGINAL" in initial.content:
+                    break
+                await asyncio.sleep(0.03)
+        assert not Path(task.log_path + ".complete").exists()
+        log = Path(task.log_path)
+        if change == "unbound":
+            background._TASKS[(ctx.session_id, task_id)] = background.BackgroundTask(
+                task_id, task.pid, task.command, task.log_path, task.process,
+            )
+        elif change == "directory":
+            moved = tmp_path / "original-log-directory"
+            log.parent.rename(moved)
+            log.parent.mkdir()
+            # Keep the file identity identical: the directory binding matters too.
+            os.link(moved / log.name, log)
+        else:
+            log.rename(tmp_path / "original-log")
+            foreign = tmp_path / "foreign-log"
+            foreign.write_text("FOREIGN_RUNNING_BYTES")
+            if change == "symlink":
+                log.symlink_to(foreign)
+            else:
+                log.write_text("FOREIGN_RUNNING_BYTES")
+        polled = await TaskOutputTool().execute({"task_id": task_id}, env, ctx)
+        assert polled.is_error
+        assert "FOREIGN_RUNNING_BYTES" not in polled.content
+        if change == "unbound":
+            assert "ORIGINAL" not in polled.content
+        assert polled.metadata["background_tasks"] == 1
+    finally:
+        (tmp_path / "release-output").touch()
+        await background._deliver_kill(env, task.pid, "KILL")
+        if task.process is not None:
+            await asyncio.wait_for(task.process.wait(), timeout=5)
+        background._TASKS.pop((ctx.session_id, task_id), None)
+
+
+async def test_portable_background_launcher_uses_the_environment_transport(tmp_path, monkeypatch):
+    from garuda.tools import background
+
+    local = LocalEnvironment(workspace_root=tmp_path)
+
+    class ExecuteTransport:
+        async def execute(self, command, timeout=None):
+            return await local.execute(command, timeout=timeout)
+
+    transport = ExecuteTransport()
+    monkeypatch.setattr(background, "TASKS_DIR", str(tmp_path / "portable-logs"))
+    ctx = ToolContext(session_id="portable-background")
+    started = await BashBackgroundTool().execute({"command": "printf PORTABLE_CAPTURE"}, transport, ctx)
+    assert not started.is_error
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    task = background._TASKS[(ctx.session_id, task_id)]
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                polled = await TaskOutputTool().execute({"task_id": task_id}, transport, ctx)
+                assert not polled.is_error
+                if polled.metadata["artifact_source"]["completeness"] == "complete":
+                    break
+                await asyncio.sleep(0.03)
+        assert "PORTABLE_CAPTURE" in polled.content
+        assert polled.metadata["background_tasks"] == 0
+    finally:
+        await background._deliver_kill(transport, task.pid, "KILL")
+        background._TASKS.pop((ctx.session_id, task_id), None)
+
+
+@pytest.mark.parametrize("tail_bytes,complete,omitted,receipt,change", [
+    (2, False, None, "valid", "none"), (8, True, 0, "valid", "none"),
+    (2, False, None, "missing", "none"), (8, False, 0, "missing", "none"),
+    (8, False, None, "valid", "symlink"), (8, False, None, "valid", "replacement"),
+    (8, False, None, "valid", "mutation"),
+    (8, False, None, "valid", "parent-symlink"),
+])
+async def test_finished_background_tail_preserves_byte_and_decoding_evidence(tmp_path, monkeypatch, tail_bytes, complete, omitted, receipt, change):
+    from garuda.tools import background
+    from garuda.tools.background import _TASKS
+
+    monkeypatch.setattr(background, "TASKS_DIR", str(tmp_path / "logs"))
+    env = LocalEnvironment(workspace_root=tmp_path)
+    ctx = ToolContext(session_id="bg-unicode-tail")
+    started = await BashBackgroundTool().execute({"command": "printf '🦅'"}, env, ctx)
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    task = _TASKS[(ctx.session_id, task_id)]
+    await asyncio.wait_for(task.process.wait(), timeout=10)
+    if receipt == "missing":
+        Path(task.log_path + ".complete").unlink()
+    if change != "none":
+        log = Path(task.log_path)
+        if change == "parent-symlink":
+            moved = tmp_path / "moved-logs"
+            log.parent.rename(moved)
+            log.parent.symlink_to(moved, target_is_directory=True)
+        elif change != "mutation":
+            log.unlink()
+        if change == "symlink":
+            foreign = tmp_path / "foreign.txt"
+            foreign.write_text("FOREIGN")
+            log.symlink_to(foreign)
+        elif change != "parent-symlink":
+            log.write_text("ABCD")
+    try:
+        polled = await TaskOutputTool().execute({"task_id": task_id, "tail_bytes": tail_bytes}, env, ctx)
+        capture = polled.metadata["artifact_source"]
+        if change != "none":
+            assert polled.is_error
+            assert capture["completeness"] == "failed"
+            assert "FOREIGN" not in polled.content and "ABCD" not in polled.content
+            assert polled.metadata["background_tasks"] == 1
+            return
+        assert (capture["completeness"] == "complete") is (complete and receipt == "valid")
+        assert capture["omitted_source_bytes"] == omitted
+        assert polled.metadata["background_tasks"] == (1 if receipt == "missing" else 0)
+    finally:
+        _TASKS.pop((ctx.session_id, task_id), None)
+
+
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_missing_background_log_is_explicitly_unavailable(tmp_path: Path, buffered):
+    from garuda.core.artifact_read_model import project_session_artifacts
+    from garuda.core.buffer import ToolOutputBuffer
+    from garuda.core.events import EventStore
+    from garuda.core.sessions import SessionStore
+    from garuda.tools.background import _TASKS
+
+    env = LocalEnvironment(workspace_root=tmp_path)
+    ctx = ToolContext(session_id="bg-missing-log")
+    started = await BashBackgroundTool().execute({"command": "sleep 30"}, env, ctx)
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    try:
+        Path(_TASKS[(ctx.session_id, task_id)].log_path).unlink()
+        polled = await TaskOutputTool().execute({"task_id": task_id}, env, ctx)
+        assert polled.is_error and "unavailable" in polled.content
+        assert polled.metadata["artifact_source"]["completeness"] == "failed"
+        store = SessionStore(tmp_path / "sessions")
+        store.begin(ctx.session_id, task="poll", model="script", agent="build", workspace=str(tmp_path))
+        owner = ToolOutputBuffer(ctx.session_id, threshold_bytes=1,
+                                 root=store.session_dir(ctx.session_id) / "buffers") if buffered else None
+        result = await DefaultAgent().run(
+            task="poll missing output", env=env,
+            model=ScriptModel([
+                ModelResponse(content=None, tool_calls=[ToolCall(id="poll", name="task_output", arguments={"task_id": task_id})]),
+                ModelResponse(content=None, tool_calls=[ToolCall(id="done", name="task_complete", arguments={"summary": "Completed the missing-output check."})]),
+            ]), tools=default_tools(), buffer=owner,
+            events=EventStore(session_id=ctx.session_id, persist_path=store.events_path(ctx.session_id)),
+            config=AgentConfig(enable_verifier=False, max_turns=3, buffer_tool_output=buffered),
+        )
+        message = next(message for message in result.messages if message.tool_call_id == "poll")
+        capture = message.metadata["artifact_capture"]
+        assert capture["completeness"] == "failed"
+        assert capture["availability"]["state"] == "unavailable"
+        store.finish(ctx.session_id, result)
+        projected = project_session_artifacts(store, ctx.session_id)
+        references = [ref for ref in projected["references"] if ref.get("producer") == "task_output"]
+        assert len(references) == 1
+        assert references[0]["completeness"] == "failed"
+        assert references[0]["availability"]["state"] == "unavailable"
+    finally:
+        await KillTaskTool().execute({"task_id": task_id}, env, ctx)
 
 
 async def test_killing_a_task_reaps_its_children_not_just_the_launcher(tmp_path: Path):

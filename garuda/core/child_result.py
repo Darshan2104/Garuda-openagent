@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -35,7 +36,8 @@ class ChildResultStorage(Protocol):
     session_id: str
 
     def store(
-        self, buffer_id: str, content: str, tool_name: str = "", is_error: bool = False
+        self, buffer_id: str, content: str, tool_name: str = "", is_error: bool = False,
+        *, capture: dict | None = None, producer_session_id: str | None = None,
     ) -> Any: ...
 
     def read(self, buffer_id: str) -> str: ...
@@ -220,7 +222,21 @@ def _reference(
     *, storage: ChildResultStorage, producer_session: str, serialized: str
 ) -> dict[str, Any]:
     buffer_id = f"child-result-{producer_session}-{uuid.uuid4().hex}"
-    ref = storage.store(buffer_id, serialized, tool_name="invoke_subagent")
+    from garuda.core.artifact_read_model import source_capture
+
+    ref = storage.store(
+        buffer_id,
+        serialized,
+        tool_name="invoke_subagent",
+        producer_session_id=producer_session,
+        capture=source_capture(
+            kind="accepted_child_value",
+            completeness="complete",
+            identity=producer_session,
+            media_type="application/json",
+            redaction="unknown",
+        ),
+    )
     return {
         "version": CONTRACT_VERSION,
         "format": "application/json",
@@ -229,6 +245,7 @@ def _reference(
         "producer_session_id": producer_session,
         "serialized_bytes": len(serialized.encode("utf-8")),
         "sha256": _digest(serialized),
+        "artifact": ref.artifact,
         "retrieval": {
             "tool": "buffer_slice",
             "mode": "characters",
@@ -364,7 +381,7 @@ def validate_child_result_reference(
 ) -> dict[str, Any]:
     if not isinstance(reference, dict) or not _strict_keys(reference, {
         "version", "format", "buffer_id", "parent_session_id", "producer_session_id",
-        "serialized_bytes", "sha256", "retrieval",
+        "serialized_bytes", "sha256", "retrieval", "artifact",
     }):
         raise ChildResultRetrievalError("malformed child-result reference")
     if type(reference.get("version")) is not int or reference["version"] != CONTRACT_VERSION:
@@ -385,6 +402,12 @@ def validate_child_result_reference(
         "reference_argument": "child_result_reference",
     }:
         raise ChildResultRetrievalError("child-result reference has invalid retrieval contract")
+    from garuda.core.artifact_read_model import validate_descriptor
+
+    if "artifact" in reference:
+        artifact = validate_descriptor(reference.get("artifact"))
+        if artifact is None:
+            raise ChildResultRetrievalError("child-result artifact metadata is invalid")
     expected_prefix = f"child-result-{reference['producer_session_id']}-"
     if not reference["buffer_id"].startswith(expected_prefix) or not re.fullmatch(
         r"[0-9a-f]{32}", reference["buffer_id"][len(expected_prefix):]
@@ -393,6 +416,81 @@ def validate_child_result_reference(
     if storage is not None and reference["parent_session_id"] != storage.session_id:
         raise ChildResultRetrievalError("child-result reference belongs to another parent session")
     return deepcopy(reference)
+
+
+def rebind_child_result_storage(value: Any, source_session: str, target_session: str) -> dict[str, Any] | None:
+    """Retarget an authorized resumed parent's storage, preserving producer/nonce commitments."""
+    envelope = validate_child_result_envelope(value)
+    if envelope is None or envelope["delivery"]["state"] != "referenced":
+        return envelope
+    reference = envelope["delivery"]["reference"]
+    if reference["parent_session_id"] != source_session:
+        raise ChildResultRetrievalError("resumed child reference belongs to another parent")
+    reference["parent_session_id"] = target_session
+    if "artifact" in reference:
+        reference["artifact"]["storage_session_id"] = target_session
+    checked = validate_child_result_envelope(envelope)
+    if checked is None:
+        raise ChildResultRetrievalError("resumed child result violates its original contract")
+    artifact_from_child_result_reference(checked["delivery"]["reference"])
+    return checked
+
+
+def failed_child_publication_descriptor(envelope: dict, storage_session_id: str) -> dict | None:
+    """Adapt an already-validated failed publication without a payload reference."""
+    if (envelope["outcome"]["validation"] != "accepted"
+            or envelope["delivery"] != {"state": "unavailable", "reason": "publication_failed"}):
+        return None
+    from garuda.core.artifact_read_model import failed_descriptor, source_capture
+
+    producer_session = envelope["producer"]["session_id"]
+    capture = failed_descriptor(
+        storage_session_id=storage_session_id, producer="invoke_subagent",
+        source=source_capture(kind="accepted_child_value", completeness="unknown",
+                              identity=producer_session, media_type="application/json",
+                              redaction="unknown"),
+        reason="publication_failed",
+    )
+    # Stable evidence identity survives message/event deduplication and resume.
+    # This hash names the envelope, never purported payload bytes.
+    capture["owner"]["reference"] = hashlib.sha256(canonical_json(envelope).encode("utf-8")).hexdigest()[:24]
+    capture["producer_session_id"] = producer_session
+    capture["availability"]["reason"] = "publication_failed"
+    return capture
+
+
+def artifact_from_child_result_reference(reference: dict[str, Any]) -> dict[str, Any]:
+    """Read retained metadata only, after the same parent/producer/ref bindings."""
+    reference = validate_child_result_reference(reference)
+    artifact = reference.get("artifact")
+    if artifact is None:
+        from garuda.core.artifact_read_model import descriptor, source_capture
+
+        # Version-1 references predate nested descriptors but already commit to
+        # exact serialized bytes. Adapt those facts without hashing current bytes
+        # or inventing historical capture/redaction/retention knowledge.
+        return descriptor(
+            owner_kind="buffer", owner_reference=reference["buffer_id"],
+            storage_session_id=reference["parent_session_id"],
+            producer_session_id=reference["producer_session_id"], producer=None,
+            source=source_capture(kind="accepted_child_value", completeness="unknown",
+                                  media_type=reference["format"]),
+            size_bytes=reference["serialized_bytes"], sha256=reference["sha256"][7:],
+            size_provenance="recorded", digest_provenance="recorded",
+            availability="unknown", integrity="unverified", omitted_view_bytes=None,
+            retention={"policy": "legacy-unknown"},
+        )
+    if (
+        artifact["owner"] != {"kind": "buffer", "reference": reference["buffer_id"]}
+        or artifact["storage_session_id"] != reference["parent_session_id"]
+        or artifact["producer_session_id"] != reference["producer_session_id"]
+        or artifact["media_type"] != "application/json"
+        or artifact["size"].get("bytes") != reference["serialized_bytes"]
+        or "sha256:" + str(artifact["digest"].get("sha256")) != reference["sha256"]
+        or artifact["completeness"] != "complete"
+    ):
+        raise ChildResultRetrievalError("child-result artifact metadata conflicts with its reference")
+    return artifact
 
 
 def read_child_result_reference(
@@ -414,11 +512,14 @@ def read_child_result_reference(
         raise ChildResultRetrievalError("child-result content is not valid JSON") from exc
     if canonical_json(value) != serialized:
         raise ChildResultRetrievalError("child-result content is not canonical JSON")
+    artifact_from_child_result_reference(checked)
     return value, serialized
 
 
-def validate_child_result_envelope(value: Any) -> dict[str, Any] | None:
-    """Validate and normalize the only child metadata retained by ToolRunner."""
+def validate_child_result_envelope(
+    value: Any, *, reserve_verification: Callable[[int], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Validate child metadata, reserving any caller-owned allowance before hashing."""
     if not isinstance(value, dict) or not _strict_keys(value, {
         "version", "outcome", "producer", "schema", "delivery", "output", "workspace",
     }):
@@ -454,6 +555,8 @@ def validate_child_result_envelope(value: Any) -> dict[str, Any] | None:
             return None
         size = delivery.get("serialized_bytes")
         if type(size) is not int or size < 0 or size != len(serialized.encode("utf-8")):
+            return None
+        if reserve_verification is not None and not reserve_verification(size):
             return None
         if delivery.get("sha256") != _digest(serialized):
             return None

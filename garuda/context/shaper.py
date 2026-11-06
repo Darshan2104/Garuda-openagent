@@ -5,6 +5,8 @@ The one place a tool result is made to fit. Lossy by construction — the buffer
 happens when there is no buffer, or when storing to it failed.
 """
 
+from dataclasses import dataclass
+
 # Ceiling on one tool result in the context window. 30 KiB, shared by every caller
 # that used to redeclare the literal, so the cap can be reasoned about in one place.
 DEFAULT_MAX_OUTPUT_BYTES = 30_720
@@ -15,19 +17,31 @@ DEFAULT_MAX_OUTPUT_BYTES = 30_720
 ERROR_HEAD_FRACTION = 0.3
 
 
+@dataclass(frozen=True)
+class ObservationShape:
+    content: str
+    omitted_bytes: int
+
+
 def shape_observation(
     text: str, max_bytes: int, is_error: bool = False, head_fraction: float | None = None
 ) -> str:
+    return shape_observation_evidence(text, max_bytes, is_error, head_fraction).content
+
+
+def shape_observation_evidence(
+    text: str, max_bytes: int, is_error: bool = False, head_fraction: float | None = None
+) -> ObservationShape:
     if not text:
-        return "(command failed with no output)" if is_error else "(no output)"
+        return ObservationShape("(command failed with no output)" if is_error else "(no output)", 0)
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
-        return text
+        return ObservationShape(text, 0)
     if head_fraction is None:
         head_fraction = ERROR_HEAD_FRACTION if is_error else 0.5
     head_bytes = max(0, min(max_bytes, int(max_bytes * head_fraction)))
     tail_bytes = max_bytes - head_bytes
     head = encoded[:head_bytes].decode("utf-8", errors="ignore")
     tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes else ""
-    omitted = len(encoded) - max_bytes
-    return f"{head}\n\n...[truncated {omitted} bytes]...\n\n{tail}"
+    omitted = len(encoded) - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+    return ObservationShape(f"{head}\n\n...[truncated {omitted} bytes]...\n\n{tail}", omitted)
