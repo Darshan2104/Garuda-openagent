@@ -378,7 +378,17 @@ async def run_agent_task(
             # The definition may have changed since the session being resumed
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
-            before = (source_records.load_meta(resumed_from) or {}).get("agent_digest")
+            source_meta = source_records.load_meta(resumed_from) or {}
+            if config.spend_gate is None and (config.max_run_tokens or config.max_run_cost_usd):
+                # Fresh runs start at zero; a resumed run continues the source's
+                # tree spend (#407), or records that it is unknown.
+                from garuda.core.spend import SpendGate
+
+                config.spend_gate = SpendGate(max_tokens=config.max_run_tokens,
+                                              max_cost_usd=config.max_run_cost_usd)
+                update_session_meta(store, events.session_id, {
+                    "spend_inherited": config.spend_gate.inherit(source_meta.get("spend_gate"))})
+            before = source_meta.get("agent_digest")
             if before and agent_digest and before != agent_digest:
                 update_session_meta(store, events.session_id, {"agent_segment": {
                     "previous_digest": before, "digest": agent_digest,
@@ -428,6 +438,15 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
+            try:
+                return await _run_agent(task=task, trail=trail)
+            finally:
+                if config.spend_gate is not None:
+                    # The tree's settled spend, children included: what a resume continues from.
+                    update_session_meta(store, events.session_id,
+                                        {"spend_gate": config.spend_gate.snapshot()})
+
+        async def _run_agent(*, task: str, trail: EventStore):
             return await agent.run(
                 task=task,
                 model=model,

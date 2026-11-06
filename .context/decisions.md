@@ -2374,3 +2374,13 @@ under a dollar-only cap the first unpriced call stops further admission.
 Defaults stay unlimited. Not yet covered: collection workers keep their own
 ledger, consult and ACP children are separate roots, failed-attempt usage is
 #406, and resume accounting is #407.
+
+## 2026-11-06 — Resumed runs continue the source tree's spend (#407)
+
+A resumed run is the same work continued, so caps given to it cover what the
+source already spent. The root runner records the gate snapshot (children
+included) as session meta `spend_gate`; a resumed run with caps inherits it and
+records `spend_inherited`. A source without a snapshot has unknown prior spend:
+it counts as an unknown-cost call, so a dollar-only cap refuses admission, and
+prior tokens are reported as not inherited. Fresh runs start at zero. Turn and
+deadline budgets are unchanged on resume.

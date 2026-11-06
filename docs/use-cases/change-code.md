@@ -232,6 +232,13 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache module"
 ```
 
+- A resumed run (`--resume`) with these flags continues from the source
+  session's recorded tree spend (`spend_gate` in its `meta.json`) instead of
+  starting at zero; the new session records what it inherited under
+  `spend_inherited`. If the source recorded no spend (it ran without these
+  flags), prior spend is unknown: a dollar-only budget then refuses to admit
+  calls, and a token budget starts from zero and says so.
+
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.
 - Your provider's billing page is the authority on cost. Garuda does not guess
