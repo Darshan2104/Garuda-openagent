@@ -334,6 +334,57 @@ dc6c49fc  scope: project  session: 563025e0-…  state: pending
 - Proposals are short (500 characters, ten per task), and anything that looks
   like a secret is refused.
 
+## Retrieve reviewed notes with source evidence
+
+The same `remember` tool can attach optional evidence when proposing a note:
+
+```json
+{"text":"Run make check for this project's tests.","scope":"project","sources":["Makefile"],"evidence":["session:563025e0#check"]}
+```
+
+Garuda fingerprints the referenced files through the active workspace Environment.
+Docker/remote project scope uses the owner's mount mapping, never the shared
+`/workspace` execution path; an unavailable mapping refuses access.
+The review displays those SHA-256 versions and evidence references before you
+decide. Nothing accepts a proposal automatically. Repeated proposals with the same
+text, scope and evidence within one root task reuse the original decision, even
+across child sessions. A changed source version is different evidence.
+
+After accepting at a terminal, retrieve relevant notes on demand:
+
+```bash
+garuda memory review --workspace .
+garuda memory search "tests" --workspace . --max-chars 2000 --limit 5
+```
+
+An enabled agent can call `remember` with
+`{"action":"search","query":"tests","max_chars":2000,"limit":5}`.
+Search uses lexical word overlap, favors matches in note text, and returns only
+accepted ledger decisions from the current project, including user-scope notes
+originating there. Pending/rejected proposals and other projects are excluded.
+It does not index manually written memory lines or session transcripts.
+
+Results are labelled data. Referenced files that changed or disappeared make a
+note **stale**; missing provenance, inaccessible/oversized sources and exhausted
+source checks leave freshness **unknown**. Search checks at most eight distinct
+regular files with an observed size of at most 1 MiB each. A `current` label means
+the observed bytes match the recorded version, not that the note's claim is verified.
+Output defaults to 2,000 characters and five
+notes, with hard maxima of 4,000 characters and ten notes; omissions are explicit.
+The ledger scan is local and linear.
+
+Optional `supersedes` lists accepted note ids in the same project and scope;
+only accepting the replacement marks those notes superseded. `expires_at` is an
+ISO timestamp with a timezone. Expired and superseded notes remain visible with
+stale labels. Different active notes sharing a referenced path are labelled as
+possible conflicts, with ids to inspect; this is conservative overlap detection,
+not semantic contradiction detection. Prefer current source and user instructions.
+
+Ledger version 2 adds optional provenance. Version 1 records migrate in memory
+with unknown provenance and keep their original review digests; the next decision
+write persists version 2. Reading never rewrites the ledger. Existing memory-file
+and prompt-loading behavior stays unchanged; freshness checks run on demand.
+
 ## Add a skill
 
 <p class="gd-facts">Applies to: every run in this project · Format: compatible with Anthropic and OpenCode skills</p>
