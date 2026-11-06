@@ -40,6 +40,8 @@ def test_projection_redacts_controls_bounds_text_and_keeps_sparse_history_honest
     assert projection["original_cause"]["status"] == "unavailable"
     assert "not reconstructed" in projection["original_cause"]["reason"]
     assert projection["coverage"]["causal_records"]["status"] == "unavailable"
+    assert projection["artifacts"]["status"] == "present"
+    assert projection["artifacts"]["value"]["references"] == []
 
     session_dir = _session(store, "hostile", tmp_path)
     store.update_meta("hostile", {"model": "m" * 1000,
@@ -257,6 +259,61 @@ def test_historical_error_details_cannot_export_reasoning(tmp_path, source, open
     assert selected["detail"]["status"] == "withheld"
 
 
+@pytest.mark.parametrize("optional_sources", ["small", "exhausted", "changed", "grown"])
+def test_optional_artifact_reads_preserve_cause_and_metadata_revalidation(tmp_path, monkeypatch, optional_sources):
+    from garuda.core import artifact_read_model, failure_evidence
+
+    store = SessionStore(tmp_path / "sessions")
+    session = _session(store, "retained-cause", tmp_path)
+    assert append_causal_record(session, causal_record(
+        RuntimeError("retained execution failure"), phase="execution", code="execution.failed",
+    ))
+    large = optional_sources != "small"
+    (session / "messages.json").write_text(json.dumps([{
+        "role": "tool", "content": "x" * (failure_evidence.MAX_SOURCE_BYTES + 1 if large else 1),
+    }]))
+    line = json.dumps({"type": "user_message", "payload": {"content": "x" * 60000}}) + "\n"
+    (session / "events.jsonl").write_text(line * (71 if large else 1))
+    before = _tree_bytes(session)
+    consumed = 0
+    original_read = failure_evidence.os.read
+
+    def measured_read(fd, count):
+        nonlocal consumed
+        data = original_read(fd, count)
+        consumed += len(data)
+        return data
+
+    monkeypatch.setattr(failure_evidence.os, "read", measured_read)
+    original_projection = artifact_read_model.project_session_artifacts
+
+    def after_artifact_reads(*args, **kwargs):
+        value = original_projection(*args, **kwargs)
+        if optional_sources in {"changed", "grown"}:
+            update = {"status": "changed"}
+            if optional_sources == "grown":
+                update["padding"] = "x" * (session / "meta.json").stat().st_size
+            store.update_meta("retained-cause", update)
+        return value
+
+    monkeypatch.setattr(artifact_read_model, "project_session_artifacts", after_artifact_reads)
+    if optional_sources in {"changed", "grown"}:
+        with pytest.raises(FailureEvidenceError, match="session changed while evidence was read") as caught:
+            SessionFailureEvidence(store).project("retained-cause")
+        assert "aggregate source read budget exhausted" not in str(caught.value)
+        assert (session / CAUSE_FILE).read_bytes() == before[CAUSE_FILE]
+    else:
+        projection = SessionFailureEvidence(store).project("retained-cause")
+        assert projection["original_cause"]["status"] == "present"
+        assert projection["original_cause"]["value"]["code"] == "execution.failed"
+        assert projection["original_cause"]["value"]["detail"]["value"] == "retained execution failure"
+        assert projection["artifacts"]["status"] == "present"
+        if large:
+            assert projection["artifacts"]["value"]["coverage"] == "unknown"
+        assert _tree_bytes(session) == before
+    assert consumed <= 16 * 1024 * 1024
+
+
 def test_linked_child_reads_share_the_declared_source_budget(tmp_path, monkeypatch):
     from garuda.core import failure_evidence
 
@@ -295,11 +352,37 @@ def test_linked_child_reads_share_the_declared_source_budget(tmp_path, monkeypat
     assert consumed <= failure_evidence.MAX_AGGREGATE_SOURCE_BYTES
 
 
-@pytest.mark.parametrize("malformed", ["recovery", "receipt", "version", "kind"])
+@pytest.mark.parametrize("malformed", [
+    "recovery", "receipt", "version", "kind", "flow-valid", "flow-list",
+    "flow-steps-number", "flow-steps-string", "flow-step-items", "flow-duplicate-steps",
+])
 def test_malformed_failure_metadata_never_becomes_a_cause_or_reader_crash(tmp_path, malformed):
     store = SessionStore(tmp_path / "sessions")
     session = _session(store, "malformed", tmp_path)
-    if malformed == "recovery":
+    flow_values = {
+        "flow-valid": {"steps": ["build"]},
+        "flow-list": [1],
+        "flow-steps-number": {"steps": 1},
+        "flow-steps-string": {"steps": "build"},
+        "flow-step-items": {"steps": [{}]},
+        "flow-duplicate-steps": {"steps": ["build", "build"]},
+    }
+    if malformed in flow_values:
+        from garuda.core.buffer import ToolOutputBuffer
+
+        store.update_meta("malformed", {"kind": "flow", "flow": flow_values[malformed]})
+        ToolOutputBuffer("malformed", root=session / "buffers").store("retained", "retained evidence")
+        assert append_causal_record(session, causal_record(
+            RuntimeError("retained execution failure"), phase="execution", code="execution.failed",
+        ))
+        (session / "flow/receipts").mkdir(parents=True)
+        (session / "flow/receipts/build-1.json").write_text(json.dumps({
+            "step": "build", "attempt": 1, "inputs": [], "outputs": [], "status": "done",
+        }))
+        (session / "flow/journal.jsonl").write_text("".join(json.dumps({
+            "event": event, "step": "build", "attempt": 1,
+        }) + "\n" for event in ("intent", "receipt")))
+    elif malformed == "recovery":
         store.update_meta("malformed", {"quota_recovery": {"state": []}})
     elif malformed == "receipt":
         store.update_meta("malformed", {"kind": "flow"})
@@ -312,8 +395,20 @@ def test_malformed_failure_metadata_never_becomes_a_cause_or_reader_crash(tmp_pa
         else:
             record["version"] = True
         (session / CAUSE_FILE).write_text(json.dumps(record) + "\n")
+    before = _tree_bytes(session)
     result = SessionFailureEvidence(store).project("malformed")
-    assert result["original_cause"]["status"] == "unavailable"
+    assert _tree_bytes(session) == before
+    if malformed in flow_values:
+        assert result["original_cause"]["status"] == "present"
+        assert result["original_cause"]["value"]["code"] == "execution.failed"
+        assert result["artifacts"]["status"] == "present"
+        projection = result["artifacts"]["value"]
+        retained = next(ref for ref in projection["references"]
+                        if ref["owner"]["reference"] == "retained")
+        assert retained["availability"]["state"] == "available"
+        assert projection["coverage"] == ("complete" if malformed == "flow-valid" else "unknown")
+    else:
+        assert result["original_cause"]["status"] == "unavailable"
 
 
 def test_linked_child_requires_affirmative_project_identity(tmp_path):
@@ -337,9 +432,15 @@ def test_selected_diagnostics_redact_credential_shaped_session_references(tmp_pa
     store = SessionStore(tmp_path / "sessions")
     session_id = "ghp_" + "a" * 36  # Synthetic credential shape, never a real credential.
     session_dir = _session(store, session_id, tmp_path)
+    from garuda.core.buffer import ToolOutputBuffer
+
+    ToolOutputBuffer(session_id, root=session_dir / "buffers").store(
+        "diagnostic-buffer", "safe retained output", tool_name="bash",
+    )
     service = DiagnosticService(store)
     preview = service.preview(session_id, categories=["causes", "identities"])
     assert session_id not in service.export(session_id)
+    assert session_id not in json.dumps(SessionFailureEvidence(store).project(session_id))
     assert session_id not in json.dumps(preview)
     receipt = service.capture(session_id, categories=["causes", "identities"],
                               preview_digest=preview["digest"])

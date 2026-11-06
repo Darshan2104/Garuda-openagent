@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from garuda.runtime.protocol import AgentRuntimeError
 
@@ -53,6 +53,15 @@ PREPARED_CHILD_STATE = "prepared"
 _SIGNAL_CANDIDATE_STATES = frozenset({"live", PREPARED_CHILD_STATE})
 
 _PS_CANDIDATES = ("/bin/ps", "/usr/bin/ps")
+
+
+class RecoverySource(Protocol):
+    """Read authority retained by the caller; mutation stays with SessionStore."""
+
+    def load_meta(self, session_id: str) -> dict: ...
+    def load_unified(self, session_id: str) -> Any: ...
+    def load_messages(self, session_id: str) -> list: ...
+    def load_event_trail(self, session_id: str) -> str | None: ...
 
 
 class RestartState(str, Enum):
@@ -641,7 +650,9 @@ def reap_orphans(
     return tuple(reaped)
 
 
-def audit_core_trail(path: str | Path) -> bool:
+def audit_core_trail(
+    path: str | Path, *, read_text: Callable[[], str | None] | None = None,
+) -> bool:
     """True when the persisted core trail is unambiguous: no malformed lines,
     at most one `session_end`, and nothing substantive after it.
 
@@ -652,7 +663,9 @@ def audit_core_trail(path: str | Path) -> bool:
     more model/tool traffic, a new start) is ambiguous and refuses.
     """
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = read_text() if read_text is not None else Path(path).read_text(encoding="utf-8")
+        if text is None:
+            return True
     except FileNotFoundError:
         return True
     except OSError as exc:
@@ -808,6 +821,7 @@ def recover(
     identify: Callable[[int], str | None] = _process_identity,
     leases=None,
     reap_timeout: float = REAP_TIMEOUT_SEC,
+    source_reader: RecoverySource | None = None,
 ) -> RecoveryReport:
     """Audit, classify, reap identity-matched orphans, and mark rolled-back
     switches. Returns the session to resume; never invents success.
@@ -824,13 +838,18 @@ def recover(
     # customise the probes for deterministic tests, but may not smuggle an
     # arbitrary PID into a production recovery operation.
     _refuse_live_lease(session_id, leases)
-    children = _live_children(store, session_id)
+    source = source_reader if source_reader is not None else store
+    children = _live_children(source, session_id)
     for child in children:
         _refuse_live_owner(child, identify)
     events_path = getattr(store, "events_path", None)
     if callable(events_path):
         try:
-            trail_ok = audit_core_trail(events_path(session_id))
+            trail_ok = audit_core_trail(
+                events_path(session_id),
+                read_text=(lambda: source_reader.load_event_trail(session_id))
+                    if source_reader is not None else None,
+            )
         except RecoveryError:
             raise
         except Exception as exc:
@@ -842,7 +861,7 @@ def recover(
                 f"session {session_id} has a malformed or ambiguous terminal "
                 "trail; refusing without operator action"
             )
-    report = classify(store, session_id)
+    report = classify(source, session_id)
 
     outcomes: dict[int, str] = {}
     reaped: list[int] = []
@@ -873,6 +892,7 @@ def recover(
                 outcomes[pid] = "reused"
                 notes.append(f"pid {pid} was reused by another process; not signalled")
                 continue
+            source.load_meta(session_id)  # Recheck retained read authority before signalling.
             reap(pid)
             _await_death(pid, is_alive, reap_timeout)
             outcomes[pid] = "reaped"
@@ -880,12 +900,14 @@ def recover(
     except BaseException:
         if outcomes:
             try:
+                source.load_meta(session_id)
                 _retire(store, session_id, outcomes)
             except Exception:
                 pass
         raise
     if outcomes:
         try:
+            source.load_meta(session_id)
             _retire(store, session_id, outcomes)
         except Exception as exc:
             raise RecoveryError(
@@ -895,8 +917,9 @@ def recover(
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
-        target = store.load_unified(session_id).handoff.get("target_runtime")
+        target = source.load_unified(session_id).handoff.get("target_runtime")
         extra = {"target_runtime": target} if isinstance(target, str) and target else {}
+        source.load_meta(session_id)
         store.record_handoff(session_id, state="failed", attempts=1, **extra)
     return RecoveryReport(
         session_id=report.session_id,

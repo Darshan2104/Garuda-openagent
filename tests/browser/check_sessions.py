@@ -69,6 +69,14 @@ with sync_playwright() as p:
     evidence = page.locator("#failure-evidence")
     check("original failure remains separate from later recovery refusal",
           "model_error" in evidence.inner_text() and "flow.quota_wait" in evidence.inner_text())
+    page.wait_for_selector("#artifact-projection")
+    artifacts = page.locator("#artifact-projection")
+    partial = artifacts.locator("li").filter(has_text="partial-observation").inner_text()
+    pruned = artifacts.locator("li").filter(has_text="pruned-observation").inner_text()
+    check("partial artifact capture remains distinct from availability",
+          "capture: partial" in partial and "availability: available" in partial, partial)
+    check("pruned artifact references remain visible and unavailable",
+          "availability: unavailable" in pruned and "retention_pruned" in pruned, pruned)
     check("failure details are redacted and rendered as text",
           "synthetic failure" in evidence.inner_text() and "seed-failure-secret" not in evidence.inner_text()
           and page.locator("img[src='x']").count() == 0

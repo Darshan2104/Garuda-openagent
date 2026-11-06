@@ -732,6 +732,14 @@ class SessionFailureEvidence:
         if expected_project_id is not None and meta.get("project_id") != expected_project_id:
             raise FailureEvidenceError("session belongs to a different project")
 
+        # Keep the mandatory final snapshot check independent of optional reads.
+        # A successful initial read charged its actual bytes; reserve that size
+        # plus the bounded reader's growth-detection chunk from the SAME ceiling.
+        # A grown metadata file must refuse rather than borrow optional budget.
+        metadata_bytes = MAX_AGGREGATE_SOURCE_BYTES - store.remaining
+        revalidation_bytes = metadata_bytes + 65536
+        store.remaining -= revalidation_bytes
+
         cause_records, causal_coverage = _jsonl(
             store, Path(session_id) / CAUSE_FILE, limit=MAX_CAUSE_FILE_BYTES
         )
@@ -822,6 +830,20 @@ class SessionFailureEvidence:
         workspace = _workspace_references(meta)
         selected_meta = _evidence_meta(meta)
         approvals, approvals_coverage = _approval_evidence(store, session_id)
+        try:
+            from garuda.core.artifact_read_model import project_session_artifacts
+
+            artifacts = _field(
+                "present",
+                project_session_artifacts(
+                    store, session_id, expected_project_id=expected_project_id
+                ),
+                source="buffer-records/,flow/receipts/",
+            )
+        except (RecordError, ValueError, OSError) as exc:
+            artifacts = _field(
+                "unavailable", reason=str(exc), source="buffer-records/,flow/receipts/"
+            )
         projection = {
             "schema": SCHEMA,
             "version": SCHEMA_VERSION,
@@ -846,6 +868,7 @@ class SessionFailureEvidence:
                 source="meta.json",
             ),
             "approvals": approvals,
+            "artifacts": artifacts,
             "review": _selected_meta(selected_meta, "review", "meta.json:review"),
             "self_check": _selected_meta(selected_meta, "self_check", "meta.json:state.self_check"),
             "acceptance": _selected_meta(selected_meta, "acceptance", "meta.json:acceptance"),
@@ -855,6 +878,11 @@ class SessionFailureEvidence:
                 "acp_events": acp_coverage,
                 "causal_records": causal_coverage,
                 "approvals": approvals_coverage,
+                "artifacts": _field(
+                    artifacts["status"],
+                    source="buffer-records/,flow/receipts/",
+                    reason=artifacts.get("reason"),
+                ),
                 "review": _field("present" if meta.get("review") is not None else "unavailable",
                                   source="meta.json"),
                 "acceptance": _field("present" if selected_meta.get("acceptance") is not None else "unavailable",
@@ -886,7 +914,8 @@ class SessionFailureEvidence:
         if len(encoded) > MAX_PROJECTION_BYTES:
             raise FailureEvidenceError("bounded failure projection exceeds its serialized limit")
         try:
-            latest_meta = _read_json(store, Path(session_id) / "meta.json")
+            store.remaining += revalidation_bytes
+            latest_meta = parse_json(store.read(Path(session_id) / "meta.json", limit=metadata_bytes))
         except RecordError as exc:
             raise FailureEvidenceError(f"session changed while evidence was read: {exc}") from exc
         if latest_meta != meta:

@@ -155,6 +155,35 @@ function failureEvidenceHtml(evidence) {
     '<p class="stat-sub">Coverage labels describe retained evidence. Inspection is read-only and never replays work.</p></section>';
 }
 
+function artifactProjectionHtml(projection) {
+  if (!projection) return "";
+  var refs = projection.references || [];
+  var omitted = projection.omitted_references || 0;
+  var incomplete = projection.coverage && projection.coverage !== "complete";
+  return '<section class="artifacts" id="artifact-projection"><h2>Artifact references</h2>' +
+    (refs.length ? '<ul>' + refs.map(function (ref) {
+      var owner = ref.owner || {};
+      var availability = ref.availability || {state: "unknown", integrity: "unknown"};
+      var reason = availability.reason ? ' · ' + availability.reason : '';
+      var view = ref.omitted_view_bytes === null ? ' · view omissions unknown' :
+        (ref.omitted_view_bytes > 0 ? ' · view omits ' + ref.omitted_view_bytes + ' bytes' : '');
+      var withheld = ref.field_coverage && Object.keys(ref.field_coverage).length ?
+        ' · some metadata withheld' : '';
+      return '<li><code>' + esc(owner.kind || "artifact") + ':' + esc(owner.reference || "unknown") +
+        '</code> · ' + chip("capture", ref.completeness || "unknown",
+          ref.completeness === "complete" ? "chip-on" : "chip-off") + ' ' +
+        chip("availability", availability.state || "unknown",
+          availability.state === "available" ? "chip-on" : "chip-bad") +
+        ' <span class="stat-sub">integrity ' + esc(availability.integrity || "unknown") +
+        esc(reason) + esc(view) + esc(withheld) + '</span></li>';
+    }).join("") + '</ul>' : '<p class="stat-sub">' +
+      (incomplete ? 'Artifact references could not be fully inspected.' : 'No retained artifact references.') + '</p>') +
+    (omitted ? '<p class="stat-sub">' + (projection.omission_count_status === 'lower-bound' ? 'At least ' : '') +
+      esc(omitted) + ' references omitted by the read bound.</p>' : '') +
+    (incomplete ? '<p class="stat-sub">Some artifact evidence is unavailable.</p>' : '') +
+    '<p class="stat-sub">Completeness describes the captured source; retention is best effort.</p></section>';
+}
+
 function sessionDetailView(id) {
   render('<div class="loading">Loading session…</div>');
   return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
@@ -177,6 +206,7 @@ function sessionDetailView(id) {
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
         return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
       }).join("") + "</ul>" : "") +
+      artifactProjectionHtml(row.artifacts) +
       failureEvidenceHtml(row.failure_evidence) +
       flowHtml(row.flow) +
       '<div id="starter-result-host"></div>' +

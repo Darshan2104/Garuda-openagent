@@ -132,13 +132,118 @@ flow artifacts, independent review or a new session/resume engine.
     while garuda sessions show "$id" --json | jq -e '.label | IN("queued", "working", "waiting")' >/dev/null; do
       sleep 10
     done
-    garuda sessions show "$id" --json | jq '{label, verification}'
+    garuda sessions show "$id" --json | jq '{label, verification, artifacts}'
     ```
 
     `--bg` prints only the session ID on stdout. `sessions show SESSION --json`
     returns the same record the dashboard uses: `label`, the four-part
     `state`, `verification`, `self_check`, `queue`, `branch`, `approvals`,
-    `flow` and `consults`. `garuda sessions --json` lists every session.
+    `flow`, `consults` and the bounded `artifacts` projection. `garuda sessions
+    --json` lists every session.
+
+    Inspect the retained output contract without printing its payload:
+
+    ```bash
+    garuda sessions show "$id" --json | jq '.artifacts.references[] | {owner, source, completeness, omitted_source_bytes, availability, retention}'
+    ```
+
+    `complete` means the identified source representation was captured in full.
+    `partial` covers sampled or clipped observations, including a running
+    background tail. Background completion requires the capture owner's EOF
+    receipt and process-group settlement; launcher exit alone leaves a task
+    incomplete and available for further polling. Unsafe or replaced logs are
+    unavailable and remain registered for reconciliation, even while the command
+    is running. `failed` preserves a capture failure. An otherwise known
+    reference becomes `unavailable` when its payload is pruned, missing, changed
+    or unsafe to open. For a delivered inline result, `omitted_view_bytes`
+    describes bytes left out of its retained message. Stored-artifact descriptors
+    describe their stored representation, rather than every later preview.
+    The dashboard session page shows the same states. The 14-day buffer policy is best effort, not a retrieval deadline.
+    Older `.txt` buffers have `unknown` completeness and producer provenance;
+    their current size and digest are labelled `observed` rather than invented
+    as historical facts. Older version-1 typed child references already contain
+    size/digest commitments: inspection and resume preserve those as `recorded`,
+    refuse mismatching bytes, and leave unrecorded historical facts unknown.
+    Inspection shares its source allowance across metadata,
+    payloads and failed reads; exhausted verification remains unknown unless
+    the retention owner has already confirmed pruning. That known unavailability
+    survives skipped verification; missing bytes alone do not prove pruning. Omitted
+    reference counts can be lower bounds when coverage is incomplete. Malformed
+    flow metadata leaves declaration coverage unknown in CLI/API detail while valid
+    retained buffers and failure causes remain visible. Invalid summary runtime
+    identities are withheld locally rather than hiding independent artifacts.
+    Malformed nested flow receipts are skipped locally; valid sibling attempts,
+    buffers and causes remain visible in CLI/API detail and consult discovery.
+    `.flow.coverage.receipts` becomes `unknown`, separately from declaration and
+    journal coverage; it does not claim receipt integrity or verification. Unsafe
+    metadata identities are withheld with per-field coverage, independently of
+    payload redaction. Unsafe capture sidecar paths refuse buffer reads and
+    inspection instead of falling back to legacy bytes, including when directory
+    discovery clips before their exact sidecars. Exhausted sidecar checks leave
+    availability unknown. A valid sidecar cannot replace a conflicting retained
+    size/digest commitment. Unknown sidecar or repeated transcript fields preserve
+    known producer, size and digest facts; resumed ordinary reads enforce those
+    inherited commitments. Inspection refuses conflicting references, and resume
+    refuses conflicting inherited records. Long provider IDs remain retrievable through their
+    supported IDs and canonical discovered aliases. Cached reads preserve capture
+    loss; archiving an already clipped inline result cannot restore its missing
+    bytes. Malformed records or uninspected staging entries make coverage unknown
+    rather than inventing artifact counts. Failure evidence reserves its final
+    metadata recheck within the existing aggregate read limit, so exhausted
+    optional artifact reads retain the original cause with unknown artifact
+    coverage. Changed metadata still refuses the failure projection. Changed
+    session/store directory bindings also refuse; regular directory replacement
+    cannot redirect the projection into another project's payloads. Inline
+    references become unavailable when their retained text is missing or no longer
+    matches its recorded digest.
+    With buffering disabled, pruning still retains known capture facts, while
+    discarded inline bytes are unavailable with unknown integrity and view loss.
+    Literal buffer-looking text does not change an inline capture's owner.
+    Character-slice frames and receipt errors keep their exact bytes and budgets
+    while retaining inline capture facts; embedded buffer-looking text stays text.
+    Post-tool hooks cannot replace frame bytes, offsets or receipt-error contracts,
+    even by recomputing hashes. Changed deliveries produce bounded failure feedback.
+    Runner-generated lookup, argument and exception feedback also carries inline
+    facts before hooks or storage. Its text cannot grant a collection worker a
+    parent buffer; unretained earlier capture/loss facts stay unknown.
+    Permission/hook refusals and native argument-parse feedback use the same
+    bounded inline contract, so echoed names cannot widen collection access.
+    Brief handoffs and collection workers use the same owner-aware discovery,
+    so known inline or failed output cannot grant a parent buffer by mentioning it.
+    Post-tool hooks may format a child summary within its delivery budget, but
+    validated child output, delivery, schema and producer identity remain those
+    captured before the hooks. Changing those facts makes delivery unavailable.
+    A rejected or null capture contract grants no buffers; text-only compatibility
+    applies to legacy messages with no capture contract.
+    Unknown retrieval bindings preserve historical completeness and omissions;
+    those facts do not establish current availability or grant access.
+    Pruned buffer pointers explicitly leave current availability unverified;
+    inspection and retrieval perform their existing owner checks.
+    Pruning a typed child handoff retains its canonical result contract for resume.
+    Native `garuda run --resume "$id" "Continue the investigation"` keeps the
+    original producer identity while rebinding copied captures to the new storage
+    session. Source selection uses the retained no-follow metadata reader before
+    workspace or lease setup. Names, prefixes and latest remain project-scoped;
+    explicit full ids and all-projects retain their existing meanings. A replacement
+    before the later binding cannot bypass project authorization, and incomplete
+    metadata budgets refuse selection. The source/store directory binding stays held through
+    recovery, replay, discovery and copying. Cancellation waits for recovery to
+    finish before releasing that source binding and workspace lease; replacements refuse before foreign
+    payload reads. Child buffer-publication failures remain failed/unavailable
+    facts with unknown payload size/digest, including event-only evidence, rather
+    than disappearing or becoming retrieval references. Captures bind to the new
+    session. Confirmed retention pruning survives older transcript availability
+    during resume and exact-sidecar lookup after clipped discovery, including large
+    captures and exhausted verification budgets. Unconfirmed loss remains unknown
+    when unverified. Partial, failed and pruned facts survive, including event-only facts;
+    copied corrupt payloads still fail their recorded integrity checks. Resume
+    refuses malformed capture records and symlinked transcript/artifact inputs
+    before a model prompt. If commitment discovery is incomplete, every copied
+    payload needs a retained size/digest commitment; an unchecked legacy fallback
+    refuses startup. Missing inheritance on a resumed source remains unknown
+    across later resumes. Large regular saved transcripts remain replayable,
+    while their bounded inspection can stay unknown. Bounded inherited facts can retain unknown coverage, and
+    referenced child results keep their original producer and byte commitments.
 
 Add `--trajectory run.jsonl` to also save the events to a file after the run.
 

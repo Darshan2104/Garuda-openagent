@@ -341,7 +341,7 @@ async def test_an_ordinary_subagent_handoff_delivers_the_validated_object(tmp_pa
     assert message_from_dict(message_to_dict(handoff)).metadata["child_result"] == child_result
 
 
-@pytest.mark.parametrize("rewrite", ["drop_metadata", "oversized_prefix"])
+@pytest.mark.parametrize("rewrite", ["drop_metadata", "oversized_prefix", "output", "delivery", "identity", "summary"])
 async def test_post_tool_rewrite_cannot_leave_a_validated_child_claim(tmp_path, rewrite):
     from garuda.plugins.hooks import HookRegistry
     from garuda.types import ToolResult
@@ -360,11 +360,27 @@ async def test_post_tool_rewrite_cannot_leave_a_validated_child_claim(tmp_path, 
     async def rewrite_handoff(call, result, _context):
         if call.name != "invoke_subagent":
             return result
+        if rewrite in {"output", "delivery", "identity"}:
+            envelope = deepcopy(result.metadata["child_result"])
+            if rewrite == "output":
+                envelope["output"] = {"count": "forged"}
+                raw = canonical_json(envelope["output"]).encode()
+                envelope["delivery"]["serialized_bytes"] = len(raw)
+                envelope["delivery"]["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+            elif rewrite == "delivery":
+                envelope.pop("output")
+                envelope["delivery"] = {"state": "unavailable", "reason": "publication_failed"}
+            else:
+                envelope["producer"]["session_id"] = "forged-child"
+            assert validate_child_result_envelope(envelope) is not None
+            result.metadata["child_result"] = envelope
+            result.content = render_child_result_handoff("Rewritten child result.", envelope, 2048)
+            return result
         return ToolResult(
             tool_call_id=result.tool_call_id,
             content=("🦅" * 1000 if rewrite == "oversized_prefix" else "[rewritten] ") + result.content,
             is_error=result.is_error,
-            metadata=result.metadata if rewrite == "oversized_prefix" else {},
+            metadata=result.metadata if rewrite in {"oversized_prefix", "summary"} else {},
         )
 
     hooks.register_after_tool(rewrite_handoff)
@@ -381,6 +397,10 @@ async def test_post_tool_rewrite_cannot_leave_a_validated_child_claim(tmp_path, 
         message for message in model.requests[2]
         if message.role == Role.TOOL and message.name == "invoke_subagent"
     )
+    if rewrite == "summary":
+        assert handoff.metadata["child_result"]["output"] == {"count": 1}
+        assert handoff.content.endswith(canonical_json(handoff.metadata["child_result"]))
+        return
     assert handoff.content.startswith("Child result delivery unavailable:")
     assert "Validated child result" not in handoff.content
     assert "child_result" not in handoff.metadata
@@ -560,7 +580,28 @@ async def test_a_failed_child_never_advertises_its_invalid_partial_output(tmp_pa
     assert result.success
 
 
-async def test_a_large_child_result_publishes_a_complete_parent_reference(tmp_path):
+@pytest.mark.parametrize("persistence", ["messages", "events"])
+@pytest.mark.parametrize(("missing_field", "payload_state"), [
+    (None, "missing"),
+    ("producer_session_id", "missing"),
+    ("producer", "missing"),
+    ("omitted_source_bytes", "missing"),
+    ("omitted_view_bytes", "missing"),
+    ("legacy-reference", "missing"),
+    ("legacy-reference", "same-size-corrupt"),
+    ("legacy-reference", "retained"),
+    (None, "conflicting-present"),
+    ("legacy-reference", "conflicting-present"),
+    (None, "matching-present"),
+    (None, "unknown-sidecar-corrupt"),
+    (None, "unknown-sidecar-matching"),
+    (None, "unknown-retained-corrupt"),
+    (None, "publication-failed"),
+    ("legacy-failure", "publication-failed"),
+])
+async def test_large_child_delivery_facts_survive_persistence(
+    tmp_path, monkeypatch, persistence, missing_field, payload_state,
+):
     schema = {
         "type": "object",
         "properties": {"text": {"type": "string"}},
@@ -577,13 +618,30 @@ async def test_a_large_child_result_publishes_a_complete_parent_reference(tmp_pa
         _done(accepted, "child-done"),
         _done(call_id="parent-done"),
     ])
-    buffer = ToolOutputBuffer("parent", threshold_bytes=100, root=tmp_path / "buffers")
+    from garuda.core.artifact_read_model import project_session_artifacts
+    from garuda.core.events import EventStore, EventType
+    from garuda.core.sessions import SessionStore
 
-    await DefaultAgent().run(
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("parent", task="delegate", model="script", agent="build", workspace=str(tmp_path))
+    directory = store.session_dir("parent")
+    buffer = ToolOutputBuffer("parent", threshold_bytes=100, root=directory / "buffers")
+    if payload_state == "publication-failed":
+        original_store = buffer.store
+
+        def fail_child_publication(*args, **kwargs):
+            if kwargs.get("tool_name") == "invoke_subagent":
+                raise OSError("disk full")
+            return original_store(*args, **kwargs)
+
+        monkeypatch.setattr(buffer, "store", fail_child_publication)
+    events = EventStore(session_id="parent", persist_path=store.events_path("parent") if persistence == "events" else None)
+
+    result = await DefaultAgent().run(
         task="delegate then finish", model=model,
         env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
         config=AgentConfig(enable_verifier=False, max_turns=5, subagents=["typed"]),
-        agents_dir=agents, buffer=buffer,
+        agents_dir=agents, buffer=buffer, events=events,
     )
 
     handoff = next(
@@ -591,11 +649,142 @@ async def test_a_large_child_result_publishes_a_complete_parent_reference(tmp_pa
         if message.role == Role.TOOL and message.name == "invoke_subagent"
     )
     delivery = handoff.metadata["child_result"]["delivery"]
+    if payload_state == "publication-failed":
+        assert delivery == {"state": "unavailable", "reason": "publication_failed"}
+        child_id = handoff.metadata["child_result"]["producer"]["session_id"]
+        if missing_field is None:
+            assert handoff.metadata["artifact_capture"]["completeness"] == "failed"
+        store.finish("parent", result)
+        if missing_field == "legacy-failure" or persistence == "events":
+            path = directory / "messages.json"
+            messages = json.loads(path.read_text())
+            for message in messages:
+                if message.get("name") == "invoke_subagent":
+                    metadata = message["metadata"]
+                    metadata.pop("artifact_capture", None)
+                    if persistence == "events":
+                        metadata.pop("child_result", None)
+            path.write_text(json.dumps(messages))
+        if missing_field == "legacy-failure" and persistence == "events":
+            path = store.events_path("parent")
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for event in records:
+                if event["type"] == "tool_result" and event["payload"].get("name") == "invoke_subagent":
+                    event["payload"].pop("artifact_capture", None)
+            path.write_text("".join(json.dumps(record) + "\n" for record in records))
+        projection = project_session_artifacts(store, "parent")
+        failures = [ref for ref in projection["references"] if ref["owner"]["kind"] == "capture-attempt"
+                    and ref["producer_session_id"] == child_id]
+        assert len(failures) == 1
+        capture = failures[0]
+        assert capture["completeness"] == "failed"
+        assert capture["availability"]["state"] == "unavailable"
+        assert capture["availability"]["reason"] == "publication_failed"
+        assert capture["size"]["bytes"] is None and capture["digest"]["sha256"] is None
+        from garuda.core.permissions import PermissionEngine
+        from garuda.interfaces.runner import run_agent_task
+
+        resumed_events = EventStore()
+        resumed = await run_agent_task(
+            task="Resume known failed publication", model=ScriptModel([_done()]),
+            agent=DefaultAgent(), tools=default_tools(),
+            config=AgentConfig(enable_verifier=False, max_turns=3),
+            permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path),
+            events=resumed_events, resume="parent", store=store,
+        )
+        assert resumed.success
+        inherited = project_session_artifacts(store, resumed_events.session_id)
+        retained = next(ref for ref in inherited["references"] if ref["owner"] == capture["owner"])
+        assert retained["completeness"] == "failed"
+        assert retained["availability"]["state"] == "unavailable"
+        assert retained["availability"]["reason"] == "publication_failed"
+        assert retained["producer_session_id"] == child_id
+        return
     assert delivery["state"] == "referenced" and "output" not in handoff.metadata["child_result"]
     reference = delivery["reference"]
     assert buffer.read(reference["buffer_id"]) == json.dumps(
         accepted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
+
+    if persistence == "messages":
+        store.finish("parent", result)
+    if missing_field is not None:
+        path = directory / "messages.json" if persistence == "messages" else store.events_path("parent")
+        if persistence == "messages":
+            records = json.loads(path.read_text())
+            metadata = next(m["metadata"] for m in records if m.get("name") == "invoke_subagent")
+        else:
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            metadata = next(event["payload"] for event in records
+                            if event["type"] == "tool_result" and event["payload"].get("name") == "invoke_subagent")
+        persisted = metadata["child_result"]["delivery"]["reference"]
+        if missing_field == "legacy-reference":
+            persisted.pop("artifact")
+        else:
+            persisted["artifact"].pop(missing_field)
+        path.write_text(json.dumps(records) if persistence == "messages" else
+                        "".join(json.dumps(record) + "\n" for record in records))
+    payload = directory / "buffers" / (reference["buffer_id"] + ".txt")
+    if payload_state == "missing":
+        payload.unlink()
+    elif payload_state == "same-size-corrupt":
+        original = payload.read_bytes()
+        payload.write_bytes(original[:-1] + b"!")
+    elif payload_state == "conflicting-present":
+        from garuda.core.artifact_read_model import source_capture
+
+        replacement = {"text": accepted["text"].replace("single", "double", 1)}
+        buffer.store(reference["buffer_id"], json.dumps(
+            replacement, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ), tool_name="invoke_subagent", producer_session_id=reference["producer_session_id"],
+            capture=source_capture(kind="accepted_child_value", completeness="complete",
+                                   media_type="application/json", identity=reference["producer_session_id"]))
+    elif payload_state.startswith("unknown-"):
+        from copy import deepcopy
+
+        weaker = deepcopy(reference["artifact"])
+        weaker["size"] = {"bytes": None, "provenance": "unknown"}
+        weaker["digest"] = {"sha256": None, "provenance": "unknown"}
+        weaker["producer_session_id"] = weaker["producer"] = None
+        if payload_state.endswith("corrupt"):
+            original = payload.read_bytes()
+            payload.write_bytes(original[:-1] + b"!")
+        if payload_state.startswith("unknown-sidecar"):
+            (directory / "buffer-records" / (reference["buffer_id"] + ".json")).write_text(json.dumps(weaker))
+        else:
+            path = directory / "messages.json" if persistence == "messages" else store.events_path("parent")
+            if persistence == "messages":
+                records = json.loads(path.read_text())
+                records.append({"role": "tool", "name": "bash", "content": "retained buffer pointer",
+                                "metadata": {"artifact_capture": weaker}})
+                path.write_text(json.dumps(records))
+            else:
+                events.append(EventType.TOOL_RESULT, {"name": "bash", "content": "retained buffer pointer",
+                                                       "artifact_capture": weaker})
+    if payload_state not in {"conflicting-present", "matching-present", "unknown-sidecar-corrupt", "unknown-sidecar-matching"}:
+        (directory / "buffer-records" / (reference["buffer_id"] + ".json")).unlink()
+    projection = project_session_artifacts(store, "parent")
+    if missing_field not in {None, "legacy-reference"}:
+        assert projection["coverage"] != "complete"
+        assert not any(ref["owner"]["reference"] == reference["buffer_id"] for ref in projection["references"])
+        return
+    retained = next(ref for ref in projection["references"]
+                    if ref["owner"]["reference"] == reference["buffer_id"])
+    assert retained["availability"]["state"] == (
+        "available" if payload_state in {"retained", "matching-present", "unknown-sidecar-matching"} else "unavailable"
+    )
+    assert retained["size"] == {"bytes": reference["serialized_bytes"], "provenance": "recorded"}
+    assert retained["digest"] == {"sha256": reference["sha256"][7:], "provenance": "recorded"}
+    assert retained["storage_session_id"] == "parent"
+    assert retained["producer_session_id"] == reference["producer_session_id"]
+    if payload_state in {"same-size-corrupt", "conflicting-present", "unknown-sidecar-corrupt", "unknown-retained-corrupt"}:
+        assert retained["availability"]["integrity"] == "failed"
+    if missing_field == "legacy-reference":
+        assert retained["completeness"] == "unknown"
+        assert retained["omitted_source_bytes"] is None
+        assert retained["omitted_view_bytes"] is None
+        assert retained["redaction"]["state"] == "unknown"
+        assert retained["retention"]["policy"] == "legacy-unknown"
 
 
 async def test_child_changed_files_come_from_its_workspace_delta(tmp_path):

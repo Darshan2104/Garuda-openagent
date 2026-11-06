@@ -122,10 +122,29 @@ class BashTool:
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             ).strip()
+        from garuda.core.artifact_read_model import source_capture
+
+        completeness = "partial" if result.truncated else "complete"
+        omitted_source_bytes = None
+        capture_reason = "environment_output_truncated" if result.truncated else None
+        if result.truncated:
+            output += (
+                "\n\n[capture] Command output is partial because the execution "
+                "environment truncated its observation."
+            )
         cap = ctx.option("bash", "max_output_bytes") if hasattr(ctx, "option") else None
         if cap is not None and len(output.encode("utf-8")) > cap:
-            output = (output.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+            before = len(output.encode("utf-8"))
+            prefix = output.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+            if not result.truncated:
+                omitted_source_bytes = before - len(prefix.encode("utf-8"))
+            output = (prefix
                       + f"\n[output cut at {cap} bytes by tools.options.bash.max_output_bytes]")
+            completeness = "partial"
+            capture_reason = (
+                "environment_and_tool_output_clipped" if result.truncated
+                else "tool_output_option_clipped"
+            )
         if asked is not None:
             output += BUDGET_CAPPED_NOTE.format(
                 capped=effective, asked=asked, remaining=remaining or 0.0
@@ -133,7 +152,16 @@ class BashTool:
         # exit_code is on the metadata, not only in the rendered text: the working
         # state records which verification commands passed, and re-parsing it out of
         # the content would mean regexing a header the model can also produce.
-        metadata: dict = {"exit_code": result.exit_code}
+        metadata: dict = {
+            "exit_code": result.exit_code,
+            "artifact_source": source_capture(
+                kind="tool_observation",
+                completeness=completeness,
+                omitted_source_bytes=omitted_source_bytes,
+                identity="bash",
+                reason=capture_reason,
+            ),
+        }
         if launch:
             metadata["launch"] = launch
         return ToolResult(

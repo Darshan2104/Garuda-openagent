@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import ExitStack
 from datetime import datetime, timezone
 
 from garuda.context.manager import ContextManager
@@ -192,43 +193,59 @@ async def run_agent_task(
     # back to the worktree it ran in.
     from garuda.interfaces import session_service
 
-    workspace, workspace_plan = session_service.choose_workspace(
-        store, workspace, events.session_id, isolation, workspace_kind,
-        resume=resume, resume_all_projects=resume_all_projects,
-    )
-    # Every native run — CLI, SDK, server, web — executes through the
-    # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
-    # record and the normalized event log; execution below is unchanged.
-    runtime = NativeGarudaRuntime(
-        agent=agent,
-        model=model,
-        tools=tools,
-        config=config,
-        permissions=permissions,
-        store=store,
-        events=events,
-        workspace=os.path.realpath(workspace),
-        session_name=session_name,
-    )
+    resumed_from: str | None = None
+    source_scope = ExitStack()
+    source_records = source_binding = None
+    try:
+        if resume:
+            from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+            from garuda.core.session_records import BoundedSessionRecords
 
-    # One mutating session owns a workspace (P0.16). Acquired before any
-    # environment is resolved — and before restart recovery below — so a
-    # refused run burns nothing and another live Garuda on this workspace is
-    # refused before recovery may touch its processes. Held for the whole
-    # facade call and released last in `finally`. A live foreign mutating
-    # lease — including a second concurrent `run_agent_task` on this
-    # workspace — fails here instead of interleaving mutations. Fail-closed:
-    # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
-    from garuda.interfaces.run_guard import install_session_broker, lease_mode_for
+            source_records = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
+            resumed_from = source_records.resolve_for_resume(
+                resume, workspace=workspace, all_projects=resume_all_projects,
+            )
+            source_binding = source_scope.enter_context(source_records.selected_session(resumed_from))
+        workspace, workspace_plan = session_service.choose_workspace(
+            source_records if resume else store, workspace, events.session_id, isolation, workspace_kind,
+            resume=resumed_from, resume_all_projects=resume_all_projects,
+        )
+        # Every native run — CLI, SDK, server, web — executes through the
+        # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
+        # record and the normalized event log; execution below is unchanged.
+        runtime = NativeGarudaRuntime(
+            agent=agent,
+            model=model,
+            tools=tools,
+            config=config,
+            permissions=permissions,
+            store=store,
+            events=events,
+            workspace=os.path.realpath(workspace),
+            session_name=session_name,
+        )
 
-    # Native runs share one capacity pool ("native"), limited only when the
-    # user sets `capacity.native` in global settings.
-    lease = session_service.acquire_lease(
-        workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan,
-        capability=lease_capability, capacity_loan=capacity_loan,
-        # A read-only posture shares the workspace with other readers (B.4).
-        mode=lease_mode_for(getattr(config, "permission_mode", None)),
-    )
+        # One mutating session owns a workspace (P0.16). Acquired before any
+        # environment is resolved — and before restart recovery below — so a
+        # refused run burns nothing and another live Garuda on this workspace is
+        # refused before recovery may touch its processes. Held for the whole
+        # facade call and released last in `finally`. A live foreign mutating
+        # lease — including a second concurrent `run_agent_task` on this
+        # workspace — fails here instead of interleaving mutations. Fail-closed:
+        # `LeaseConflictError`/`LeaseError` propagate, never degrade to unlocked.
+        from garuda.interfaces.run_guard import install_session_broker, lease_mode_for
+
+        # Native runs share one capacity pool ("native"), limited only when the
+        # user sets `capacity.native` in global settings.
+        lease = session_service.acquire_lease(
+            workspace, events.session_id, capacity_key="native", worktree_plan=workspace_plan,
+            capability=lease_capability, capacity_loan=capacity_loan,
+            # A read-only posture shares the workspace with other readers (B.4).
+            mode=lease_mode_for(getattr(config, "permission_mode", None)),
+        )
+    except BaseException:
+        source_scope.close()
+        raise
 
     try:
         if initial_selection is not None:
@@ -248,16 +265,17 @@ async def run_agent_task(
 
             record_initial_selection(store, events.session_id, initial_selection)
     except BaseException:
-        await lease.release()
+        try:
+            source_scope.close()
+        finally:
+            await lease.release()
         raise
 
-    resumed_from: str | None = None
+    resumed_buffer = None
     initial_state: dict | None = None
     if resume:
         try:
-            resumed_from = store.resolve(
-                resume, workspace=workspace, all_projects=resume_all_projects
-            )
+            source_binding.check()
             # Recover the retained session before resuming it (resume only; a
             # fresh run has nothing to recover): a live owner or lease holder
             # refuses, prepared switches roll back (marked failed), orphans
@@ -267,25 +285,36 @@ async def run_agent_task(
             from garuda.runtime.recovery import recover, require_native_resumable
 
             # Off the loop: probes shell out to `ps` and reaping polls for death.
-            report = await asyncio.to_thread(
-                recover, store, resumed_from, leases=lease.leases
-            )
-            require_native_resumable(report)
-            if context is None:
-                context = build_resumed_context(store, resumed_from, task, model, config)
-        except BaseException:
-            await lease.release()
-            raise
-        # Restore pack facts after restart: the persisted WorkingState is the
-        # input the pack compiler renders from, so hydrating it here means the
-        # re-synced current-task/handoff carry the pre-restart facts verbatim.
-        try:
-            initial_state = store.load_state(resumed_from) or None
-        except Exception:
-            logger.warning("Failed to load persisted working state", exc_info=True)
-            initial_state = None
+            recovery_task = asyncio.create_task(asyncio.to_thread(
+                recover, store, resumed_from, leases=lease.leases, source_reader=source_records,
+            ))
+            try:
+                report = await asyncio.shield(recovery_task)
+            except asyncio.CancelledError as cancelled:
+                from garuda.workspace.settlement import settle_task
 
-    lease.start_heartbeat()
+                try:
+                    await settle_task(recovery_task)
+                except BaseException as settlement_error:
+                    raise cancelled from settlement_error
+                raise
+            require_native_resumable(report)
+            if source_records.load_meta(resumed_from).get("session_id") != resumed_from:
+                raise ValueError("resumed source identity conflicts with its selected directory")
+            if context is None:
+                context = build_resumed_context(source_records, resumed_from, task, model, config)
+            # Restore pack facts through the same selected source binding.
+            try:
+                initial_state = source_records.load_state(resumed_from) or None
+            except Exception:
+                logger.warning("Failed to load persisted working state", exc_info=True)
+                initial_state = None
+        except BaseException as exc:
+            try:
+                source_scope.__exit__(type(exc), exc, exc.__traceback__)
+            finally:
+                await lease.release()
+            raise
 
     # One approval path for every run through this facade (P0.17): the engine's
     # ASK responder becomes the session broker, so native tool approvals and
@@ -295,6 +324,7 @@ async def run_agent_task(
     # broker's answerer. With no handler, asks deny immediately (audited)
     # instead of hanging until timeout.
     try:
+        lease.start_heartbeat()
         install_session_broker(permissions, store, events.session_id, external=external_approvals)
         # Persist the trusted routing decision before the runtime is started.
         # The caller has already resolved any automatic selection, so this
@@ -348,25 +378,24 @@ async def run_agent_task(
             # The definition may have changed since the session being resumed
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
-            before = (store.load_meta(resumed_from) or {}).get("agent_digest")
+            before = (source_records.load_meta(resumed_from) or {}).get("agent_digest")
             if before and agent_digest and before != agent_digest:
                 update_session_meta(store, events.session_id, {"agent_segment": {
                     "previous_digest": before, "digest": agent_digest,
                     "reason": "the agent definition changed since the resumed session"}})
                 logger.warning("Resuming %s with a changed agent definition (%s -> %s)",
                                resumed_from, before[:12], agent_digest[:12])
-            # Copy the prior session's tool-output buffers into the new session dir so
-            # inherited [buffer:...] stubs in the resumed conversation still resolve
-            # (buffers are keyed to the session id, which changes on resume).
-            try:
-                import shutil
+            # Authorization/recovery above selected a settled source. Its owner
+            # copies bytes and commitments; retained messages acquire the new
+            # storage binding without changing producer lineage or integrity.
+            from garuda.core.session_artifact_resume import inherit_session_artifacts
 
-                src = store.session_dir(resumed_from) / "buffers"
-                dst = store.session_dir(events.session_id) / "buffers"
-                if src.is_dir() and not dst.exists():
-                    shutil.copytree(src, dst)
-            except Exception:
-                logger.warning("Failed to copy resumed session buffers", exc_info=True)
+            resumed_buffer = inherit_session_artifacts(
+                store, resumed_from, events.session_id, context,
+                threshold_bytes=config.buffer_threshold_bytes,
+                source_records=source_records, source_binding=source_binding,
+            )
+            source_scope.close()
 
         if hooks is None:
             hooks = build_hook_registry(workspace)
@@ -419,10 +448,11 @@ async def run_agent_task(
                 workspace_delta_loader=workspace_delta_loader,
                 collection_model=collection_model,
                 collection_policy=collection_policy,
+                **({"buffer": resumed_buffer} if resumed_buffer is not None and config.buffer_tool_output else {}),
             )
 
         runtime.install_driver(_driver)
-    except BaseException:
+    except BaseException as exc:
         # `BaseException`, not `Exception`: a job cancelled mid-startup (a
         # docker pull, a slow session-start hook) raises `CancelledError`, and
         # skipping the release would leave the heartbeat holding the
@@ -430,12 +460,17 @@ async def run_agent_task(
         # `runtime.start` has created the durable session by this point.  Mark a
         # baseline/startup refusal failed when the store is still writable; the
         # original error remains authoritative if it is not.
-        record_startup_refusal(store, events.session_id)
         try:
-            await runtime.close()
-        except Exception:
-            logger.warning("Failed to close refused runtime", exc_info=True)
-        await lease.release()
+            record_startup_refusal(store, events.session_id)
+            try:
+                await runtime.close()
+            except Exception:
+                logger.warning("Failed to close refused runtime", exc_info=True)
+        finally:
+            try:
+                source_scope.__exit__(type(exc), exc, exc.__traceback__)
+            finally:
+                await lease.release()
         raise
     survivors: list[str] = []
     try:

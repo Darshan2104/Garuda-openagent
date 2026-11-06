@@ -93,10 +93,20 @@ def _flow_sessions(store, session_id: str, meta: dict) -> list[tuple[str, str | 
     """``[(step session id, role)]`` for a flow's receipts."""
     if meta.get("kind") != "flow":
         return []
-    from garuda.flows import engine
+    from garuda.core.session_records import RecordError
+    from garuda.core.starter_evidence import flow_steps, selected_flow_records
 
     out = []
-    for receipt in engine.receipts(store, session_id):
+    declared = flow_steps(meta)
+    if declared is None:
+        return out
+    try:
+        receipts, _coverage = selected_flow_records(
+            store, session_id, declared, expected_project_id=meta.get("project_id"),
+        )
+    except (RecordError, ValueError, OSError, TypeError):
+        return out
+    for receipt in receipts:
         sid = receipt.get("session_id")
         if sid:
             out.append((sid, receipt.get("role") or receipt.get("step")))

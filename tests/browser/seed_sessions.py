@@ -93,6 +93,18 @@ def seed(root: Path, workspace: str) -> dict:
     # failed outcome, but its own self-check passed: outcome and verification stay separate
     store.finish(IDS["failed"], AgentResult(success=False, final_message="no", messages=[],
                                             turns=1, metadata={}))
+    from garuda.core.artifact_read_model import source_capture
+    from garuda.core.buffer import ToolOutputBuffer
+
+    buffers = ToolOutputBuffer(IDS["failed"], root=store.session_dir(IDS["failed"]) / "buffers")
+    pruned = buffers.store("pruned-observation", "previously retained output", tool_name="bash")
+    buffers.mark_pruned()
+    Path(pruned.path).unlink()
+    buffers.store("partial-observation", "a retained sample", tool_name="bash", capture=source_capture(
+        kind="tool_observation", completeness="partial", omitted_source_bytes=20,
+    ))
+    buffers.store("artifact-" + HOSTILE, "safe retained output", tool_name="bash")
+
     # a conversation with several kinds of calls and hostile names, through the production
     # writers: an event store with the ledger observer attached
     from garuda.observability import usage as usage_ledger

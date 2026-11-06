@@ -1,5 +1,201 @@
 # Durable decisions
 
+## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
+
+- `core/artifact_read_model.py` defines the bounded version-1 descriptor for
+  existing artifact owners. It separates source completeness from rendered-view
+  omission and current availability/integrity, and labels size/digest provenance
+  as recorded, observed or unknown.
+- Buffer payloads keep their supported `.txt` paths and 14-day best-effort
+  retention default. New descriptors live in sibling `buffer-records/`, so
+  owner-confirmed pruning and unexplained loss stay visible. Legacy payloads are
+  readable with unknown historical completeness/producer facts.
+- Bash/backend clipping, background tails and capture publication failure pass
+  an allowlisted descriptor through tool events, messages and resume. Context
+  archives inherit upstream incompleteness. Typed child references bind the same
+  descriptor while older version-1 references remain supported.
+- Session CLI/API/dashboard and failure evidence consume the selected session's
+  projection. A reference never grants session/project access. The projection
+  does no repair, replay, process/provider/Git probe or workspace read.
+  A validated accepted-child publication failure adapts to a bounded unavailable
+  capture attempt with unknown payload size/digest and its original producer.
+  Live delivery and persisted inspection use the same adapter, including legacy
+  envelopes without capture metadata. Stable envelope-derived evidence identity
+  supports deduplication and event-only inheritance, never payload retrieval.
+  The runner snapshots validated child envelopes before post-tool hooks in each
+  delivery path. Hooks may change bounded summary rendering, never the original
+  accepted output, delivery, schema or producer identity; canonical envelope
+  changes refuse delivery. Absent byte-owner captures cannot become hook-minted
+  authoritative captures. Flow detail and consult discovery share bounded,
+  selected-session receipt loading and nested shape validation. Invalid receipts
+  skip locally, retaining valid siblings and independent buffers/causes with
+  explicit unknown receipt coverage. Journal evidence remains a separate field,
+  and receipt coverage does not attest integrity, approval or verification.
+  Native resume resolves through the retained no-follow metadata reader before
+  choosing its workspace or acquiring its lease. Existing project/name owners
+  keep full-id, name, prefix and latest semantics; scoped selection rechecks
+  selected metadata identity/project and refuses exhausted metadata allowances.
+  The selected source reader also supplies workspace selection, so a second raw
+  lookup cannot replace the authorized source. Startup refusal closes that scope.
+  Native resume retains the selected source/store directory binding from selection
+  through recovery, replay, discovery and copying. Recovery reads metadata, events
+  and checkpoints through that retained reader; signals and metadata mutations
+  keep their existing owners. Cancellation settles the off-loop recovery worker
+  before closing source descriptors or releasing its workspace lease.
+  The byte owner receives that binding
+  through its source-directory protocol instead of reopening a source path.
+  Changed regular directories refuse before replacement payload reads, including
+  after discovery; issuing descriptor scopes close on success or startup refusal.
+- Flow descriptors are additive. `flows/artifacts.py` remains the byte owner and
+  continues to refuse forged, symlinked, missing and workspace-stale inputs.
+- Metadata and failed reads borrow the caller's no-follow source allowance. The
+  bounded reader retains the initial store/session directory identities, including
+  across cached metadata calls. Projection holds no-follow directory descriptors
+  through discovery, reads and final binding validation; changed regular directory
+  bindings refuse before replacement bytes are read. Descriptor scopes close on
+  success and failure. The reserved final failure-metadata check spends its
+  allowance through that same authorized reader.
+  The failure reader reserves its final metadata revalidation from that same ceiling
+  before optional reads, using the initially observed size plus the bounded
+  growth-detection chunk. Artifact exhaustion cannot discard retained causes;
+  changed or grown metadata still refuses, and source budgets do not expand.
+  The verified-payload ceiling is shared across owners; exhausted evidence stays
+  unverified, and incomplete omission counts are labelled lower bounds.
+  Public descriptor metadata withholds unsafe identities independently of payload
+  redaction. Descriptor validation precedes payload replacement, preserving prior
+  captures on refusal. Long provider keys retain lookup via canonical aliases.
+  Flow inputs and granted read views share the byte owner's integrity validator.
+  Output shaping owns exact Unicode view-omission counts. Later archives carry
+  irreversible inline view loss as source loss. Persisted child handoffs are
+  validated before their retained buffer descriptors are rechecked. Verification
+  attempts, including failed reads, share the payload ceiling; uninspected records
+  contribute unknown coverage rather than invented artifact counts. Cached tool
+  delivery retains only validated capture metadata and rebinds inline digests to
+  its delivered text. Malformed owner records and clipped staging enumeration
+  remain explicit uncertainty. Strict record readers bound JSON nesting before
+  downstream metadata validation. Archive pointers retain their descriptors on
+  both summary and drop-only paths, preserving capture loss across later
+  compaction and owner-record loss. Nullable version-1 descriptor fields remain
+  required keys; rejected persisted contracts produce unknown coverage. Supplied
+  invalid capture facts remain unknown through compaction rather than becoming
+  complete. Persisted contract failures are isolated per record, retaining valid
+  sibling evidence after malformed child records or JSONL lines. Existing-buffer
+  pruning validates descriptor identity against the current owner and pointer.
+  Required event payload containers stay distinct from absent optional metadata.
+  Flow omissions count only identities admitted by the shared reference reader,
+  including when projection slots are already full. Persisted inline availability
+  is revalidated against its retained content; failed attempts remain unavailable,
+  and transcript metadata cannot attest another storage owner's payloads. Summary,
+  inline, buffer and flow verification borrow one aggregate payload allowance.
+  Resume reconciliation preserves a copied owner sidecar's confirmed pruning
+  against older transcript availability. Exact sibling reconciliation after clipped
+  discovery does the same before applying verification limits; compatibility checks
+  still reject conflicting commitments. Unconfirmed loss cannot acquire pruning.
+  Exhausted verification does not erase owner-confirmed retention pruning;
+  unconfirmed missing payloads do not acquire that pruning claim.
+  Validated legacy version-1 typed child references are adapted through the shared
+  child owner even without a nested descriptor. Their recorded size/digest and
+  parent/producer binding survive inspection and authorized inheritance; missing
+  capture/omission/redaction/retention facts stay unknown. The read adapter never
+  rehashes changed bytes into replacement historical commitments.
+  Inline child-envelope validation reserves serialized bytes through its existing
+  owner before hashing; rejected digests and duplicate message/event checks spend
+  that same allowance before buffer/flow verification receives the remainder.
+  Compaction publication failures retain failed/unavailable capture metadata on
+  surviving messages; disabled-owner pruning preserves valid capture facts and
+  explicit uncertainty for legacy output. Discarded inline bytes retain their
+  source commitments but become unavailable with unknown integrity and cumulative
+  view loss, rather than being mistaken for corruption of retained bytes.
+  Valid inline/failed capture owners take precedence over buffer-looking output.
+  Exact character frames and receipt-error bypasses publish inline capture facts
+  before returning their unchanged delivery. Sequential and parallel delivery
+  snapshot exact frame/error content, status and contracts before hooks, refusing
+  changed offsets, hashes or bytes and checking the live output ceiling afterward.
+  Hook-computed replacement hashes cannot establish delivery authority.
+  This ensures owner-aware collection grants
+  cannot treat embedded buffer-looking text as legacy reference authority.
+  The shared timed-delivery path annotates previously unannotated error results
+  before hooks and persistence, including synthesized lookup/argument/exception
+  feedback. It keeps those errors inline and bounded, with unknown earlier
+  capture/loss facts instead of minting legacy buffer authority from their text.
+  Screening refusals and native parse feedback share that error-message owner;
+  they receive the same inline contract before entering the context. Permission
+  decisions and before-hook refusals remain with their existing enforcers.
+  Unknown buffer bindings downgrade availability and rendered retrieval claims,
+  while validated historical completeness and omission counts survive. These
+  facts grant no authority to another session or payload.
+  Flow adaptation requires a mapping with a list of distinct nonempty step IDs;
+  invalid declarations leave flow coverage unknown while independently collected
+  artifacts and retained failure causes remain available to their readers.
+  The shared flow view and artifact adapter use that same declaration validator;
+  declaration coverage makes no receipt-verification claim. Invalid summary
+  runtime identities are withheld with local field coverage instead of discarding
+  independent owners. Unsafe record paths have a typed refusal distinct from
+  missing legacy records; buffer reads and inspection cannot turn that refusal
+  into uncommitted legacy payload access, including with retained metadata.
+  Directory enumeration never authorizes a legacy downgrade: every candidate
+  payload's exact sibling sidecar is checked through the same bounded reader.
+  Unknown check coverage grants no payload access; discovered records retain
+  their commitments, and skipped verification preserves confirmed pruning facts.
+  Reconciliation precedes dictionary replacement and inheritance acceptance.
+  Compatible unknown fields do not erase known producer, size or digest
+  commitments. Retained-record deduplication and buffer adaptation carry those
+  commitments forward; only authorized resume writes merged commitments into
+  a compatible destination sidecar, leaving the source unchanged. Read-side
+  projection never repairs a sidecar or rehashes changed bytes into commitments.
+  Conflicting retained/stored known identity, producer or byte commitments cannot
+  become a newly verified reference; inspection preserves the retained facts with
+  failed integrity and migration refuses conflicting present sidecars.
+  Pruning leaves buffer retention explicitly unverified even for matching ids;
+  payload checks remain with inspection/retrieval owners. Missing inheritance on
+  a resumed source is shared-reader uncertainty, so later resumes retain the gap
+  and require commitments for every migrated payload before prompting.
+  Canonical payload stems select exact sibling records, whose original references
+  are validated against the payload name; raw-id hashing is never repeated.
+  Background capture owns a pipe-draining monitor and atomically published EOF
+  receipt. Task polling requires that receipt plus process-group settlement before
+  claiming complete capture or removing its writer state. Missing/invalid receipts
+  and unknown settlement remain incomplete; this is not process confinement.
+  Background receipts bind the log's identity, size, timestamps and digest.
+  Bounded polling reads one stable no-follow regular-file snapshot and refuses
+  replaced/unsafe logs before retiring writer state. Both launch paths create
+  private logs and publish receipts through held directory descriptors.
+  Buffer publication validates both storage directories before replacing either
+  member; backups, rollback and migration copies remain anchored to the same
+  no-follow descriptors and recheck path bindings before claiming availability.
+  A rollback that cannot restore an original retains its backup instead of
+  deleting the last copy; that capture attempt still fails without availability.
+  Brief handoff rendering and collection grants share selected-storage,
+  capture-owner-aware reference discovery. Known inline/failed/foreign facts and
+  malformed child contracts cannot grant literal buffer-looking text; legacy
+  unknown bindings retain their compatibility path. Collection's scoped view
+  still checks current owner availability before access.
+  Background launch acknowledgements bind the original opened directory/file
+  identities in both local and portable paths. Every poll validates those bindings
+  before exposing bytes, independent of completion receipts; unbound task records
+  never infer authority from the current filesystem occupant. Rejected or null
+  capture descriptors cannot fall back to text-derived grants. Legacy text
+  compatibility requires absence of a capture contract.
+  Typed child pruning delegates prose removal to the existing bounded handoff
+  renderer and retains its canonical envelope; resume's original canonical and
+  parent/producer/nonce/digest gates are not relaxed to accept replacement stubs.
+  Sequential and parallel hooks compare against independent capture snapshots;
+  arbitrary rendering changes make additional view loss unknown. Invalid supplied
+  source facts are distinct from absent optional facts and cannot publish complete
+  capture claims.
+
+- Native resume is the authorized migration boundary. After source resolution
+  and native recovery, `session_artifact_resume.py` delegates byte/record copies
+  to the existing buffer owner and metadata publication to SessionStore. Storage
+  identities rebind to the new session; producer lineage, recorded size/digests
+  and failed/pruned facts do not improve. A bounded `artifact-inheritance.json`
+  preserves event-only capture facts without replaying tool events or deriving
+  read authority from its source id. Inline facts without retained text remain
+  unavailable. Typed referenced child handoffs rebind the authorized parent's
+  storage while preserving producer, nonce, digest and canonical JSON gates.
+  Migration rejects malformed records and symlinked inputs, and never rewrites
+  the original session. The read projection does not perform this migration.
+
 ## 2026-10-28 — Failure evidence is a bounded read projection (#360)
 
 - ACP and native execution failures retain an allowlisted causal envelope at

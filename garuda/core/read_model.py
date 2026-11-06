@@ -105,14 +105,32 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
     meta = meta if meta is not None else store.load_meta(session_id)
     if meta.get("kind") != "flow":
         return None
-    from garuda.flows import engine
+    from garuda.core.session_records import RecordError
+    from garuda.core.starter_evidence import flow_receipt_shape, flow_steps, selected_flow_records
 
-    declared = (meta.get("flow") or {}).get("steps") or []
+    declared = flow_steps(meta)
+    declarations_known = declared is not None
+    receipts_known = declarations_known
+    journal_coverage = "unknown"
+    if not declarations_known:
+        declared, receipts = [], []
     if receipts is None:
         try:
-            receipts = engine.receipts(store, session_id)
-        except Exception:
+            receipts, coverage = selected_flow_records(
+                store, session_id, declared, expected_project_id=meta.get("project_id"),
+            )
+            receipts_known = (coverage["total_records"] is not None
+                              and not coverage["unreadable_records"]
+                              and not coverage["missing_records"])
+            journal_coverage = coverage["journal"]
+        except (RecordError, OSError, ValueError, TypeError):
             receipts = []
+            receipts_known = False
+    if not isinstance(receipts, list):
+        receipts, receipts_known = [], False
+    valid = [receipt for receipt in receipts if flow_receipt_shape(receipt, declared)]
+    receipts_known = receipts_known and len(valid) == len(receipts)
+    receipts = valid
     steps = []
     edges = []
     for step in declared:
@@ -124,8 +142,13 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
                 if edge not in edges:
                     edges.append(edge)
         steps.append({"id": step, "attempts": attempts})
-    return {"name": (meta.get("flow") or {}).get("name"), "state": meta.get("flow_state"),
+    flow_meta = meta.get("flow")
+    return {"name": flow_meta.get("name") if isinstance(flow_meta, dict) else None,
+            "state": meta.get("flow_state"),
             "steps": steps, "edges": edges,
+            "coverage": {"declarations": "complete" if declarations_known else "unknown",
+                         "receipts": "complete" if receipts_known else "unknown",
+                         "journal": journal_coverage},
             # Own field: a review verdict is advice about the work, not verification of it.
             "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
 
@@ -199,6 +222,21 @@ def session(store, session_id: str, *, queue=None) -> dict:
     consults = conversation.consult_rows(store, session_id, meta)
     row["consults"] = {"summary": view.summary(consults), "line": view.line(consults),
                        "entries": consults}
+    try:
+        from garuda.core.artifact_read_model import project_session_artifacts
+
+        row["artifacts"] = project_session_artifacts(
+            store, session_id, expected_project_id=meta.get("project_id")
+        )
+    except (ValueError, OSError) as exc:
+        row["artifacts"] = {
+            "schema": "garuda.artifact-projection",
+            "version": 1,
+            "references": [],
+            "omitted_references": 0,
+            "coverage": "unavailable",
+            "reason": str(exc),
+        }
     try:
         row["failure_evidence"] = failure_evidence(store, session_id)
     except ValueError as exc:
