@@ -172,3 +172,15 @@ async def test_dashboard_answers_must_name_the_owner_and_request_they_saw(store,
     assert (await task)[0] is True
     (record,) = _records(store).values()
     assert record["outcome"] == "allow"
+
+
+def test_acp_requests_with_the_same_title_are_distinct_approvals():
+    from garuda.acp.adapter import _approval_action
+
+    options = [{"optionId": "allow", "kind": "allow_once", "name": "Allow"}]
+    first = _approval_action({"title": "Run command", "kind": "execute", "toolCallId": "t1",
+                              "rawInput": {"command": "ls"}}, options, "perm-int-1")
+    second = _approval_action({"title": "Run command", "kind": "execute", "toolCallId": "t1",
+                               "rawInput": {"command": "rm -rf build"}}, options, "perm-int-1")
+    assert first != second and first.startswith("Run command [acp perm-int-1; kind=execute")
+    assert "rm -rf" not in second  # raw input is bound by digest, never displayed
