@@ -2361,3 +2361,15 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Edits can require the version they read (#368)
+
+`read_file` reports a version token bound to the session, the normalized path
+and the full content; `edit`/`multi_edit` accept `expected_version` and refuse
+a mismatch before matching. The contract is selected per tool through the
+existing validated `tools.options` (`legacy` default: tokens optional;
+`versioned`: required), so an unknown value refuses the definition and the
+selection is visible in agent inspection. The token is a precondition checked
+on the content the edit transforms, not a compare-and-write: no backend offers
+an atomic write here, and none is claimed. String matching and its formatting
+recovery are unchanged; no alternate anchored edit format is introduced.

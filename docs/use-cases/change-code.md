@@ -204,6 +204,41 @@ garuda run --workspace-kind sandbox --allow-network -t "Install the dependencies
     `--allow-unsandboxed` turns the refusal into unconfined host execution. It
     is an availability escape hatch, not a safety boundary.
 
+## Refuse edits to files that changed since they were read
+
+<p class="gd-facts">Opt-in per agent · Works with any workspace · A precondition, not a lock</p>
+
+**Use it when** files may change under the agent (you edit alongside it, or
+another tool writes to the tree) and a still-matching replacement must not
+land on content the agent never saw.
+
+```yaml
+# .garuda/agents/careful.yaml
+version: 1
+extends: garuda/build
+tools:
+  options:
+    edit: {contract: versioned}
+    multi_edit: {contract: versioned}
+```
+
+```bash
+garuda run --agent careful -t "Rename the retry setting in config.py"
+```
+
+**What happens**
+
+- Every `read_file` reports `(version: v1:…)`, a token for the full content
+  it read, this session and this path.
+- `edit` and `multi_edit` must pass that token as `expected_version`. If the
+  file changed since, or the token belongs to another file or session, the
+  edit is refused and nothing is written; the agent reads the file again.
+- A successful edit reports the new version, so a following edit can chain.
+- With the default `legacy` contract, edits work as before. A token is
+  optional there and checked only when given.
+- The check runs on the content the edit itself reads. A writer that changes
+  the file in the moment between that read and the write is not prevented.
+
 ## Cap time, turns, and cost
 
 <p class="gd-facts">Works with: any native run</p>
