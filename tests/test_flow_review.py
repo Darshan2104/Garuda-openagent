@@ -422,3 +422,51 @@ async def test_a_candidate_changed_before_review_is_refused(repo, monkeypatch):
     result = await _run(repo, script, _config(max_rounds=0)).run()
     assert result.stopped.code == "flow.review_stale_candidate"
     assert ("review", 1) not in script.sequence  # no reviewer ran on a stale candidate
+
+
+class ConfigScript(Script):
+    """The coder changes configuration files, recorded as its step session's delta."""
+
+    def __init__(self, reviews, files):
+        super().__init__(reviews)
+        self.files = files
+
+    async def __call__(self, launch):
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            for path, text in self.files.items():
+                target = self.repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+            store = SessionStore()
+            store.begin(result.session_id, task="t", model="m", agent="a", workspace="w")
+            store.update_meta(result.session_id, {"delta_changed": list(self.files)})
+        return result
+
+
+async def test_the_packet_shows_what_the_loader_made_of_changed_config(repo):
+    script = ConfigScript([APPROVE], {
+        "garuda.yaml": "version: 1\nretry_budget: 5\n",  # a field Garuda does not read
+        ".garuda/agents/careful.yaml": "version: 1\nextends: garuda/build\ndescription: careful\n",
+        "README.md": "docs only\n",
+    })
+    script.repo = repo
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    from garuda.flows.review_evidence import config_evidence
+
+    evidence = config_evidence(str(repo), list(script.files))
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert set(by_path) == {"garuda.yaml", ".garuda/agents/careful.yaml"}  # README is not config
+    assert by_path["garuda.yaml"]["status"] == "refused"
+    assert "retry_budget" in by_path["garuda.yaml"]["error"]
+    assert by_path[".garuda/agents/careful.yaml"]["status"] == "loaded"
+    assert "description" in by_path[".garuda/agents/careful.yaml"]["declared"]
+    prompt = script.prompts[("review", 1)]
+    assert "retry_budget" in prompt and "refused" in prompt  # the reviewer is told
+
+
+def test_config_evidence_without_a_manifest_is_unknown(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    assert config_evidence(str(tmp_path), None)["status"] == "unknown"
