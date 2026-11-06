@@ -66,7 +66,21 @@ Execution: `bash.py` (a command that backgrounds something also records the
 process group it leaves behind, so the pre-completion sweep has an exact handle
 on it), `background.py`, `tmux.py`.
 Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
-`diagnostics.py` (post-edit syntax + lint).
+`diagnostics.py` (post-edit syntax + lint). Successful write/edit/multi-edit
+results expose bounded `metadata["diagnostics"]` with `advisory: true` and
+`checkers.syntax` / `checkers.lint`: availability (`null` when unobserved), ran,
+SHA-256 source version, status (`clean`, `violations`, `unavailable`, `error`),
+duration in milliseconds, reason, bounded details/diagnostics and completeness.
+Source digests use `Environment.read_bytes`; an observed change during checks
+invalidates results with `error` / `source_changed`. Disabled, unsupported and
+syntax-blocked checks remain explicitly unavailable. Clean tool text stays quiet.
+On violations, edit/multi-edit can check their known pre-edit content through the
+same fixed checkers (up to 64 KiB). Per-diagnostic attribution is introduced,
+preexisting or unknown; incomplete/failed baselines and ambiguous locations stay
+unknown. Whole-file writes have no baseline. External commands still use
+`Environment.execute`; JSON/YAML retain their existing in-process parsers.
+These results are advisory ToolResult metadata, not persisted acceptance receipts;
+project commands and verification remain with their existing trusted owners.
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.

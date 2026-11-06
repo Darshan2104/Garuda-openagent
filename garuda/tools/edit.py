@@ -383,5 +383,6 @@ class EditTool:
             message += f"\n\nSnippet of new content:\n{snippet}"
         from garuda.tools.diagnostics import post_edit_report
 
-        message += await post_edit_report(env, path, ctx)
-        return ToolResult(tool_call_id="", content=message)
+        metadata = {}
+        message += await post_edit_report(env, path, ctx, metadata=metadata, baseline=content)
+        return ToolResult(tool_call_id="", content=message, metadata=metadata)
