@@ -15,6 +15,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Headless run | One task, an answer, a saved session | `garuda run -t "…"` | [Level 2](../use-cases/change-code.md#fix-a-bug-with-a-git-safety-net) |
 | Interactive chat | Turn-by-turn work with `y/N` approvals | `garuda chat` | [Level 2](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
 | Read-only mode | Inspection only, blocked writes | `garuda run --mode readonly -t "…"` | [Level 1](../use-cases/explore.md#ask-questions-about-a-codebase) |
+| Investigation scopes | A read-only subagent that hands back only a validated report of evidence, conclusions, rejected approaches and coverage | `invoke_subagent` with `profile: investigate` | [Level 1](../use-cases/explore.md#investigate-without-filling-the-main-conversation) |
 | No-edits guard | A run that is checked to have changed nothing | `garuda run --no-edits -t "…"` | [Level 1](../use-cases/explore.md#make-sure-a-run-changes-nothing) |
 | Acceptance checks | "Done" means your command passed | `garuda run --check "pytest -q" -t "…"` | [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check) |
 | Evidence modes | The agent proves its own work before stopping | `garuda run --mode rigorous -t "…"` | [Level 2](../use-cases/change-code.md#make-garuda-prove-the-fix) |

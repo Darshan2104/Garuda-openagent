@@ -2361,3 +2361,13 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Investigation scopes are typed read-only subagents (#370)
+
+The first slice of #370 adds no new execution path. `garuda/investigate`
+extends `explore` (read-only permissions and tools) and declares an output
+schema, so the existing typed child-result handoff (#357) is the report
+boundary: the parent receives only a validated report of question,
+evidence-backed conclusions, sources, rejected approaches and coverage, and
+the exploration stays in the child's session. Confidence is an uncalibrated
+assertion. Context forks and named rewinds are #415.
