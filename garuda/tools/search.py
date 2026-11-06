@@ -1,5 +1,9 @@
+import base64
+import hashlib
+import json
 import re
 import shlex
+import warnings
 
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
@@ -55,6 +59,77 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
 
 DEFAULT_GREP_MAX_RESULTS = 100
 GLOB_MAX_RESULTS = 200
+# Production and capture bounds: the producer is stopped once a page (plus one
+# look-ahead line) or this many bytes have been captured, whichever is first.
+SEARCH_CAPTURE_BYTES = 512 * 1024
+MAX_SEARCH_OFFSET = 10_000
+LONG_LINE_CHARS = 2000
+LINE_WINDOW_CHARS = 200
+_EXIT_MARKER = "__GARUDA_SEARCH_EXIT__:"
+
+
+def _bounded(command: str, max_lines: int | None, max_bytes: int) -> str:
+    """Stop ``command`` early while keeping its exit status when it finishes.
+
+    The producer's status is printed as a final marker line; if ``head`` cut the
+    stream first, the marker is absent and the result is known to be partial.
+    Closing the pipe stops rg/grep/find by SIGPIPE instead of letting them run on.
+    """
+    line_cap = f" | head -n {max_lines + 1}" if max_lines is not None else ""
+    return (f"{{ {command}; printf '%s%s\\n' {_EXIT_MARKER} \"$?\"; }}"
+            f"{line_cap} | head -c {max_bytes}")
+
+
+def _split_capture(stdout: str) -> tuple[list[str], int | None, bool]:
+    """(lines, producer exit status or None if stopped early, last line cut by the byte cap)."""
+    partial = bool(stdout) and not stdout.endswith("\n")
+    # Split on "\n" only, as head -n counts; matched content may hold \r or U+2028.
+    lines = stdout.split("\n")
+    if not partial:
+        lines.pop()
+    if lines and lines[-1].startswith(_EXIT_MARKER) and not partial:
+        try:
+            return lines[:-1], int(lines[-1][len(_EXIT_MARKER):]), False
+        except ValueError:
+            pass
+    return lines, None, partial
+
+
+def _window(line: str, regex: "re.Pattern[str] | None") -> str:
+    """A long line reduced to a match-centred window with explicit omission markers."""
+    if len(line) <= LONG_LINE_CHARS:
+        return line
+    match = regex.search(line) if regex is not None else None
+    start, end = (match.start(), match.end()) if match else (0, 0)
+    begin = max(0, start - LINE_WINDOW_CHARS)
+    finish = min(len(line), max(end, start) + LINE_WINDOW_CHARS)
+    if finish - begin > 2 * LINE_WINDOW_CHARS + LONG_LINE_CHARS // 2:
+        finish = begin + 2 * LINE_WINDOW_CHARS + LONG_LINE_CHARS // 2
+    head = f"[…{begin} chars omitted]" if begin else ""
+    tail = f"[…{len(line) - finish} chars omitted]" if finish < len(line) else ""
+    return f"{head}{line[begin:finish]}{tail}"
+
+
+def _digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _encode_cursor(value: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode()
+
+
+def _decode_cursor(token) -> dict:
+    if not isinstance(token, str) or len(token) > 1024:
+        raise ValueError("invalid cursor")
+    try:
+        value = json.loads(base64.urlsafe_b64decode(token.encode()))
+    except ValueError as exc:
+        raise ValueError("invalid cursor") from exc
+    if (not isinstance(value, dict) or value.get("v") != 1
+            or type(value.get("o")) is not int or not 0 < value["o"] <= MAX_SEARCH_OFFSET
+            or not isinstance(value.get("q"), str) or not isinstance(value.get("d"), str)):
+        raise ValueError("invalid cursor")
+    return value
 
 
 def _ctx_int(value) -> int:
@@ -69,14 +144,16 @@ def _ctx_int(value) -> int:
 def _rg_variant(
     q_pattern: str, q_path: str, glob: str | None, output_mode: str,
     context: int, before: int, after: int, no_ignore: bool,
+    per_file: int | None = None,
 ) -> str:
     """ripgrep command producing the same ``path:line:content`` shape as grep.
 
     Respects .gitignore/.ignore and skips hidden files by default — the point of
     preferring rg (no node_modules/build/.git noise, and far faster on big trees).
     ``no_ignore`` restores a grep-like full sweep (but still skips the .git dir).
+    ``--sort path`` makes the order stable so pages and cursors are reproducible.
     """
-    flags = ["rg", "--color=never", "--no-heading", "-H"]
+    flags = ["rg", "--color=never", "--no-heading", "-H", "--sort", "path"]
     if no_ignore:
         flags += ["--no-ignore", "--hidden", "-g", shlex.quote("!.git")]
     if glob:
@@ -87,6 +164,8 @@ def _rg_variant(
         flags.append("-c")
     else:
         flags.append("-n")
+        if per_file:
+            flags += ["--max-count", str(per_file)]
         if context:
             flags += ["-C", str(context)]
         else:
@@ -100,7 +179,7 @@ def _rg_variant(
 
 def _grep_variant(
     q_pattern: str, q_path: str, glob: str | None, output_mode: str,
-    context: int, before: int, after: int,
+    context: int, before: int, after: int, per_file: int | None = None,
 ) -> str:
     """GNU/BSD grep command (the fallback when ripgrep is not installed)."""
     include = f" --include={shlex.quote(glob)}" if glob else ""
@@ -111,7 +190,7 @@ def _grep_variant(
         mode_flags = " -c"
         line_flags = "-H"
     else:
-        mode_flags = ""
+        mode_flags = f" -m {per_file}" if per_file else ""
         line_flags = "-nH"
         if context:
             mode_flags += f" -C {context}"
@@ -138,13 +217,15 @@ def _grep_variant(
 def _build_search_command(
     pattern: str, path: str, glob: str | None, output_mode: str,
     context: int, before: int, after: int, no_ignore: bool,
+    per_file: int | None = None,
 ) -> str:
     """Prefer ripgrep when present, fall back to grep — chosen in one shell command
     so it works uniformly across local/docker/remote without an extra round-trip."""
     q_path = shlex.quote(path)
     q_pattern = shlex.quote(pattern)
-    rg = _rg_variant(q_pattern, q_path, glob, output_mode, context, before, after, no_ignore)
-    grep = _grep_variant(q_pattern, q_path, glob, output_mode, context, before, after)
+    rg = _rg_variant(q_pattern, q_path, glob, output_mode, context, before, after, no_ignore,
+                     per_file)
+    grep = _grep_variant(q_pattern, q_path, glob, output_mode, context, before, after, per_file)
     return f"if command -v rg >/dev/null 2>&1; then {rg}; else {grep}; fi"
 
 
@@ -156,7 +237,9 @@ class GrepTool:
         "else `grep -E`). Returns matching lines as path:line:content. Use glob to filter "
         "filenames (e.g. '*.py') and path to scope the search to a directory or file. "
         "By default excludes files ignored by .gitignore/.ignore and hidden files; set "
-        "no_ignore to search everything."
+        "no_ignore to search everything. Output is sorted by path; when capped, pass "
+        "the reported next_cursor to read the next page. Long lines are shown as a "
+        "window around the match."
     )
     parameters = {
         "type": "object",
@@ -198,6 +281,19 @@ class GrepTool:
                 "type": "integer",
                 "description": f"Maximum output lines to return (default {DEFAULT_GREP_MAX_RESULTS})",
             },
+            "per_file_limit": {
+                "type": "integer",
+                "description": "content mode: at most this many matches per file, so one hot "
+                "file cannot fill the page (default: no per-file limit)",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Skip this many output lines (prefer cursor, which detects changes)",
+            },
+            "cursor": {
+                "type": "string",
+                "description": "next_cursor from the previous page; refused if earlier results changed",
+            },
         },
         "required": ["pattern"],
     }
@@ -219,35 +315,119 @@ class GrepTool:
         context = _ctx_int(arguments.get("context"))
         before = _ctx_int(arguments.get("before_context"))
         after = _ctx_int(arguments.get("after_context"))
+        per_file = _ctx_int(arguments.get("per_file_limit")) or None
+        if output_mode != "content":
+            per_file = None  # a per-file cap would falsify counts and changes nothing for -l
+
+        scope = _digest([pattern, path, glob, output_mode, no_ignore, context, before, after,
+                         per_file, getattr(env, "workspace_root", None)])
+        cursor = None
+        try:
+            offset = _ctx_int(arguments.get("offset"))
+            if arguments.get("cursor"):
+                cursor = _decode_cursor(arguments["cursor"])
+                if cursor["q"] != scope:
+                    raise ValueError("cursor belongs to a different search; restart without it")
+                offset = cursor["o"]
+            if offset > MAX_SEARCH_OFFSET:
+                raise ValueError(f"offset exceeds {MAX_SEARCH_OFFSET}; narrow the search")
+        except ValueError as exc:
+            return ToolResult(tool_call_id="", content=f"grep failed: {exc}", is_error=True)
 
         command = _build_search_command(
-            pattern, path, glob, output_mode, context, before, after, no_ignore
+            pattern, path, glob, output_mode, context, before, after, no_ignore, per_file
         )
-        result = await env.execute(command)
-        if result.exit_code == 1 and not result.stdout.strip():
+        # One look-ahead line past the page tells a full page from a capped one.
+        wanted = offset + max_results
+        result = await env.execute(_bounded(command, wanted + 1, SEARCH_CAPTURE_BYTES))
+        if result.exit_code != 0:
             return ToolResult(
                 tool_call_id="",
-                content=f"No matches found for {pattern}",
+                content=f"grep failed (exit {result.exit_code}): {result.stderr.strip()}",
+                is_error=True,
             )
-        if result.exit_code not in (0, 1):
+        lines, status, partial = _split_capture(result.stdout)
+        if status is not None and status not in (0, 1):
             stderr = result.stderr.strip()
             hint = ""
             if "No such file" in stderr:
                 hint = f" (path {path!r} does not exist or is not readable)"
             return ToolResult(
                 tool_call_id="",
-                content=f"grep failed (exit {result.exit_code}): {stderr}{hint}",
+                content=f"grep failed (exit {status}): {stderr}{hint}",
                 is_error=True,
             )
+        if status == 1 and not lines:
+            return ToolResult(
+                tool_call_id="",
+                content=f"No matches found for {pattern}",
+            )
 
-        lines = result.stdout.splitlines()
-        capped = len(lines) > max_results
-        if capped:
-            lines = lines[:max_results]
-        output = "\n".join(lines)
-        if capped:
-            output += f"\n(results capped at {max_results})"
+        if cursor is not None and (len(lines) < offset or _digest(lines[:offset]) != cursor["d"]):
+            return ToolResult(
+                tool_call_id="",
+                content="grep failed: stale cursor — results before this page changed; "
+                "restart the search without a cursor",
+                is_error=True,
+            )
+        if partial and len(lines) <= offset:
+            return ToolResult(
+                tool_call_id="",
+                content=f"grep failed: the {SEARCH_CAPTURE_BYTES}-byte capture limit was reached "
+                f"before offset {offset}; narrow the search",
+                is_error=True,
+            )
+        if status is None and not lines:
+            return ToolResult(tool_call_id="", content="grep failed: no output was captured",
+                              is_error=True)
+        if not lines[offset:]:
+            return ToolResult(tool_call_id="", content=f"No more results at offset {offset}")
+
+        regex = None
+        if output_mode == "content":
+            # Python re only locates the window; rg/grep already decided the match.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    regex = re.compile(pattern)
+                except re.error:
+                    regex = None
+        page = lines[offset:wanted]
+        output = "\n".join(_window(line, regex) for line in page)
+        # Producer finished and nothing was cut: the count is exact.
+        complete = status is not None and len(lines) <= wanted
+        shown = f"{offset + 1}-{offset + len(page)}"
+        if not complete:
+            if partial or len(lines) <= wanted:
+                output += (f"\n(capture limit of {SEARCH_CAPTURE_BYTES} bytes reached; "
+                           "the last line may be cut and more results may exist)")
+            if len(lines) > wanted or not partial:
+                output += f"\n(results capped at {max_results})"
+            output += f"\n(showing {shown}; total unknown, at least {len(lines)} lines)"
+            # A byte-cut line is shown but not claimed: the next page starts on it.
+            resume = offset + len(page) - (1 if partial and len(lines) <= wanted else 0)
+            if offset < resume <= MAX_SEARCH_OFFSET:
+                next_cursor = _encode_cursor({"v": 1, "q": scope, "o": resume,
+                                              "d": _digest(lines[:resume])})
+                output += f"\nnext_cursor: {next_cursor}"
+            else:
+                output += "\n(no further page is reachable; narrow the search)"
+        elif offset:
+            output += f"\n(showing {shown} of {len(lines)} lines)"
+        if per_file and _per_file_reached(page, per_file):
+            output += (f"\n(per-file limit of {per_file} reached in some files; "
+                       "further matches there are omitted)")
         return ToolResult(tool_call_id="", content=output)
+
+
+def _per_file_reached(lines: list[str], per_file: int) -> bool:
+    """Whether any file shows ``per_file`` match lines (context lines use ``-``, not ``:``)."""
+    counts: dict[str, int] = {}
+    for line in lines:
+        found = re.match(r"(.+?):(\d+):", line)
+        if found:
+            counts[found.group(1)] = counts.get(found.group(1), 0) + 1
+    return any(count >= per_file for count in counts.values())
 
 
 class GlobTool:
@@ -303,7 +483,9 @@ class GlobTool:
             f"cd {shlex.quote(base)} && "
             f"find -L . -type f {matcher} -not -path '*/.git/*' | sort"
         )
-        result = await env.execute(command)
+        # Sorting needs the whole listing, but capture stays bounded; the path
+        # filter below runs after capture, so no line cap is applied here.
+        result = await env.execute(_bounded(command, None, SEARCH_CAPTURE_BYTES))
         if result.exit_code != 0:
             return ToolResult(
                 tool_call_id="",
@@ -311,10 +493,19 @@ class GlobTool:
                 is_error=True,
             )
 
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        captured, status, partial = _split_capture(result.stdout)
+        if status is not None and status != 0:
+            return ToolResult(
+                tool_call_id="",
+                content=f"glob failed (exit {status}): {result.stderr.strip()}",
+                is_error=True,
+            )
+        if partial:
+            captured = captured[:-1]  # a cut path is not a real file name
+        lines = [line for line in captured if line.strip()]
         if segment_filter is not None:
             lines = [line for line in lines if segment_filter.match(line.strip())]
-        if not lines:
+        if not lines and status is not None:
             return ToolResult(tool_call_id="", content=f"No files matched pattern {pattern}")
         capped = len(lines) > GLOB_MAX_RESULTS
         if capped:
@@ -322,7 +513,10 @@ class GlobTool:
         output = "\n".join(lines)
         if capped:
             output += f"\n(results capped at {GLOB_MAX_RESULTS})"
-        return ToolResult(tool_call_id="", content=output)
+        if status is None:
+            output += (f"\n(file list capture limit of {SEARCH_CAPTURE_BYTES} bytes reached; "
+                       "matches may be incomplete — narrow the path or pattern)")
+        return ToolResult(tool_call_id="", content=output.lstrip("\n"))
 
 
 class LsTool:
