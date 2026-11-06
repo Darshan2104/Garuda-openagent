@@ -417,8 +417,9 @@ function renderApprovals() {
       "</div>" + body +
       '<div class="composer-row">' +
       '<button type="button" class="btn btn-primary" data-approve="' + esc(ask.ask_id) +
-      '">Approve</button>' +
-      '<button type="button" class="btn" data-deny="' + esc(ask.ask_id) + '">Deny</button>' +
+      '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) + '">Approve</button>' +
+      '<button type="button" class="btn" data-deny="' + esc(ask.ask_id) +
+      '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) + '">Deny</button>' +
       '<span class="stat-sub">Closing this tab denies it within a few seconds — the agent ' +
       "carries on as if you had said no.</span></div></div>"
     );
@@ -430,20 +431,22 @@ function wireApprovalButtons(node) {
   var approve = node.querySelectorAll("[data-approve]");
   for (var i = 0; i < approve.length; i++) {
     approve[i].addEventListener("click", function () {
-      answerApproval(this.getAttribute("data-approve"), true);
+      answerApproval(this.getAttribute("data-approve"), true, this);
     });
   }
   var deny = node.querySelectorAll("[data-deny]");
   for (var j = 0; j < deny.length; j++) {
     deny[j].addEventListener("click", function () {
-      answerApproval(this.getAttribute("data-deny"), false);
+      answerApproval(this.getAttribute("data-deny"), false, this);
     });
   }
 }
 
-function answerApproval(askId, approved) {
+function answerApproval(askId, approved, button) {
+  // The owner and digest name the exact ask this card showed; a stale card is refused.
   api("/api/approvals/" + encodeURIComponent(askId), {
-    method: "POST", body: { approved: approved }
+    method: "POST", body: { approved: approved, owner: button.getAttribute("data-owner"),
+      digest: button.getAttribute("data-digest") }
   })
     .then(function () { return pollChat(); })
     .catch(function (err) {
