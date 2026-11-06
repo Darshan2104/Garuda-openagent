@@ -1,3 +1,8 @@
+import hashlib
+from pathlib import PurePosixPath
+
+from garuda.context.outline import PythonOutlineCache
+from garuda.core.artifact_read_model import source_capture
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
@@ -11,7 +16,10 @@ class ReadFileTool:
     name = "read_file"
     description = (
         "Read a text file from the workspace. Output is numbered like `cat -n`. "
-        "Use offset (1-based start line) and limit (max lines) to page through large files."
+        "Use offset (1-based start line) and limit (max lines) to page through large files. "
+        "Set outline=true for host-parsed Python AST metadata with source identity and hidden "
+        "body ranges, instead of source text. Read the relevant raw ranges before editing. "
+        "Outline cannot be combined with offset/limit."
     )
     parameters = {
         "type": "object",
@@ -28,9 +36,16 @@ class ReadFileTool:
                 "type": "integer",
                 "description": f"Maximum number of lines to read (default {DEFAULT_READ_LIMIT})",
             },
+            "outline": {
+                "type": "boolean",
+                "description": "Return Python (.py/.pyi) AST metadata only (default false)",
+            },
         },
         "required": ["path"],
     }
+
+    def __init__(self):
+        self._outlines = PythonOutlineCache()
 
     async def execute(
         self,
@@ -39,6 +54,13 @@ class ReadFileTool:
         ctx: ToolContext,
     ) -> ToolResult:
         path = arguments["path"]
+        outline = arguments.get("outline", False)
+        if type(outline) is not bool or (outline and {"offset", "limit"} & arguments.keys()):
+            return ToolResult(
+                tool_call_id="", is_error=True,
+                content="outline must be a boolean and outline=true cannot be combined with offset/limit.",
+                metadata={"artifact_source": source_capture(kind="tool_observation", completeness="unknown")},
+            )
         offset = arguments.get("offset") or 1
         limit = arguments.get("limit") or DEFAULT_READ_LIMIT
         if offset < 1:
@@ -54,6 +76,27 @@ class ReadFileTool:
                 content=f"Cannot read {path}: {exc}",
                 is_error=True,
                 metadata={"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {},
+            )
+
+        if outline:
+            if PurePosixPath(path).suffix.lower() not in {".py", ".pyi"}:
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                output = (
+                    "Python outline unavailable: unsupported language (requires .py or .pyi). "
+                    "No outline returned.\n"
+                    f"source_sha256: {digest} (UTF-8 of Environment.read_file text)\n"
+                    "Use read_file without outline, with offset/limit for raw source."
+                )
+            else:
+                result = self._outlines.render(
+                    content, max_lines=DEFAULT_READ_LIMIT, max_line_chars=MAX_LINE_CHARS,
+                )
+                digest, output = result.sha256, result.content
+            return ToolResult(
+                tool_call_id="", content=output,
+                metadata={"artifact_source": source_capture(
+                    kind="tool_observation", completeness="partial", identity=f"sha256:{digest}",
+                )},
             )
 
         lines = content.splitlines()
