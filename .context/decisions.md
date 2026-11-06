@@ -2361,3 +2361,16 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — One spend gate per native run tree (#363, #405)
+
+`--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,
+carried by reference to native subagents like `DelegationBudget`. The main loop
+and `model/accounting.complete` (summarizer, buffer_query, contract, verifier,
+critic) admit before sending and settle afterwards, failed or not. Tokens are
+reserved under a lock, so concurrent calls cannot reuse one remainder. Dollars
+are a post-response stop, not a prepaid maximum. Unknown cost is never zero:
+under a dollar-only cap the first unpriced call stops further admission.
+Defaults stay unlimited. Not yet covered: collection workers keep their own
+ledger, consult and ACP children are separate roots, failed-attempt usage is
+#406, and resume accounting is #407.

@@ -233,6 +233,25 @@ def build_parser():
         ),
     )
     run_parser.add_argument(
+        "--max-run-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Token budget shared by the whole native run tree: main calls, summaries, "
+            "verifier/critic and subagents. Calls reserve their estimate before sending."
+        ),
+    )
+    run_parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Stop admitting model calls once provider-reported spend reaches this. "
+            "Not a prepaid maximum; unreported cost stops admission unless "
+            "--max-run-tokens is also set."
+        ),
+    )
+    run_parser.add_argument(
         "--reasoning-effort",
         choices=["minimal", "low", "medium", "high"],
         help="Enable extended thinking at this effort (cross-provider)",
