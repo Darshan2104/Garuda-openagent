@@ -226,7 +226,8 @@ MAX_PACKET_FILES = 200
 
 
 def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate: dict,
-                 changed: list | None, reviewer_plan: dict | None, no_edits: bool) -> dict:
+                 changed: list | None, reviewer_plan: dict | None, no_edits: bool,
+                 config: dict | None = None) -> dict:
     """The frozen, bounded evidence a reviewer is given, with a digest of it.
 
     Built from the reviewed step's own receipt and session records; a manifest
@@ -247,6 +248,7 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
                     "status": "unknown" if changed is None else "recorded"},
         "reviewer": {"step": reviewer["id"], "role": reviewer["role"], "no_edits": no_edits,
                      "plan": reviewer_plan},
+        "config": config or {"status": "unknown", "files": []},
         "checks": {"status": "not_in_packet",
                    "note": "acceptance checks run separately; a review is not verification"},
     }

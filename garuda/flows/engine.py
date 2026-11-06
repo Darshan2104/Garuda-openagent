@@ -1051,6 +1051,7 @@ class FlowRunner:
         produced; unknown identities and manifests stay explicitly unknown.
         """
         from garuda.flows import review as rv
+        from garuda.flows.review_evidence import config_evidence
 
         reviewed = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
         if reviewed is None:
@@ -1074,7 +1075,9 @@ class FlowRunner:
                        "workspace_version_before": reviewed.get("workspace_version_before")},
             changed=changed if isinstance(changed, list) else None,
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
-            no_edits=self._no_edits(terminal, terminal["role"]))
+            no_edits=self._no_edits(terminal, terminal["role"]),
+            config=await _settled_sync(config_evidence, self.workspace,
+                                       changed if isinstance(changed, list) else None))
         await self._publish(self.flow_session, {"review_packet": {
             "digest": packet["digest"], "candidate": packet["candidate"],
             "changed_total": packet["changed"]["total"]}})
