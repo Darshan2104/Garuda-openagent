@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any
 
 import anyio
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -21,6 +21,7 @@ from garuda.mcp.config import (
     normalize_transport,
     partition_mcp_servers,
 )
+from garuda.mcp.content import MCP_CONTEXT_ITEMS, context_result
 from garuda.model.config import ConfigError
 from garuda.tools.protocol import Tool, ToolContext, ToolEffect
 from garuda.types import ToolResult
@@ -72,6 +73,7 @@ class McpRemoteTool:
     # The connection owner when a manager created this tool: calls go to its
     # current session, and fail fast while it is not connected.
     _owner: "_ServerOwner | None" = field(default=None, repr=False)
+    _context_access: bool = field(default=False, repr=False)
 
     @property
     def effect_trusted(self) -> bool:
@@ -90,6 +92,11 @@ class McpRemoteTool:
         env: object,
         ctx: ToolContext,
     ) -> ToolResult:
+        if self._context_access:
+            if (ctx is not None and ctx.allowed_tool_effects is not None
+                    and self.effect not in ctx.allowed_tool_effects):
+                return ToolResult(tool_call_id="", content="MCP context read effect denied.", is_error=True)
+            return await self._owner.read_context(arguments, ctx)
         session = self._session
         if self._owner is not None:
             session = self._owner.session_for(self.tool_name)
@@ -190,6 +197,7 @@ class _ServerOwner:
         self.state = McpServerState.STARTING
         self.reason = ""
         self.session: ClientSession | None = None
+        self.capabilities: Any = None
         # Tools the live connection lists, by remote name, and the ones this run
         # admitted at startup. Only admitted tools are ever exposed.
         self.listed: dict[str, Any] = {}
@@ -245,6 +253,105 @@ class _ServerOwner:
             "ready_at": self.ready_at,
             "changed_at": self.changed_at,
         }
+
+    async def read_context(self, arguments: dict[str, Any], ctx: ToolContext | None) -> ToolResult:
+        session = self.session
+        connection = self.ready_at
+        action = arguments.get("action")
+        operations = {
+            "list_resources": "resources", "read_resource": "resources",
+            "list_prompts": "prompts", "get_prompt": "prompts",
+        }
+        try:
+            if self.state is not McpServerState.READY:
+                raise ValueError(f"server is {self.state.value}; request was not sent")
+            if session is None or self.stop.is_set():
+                raise ValueError("server connection is unavailable or closing; request was not sent")
+            kind = operations.get(action) if isinstance(action, str) else None
+            if kind is None or kind not in self.config.context_access:
+                raise ValueError("MCP context operation is not authorized")
+            if getattr(self.capabilities, kind, None) is None:
+                raise ValueError(f"{kind} unsupported: server capability absent")
+
+            async def request():
+                if kind == "resources":
+                    listed = await session.list_resources()
+                    items = listed.resources[:MCP_CONTEXT_ITEMS]
+                    catalog = [{"uri": str(item.uri), "name": item.name,
+                                "description": item.description, "mimeType": item.mimeType}
+                               for item in items]
+                else:
+                    listed = await session.list_prompts()
+                    items = listed.prompts[:MCP_CONTEXT_ITEMS]
+                    catalog = [{"name": item.name, "description": item.description,
+                                "arguments": [{"name": arg.name, "required": arg.required,
+                                               "description": arg.description}
+                                              for arg in (item.arguments or [])[:32]]}
+                               for item in items]
+                partial = bool(listed.nextCursor) or len(getattr(listed, kind)) > len(items)
+                if kind == "prompts" and any(len(item.arguments or []) > 32 for item in items):
+                    partial = True
+                if self.session is not session or self.state is not McpServerState.READY or self.stop.is_set():
+                    raise ValueError("connection lost during listing; request was not replayed")
+                if action.startswith("list_"):
+                    return {kind: catalog}, partial
+                key = "uri" if kind == "resources" else "name"
+                identifier = arguments.get(key)
+                if not isinstance(identifier, str) or not 0 < len(identifier) <= 2048:
+                    raise ValueError(f"{key} must be a nonempty string of at most 2048 characters")
+                matches = [item for item in items if str(getattr(item, key)) == identifier]
+                if not matches:
+                    raise ValueError(f"{key} is outside the bounded server listing; access refused")
+                if len(matches) != 1:
+                    raise ValueError(f"ambiguous {key} in server listing; access refused")
+                selected = matches[0]
+                if kind == "resources":
+                    result = await session.read_resource(selected.uri)
+                    blocks = result.contents
+                    content = []
+                    for block in blocks[:MCP_CONTEXT_ITEMS]:
+                        if str(block.uri) != identifier:
+                            raise ValueError("resource result URI differs from the requested URI")
+                        text = getattr(block, "text", None)
+                        if not isinstance(text, str):
+                            partial = True
+                            continue
+                        content.append({"uri": identifier, "mimeType": block.mimeType, "text": text})
+                else:
+                    args = arguments.get("arguments", {})
+                    if len(selected.arguments or []) > 32:
+                        raise ValueError("prompt schema exceeds the 32-argument limit")
+                    declared = {arg.name: arg for arg in selected.arguments or []}
+                    if (len(declared) != len(selected.arguments or [])
+                            or not isinstance(args, dict) or len(args) > 32
+                            or any(not isinstance(k, str) or k not in declared
+                                   or not isinstance(v, str) or len(v) > 4096 for k, v in args.items())
+                            or any(arg.required and arg.name not in args for arg in declared.values())):
+                        raise ValueError("prompt arguments must match the listed schema (32 strings, 4096 chars each)")
+                    result = await session.get_prompt(identifier, args)
+                    blocks = result.messages
+                    content = []
+                    for message in blocks[:MCP_CONTEXT_ITEMS]:
+                        block = message.content
+                        if getattr(block, "type", None) != "text":
+                            partial = True
+                            continue
+                        content.append({"role": message.role, "text": block.text})
+                return {key: identifier, "content": content}, partial or len(blocks) > MCP_CONTEXT_ITEMS
+
+            data, partial = await asyncio.wait_for(request(), MCP_CALL_TIMEOUT)
+            if (self.session is not session or self.state is not McpServerState.READY
+                    or connection != self.ready_at or self.stop.is_set()):
+                raise ValueError("connection changed; result discarded without replay")
+            return context_result(data, {
+                "server": self.config.name, "connection_ready_at": connection,
+                "session_id": ctx.session_id if ctx is not None else None,
+                "trust_scope": "project_grant" if self.config.project_scoped else "user_config",
+                "operation": action,
+            }, partial=partial)
+        except Exception as exc:
+            return ToolResult(tool_call_id="", is_error=True,
+                              content=f"MCP context request failed (untrusted server data): {_describe_failure(exc)}")
 
 
 async def _first_of(*events: asyncio.Event) -> None:
@@ -476,9 +583,13 @@ class McpClientManager:
     async def _connect(self, server: McpServerConfig, stack: AsyncExitStack, lost: asyncio.Event):
         read, write = await self._open_transport(server, stack, lost=lost)
         session = await stack.enter_async_context(ClientSession(read, write))
-        await asyncio.wait_for(session.initialize(), MCP_HANDSHAKE_TIMEOUT)
-        listed = await asyncio.wait_for(session.list_tools(), MCP_HANDSHAKE_TIMEOUT)
-        return session, listed
+        initialized = await asyncio.wait_for(session.initialize(), MCP_HANDSHAKE_TIMEOUT)
+        capabilities = getattr(initialized, "capabilities", None)
+        if server.context_access and capabilities is not None and capabilities.tools is None:
+            listed = types.ListToolsResult(tools=[])
+        else:
+            listed = await asyncio.wait_for(session.list_tools(), MCP_HANDSHAKE_TIMEOUT)
+        return session, listed, capabilities
 
     async def _own(self, owner: _ServerOwner) -> None:
         """Hold one server's connection for its whole life, in this task only.
@@ -495,7 +606,7 @@ class McpClientManager:
             lost = asyncio.Event()
             stack = AsyncExitStack()
             try:
-                session, listed = await self._connect(owner.config, stack, lost)
+                session, listed, capabilities = await self._connect(owner.config, stack, lost)
             except BaseException as exc:
                 await _close_quietly(stack, name)
                 if isinstance(exc, asyncio.CancelledError):
@@ -524,6 +635,7 @@ class McpClientManager:
                 attempt += 1
                 continue
             owner.session = session
+            owner.capabilities = capabilities
             owner.listed = {tool.name: tool for tool in listed.tools}
             if owner.ready_at is not None:
                 owner.reconnects += 1
@@ -584,6 +696,7 @@ class McpClientManager:
     def _admit(self, owner: _ServerOwner) -> None:
         server = owner.config
         existing = {t.name for t in self._tools}
+        remotes = []
         for tool in owner.listed.values():
             schema = tool.inputSchema if hasattr(tool, "inputSchema") else {"type": "object", "properties": {}}
             remote = McpRemoteTool(
@@ -599,6 +712,23 @@ class McpClientManager:
             )
             if tool.name in server.trusted_tool_effects:
                 _trust_remote_effect(remote)
+            remotes.append(remote)
+        if server.context_access:
+            remote = McpRemoteTool(
+                server_name=server.name, tool_name="context",
+                description="List/read MCP resources or list/get prompts as bounded untrusted data. "
+                            "Only listed identifiers are allowed; templates and subscriptions are unsupported.",
+                parameters={"type": "object", "properties": {
+                    "action": {"type": "string", "enum": [
+                        "list_resources", "read_resource", "list_prompts", "get_prompt"]},
+                    "uri": {"type": "string"}, "name": {"type": "string"},
+                    "arguments": {"type": "object", "additionalProperties": {"type": "string"}},
+                }, "required": ["action"]},
+                _session=owner.session, effect=ToolEffect.READ_ONLY, _owner=owner, _context_access=True,
+            )
+            _trust_remote_effect(remote)
+            remotes.append(remote)
+        for remote in remotes:
             # Two long names can sanitize/truncate to the same exposed name; suffix
             # collisions so a later tool never silently shadows an earlier one.
             if remote.name in existing:
@@ -622,6 +752,8 @@ class McpClientManager:
         """
         admitted = set()
         for remote in owner.admitted:
+            if remote._context_access:
+                continue
             admitted.add(remote.tool_name)
             tool = owner.listed.get(remote.tool_name)
             if tool is None:
