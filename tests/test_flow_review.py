@@ -338,3 +338,87 @@ async def test_required_review_stops_if_identity_evidence_is_lost_after_launch(r
     assert evidence['policy'] == 'required' and evidence['decision'] == 'unknown'
     assert evidence['reviewed']['configured'] is None
     assert evidence['reviewed']['launched'] == [{'runtime': 'native', 'model_id': 'c/1'}]
+
+
+# --- review packets and structured findings (#362) ----------------------------
+
+import json  # noqa: E402
+
+STRUCTURED = {"version": 2, "verdict": "changes", "findings": [{
+    "severity": "major", "path": "src/loop.py", "lines": [10, 14], "message": "never terminates",
+    "evidence": "the while condition never changes", "verification": "run tests/test_loop.py"}]}
+
+
+@pytest.mark.parametrize("finding, problem", [
+    ({"path": "/etc/passwd"}, "workspace-relative"),
+    ({"path": "../outside.py"}, "workspace-relative"),
+    ({"evidence": ""}, "evidence"),
+    ({"lines": [5, 2]}, "lines"),
+    ({"confidence": "certain"}, "confidence"),
+    ({"extra": "field"}, "only"),
+])
+def test_invalid_structured_findings_never_approve(finding, problem):
+    review = {**STRUCTURED, "verdict": "approve",
+              "findings": [{**STRUCTURED["findings"][0], **finding}]}
+    with pytest.raises(rv.ReviewInvalid, match=problem):
+        rv.parse(json.dumps(review))
+    with pytest.raises(rv.ReviewInvalid, match="version"):
+        rv.parse(json.dumps({**STRUCTURED, "version": 3}))
+
+
+async def test_a_structured_review_requests_changes_with_its_evidence(repo):
+    script = Script([json.dumps(STRUCTURED), APPROVE])
+    result = await _run(repo, script, _config(max_rounds=1)).run()
+    assert result.completed
+    assert rv.STRUCTURED_FORMAT in script.prompts[("review", 1)]
+    retry = script.prompts[("build", 2)]
+    assert "src/loop.py:10-14: never terminates" in retry and "run tests/test_loop.py" in retry
+    history = SessionStore().load_meta(result.flow_session)["review"]["history"]
+    assert history[0]["structured"][0]["evidence"] == "the while condition never changes"
+    assert "structured" not in history[1]  # the legacy line review stays legacy
+
+
+class PacketScript(Script):
+    """The coder records its step session's changed files, as a real step session does."""
+
+    async def __call__(self, launch):
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            store = SessionStore()
+            store.begin(result.session_id, task="t", model="m", agent="a", workspace="w")
+            store.update_meta(result.session_id, {"delta_changed": ["src/loop.py"]})
+        return result
+
+
+async def test_the_reviewer_receives_a_frozen_candidate_packet(repo):
+    script = PacketScript([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    meta = SessionStore().load_meta(result.flow_session)
+    digest = meta["review_packet"]["digest"]
+    assert f'<review-packet digest="{digest}">' in prompt and "src/loop.py" in prompt
+    assert meta["review"]["history"][0]["packet_digest"] == digest
+    build = next(r for r in result.receipts if r["step"] == "build")
+    assert meta["review_packet"]["candidate"]["workspace_version"] == build["workspace_version_after"]
+
+
+async def test_an_unrecorded_manifest_is_unknown_not_empty(repo):
+    script = Script([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert "&quot;status&quot;: &quot;unknown&quot;" in script.prompts[("review", 1)]
+    assert SessionStore().load_meta(result.flow_session)["review_packet"]["changed_total"] is None
+
+
+async def test_a_candidate_changed_before_review_is_refused(repo, monkeypatch):
+    original = FlowRunner._review_packet
+
+    async def external_writer(self, *args, **kwargs):
+        (repo / "a.txt").write_text("changed by someone else\n")  # after the coder, before review
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(FlowRunner, "_review_packet", external_writer)
+    script = Script([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.stopped.code == "flow.review_stale_candidate"
+    assert ("review", 1) not in script.sequence  # no reviewer ran on a stale candidate
