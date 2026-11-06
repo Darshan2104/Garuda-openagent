@@ -2361,3 +2361,14 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-07 — The advisor is a consult, its advice is steering data (#385)
+
+An agent's optional `advisor.role` is asked only when it is one of the run's
+granted consult targets, so admission, snapshot isolation, its read-only
+profile, deadlines and receipts stay with the consult service. The first
+checkpoint is the steering's existing repeated-failure streak; the answer is
+queued between turns as labelled advice that cannot grant permissions,
+verify work or replace review. Notes are capped per run and deduplicated, and
+a failed or busy advisor changes nothing. Plan-ready and candidate-ready
+checkpoints, and spend shared with the run-tree gate, are follow-ups.

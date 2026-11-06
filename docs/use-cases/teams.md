@@ -309,6 +309,43 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
   An external harness can't *ask* yet; see
   [External harnesses](../guides/external-harnesses.md#consult-transport).
 
+## Get an advisor's second opinion when a run keeps failing
+
+<p class="gd-facts">Opt-in · Uses a role you already let it consult · Advice only</p>
+
+**Use it when** you want a stronger or different model to look in once a run
+is stuck, without letting it act.
+
+```yaml
+# garuda.yaml: the coder may consult the planner
+roles:
+  coder:   {harness: native, model_id: MODEL_A, consult: [planner], agent: careful}
+  planner: {harness: native, model_id: MODEL_B}
+```
+
+```yaml
+# .garuda/agents/careful.yaml
+version: 1
+extends: garuda/build
+advisor:
+  role: planner     # must be one of the coder's consult targets
+  max_notes: 2      # advisor notes per run (default 2)
+```
+
+**What happens**
+
+- After three consecutive failed tool steps (the same point at which Garuda
+  already nudges the agent), the planner is asked for next steps through the
+  ordinary consult path: read-only, on a snapshot, with its own receipt.
+- Its answer arrives before the next turn, labelled as advice. It cannot grant
+  permissions, approve or verify work, or replace an independent review.
+- Notes are capped per run and repeated advice is dropped. An advisor that
+  fails or is busy changes nothing about the run.
+- If `advisor.role` isn't one of the role's consult targets, no advisor runs
+  and the session records why.
+- Each request, delivered note and suppression is an `advisor` event in the
+  session.
+
 ## Require checks for every run in this project
 
 <p class="gd-facts">Configured in: <code>garuda.yaml</code> at the project root · Runs only after: <code>garuda config trust</code></p>
