@@ -21,6 +21,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Budgets | Wall-clock and turn limits | `garuda run --deadline-sec 900 --max-turns 30 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
 | Any model | A LiteLLM `provider/model`, reasoning effort | `garuda run --model provider/model -t "…"` | [Level 2](../use-cases/change-code.md#use-a-different-model-for-one-run) |
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
+| Bounded search | grep stops once a page is captured, reports totals as exact or "at least", pages with a stale-checked cursor, windows long lines and can cap matches per file | `garuda run --mode readonly -t "Find every TODO"` | [Level 1](../use-cases/explore.md#search-large-trees-without-flooding-the-context) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
 
 ## Where commands run

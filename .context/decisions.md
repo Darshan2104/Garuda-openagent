@@ -2361,3 +2361,16 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Search bounds production in the environment shell (#367)
+
+grep and glob keep running rg/grep/find through `Environment.execute`; no
+interpreter is required in the workspace. The command is wrapped so `head`
+stops the producer after one page plus a look-ahead line or 512 KiB, and the
+producer's exit status is emitted as a final marker line: its absence proves
+the result is partial, so totals are exact only when the producer finished.
+rg output is sorted by path. Cursors bind the search options, workspace root
+and a digest of the claimed earlier results; any change is refused as stale.
+The grep fallback keeps directory order, which is stable while the tree is
+unchanged and otherwise detected by the same digest. Glob still sorts the full
+listing, so only its capture (not traversal) is bounded.
