@@ -217,6 +217,21 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 - `--deadline-sec` sets a wall-clock budget. The agent paces itself against it
   and keeps turns in reserve to finish cleanly.
 - `--max-turns` caps the number of agent turns.
+- `--max-run-tokens` caps tokens across the whole native run tree: the main
+  calls, summaries, the verifier and critic, and every subagent share one
+  budget. Each call reserves its estimate first, so parallel calls cannot spend
+  the same remainder; when the budget is gone the run stops with
+  `spend_limit`.
+- `--max-run-cost-usd` stops admitting calls once provider-reported spend
+  reaches the amount. It is a stop, not a prepaid maximum: a call in flight
+  can overshoot. If the provider does not report a call's cost, the dollar
+  budget cannot be verified and no further calls are admitted, unless
+  `--max-run-tokens` is also set.
+
+```bash
+garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache module"
+```
+
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.
 - Your provider's billing page is the authority on cost. Garuda does not guess

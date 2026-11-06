@@ -197,6 +197,15 @@ async def run_task(args) -> int:
         config.max_turns = args.max_turns
     if getattr(args, "deadline_sec", None) is not None:
         config.deadline_sec = args.deadline_sec
+    if (getattr(args, "max_run_tokens", None) or 1) < 1 or (
+            getattr(args, "max_run_cost_usd", None) is not None and args.max_run_cost_usd <= 0):
+        print("Error: --max-run-tokens must be at least 1 and --max-run-cost-usd greater than 0",
+              file=sys.stderr)
+        return 2
+    if getattr(args, "max_run_tokens", None) is not None:
+        config.max_run_tokens = args.max_run_tokens
+    if getattr(args, "max_run_cost_usd", None) is not None:
+        config.max_run_cost_usd = args.max_run_cost_usd
     if args.no_verifier:
         config.enable_verifier = False
     if args.no_three_step_summary:

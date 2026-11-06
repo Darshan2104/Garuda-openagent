@@ -26,6 +26,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
 from garuda.core.permissions import PermissionEngine, permission_workspace
 from garuda.core.run_state import RunState, prepare_run
+from garuda.core.spend import SpendLimitExceeded
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
     CONTEXT_WARNING_NUDGE,
@@ -144,7 +145,7 @@ class DefaultAgent:
 
             # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
             # run's store for as long as it runs.
-            accounting_token = accounting.bind(state.events)
+            accounting_token = accounting.bind(state.events, state.config.spend_gate)
             try:
                 turn = 0
                 for turn in range(1, state.config.max_turns + 1):
@@ -323,10 +324,19 @@ class DefaultAgent:
         elapsed = [0.0]
         messages = state.context.get_messages()
         _record_system_digest(state, messages)
+        gate = state.config.spend_gate
+        reservation = None
+        if gate is not None:
+            # Prompt as the context gauge measures it, plus the requested output
+            # ceiling. A refusal raises before anything is sent.
+            estimate = (state.context.budget_snapshot()["used_tokens"]
+                        + (state.config.max_tokens or accounting.AUXILIARY_OUTPUT_ESTIMATE))
+            reservation = await accounting.admit(gate, "main", estimate)
+        response = None
         try:
             with stopwatch() as holder:
                 elapsed = holder
-                return await model.complete(
+                response = await model.complete(
                     messages,
                     tools=state.tools_schema if tools is None else tools,
                     # Sent, not merely reserved against. run_state.reserved_output_tokens
@@ -337,10 +347,16 @@ class DefaultAgent:
                     # config that reads as tightening it.
                     max_tokens=state.config.max_tokens,
                 )
+                return response
         finally:
             # Runs after the stopwatch's own exit has filled the holder, so this is
             # correct on the raising path too — which is the one that matters here.
             model_ms[0] = round(model_ms[0] + elapsed[0], 3)
+            if reservation is not None:
+                # Settled failed or not: a raised call releases its reservation and
+                # counts as unknown cost rather than as free.
+                await accounting.settle(gate, reservation,
+                                        getattr(response, "usage", None) if response else None)
 
     async def _complete_or_shrink(
         self,
@@ -429,6 +445,15 @@ class DefaultAgent:
         model_ms = [0.0]
         try:
             response = await self._complete_or_shrink(state, model, turn, model_ms)
+        except SpendLimitExceeded as exc:
+            if record is not None:
+                record.model_ms = model_ms[0]
+            if state.emit_session_events:
+                state.events.append(
+                    EventType.SESSION_END,
+                    {"success": False, "reason": "spend_limit", "error": str(exc)},
+                )
+            return state.bare_result(False, f"Run-tree spend budget exhausted: {exc}", turn)
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
