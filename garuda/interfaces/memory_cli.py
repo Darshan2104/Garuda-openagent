@@ -1,4 +1,4 @@
-"""``garuda memory list | review`` (plan task H.9, #171).
+"""``garuda memory list | review | search`` (#171, #371).
 
 Review is the only way a proposed note becomes memory, and it needs a person at
 a terminal: it refuses without one, so a headless run, a script or an agent
@@ -19,6 +19,8 @@ def _show(proposal, out) -> None:
     print(f"\n{proposal.id[:8]}  scope: {proposal.scope}  session: {proposal.session_id}  "
           f"state: {proposal.state}", file=out)
     print(f"  {proposal.text}", file=out)
+    if proposal.provenance:
+        print("  provenance: " + json.dumps(proposal.provenance, sort_keys=True), file=out)
 
 
 def review(proposals: ProposalStore, ask, out=None) -> dict:
@@ -65,6 +67,21 @@ def run_memory(args) -> int:
     except Exception as exc:
         print(f"Error: cannot open the proposal store: {exc}", file=sys.stderr)
         return 2
+    if args.memory_command == "search":
+        import asyncio
+
+        from garuda.runtime.strict_store import StorageError
+        from garuda.workspace.local import LocalEnvironment
+
+        try:
+            result = asyncio.run(proposals.search(
+                args.query, LocalEnvironment(workspace_root=args.workspace),
+                max_chars=args.max_chars, limit=args.limit))
+        except (NotesRefused, StorageError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        print(result, end="")
+        return 0
     if args.memory_command == "list":
         pending = proposals.pending()
         if getattr(args, "json", False):

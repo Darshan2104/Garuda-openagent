@@ -8,7 +8,7 @@ atomically with mode ``0600`` beside the session store, and never exported, so
 an id names a project without revealing its path and cannot be computed by
 anyone without the key.
 
-If the key is missing while sessions already carry project ids, nothing
+If the key is missing while sessions or reviewed notes carry project ids, nothing
 generates a replacement silently — that would split every project into two.
 Allocation refuses with ``session.project_key_missing`` until the identities are
 recovered.
@@ -69,6 +69,10 @@ def _any_identified_session(store_root: Path) -> bool:
 
     if not Path(store_root).is_dir():
         return False
+    # Reviewed notes also bind this key, even before a session is persisted.
+    memory = Path(store_root) / ".memory"
+    if memory.is_symlink() or (memory.exists() and (not memory.is_dir() or any(memory.iterdir()))):
+        return True
     for directory in Path(store_root).iterdir():
         meta = directory / "meta.json"
         if not meta.is_file():
@@ -102,8 +106,9 @@ def load_key(store_root: Path) -> bytes:
         if _any_identified_session(store_root):
             raise ProjectKeyMissing(
                 f"{ProjectKeyMissing.code}: the project key at {path} is missing but saved "
-                "sessions already carry project ids; a new key would split every project. "
-                "Run `garuda doctor --recover-project-ids` to recover them."
+                "sessions or reviewed notes carry project ids; a new key would split every project. "
+                "Run `garuda doctor --recover-project-ids` for session recovery. "
+                "Reviewed notes require the original key; preserve their ledger."
             )
         key = secrets.token_hex(32)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -165,6 +170,14 @@ def project_identity(store_root: Path, workspace: str | Path) -> ProjectIdentity
     return ProjectIdentity(
         compute_project_id(load_key(store_root), canonical), canonical, filesystem_identity(canonical)
     )
+
+
+def environment_project_path(env) -> str:
+    """Use the owner's project mapping, never a shared container execution path."""
+    workspace = getattr(env, "host_workspace_root", env.workspace_root)
+    if not workspace:
+        raise ProjectIdentityError("workspace project mapping is unavailable")
+    return str(workspace)
 
 
 def filesystem_identity(path: str) -> str:

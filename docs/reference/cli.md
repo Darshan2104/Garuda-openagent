@@ -42,6 +42,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda agent migrate PATH [--write] [--accept-tightening]` | Preview a legacy profile as a version 1 definition (and confirm it resolves the same); `--write` replaces it with a backup, and refuses if behaviour would change. Where version 1 is only stricter, it also needs `--accept-tightening` |
 | Memory | `garuda memory list [--json]` | The note proposals waiting for your review in this project |
 | | `garuda memory review` | Accept, edit or reject each proposal; needs a terminal, and is the only way a note becomes memory |
+| | `garuda memory search QUERY [--workspace .] [--max-chars 2000] [--limit 5]` | Search accepted decisions in this project; labels stale/unknown sources and possible conflicts (maximum 4,000 characters, ten notes) |
 | Configuration | `garuda init [--project] [--model HARNESS=ID] [--yes]` | Propose a user `garuda.yaml` (roles) or, with `--project`, the project's checks; writes only after confirmation |
 | | `garuda config show [--flow NAME]` | The effective `garuda.yaml` and where each value came from, or one flow to copy |
 | | `garuda config migrate [--write]` | Preview or write the user `garuda.yaml` that carries `settings.yaml`'s runtimes and capacity |

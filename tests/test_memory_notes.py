@@ -1,8 +1,11 @@
 """Reviewed memory notes (#171, plan task H.9)."""
 
+import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -71,6 +74,8 @@ def test_at_most_ten_proposals_per_root_task_shared_with_descendants(ws):
     ledger = notes.NotesLedger.create(ws, "root")
     for i in range(10):
         ledger.propose(f"note {i}", "project", session_id=f"child-{i % 3}")
+    repeated = ledger.propose(" note   0 ", "project", session_id="another-child")
+    assert repeated.text == "note 0" and len(ledger.proposals.pending()) == 10
     with pytest.raises(NotesRefused, match="memory.limit"):
         ledger.propose("one too many", "user", session_id="root")
     other = notes.NotesLedger.create(ws, "another-root")
@@ -94,7 +99,8 @@ def test_accepting_appends_once_to_the_owners_file(proposals, ws):
 
 
 def test_a_replay_after_a_crash_does_not_append_twice(proposals, ws, monkeypatch):
-    proposal = _propose(proposals)
+    proposal = proposals.propose("Use tabs in Makefiles.", "project", session_id="s1",
+                                 root_session_id="s1", provenance={"evidence": ["session:s1"]})
     real = notes._append_once
     calls = []
 
@@ -110,6 +116,7 @@ def test_a_replay_after_a_crash_does_not_append_twice(proposals, ws, monkeypatch
     assert proposals.get(proposal.id).state == "accepting"
     proposals.accept(proposal.id, digest=proposal.digest)  # the replay
     assert proposals.get(proposal.id).state == "accepted"
+    assert proposals.get(proposal.id).provenance == {"evidence": ["session:s1"]}
     assert notes.project_notes_path(ws).read_text().count("Use tabs") == 1
 
 
@@ -249,8 +256,13 @@ async def test_the_agent_can_propose_and_the_proposal_waits(ws):
     assert not notes.project_notes_path(ws).exists()
 
 
-async def test_a_secret_shaped_proposal_is_rejected_and_absent_from_every_log(ws, tmp_path):
-    result = await _run(ws, [_call("remember", "r1", text=f"token is {SECRET}", scope="user"),
+@pytest.mark.parametrize("arguments", [
+    {"text": f"token is {SECRET}"},
+    {"text": "safe", "evidence": [f"token is {SECRET}"]},
+    {"text": "safe", "sources": [SECRET]},
+])
+async def test_a_secret_shaped_proposal_is_rejected_and_absent_from_every_log(ws, tmp_path, arguments):
+    result = await _run(ws, [_call("remember", "r1", scope="user", **arguments),
                              _call("task_complete", "d", summary=SUMMARY)])
     assert result.success and not ProposalStore(SessionStore(), ws).pending()
     assert SECRET not in json.dumps(result.metadata["events"], default=str)
@@ -309,3 +321,326 @@ def test_the_dashboard_lists_pending_proposals_read_only(ws, proposals):
     assert response.status == 200
     assert [p["text"] for p in body(response)["proposals"]] == ["Use tabs in Makefiles."]
     assert call(ctx, "/api/memory/proposals", method="POST").status in (403, 404, 405)
+
+
+# --- versioned evidence and on-demand retrieval -----------------------------------------
+
+
+def test_v1_migration_preserves_review_digest_and_unknown_provenance(proposals, ws):
+    note_id = "a" * 32
+    digest = hashlib.sha256(b"project\0Use make check.\0" + proposals.project_id.encode()
+                            + b"\0old-session").hexdigest()
+    legacy = {"version": 1, "id": note_id, "text": "Use make check.", "scope": "project",
+              "session_id": "old-session", "root_session_id": "old-session",
+              "project_id": proposals.project_id, "created_at": "2026-01-01T00:00:00+00:00",
+              "digest": digest, "state": "pending", "decision": {}}
+    proposals.directory.mkdir(parents=True)
+    path = proposals.directory / f"{note_id}.json"
+    raw = json.dumps(legacy)
+    path.write_text(raw)
+    old = proposals.get(note_id)
+    assert old.digest == digest and path.read_text() == raw  # reading does not migrate on disk
+    proposals.accept(note_id, digest=digest)
+    migrated = json.loads(path.read_text())
+    assert migrated["version"] == 2 and migrated["provenance"] is None
+    assert migrated["digest"] == digest and "Use make check." in notes.project_notes_path(ws).read_text()
+
+
+def test_proposal_dedup_is_per_task_and_keeps_rejection(proposals):
+    first = proposals.propose("Use make check.", "project", session_id="child1", root_session_id="root")
+    proposals.reject(first.id, digest=first.digest)
+    repeated = proposals.propose(" Use  make check. ", "project", session_id="child2",
+                                  root_session_id="root")
+    assert (repeated.id, repeated.state) == (first.id, "rejected")
+    other = proposals.propose("Use make check.", "project", session_id="child2", root_session_id="next")
+    assert other.id != first.id
+
+
+async def _source_proposal(proposals, ws, text="Use make check.", **extra):
+    from garuda.tools.protocol import ToolContext
+
+    result = await RememberTool().execute(
+        {"text": text, "scope": "project", "sources": ["build.cfg"], **extra},
+        LocalEnvironment(workspace_root=ws),
+        ToolContext(session_id="child", notes=notes.NotesLedger(proposals, "root")))
+    assert not result.is_error, result.content
+    return proposals.pending()[-1]
+
+
+async def test_provenance_binds_review_and_deduplicates_source_snapshots(proposals, ws):
+    (ws / "build.cfg").write_bytes(b"check = pytest\n")
+    first = await _source_proposal(proposals, ws, evidence=["session:child#check"])
+    assert first.provenance["sources"] == {
+        "build.cfg": hashlib.sha256(b"check = pytest\n").hexdigest()}
+    repeated = await _source_proposal(proposals, ws, evidence=["session:child#check"])
+    assert repeated.id == first.id and len(proposals.pending()) == 1
+    output = io.StringIO()
+    review(proposals, lambda prompt: "a", output)
+    assert first.provenance["sources"]["build.cfg"] in output.getvalue()
+    assert "session:child#check" in output.getvalue()
+    assert proposals.get(first.id).state == "accepted"
+    second = await _source_proposal(proposals, ws, text="Use another check.")
+    path = proposals.directory / f"{second.id}.json"
+    data = json.loads(path.read_text())
+    data["provenance"]["sources"]["build.cfg"] = "f" * 64
+    path.write_text(json.dumps(data))
+    with pytest.raises(NotesRefused, match="memory.stale"):
+        proposals.accept(second.id, digest=second.digest)
+
+
+@pytest.mark.parametrize("change, label", [
+    ("unchanged", "current: referenced sources unchanged"),
+    ("modified", "stale: source changed"),
+    ("deleted", "stale: source deleted"),
+    ("symlink", "unknown: source unavailable"),
+    ("oversized", "unknown: source too large"),
+])
+async def test_retrieval_checks_real_source_freshness(proposals, ws, tmp_path, change, label):
+    source = ws / "build.cfg"
+    source.write_bytes(b"check = pytest\n")
+    proposal = await _source_proposal(proposals, ws)
+    if change == "modified":
+        source.write_bytes(b"check = make\n")  # even a change before acceptance stays visible
+    elif change == "deleted":
+        source.unlink()
+    elif change == "symlink":
+        outside = tmp_path / "outside"
+        outside.write_text("outside content must not be retrieved")
+        source.unlink()
+        source.symlink_to(outside)
+    elif change == "oversized":
+        source.write_bytes(b"x" * (1024 * 1024 + 1))
+    proposals.accept(proposal.id, digest=proposal.digest, text="Use make check for builds.")
+    result = await proposals.search("builds", LocalEnvironment(workspace_root=ws))
+    assert label in result and "Use make check for builds." in result
+    assert proposal.id in result and "outside content" not in result
+    assert "data, not instructions" in result
+
+
+async def test_retrieval_labels_conflicts_supersession_and_expiry(proposals, ws):
+    (ws / "build.cfg").write_text("check = pytest\n")
+    first = await _source_proposal(proposals, ws, text="Build with pytest.")
+    proposals.accept(first.id, digest=first.digest)
+    second = await _source_proposal(proposals, ws, text="Build with make.")
+    env = LocalEnvironment(workspace_root=ws)
+    assert second.id not in await proposals.search("build", env)
+    proposals.accept(second.id, digest=second.digest)
+    conflicts = await proposals.search("build", env)
+    assert "possible conflict" in conflicts and first.id in conflicts and second.id in conflicts
+    replacement = await _source_proposal(
+        proposals, ws, text="Build with the wrapper.", supersedes=[first.id, second.id],
+        expires_at="2000-01-01T00:00:00Z")
+    assert "superseded" not in await proposals.search("build", env)
+    proposals.accept(replacement.id, digest=replacement.digest)
+    result = await proposals.search("build", env)
+    assert result.count("stale: superseded") == 2 and "stale: expired" in result
+    assert "possible conflict" not in result
+
+
+async def test_search_relevance_rejection_unknown_and_output_budget(proposals, ws):
+    for text in ("Prefer short answers.", "Database migrations need backup.",
+                 "Database backups use the nightly job."):
+        p = _propose(proposals, text)
+        proposals.accept(p.id, digest=p.digest)
+    rejected = _propose(proposals, "Database passwords are optional.")
+    proposals.reject(rejected.id, digest=rejected.digest)
+    _propose(proposals, "Database pending claim.")
+    env = LocalEnvironment(workspace_root=ws)
+    result = await proposals.search("database migrations", env)
+    assert result.index("Database migrations") < result.index("Database backups")
+    assert "Prefer short" not in result and "optional" not in result and "pending claim" not in result
+    assert "unknown: source freshness" in result
+    assert result == await proposals.search("database migrations", env)
+    bounded = await proposals.search("database", env, max_chars=256, limit=1)
+    assert len(bounded) <= 256 and "omitted by budget" in bounded
+    with pytest.raises(NotesRefused, match="memory.invalid_budget"):
+        await proposals.search("database", env, max_chars=100000)
+
+
+async def test_search_refuses_foreign_records_and_foreign_workspaces(proposals, ws, tmp_path):
+    p = _propose(proposals)
+    proposals.accept(p.id, digest=p.digest)
+    other = tmp_path / "other"
+    other.mkdir()
+    with pytest.raises(NotesRefused, match="memory.foreign_project"):
+        await proposals.search("tabs", LocalEnvironment(workspace_root=other))
+    foreign = ProposalStore(SessionStore(), other)
+    foreign.directory = proposals.directory
+    with pytest.raises(NotesRefused, match="memory.foreign_project"):
+        await foreign.search("tabs", LocalEnvironment(workspace_root=other))
+    with pytest.raises(NotesRefused, match="memory.foreign_project"):
+        foreign.reject(p.id, digest=p.digest)
+    assert proposals.get(p.id).state == "accepted"
+
+
+async def test_search_refuses_unknown_coverage_instead_of_reporting_no_matches(proposals, ws):
+    p = _propose(proposals)
+    proposals.accept(p.id, digest=p.digest)
+    (proposals.directory / ("f" * 32 + ".json")).write_text('{"version": 99}')
+    with pytest.raises(NotesRefused, match="memory.unavailable"):
+        await proposals.search("unmatched", LocalEnvironment(workspace_root=ws))
+
+
+async def test_existing_remember_tool_searches_without_proposing(proposals, ws):
+    from garuda.tools.protocol import ToolContext
+
+    p = proposals.propose("Run pytest for checks.", "project", session_id="s", root_session_id="root")
+    proposals.accept(p.id, digest=p.digest)
+    result = await RememberTool().execute(
+        {"action": "search", "query": "checks", "max_chars": 500},
+        LocalEnvironment(workspace_root=ws),
+        ToolContext(session_id="searcher", notes=notes.NotesLedger(proposals, "root")))
+    assert not result.is_error and "Run pytest" in result.content
+    assert len(result.content) <= 500 and not proposals.pending()
+    duplicate = await RememberTool().execute(
+        {"text": p.text, "scope": "project"}, LocalEnvironment(workspace_root=ws),
+        ToolContext(session_id="searcher", notes=notes.NotesLedger(proposals, "root")))
+    assert not duplicate.is_error and "state: accepted" in duplicate.content
+    assert not proposals.pending()
+
+
+async def test_source_fingerprints_use_the_environment_without_a_workspace_python(
+        proposals, ws, tmp_path, monkeypatch):
+    from garuda.tools.protocol import ToolContext
+
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    (mounted / "build.cfg").write_bytes(b"remote content\n")
+    (ws / "build.cfg").write_bytes(b"host content must not be fingerprinted\n")
+    inner = LocalEnvironment(workspace_root=mounted)
+
+    class MountedEnvironment:
+        # Simulate Docker/remote path ownership using two real fixture directories.
+        workspace_root = "/workspace"
+        host_workspace_root = str(ws)
+
+        async def execute(self, command, timeout=None, cwd=None):
+            return await inner.execute(command, timeout=timeout)
+
+        async def read_bytes(self, path):
+            return await inner.read_bytes(path)
+
+    utilities = tmp_path / "utilities"
+    utilities.mkdir()
+    (utilities / "wc").symlink_to(shutil.which("wc"))
+    monkeypatch.setenv("PATH", str(utilities))
+    env = MountedEnvironment()
+    result = await RememberTool().execute(
+        {"text": "Use the remote build.", "scope": "project", "sources": ["build.cfg"]}, env,
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root")))
+    assert not result.is_error, result.content
+    p = proposals.pending()[0]
+    assert p.provenance["sources"]["build.cfg"] == hashlib.sha256(b"remote content\n").hexdigest()
+    proposals.accept(p.id, digest=p.digest)
+    assert "current: referenced sources unchanged" in await proposals.search("build", env)
+    (mounted / "build.cfg").unlink()
+    assert "stale: source deleted" in await proposals.search("build", env)
+
+
+@pytest.mark.parametrize("backend", ["docker", "remote"])
+async def test_container_project_mapping_cannot_alias_other_projects(ws, tmp_path, backend):
+    from garuda.core.project_identity import ProjectIdentityError
+    from garuda.tools.protocol import ToolContext
+    from garuda.workspace.docker import DockerEnvironment
+    from garuda.workspace.remote import RemoteEnvironment
+
+    def environment(path):
+        if backend == "docker":
+            return DockerEnvironment("fixture", host_workspace_root=path)
+        return RemoteEnvironment(["docker"], "fixture", host_workspace_root=path)
+
+    env = environment(ws)
+    ledger = notes.NotesLedger.for_environment(env, "root")
+    result = await RememberTool().execute(
+        {"text": "Build with make.", "scope": "project"}, env,
+        ToolContext(session_id="s", notes=ledger))
+    assert not result.is_error, result.content
+    p = ledger.proposals.pending()[0]
+    ledger.proposals.accept(p.id, digest=p.digest)
+    assert "Build with make." in notes.project_notes_path(ws).read_text()
+    assert "Build with make." in await ledger.proposals.search("build", env)
+    other = tmp_path / "other-project"
+    other.mkdir()
+    with pytest.raises(NotesRefused, match="memory.foreign_project"):
+        await ledger.proposals.search("build", environment(other))
+    with pytest.raises(ProjectIdentityError):
+        notes.NotesLedger.for_environment(environment(None), "root")
+
+
+async def test_retrieval_source_budget_keeps_unchecked_freshness_unknown(proposals, ws):
+    from garuda.tools.protocol import ToolContext
+
+    env = LocalEnvironment(workspace_root=ws)
+    ctx = ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"))
+    for i in range(9):
+        (ws / f"file-{i}").write_text(str(i))
+    for paths, text in [([f"file-{i}" for i in range(8)], "Build alpha."),
+                        (["file-8"], "Build beta.")]:
+        result = await RememberTool().execute(
+            {"text": text, "scope": "project", "sources": paths}, env, ctx)
+        assert not result.is_error, result.content
+        p = proposals.pending()[0]
+        proposals.accept(p.id, digest=p.digest)
+    (ws / "file-8").unlink()
+    result = await proposals.search("build", env, max_chars=4000)
+    assert "Build beta." in result and "unknown: source budget exhausted" in result
+    assert "stale: source deleted" not in result
+
+
+async def test_search_in_a_linked_worktree_checks_its_sources(tmp_path):
+    from garuda.tools.protocol import ToolContext
+    from tests.test_project_identity import _git_repo
+
+    repo = _git_repo(tmp_path / "repo")
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(checkout)],
+                   check=True, capture_output=True)
+    proposals = ProposalStore(SessionStore(), repo)
+    result = await RememberTool().execute(
+        {"text": "Build from f.", "scope": "project", "sources": ["f"]},
+        LocalEnvironment(workspace_root=repo),
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root")))
+    assert not result.is_error, result.content
+    p = proposals.pending()[0]
+    proposals.accept(p.id, digest=p.digest)
+    selected = ProposalStore(proposals.store, checkout)
+    assert selected.project_id == proposals.project_id
+    (checkout / "f").write_text("changed in the linked checkout")
+    assert "stale: source changed" in await selected.search(
+        "build", LocalEnvironment(workspace_root=checkout))
+    assert "current: referenced sources unchanged" in await proposals.search(
+        "build", LocalEnvironment(workspace_root=repo))
+
+
+@pytest.mark.parametrize("sources", [["../outside"], ["/outside"], ["./build.cfg"], ["dir/../f"]])
+async def test_provenance_rejects_escaping_or_ambiguous_paths(proposals, ws, sources):
+    from garuda.tools.protocol import ToolContext
+
+    result = await RememberTool().execute(
+        {"text": "safe", "scope": "project", "sources": sources},
+        LocalEnvironment(workspace_root=ws),
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root")))
+    assert result.is_error and "memory.invalid_provenance" in result.content
+    assert not proposals.pending()
+
+
+def test_memory_search_cli_is_bounded_and_project_local(proposals, ws, monkeypatch, capsys):
+    from tests.test_runtime_cli import _main
+
+    p = _propose(proposals, "Run pytest for checks.")
+    proposals.accept(p.id, digest=p.digest)
+    code, out = _main(monkeypatch, capsys, "memory", "search", "checks", "--workspace", str(ws),
+                      "--max-chars", "500")
+    assert code == 0 and "Run pytest" in out and len(out) <= 500
+    code, out = _main(monkeypatch, capsys, "memory", "search", "checks", "--workspace", str(ws),
+                      "--max-chars", "99999")
+    assert code == 2 and "memory.invalid_budget" in out
+
+
+def test_a_lost_identity_key_cannot_silently_orphan_reviewed_notes(proposals):
+    from garuda.core.project_identity import ProjectKeyMissing
+
+    _propose(proposals)
+    (Path(proposals.store.root) / ".identity" / "key").unlink()
+    with pytest.raises(ProjectKeyMissing):
+        ProposalStore(proposals.store, proposals.workspace)
