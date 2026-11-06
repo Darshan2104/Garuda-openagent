@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, project
+from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, project, tick_health
 from garuda.runtime import strict_store as ss
 
 
@@ -33,7 +33,10 @@ def run_recovery(args) -> int:
                 args.flow_session, {"quota_recovery": project(row)})
             result = project(row)
         else:
+            # Installation and runtime health are observed separately; status
+            # reads recorded tick health and never probes quota or runs a tick.
             result = {"schedule": schedule_status(root),
+                      "tick_health": tick_health(records.health()),
                       "flows": [project(row) for row in records.records()]}
         print(json.dumps(result, indent=2))
         if command == "tick" and any(

@@ -18,7 +18,7 @@ from garuda.config.garuda_yaml import user_path
 from garuda.core import read_model
 from garuda.core.sessions import SessionStore
 from garuda.flows.engine import FlowRunner, StepResult
-from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root
+from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, tick_health
 from garuda.flows.service import FlowExecutionService
 from garuda.observability.limits import LimitObservation, Window
 from garuda.runtime import strict_store as ss
@@ -99,6 +99,9 @@ async def test_hourly_recovery_retains_completed_work_and_continues_pending_step
     waiting = await FlowRecovery().tick()
     assert waiting["flows"][0]["state"] == "waiting-for-quota"
     assert h.script.sequence == before
+    health = h.records.health()
+    assert health["last_result"]["outcome"] == "quota-waiting"
+    assert health["last_result"]["pending"] == 1 and "last_dispatch" not in health
 
     h.script.exhausted = False
     h.clock.now += 3601
@@ -113,8 +116,14 @@ async def test_hourly_recovery_retains_completed_work_and_continues_pending_step
     meta = SessionStore().load_meta(sid)
     assert meta["status"] == "completed" and meta["review"]["status"] == "review_approved"
     assert read_model.session(SessionStore(), sid)["flow"]["quota_recovery"]["state"] == "completed"
+    health = h.records.health()
+    assert health["last_result"]["outcome"] == "dispatched"
+    assert health["last_dispatch"]["flow_session"] == sid and health["dispatches"] == 1
     await FlowRecovery().tick()
     assert h.records.get(sid)["dispatches"] == 1
+    health = h.records.health()
+    assert health["last_result"]["outcome"] == "zero-pending" and health["last_result"]["pending"] == 0
+    assert health["last_dispatch"]["flow_session"] == sid and health["attempts"] == 3
 
 
 @pytest.mark.parametrize("step", ["build", "review"])
@@ -190,6 +199,7 @@ async def test_cancel_or_disable_prevents_automatic_continuation(harness):
     h.script.exhausted = False
     h.clock.now += 3601
     assert (await FlowRecovery().tick())["enabled"] is False
+    assert h.records.health()["last_result"]["outcome"] == "disabled"
     h.records.cancel(sid)
     with pytest.raises(ValueError, match="not waiting"):
         await h.service.resume(sid)
@@ -204,6 +214,7 @@ async def test_only_one_of_competing_ticks_can_dispatch(harness):
     h.clock.now += 3601
     await asyncio.gather(FlowRecovery().tick(), FlowRecovery().tick())
     assert h.records.get(sid)["state"] == "completed"
+    assert h.records.health()["dispatches"] == 1 and h.records.health()["attempts"] == 2
     assert [p for p in h.script.sequence if p[0] == "review"] == [("review", 1), ("review", 2)]
     with pytest.raises(ValueError, match="not waiting"):
         await h.service.resume(sid)
@@ -415,10 +426,15 @@ async def test_a_losing_tick_cannot_overwrite_another_ticks_reserved_dispatch(ha
     try:
         await asyncio.wait_for(loser, timeout=5)
         assert h.records.get(sid)["state"] == "dispatch-reserved"
+        # The loser reports the other owner's dispatch, never its own success.
+        assert h.records.health()["last_result"]["outcome"] == "dispatch-in-progress"
+        assert "last_dispatch" not in h.records.health()
         release.set()
         await asyncio.wait_for(winner, timeout=10)
         assert h.records.get(sid)["state"] == "completed"
         assert h.records.get(sid)["dispatches"] == 1
+        assert h.records.health()["last_dispatch"]["flow_session"] == sid
+        assert h.records.health()["dispatches"] == 1
     finally:
         release.set()
         await asyncio.gather(winner, loser, return_exceptions=True)
@@ -438,3 +454,57 @@ async def test_tick_cli_reports_a_lost_dispatch_on_stderr_and_nonzero_exit(harne
     assert "requires attention" in result.stderr
     assert json.loads(result.stdout)["flows"][0]["state"] == "uncertain"
     assert h.records.get(sid)["state"] == "uncertain"
+
+
+def test_an_empty_scheduled_tick_publishes_health_without_probing(tmp_path, monkeypatch):
+    root = tmp_path / "recovery"
+    ss.write_document(root / "settings.json", {
+        "version": 1, "enabled": True, "codex_executable": "/nonexistent/codex"})
+    result = subprocess.run([sys.executable, "-m", "garuda.interfaces.main", "recovery", "tick",
+                             "--root", str(root)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    health = RecoveryStore(root).health()
+    assert health["last_result"]["outcome"] == "zero-pending"
+    assert health["last_result"]["tick_id"] == health["last_attempt"]["tick_id"]
+    assert tick_health(health)["state"] == "zero-pending"
+
+    from garuda.interfaces import recovery_cli
+
+    def no_tick(*args, **kwargs):
+        raise AssertionError("status must not run or probe a tick")
+
+    monkeypatch.setattr(FlowRecovery, "tick", no_tick)
+    monkeypatch.setattr(FlowRecovery, "probe", no_tick)
+    monkeypatch.setattr("garuda.runtime.recovery_schedule.schedule_status",
+                        lambda root: {"installed": False, "reason": "managed cron entry is missing"})
+    before = (root / "tick-health.json").read_bytes()
+    assert recovery_cli.run_recovery(SimpleNamespace(root=str(root), recovery_command="status")) == 0
+    assert (root / "tick-health.json").read_bytes() == before
+
+
+async def test_tick_health_distinguishes_unavailable_probe_crash_and_failure(harness, monkeypatch):
+    h = harness
+    await h.service.run("pbr", "ship it", str(h.repo))
+    h.clock.now += 3601
+
+    async def unavailable(_recovery):
+        return None
+
+    monkeypatch.setattr(FlowRecovery, "probe", unavailable)
+    await FlowRecovery().tick()
+    assert h.records.health()["last_result"]["outcome"] == "probe-unavailable"
+
+    # A tick that died after starting is uncertain, never a stale success.
+    h.records.tick_started("crashed")
+    monkeypatch.setattr("garuda.flows.quota_recovery.owner_liveness", lambda owner: False)
+    view = tick_health(h.records.health())
+    assert view["state"] == "uncertain" and view["last_result"]["outcome"] == "probe-unavailable"
+
+    def broken(_self):
+        raise ss.StorageError("record unreadable")
+
+    monkeypatch.setattr(RecoveryStore, "records", broken)
+    with pytest.raises(ss.StorageError):
+        await FlowRecovery().tick()
+    assert h.records.health()["last_result"]["outcome"] == "failed"
+    assert tick_health(h.records.health())["state"] == "failed"

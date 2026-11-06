@@ -2361,3 +2361,16 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Recovery tick health is evidence, not dispatch authority (#378)
+
+Each quota-recovery tick records a bounded `tick-health.json` in the private
+recovery root under the root's exclusive lock: its attempt (id, time, owner)
+before any work, then its own classified result and redacted reason. Only the
+tick whose own claim the flow service advanced to running is credited with a
+dispatch; a tick that loses the claim reports the other owner. `recovery status`
+reads this file next to observed cron installation and never probes quota or
+runs the wrapper; an attempt without its own result is `running` or `uncertain`.
+Health never authorizes dispatch: account, version, workspace, receipt and
+exclusive-claim gates stay authoritative. A health-write failure on the error
+path never masks the tick's own exception.
