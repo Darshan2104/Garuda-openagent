@@ -119,6 +119,14 @@ fastest way to learn the system.
    harness streaming is a separate runtime path. Standalone ACP runs can use
    explicit post-run acceptance checks even though the native completion gate
    does not run inside the external harness.
+   Native edit/write/multi-edit tools return bounded advisory syntax/lint state
+   in `ToolResult.metadata["diagnostics"]`. Each checker reports availability,
+   execution, a source digest, status and timing; observed content changes
+   invalidate the result. Known pre-edit content permits conservative attribution
+   through the same fixed checkers, only when a violation needs comparison.
+   Missing, failed or ambiguous checks never imply clean or introduced findings.
+   This tool metadata does not enter acceptance verification or authorize project
+   commands; the existing acceptance owners remain authoritative.
    `Model.complete()` and LiteLLM's `complete_streaming()` preserve the
    provider's finish reason and status in `ModelResponse.raw`. The lower-level
    `stream()` helper carries observed values on `StreamDelta`, including empty
