@@ -3,6 +3,11 @@ import pytest
 
 from garuda.tools.files import ReadFileTool
 from garuda.tools.protocol import ToolContext
+from garuda.workspace.health import (
+    CONSECUTIVE_FAILURE_LIMIT,
+    EnvironmentUnavailableError,
+    monitored,
+)
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -124,6 +129,33 @@ async def test_unsupported_backend_keeps_legacy_but_refuses_required_reads():
     for options in ({'bounded': True}, {'tail': True}):
         result = await tool.execute({'path': 'a', **options}, Legacy(), ctx)
         assert result.is_error and 'not supported' in result.content
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_routes_bounded_reads_through_its_latch(tmp_path):
+    class Legacy:
+        workspace_root = str(tmp_path)
+
+        async def read_file(self, path):
+            return 'legacy\n'
+
+    ctx = ToolContext(session_id='test')
+    tool = ReadFileTool()
+    (tmp_path / 'a').write_text('one\ntwo\n', encoding='utf-8')
+    local = monitored(LocalEnvironment(workspace_root=str(tmp_path)))
+    result = await tool.execute({'path': 'a', 'tail': True, 'limit': 1}, local, ctx)
+    assert result.content.startswith('2\ttwo\n') and result.metadata['bounded_read']
+
+    legacy = monitored(Legacy())
+    for _ in range(CONSECUTIVE_FAILURE_LIMIT + 1):
+        result = await tool.execute({'path': 'a', 'bounded': True}, legacy, ctx)
+        assert result.is_error and 'not supported' in result.content
+    assert legacy.is_alive and not (await tool.execute({'path': 'a'}, legacy, ctx)).is_error
+
+    with pytest.raises(EnvironmentUnavailableError):
+        local._die('container_gone', 'test')
+    with pytest.raises(EnvironmentUnavailableError):
+        await local.read_text_page('a')
 
 
 @pytest.mark.asyncio
