@@ -642,6 +642,40 @@ the document version Garuda sent and are labelled current, stale, unversioned
 or none. ACP harnesses keep their own tooling; subagents spawned by
 `invoke_subagent` build their toolkit without it.
 
+Rename and code-action edits (#382) use two separate tools: `lsp` requests a
+read-only preview and `lsp_apply` is mutating. A preview lists every replacement
+with 1-based character ranges, a full-content SHA-256 digest and the exact client
+version sent for each file. Initially unopened targets are discovered, read
+through the Environment, synced and requested again; a discovery response never
+authorizes writes. Explicit server versions must match the request snapshot;
+unversioned edits are bound to that snapshot rather than assigned a guessed
+server version. Stale server snapshots are refreshed and requested again;
+changes to the source or an already observed target refuse the preview.
+
+The run owns at most four previews, each limited to 32 files, 256 edits,
+4 MiB of original/result text each and 12,000 output bytes (or the smaller live inline allowance). Oversized previews
+are refused rather than truncated into applicable tokens. Tokens are scoped to
+the run, session and workspace, and consumed before the first write attempt.
+Only existing, direct workspace files are supported: resource operations,
+symlink aliases, overlapping/ambiguous edits, commands, unresolved code actions
+and confirmation annotations are refused. Server-initiated `workspace/applyEdit`
+continues to be refused; there is no raw request or execute-command tool.
+
+Apply evaluates `lsp_apply` through the ordinary permission engine for every
+stored path, then checks every original digest before writing through the
+Environment. Each write is read back, and successful edits are synced back to the server
+so later refactors see the applied documents. On failure or cancellation, every attempted
+file (including a possibly partial failed write) is restored from its exact
+original text and read back, with explicit per-file results. Cancellation waits
+for outstanding writes and restoration and retains the result in its exception
+cause. Failed restoration is reported and tracked in the side-effect ledger;
+it is never presented as atomic success. This is compensating rollback, without
+filesystem transactions or protection against concurrent external writers.
+Existing Docker/remote behavior stays unchanged; this local language-service
+slice introduces no interpreter requirement inside workspace environments.
+Diagnostics remain advisory; authorized candidate-bound checks establish
+verification independently.
+
 ## Conventions
 
 - **`.agent/` is the project home.** Custom tools, MCP servers, skills, agent

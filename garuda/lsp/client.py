@@ -29,6 +29,7 @@ from garuda.lsp.protocol import (
     REQUEST_CAPABILITIES,
     Diagnostic,
     DiagnosticsReport,
+    DocumentSnapshot,
     LanguageServiceError,
     Location,
     Range,
@@ -36,6 +37,7 @@ from garuda.lsp.protocol import (
     ServiceStatus,
     Symbol,
     UnsupportedRequest,
+    WorkspaceEditResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,11 +186,15 @@ class StdioLanguageServer:
 
     # -- status -------------------------------------------------------------
 
+    def _supports(self, kind: str) -> bool:
+        value = self._capabilities.get(REQUEST_CAPABILITIES[kind])
+        return value is True or isinstance(value, dict)
+
     def status(self) -> ServiceStatus:
         supported: tuple[str, ...] = ()
         unsupported: tuple[str, ...] = ()
         if self._state is ServiceState.READY:
-            supported = tuple(k for k, cap in REQUEST_CAPABILITIES.items() if self._capabilities.get(cap))
+            supported = tuple(k for k in REQUEST_CAPABILITIES if self._supports(k))
             unsupported = tuple(k for k in REQUEST_CAPABILITIES if k not in supported)
         return ServiceStatus(
             name=self.name, state=self._state, extensions=self.extensions,
@@ -288,8 +294,14 @@ class StdioLanguageServer:
                     "hover": {"contentFormat": ["plaintext", "markdown"]},
                     "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                     "publishDiagnostics": {"versionSupport": True},
+                    "rename": {"prepareSupport": False, "honorsChangeAnnotations": False},
+                    "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {
+                        "valueSet": ["", "quickfix", "refactor", "refactor.extract",
+                                     "refactor.inline", "refactor.rewrite", "source",
+                                     "source.organizeImports", "source.fixAll"]}}},
                 },
-                "workspace": {"workspaceFolders": True, "configuration": True},
+                "workspace": {"workspaceFolders": True, "configuration": True,
+                              "workspaceEdit": {"documentChanges": True}},
             },
         }, timeout=None)
         if not isinstance(result, dict) or not isinstance(result.get("capabilities"), dict):
@@ -488,7 +500,7 @@ class StdioLanguageServer:
         if self._state is not ServiceState.READY:
             raise self._unavailable()
         capability = REQUEST_CAPABILITIES.get(kind)
-        if capability and not self._capabilities.get(capability):
+        if capability and not self._supports(kind):
             raise UnsupportedRequest(
                 f"language server {self.name} does not support {method} "
                 f"(no {capability} in its capabilities)")
@@ -555,6 +567,52 @@ class StdioLanguageServer:
         result = await self._request(
             "symbols", "textDocument/documentSymbol", {"textDocument": {"uri": uri}})
         return _symbols(result)
+
+    def _snapshots(self) -> tuple[DocumentSnapshot, ...]:
+        return tuple(DocumentSnapshot(path, version, text)
+                     for path, (_, version, text) in self._docs.items())
+
+    async def rename(
+        self, path: str, line: int, character: int, new_name: str
+    ) -> WorkspaceEditResponse:
+        async with self._doc_lock:
+            documents = self._snapshots()
+            params = self._position_params(path, line, character)
+            params["newName"] = new_name
+            edit = await self._request("rename", "textDocument/rename", params)
+            return WorkspaceEditResponse(edit, documents)
+
+    async def code_actions(self, path: str, selection: Range) -> list[dict]:
+        uri = self._docs[_doc_key(path)][0]
+        result = await self._request("code_action", "textDocument/codeAction", {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": selection.start_line,
+                                "character": selection.start_character},
+                      "end": {"line": selection.end_line, "character": selection.end_character}},
+            "context": {"diagnostics": []},
+        })
+        if result is None:
+            return []
+        if (not isinstance(result, list) or len(result) > 100
+                or not all(isinstance(item, dict) and isinstance(item.get("title"), str)
+                           for item in result)):
+            raise LanguageServiceError("Invalid or oversized code-action response")
+        return result
+
+    async def code_action(
+        self, path: str, selection: Range, title: str
+    ) -> WorkspaceEditResponse:
+        async with self._doc_lock:
+            documents = self._snapshots()
+            actions = [a for a in await self.code_actions(path, selection) if a["title"] == title]
+            if len(actions) != 1:
+                raise LanguageServiceError("Code-action title must identify exactly one action")
+            action = actions[0]
+            if "disabled" in action or "command" in action or not action.get("edit"):
+                raise LanguageServiceError(
+                    "Only enabled code actions with an edit and no command are supported; "
+                    "commands and unresolved actions are refused")
+            return WorkspaceEditResponse(action["edit"], documents)
 
     async def diagnostics(self, path: str, wait: float) -> DiagnosticsReport:
         """Diagnostics for the version last synced, waiting up to ``wait`` seconds.

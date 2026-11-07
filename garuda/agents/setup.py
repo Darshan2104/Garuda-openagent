@@ -1172,7 +1172,7 @@ class OwnedRunResources:
 
 
 def language_service_tools(workspace: str) -> tuple[list[Tool], list]:
-    """The ``lsp`` tool and its unstarted services, when trusted config names any.
+    """Language tools and run-owned resources, when trusted config names servers.
 
     Reads configuration only: no server starts until the tool is first used.
     """
@@ -1182,15 +1182,17 @@ def language_service_tools(workspace: str) -> tuple[list[Tool], list]:
     if not settings.servers:
         return [], []
     from garuda.lsp.client import StdioLanguageServer
-    from garuda.tools.language import LanguageServerTool
+    from garuda.tools.language import ApplyLanguageEditTool, LanguageServerTool
 
     services = [StdioLanguageServer(config) for config in settings.servers]
     tool = LanguageServerTool(services)
     # The user's global settings chose it, as explicitly as `register_tool`;
     # a profile's `tools:` allowlist selects among discovered tools and keeps it
     # (`tools.remove: [lsp]` still removes it).
-    setattr(tool, EXPLICIT_TOOL_ATTR, True)
-    return [tool], services
+    apply = ApplyLanguageEditTool(tool.edits)
+    for entry in (tool, apply):
+        setattr(entry, EXPLICIT_TOOL_ATTR, True)
+    return [tool, apply], [*services, tool.edits]
 
 
 async def activate_agent_plan(

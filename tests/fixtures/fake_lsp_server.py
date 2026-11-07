@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import urllib.parse
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--mode", default="normal")
@@ -32,6 +33,8 @@ stdout = sys.stdout.buffer
 docs: dict[str, str] = {}
 first_version: dict[str, int] = {}
 next_id = 1000
+root = None
+versions = {}
 
 
 def log(message) -> None:
@@ -143,13 +146,17 @@ def symbols(uri: str) -> list:
 
 
 def handle(message) -> None:
-    global next_id
+    global next_id, root
     method, params, mid = message.get("method"), message.get("params") or {}, message.get("id")
     if method == "initialize":
         if opts.mode == "hang-init":
             return
+        root = Path(urllib.parse.unquote(urllib.parse.urlsplit(params["rootUri"]).path))
         caps = {"textDocumentSync": 1, "definitionProvider": True, "referencesProvider": True,
-                "hoverProvider": opts.mode != "no-hover", "documentSymbolProvider": True}
+                "hoverProvider": opts.mode != "no-hover", "documentSymbolProvider": True,
+                "renameProvider": True, "codeActionProvider": True}
+        if opts.mode == "empty-options":
+            caps.update(renameProvider={}, codeActionProvider={})
         if opts.mode == "utf8":
             caps["positionEncoding"] = "utf-8"
         send({"jsonrpc": "2.0", "id": mid, "result": {"capabilities": caps}})
@@ -165,10 +172,12 @@ def handle(message) -> None:
         doc = params["textDocument"]
         docs[doc["uri"]] = doc["text"]
         first_version[doc["uri"]] = doc["version"]
+        versions[doc["uri"]] = doc["version"]
         publish(doc["uri"], doc["version"])
     elif method == "textDocument/didChange":
         doc = params["textDocument"]
         docs[doc["uri"]] = params["contentChanges"][-1]["text"]
+        versions[doc["uri"]] = doc["version"]
         publish(doc["uri"], doc["version"])
     elif method == "textDocument/definition":
         if opts.mode == "crash":
@@ -180,6 +189,59 @@ def handle(message) -> None:
         word = word_at(params["textDocument"]["uri"], params["position"])
         result = [{"uri": own_uri(uri), "range": span(n, line, start, len(word))}
                   for uri, n, line, start, declares in occurrences(word or "") if declares]
+        send({"jsonrpc": "2.0", "id": mid, "result": result})
+    elif method in ("textDocument/rename", "textDocument/codeAction"):
+        if opts.mode == "slow-rename":
+            return
+        if method == "textDocument/rename":
+            position = params["position"]
+            new_name = params["newName"]
+        else:
+            position = params["range"]["start"]
+            new_name = "renamed"
+        word = word_at(params["textDocument"]["uri"], position)
+        # Include unopened on-disk references, like an indexed server would.
+        for path in sorted(root.glob("*.py")):
+            docs.setdefault(path.as_uri(), path.read_bytes().decode("utf-8"))
+        changes = {}
+        for uri, n, line, start, _ in occurrences(word or ""):
+            changes.setdefault(uri, []).append(
+                {"range": span(n, line, start, len(word)), "newText": new_name})
+        if opts.mode == "outside-edit":
+            changes[(root.parent / "outside.py").as_uri()] = next(iter(changes.values()))
+        if opts.mode == "alias-edit":
+            changes[(root / "alias.py").as_uri()] = next(iter(changes.values()))
+        if opts.mode == "overlap-edit":
+            next(iter(changes.values())).append(next(iter(changes.values()))[0])
+        if opts.mode == "bad-range":
+            next(iter(changes.values()))[0]["range"]["start"]["character"] = 6
+        edit = {"documentChanges": [
+            {"textDocument": {"uri": own_uri(uri), "version":
+                              (versions.get(uri, 1) - 1 if opts.mode == "stale-edit"
+                               else versions.get(uri))}, "edits": edits}
+            for uri, edits in changes.items()]}
+        if opts.mode == "multiline-edit":
+            edit["documentChanges"][0]["edits"] = [{
+                "range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 1, "character": 0}}, "newText": "prefix\n"}]
+        if opts.mode == "changes-edit":
+            edit = {"changes": changes}
+        if opts.mode in ("create-edit", "rename-edit", "delete-edit"):
+            edit["documentChanges"].append({"kind": opts.mode.split("-")[0],
+                                           "uri": (root / "new.py").as_uri()})
+        if method == "textDocument/codeAction":
+            result = [{"title": "Rename symbol", "edit": edit}]
+            if opts.mode == "command-action":
+                result[0]["command"] = {"command": "dangerous", "arguments": []}
+            elif opts.mode == "unresolved-action":
+                result[0].pop("edit")
+                result[0]["data"] = {"id": "resolve-me"}
+            elif opts.mode == "disabled-action":
+                result[0]["disabled"] = {"reason": "unavailable"}
+            elif opts.mode == "duplicate-action":
+                result.append(result[0])
+        else:
+            result = edit
         send({"jsonrpc": "2.0", "id": mid, "result": result})
     elif method == "textDocument/references":
         word = word_at(params["textDocument"]["uri"], params["position"])
