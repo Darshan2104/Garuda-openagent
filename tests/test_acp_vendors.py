@@ -44,6 +44,7 @@ def test_builtin_manifests_parse_and_cover_all_vendors():
         "opencode",
         "pi",
         "goose",
+        "omp",
     }
     for manifest in manifests:
         assert manifest.kind.value == "acp"
@@ -346,7 +347,7 @@ async def test_generic_adapter_needs_only_configuration():
 
 async def test_tested_commands_carry_no_generic_warning():
     found = {d.runtime_id: d for d in discover(_manifests())}
-    for vendor in ("claude", "codex", "cursor", "opencode", "pi", "goose"):
+    for vendor in ("claude", "codex", "cursor", "opencode", "pi", "goose", "omp"):
         assert not any("generic adapter" in w for w in found[vendor].warnings), vendor
 
 

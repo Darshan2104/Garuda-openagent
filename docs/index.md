@@ -147,7 +147,7 @@ Start with the runnable reconnect example and inspect readiness before launch.
 | **Parallel work** | Background runs with a queue, per-runtime capacity, worktree sessions, and merges checked in Docker |
 | **Teams of roles** | Roles with an exact harness and model, fallbacks, plan → build → review flows, independent reviews, and consults |
 | **Observability** | A dashboard with sessions, approvals, usage and cost by model, provider limits, and setup diagnostics |
-| **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, and Goose through ACP, with handoff and recovery |
+| **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, Goose, and oh-my-pi through ACP, with handoff and recovery |
 | **Many interfaces** | CLI, interactive chat, web dashboard, YAML recipes, Python SDK, and a JSON-RPC service |
 
 ## Contributing
