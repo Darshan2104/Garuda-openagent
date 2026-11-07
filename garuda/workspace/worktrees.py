@@ -233,6 +233,65 @@ def _run_check(directory: Path, command: str, image: str, timeout: float) -> dic
     }
 
 
+def check_snapshot_tree(repo: Path, tree: str, *, checks: list[str], image: str,
+                        timeout: float = 600) -> list[dict]:
+    """Check an exact candidate tree with the session integration checker."""
+    if not checks:
+        raise WorktreeError("integration.no_trusted_check", "editing integration requires trusted checks")
+    outcomes = []
+    with tempfile.TemporaryDirectory(prefix="garuda-worker-check-") as scratch:
+        directory = Path(scratch)
+        _materialize(repo, tree, directory)
+        before = _tree_digest(directory)
+        for command in checks:
+            outcome = _run_check(directory, command, image, timeout)
+            outcomes.append(outcome)
+            if not outcome["passed"]:
+                raise WorktreeError("integration.check_failed", f"check failed: {command}")
+        if _tree_digest(directory) != before:
+            raise WorktreeError("integration.check_changed_tree", "a check changed the candidate tree")
+    return outcomes
+
+
+def apply_snapshot_patch(repo: Path, patch: bytes, base: snap.Snapshot, *,
+                         index_digest: str, head_ref: bytes, candidate_tree: str) -> None:
+    """Apply without merging or staging, only to the exact captured destination."""
+    current = snap.capture(repo)
+    index = hashlib.sha256(git(repo, "ls-files", "-s", "-z").stdout).hexdigest()
+    ref = git(repo, "symbolic-ref", "-q", "HEAD", check=False).stdout
+    head = git(repo, "rev-parse", "--verify", "-q", "HEAD", check=False).stdout.decode().strip() or None
+    if (current.source_head != base.source_head or current.tree != base.tree
+            or current.manifest_digest != base.manifest_digest
+            or index != index_digest or ref != head_ref or head != base.source_head):
+        raise WorktreeError("integration.stale_base", "parent workspace or index changed since admission")
+    snapshot_patch_paths(repo, patch, current.tree, candidate_tree)
+    if not patch:
+        return
+    preview = git(repo, "apply", "--check", "--binary", "--whitespace=nowarn",
+                  input=patch, check=False)
+    if preview.returncode != 0:
+        raise WorktreeError("integration.conflicts", "patch does not apply cleanly to the parent")
+    git(repo, "apply", "--binary", "--whitespace=nowarn", input=patch)
+
+
+def snapshot_patch_paths(repo: Path, patch: bytes, base_tree: str, candidate_tree: str) -> list[str]:
+    """Prove patch/tree equivalence and enumerate paths using parent Git metadata."""
+    with tempfile.TemporaryDirectory(prefix="garuda-worker-index-") as scratch:
+        index_path = Path(scratch) / "index"
+        git(repo, "read-tree", base_tree, index=index_path)
+        if patch:
+            applied = git(repo, "apply", "--cached", "--binary", "--whitespace=nowarn",
+                          index=index_path, input=patch, check=False)
+            if applied.returncode != 0:
+                raise WorktreeError("integration.conflicts", "patch does not match its captured base")
+        patched_tree = git(repo, "write-tree", index=index_path).stdout.decode().strip()
+        if patched_tree != candidate_tree:
+            raise WorktreeError("integration.candidate_changed", "patch does not produce the checked tree")
+    paths = git(repo, "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", "--no-renames",
+                "--no-ext-diff", "--no-textconv", base_tree, candidate_tree, "--").stdout
+    return [path for path in paths.decode().split("\0") if path]
+
+
 def merge_session(
     session_meta: dict,
     *,

@@ -156,6 +156,8 @@ class AgentConfig:
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0
     delegation_budget: Any = None
+    # Trusted programmatic service; absent keeps ordinary subagents unchanged.
+    editing_workers: Any = None
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared

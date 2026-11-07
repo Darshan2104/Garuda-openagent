@@ -2361,3 +2361,26 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Sequential isolated native editing workers (#384)
+
+Editing workers are an explicit programmatic service opt-in on native subagents.
+The first slice uses the existing detached snapshot repository owner for local
+environments, with independent child sessions, mutating leases and native
+capacity reservations under the parent's shared DelegationBudget. Ordinary
+subagents and read-only flow parallel groups retain their current behavior.
+Schema-bound children inherit the model and narrowed budgets/tools; parent-bound
+services and nested delegation are excluded.
+
+The parent integrates only through an explicit candidate/digest request. A
+retained binary patch binds base snapshot, source HEAD, staged index, candidate
+tree and typed-output provenance. The existing confined worktree checker checks
+the candidate, then application revalidates the destination and refuses drift or
+conflicts without merging or staging. Dirty parent content is included in the
+base. Receipts and events retain outcomes. Active-child cancellation and unproved
+child cleanup retain workspace/lease/capacity and block further editing launches;
+cancelled integration settles checks and retains an uncertain candidate. Durable
+receipts preserve the refusal when the parent constructs a fresh service;
+automatic cleanup, recovery and concurrent editing are deferred. Unsupported
+editing backends refuse without changing ordinary backend execution. Local
+workspace separation and permission screening remain guardrails, not confinement.
