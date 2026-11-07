@@ -94,6 +94,9 @@ FIELDS: dict[str, Field] = {
     "tools.options": _f("map", "tool_options"),
     "tools.subagents": _f("strs", "subagents", nullable=True),
     "tools.subagent_only": _f("bool", "subagent"),
+    # advisor (#385): a granted consult target asked at the repeated-failure checkpoint
+    "advisor.role": _f("str", "advisor", nullable=True),
+    "advisor.max_notes": _f("int", "advisor_max_notes"),
     # permissions
     "permissions.mode": _f("choice", "permission_mode", choices=PERMISSIONS),
     "permissions.rules.tools": _f("rules", "tool_rules", nullable=True),

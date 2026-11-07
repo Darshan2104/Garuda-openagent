@@ -74,6 +74,8 @@ async def test_agent_md_fields_reach_the_run(tmp_path):
 
 # Hand-written non-default values: the expectation does not come from the parser.
 NON_DEFAULTS = {
+    "advisor": "reviewer",
+    "advisor_max_notes": 1,
     "description": "d",
     "permission_mode": "readonly",
     "mode": "eval",
