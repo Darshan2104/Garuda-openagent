@@ -76,6 +76,20 @@ Large output: `buffer_tools.py`, including legacy line retrieval and byte-bounde
 exact character frames with optional child-result receipt validation. Discovery: `discovery.py` (token-lean MCP),
 `project_loader.py` (opt-in `.agent/tools/*.py`). Delegation: `subagent.py`.
 
+`debug.py` exposes explicitly selected `debug_launch`, `debug_inspect`,
+`debug_variables` and `debug_control` tools. Variable rendering is mutating
+because debugpy can execute user repr methods; basic inspection is read-only.
+Presets and unrestricted default toolkits exclude them.
+`runtime/debug.py` defines the `DebugService` boundary and owns session identity,
+stop-scoped handles and bounded inspection; `runtime/debug_adapter.py` owns bounded
+DAP framing, capabilities, events and captured output. Only `LocalEnvironment`
+creates the service and launches its adapter using the harness Python with
+separately installed debugpy. No new interpreter requirement reaches other
+environments. `runtime/process_session.py` anchors a POSIX session with an
+identity-bound supervisor and kills/verifies all its process groups, including
+debugpy's separate debuggee group. `agents/setup.py::reap_owned_processes` feeds
+cleanup uncertainty into the existing session quarantine path across entry points.
+
 ## `workspace/` — where commands run
 
 `protocol.py` is the `Environment` interface every tool talks to, including

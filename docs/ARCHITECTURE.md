@@ -363,6 +363,20 @@ fastest way to learn the system.
    it. Unknown borrower cleanup quarantines the root and retains the slot.
 5. **Tools** — `tools/` registered through `tools/registry.py` and assembled by
    `build_toolkit`. Every tool takes a `ToolContext` and returns a `ToolResult`.
+   Optional Python DAP tools require explicit names (`tools.add`); neither the
+   default toolkit nor tool presets enable them. Launch is mutating and enters
+   the ordinary bash command/path permission screen with a derived Python argv.
+   Stepping/continue and variable rendering are mutating; basic inspection
+   exposes bounded observations with session identity and stop-scoped handles.
+   Debugpy can invoke Python `repr` while rendering values, so variables require
+   separate `debug_variables` authority. Inspection is not an execution isolation
+   boundary. Arbitrary object expansion, explicit getters, evaluate, attach,
+   writes, memory and raw requests refuse. Only local workspaces are supported.
+   The local environment owns adapter launch and a private POSIX session spanning
+   debugpy's process groups. Cleanup kills and observes live session membership;
+   inability to verify retains “cleanup unproved” and quarantines the lease.
+   Descendants that detach into another POSIX session remain outside this cleanup
+   guardrail. Debug evidence never substitutes for independent acceptance checks.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers

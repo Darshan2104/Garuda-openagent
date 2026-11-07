@@ -2361,3 +2361,24 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Optional local launch-only Python debugging (#388)
+
+Python DAP tools require explicit selection; default toolkits and presets stay
+unchanged. Launch is mutating and screened through the derived Python command
+and existing bash/path policy; execution control and `debug_variables` rendering
+are mutating. Basic `debug_inspect` cannot dispatch variables. Inspection returns
+bounded, versioned observations bound to an agent session, debug session and
+stop generation. Handles expire on resume and are never arbitrary DAP ids.
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw requests are unsupported. Debugpy summaries can invoke Python
+repr; inspection is not confinement or independent acceptance evidence.
+
+Only LocalEnvironment launches the optional adapter through the harness Python.
+Docker, remote, sandbox and tmux refuse without new interpreter requirements.
+An identity-bound supervisor anchors one POSIX session because debugpy places
+its debuggee in another process group. Cancellation and shared teardown kill
+and verify session membership; unknown closure remains cleanup unproved and
+quarantines ownership. Descendants that leave the POSIX session are outside
+this cleanup guardrail. Debugpy remains an optional, separately installed
+dependency; real adapter tests skip when it or required OS facilities are absent.
