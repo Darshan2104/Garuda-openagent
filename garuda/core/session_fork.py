@@ -1,0 +1,160 @@
+"""Context-only forks of saved native checkpoints; never recover the source."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from garuda.core.session_records import (
+    MAX_RECORD_BYTES,
+    RecordError,
+    UnsafeRecordError,
+    parse_json,
+    parse_json_value,
+    read_bytes,
+)
+from garuda.core.sessions import message_from_dict
+from garuda.types import Message, Role
+
+CONTEXT_REWIND_NOTICE = (
+    "Context rewind only: filesystem and processes were not restored. "
+    "All inherited candidate and verification evidence is stale; recheck the current workspace. "
+    "Source side effects and receipts are historical references, not authority to replay or clean up."
+)
+
+
+def validate_fork_request(*, fork, fork_at, resume=None, context=None, isolation="shared"):
+    if fork is None:
+        if fork_at is not None:
+            raise ValueError("--fork-at requires --fork")
+        return
+    if not isinstance(fork, str) or not fork:
+        raise ValueError("--fork requires a saved session reference")
+    if type(fork_at) is not int or fork_at < 0:
+        raise ValueError("--fork requires a non-negative integer --fork-at message index")
+    if resume is not None or context is not None or isolation != "shared":
+        raise ValueError("context fork cannot combine with resume, a supplied context, or workspace isolation")
+
+
+def _snapshot(reader, session_id):
+    snapshot = {}
+    for name in ("meta.json", "messages.json", "state.json", "events.jsonl"):
+        try:
+            snapshot[name] = read_bytes(
+                reader, Path(session_id) / name,
+                limit=None if name in {"messages.json", "events.jsonl"} else MAX_RECORD_BYTES,
+            )
+        except RecordError as exc:
+            if (name in {"state.json", "events.jsonl"}
+                    and not isinstance(exc, UnsafeRecordError)
+                    and isinstance(exc.__cause__, FileNotFoundError)):
+                snapshot[name] = None
+            else:
+                raise
+    return snapshot
+
+
+def _digests(snapshot):
+    return {name: hashlib.sha256(raw).hexdigest() if raw is not None else None
+            for name, raw in snapshot.items()}
+
+
+def _complete_prefix(messages, fork_at):
+    if fork_at >= len(messages):
+        raise ValueError("fork point is outside the saved message checkpoint")
+    pending = set()
+    complete = 0
+    for index, message in enumerate(messages[:fork_at + 1]):
+        if message.role == Role.TOOL:
+            if message.tool_call_id not in pending or message.tool_calls:
+                raise ValueError("fork prefix contains an unmatched tool result")
+            pending.remove(message.tool_call_id)
+        elif pending:
+            raise ValueError("fork prefix contains an interrupted tool-call batch")
+        elif message.tool_calls:
+            ids = [call.id for call in message.tool_calls]
+            if message.role != Role.ASSISTANT or not all(ids) or len(ids) != len(set(ids)):
+                raise ValueError("fork prefix contains an ambiguous tool-call batch")
+            pending = set(ids)
+        if not pending:
+            complete = index + 1
+    return messages[:complete], complete - 1
+
+
+@dataclass
+class ContextFork:
+    messages: list[Message]
+    initial_state: dict
+    record: dict
+
+    def check_source(self, reader, source_binding):
+        source_binding.check()
+        if _digests(_snapshot(reader, self.record["forked_from"])) != self.record["source_files"]:
+            raise ValueError("context fork source changed during preparation")
+
+
+def prepare_context_fork(reader, session_id: str, fork_at: int) -> ContextFork:
+    snapshot = _snapshot(reader, session_id)
+    meta = parse_json(snapshot["meta.json"])
+    if meta != reader.load_meta(session_id):
+        raise ValueError("fork source metadata changed after selection")
+    if meta.get("session_id") != session_id:
+        raise ValueError("fork source identity conflicts with its selected directory")
+    from garuda.runtime.session_state import from_legacy, validate
+
+    source_state = validate(meta["state"]) if "state" in meta else from_legacy(meta)
+    segments = meta.get("runtime_segments") or []
+    if (source_state["process"] != "exited" or source_state["work"] not in {"done", "stopped"}
+            or meta.get("kind") == "flow" or meta.get("status") not in {"success", "failed", "cancelled"}
+            or meta.get("quarantine") or (meta.get("handoff") or {}).get("state", "none") != "none"
+            or (segments and (segments[-1].get("kind") != "native"
+                              or segments[-1].get("runtime_id") != "native"))):
+        raise ValueError("context fork requires a terminal native source without pending ownership or quarantine")
+    values = parse_json_value(snapshot["messages.json"])
+    if not isinstance(values, list):
+        raise ValueError("saved messages must be a JSON list")
+    messages, effective_at = _complete_prefix([message_from_dict(value) for value in values], fork_at)
+    state = parse_json(snapshot["state.json"]) if snapshot["state.json"] is not None else {}
+    source_files = _digests(snapshot)
+    digest = hashlib.sha256(json.dumps(source_files, sort_keys=True).encode()).hexdigest()
+    references = [
+        {"session_id": session_id, "path": "meta.json", "purpose": "task constraints and receipt references"},
+        {"session_id": session_id, "path": "state.json", "purpose": "historical working state",
+         "availability": "recorded" if snapshot["state.json"] is not None else "unknown"},
+        {"session_id": session_id, "path": "events.jsonl", "purpose": "side effects and verification receipts",
+         "availability": "recorded" if snapshot["events.jsonl"] is not None else "unknown"},
+        {"session_id": session_id, "path": "receipts/", "purpose": "receipt references", "availability": "unknown"},
+    ]
+    receipt_references = []
+    receipt_coverage = "unknown"
+    try:
+        names, omitted = reader.names(Path(session_id) / "receipts", limit=64)
+    except RecordError as exc:
+        if isinstance(exc, UnsafeRecordError) or not isinstance(exc.__cause__, FileNotFoundError):
+            raise
+    else:
+        receipt_coverage = "partial" if omitted else "complete"
+        receipt_references = [{"session_id": session_id, "path": f"receipts/{name}",
+                               "availability": "unknown", "evidence": "stale"}
+                              for name in names if name.endswith(".json")]
+    record = {
+        "forked_from": session_id,
+        "fork_at": effective_at,
+        "fork_requested_at": fork_at,
+        "fork_adjustment": "incomplete tool-call batch" if effective_at != fork_at else None,
+        "source_digest": digest,
+        "source_files": source_files,
+        "rewind": "context rewind only",
+        "filesystem_restored": False,
+        "processes_restored": False,
+        "inherited_evidence": {"candidate": "stale", "verification": "stale"},
+        "references": references,
+        "receipt_references": receipt_references,
+        "receipt_reference_coverage": receipt_coverage,
+    }
+    # Carry constraints, never the source's candidate/check/todo claims as live state.
+    initial_state = {"goal": state.get("goal", ""), "acceptance": state.get("acceptance", ""),
+                     "context_fork": record, "source_task": meta.get("task", "")}
+    return ContextFork(messages, initial_state, record)
