@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from garuda.core.collection import CollectionCoordinator
     from garuda.core.permissions import PermissionEngine
     from garuda.core.subagent import SubagentRunner
+    from garuda.tools.python_codemod import CodemodState
 
 
 class ToolEffect(str, Enum):
@@ -79,6 +80,9 @@ class ToolContext:
     # Appended to preserve the existing positional construction contract.
     # Retrieval tools size exact frames against this live byte allowance.
     output_budget: Any = None
+
+    # Run-local previews; built-in tool instances are shared across runs.
+    codemod_state: "CodemodState | None" = None
 
     def option(self, tool: str, name: str, default=None):
         return (self.tool_options.get(tool) or {}).get(name, default)

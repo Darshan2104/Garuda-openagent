@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from garuda.types import ExecResult
-from garuda.workspace.paths import resolve_workspace_path
+from garuda.workspace.paths import read_path_bytes, resolve_workspace_path
 from garuda.workspace.settlement import settle_task
 
 
@@ -181,9 +181,9 @@ class LocalEnvironment:
         target = self._resolve_path(path)
         return await asyncio.to_thread(target.read_text, encoding="utf-8")
 
-    async def read_bytes(self, path: str) -> bytes:
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
         target = self._resolve_path(path)
-        return await asyncio.to_thread(target.read_bytes)
+        return await asyncio.to_thread(read_path_bytes, target, max_bytes)
 
     async def write_file(self, path: str, content: str) -> None:
         target = self._resolve_path(path)
