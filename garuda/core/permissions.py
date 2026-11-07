@@ -112,12 +112,13 @@ SEARCH_TOOLS = {
 # The side-effect ledger takes an immutable import-time snapshot of this set.
 # `notebook_edit` does not ship today; retaining it preserves the existing
 # classification for a future implementation.
-WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
+WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit", "lsp_apply"}
 
 # File-operation tools that only read.
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet", "image_read"}
 
 READONLY_DENIED_TOOLS = {
+    "lsp_apply",
     "write_file",
     "edit",
     "multi_edit",
