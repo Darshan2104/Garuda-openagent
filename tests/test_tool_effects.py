@@ -4,6 +4,7 @@ from garuda.tools.protocol import ToolEffect, tool_effect
 
 EXPECTED_BUILTIN_EFFECTS = {
     "bash": ToolEffect.MUTATING,
+    "code_cell": ToolEffect.MUTATING,
     "bash_background": ToolEffect.MUTATING,
     "task_output": ToolEffect.READ_ONLY,
     "kill_task": ToolEffect.MUTATING,

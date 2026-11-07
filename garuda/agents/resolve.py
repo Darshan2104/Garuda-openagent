@@ -355,9 +355,10 @@ def _merge(current: dict[str, Any], prov: dict[str, Source], leaves: dict[str, A
 
 
 def builtin_tools() -> list[str]:
-    from garuda.tools.registry import list_tool_names
+    from garuda.tools.registry import builtin_registry
 
-    return sorted(list_tool_names())
+    return sorted(tool.name for tool in builtin_registry().all_tools()
+                  if not getattr(tool, "opt_in", False))
 
 
 def read_only_tools() -> list[str]:

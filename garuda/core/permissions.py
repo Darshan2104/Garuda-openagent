@@ -116,6 +116,7 @@ WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet", "image_read"}
 
 READONLY_DENIED_TOOLS = {
+    "code_cell",
     "write_file",
     "edit",
     "multi_edit",

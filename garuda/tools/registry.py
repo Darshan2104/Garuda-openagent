@@ -55,13 +55,13 @@ class ToolRegistry:
         return list(resolved.values())
 
     def select(self, names: list[str] | None) -> list[Tool]:
-        """Resolve an ordered list of tool names (None = all resolvable tools).
+        """Resolve tool names (None selects all except explicitly opt-in tools).
 
         Unknown names and ``mcp__*`` names are skipped here — MCP tools are
         appended separately by :func:`build_toolkit` from the live client manager.
         """
         if names is None:
-            return self.all_tools()
+            return [tool for tool in self.all_tools() if not getattr(tool, "opt_in", False)]
         tools: list[Tool] = []
         for name in names:
             tool = self.get(name)

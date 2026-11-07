@@ -80,6 +80,9 @@ class ToolContext:
     # Retrieval tools size exact frames against this live byte allowance.
     output_budget: Any = None
 
+    # Installed only for a code-cell invocation by its active ToolRunner.
+    cell_bridge: Any = None
+
     def option(self, tool: str, name: str, default=None):
         return (self.tool_options.get(tool) or {}).get(name, default)
 
