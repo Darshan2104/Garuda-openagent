@@ -2130,17 +2130,18 @@ async def run_task_guarded(args) -> int:
         return await run_task(args)
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
-    except (ValueError, OSError) as exc:
-        if getattr(args, "fork", None) is None and getattr(args, "fork_at", None) is None:
-            raise
-        import sys
-
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
             ResumeRefused, GarudaConfigError, RoleRefused) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except (ValueError, OSError) as exc:
+        # After the typed refusals above: GarudaConfigError is a ValueError too.
+        if getattr(args, "fork", None) is None and getattr(args, "fork_at", None) is None:
+            raise
         import sys
 
         print(f"Error: {exc}", file=sys.stderr)
