@@ -1,15 +1,29 @@
 import json
 import math
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from garuda.model.protocol import ModelResponse, StreamDelta
 from garuda.types import Message
 
 
-class ScriptModel:
-    """Deterministic model for tests — returns queued responses in order."""
+@dataclass
+class ScriptedStream:
+    """An exact stream for one ``stream()`` call: deltas yielded in order, and any
+    exception in the list raised at that point (a mid-stream failure). A list with
+    no ``done`` delta is a stream that ends without its terminal chunk."""
 
-    def __init__(self, responses: list[ModelResponse], model_name: str = "script/test"):
+    deltas: list
+
+
+class ScriptModel:
+    """Deterministic model for tests — returns queued responses in order.
+
+    ``complete`` and ``stream`` take turns from one queue, so a stream that fails
+    and the fallback ``complete`` it causes are scripted as consecutive entries.
+    """
+
+    def __init__(self, responses: list[ModelResponse | ScriptedStream], model_name: str = "script/test"):
         self._responses = list(responses)
         self._model_name = model_name
 
@@ -30,7 +44,10 @@ class ScriptModel:
     ) -> ModelResponse:
         if not self._responses:
             return ModelResponse(content="Done.", tool_calls=[])
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, ScriptedStream):
+            raise TypeError("a ScriptedStream was queued for a non-streaming call")
+        return response
 
     async def stream(
         self,
@@ -39,19 +56,28 @@ class ScriptModel:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[StreamDelta]:
-        """Yield the next queued response's content in a few chunks, then done.
+        """Yield the next queued response's reasoning and content in a few chunks,
+        its tool calls as trailing fragments, its usage, then done.
 
         Deterministic so tests can exercise the streaming path without a network.
-        Any tool calls on the response are emitted as trailing fragments.
+        A queued ``ScriptedStream`` is replayed exactly instead.
         """
         response = self._responses.pop(0) if self._responses else ModelResponse(
             content="Done.", tool_calls=[]
         )
-        content = response.content or ""
-        if content:
-            size = max(1, math.ceil(len(content) / 3))
-            for i in range(0, len(content), size):
-                yield StreamDelta(content_delta=content[i : i + size])
+        if isinstance(response, ScriptedStream):
+            for item in response.deltas:
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+            return
+        for field, text in (("reasoning_delta", response.reasoning_content or ""),
+                            ("content_delta", response.content or "")):
+            size = max(1, math.ceil(len(text) / 3))
+            for i in range(0, len(text), size):
+                yield StreamDelta(**{field: text[i : i + size]})
+        if response.thinking_blocks:
+            yield StreamDelta(thinking_blocks=response.thinking_blocks)
         for index, call in enumerate(response.tool_calls or []):
             yield StreamDelta(
                 tool_call_delta={
@@ -61,6 +87,8 @@ class ScriptModel:
                     "arguments": json.dumps(call.arguments),
                 }
             )
+        if response.usage or response.attempt_usage:
+            yield StreamDelta(usage=response.usage, attempt_usage=response.attempt_usage or None)
         yield StreamDelta(
             done=True,
             finish_reason=response.raw.get("finish_reason"),

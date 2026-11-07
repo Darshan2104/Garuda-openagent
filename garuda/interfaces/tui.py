@@ -13,11 +13,10 @@ about that, this renderer is driven by the EventStore rather than by the model:
   events while a "thinking" spinner is shown, so these surface as they happen.
 * POST-HOC: nothing extra — the final message is just the last thing rendered.
 
-* NOT YET LIVE: true token-level streaming of assistant text. The streaming
-  model API (``Model.stream`` / ``LitellmModel.complete_streaming``) exists and
-  is exercised by tests, and ``on_assistant_delta`` accepts incremental chunks,
-  but the loop does not feed it token-by-token. Wiring token streaming through
-  the loop is a deliberate future step (D3).
+* NOT YET LIVE: true token-level streaming of assistant text. The loop can
+  stream into an opt-in ``model_delta_consumer`` (``garuda.model.streaming``),
+  and ``on_assistant_delta`` accepts incremental chunks, but the chat driver does
+  not attach a consumer yet, so it still renders each completed turn.
 
 The renderer degrades gracefully: if ``rich`` is not installed it falls back to
 plain ``print`` output with an identical method surface. It is intentionally

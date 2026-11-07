@@ -2377,3 +2377,20 @@ budgets, handoff modes, textual summaries and sibling traces remain authoritativ
   Known subtotals and unknown coverage coexist in aggregates and usage views;
   ordinary legacy model responses need no new fields. Context gauges use the
   final request's usage rather than repeated-prompt spend totals.
+
+## 2026-11-06 — Opt-in live model output through the native loop (#389)
+
+- Live output is a view of a model call, not a different call. With a
+  `model_delta_consumer` on `DefaultAgent.run`, `_timed_complete` streams through
+  `model/streaming.py`, which assembles the same `ModelResponse` as `complete()`;
+  tool calls are parsed and dispatched only after the terminal chunk. Without a
+  consumer the loop is unchanged. Interfaces do not attach one yet.
+- A stream that fails or ends without its terminal chunk is replaced by exactly
+  one `complete()`; fragments are never dispatched or replayed, and both attempts'
+  usage is counted once. The consumer receives `discard`; the fallback answer is
+  rendered from the `model_response` event, not re-sent as deltas.
+  `ContextOverflowError` goes to the existing shrink path without fallback, and
+  cancellation propagates with no fallback, dispatch or replay.
+- `model_response` records `live_coverage` (`streamed`, `fallback`,
+  `not_streamed`), a bounded `stream_error`, and `live_consumer_error` when a
+  consumer raised and was detached, separately from `outcome`.
