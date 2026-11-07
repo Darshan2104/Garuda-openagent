@@ -70,6 +70,47 @@ Stop one with `garuda sessions cancel NAME`:
 A running worker is stopped only after Garuda has matched its recorded
 process, so it never signals an unrelated process.
 
+## See who owns a session and whether it can be recovered
+
+<p class="gd-facts">Returns: at once · Changes: nothing</p>
+
+**Use it when** a session looks stuck and you want to know whether it is
+waiting, still running, or safe to recover — before you start it again.
+
+```bash
+garuda sessions show docstrings --json | jq '.ownership | {owner, waiting: .progress.waiting, reconciliation}'
+```
+
+```json
+{
+  "owner": {"pid": 48211, "source": "state", "liveness": "dead"},
+  "waiting": [],
+  "reconciliation": {
+    "status": "blocked",
+    "blockers": ["workspace_lease_retained"],
+    "retained": ["workspace_lease"],
+    "path": null,
+    "performs_repair": false
+  }
+}
+```
+
+**What happens**
+
+- The `ownership` field joins what separate owners already record: the
+  session's owner (`alive`, `dead`, `exited` or `unknown`), its workspace
+  leases, its queue entry or claim, its capacity slots, its recorded child
+  processes, pending approvals and quota recovery.
+- `progress.waiting` says what it waits on: `queue` (with position),
+  `quarantine`, `approval` or `quota`.
+- `reconciliation.status` is one of `not_needed`, `owner_running`,
+  `owner_scheduled` (quota recovery owns it), `blocked`, `unknown` or
+  `eligible`. Only `eligible` names a path — `garuda runtime recover --session
+  ID` — and that command checks every prerequisite again itself.
+- Inspection starts, stops and repairs nothing, and the dashboard's session
+  page shows the same view and adds no controls. A record Garuda cannot read makes
+  the status `unknown`, never `eligible`.
+
 ## Let two tasks edit at once
 
 <p class="gd-facts">Changes: a separate Git worktree · Needs: a Git repository with at least one commit</p>
