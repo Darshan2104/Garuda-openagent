@@ -363,6 +363,20 @@ fastest way to learn the system.
    it. Unknown borrower cleanup quarantines the root and retains the slot.
 5. **Tools** — `tools/` registered through `tools/registry.py` and assembled by
    `build_toolkit`. Every tool takes a `ToolContext` and returns a `ToolResult`.
+   `web_fetch` (`tools/web.py`) connects only through the vetted opener: the
+   pre-flight SSRF check, every redirect re-vetted, every connect pinned to the
+   address it vetted. Its provenance is read off the response actually
+   delivered: requested and final URL (userinfo removed, length bounded),
+   status, declared content type, charset with its source (byte-order mark,
+   header, HTML `<meta>`, or UTF-8 default; an unsupported declaration falls
+   back and is named), lossy decoding, retrieval time, `Last-Modified` or
+   `None`, received body bytes and SHA-256, and completeness. A body past the
+   raw read limit or shorter than its `Content-Length` is `partial` with an
+   in-text marker and an unknown omitted size; a `max_bytes` cut is `partial`
+   with an exact omitted count. The same facts reach the artifact read model
+   as the result's `artifact_source` (identity = final URL). `web_search`
+   uses exactly one provider (SerpAPI with a key, else DuckDuckGo) and reports
+   an outage as unavailable rather than blending in the other.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
