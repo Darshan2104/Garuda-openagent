@@ -2361,3 +2361,31 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Web results carry the delivered source's provenance (#377)
+
+`web_fetch` keeps its connection path unchanged: the pre-flight SSRF check, a
+re-vetted redirect on every hop and a connect pinned to the vetted address.
+Provenance is read from the response that path delivered, so the final URL is
+the last vetted hop rather than the request. Results start with a short source
+block and return the same facts in `ToolResult.metadata["web_source"]`: requested
+and final URL (userinfo removed, 2048 characters at most), status, declared
+content type, charset and where it came from, lossy decoding, retrieval time,
+`Last-Modified` (unparseable or absent stays unknown, never the retrieval time),
+received body bytes and SHA-256, and completeness. Page-controlled text (the
+title) comes after the observed fields and the block ends by marking the page as
+data. The text that follows is unchanged from earlier releases except for
+extraction fixes (inline word breaks, `<pre>` indentation, `<meta>` and BOM
+charsets) and new markers for a body clipped by the raw read limit or shorter
+than its `Content-Length`.
+
+Completeness is `partial` for any of those cuts or a `max_bytes` clip. The
+omitted size is exact only when the whole body arrived; past a clipped body it is
+unknown. The result also supplies `artifact_source` (identity = final URL) so the
+artifact read model stores the same completeness. `_blocking_fetch` keeps its
+`(error, text)` contract for dashboard grounding.
+
+`web_search` uses exactly one provider per call — SerpAPI when its key is set,
+otherwise DuckDuckGo — and records provider, retrieval time and result count. A
+provider failure is an unavailable result; there is no silent fallback or
+blending. Snippets remain provider text, not page content.
