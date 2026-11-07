@@ -2361,3 +2361,21 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+
+## 2026-11-06 — Admit code cells only through confinement owners (#387)
+
+The optional mutating `code_cell` tool uses scratch-only workers. Linux/bwrap
+and Docker owners provide process/namespace lifetime; Seatbelt, unconfined
+fallbacks and unknown Environment capabilities refuse. Docker cells use a separate
+preinstalled Python image, no workspace mounts, no network, and explicit resource
+limits; neither ordinary workspace commands nor workspace images gain an interpreter
+requirement. Remote Docker uses the same cell owner on its selected daemon.
+
+The stdio bridge carries JSON tool requests only, through the active ordinary
+ToolRunner's dispatch, permissions, hooks, effects, memo and event/capture owners.
+Every cell and nested receipt has cell id/index provenance. Nested results are
+recorded without becoming orphan tool messages in the model context. Broad/default
+tool selections do not opt in. Input, output, time and call counts are bounded;
+namespace teardown cancels descendants, and interrupted effects never imply zero
+or authorize replay. No retained kernels or dependency installation are introduced.

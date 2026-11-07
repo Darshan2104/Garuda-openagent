@@ -110,6 +110,11 @@ class RemoteEnvironment:
     def workspace_root(self) -> str:
         return self._workspace_root
 
+    def open_code_cell(self):
+        from garuda.workspace.docker_cells import docker_code_cell
+
+        return docker_code_cell(self._docker_base, self._container_name)
+
     async def execute(
         self,
         command: str,

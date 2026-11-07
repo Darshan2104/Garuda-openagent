@@ -381,3 +381,58 @@ garuda run --mode eval --trajectory run.jsonl -t "Make the failing tests pass"
 `--trajectory` saves the run's events for analysis. For benchmark setups and
 paired dual-model reports (`garuda eval dual-model report ...`), see
 [Evaluation](../evaluation/index.md).
+
+
+## Aggregate tool results in a confined Python cell
+
+Add `code_cell` explicitly to an agent definition; it is absent from default
+and `all` tool selections. The cell is mutating and cannot run in read-only mode.
+
+```yaml
+version: 1
+name: cell-investigator
+extends: garuda/build
+tools:
+  add: [code_cell]
+  options:
+    code_cell:
+      timeout: 10
+      output_bytes: 32768
+      nested_calls: 8
+```
+
+Save this as `.agent/agents/cell-investigator.yaml`. With Docker available,
+preinstall `python:3.12-slim` on the selected daemon yourself (for example,
+`docker pull python:3.12-slim`), then run:
+
+```bash
+garuda run --agent cell-investigator --workspace-kind docker -t "Use a code cell to count lines in README.md and return only the count."
+```
+
+The model can call `code_cell` with this code:
+
+```python
+reply = tool("read_file", {"path": "README.md"})
+if reply["is_error"]:
+    raise RuntimeError(reply["content"])
+result = {"lines": len(reply["content"].splitlines())}
+```
+
+`inputs` is an optional JSON object. Assign a JSON-serializable `result`; printed
+text is also returned. The scratch worker has no workspace mount or network.
+Every `tool` request is screened and recorded by the ordinary host ToolRunner;
+a denied write stays denied. Intermediate replies stay inside the cell, while
+session events retain nested receipts with cell id and request index.
+
+Defaults are 10 seconds, 32 KiB output, eight nested requests, and 32 KiB combined
+code/input. Options may set positive values up to 30 seconds, 64 KiB output and
+32 requests; run deadlines may shorten execution. Bridge frames/replies are also
+bounded at 64 KiB. Cancellation, time/output/request limits and worker death
+terminate the cell; interrupted effects remain unknown and are never replayed
+automatically. Container/process cleanup can take additional bounded time.
+
+Linux `--workspace-kind sandbox` supports cells only when bubblewrap can launch
+and Garuda's Python resides in its mounted system runtime paths. macOS Seatbelt,
+local, tmux and environments without this capability explicitly refuse. Docker
+and remote Docker use a separate preinstalled cell image, so the workspace's own
+image does not need Python. Cells cannot invoke another code cell.

@@ -15,6 +15,7 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.code_cell import CodeCellTool
 from garuda.tools.collection import DelegateCollectionTool, SubmitCollectionTool
 from garuda.tools.contract import ContractTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
@@ -102,6 +103,7 @@ __all__ = [
 def _bootstrap_registry() -> None:
     for tool in [
         BashTool(),
+        CodeCellTool(),
         BashBackgroundTool(),
         TaskOutputTool(),
         KillTaskTool(),
