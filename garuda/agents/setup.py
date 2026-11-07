@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -37,6 +38,36 @@ from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+async def reap_owned_processes(session_id, env) -> list[str]:
+    """Shared teardown receipt for optional workspace-owned process services."""
+    from garuda.tools.background import reap_session_verified
+
+    debug = getattr(env, "_debug_service", None)
+    if debug is None:
+        return await reap_session_verified(session_id, env)
+
+    async def reap():
+        try:
+            survivors = await reap_session_verified(session_id, env)
+        except Exception:
+            survivors = ["background: cleanup unproved"]
+        try:
+            survivors.extend(await debug.reap(session_id))
+        except Exception:
+            survivors.append("debug: cleanup unproved")
+        return survivors
+
+    from garuda.workspace.settlement import settle_task
+
+    task = asyncio.create_task(reap())
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Teardown must deliver its receipt to the lease owner even if the
+        # caller is cancelled again while leaving a cancelled turn.
+        return await settle_task(task)
 
 
 def _is_sdk_model(candidate: Any) -> bool:

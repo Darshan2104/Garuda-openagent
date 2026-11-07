@@ -497,9 +497,9 @@ async def run_agent_task(
             # Kill any background tasks this session left running before tearing down
             # the workspace (essential for the local env, where nothing else reaps them).
             try:
-                from garuda.tools.background import reap_session_verified
+                from garuda.agents.setup import reap_owned_processes
 
-                survivors = await reap_session_verified(events.session_id, env)
+                survivors = await reap_owned_processes(events.session_id, env)
             except Exception:
                 survivors = []
             # Close a persistent shell if the local env opened one.

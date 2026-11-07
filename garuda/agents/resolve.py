@@ -355,9 +355,9 @@ def _merge(current: dict[str, Any], prov: dict[str, Source], leaves: dict[str, A
 
 
 def builtin_tools() -> list[str]:
-    from garuda.tools.registry import list_tool_names
+    from garuda.tools.registry import tools_for_names
 
-    return sorted(list_tool_names())
+    return sorted(tool.name for tool in tools_for_names(None))
 
 
 def read_only_tools() -> list[str]:
