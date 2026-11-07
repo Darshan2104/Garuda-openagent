@@ -97,6 +97,7 @@ class RigorousAgent:
         collection_model=None,
         collection_policy=None,
         allowed_tool_effects=None,
+        model_delta_consumer=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -141,6 +142,7 @@ class RigorousAgent:
             permissions=plan_permissions,
             hooks=hooks,
             emit_session_events=False,  # rigorous emits its own single session span
+            model_delta_consumer=model_delta_consumer,
         )
         events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
 
@@ -194,6 +196,7 @@ class RigorousAgent:
                 collection_model=collection_model,
                 collection_policy=collection_policy,
                 allowed_tool_effects=allowed_tool_effects,
+                model_delta_consumer=model_delta_consumer,
             )
 
             approved, feedback = await self._critic_review(

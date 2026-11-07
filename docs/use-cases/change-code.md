@@ -303,9 +303,41 @@ does not guess from content, tool calls, stream exhaustion, or `done=True`.
 Empty terminal chunks and later usage-only chunks preserve an observed value.
 
 These are model-helper APIs. Native `garuda run` and `garuda chat` still call
-`complete()` and render completed turns; this does not add live token rendering
-to the native loop. External harness streaming follows its separate runtime
-path.
+`complete()` and render completed turns; live output is an opt-in for code that
+drives the loop itself (below). External harness streaming follows its separate
+runtime path.
+
+### Show model output live from your own driver
+
+Code that calls the native loop directly can pass a delta consumer. Each model
+call then streams, while tools, permissions, the completion gate and accounting
+still act on the complete response:
+
+```python
+from garuda.core.loop import DefaultAgent
+
+def show(delta):
+    if delta.kind == "text":
+        print(delta.text, end="", flush=True)
+    elif delta.kind == "discard":
+        print("\n[stream interrupted; answer follows from the retry]")
+
+result = await DefaultAgent().run(
+    task="Summarize the repository", model=model, env=env, tools=tools,
+    model_delta_consumer=show,
+)
+```
+
+The consumer receives `text` and `reasoning` fragments, and `discard` if a stream
+fails before it finishes. Tool calls are never streamed: they run only after the
+whole response has arrived. A failed stream is replaced by exactly one ordinary
+`complete()` call; its answer is not re-sent as fragments, so render it from the
+turn's `model_response` event. That event's `live_coverage` is `streamed`,
+`fallback` (with the bounded `stream_error`) or `not_streamed` for a model without
+`stream()`. A consumer that raises is detached for the rest of that call and
+recorded as `live_consumer_error`; the run continues. Cancelling the run stops the
+stream and dispatches nothing. Without a consumer nothing changes, and
+`garuda run`, `garuda chat` and the dashboard do not attach one yet.
 
 ## Inspect retry and failed-call usage
 

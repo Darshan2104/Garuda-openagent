@@ -95,6 +95,10 @@ class RunState:
     # facts, so the model is not asked to remember what the harness already knows.
     state: WorkingState = field(default_factory=WorkingState)
 
+    # Opt-in receiver of live text/reasoning deltas (``garuda.model.streaming``).
+    # None keeps every model call on ``complete()``.
+    delta_consumer: object | None = None
+
     usage_totals: dict[str, int] = field(default_factory=dict)
     final_message: str = ""
     # The last substantive thing the model said. After a forced final turn this
