@@ -273,10 +273,13 @@ def build_parser():
         help="Resume a saved session (full id, unique prefix, or 'latest' for this "
         "project's newest)",
     )
+    run_parser.add_argument("--fork", metavar="SESSION", help="Fork a saved native session's context into a new session")
+    run_parser.add_argument("--fork-at", type=int, metavar="MESSAGE_INDEX",
+                            help="With --fork, retain through this zero-based saved message index (inclusive); context rewind only")
     run_parser.add_argument(
         "--all-projects",
         action="store_true",
-        help="With --resume latest, resume the newest session from any project",
+        help="With --resume latest or --fork latest, select the newest session from any project",
     )
     run_parser.add_argument(
         "--name",
@@ -2127,6 +2130,13 @@ async def run_task_guarded(args) -> int:
         return await run_task(args)
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
+    except (ValueError, OSError) as exc:
+        if getattr(args, "fork", None) is None and getattr(args, "fork_at", None) is None:
+            raise
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
             ResumeRefused, GarudaConfigError, RoleRefused) as exc:
         # The workspace is held by another run, the runtime is at its

@@ -2361,3 +2361,18 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+
+## 2026-11-06 — Context forks preserve history without restoring execution (#415)
+
+An explicit native fork creates a new session through ordinary workspace and
+capacity admission. Its inclusive saved-message index backs up before an
+incomplete tool batch; source-file digests bind provenance. It reuses resume
+context construction and artifact inheritance, but never source recovery,
+process ownership, old worktree selection or baseline inheritance. Source events
+remain append-only and untouched. Only context is rewound: filesystem and
+processes are not restored. Source candidate/check claims are stale; constraints
+and historical event/state/receipt references survive compaction and resume in
+the working-state card. Fork lineage inspection reads persisted metadata only.
+Terminal native sources without pending ownership or quarantine are supported;
+ACP state, live-source forks and combined workspace isolation are refused.

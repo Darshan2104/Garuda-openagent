@@ -65,7 +65,7 @@ ACP runtime continues through the agent's own reload where that is proven for
 the adapter version, and otherwise through a new linked session started from
 its brief; a session whose owner is still running refuses.
 
-Session arguments (`--resume`, `--session`) accept a full ID, a unique prefix
+Session arguments (`--resume`, `--fork`, `--session`) accept a full ID, a unique prefix
 from `garuda sessions`, a session name, or `latest`. Names, prefixes and
 `latest` are looked up in the current project; add `--all-projects` to search
 every project. A full ID always resolves.
@@ -79,7 +79,8 @@ every project. A full ID always resolves.
     | `-t, --task TEXT` | Task text |
     | `-f, --file PATH` | Read the task from a file |
     | `--resume ID` | Continue a saved session (ID, prefix, or `latest`: this project's newest) |
-    | `--all-projects` | With `--resume latest`, take the newest session from any project |
+    | `--fork SESSION --fork-at MESSAGE_INDEX` | Context-only fork of a terminal native checkpoint through an inclusive zero-based message index; complete tool batches only, fresh workspace evidence, no file/process restoration. See [example](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
+    | `--all-projects` | With `--resume latest` or `--fork latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
     | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |

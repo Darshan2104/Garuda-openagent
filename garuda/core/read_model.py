@@ -213,6 +213,12 @@ def sessions(store, *, limit: int | None = 20, queue=None) -> list[dict]:
 def session(store, session_id: str, *, queue=None) -> dict:
     meta = store.load_meta(session_id)
     row = session_row(store, meta, queue_index=_queue_index(queue))
+    if meta.get("forked_from") is not None:
+        row["context_fork"] = {key: meta.get(key) for key in (
+            "forked_from", "fork_at", "fork_requested_at", "fork_adjustment", "source_digest",
+            "source_files", "rewind", "filesystem_restored", "processes_restored", "inherited_evidence", "references",
+            "receipt_references", "receipt_reference_coverage",
+        )}
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
     row["flow"] = flow(store, session_id, meta)

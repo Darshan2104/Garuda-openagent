@@ -175,8 +175,8 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
         task = Path(args.file).read_text(encoding="utf-8")
     if not task:
         raise BackgroundRefused("provide -t/--task or -f/--file")
-    for flag in ("resume", "trajectory"):
-        if getattr(args, flag, None):
+    for flag in ("resume", "trajectory", "fork", "fork_at"):
+        if getattr(args, flag, None) or (flag == "fork_at" and getattr(args, flag, None) is not None):
             raise BackgroundRefused(f"--bg does not combine with --{flag.replace('_', '-')}")
     binding = _runtime_binding(args)
     harness = binding.runtime_id
