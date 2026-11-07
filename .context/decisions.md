@@ -2361,3 +2361,38 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Language servers are a trusted, run-owned, read-labelled service (#381)
+
+Semantic navigation sits behind one optional `LanguageService` protocol
+(`garuda/lsp/`) and one agent tool, `lsp`, added by shared setup. Only the
+user's global settings may name a server command; a project's
+`language_servers:` is reported as `agent.untrusted_project_language_server`
+and ignored, never merged, so a repository can neither add a server nor change
+a configured command. Relative command paths are refused because they would
+resolve against an unspecified directory. The server inherits a short
+environment allowlist plus configured `env`, not the harness environment.
+
+Configuration reads and status inspection never launch a server. The first
+request starts it in the local workspace root; Docker, remote, tmux and
+OS-sandbox workspaces are refused because a host process would bypass their
+boundary. Startup and requests are time-bounded; timeouts and caller
+cancellation send `$/cancelRequest`. A missing executable, startup failure,
+crash, oversized message or protocol error moves the server to `failed`, and
+it is not restarted within the run. Teardown sends `shutdown`/`exit` and kills
+the process group.
+
+Positions are converted between Garuda's 1-based character columns and LSP's
+0-based UTF-16 offsets using LSP line separators; URIs are percent-escaped
+both ways and non-`file` URIs are shown, not guessed. Diagnostics are bound
+to the version Garuda sent: only an exact version match is current; older
+versions are stale, unversioned publications are of unknown currency, and the
+absence of a publication is not evidence of a clean file. Unsupported
+requests are refused by capability name; `workspace/applyEdit` is refused.
+Path rules screen the requested file and withhold denied result locations.
+
+The tool declares `READ_ONLY` because Garuda sends only read-labelled
+requests. That is a classification of Garuda's requests, not proof that the
+server writes no caches or stays inside the workspace; it is a trusted local
+process, not a confined one. Runs without configuration are unchanged: no
+tool, no process and the same `mcp_manager`.

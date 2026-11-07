@@ -426,6 +426,58 @@ garuda mcp list
 
 More in [Configuration → MCP](../guides/configuration.md#mcp).
 
+## Navigate code with a language server
+
+<p class="gd-facts">Applies to: every native run on your machine · Needs: a language server installed locally</p>
+
+**Use it when** text search keeps finding the wrong thing: aliases, re-exports
+and inherited methods need the definition a language server resolves, not a
+spelling match.
+
+Name the server in your **global** `~/.agent/settings.yaml` (never the project's):
+
+```yaml
+language_servers:
+  - name: pyright
+    command: pyright-langserver
+    args: ["--stdio"]
+    extensions: [py, pyi]
+```
+
+Check what a run would use. This reads configuration only and starts nothing:
+
+```bash
+garuda lsp list
+```
+
+Then ask as usual; the agent gets an `lsp` tool:
+
+```bash
+garuda run -t "Find every caller of load_profile, following re-exports"
+```
+
+**What happens**
+
+- The `lsp` tool answers `definition`, `references`, `hover`, `symbols` and
+  `diagnostics` for one file, using 1-based lines and character columns as
+  `read_file` shows them. `status` reports each server's state without
+  starting it.
+- The server starts on the first request, in the workspace root, and stops with
+  the run. A server that is missing, fails to start in time, or exits is
+  reported as failed and is not restarted. A slow request is cancelled after
+  the configured `request_timeout`.
+- Diagnostics are tied to the file version Garuda last sent. Older ones are
+  labelled stale, ones the server didn't tie to a version are labelled
+  unknown, and none at all is never reported as a clean file.
+- A request the server didn't declare support for is refused by name. Server
+  requests to edit files are refused. Path rules screen the file you ask about
+  and hide results in denied files.
+- `language_servers` in a project's `settings.yaml` is ignored and reported, so
+  a repository can't choose what runs. Only local workspaces are served; Docker,
+  remote, tmux and sandbox runs get an explicit refusal.
+- The tool is labelled read-only because Garuda only sends read requests, but
+  the server itself is not confined and may write caches or index files.
+
 ## Block or log tool calls with a hook
 
 <p class="gd-facts">Configured in: <code>~/.agent/settings.yaml</code> · Runs: your shell command before or after a tool</p>
