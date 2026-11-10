@@ -4,6 +4,12 @@ from pathlib import PurePosixPath
 from garuda.context.outline import PythonOutlineCache
 from garuda.core.artifact_read_model import source_capture
 from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.source_version import (
+    UNKNOWN_VERSION_NOTE,
+    digest_version_token,
+    version_token,
+    versioned_reads,
+)
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 from garuda.workspace.text_reads import MAX_LINE_CHARS, MAX_PAGE_LINES, BoundedTextEnvironment
@@ -75,17 +81,23 @@ class ReadFileTool:
         if limit < 1:
             limit = 1
 
-        page = None
+        page = content = None
         metadata = {"bounded_read": False}
         tail = arguments.get("tail", False)
         require_bounded = arguments.get("bounded", False) or tail
+        # Under the versioned edit contract an ordinary page streams the whole
+        # file once more to hash it (bounded memory), so its token names the
+        # full content an edit will compare. An explicit tail/bounded read keeps
+        # its I/O bound and reports a version only if it covered the whole file.
+        want_digest = versioned_reads(ctx) and not require_bounded
         try:
             # Outlines parse full text, so they skip the page reader (tail/bounded
             # were refused above, so require_bounded is false here).
             if not outline and isinstance(env, BoundedTextEnvironment):
                 try:
                     page = await env.read_text_page(path, offset=offset,
-                                                    limit=min(limit, MAX_PAGE_LINES), tail=tail)
+                                                    limit=min(limit, MAX_PAGE_LINES), tail=tail,
+                                                    digest=want_digest)
                 except NotImplementedError:
                     if require_bounded:
                         raise
@@ -140,13 +152,14 @@ class ReadFileTool:
                 body = "\n".join(line if len(line) <= MAX_LINE_CHARS
                                  else line[:MAX_LINE_CHARS] + "... (line truncated)"
                                  for line in selected)
-                return ToolResult(
-                    tool_call_id="", metadata=metadata,
-                    content=f"{body}\n(last {len(selected)} lines; line numbers and total lines unknown)")
+                return _versioned(
+                    f"{body}\n(last {len(selected)} lines; line numbers and total lines unknown)",
+                    metadata, ctx, env, path, page=page)
             offset = page.offset
             start = offset - 1
         if total == 0:
-            return ToolResult(tool_call_id="", content="(empty file)", metadata=metadata)
+            # An empty file still has a version: the empty text is the full content.
+            return _versioned("(empty file)", metadata, ctx, env, path, content=content, page=page)
         if not selected:
             return ToolResult(
                 tool_call_id="",
@@ -171,7 +184,27 @@ class ReadFileTool:
                 f"\n(file has {total} lines total; showing {shown_start}-{shown_end}"
                 " — use offset/limit to read more)"
             )
-        return ToolResult(tool_call_id="", content=output, metadata=metadata)
+        return _versioned(output, metadata, ctx, env, path,
+                          content=content, page=page)
+
+
+def _versioned(output: str, metadata: dict, ctx: ToolContext, env: Environment, path: str, *,
+               content: str | None = None, page=None) -> ToolResult:
+    """Attach the source version of the FULL content, never of the lines shown.
+
+    A whole read hashes its text; a bounded page supplies the digest its reader
+    took over the whole file. When neither exists the version is unknown (None)
+    so a versioned edit is refused instead of silently mismatching.
+    """
+    if content is not None:
+        token = version_token(ctx, env, path, content)
+    elif page is not None and page.content_sha256:
+        token = digest_version_token(ctx, env, path, "sha256:" + page.content_sha256)
+    else:
+        token = None
+    if versioned_reads(ctx):
+        output += f"\n(version: {token})" if token else f"\n{UNKNOWN_VERSION_NOTE}"
+    return ToolResult(tool_call_id="", content=output, metadata={**metadata, "source_version": token})
 
 
 class WriteFileTool:

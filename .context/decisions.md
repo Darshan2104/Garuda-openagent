@@ -2554,3 +2554,28 @@ evidence and an unknown omitted byte count, preserved by the ordinary runner.
 No hidden body receives full-read evidence. Edit and multi-edit still compare
 against current workspace content; neither currently has a prior-read gate.
 The digest identifies an observation and does not lock later reads or edits.
+
+## 2026-11-06 — Edits can require the version they read (#368)
+
+`read_file` reports a version token bound to the session, the normalized path
+and the full content; `edit`/`multi_edit` accept `expected_version` and refuse
+a mismatch before matching. The contract is selected per tool through the
+existing validated `tools.options` (`legacy` default: tokens optional;
+`versioned`: required), so an unknown value refuses the definition and the
+selection is visible in agent inspection. The token is a precondition checked
+on the content the edit transforms, not a compare-and-write: no backend offers
+an atomic write here, and none is claimed. The version an edit reports comes
+from reading the file back (reads may translate newlines); if that read fails or
+shows other content, the version is unknown rather than guessed. String matching and its formatting
+recovery are unchanged; no alternate anchored edit format is introduced.
+
+With bounded reads (#365) a local `read_file` serves a page and never holds the
+whole text, so the token cannot be computed from the shown lines. The page
+reader hashes the whole file's `read_file` text (strict UTF-8, universal
+newlines) in the same pass and the token is derived from that digest, so it
+equals the token an edit computes from its own full read. Under `versioned` an
+ordinary page streams to EOF for the digest (bounded memory, whole-file I/O); an
+explicit tail/bounded read keeps its I/O bound and, unless it covered the whole
+file, reports the version as unknown. An unknown version is never a page-only
+token: edits refuse it and ask for a full read. An empty file is whole content
+too, so its read reports a version like any other.
