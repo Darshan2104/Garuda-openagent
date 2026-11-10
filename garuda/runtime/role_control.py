@@ -138,7 +138,7 @@ class RoleControl:
             response = await self._dispatch(operation, value)
         except Exception:
             return {"ok": False, "value": "role-control-refused"}
-        from garuda.acp.broker import Unanswered
+        from garuda.core.approval_outcome import Unanswered
 
         if isinstance(response, Unanswered):
             # The value stays a "no"; the extra field carries why nobody answered,
@@ -166,7 +166,7 @@ class RoleControl:
                 raise LeaseError("role already released")
             if self.approval is None:
                 return False
-            from garuda.acp.broker import Unanswered
+            from garuda.core.approval_outcome import Unanswered
 
             answer = await self.approval(value)
             # A timeout or lost person stays a non-answer for the worker's broker to audit.
@@ -280,9 +280,9 @@ class RoleControlClient:
         self.request("release")
 
     async def approve(self, action):
-        """The parent's yes or no, or an :class:`~garuda.acp.broker.Unanswered`
+        """The parent's yes or no, or an :class:`~garuda.core.approval_outcome.Unanswered`
         (falsy) when its responder timed out or lost its person."""
-        from garuda.acp.broker import ApprovalOutcome, Unanswered
+        from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
 
         reply = self._exchange("approve", action, unanswered=True)
         if type(reply["value"]) is not bool:

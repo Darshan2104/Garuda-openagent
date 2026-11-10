@@ -20,7 +20,6 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 from garuda.acp.authority import (
@@ -30,6 +29,7 @@ from garuda.acp.authority import (
     negotiate,
 )
 from garuda.acp.protocol import AcpError
+from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
 from garuda.core.permissions import PermissionDecision, PermissionEngine
 
 logger = logging.getLogger(__name__)
@@ -37,38 +37,6 @@ logger = logging.getLogger(__name__)
 
 class ApprovalAuditError(AcpError):
     """An allow/deny outcome could not be persisted. Fail-closed, always."""
-
-
-class ApprovalOutcome(str, Enum):
-    ALLOW = "allow"
-    DENY = "deny"
-    TIMEOUT = "timeout"
-    DISCONNECTED = "disconnected"
-    CANCELLED = "cancelled"
-
-
-class Unanswered:
-    """A responder's non-answer: it timed out or its person went away.
-
-    Falsy wherever it is tested, so a caller that does not know this type
-    still denies; the broker records the real terminal outcome instead of
-    collapsing it into a deny. (An :class:`ApprovalOutcome` would be truthy,
-    being a non-empty string, and would fail open.)
-    """
-
-    __slots__ = ("outcome", "reason")
-
-    def __init__(self, outcome: ApprovalOutcome, reason: str | None = None):
-        if outcome not in (ApprovalOutcome.TIMEOUT, ApprovalOutcome.DISCONNECTED):
-            raise ValueError(f"not a non-answer outcome: {outcome!r}")
-        self.outcome = outcome
-        self.reason = reason
-
-    def __bool__(self) -> bool:
-        return False
-
-    def __repr__(self) -> str:
-        return f"Unanswered({self.outcome.value!r})"
 
 
 @dataclass
