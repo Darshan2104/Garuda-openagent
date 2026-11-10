@@ -10,6 +10,7 @@ EXPECTED_BUILTIN_EFFECTS = {
     "read_file": ToolEffect.READ_ONLY,
     "write_file": ToolEffect.MUTATING,
     "edit": ToolEffect.MUTATING,
+    "python_codemod": ToolEffect.MUTATING,  # preview reads; apply writes
     "multi_edit": ToolEffect.MUTATING,
     "grep": ToolEffect.READ_ONLY,
     "glob": ToolEffect.READ_ONLY,

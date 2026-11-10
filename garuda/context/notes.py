@@ -45,7 +45,7 @@ from garuda.runtime import strict_store as ss
 MAX_TEXT = 500
 MAX_PROPOSALS = 10
 SCOPES = ("user", "project")
-SCRUBBED_TOOLS = {"remember": ("text",)}
+SCRUBBED_TOOLS = {"remember"}
 _MARKER = "<!-- garuda-note:{id} -->"
 _PENDING, _ACCEPTING, _ACCEPTED, _REJECTED = "pending", "accepting", "accepted", "rejected"
 
@@ -87,8 +87,11 @@ def project_notes_path(workspace: str | Path) -> Path:
     return Path(workspace) / ".agent" / "memory.md"
 
 
-def digest_of(scope: str, text: str, project_id: str, session_id: str) -> str:
+def digest_of(scope: str, text: str, project_id: str, session_id: str,
+              provenance: dict | None = None) -> str:
     material = "\0".join([scope, text, project_id, session_id])
+    if provenance is not None:
+        material += "\0" + json.dumps(provenance, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -102,13 +105,30 @@ def scrub_response(response) -> None:
     from garuda.context.redact import redact_text
 
     for call in getattr(response, "tool_calls", None) or []:
-        keys = SCRUBBED_TOOLS.get(call.name)
-        if not keys or not isinstance(call.arguments, dict):
+        if call.name not in SCRUBBED_TOOLS or not isinstance(call.arguments, dict):
             continue
-        for key in keys:
-            value = call.arguments.get(key)
+        def scrub(value):
             if isinstance(value, str):
-                call.arguments[key] = redact_text(value)[0]
+                return redact_text(value)[0]
+            if isinstance(value, list):
+                return [scrub(v) for v in value]
+            if isinstance(value, dict):
+                return {scrub(k): scrub(v) for k, v in value.items()}
+            return value
+
+        call.arguments = scrub(call.arguments)
+
+
+def migrate_proposal(data: dict) -> dict:
+    """Project v1 records into v2 without inventing evidence or changing old digests.
+
+    Reads never rewrite records. The next journal/decision write publishes v2.
+    """
+    version = data.get("version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ss.CorruptRecord("unsupported reviewed-note version")
+    return {**data, "version": 2,
+            "provenance": None if version == 1 else data.get("provenance")}
 
 
 @dataclass
@@ -123,14 +143,32 @@ class Proposal:
     digest: str
     state: str = _PENDING
     decision: dict = field(default_factory=dict)
+    provenance: dict | None = None
 
     def to_dict(self) -> dict:
-        return {"version": 1, **self.__dict__}
+        return {"version": 2, **self.__dict__}
 
     @classmethod
     def from_dict(cls, data: dict) -> Proposal:
+        from garuda.context.note_provenance import normalize
+
+        data = migrate_proposal(data)
         names = cls.__dataclass_fields__
-        return cls(**{k: v for k, v in data.items() if k in names})
+        try:
+            proposal = cls(**{k: v for k, v in data.items() if k in names})
+            if normalize(proposal.provenance) != proposal.provenance:
+                raise ValueError("noncanonical provenance")
+            if (proposal.scope not in SCOPES or proposal.state not in
+                    (_PENDING, _ACCEPTING, _ACCEPTED, _REJECTED)
+                    or not re.fullmatch(r"[0-9a-f]{32}", proposal.id)
+                    or not isinstance(proposal.decision, dict)
+                    or any(not isinstance(getattr(proposal, key), str) for key in
+                           ("text", "session_id", "root_session_id", "project_id",
+                            "created_at", "digest"))):
+                raise ValueError("invalid proposal")
+            return proposal
+        except (TypeError, ValueError, NotesRefused) as exc:
+            raise ss.CorruptRecord("invalid reviewed-note record") from exc
 
 
 class ProposalStore:
@@ -152,31 +190,96 @@ class ProposalStore:
     def count(self, root_session_id: str) -> int:
         return sum(1 for p in self.all() if p.root_session_id == root_session_id)
 
-    def all(self) -> list[Proposal]:
-        if not self.directory.is_dir():
+    def all(self, *, strict: bool = False) -> list[Proposal]:
+        self._check_directory()
+        try:
+            paths = sorted(self.directory.iterdir())
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            if strict:
+                raise NotesRefused("memory.unavailable", "proposal coverage is unknown") from exc
             return []
         out = []
-        for path in sorted(self.directory.glob("*.json")):
-            try:
-                data = ss.read_document(path, versions=(1,))
-            except ss.CorruptRecord:
+        for path in paths:
+            if path.suffix != ".json":
                 continue
-            if data:
-                out.append(Proposal.from_dict(data))
+            try:
+                data = ss.read_document(path, versions=(1, 2))
+                if data:
+                    proposal = Proposal.from_dict(data)
+                    self._check_project(proposal)
+                    if proposal.id != path.stem:
+                        raise ss.CorruptRecord("proposal id does not match its filename")
+                    out.append(proposal)
+                elif strict:
+                    raise ss.CorruptRecord("proposal disappeared during read")
+            except ss.CorruptRecord:
+                if strict:
+                    raise NotesRefused("memory.unavailable", "proposal coverage is unknown") from None
+                continue
         return sorted(out, key=lambda p: (p.created_at, p.id))
 
     def pending(self) -> list[Proposal]:
         return [p for p in self.all() if p.state in (_PENDING, _ACCEPTING)]
 
     def get(self, proposal_id: str) -> Proposal:
-        data = ss.read_document(self._path(proposal_id), versions=(1,))
+        self._check_directory()
+        data = ss.read_document(self._path(proposal_id), versions=(1, 2))
         if data is None:
             raise NotesRefused("memory.unknown_proposal", "no such proposal")
-        return Proposal.from_dict(data)
+        proposal = Proposal.from_dict(data)
+        self._check_project(proposal)
+        if proposal.id != proposal_id:
+            raise NotesRefused("memory.stale", "proposal id does not match its filename")
+        return proposal
+
+    def _check_project(self, proposal: Proposal) -> None:
+        if proposal.project_id != self.project_id:
+            raise NotesRefused("memory.foreign_project", "this proposal belongs to another project")
+
+    def _check_directory(self) -> None:
+        root = Path(self.store.root).absolute()
+        directory = self.directory.absolute()
+        if not directory.is_relative_to(root):
+            raise NotesRefused("memory.foreign_project", "proposal directory leaves the store")
+        while directory != root:
+            if directory.is_symlink():
+                raise NotesRefused("memory.unavailable", "proposal directory is a symbolic link")
+            if directory.exists() and not directory.is_dir():
+                raise NotesRefused("memory.unavailable", "proposal directory is not a directory")
+            directory = directory.parent
+
+    def check_environment(self, env) -> None:
+        from garuda.core.project_identity import (
+            ProjectIdentityError,
+            environment_project_path,
+            existing_project_id,
+        )
+
+        try:
+            project_id = existing_project_id(self.store.root, environment_project_path(env))
+        except ProjectIdentityError as exc:
+            raise NotesRefused("memory.unavailable", "cannot confirm the project identity") from exc
+        if project_id != self.project_id:
+            raise NotesRefused("memory.foreign_project", "workspace belongs to another project")
+
+    async def search(self, query: str, env, *, max_chars: int = 2000, limit: int = 5,
+                     readable=None) -> str:
+        from garuda.context.notes_retrieval import search
+
+        self.check_environment(env)
+        try:
+            return await search(self, query, env, max_chars=max_chars, limit=limit,
+                                readable=readable)
+        except ss.StorageError as exc:
+            raise NotesRefused("memory.unavailable", "cannot read accepted decisions") from exc
 
     # --- proposing -------------------------------------------------------------------
 
-    def propose(self, text: str, scope: str, *, session_id: str, root_session_id: str) -> Proposal:
+    def propose(self, text: str, scope: str, *, session_id: str, root_session_id: str,
+                provenance: dict | None = None) -> Proposal:
+        from garuda.context.note_provenance import normalize
         from garuda.context.redact import redact_text
 
         if scope not in SCOPES:
@@ -189,24 +292,44 @@ class ProposalStore:
         if "[REDACTED:" in text or redact_text(text)[1]:
             raise NotesRefused("memory.secret_shaped",
                                "the text looks like it contains a secret; nothing was recorded")
+        provenance = normalize(provenance)
         try:
+            self._check_directory()
             with ss.exclusive_lock(self.directory):
-                if self.count(root_session_id) >= MAX_PROPOSALS:
+                records = self.all(strict=True)
+                key = _proposal_key(scope, text, provenance)
+                for existing in records:
+                    if (existing.root_session_id == root_session_id
+                            and _proposal_key(existing.scope, existing.text,
+                                              existing.provenance) == key):
+                        self._bound(existing.id, existing.digest)
+                        return existing
+                if sum(p.root_session_id == root_session_id for p in records) >= MAX_PROPOSALS:
                     raise NotesRefused("memory.limit",
                                        f"at most {MAX_PROPOSALS} proposals per task")
                 proposal = Proposal(
                     id=uuid.uuid4().hex, text=text, scope=scope, session_id=session_id,
                     root_session_id=root_session_id, project_id=self.project_id,
                     created_at=datetime.now(timezone.utc).isoformat(),
-                    digest=digest_of(scope, text, self.project_id, session_id))
+                    digest=digest_of(scope, text, self.project_id, session_id, provenance),
+                    provenance=provenance)
+                self._check_supersedes(proposal)
                 ss.write_document(self._path(proposal.id), proposal.to_dict())
         except ss.StorageError as exc:
             raise NotesRefused("agent.notes_unavailable", f"cannot record: {exc}") from exc
         return proposal
 
+    def _check_supersedes(self, proposal: Proposal) -> None:
+        for note_id in (proposal.provenance or {}).get("supersedes", []):
+            target = self.get(note_id)
+            if target.state != _ACCEPTED or target.scope != proposal.scope or target.id == proposal.id:
+                raise NotesRefused("memory.invalid_provenance", "supersedes needs an accepted note "
+                                   "in the same project and scope")
+
     # --- deciding (only an explicit local user decision reaches these) -------------------
 
     def reject(self, proposal_id: str, *, digest: str) -> Proposal:
+        self._check_directory()
         with ss.exclusive_lock(self.directory):
             proposal = self._bound(proposal_id, digest)
             if proposal.state != _PENDING:
@@ -222,6 +345,7 @@ class ProposalStore:
         ``digest`` is the digest of the proposal the user was shown; a changed or
         stale proposal refuses. ``text`` is the user's edit, if any. Replaying an
         interrupted acceptance completes it without appending twice."""
+        self._check_directory()
         with ss.exclusive_lock(self.directory):
             proposal = self._bound(proposal_id, digest)
             if proposal.project_id != self.project_id:
@@ -233,6 +357,7 @@ class ProposalStore:
                 raise NotesRefused("memory.not_pending", f"the proposal is {proposal.state}")
             final = clean(text) if text is not None else proposal.text
             if proposal.state == _PENDING:
+                self._check_supersedes(proposal)
                 if not final or len(final) > MAX_TEXT:
                     raise NotesRefused("memory.too_long", f"a note is 1-{MAX_TEXT} characters")
                 from garuda.context.redact import redact_text
@@ -259,10 +384,15 @@ class ProposalStore:
         if proposal.digest != digest:
             raise NotesRefused("memory.stale", "the proposal changed since it was shown")
         expected = digest_of(proposal.scope, proposal.text, proposal.project_id,
-                             proposal.session_id)
+                             proposal.session_id, proposal.provenance)
         if expected != proposal.digest:
             raise NotesRefused("memory.stale", "the proposal record does not match its digest")
         return proposal
+
+
+def _proposal_key(scope: str, text: str, provenance: dict | None) -> tuple:
+    evidence = {k: v for k, v in (provenance or {}).items() if k != "confirmed_at"}
+    return scope, text, json.dumps(evidence, sort_keys=True)
 
 
 def _append_once(target: Path, note_id: str, text: str, *, inside: Path | None) -> None:
@@ -323,9 +453,16 @@ class NotesLedger:
 
         return cls(ProposalStore(SessionStore(), workspace), root_session_id)
 
-    def propose(self, text: str, scope: str, session_id: str) -> Proposal:
+    @classmethod
+    def for_environment(cls, env, root_session_id: str) -> NotesLedger:
+        from garuda.core.project_identity import environment_project_path
+
+        return cls.create(environment_project_path(env), root_session_id)
+
+    def propose(self, text: str, scope: str, session_id: str,
+                provenance: dict | None = None) -> Proposal:
         return self.proposals.propose(text, scope, session_id=session_id,
-                                      root_session_id=self.root_session_id)
+                                      root_session_id=self.root_session_id, provenance=provenance)
 
 
 def to_json(proposal: Proposal) -> str:  # pragma: no cover - convenience for the CLI

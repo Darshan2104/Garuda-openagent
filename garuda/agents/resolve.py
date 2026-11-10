@@ -81,6 +81,8 @@ class ResolvedAgent:
     removed: set[str] = field(default_factory=set)  # tools any level removed
     output_schema: dict | None = None  # the compiled final-output JSON Schema (H.12b)
     instructions_replaced: bool = False  # declared/inherited intent, independent of text
+    ignored_fields: list[dict] = field(default_factory=list)
+    instruction_files: list[Path] = field(default_factory=list)
 
     @property
     def source(self) -> Source:
@@ -233,7 +235,8 @@ def _yaml(text: str, where: str):
     return data
 
 
-def parse_source(source: Source, data: bytes) -> tuple[dict, list[str], set[str], bool]:
+def parse_source(source: Source, data: bytes, *, ignored_fields: list | None = None
+                 ) -> tuple[dict, list[str], set[str], bool]:
     """``(version 1 document, warnings, declared legacy fields, was version 1)``."""
     text = data.decode("utf-8")
     where = str(source.path)
@@ -273,10 +276,11 @@ def parse_source(source: Source, data: bytes) -> tuple[dict, list[str], set[str]
         spec.validate(doc, source=where)
         declared = _declared(spec.flatten({k: v for k, v in doc.items() if k != "version"}))
         return doc, [], declared, True
-    return (*translate_legacy(meta, body, source=source), False)
+    return (*translate_legacy(meta, body, source=source, ignored_fields=ignored_fields), False)
 
 
-def translate_legacy(data: dict, body: str | None, *, source: Source | None = None
+def translate_legacy(data: dict, body: str | None, *, source: Source | None = None,
+                     ignored_fields: list | None = None
                      ) -> tuple[dict, list[str], set[str]]:
     """A legacy profile mapping as a version 1 document (see ``spec.LEGACY``)."""
     import difflib
@@ -291,6 +295,12 @@ def translate_legacy(data: dict, body: str | None, *, source: Source | None = No
     known = set(spec.LEGACY) | set(spec.LEGACY_SPECIAL) | set(_ALIASES)
     for raw_key, value in data.items():
         key = _ALIASES.get(raw_key, raw_key)
+        ignored = (key in ("declared_fields", "source_path", "spec_version")
+                   or (raw_key != key and key in data) or key not in known)
+        if ignored and ignored_fields is not None:
+            ignored_fields.append({"field": str(raw_key), "path": str(path),
+                                   "source": source.qualified if source else "inline",
+                                   "status": "unsupported/ignored"})
         if key in ("declared_fields", "source_path", "spec_version"):
             continue
         if raw_key != key and key in data:
@@ -449,7 +459,8 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
     if source.identity in {s.identity for s in _stack}:
         raise spec.AgentSpecError("agent.extends_cycle", "extends",
                                   " -> ".join(s.qualified for s in (*_stack, source)))
-    doc, warnings, declared, is_v1 = parse_source(source, data)
+    ignored_fields: list[dict] = []
+    doc, warnings, declared, is_v1 = parse_source(source, data, ignored_fields=ignored_fields)
     leaves = spec.flatten({k: v for k, v in doc.items() if k != "version"})
     if is_v1:
         _check_tools(leaves.get("tools.add", []), str(source.path))
@@ -473,11 +484,14 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         declared = set(parent.declared) | declared
         warnings = parent.warnings + warnings
         chain = [*parent.chain, source]
+        ignored_fields = parent.ignored_fields + ignored_fields
+        instruction_files = list(parent.instruction_files)
     else:
         merged, prov, instructions, tools, chain = {}, {}, None, None, [source]
         removed = set()
         output_schema = None
         instructions_replaced = False
+        instruction_files = []
     own = {k: v for k, v in leaves.items() if not k.startswith(("instructions.",))
            and k not in ("tools.preset", "tools.add", "tools.remove")}
     _merge(merged, prov, own, source)
@@ -492,6 +506,9 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
     if leaves.get("instructions.mode") == "replace" or (text is not None and mode == "replace"):
         instructions_replaced = True
     if text is not None:
+        if mode == "replace":
+            instruction_files = []
+        instruction_files += [source.path.parent / rel for rel in files] if source.path else []
         instructions = text if mode == "replace" else (
             (instructions or DEFAULT_SYSTEM_PROMPT).rstrip() + "\n\n" + text)
         prov["instructions"] = source
@@ -522,6 +539,7 @@ def resolve_source(source: Source, data: bytes, dirs: list[Path], *,
         chain=chain, declared=declared, warnings=warnings, versioned=is_v1,
         removed=removed, output_schema=output_schema,
         instructions_replaced=instructions_replaced,
+        ignored_fields=ignored_fields, instruction_files=instruction_files,
     )
 
 

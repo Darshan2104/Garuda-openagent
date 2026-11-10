@@ -95,6 +95,20 @@ def update_session_meta(store: SessionStore, session_id: str, updates: dict) -> 
         pass
 
 
+def _record_mcp_states(store: SessionStore, session_id: str, mcp_manager) -> None:
+    """Patch the MCP manager's per-server status into meta.json as ``mcp_servers``."""
+    states = getattr(mcp_manager, "server_states", None)
+    if not callable(states):
+        return
+    try:
+        snapshot = states()
+    except Exception:
+        logger.debug("MCP server status unavailable", exc_info=True)
+        return
+    if isinstance(snapshot, list):
+        update_session_meta(store, session_id, {"mcp_servers": snapshot})
+
+
 def _with_current_system_prompt(messages: list[Message], system_prompt: str) -> list[Message]:
     """Replace the replayed history's leading system message with the current one.
 
@@ -373,12 +387,23 @@ async def run_agent_task(
         agent_digest = getattr(config, "agent_digest", None)
         if agent_digest:
             update_session_meta(store, events.session_id, {"agent_digest": agent_digest})
+        # Which MCP servers this run started with, including optional failures.
+        _record_mcp_states(store, events.session_id, mcp_manager)
         if resumed_from:
             update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
             # The definition may have changed since the session being resumed
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
-            before = (source_records.load_meta(resumed_from) or {}).get("agent_digest")
+            source_meta = source_records.load_meta(resumed_from) or {}
+            if config.spend_gate is None:
+                # Fresh runs start at zero; a resumed run continues the source's
+                # tree spend (#407), or records that it is unknown.
+                from garuda.core.spend import gate_for
+
+                if gate_for(config) is not None:
+                    update_session_meta(store, events.session_id, {
+                        "spend_inherited": config.spend_gate.inherit(source_meta.get("spend_gate"))})
+            before = source_meta.get("agent_digest")
             if before and agent_digest and before != agent_digest:
                 update_session_meta(store, events.session_id, {"agent_segment": {
                     "previous_digest": before, "digest": agent_digest,
@@ -428,6 +453,15 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
+            try:
+                return await _run_agent(task=task, trail=trail)
+            finally:
+                if config.spend_gate is not None:
+                    # The tree's settled spend, children included: what a resume continues from.
+                    update_session_meta(store, events.session_id,
+                                        {"spend_gate": config.spend_gate.snapshot()})
+
+        async def _run_agent(*, task: str, trail: EventStore):
             return await agent.run(
                 task=task,
                 model=model,
@@ -516,6 +550,8 @@ async def run_agent_task(
                 await cleanup_workspace(handle)
             except Exception:
                 logger.warning("Workspace cleanup failed", exc_info=True)
+            # Before close, so a reconnect or failure during the run stays visible.
+            _record_mcp_states(store, events.session_id, mcp_manager)
             if close_mcp and mcp_manager is not None:
                 try:
                     await mcp_manager.close()
