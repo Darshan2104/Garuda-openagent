@@ -2,6 +2,12 @@ import re
 from dataclasses import dataclass
 
 from garuda.tools.protocol import ToolContext, ToolEffect
+from garuda.tools.source_version import (
+    contract_option,
+    precondition_error,
+    version_token,
+    versioned_reads,
+)
 from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
@@ -295,6 +301,32 @@ def resolve_edit(
     )
 
 
+async def _with_version(message: str, ctx, env, path: str, updated: str) -> ToolResult:
+    """The edit result, carrying the new content's version for a chained edit.
+
+    The token must be what the next read_file reports, so it comes from a re-read:
+    a read may translate newlines (``\r\n`` or ``\r`` read back as ``\n``). If the
+    re-read fails or shows other content (another writer), the version is unknown.
+    """
+    if not versioned_reads(ctx) and "\r" not in updated:
+        # Legacy contract: the token is metadata only, and with no CR to translate
+        # the next read returns exactly what was written; spare the extra read.
+        current = updated
+    else:
+        try:
+            current = await env.read_file(path)
+        except Exception:  # The edit is written; only its version is unknown.
+            current = None
+    if current in (updated, _normalize_eol(updated)):
+        token = version_token(ctx, env, path, current)
+        shown = token
+    else:
+        token, shown = None, "unknown; read the file again before the next edit"
+    if versioned_reads(ctx):
+        message += f"\n(version: {shown})"
+    return ToolResult(tool_call_id="", content=message, metadata={"source_version": token})
+
+
 class EditTool:
     effect = ToolEffect.MUTATING
     name = "edit"
@@ -324,9 +356,15 @@ class EditTool:
                 "description": "Replace every occurrence of old_string (default false)",
                 "default": False,
             },
+            "expected_version": {
+                "type": "string",
+                "description": "The version read_file reported; the edit is refused if the "
+                "file changed since (required under the versioned edit contract)",
+            },
         },
         "required": ["path", "old_string", "new_string"],
     }
+    options_schema = {"contract": contract_option}
 
     async def execute(
         self,
@@ -368,6 +406,10 @@ class EditTool:
                 is_error=True,
             )
 
+        refusal = precondition_error(arguments, ctx, env, path, content, self.name)
+        if refusal:
+            return ToolResult(tool_call_id="", content=refusal, is_error=True)
+
         outcome = resolve_edit(content, old_string, new_string, path, replace_all)
         if not outcome.ok:
             return ToolResult(tool_call_id="", content=outcome.error, is_error=True)
@@ -384,4 +426,4 @@ class EditTool:
         from garuda.tools.diagnostics import post_edit_report
 
         message += await post_edit_report(env, path, ctx)
-        return ToolResult(tool_call_id="", content=message)
+        return await _with_version(message, ctx, env, path, outcome.updated)
