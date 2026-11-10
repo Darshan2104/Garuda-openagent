@@ -112,7 +112,9 @@ async def test_a_subagent_admits_against_the_roots_gate(tmp_path, monkeypatch):
     # all admitted by the one root gate and settled back to zero reservations.
     assert {owner for owner, _ in admitted} == {id(gate)}
     assert [p for _, p in admitted].count("main") == 4 and ("contract" in [p for _, p in admitted])
-    assert gate.settled_tokens == 400 and gate.reserved_tokens == 0
+    # The scripted contract call reports no usage, so it is charged its estimate.
+    assert gate.estimated_token_calls == 1 and gate.reserved_tokens == 0
+    assert gate.settled_tokens >= 400 + accounting.AUXILIARY_OUTPUT_ESTIMATE
 
 
 async def test_the_run_stops_when_the_tree_budget_is_exhausted(tmp_path):
@@ -211,3 +213,173 @@ async def test_an_unpriced_model_under_a_dollar_cap_stops_with_the_exact_reason(
     end = next(r for r in events.get_all() if r["type"] == EventType.SESSION_END.value)
     assert end["payload"]["reason"] == "spend_limit"
     assert end["payload"]["spend_cause"] == "cost_unknown"
+
+
+async def test_a_completed_call_with_no_reported_tokens_is_charged_its_estimate():
+    gate = SpendGate(max_tokens=1000)
+    await gate.settle(await gate.admit("main", estimate_tokens=900), {})
+    # The token cap stays enforced: the unreported call cost its estimate.
+    assert gate.settled_tokens == 900 and gate.snapshot()["estimated_token_calls"] == 1
+    with pytest.raises(SpendLimitExceeded):
+        await gate.admit("main", estimate_tokens=900)
+    # A reported zero is a report; a raised call stays failed without usage.
+    reported = SpendGate(max_tokens=1000)
+    await reported.settle(await reported.admit("main", estimate_tokens=900), {"total_tokens": 0})
+    await reported.settle(await reported.admit("main", estimate_tokens=900), None, failed=True)
+    assert (reported.settled_tokens, reported.estimated_token_calls,
+            reported.failed_without_usage) == (0, 0, 1)
+
+
+@pytest.mark.parametrize("caps", [{"max_tokens": 0}, {"max_cost_usd": float("nan")},
+                                  {"max_cost_usd": float("inf")}, {"max_cost_usd": 0.0}])
+def test_a_cap_that_cannot_bound_spend_is_refused(caps):
+    with pytest.raises(ValueError):
+        SpendGate(**caps)
+
+
+async def test_a_zero_token_cap_refuses_the_run_instead_of_disabling_the_gate(tmp_path):
+    with pytest.raises(ValueError, match="--max-run-tokens"):
+        await _run(tmp_path, [_done("d1", {"total_tokens": 10**6})], max_run_tokens=0)
+
+
+class _Counting(ScriptModel):
+    sent = 0
+
+    async def complete(self, *args, **kwargs):
+        self.sent += 1
+        return await super().complete(*args, **kwargs)
+
+
+async def _rigorous(tmp_path: Path, script, **limits):
+    from garuda.core.rigorous import RigorousAgent
+
+    config = AgentConfig(mode="rigorous", max_turns=20, enable_verifier=False, max_tokens=50,
+                         **limits)
+    events = EventStore(session_id="rigorous-spend")
+    model = _Counting(script)
+    result = await RigorousAgent().run(
+        task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, permissions=PermissionEngine(mode="yolo"),
+        events=events,
+    )
+    return result, config, events, model
+
+
+def _text(content, tokens):
+    return ModelResponse(content=content, tool_calls=[], usage={"total_tokens": tokens})
+
+
+def _session_end(events):
+    return next(r["payload"] for r in events.get_all() if r["type"] == EventType.SESSION_END.value)
+
+
+async def test_the_rigorous_plan_and_build_share_one_gate(tmp_path):
+    # The plan leaves too little for the build's first call: it is refused, and
+    # no critic call follows a run whose budget is gone.
+    script = [_text("PLAN: do it", 59_990)] + [_text("REJECTED: nope", 50_000)] * 6
+    result, config, events, model = await _rigorous(tmp_path, script, max_run_tokens=60_000)
+    assert not result.success and "spend budget exhausted" in result.final_message
+    assert model.sent == 1
+    gate = config.spend_gate
+    assert gate.settled_tokens == 59_990 and gate.calls == 1 and gate.refused == 1
+    assert _session_end(events)["reason"] == "spend_limit"
+    assert not [r for r in events.get_all() if r["type"] == EventType.VERIFICATION.value]
+
+
+async def test_a_refused_critic_call_ends_a_rigorous_run_on_the_spend_limit(tmp_path):
+    # Plan and build fit; the build's report leaves less than a critic call's
+    # output reservation, so the critic is refused rather than sent unbudgeted.
+    script = [_text("PLAN: do it", 100), _text("done", 197_000)] + [_text("REJECTED: no", 10)] * 6
+    result, config, events, model = await _rigorous(tmp_path, script, max_run_tokens=200_000)
+    assert model.sent == 2 and not result.success
+    assert result.metadata["spend_limit"] == "tokens"
+    assert _session_end(events)["reason"] == "spend_limit"
+    refusals = [r["payload"]["refused"] for r in events.get_all()
+                if r["type"] == EventType.BUDGET.value and "refused" in r["payload"]]
+    assert refusals == ["critic"] and config.spend_gate.refused == 1
+
+
+async def test_a_rigorous_critic_call_is_admitted_settled_and_recorded(tmp_path):
+    script = [_text("PLAN: do it", 100), _text("done", 100), _text("APPROVED", 100)]
+    result, config, events, model = await _rigorous(tmp_path, script, max_run_tokens=1_000_000)
+    assert result.success and model.sent == 3
+    gate = config.spend_gate
+    assert gate.calls == 3 and gate.settled_tokens == 300 and gate.reserved_tokens == 0
+    critic = [r["payload"] for r in events.get_all() if r["type"] == EventType.MODEL_RESPONSE.value
+              and r["payload"].get("call_purpose") == "critic"]
+    assert len(critic) == 1 and critic[0]["usage"]["total_tokens"] == 100
+
+
+async def test_a_rigorous_run_refused_at_its_plan_persists_the_gate(tmp_path, monkeypatch):
+    import json
+
+    from garuda.core.rigorous import RigorousAgent
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    model = _Counting([_text("PLAN: do it", 10)])
+    result = await run_agent_task(
+        task="t", model=model, agent=RigorousAgent(), tools=default_tools(),
+        config=AgentConfig(mode="rigorous", enable_verifier=False, max_run_tokens=1),
+        permissions=PermissionEngine(mode="yolo"), workspace=str(workspace),
+        events=EventStore(session_id="rigorous-plan-refused"), store=store,
+    )
+    assert not result.success and model.sent == 0
+    meta = json.loads((store.session_dir("rigorous-plan-refused") / "meta.json").read_text())
+    assert meta["spend_gate"]["refused"] == 1 and meta["spend_gate"]["calls"] == 0
+    assert meta["spend_gate"]["max_tokens"] == 1
+
+
+class _Started(Exception):
+    pass
+
+
+@pytest.fixture
+def launches(tmp_path, monkeypatch):
+    """`garuda run` up to the executor it would start, which raises its name."""
+    import os
+    import stat
+
+    import garuda.interfaces.main as main
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "pi-acp"
+    script.write_text("#!/bin/sh\necho 'pi-acp 9.9'\n")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(tmp_path / "settings.yaml"))
+
+    async def acp(args, task, catalog):
+        raise _Started(args.runtime)
+
+    async def native(*args, **kwargs):
+        raise _Started("native")
+
+    monkeypatch.setattr(main, "run_acp_command", acp)
+    monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", native)
+
+    async def run(*extra):
+        args = main.build_parser().parse_args(
+            ["run", "-t", "do it", "--workspace", str(tmp_path), *extra])
+        return await main.run_task(args)
+
+    return run
+
+
+@pytest.mark.parametrize("flags", [["--max-run-tokens", "0"], ["--max-run-cost-usd", "nan"],
+                                   ["--max-run-cost-usd", "inf"], ["--max-run-cost-usd", "-1"]])
+async def test_the_run_command_refuses_an_invalid_cap_before_any_runtime(launches, flags, capsys):
+    assert await launches(*flags) == 2
+    assert "--max-run-" in capsys.readouterr().err
+
+
+async def test_an_acp_runtime_refuses_the_tree_budget_flags(launches, capsys):
+    assert await launches("--runtime", "pi", "--max-run-tokens", "5000") == 2
+    assert "cannot be enforced on the ACP runtime" in capsys.readouterr().err
+    with pytest.raises(_Started, match="pi"):  # without a cap the runtime starts
+        await launches("--runtime", "pi")

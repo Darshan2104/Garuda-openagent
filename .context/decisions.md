@@ -2376,6 +2376,14 @@ admission with a reason saying the cap cannot be enforced for that model
 A call that raised before reporting usage (a context-overflow rejection) is
 not an unpriced call: it releases its reservation and is counted apart as
 failed without usage, so overflow recovery still runs under a dollar cap.
-Defaults stay unlimited. Not yet covered: collection workers keep their own
-ledger, consult and ACP children are separate roots, failed-attempt usage is
-#406, and resume accounting is #407.
+A completed call that reports no token count at all is charged its reservation
+estimate (`estimated_token_calls`), so a missing usage report cannot disable the
+token cap. Rigorous mode creates the gate before its plan phase: plan, every
+build round and the critic all admit against it, and a refusal in any phase ends
+the run with `spend_limit`. The root runner records the final gate snapshot as
+session meta `spend_gate`. A cap that cannot bound spend (tokens below 1, a
+cost that is not a finite amount above 0) is refused before any runtime is
+selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
+does not see that agent's model calls. Defaults stay unlimited. Not yet
+covered: collection workers keep their own ledger, consult children are
+separate roots, failed-attempt usage is #406, and resume accounting is #407.

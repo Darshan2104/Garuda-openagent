@@ -24,11 +24,17 @@ returned any usage (a context-overflow rejection, a transport error) releases it
 reservation and is counted apart as failed without usage; usage the exception
 carries is charged like any other. Such a call's spend, if the provider billed
 it at all, is not reported to Garuda and is not added to the settled total.
+
+**A completed call with no token fields is charged its estimate.** A provider
+that returns no usage at all (a stream whose server ignored ``include_usage``)
+did consume tokens; settling it as zero would leave the token cap unenforced, so
+its reservation estimate is charged instead and counted as ``estimated_token_calls``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,6 +68,26 @@ def usage_tokens(usage: dict | None) -> int:
     return sum(int(usage.get(key) or 0) for key in ("prompt_tokens", "completion_tokens"))
 
 
+def reports_tokens(usage: dict | None) -> bool:
+    """Whether the provider reported any token count, zero included."""
+    return isinstance(usage, dict) and any(
+        isinstance(usage.get(key), (int, float))
+        for key in ("total_tokens", "prompt_tokens", "completion_tokens"))
+
+
+def gate_for(config: Any) -> SpendGate | None:
+    """The run tree's gate on ``config``, created once when either cap is set.
+
+    Every phase that can start a run tree (``prepare_run``, the rigorous plan and
+    critic) goes through here, so a later phase reuses the gate an earlier one made.
+    """
+    if config.spend_gate is None and (config.max_run_tokens is not None
+                                      or config.max_run_cost_usd is not None):
+        config.spend_gate = SpendGate(max_tokens=config.max_run_tokens,
+                                      max_cost_usd=config.max_run_cost_usd)
+    return config.spend_gate
+
+
 @dataclass
 class SpendGate:
     max_tokens: int | None = None
@@ -74,15 +100,19 @@ class SpendGate:
     cost_unknown_calls: int = 0
     unpriced_model: str | None = None
     failed_without_usage: int = 0
+    estimated_token_calls: int = 0
     calls: int = 0
     refused: int = 0
     warned: bool = False
 
     def __post_init__(self) -> None:
+        # A cap that compares false against everything (NaN) or can never be
+        # reached (inf) would silently disable itself: refused, not accepted.
         if self.max_tokens is not None and self.max_tokens < 1:
-            raise ValueError("max run tokens must be at least 1")
-        if self.max_cost_usd is not None and self.max_cost_usd <= 0:
-            raise ValueError("max run cost must be greater than 0")
+            raise ValueError("--max-run-tokens must be at least 1")
+        if self.max_cost_usd is not None and not (
+                math.isfinite(self.max_cost_usd) and self.max_cost_usd > 0):
+            raise ValueError("--max-run-cost-usd must be a finite amount greater than 0")
 
     @property
     def limited(self) -> bool:
@@ -138,6 +168,11 @@ class SpendGate:
                 # zero and not as a completed call whose price is unknown.
                 self.failed_without_usage += 1
             else:
+                if not failed and not reports_tokens(usage):
+                    # Completed without any token count: the call consumed
+                    # tokens nobody reported, so its estimate stands in.
+                    tokens = reservation.tokens
+                    self.estimated_token_calls += 1
                 self.settled_tokens += tokens
                 if isinstance(cost, (int, float)):
                     self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
@@ -169,6 +204,7 @@ class SpendGate:
             "settled_cost_usd": round(self.settled_cost_usd, 8),
             "cost_unknown_calls": self.cost_unknown_calls,
             "failed_without_usage": self.failed_without_usage,
+            "estimated_token_calls": self.estimated_token_calls,
             "calls": self.calls,
             "refused": self.refused,
         }

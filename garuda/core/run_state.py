@@ -759,11 +759,9 @@ async def prepare_run(
     started_at = time.monotonic()
     deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
     # One spend gate per run tree: created at the root, inherited by children.
-    if config.spend_gate is None and (config.max_run_tokens or config.max_run_cost_usd):
-        from garuda.core.spend import SpendGate
+    from garuda.core.spend import gate_for
 
-        config.spend_gate = SpendGate(max_tokens=config.max_run_tokens,
-                                      max_cost_usd=config.max_run_cost_usd)
+    gate_for(config)
 
     # Session-wide record of what has already been asked and whether a writer is
     # loose. The collection coordinator samples the same object before/after a

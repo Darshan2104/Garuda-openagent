@@ -460,7 +460,10 @@ class DefaultAgent:
                      "error": str(exc)},
                 )
             what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
-            return state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turn)
+            result = state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turn)
+            # Read by a caller that runs phases of its own (rigorous) to stop there.
+            result.metadata["spend_limit"] = exc.cause
+            return result
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]

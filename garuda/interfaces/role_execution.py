@@ -39,6 +39,17 @@ async def run_task(args) -> int:
     if not task:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
+    # Run-tree spend caps (#405) are validated by the gate that will enforce them,
+    # before any runtime is selected: an invalid cap never reaches a run.
+    spend_caps = (getattr(args, "max_run_tokens", None), getattr(args, "max_run_cost_usd", None))
+    if spend_caps != (None, None):
+        from garuda.core.spend import SpendGate
+
+        try:
+            SpendGate(max_tokens=spend_caps[0], max_cost_usd=spend_caps[1])
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     # garuda.yaml is validated — a conflict or invalid file refuses — before
     # tags, runtimes, models or the workspace are touched (C.1).
     resolved_config = check_garuda_config(args)
@@ -142,6 +153,13 @@ async def run_task(args) -> int:
 
         selected = runtime_catalog.registry.get(args.runtime)
         if selected.kind is RuntimeKind.ACP:
+            if spend_caps != (None, None):
+                # The external agent makes its own model calls; Garuda cannot
+                # admit or settle them, so a cap here would be a silent no-op.
+                print(f"Error: --max-run-tokens/--max-run-cost-usd cannot be enforced on the "
+                      f"ACP runtime '{args.runtime}'; they bound the native run tree only "
+                      "(use --runtime native)", file=sys.stderr)
+                return 2
             try:
                 return await run_acp_command(args, task, runtime_catalog)
             except NativeStartupFallback as fallback:
@@ -197,11 +215,6 @@ async def run_task(args) -> int:
         config.max_turns = args.max_turns
     if getattr(args, "deadline_sec", None) is not None:
         config.deadline_sec = args.deadline_sec
-    if (getattr(args, "max_run_tokens", None) or 1) < 1 or (
-            getattr(args, "max_run_cost_usd", None) is not None and args.max_run_cost_usd <= 0):
-        print("Error: --max-run-tokens must be at least 1 and --max-run-cost-usd greater than 0",
-              file=sys.stderr)
-        return 2
     if getattr(args, "max_run_tokens", None) is not None:
         config.max_run_tokens = args.max_run_tokens
     if getattr(args, "max_run_cost_usd", None) is not None:
