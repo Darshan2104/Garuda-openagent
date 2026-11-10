@@ -65,7 +65,10 @@ tool authorized by the user-owned global config. Project tools cannot self-bless
 Execution: `bash.py` (a command that backgrounds something also records the
 process group it leaves behind, so the pre-completion sweep has an exact handle
 on it), `background.py`, `tmux.py`.
-Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed;
+Files: `files.py`, `edit.py`, `multi_edit.py` (with `source_version.py`: reads
+report a session-, path- and content-bound version token; edits honour an
+optional `expected_version`, required under the `tools.options` edit contract
+`versioned` (#368)), `search.py` (ripgrep-backed;
 grep/glob stop the producer through the Environment once a page plus one
 look-ahead line or 512 KiB is captured, keep the producer's exit status via a
 marker line so early stopping is distinguishable from completion, sort
@@ -829,3 +832,8 @@ ACP requests can outlive the server and retain existing timeout/audit delivery.
 page evidence, and chunked local scanner. `LocalEnvironment` owns asynchronous
 cancellation settlement; sandbox delegates after checking its ordinary real-path
 policy. `tools/files.py` renders bounded pages or the explicit legacy fallback.
+A page can carry `content_sha256`, the digest of the whole file's text as
+`read_file` returns it, hashed in the same pass (`digest=True` streams to EOF
+with bounded memory); `read_file` derives its source version from it and reports
+the version as unknown when a tail/bounded read did not cover the whole file.
+Outlines always parse the full `read_file` text, never a page.

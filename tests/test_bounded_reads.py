@@ -256,7 +256,7 @@ async def test_cancellation_settles_reader(tmp_path, monkeypatch):
 
     started, settled = threading.Event(), threading.Event()
 
-    def slow_reader(path, offset, limit, tail, cancelled):
+    def slow_reader(path, offset, limit, tail, cancelled, digest=False):
         started.set()
         assert cancelled.wait(3)
         settled.set()

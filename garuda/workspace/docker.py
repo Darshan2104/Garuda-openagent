@@ -212,7 +212,8 @@ class DockerEnvironment:
         return result.stdout
 
     async def read_text_page(self, path: str, *, offset: int = 1,
-                             limit: int = 2000, tail: bool = False) -> TextPage:
+                             limit: int = 2000, tail: bool = False,
+                             digest: bool = False) -> TextPage:
         raise NotImplementedError('Bounded text reads are not supported by this backend')
 
     async def read_bytes(self, path: str) -> bytes:

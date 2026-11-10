@@ -1,6 +1,8 @@
 """Optional bounded UTF-8 reads; ordinary Environment.read_file stays compatible."""
 
 import codecs
+import hashlib
+import io
 import os
 import re
 import stat
@@ -30,13 +32,24 @@ class TextPage:
     total_lines: int | None
     has_more: bool
     bytes_read: int
+    # SHA-256 (hex) of the UTF-8 encoding of the whole file's text exactly as the
+    # backend's read_file returns it (strict UTF-8, universal newlines), taken in
+    # the same pass as the page. None when this read did not cover the whole file.
+    content_sha256: str | None = None
 
 
 @runtime_checkable
 class BoundedTextEnvironment(Protocol):
     async def read_text_page(self, path: str, *, offset: int = 1,
-                             limit: int = 2000, tail: bool = False) -> TextPage:
+                             limit: int = 2000, tail: bool = False,
+                             digest: bool = False) -> TextPage:
         """Read UTF-8 strictly, with bounded memory/I/O, or raise NotImplementedError.
+
+        digest=True asks for TextPage.content_sha256 of the whole file: a forward
+        page then keeps streaming (memory stays bounded) to EOF instead of
+        stopping after the page. Without it the digest is reported only when the
+        page already covered the whole file. A backend that cannot hash the file
+        in the same pass returns None (unknown), never a page-only digest.
 
         Line boundaries match str.splitlines; long lines retain at most 2001
         characters so consumers can mark truncation. Unknown totals are None;
@@ -71,7 +84,7 @@ def _tail_start(stream, limit: int, cancelled: threading.Event) -> tuple[int, in
 
 
 def read_local_page(path: Path, offset: int, limit: int, tail: bool,
-                    cancelled: threading.Event) -> TextPage:
+                    cancelled: threading.Event, digest: bool = False) -> TextPage:
     if not 1 <= limit <= MAX_PAGE_LINES or offset < 1 or (tail and offset != 1):
         raise ValueError('Require offset >= 1, limit 1..2000, and no offset with tail')
     selected: deque[str] = deque(maxlen=limit)
@@ -79,6 +92,11 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
     count = scanned = 0
     skip_lf = False
     decoder = codecs.getincrementaldecoder('utf-8')('strict')
+    # The digest covers what LocalEnvironment.read_file returns (Path.read_text:
+    # strict UTF-8 with universal newlines), so it equals the digest an edit
+    # computes from its own full read of unchanged content.
+    hasher = hashlib.sha256()
+    newlines = io.IncrementalNewlineDecoder(None, translate=True)
 
     # Nonblocking open avoids getting stuck opening a FIFO; only regular files
     # support this capability. The caller resolves through its normal path policy.
@@ -106,6 +124,8 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
             forward += len(data)
             eof = not data
             text = decoder.decode(data, final=eof)
+            if not start_byte:
+                hasher.update(newlines.decode(text, final=eof).encode('utf-8'))
             if skip_lf and text:
                 # The CR ending the previous block already closed its line.
                 skip_lf = False
@@ -131,7 +151,7 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
                     carry = (carry + open_part[:MAX_LINE_CHARS + 1])[:MAX_LINE_CHARS + 1]
             # A short regular-file read isn't proof of EOF under concurrent edits.
             # Small files are exhausted to preserve exact existing count semantics.
-            if not tail and count >= offset + limit and forward >= CHUNK_BYTES:
+            if not tail and not digest and count >= offset + limit and forward >= CHUNK_BYTES:
                 return TextPage(tuple(selected), offset, None, True, forward)
             if eof:
                 if carry:
@@ -142,4 +162,5 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
                     return TextPage(tuple(selected), None, None, False, scanned + forward)
                 start = max(1, count - len(selected) + 1) if tail else offset
                 return TextPage(tuple(selected), start, count,
-                                count >= start + len(selected), scanned + forward)
+                                count >= start + len(selected), scanned + forward,
+                                hasher.hexdigest())

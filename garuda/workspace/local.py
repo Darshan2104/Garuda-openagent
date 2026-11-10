@@ -183,7 +183,8 @@ class LocalEnvironment:
         return await asyncio.to_thread(target.read_text, encoding="utf-8")
 
     async def read_text_page(self, path: str, *, offset: int = 1,
-                             limit: int = 2000, tail: bool = False) -> TextPage:
+                             limit: int = 2000, tail: bool = False,
+                             digest: bool = False) -> TextPage:
         import threading
 
         from garuda.workspace.text_reads import read_local_page
@@ -191,7 +192,7 @@ class LocalEnvironment:
         target = self._resolve_path(path)
         cancelled = threading.Event()
         task = asyncio.create_task(asyncio.to_thread(
-            read_local_page, target, offset, limit, tail, cancelled))
+            read_local_page, target, offset, limit, tail, cancelled, digest))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError as cancellation:
