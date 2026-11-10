@@ -2407,8 +2407,12 @@ session-keyed process-local snapshots addressed by the digest of the extraction
 and its provenance. The store caps snapshot, session, and global bytes/entries,
 including serialized provenance, with LRU eviction and bounded tombstones.
 `web_fetch` accepts exactly one URL or reference; references support section
-selection and character offsets, recalculate delivery completeness, and never
-refetch on a miss. Current domain restrictions still apply to every recorded
+selection and character offsets, plus `sections_from` (default zero) to list
+up to 16 section titles/ranges with a visible next cursor. Inventory discovery
+uses tool content because arbitrary `web_source` metadata does not reach the
+model or CLI run output. Inventory windows do not change body selection.
+References recalculate delivery completeness and never refetch on a miss.
+Current domain restrictions still apply to every recorded
 URL; clipped URLs or unknown redirect evidence refuse restricted admission.
 Snapshots do not survive process exit. This needs no workspace command or
 interpreter and keeps Docker/remote execution ownership unchanged.

@@ -78,7 +78,9 @@ The same source record includes heading-delimited character ranges and per-secti
 omission evidence, plus each vetted redirect's URL/status (at most five redirects).
 `web_store.py` owns opt-in rendered snapshots (`retain: true`), isolated by session
 in a bounded process-local LRU. `web_fetch` accepts `ref`, `section`, and `offset`
-to read them without network access; missing or evicted references fail closed.
+to read them without network access, plus `sections_from` to page the visible
+inventory in windows of up to 16 titles/ranges with a next cursor. Missing or
+evicted references fail closed.
 Dashboard grounding saves the shared source header and carries `web_source` on its
 existing `Source` record; `_blocking_fetch` retains its bare `(error, text)` contract.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.

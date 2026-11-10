@@ -204,13 +204,24 @@ first call returns):
 {"ref": "web:<returned digest>", "section": 2, "offset": 0, "max_bytes": 2000}
 ```
 
-The retained result lists section indices and character ranges; full section
-metadata is in `web_source.sections`. `section` is zero-based; `offset` counts
-characters within that section (or within the whole body if `section` is absent).
-Use `web_source.next_offset` for the next page; `null` means the retained selection
-has ended. Ranges exclude headers and truncation markers. Section metadata says
-which text was omitted, and keeps the final boundary unknown if the source was
-cut short. A metadata cap of 128 sections does not remove text from the body.
+The retained result's visible header lists up to 16 section titles, indices and
+character ranges. Follow its `next sections_from` value to discover later
+sections without refetching:
+
+```json
+{"ref": "web:<returned digest>", "sections_from": 16, "max_bytes": 2000}
+```
+
+`sections_from` defaults to zero and changes only the inventory window. A
+`next sections_from None` header means all indexed sections have been listed.
+`section` is zero-based; `offset` counts characters within that section (or
+within the whole body if `section` is absent). Follow the visible `next offset`
+for the next body page; `None` means the retained selection has ended. Ranges
+exclude headers and truncation markers. SDK callers can also inspect
+`web_source.sections` for full per-section omission evidence and
+`web_source.next_offset` (`null` at the end). The final boundary stays unknown
+if the source was cut short. The inventory cap of 128 sections does not remove
+text from the body.
 
 Retention is opt-in and bounded: 5 MB per snapshot, 16 entries / 8 MB per session,
 64 entries / 16 MB per process, including provenance bytes. The snapshot keeps

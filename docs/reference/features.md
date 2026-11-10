@@ -22,7 +22,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Any model | A LiteLLM `provider/model`, reasoning effort | `garuda run --model provider/model -t "…"` | [Level 2](../use-cases/change-code.md#use-a-different-model-for-one-run) |
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
-| Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
+| Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
 
 ## Where commands run
 

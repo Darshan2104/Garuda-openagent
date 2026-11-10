@@ -396,8 +396,11 @@ fastest way to learn the system.
    provenance bytes). Oversized snapshots are reported unavailable. Evictions
    are recorded with at most 128 tombstones; older misses remain unknown.
    `web_fetch(ref=..., section=..., offset=...)` pages the stored extraction
-   and recalculates delivery evidence without refetching; the current domain
-   allowlist must still admit every recorded URL. Unknown redirect evidence or
+   and recalculates delivery evidence without refetching. The visible header
+   lists up to 16 section titles/ranges; reference reads accept `sections_from`
+   (default zero) to page that inventory independently of the body selection,
+   with a visible next cursor until all indexed sections are discoverable.
+   The current domain allowlist must still admit every recorded URL. Unknown redirect evidence or
    clipped URLs refuse allowlist admission. References expire on eviction or
    process exit and are unavailable in another session. Dashboard grounding
    uses `_fetch_page` and the shared header renderer, preserving its `Source`

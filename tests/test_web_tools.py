@@ -5,6 +5,7 @@ in-memory HTTP transport and search providers are stubbed at ``_fetch_raw``."""
 import hashlib
 import io
 import json
+import re
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -482,6 +483,55 @@ async def test_section_titles_and_inventory_are_bounded_without_clipping_the_bod
     assert "é" * 80 + "..." in result.content
     assert source["completeness"] == "complete"
     assert result.content.endswith("More\n\nbody")
+
+
+async def test_retained_section_inventory_is_discoverable_in_content(site, monkeypatch):
+    html = "".join(f"<h2>Topic {i}</h2><p>Details {i}.</p>" for i in range(40))
+    monkeypatch.setitem(ROUTES, "/inventory", (200, {"Content-Type": "text/html"}, html.encode()))
+    ctx = ToolContext(session_id="inventory")
+    tool = WebFetchTool()
+    result = await tool.execute({"url": f"{site}/inventory", "retain": True, "max_bytes": 1}, None, ctx)
+    assert not result.is_error
+    ref = re.search(r"Rendered reference: (web:[0-9a-f]{64})", result.content)[1]
+
+    def no_fetch(*args, **kwargs):
+        raise AssertionError("inventory and section reads must not refetch")
+
+    monkeypatch.setattr(web.socket, "create_connection", no_fetch)
+    discovered = []
+    windows = []
+    for _ in range(3):
+        assert not result.is_error
+        inventory = next(line for line in result.content.splitlines() if line.startswith("Sections ("))
+        entries = re.findall(r"(\d+) \[(\d+), (\d+)\) '([^']+)'", inventory)
+        assert 0 < len(entries) <= 16
+        windows.append(len(entries))
+        discovered.extend((int(i), int(start), int(end), title) for i, start, end, title in entries)
+        cursor = re.search(r"next sections_from (\d+|None)\.", result.content)
+        assert cursor is not None, "the content must expose how to discover the next inventory window"
+        if cursor[1] == "None":
+            break
+        result = await tool.execute({"ref": ref, "sections_from": int(cursor[1]), "max_bytes": 1}, None, ctx)
+    else:
+        pytest.fail("the inventory must end after all 40 sections have been listed")
+
+    assert windows == [16, 16, 8]
+    start = 0
+    for i, actual in enumerate(discovered):
+        text = f"Topic {i}\n\nDetails {i}." + ("\n\n" if i < 39 else "")
+        end = start + len(text)
+        assert actual == (i, start, end, f"Topic {i}")
+        start = end
+    assert len(discovered) == 40
+    selected = await tool.execute({"ref": ref, "section": discovered[-1][0], "sections_from": 32}, None, ctx)
+    assert not selected.is_error
+    assert selected.content.partition("\n\n")[2] == "Topic 39\n\nDetails 39."
+
+    for invalid in (-1, 40, True, 1.5, "16", None):
+        denied = await tool.execute({"ref": ref, "sections_from": invalid}, None, ctx)
+        assert denied.is_error and "sections_from" in denied.content
+    denied = await tool.execute({"url": f"{site}/inventory", "sections_from": 0}, None, ctx)
+    assert denied.is_error and "require a retained ref" in denied.content
 
 
 async def test_retained_body_can_be_paged_by_section_without_fetching_again(site, monkeypatch):
