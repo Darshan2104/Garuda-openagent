@@ -144,6 +144,8 @@ class SubagentRunner:
     # cannot redefine which workspace implementation is actually executing.
     workspace_kind: str | None = None
     workspace_evidence_root: str | None = None
+    # The root's run-tree SpendGate (#405): children admit against the same budget.
+    spend_gate: Any = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -245,6 +247,7 @@ class SubagentRunner:
             config.deadline_sec = min(config.deadline_sec or remaining, remaining)
         config.delegation_depth = self.depth
         config.delegation_budget = budget
+        config.spend_gate = self.spend_gate
         config.notes_ledger = self.notes
         if self.allowed is not None:
             child = config.subagents if config.subagents is not None else self.allowed
