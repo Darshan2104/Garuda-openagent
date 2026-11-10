@@ -41,6 +41,8 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520
 
 # Upper bound on any single backoff/Retry-After sleep.
 _MAX_RETRY_SLEEP = 60.0
+# Response statuses that end a stream; ``in_progress``/``queued`` do not.
+_TERMINAL_STATUSES = frozenset({"completed", "incomplete", "failed", "cancelled"})
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -631,6 +633,7 @@ class LitellmModel:
         attempts: list[dict] = []
         response_stream = await self._complete_with_retries(kwargs, attempts)
         usage: dict = {}
+        terminal = False
         try:
             async for chunk in response_stream:
                 # Usage chunks are cumulative snapshots of this attempt, not deltas.
@@ -640,13 +643,21 @@ class LitellmModel:
                 if reported:
                     yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
                 for delta in _stream_deltas_from_chunk(chunk):
+                    terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
                     yield delta
         except Exception as exc:
             usage.update(_error_usage(exc))
             attach_usage(exc, attempts + [usage_attempt(usage, "failed")])
             raise
+        # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
+        # provider closed without a finish reason; only one the provider sent counts.
+        if hasattr(response_stream, "received_finish_reason"):
+            terminal = terminal and bool(response_stream.received_finish_reason
+                                         or getattr(response_stream, "intermittent_finish_reason", None))
         current = attempts + [usage_attempt(usage, "success")]
-        yield StreamDelta(done=True, usage=sum_usage(current) if not usage and attempts else None,
+        # Without a terminal chunk the stream ends without ``done``: a connection
+        # closed cleanly mid-answer is incomplete, not an answer.
+        yield StreamDelta(done=terminal, usage=sum_usage(current) if not usage and attempts else None,
                           attempt_usage=current)
 
     async def complete_streaming(

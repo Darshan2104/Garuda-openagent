@@ -148,6 +148,21 @@ async def test_midstream_failure_falls_back_once_without_dispatch(tmp_path: Path
     assert result.success and result.final_message == "All done."
 
 
+async def test_fallback_with_nested_or_missing_usage_values_keeps_the_answer(tmp_path: Path):
+    stream = ScriptedStream([StreamDelta(content_delta="Par"),
+                             StreamDelta(usage={"prompt_tokens": 40, "completion_tokens": 1}),
+                             ConnectionResetError("dropped")])
+    answer = ModelResponse(content="All done.", tool_calls=[], raw={"finish_reason": "stop"},
+                           usage={"prompt_tokens": 5, "prompt_tokens_details": {"cached_tokens": 3},
+                                  "cost_usd": None})
+    result, events = await _run(tmp_path, [stream, answer], lambda d: None)
+
+    [response] = _of(events, "model_response")
+    assert response["live_coverage"] == "fallback"
+    assert response["usage"] == {"prompt_tokens": 45, "completion_tokens": 1}
+    assert result.success and result.final_message == "All done."
+
+
 async def test_failed_fallback_records_one_failed_call(tmp_path: Path):
     class Unreachable(ScriptModel):
         async def complete(self, *args, **kwargs):
@@ -250,13 +265,26 @@ async def test_overflow_is_not_replayed_without_streaming():
 
 
 @contextmanager
-def _sse_endpoint(chunks: list[dict]):
-    """A local OpenAI-compatible endpoint that streams ``chunks`` over real HTTP."""
+def _sse_endpoint(chunks: list[dict], completion: dict | None = None):
+    """A local OpenAI-compatible endpoint that streams ``chunks`` over real HTTP.
+
+    A non-streaming request is answered with ``completion``; ``server.streamed``
+    records each request's ``stream`` flag.
+    """
 
     class Endpoint(BaseHTTPRequestHandler):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            assert request.get("stream") is True
+            self.server.streamed.append(bool(request.get("stream")))
+            if not request.get("stream"):
+                assert completion is not None
+                body = json.dumps(completion).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             body = b"".join(f"data: {json.dumps(c)}\n\n".encode() for c in chunks) + b"data: [DONE]\n\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -268,6 +296,7 @@ def _sse_endpoint(chunks: list[dict]):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    server.streamed = []
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -320,3 +349,39 @@ async def test_litellm_stream_over_http_dispatches_only_the_assembled_call(tmp_p
     assert response["live_coverage"] == "streamed"
     assert [d.text for d in seen if d.kind == "text"] == ["Writ", "ing."]
     assert (tmp_path / "a.txt").read_text() == "hi"
+
+
+async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: Path):
+    from garuda.model.litellm_model import LitellmModel
+
+    # The connection closes cleanly mid-answer: no chunk carries a finish_reason.
+    cut_short = [
+        _chunk({"role": "assistant", "content": "Partial ans"}),
+        _chunk({"tool_calls": [{"index": 0, "id": "call_w", "type": "function",
+                                "function": {"name": "write_file", "arguments": json.dumps(WRITE)[:12]}}]}),
+    ]
+    completion = {"id": "c", "object": "chat.completion", "created": 1, "model": "fixture",
+                  "choices": [{"index": 0, "finish_reason": "stop",
+                               "message": {"role": "assistant", "content": "All done."}}],
+                  "usage": {"prompt_tokens": 30, "completion_tokens": 2, "total_tokens": 32}}
+    seen: list[LiveDelta] = []
+    with _sse_endpoint(cut_short, completion) as server:
+        model = LitellmModel("openai/fixture", api_key="local-fixture", max_retries=1,
+                             api_base=f"http://127.0.0.1:{server.server_port}/v1")
+        events = EventStore()
+        result = await DefaultAgent().run(
+            task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+            tools=default_tools(), config=AgentConfig(max_turns=1, enable_verifier=False,
+                                                      force_final_submission=False),
+            events=events, model_delta_consumer=seen.append,
+        )
+
+    assert server.streamed == [True, False]
+    [response] = _of(events.get_all(), "model_response")
+    assert response["live_coverage"] == "fallback"
+    assert response["stream_error"].startswith("IncompleteStreamError")
+    assert response["content"] == "All done."
+    assert _of(events.get_all(), "tool_call") == []
+    assert not (tmp_path / "a.txt").exists()
+    assert [d.kind for d in seen] == ["text", "discard"]
+    assert result.final_message == "All done."
