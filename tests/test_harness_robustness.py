@@ -444,4 +444,9 @@ os.execvp(args[2], args[2:])
     else:
         env = RemoteEnvironment(["docker", "-H", "unix:///unused"], "test-container", workspace_root=str(tmp_path))
     assert await env.read_bytes(filename) == payload
+    assert await env.read_bytes(filename, max_bytes=len(payload)) == payload
+    with pytest.raises(ValueError, match="byte limit"):
+        await env.read_bytes(filename, max_bytes=len(payload) - 1)
+    with pytest.raises(FileNotFoundError):
+        await env.read_bytes("absent.bin", max_bytes=32)
     assert not (tmp_path / "injected").exists()

@@ -493,3 +493,63 @@ No new option is needed, and retry counts and fallback behavior stay the same.
 
 **Next:** make every run understand your project in
 [Level 3 · Teach it your project](customize.md).
+
+## Preview a Python import migration
+
+The opt-in `python_codemod` tool renames an imported API name across an explicit
+list of Python files. Add it to a native agent definition (see
+[agent definitions](customize.md#create-your-own-agent)):
+
+```yaml
+version: 1
+extends: garuda/build
+tools:
+  add: [python_codemod]
+```
+
+Ask the agent to call it with these arguments:
+
+```json
+{
+  "action": "preview",
+  "paths": ["client.py", "worker.py"],
+  "transformation": {
+    "kind": "rename_import", "module": "api", "old": "fetch", "new": "fetch_one"
+  }
+}
+```
+
+For `from api import fetch`, preview proposes `from api import fetch_one` and
+updates unambiguous `fetch(...)` references in that file. For
+`from api import fetch as load`, it changes the imported name and retains `load`.
+Review each diff, SHA-256 `before_digest`, and `issues`, then explicitly apply:
+
+```json
+{"action": "apply", "preview_token": "<exact token returned by preview>"}
+```
+
+Preview reads through the Environment and parses on the host without executing
+workspace code or requiring Python in a container. It preserves comments,
+spacing, line endings, and all text outside replaced name tokens. The limits are
+16 relative `.py` paths, 128 KiB per input/output file, and 1,000 replacements
+across the plan. Only ASCII rename identifiers and UTF-8 source without a BOM
+are supported. Strings and attribute names remain unchanged and are listed as
+skipped; shadowed/rebound names, star imports, dynamic lookup, nested target
+imports, uncertain token positions, and syntax errors block the entire plan.
+This tool does not resolve symbols across modules or migrate `module.fetch`.
+
+Apply screens each selected path through the current read/write permission
+engine and checks every original byte digest before the first write, including
+files with no changes. Tokens are single-use after admission, bound to the same
+session context and Environment instance; only the latest four previews are
+retained in memory, and resume requires a fresh preview. Read-only mode refuses
+the tool, including preview. Existing default edit tools are unchanged.
+
+A failed write restores every attempted file, including a partially written
+failing file, and verifies restoration by reading it back. The report gives
+per-file `status`, `write`, and `restoration` results, distinguishing restored,
+unattempted, and unknown restoration. Cancellation settles the active write and
+attempts restoration before propagating. This is a bounded restoration protocol,
+not a filesystem transaction: other processes can observe intermediate writes,
+and concurrent external writers, process death, or an unavailable Environment
+can prevent restoration. Review any `restoration_failed` report before continuing.

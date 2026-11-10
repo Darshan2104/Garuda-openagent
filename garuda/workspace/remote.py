@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 from garuda.types import ExecResult
+from garuda.workspace.paths import check_read_size
 from garuda.workspace.sandbox_policy import DockerLimits
 from garuda.workspace.text_reads import TextPage
 
@@ -214,13 +215,25 @@ class RemoteEnvironment:
                              digest: bool = False) -> TextPage:
         raise NotImplementedError('Bounded text reads are not supported by this backend')
 
-    async def read_bytes(self, path: str) -> bytes:
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
         # No login shell: profile banners must not corrupt the encoded content.
-        result = await self._exec_argv(["sh", "-c", f"base64 < {shlex.quote(target)}"])
+        if max_bytes is None:
+            result = await self._exec_argv(["sh", "-c", f"base64 < {shlex.quote(target)}"])
+        else:
+            if type(max_bytes) is not int or max_bytes < 0:
+                raise ValueError("max_bytes must be a nonnegative integer")
+            # POSIX sh, like the unbounded read: images without bash must work.
+            # The explicit test stands in for pipefail, since base64 of an
+            # empty pipe would otherwise succeed for a missing file.
+            quoted = shlex.quote(target)
+            result = await self._exec_argv([
+                "sh", "-c",
+                f"[ -f {quoted} ] && [ -r {quoted} ] || exit 1; head -c {max_bytes + 1} < {quoted} | base64",
+            ])
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr.strip() or f"Cannot read {path}")
-        return base64.b64decode(result.stdout)
+        return check_read_size(base64.b64decode(result.stdout), max_bytes)
 
     async def write_file(self, path: str, content: str) -> None:
         temp = Path(tempfile.gettempdir()) / f"garuda-remote-upload-{uuid.uuid4().hex}.txt"
