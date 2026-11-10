@@ -118,8 +118,15 @@ def _agent_definition(workspace: str, path: str) -> dict:
             "warnings": [str(w)[:MAX_ERROR_CHARS] for w in (getattr(profile, "warnings", None) or [])][:10]}
 
 
-def config_evidence(workspace: str, changed: list[str] | None) -> dict:
-    """Bounded loader outcomes for the candidate's changed configuration files."""
+def config_evidence(workspace: str, changed: list[str] | None, *,
+                    changed_complete: bool | None = None) -> dict:
+    """Bounded loader outcomes for the candidate's changed configuration files.
+
+    ``changed_complete`` says whether ``changed`` is the whole change set
+    (``None``: unknown). A configuration file past a cut change list is never
+    seen here, so this block is complete only when the change list is and its
+    own ``MAX_CONFIG_FILES`` bound did not cut it either.
+    """
     if changed is None:
         return {"status": "unknown", "reason": "the changed files were not recorded", "files": []}
     targets = [(p, kind) for p in changed if (kind := _kind(str(p)))]
@@ -127,5 +134,16 @@ def config_evidence(workspace: str, changed: list[str] | None) -> dict:
     for path, kind in targets[:MAX_CONFIG_FILES]:
         outcome = (_project_config if kind == "project-config" else _agent_definition)(workspace, str(path))
         files.append({"path": str(path), "kind": kind, **outcome})
-    return {"status": "recorded", "files": files, "total": len(targets),
-            "complete": len(targets) <= MAX_CONFIG_FILES}
+    evidence = {"status": "recorded", "files": files, "total": len(targets), "complete": True}
+    if changed_complete is not True:
+        # Only the files seen so far are counted; the true total is not known.
+        evidence.update(total=None, seen=len(targets), complete=changed_complete,
+                        reason="the change list was cut; configuration files past the cut are "
+                               "not evidenced" if changed_complete is False else
+                               "whether the change list is whole is unknown; configuration "
+                               "files missing from it are not evidenced")
+    if len(targets) > MAX_CONFIG_FILES:
+        evidence["complete"] = False
+        evidence.setdefault("reason", f"only the first {MAX_CONFIG_FILES} changed "
+                                      "configuration files are evidenced")
+    return evidence

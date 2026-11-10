@@ -291,6 +291,19 @@ class FlowRunner:
     async def _version_for_flow(self) -> str | None:
         return await self._evidence.version() if self._evidence is not None else self._version()
 
+    def _version_binds(self) -> bool:
+        """Whether a workspace version can tell candidates apart at all.
+
+        Outside a git work tree every state fingerprints alike, so a matching
+        version proves nothing; an unreadable repository proves nothing either.
+        """
+        from garuda.workspace.diff import BASELINE_UNSUPPORTED_NONREPO, DiffError, capture_baseline
+
+        try:
+            return capture_baseline(self.workspace).state != BASELINE_UNSUPPORTED_NONREPO
+        except DiffError:
+            return False
+
     def _role_plan(self, role: str):
         if self.prepared_roles is not None:
             if role not in self.prepared_roles:
@@ -1048,7 +1061,10 @@ class FlowRunner:
         """Freeze what the reviewer is shown, from the reviewed step's own records.
 
         Refuses when the workspace no longer is the candidate the reviewed step
-        produced; unknown identities and manifests stay explicitly unknown.
+        produced; unknown identities and manifests stay explicitly unknown. A
+        candidate version that is unknown, or cannot tell workspaces apart,
+        leaves the binding unenforced, which a review that must be independent
+        refuses.
         """
         from garuda.flows import review as rv
         from garuda.flows.review_evidence import config_evidence
@@ -1074,13 +1090,25 @@ class FlowRunner:
                        "attempt": reviewed.get("attempt"), "workspace_version": candidate,
                        "workspace_version_before": reviewed.get("workspace_version_before")},
             changed=changed if isinstance(changed, list) else None,
+            changed_total=meta.get("delta_changed_total"),
+            version_binds=candidate is not None and self._version_binds(),
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
             no_edits=self._no_edits(terminal, terminal["role"]),
-            config=await _settled_sync(config_evidence, self.workspace,
-                                       changed if isinstance(changed, list) else None))
+            config=await _settled_sync(
+                config_evidence, self.workspace, changed if isinstance(changed, list) else None,
+                changed_complete=rv.change_list_complete(
+                    changed if isinstance(changed, list) else None,
+                    meta.get("delta_changed_total"))))
         await self._publish(self.flow_session, {"review_packet": {
             "digest": packet["digest"], "candidate": packet["candidate"],
-            "changed_total": packet["changed"]["total"]}})
+            "binding": packet["binding"], "changed_total": packet["changed"]["total"],
+            "changed_complete": packet["changed"]["complete"]}})
+        if not packet["binding"]["enforced"] and spec.get("independent", True):
+            # Without a candidate version a review cannot be shown to describe
+            # what it reviewed; an independent review must not rest on that.
+            raise FlowStopped("flow.review_candidate_unknown",
+                              "the reviewed step's workspace version is unknown, so the review "
+                              "cannot be bound to its candidate", step=terminal["id"])
         return packet
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,

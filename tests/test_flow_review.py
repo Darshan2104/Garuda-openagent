@@ -495,7 +495,8 @@ def test_a_shadowed_agent_definition_names_the_definition_that_wins(tmp_path):
 
     _write(tmp_path, {".agent/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: wins\n",
                       ".garuda/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: loses\n"})
-    evidence = config_evidence(str(tmp_path), [".garuda/agents/rev.yaml", ".agent/agents/rev.yaml"])
+    evidence = config_evidence(str(tmp_path), [".garuda/agents/rev.yaml", ".agent/agents/rev.yaml"],
+                               changed_complete=True)
     by_path = {f["path"]: f for f in evidence["files"]}
     assert by_path[".garuda/agents/rev.yaml"]["status"] == "shadowed"
     assert by_path[".garuda/agents/rev.yaml"]["loaded_from"] == ".agent/agents/rev.yaml"
@@ -518,3 +519,118 @@ def test_agent_definitions_in_the_agent_home_are_evidenced(tmp_path):
     assert by_path[".agent/agents/careful/agent.md"]["source"] == ".agent/agents/careful/agent.md"
     assert "description" in by_path[".agent/agents/careful/agent.md"]["declared"]
     assert by_path[".agent/agents/careful/notes.md"]["status"] == "not-loaded"
+
+
+class ManyFilesScript(Script):
+    """The coder changes more files than session meta keeps, recorded by the real finish."""
+
+    def __init__(self, reviews, count, *, record_total=True):
+        super().__init__(reviews)
+        self.count, self.record_total = count, record_total
+
+    async def __call__(self, launch):
+        from garuda.workspace import evidence
+
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            from pathlib import Path
+
+            store, workspace = SessionStore(), Path(launch.workspace)
+            store.begin(result.session_id, task="t", model="m", agent="a",
+                        workspace=str(workspace))
+            evidence.begin_session_evidence(store, result.session_id, workspace, "local")
+            for n in range(self.count):
+                (workspace / f"f{n:03}.txt").write_text("x\n")
+            evidence.finish_session_evidence(store, result.session_id, workspace)
+            if not self.record_total:  # a session finished before totals were recorded
+                store.update_meta(result.session_id, {"delta_changed_total": None})
+        return result
+
+
+@pytest.mark.parametrize("record_total, total, complete", [(True, 451, False),
+                                                           (False, None, None)])
+async def test_a_cut_change_list_is_never_reported_complete(repo, record_total, total, complete):
+    script = ManyFilesScript([APPROVE], 451, record_total=record_total)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert f"&quot;complete&quot;: {json.dumps(complete)}" in prompt
+    assert f"&quot;total&quot;: {json.dumps(total)}" in prompt
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (total, complete)
+
+
+async def test_a_short_change_list_is_complete(repo):
+    script = ManyFilesScript([APPROVE], 3)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert "&quot;complete&quot;: true" in script.prompts[("review", 1)]
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (3, True)
+
+
+@pytest.fixture
+def plain_dir(tmp_path):
+    path = tmp_path / "plain"  # not a git repository: no workspace version
+    path.mkdir()
+    (path / "a.txt").write_text("a\n")
+    return path
+
+
+async def test_an_unknown_candidate_refuses_an_independent_review(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0)).run()
+    assert result.stopped.code == "flow.review_candidate_unknown"
+    assert ("review", 1) not in script.sequence
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert packet["binding"]["enforced"] is False
+
+
+async def test_an_unknown_candidate_is_not_called_frozen(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0, independent=False)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert "not enforced" in prompt
+    assert "frozen" not in prompt and "will be refused" not in prompt
+
+
+@pytest.mark.parametrize("record_total, complete, reason", [
+    (True, False, "past the cut"), (False, None, "whether the change list is whole is unknown")])
+async def test_config_evidence_is_not_complete_when_the_change_list_is_not(
+        repo, record_total, complete, reason):
+    script = ManyFilesScript([APPROVE], 451, record_total=record_total)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    config_block = prompt[prompt.index("&quot;config&quot;"):prompt.index("&quot;checks&quot;")]
+    assert f"&quot;complete&quot;: {json.dumps(complete)}" in config_block
+    assert "&quot;total&quot;: null" in config_block  # what lies past the cut is not counted
+    assert reason in config_block
+
+
+@pytest.mark.parametrize("changed_complete, expected", [(True, True), (False, False), (None, None)])
+def test_config_evidence_follows_the_change_lists_completeness(tmp_path, changed_complete, expected):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n"})
+    evidence = config_evidence(str(tmp_path), ["garuda.yaml"], changed_complete=changed_complete)
+    assert evidence["files"][0]["path"] == "garuda.yaml"
+    assert evidence["complete"] is expected
+    if expected is not True:
+        assert evidence["total"] is None and evidence["seen"] == 1 and evidence["reason"]
+
+
+def test_config_evidence_with_no_completeness_stated_is_unknown(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n"})
+    assert config_evidence(str(tmp_path), ["garuda.yaml"])["complete"] is None
+
+
+def test_config_evidence_keeps_its_own_bound_on_a_whole_change_list(tmp_path):
+    from garuda.flows.review_evidence import MAX_CONFIG_FILES, config_evidence
+
+    paths = [f".garuda/agents/a{n}.yaml" for n in range(MAX_CONFIG_FILES + 1)]
+    evidence = config_evidence(str(tmp_path), paths, changed_complete=True)
+    assert len(evidence["files"]) == MAX_CONFIG_FILES
+    assert evidence["total"] == MAX_CONFIG_FILES + 1 and evidence["complete"] is False

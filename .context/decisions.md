@@ -2369,6 +2369,12 @@ session records: candidate workspace version, recorded changed files (or
 `unknown`, never empty), reviewer role, plan and no-edits posture, and a
 digest recorded with the round. A workspace that differs from the candidate
 before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
 Reviewers may return a strict version 2 structured review; invalid structured
 findings stop the flow and never approve, and the legacy line format is parsed
 exactly as before. Effective-config and check-receipt evidence are #421.
@@ -2384,3 +2390,6 @@ a nested `garuda.yaml` is `not-loaded`, and a definition outranked by a
 same-name one (`.agent/agents` before `.garuda/agents`) is `shadowed` with
 the winning path. This is parsing and resolution only; nothing runs. It makes a field the loader rejects or ignores
 visible to the reviewer instead of only the author's text.
+The block reads the same change list as the packet, so it is `complete`
+only when that list is whole: a cut list makes it incomplete and a list of
+unknown size makes it unknown (`complete: null`), with a reason and no total.
