@@ -220,6 +220,27 @@ async def test_lint_runs_when_syntax_is_inconclusive(tmp_path: Path, monkeypatch
     assert states["lint"]["diagnostics"][0]["attribution"] == "introduced"
 
 
+@pytest.mark.skipif(not HAS_RUFF, reason="ruff not installed")
+async def test_lint_reports_ruff_syntax_errors_without_python3(tmp_path: Path, monkeypatch):
+    ruff = shutil.which("ruff")
+    assert ruff
+    (tmp_path / "ruff").symlink_to(ruff)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("bad.py", "def f(x):\n  pass\n")
+    result = await EditTool().execute(
+        {"path": "bad.py", "old_string": "def f(x):", "new_string": "def f(:"}, env, CTX,
+    )
+    states = result.metadata["diagnostics"]["checkers"]
+    assert states["syntax"]["reason"] == "missing_checker"
+    lint = states["lint"]
+    assert lint["status"] == "violations" and lint["reason"] is None
+    assert lint["diagnostics"][0]["code"] == "invalid-syntax"
+    assert lint["diagnostics"][0]["line"] == 1 and lint["diagnostics"][0]["column"] == 7
+    assert not lint["diagnostics"][0]["message"].startswith(":")
+    assert "Lint issues" in result.content and "invalid-syntax" in result.content
+
+
 @pytest.mark.parametrize("body,reason", [
     ("echo checker-crashed >&2\nexit 2\n", "checker_failed"),
     ("echo 'RuntimeError: checker-crashed' >&2\nexit 1\n", "checker_failed"),

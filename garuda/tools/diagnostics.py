@@ -170,7 +170,8 @@ async def _lint(env: Environment, path: str, source: str, *, baseline: bool = Fa
                  complete=len(lines) <= 6 and len(output) <= 800)
     remaining = 800
     for line in lines[:6]:
-        match = re.fullmatch(r".+?:(\d+):(\d+): ([\w-]+) (.+)", line)
+        # Ruff ends rule codes with a space and syntax errors with "invalid-syntax:".
+        match = re.fullmatch(r".+?:(\d+):(\d+): ([\w-]+):? (.+)", line)
         if match is None:
             state.update(status="error", reason="invalid_output", diagnostics=[], complete=False)
             break
