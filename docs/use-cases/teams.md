@@ -178,6 +178,34 @@ sequenceDiagram
   with the findings, for up to `max_rounds` more rounds. The flow ends
   `review_approved` or `review_changes_requested`. A review is not
   verification.
+- Before each review, the reviewer gets a **review packet**: the candidate it
+  is reviewing (the reviewed step's session and workspace version), the files
+  that step changed (or `unknown` if they weren't recorded), its own role and
+  permissions, and a digest. The flow records the digest with the round. If the
+  workspace changed after the reviewed step, or changes while the review runs,
+  the flow stops with `flow.review_stale_candidate` instead of trusting a
+  review of something else. A change list that session records cut short is
+  marked incomplete, or `complete: null` when its full size wasn't recorded.
+- That binding needs a workspace version that tells candidates apart, which
+  only a git work tree has. Otherwise the packet says the binding is not
+  enforced, and a review that must be independent stops with
+  `flow.review_candidate_unknown` before the reviewer runs; with
+  `independent: false` the review runs and is told the binding is unenforced.
+- If the reviewed step changed `garuda.yaml` or a `.agent/agents/` or
+  `.garuda/agents/` definition, the packet also shows what Garuda's own loader
+  made of it: loaded (with the keys that file supplied and any values withheld
+  because the project file is not trusted), refused with the loader's error,
+  `shadowed` by a same-name definition that takes precedence (named), or
+  `not-loaded` when Garuda never reads that path, such as a nested
+  `garuda.yaml`. A field the loader rejects
+  or ignores is visible to the reviewer instead of only the text the author
+  wrote. Loading only parses; nothing is run. When the change list is cut or
+  its size unknown, this block is marked incomplete or unknown too.
+- A reviewer may answer with the line format or a structured JSON review
+  (`"version": 2`) whose findings each give a severity, a workspace-relative
+  path and line range, the message, the evidence and how to verify a fix.
+  Structured findings are checked strictly; an invalid one stops the flow and
+  is never an approval. A finding's `confidence` is the reviewer's own claim.
 - Repeated `--check` commands run on Linux only after every required step and
   review settles. The parent flow keeps the workspace lease until candidate-bound
   receipts and the final verdict are published. `build-review` starters select
@@ -308,6 +336,58 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
   Docker read-only confinement described [below](#keep-a-role-from-changing-anything).
   An external harness can't *ask* yet; see
   [External harnesses](../guides/external-harnesses.md#consult-transport).
+
+## Get an advisor's second opinion when a run keeps failing
+
+<p class="gd-facts">Opt-in · Uses a role you already let it consult · Advice only</p>
+
+**Use it when** you want a stronger or different model to look in once a run
+is stuck, or at its first plan or completion claim, without letting it act.
+
+```yaml
+# garuda.yaml: the coder may consult the planner
+roles:
+  coder:   {harness: native, model_id: MODEL_A, consult: [planner], agent: careful}
+  planner: {harness: native, model_id: MODEL_B}
+```
+
+```yaml
+# .agent/agents/careful.yaml
+version: 1
+extends: garuda/build
+advisor:
+  role: planner     # must be one of the coder's consult targets
+  max_notes: 2      # delivered notes per run (default 2)
+  checkpoints: [repeated-failure, plan-ready, candidate-ready]
+```
+
+**What happens**
+
+- With `checkpoints` omitted, only three consecutive failed tool steps trigger
+  advice, at the existing stuck-agent nudge. The example also selects the first
+  successful nonempty `todo` or `update_goal(plan=...)` and the first completion
+  claim. Plan-ready and candidate-ready each run at most once; `checkpoints: []`
+  disables all checkpoints. Unknown checkpoint names refuse the definition.
+- Each checkpoint uses the ordinary consult path: read-only, on a snapshot,
+  with its own receipt. Candidate advice arrives before the completion gate and
+  can give the run one more ordinary turn to weigh it, within existing turn and
+  deadline limits. The agent must submit again through the same gate.
+- Its answer arrives before the next turn, labelled as advice. It cannot grant
+  permissions, approve or verify work, or replace an independent review.
+- Notes must cite a path, quoted command or quoted error in the bounded brief,
+  or a workspace path whose existence the Environment can confirm. This cheap
+  citation check does not establish that the advice is correct. Uncited notes
+  are suppressed as `no evidence cited` and do not spend the note cap.
+- All selected checkpoints share the note cap; repeated advice is dropped.
+  An advisor that fails or is busy changes nothing about the run. Stop/cancel and deadline or
+  turn exhaustion suppress advice; late answers never resume a cancelled or
+  ended run. Provider quota failures do not create an advisor retry or restart.
+  Consult admission and receipts retain their existing spend limits/accounting;
+  charging advisor spend to the run-tree spend gate remains a follow-up.
+- If `advisor.role` isn't one of the role's consult targets, no advisor runs
+  and the session records why.
+- Each request, delivered note and suppression is an `advisor` event in the
+  session.
 
 ## Require checks for every run in this project
 

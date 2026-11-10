@@ -114,11 +114,34 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
-   The loop calls `Model.complete()`; model streaming APIs and renderer delta
-   hooks do not yet provide native token-by-token loop rendering. External
-   harness streaming is a separate runtime path. Standalone ACP runs can use
+   An opt-in `core/advisor.py` reuses consult admission and between-turn steering.
+   Definitions select repeated-failure (the default), first-plan and
+   first-candidate checkpoints. Notes require literal evidence citations and are
+   capped and deduplicated. A candidate note may defer completion once within
+   existing budgets; it never counts as verification or independent review.
+   Awaited consults recheck run liveness before delivery, including cancellation
+   during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
+   The loop calls `Model.complete()` unless the run was given a
+   `model_delta_consumer`. Then `_timed_complete` makes the call through
+   `model/streaming.py`: text and reasoning deltas reach the consumer, the
+   stream is assembled into the same `ModelResponse` before any tool is
+   dispatched, a stream that fails before its terminal chunk falls back once to
+   `complete()` (the consumer is told to discard what it showed), overflow
+   propagates to the shrink-and-retry path, and cancellation propagates with
+   nothing assembled. The `model_response` event records `live_coverage`
+   (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
+   call outcome. No interface attaches a consumer yet. External harness
+   streaming is a separate runtime path. Standalone ACP runs can use
    explicit post-run acceptance checks even though the native completion gate
    does not run inside the external harness.
+   Native edit/write/multi-edit tools return bounded advisory syntax/lint state
+   in `ToolResult.metadata["diagnostics"]`. Each checker reports availability,
+   execution, a source digest, status and timing; observed content changes
+   invalidate the result. Known pre-edit content permits conservative attribution
+   through the same fixed checkers, only when a violation needs comparison.
+   Missing, failed or ambiguous checks never imply clean or introduced findings.
+   This tool metadata does not enter acceptance verification or authorize project
+   commands; the existing acceptance owners remain authoritative.
    `Model.complete()` and LiteLLM's `complete_streaming()` preserve the
    provider's finish reason and status in `ModelResponse.raw`. The lower-level
    `stream()` helper carries observed values on `StreamDelta`, including empty
@@ -371,6 +394,12 @@ fastest way to learn the system.
    as a proved loss and relaunched (bounded per run, same unchanged and still-trusted
    entry); in-flight calls fail rather than replay, and the admitted tool list,
    effects and trust never widen.
+
+   The opt-in `python_codemod` keeps immutable, versioned previews in that context;
+   only declarative host-parsed import renames are admitted. Environment reads
+   are byte-bounded. Apply uses current per-path permissions and source digests,
+   verifies writes and attempts restoration on failure; restoration uncertainty
+   is explicit and no cross-file isolation or crash transaction is claimed.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
@@ -746,3 +775,14 @@ ACP accepts appended instructions only as labelled task context.
   this heavily — a fix whose reason isn't recorded gets re-broken.
 - **Tests are per mechanism.** `tests/` mirrors the module under test; live
   Docker and Seatbelt checks are opt-in so CI stays deterministic.
+
+## Bounded workspace text inspection
+
+`workspace/text_reads.py` defines the optional `BoundedTextEnvironment` capability
+and immutable `TextPage` result. Local reads resolve through the ordinary path
+policy and settle their worker thread before propagating cancellation; sandbox
+reads additionally keep the existing real-path check. Docker/remote adapters
+explicitly refuse this capability. The file tool may use their legacy whole-file
+read only when bounded I/O was not required. Unknown totals are never inferred
+from a displayed page. See [bounded inspection](use-cases/automate.md#read-a-bounded-file-page-or-tail)
+for encoding, scan/output limits and supported backends.

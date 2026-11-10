@@ -233,6 +233,25 @@ def build_parser():
         ),
     )
     run_parser.add_argument(
+        "--max-run-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Token budget shared by the whole native run tree: main calls, summaries, "
+            "verifier/critic and subagents. Calls reserve their estimate before sending."
+        ),
+    )
+    run_parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Stop admitting model calls once provider-reported spend reaches this. "
+            "Not a prepaid maximum; unreported cost stops admission unless "
+            "--max-run-tokens is also set."
+        ),
+    )
+    run_parser.add_argument(
         "--reasoning-effort",
         choices=["minimal", "low", "medium", "high"],
         help="Enable extended thinking at this effort (cross-provider)",
@@ -660,6 +679,8 @@ def build_parser():
     decision.add_argument("--allow", action="store_true")
     decision.add_argument("--deny", action="store_true")
     approvals_answer.add_argument("--workspace", default=".")
+    approvals_answer.add_argument(
+        "--digest", help="Refuse unless the pending request has this digest (from `approvals list`)")
 
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
@@ -1422,7 +1443,8 @@ def run_approvals(args) -> int:
     directory = store.session_dir(session_id) / "approvals"
     if args.approvals_command == "answer":
         try:
-            write_answer(directory, session_id, args.approval_id, allow=args.allow)
+            write_answer(directory, session_id, args.approval_id, allow=args.allow,
+                         expect_digest=getattr(args, "digest", None))
         except FileExistsError:
             print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
             return 2
@@ -1437,7 +1459,8 @@ def run_approvals(args) -> int:
         print("No parked approvals.")
         return 0
     for request in pending:
-        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
+        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
+              f"  digest={request.get('digest')}")
     return 0
 
 

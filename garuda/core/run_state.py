@@ -95,12 +95,22 @@ class RunState:
     # facts, so the model is not asked to remember what the harness already knows.
     state: WorkingState = field(default_factory=WorkingState)
 
+    # Opt-in receiver of live text/reasoning deltas (``garuda.model.streaming``).
+    # None keeps every model call on ``complete()``.
+    delta_consumer: object | None = None
+
     usage_totals: dict[str, int] = field(default_factory=dict)
     final_message: str = ""
     # The last substantive thing the model said. After a forced final turn this
     # usually holds the best answer the run produced, so an exhausted run reports
     # it rather than a bare "max turns exceeded" that discards real work.
     last_assistant_text: str = ""
+    # The run's advisor (#385), recent tool failures it is briefed with, and
+    # whether a checkpoint fired during the current tool step.
+    advisor: object = None
+    advisor_failures: list = field(default_factory=list)
+    advisor_pending: bool = False
+    advisor_plan: str = ""
 
     def accumulate_usage(self, usage: dict[str, int]) -> None:
         self.metrics.note_usage(usage)
@@ -758,6 +768,10 @@ async def prepare_run(
     # command can block for minutes.
     started_at = time.monotonic()
     deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
+    # One spend gate per run tree: created at the root, inherited by children.
+    from garuda.core.spend import gate_for
+
+    gate_for(config)
 
     # Session-wide record of what has already been asked and whether a writer is
     # loose. The collection coordinator samples the same object before/after a
@@ -874,6 +888,7 @@ async def prepare_run(
             notes=notes_ledger,
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
+            spend_gate=config.spend_gate,
             deadline_monotonic=deadline_at,
             workspace_kind=config.workspace_kind,
             workspace_evidence_root=(
@@ -944,7 +959,10 @@ async def prepare_run(
             )
         )
 
+    from garuda.core.advisor import build_advisor
+
     run_state = RunState(
+        advisor=build_advisor(config, consult_context, events),
         agent_segment={"id": str(uuid4()), "name": config.agent_name or profile_name,
                        "digest": config.agent_digest, "runtime": "native",
                        "kind": "native_execution",

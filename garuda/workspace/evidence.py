@@ -377,6 +377,8 @@ def finish_session_evidence(
             {
                 "baseline_commit": delta.baseline_commit,
                 "delta_changed": list(delta.changed[:META_PATH_LIMIT]),
+                # The list is cut to META_PATH_LIMIT; readers learn completeness from this.
+                "delta_changed_total": len(delta.changed),
                 "delta_preexisting": list(delta.preexisting[:META_PATH_LIMIT]),
             }
         )

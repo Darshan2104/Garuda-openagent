@@ -20,8 +20,8 @@ for your installed version. For ready-made examples, see the
 | | `garuda sessions cancel S` | Stop a background session, or revoke a pending quota continuation through the shared session Stop path |
 | | `garuda sessions merge S --check CMD [--into BRANCH] [--image IMAGE] [--timeout SEC]` | Check a worktree session merged into a branch (in Docker, no network; default image `python:3.12-slim`, 600 s per check) and publish `refs/garuda/integration/<S>`; never changes your checkout |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
-| | `garuda approvals list S` | List a running session's parked approvals |
-| | `garuda approvals answer S ID --allow` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only |
+| | `garuda approvals list S` | List a running session's parked approvals with each request digest |
+| | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed |
 | | `garuda doctor [--runtime ID] [--json]` | Check configuration, the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
@@ -130,6 +130,8 @@ every project. A full ID always resolves.
     |---|---|
     | `--max-turns N` | Agent turn limit |
     | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish |
+    | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
+    | `--max-run-cost-usd X` | Stop admitting calls once reported spend reaches X (finite, > 0); unreported cost stops admission unless `--max-run-tokens` is set. Refused on an ACP runtime |
     | `--json` | Print JSONL events instead of the human-readable result |
     | `--trajectory PATH` | Also save the run's events to a JSONL file; for an external harness, the trail Garuda recorded (event kinds, turns, request digests) |
 
