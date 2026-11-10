@@ -2370,7 +2370,12 @@ and `model/accounting.complete` (summarizer, buffer_query, contract, verifier,
 critic) admit before sending and settle afterwards, failed or not. Tokens are
 reserved under a lock, so concurrent calls cannot reuse one remainder. Dollars
 are a post-response stop, not a prepaid maximum. Unknown cost is never zero:
-under a dollar-only cap the first unpriced call stops further admission.
+under a dollar-only cap the first completed unpriced call stops further
+admission with a reason saying the cap cannot be enforced for that model
+(pricing is only learned from a response, so this cannot be refused earlier).
+A call that raised before reporting usage (a context-overflow rejection) is
+not an unpriced call: it releases its reservation and is counted apart as
+failed without usage, so overflow recovery still runs under a dollar cap.
 Defaults stay unlimited. Not yet covered: collection workers keep their own
 ledger, consult and ACP children are separate roots, failed-attempt usage is
 #406, and resume accounting is #407.

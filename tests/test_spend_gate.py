@@ -9,15 +9,16 @@ from pathlib import Path
 
 import pytest
 
+from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.core.spend import SpendGate, SpendLimitExceeded
 from garuda.model import accounting
-from garuda.model.protocol import ModelResponse
+from garuda.model.protocol import ContextOverflowError, ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
-from garuda.types import AgentConfig, ToolCall
+from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -56,12 +57,21 @@ async def test_concurrent_calls_cannot_both_spend_the_same_remainder():
 async def test_unknown_cost_never_counts_as_free_under_a_dollar_cap():
     dollars = SpendGate(max_cost_usd=1.0)
     await dollars.settle(await dollars.admit("main", estimate_tokens=10), {"total_tokens": 10})
-    with pytest.raises(SpendLimitExceeded, match="cannot be verified"):
+    with pytest.raises(SpendLimitExceeded, match="cannot be enforced") as refused:
         await dollars.admit("main", estimate_tokens=10)
-    # A failed call (no usage at all) is unknown cost too, not a free call.
+    assert refused.value.cause == "cost_unknown" and "--max-run-tokens" in str(refused.value)
+    # A call that raised before any usage was reported is counted apart: it is not
+    # a completed unpriced call, so it does not stop admission.
     failed = SpendGate(max_cost_usd=1.0)
-    await failed.settle(await failed.admit("main", estimate_tokens=10), None)
-    assert failed.cost_unknown_calls == 1
+    await failed.settle(await failed.admit("main", estimate_tokens=10), None, failed=True)
+    assert (failed.failed_without_usage, failed.cost_unknown_calls) == (1, 0)
+    assert failed.snapshot()["failed_without_usage"] == 1 and failed.reserved_tokens == 0
+    await failed.admit("main", estimate_tokens=10)
+    # Usage the exception carried is charged like any other report.
+    billed = SpendGate(max_cost_usd=1.0)
+    await billed.settle(await billed.admit("main", estimate_tokens=10),
+                        {"total_tokens": 7}, failed=True)
+    assert (billed.failed_without_usage, billed.cost_unknown_calls) == (0, 1)
     # With a token cap the spend stays bounded, so admission continues.
     both = SpendGate(max_cost_usd=1.0, max_tokens=1000)
     await both.settle(await both.admit("main", estimate_tokens=10), {"total_tokens": 10})
@@ -144,3 +154,60 @@ def test_the_run_command_accepts_tree_budget_flags():
     args = build_parser().parse_args(["run", "-t", "x", "--max-run-tokens", "5000",
                                       "--max-run-cost-usd", "2.5"])
     assert args.max_run_tokens == 5000 and args.max_run_cost_usd == 2.5
+
+
+class _OverflowOnce(ScriptModel):
+    """The provider rejects the first prompt as too long, billing nothing."""
+
+    overflowed = False
+
+    async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+        if not self.overflowed:
+            self.overflowed = True
+            raise ContextOverflowError("prompt is 200000 tokens > 128000 limit")
+        return await super().complete(messages, tools, temperature, max_tokens)
+
+
+def _overflowing_context(model) -> ContextManager:
+    context = ContextManager(model=model, max_context_tokens=20_000, keep_recent_turns=2)
+    context.seed([Message(role=Role.SYSTEM, content="sys"), Message(role=Role.USER, content="task")])
+    for i in range(12):
+        context.append(Message(role=Role.ASSISTANT, content="", tool_calls=[
+            ToolCall(id=f"c{i}", name="bash", arguments={"command": "ls"})]))
+        context.append(Message(role=Role.TOOL, content="y" * 4000, name="bash", tool_call_id=f"c{i}"))
+    return context
+
+
+async def test_a_context_overflow_retry_is_admitted_under_a_dollar_only_cap(tmp_path):
+    priced = {"total_tokens": 40, "cost_usd": 0.01}
+    # The force-compaction summary, then the retried turn; both priced.
+    summary = ModelResponse(content="Earlier turns listed the workspace.", tool_calls=[],
+                            usage=priced)
+    model = _OverflowOnce([summary, _done("d1", priced)])
+    config = AgentConfig(max_turns=3, enable_verifier=False, max_run_cost_usd=5.0)
+    result = await DefaultAgent().run(
+        task="task", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, context=_overflowing_context(model),
+    )
+    assert result.success, result.final_message
+    gate = config.spend_gate
+    # The rejected attempt released its reservation and is recorded as failed,
+    # not as an unpriced call that makes the dollar cap unenforceable.
+    assert gate.failed_without_usage == 1 and gate.cost_unknown_calls == 0
+    assert gate.refused == 0 and gate.reserved_tokens == 0
+    assert gate.settled_cost_usd == 0.02 and model.overflowed
+
+
+async def test_an_unpriced_model_under_a_dollar_cap_stops_with_the_exact_reason(tmp_path):
+    script = [
+        _call("bash", "b1", {"total_tokens": 10}, command="true"),
+        _done("d1", {"total_tokens": 10}),
+    ]
+    result, config, events = await _run(tmp_path, script, max_run_cost_usd=5.0)
+    assert not result.success
+    assert "cannot be enforced for this model (script/test)" in result.final_message
+    assert "--max-run-tokens" in result.final_message
+    assert "exhausted" not in result.final_message
+    end = next(r for r in events.get_all() if r["type"] == EventType.SESSION_END.value)
+    assert end["payload"]["reason"] == "spend_limit"
+    assert end["payload"]["spend_cause"] == "cost_unknown"

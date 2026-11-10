@@ -332,7 +332,7 @@ class DefaultAgent:
             estimate = (state.context.budget_snapshot()["used_tokens"]
                         + (state.config.max_tokens or accounting.AUXILIARY_OUTPUT_ESTIMATE))
             reservation = await accounting.admit(gate, "main", estimate)
-        response = None
+        response = error = None
         try:
             with stopwatch() as holder:
                 elapsed = holder
@@ -348,15 +348,20 @@ class DefaultAgent:
                     max_tokens=state.config.max_tokens,
                 )
                 return response
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
             # Runs after the stopwatch's own exit has filled the holder, so this is
             # correct on the raising path too — which is the one that matters here.
             model_ms[0] = round(model_ms[0] + elapsed[0], 3)
             if reservation is not None:
-                # Settled failed or not: a raised call releases its reservation and
-                # counts as unknown cost rather than as free.
-                await accounting.settle(gate, reservation,
-                                        getattr(response, "usage", None) if response else None)
+                # Settled failed or not. A raised call (a context-overflow rejection
+                # among them) releases its reservation and is counted as failed
+                # without usage, not as an unpriced call, so the overflow retry
+                # below is still admitted under a dollar-only cap.
+                await accounting.settle(gate, reservation, response=response, error=error,
+                                        model=model)
 
     async def _complete_or_shrink(
         self,
@@ -451,9 +456,11 @@ class DefaultAgent:
             if state.emit_session_events:
                 state.events.append(
                     EventType.SESSION_END,
-                    {"success": False, "reason": "spend_limit", "error": str(exc)},
+                    {"success": False, "reason": "spend_limit", "spend_cause": exc.cause,
+                     "error": str(exc)},
                 )
-            return state.bare_result(False, f"Run-tree spend budget exhausted: {exc}", turn)
+            what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
+            return state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turn)
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
