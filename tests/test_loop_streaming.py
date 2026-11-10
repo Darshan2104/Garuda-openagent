@@ -174,7 +174,9 @@ async def test_failed_fallback_records_one_failed_call(tmp_path: Path):
     result, events = await _run(tmp_path, [], lambda d: None, model=Unreachable([stream]))
 
     assert not result.success
-    [failed] = _of(events, "model_response")
+    # A failed call is its own event; no model_response reads as a reply.
+    assert _of(events, "model_response") == []
+    [failed] = _of(events, "model_call_failed")
     assert failed["outcome"] == "failed"
     assert failed["live_coverage"] == "fallback"
     assert failed["stream_error"] == "ConnectionResetError: dropped"
