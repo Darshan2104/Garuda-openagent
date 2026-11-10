@@ -14,20 +14,42 @@ and charges the provider-reported usage.
 **Dollars are a stop, not a prepaid maximum.** A call's price is only known after
 it returns, so the dollar cap refuses admission once settled spend has reached
 it; a call already in flight can overshoot. Unknown cost is never counted as
-zero: under a dollar cap without a token cap, the first call whose cost the
-provider did not report stops further admission, because the cap can no longer
-be verified.
+zero: under a dollar cap without a token cap, the first completed call whose
+cost the provider did not report stops further admission, because the cap cannot
+be enforced for that model. Pricing is only learned from a response, so this
+cannot be refused before the first call.
+
+**A raised call is not an unpriced call.** A call that raised before the provider
+returned any usage (a context-overflow rejection, a transport error) releases its
+reservation and is counted apart as failed without usage; usage the exception
+carries is charged like any other. Such a call's spend, if the provider billed
+it at all, is not reported to Garuda and is not added to the settled total.
+
+**A completed call with no token fields is charged its estimate.** A provider
+that returns no usage at all (a stream whose server ignored ``include_usage``)
+did consume tokens; settling it as zero would leave the token cap unenforced, so
+its reservation estimate is charged instead and counted as ``estimated_token_calls``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 
 class SpendLimitExceeded(RuntimeError):
-    """The run tree's spend gate refused a model call."""
+    """The run tree's spend gate refused a model call.
+
+    ``cause`` says which limit refused it: ``tokens``, ``dollars`` (reported spend
+    reached the cap) or ``cost_unknown`` (the dollar cap cannot be enforced because
+    a completed call reported no cost).
+    """
+
+    def __init__(self, message: str, cause: str):
+        super().__init__(message)
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -46,6 +68,26 @@ def usage_tokens(usage: dict | None) -> int:
     return sum(int(usage.get(key) or 0) for key in ("prompt_tokens", "completion_tokens"))
 
 
+def reports_tokens(usage: dict | None) -> bool:
+    """Whether the provider reported any token count, zero included."""
+    return isinstance(usage, dict) and any(
+        isinstance(usage.get(key), (int, float))
+        for key in ("total_tokens", "prompt_tokens", "completion_tokens"))
+
+
+def gate_for(config: Any) -> SpendGate | None:
+    """The run tree's gate on ``config``, created once when either cap is set.
+
+    Every phase that can start a run tree (``prepare_run``, the rigorous plan and
+    critic) goes through here, so a later phase reuses the gate an earlier one made.
+    """
+    if config.spend_gate is None and (config.max_run_tokens is not None
+                                      or config.max_run_cost_usd is not None):
+        config.spend_gate = SpendGate(max_tokens=config.max_run_tokens,
+                                      max_cost_usd=config.max_run_cost_usd)
+    return config.spend_gate
+
+
 @dataclass
 class SpendGate:
     max_tokens: int | None = None
@@ -56,15 +98,22 @@ class SpendGate:
     settled_tokens: int = 0
     settled_cost_usd: float = 0.0
     cost_unknown_calls: int = 0
+    unpriced_model: str | None = None
+    prior_spend_unknown: bool = False
+    failed_without_usage: int = 0
+    estimated_token_calls: int = 0
     calls: int = 0
     refused: int = 0
     warned: bool = False
 
     def __post_init__(self) -> None:
+        # A cap that compares false against everything (NaN) or can never be
+        # reached (inf) would silently disable itself: refused, not accepted.
         if self.max_tokens is not None and self.max_tokens < 1:
-            raise ValueError("max run tokens must be at least 1")
-        if self.max_cost_usd is not None and self.max_cost_usd <= 0:
-            raise ValueError("max run cost must be greater than 0")
+            raise ValueError("--max-run-tokens must be at least 1")
+        if self.max_cost_usd is not None and not (
+                math.isfinite(self.max_cost_usd) and self.max_cost_usd > 0):
+            raise ValueError("--max-run-cost-usd must be a finite amount greater than 0")
 
     @property
     def limited(self) -> bool:
@@ -74,43 +123,70 @@ class SpendGate:
         """Reserve ``estimate_tokens`` for one call, or raise :class:`SpendLimitExceeded`."""
         estimate = max(0, int(estimate_tokens))
         async with self._lock:
-            reason = self._refusal(estimate)
-            if reason is not None:
+            refusal = self._refusal(estimate)
+            if refusal is not None:
                 self.refused += 1
-                raise SpendLimitExceeded(f"{purpose} call refused: {reason}")
+                cause, reason = refusal
+                raise SpendLimitExceeded(f"{purpose} call refused: {reason}", cause)
             self.reserved_tokens += estimate
             self.calls += 1
             return SpendReservation(purpose, estimate)
 
-    def _refusal(self, estimate: int) -> str | None:
+    def _refusal(self, estimate: int) -> tuple[str, str] | None:
         if self.max_tokens is not None:
             committed = self.settled_tokens + self.reserved_tokens
             if committed + estimate > self.max_tokens:
-                return (f"run-tree token budget {self.max_tokens} would be exceeded "
-                        f"({self.settled_tokens} settled, {self.reserved_tokens} reserved, "
-                        f"{estimate} requested)")
+                return "tokens", (f"run-tree token budget {self.max_tokens} would be exceeded "
+                                  f"({self.settled_tokens} settled, {self.reserved_tokens} "
+                                  f"reserved, {estimate} requested)")
         if self.max_cost_usd is not None:
             if self.settled_cost_usd >= self.max_cost_usd:
-                return (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
-                        f"(${self.settled_cost_usd:.6f} settled)")
+                return "dollars", (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
+                                   f"(${self.settled_cost_usd:.6f} settled)")
             if self.cost_unknown_calls and self.max_tokens is None:
-                return (f"run-tree dollar budget ${self.max_cost_usd:g} cannot be verified: "
-                        f"{self.cost_unknown_calls} call(s) had no reported cost")
+                if self.prior_spend_unknown and not self.unpriced_model:
+                    return "cost_unknown", (
+                        f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
+                        "a resumed session in this chain recorded no run-tree spend, so prior "
+                        "spend is unknown; use --max-run-tokens to bound this run")
+                model = f" ({self.unpriced_model})" if self.unpriced_model else ""
+                return "cost_unknown", (
+                    f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced for "
+                    f"this model{model}: {self.cost_unknown_calls} completed call(s) "
+                    "returned no provider-reported cost; use --max-run-tokens to bound "
+                    "spend for a model whose pricing is unavailable")
         return None
 
-    async def settle(self, reservation: SpendReservation, usage: dict | None) -> dict | None:
-        """Release ``reservation`` and charge reported usage; returns a warning once."""
+    async def settle(self, reservation: SpendReservation, usage: dict | None, *,
+                     failed: bool = False, model: str | None = None) -> dict | None:
+        """Release ``reservation`` and charge reported usage; returns a warning once.
+
+        ``failed`` marks a call that raised; ``usage`` is then whatever the
+        exception carried, usually nothing.
+        """
         tokens = usage_tokens(usage)
         cost = usage.get("cost_usd") if isinstance(usage, dict) else None
         async with self._lock:
             self.reserved_tokens = max(0, self.reserved_tokens - reservation.tokens)
-            self.settled_tokens += tokens
-            if isinstance(cost, (int, float)):
-                self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
+            if failed and not tokens and not isinstance(cost, (int, float)):
+                # Raised before the provider reported anything (an overflow
+                # rejection, a transport error): counted apart, not as a priced
+                # zero and not as a completed call whose price is unknown.
+                self.failed_without_usage += 1
             else:
-                # No reported price, or no usage report at all (a failed call):
-                # spend happened or may have, and its price is unknown — never zero.
-                self.cost_unknown_calls += 1
+                if not failed and not reports_tokens(usage):
+                    # Completed without any token count: the call consumed
+                    # tokens nobody reported, so its estimate stands in.
+                    tokens = reservation.tokens
+                    self.estimated_token_calls += 1
+                self.settled_tokens += tokens
+                if isinstance(cost, (int, float)):
+                    self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
+                else:
+                    # Reported usage without a price: spend happened and its price
+                    # is unknown — never zero.
+                    self.cost_unknown_calls += 1
+                    self.unpriced_model = self.unpriced_model or model
             if not self.warned and self._fraction() >= self.warn_fraction:
                 self.warned = True
                 return {**self.snapshot(), "warning": "run-tree spend passed "
@@ -130,11 +206,14 @@ class SpendGate:
                 isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
                 and snapshot[k] >= 0 for k in fields):
             self.cost_unknown_calls += 1
+            self.prior_spend_unknown = True
             return {"source": "unavailable", "inherited_tokens": None, "inherited_cost_usd": None,
                     "reason": "the resumed session recorded no run-tree spend; prior spend is unknown"}
         self.settled_tokens += int(snapshot["settled_tokens"])
         self.settled_cost_usd = round(self.settled_cost_usd + float(snapshot["settled_cost_usd"]), 8)
         self.cost_unknown_calls += int(snapshot["cost_unknown_calls"])
+        self.prior_spend_unknown = self.prior_spend_unknown or snapshot.get("prior_spend_unknown") is True
+        self.unpriced_model = self.unpriced_model or snapshot.get("unpriced_model")
         return {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
                 "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
                 "inherited_cost_unknown_calls": int(snapshot["cost_unknown_calls"])}
@@ -155,6 +234,10 @@ class SpendGate:
             "reserved_tokens": self.reserved_tokens,
             "settled_cost_usd": round(self.settled_cost_usd, 8),
             "cost_unknown_calls": self.cost_unknown_calls,
+            "prior_spend_unknown": self.prior_spend_unknown,
+            "unpriced_model": self.unpriced_model,
+            "failed_without_usage": self.failed_without_usage,
+            "estimated_token_calls": self.estimated_token_calls,
             "calls": self.calls,
             "refused": self.refused,
         }

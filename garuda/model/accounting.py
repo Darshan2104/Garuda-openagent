@@ -77,13 +77,14 @@ async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwarg
     if gate is not None:
         reservation = await admit(gate, purpose, estimate_tokens(messages, kwargs.get("max_tokens")))
     started = time.monotonic()
-    response = None
     try:
         response = await model.complete(messages, *args, **kwargs)
-    finally:
+    except BaseException as exc:
         if reservation is not None:
-            usage = getattr(response, "usage", None) if response is not None else None
-            await settle(gate, reservation, usage)
+            await settle(gate, reservation, error=exc, model=model)
+        raise
+    if reservation is not None:
+        await settle(gate, reservation, response=response, model=model)
     record(purpose, model, response, (time.monotonic() - started) * 1000)
     return response
 
@@ -102,9 +103,18 @@ async def admit(gate: Any, purpose: str, estimate: int):
         raise
 
 
-async def settle(gate: Any, reservation: Any, usage: Any) -> None:
-    """Settle one call; the first crossing of the warning threshold is recorded."""
-    warning = await gate.settle(reservation, dict(usage) if isinstance(usage, dict) else None)
+async def settle(gate: Any, reservation: Any, *, response: Any = None,
+                 error: BaseException | None = None, model: Any = None) -> None:
+    """Settle one call from its ``response`` or the ``error`` it raised; the first
+    crossing of the warning threshold is recorded.
+
+    A raised call is settled as failed with whatever usage the exception carries
+    (usually none), so a provider rejection does not read as an unpriced call.
+    """
+    usage = getattr(error if error is not None else response, "usage", None)
+    warning = await gate.settle(reservation, dict(usage) if isinstance(usage, dict) else None,
+                                failed=error is not None,
+                                model=getattr(model, "model_name", None))
     events = _events.get()
     if warning is not None and events is not None:
         events.append(EventType.BUDGET, {"spend": warning})

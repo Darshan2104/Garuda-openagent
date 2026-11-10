@@ -379,15 +379,14 @@ async def run_agent_task(
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
             source_meta = source_records.load_meta(resumed_from) or {}
-            if config.spend_gate is None and (config.max_run_tokens or config.max_run_cost_usd):
+            if config.spend_gate is None:
                 # Fresh runs start at zero; a resumed run continues the source's
                 # tree spend (#407), or records that it is unknown.
-                from garuda.core.spend import SpendGate
+                from garuda.core.spend import gate_for
 
-                config.spend_gate = SpendGate(max_tokens=config.max_run_tokens,
-                                              max_cost_usd=config.max_run_cost_usd)
-                update_session_meta(store, events.session_id, {
-                    "spend_inherited": config.spend_gate.inherit(source_meta.get("spend_gate"))})
+                if gate_for(config) is not None:
+                    update_session_meta(store, events.session_id, {
+                        "spend_inherited": config.spend_gate.inherit(source_meta.get("spend_gate"))})
             before = source_meta.get("agent_digest")
             if before and agent_digest and before != agent_digest:
                 update_session_meta(store, events.session_id, {"agent_segment": {
