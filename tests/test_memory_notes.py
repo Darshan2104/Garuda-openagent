@@ -1,5 +1,6 @@
 """Reviewed memory notes (#171, plan task H.9)."""
 
+import asyncio
 import hashlib
 import io
 import json
@@ -14,6 +15,7 @@ from garuda.agents.loader import load_profile, resolve_system_prompt
 from garuda.context import notes
 from garuda.context.notes import NotesRefused, ProposalStore
 from garuda.core.loop import DefaultAgent
+from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.memory_cli import review
 from garuda.model.protocol import ModelResponse
@@ -362,7 +364,8 @@ async def _source_proposal(proposals, ws, text="Use make check.", **extra):
     result = await RememberTool().execute(
         {"text": text, "scope": "project", "sources": ["build.cfg"], **extra},
         LocalEnvironment(workspace_root=ws),
-        ToolContext(session_id="child", notes=notes.NotesLedger(proposals, "root")))
+        ToolContext(session_id="child", notes=notes.NotesLedger(proposals, "root"),
+                    permissions=PermissionEngine(workspace_root=ws)))
     assert not result.is_error, result.content
     return proposals.pending()[-1]
 
@@ -527,7 +530,8 @@ async def test_source_fingerprints_use_the_environment_without_a_workspace_pytho
     env = MountedEnvironment()
     result = await RememberTool().execute(
         {"text": "Use the remote build.", "scope": "project", "sources": ["build.cfg"]}, env,
-        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root")))
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"),
+                    permissions=PermissionEngine(workspace_root=ws)))
     assert not result.is_error, result.content
     p = proposals.pending()[0]
     assert p.provenance["sources"]["build.cfg"] == hashlib.sha256(b"remote content\n").hexdigest()
@@ -535,6 +539,85 @@ async def test_source_fingerprints_use_the_environment_without_a_workspace_pytho
     assert "current: referenced sources unchanged" in await proposals.search("build", env)
     (mounted / "build.cfg").unlink()
     assert "stale: source deleted" in await proposals.search("build", env)
+
+
+async def test_search_labels_a_note_the_user_removed_from_the_memory_file(
+        proposals, ws, capsys):
+    from argparse import Namespace
+
+    from garuda.interfaces.memory_cli import run_memory
+    from garuda.tools.protocol import ToolContext
+
+    (ws / "build.cfg").write_text("check = pytest\n")
+    kept = await _source_proposal(proposals, ws, text="Deploys keep a canary.")
+    proposals.accept(kept.id, digest=kept.digest)
+    removed = await _source_proposal(proposals, ws, text="Deploys use blue green rollout.")
+    target = proposals.accept(removed.id, digest=removed.digest)
+    # Editing memory.md is how the user removes an accepted note.
+    target.write_text("".join(line for line in target.read_text().splitlines(keepends=True)
+                              if removed.id not in line))
+    env = LocalEnvironment(workspace_root=ws)
+    tool = await RememberTool().execute(
+        {"action": "search", "query": "deploys"}, env,
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"),
+                    permissions=PermissionEngine(workspace_root=ws)))
+    # The CLI owns its own event loop, so it runs outside this test's loop.
+    assert await asyncio.to_thread(run_memory, Namespace(
+        workspace=str(ws), memory_command="search", query="deploys", max_chars=2000,
+        limit=5)) == 0
+    for result in (tool.content, capsys.readouterr().out):
+        rows = {block.split(" [")[0]: block for block in result.split("\n") if " [" in block}
+        assert "stale: removed from memory file" in rows[removed.id]
+        assert "current" not in rows[removed.id] and "possible conflict" not in rows[removed.id]
+        assert rows[kept.id].endswith("[project; current: referenced sources unchanged]")
+    target.unlink()
+    assert "stale: removed from memory file" in await proposals.search("canary", env)
+
+
+@pytest.mark.parametrize("mode", ["readonly", "smart"])
+async def test_remember_sources_obey_the_read_permission_policy(proposals, ws, mode):
+    from garuda.tools.protocol import ToolContext
+
+    (ws / "conf.txt").write_text("x=1\n")
+    (ws / ".env").write_text("API_KEY=hunter2\n")
+    commands = []
+
+    class Recording(LocalEnvironment):
+        async def execute(self, command, *args, **kwargs):
+            commands.append(command)
+            return await super().execute(command, *args, **kwargs)
+
+        async def read_bytes(self, path):
+            commands.append(f"read {path}")
+            return await super().read_bytes(path)
+
+    env = Recording(workspace_root=ws)
+    policy = PermissionEngine(mode=mode, path_rules={"deny": ["**/.env"]}, workspace_root=ws)
+    ledger = notes.NotesLedger(proposals, "root")
+    refused = await RememberTool().execute(
+        {"text": "Config lives in conf.txt.", "scope": "project", "sources": ["conf.txt", ".env"]},
+        env, ToolContext(session_id="s", notes=ledger, permissions=policy))
+    assert refused.is_error and "memory.source_refused" in refused.content
+    assert commands == [] and not proposals.pending()
+    # Without the run's permission engine a model-named path is never observed.
+    unscreened = await RememberTool().execute(
+        {"text": "Config lives in conf.txt.", "scope": "project", "sources": ["conf.txt"]},
+        env, ToolContext(session_id="s", notes=ledger))
+    assert unscreened.is_error and commands == [] and not proposals.pending()
+    allowed = await RememberTool().execute(
+        {"text": "Config lives in conf.txt.", "scope": "project", "sources": ["conf.txt"]},
+        env, ToolContext(session_id="s", notes=ledger, permissions=policy))
+    assert not allowed.is_error, allowed.content
+    p = proposals.pending()[0]
+    assert set(p.provenance["sources"]) == {"conf.txt"}
+    proposals.accept(p.id, digest=p.digest)
+    # A source accepted earlier is screened again before search observes it.
+    commands.clear()
+    later = PermissionEngine(mode=mode, path_rules={"deny": ["conf.txt"]}, workspace_root=ws)
+    result = await RememberTool().execute(
+        {"action": "search", "query": "config"}, env,
+        ToolContext(session_id="s", notes=ledger, permissions=later))
+    assert "unknown: source access refused" in result.content and commands == []
 
 
 @pytest.mark.parametrize("backend", ["docker", "remote"])
@@ -571,7 +654,8 @@ async def test_retrieval_source_budget_keeps_unchecked_freshness_unknown(proposa
     from garuda.tools.protocol import ToolContext
 
     env = LocalEnvironment(workspace_root=ws)
-    ctx = ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"))
+    ctx = ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"),
+                      permissions=PermissionEngine(workspace_root=ws))
     for i in range(9):
         (ws / f"file-{i}").write_text(str(i))
     for paths, text in [([f"file-{i}" for i in range(8)], "Build alpha."),
@@ -599,7 +683,8 @@ async def test_search_in_a_linked_worktree_checks_its_sources(tmp_path):
     result = await RememberTool().execute(
         {"text": "Build from f.", "scope": "project", "sources": ["f"]},
         LocalEnvironment(workspace_root=repo),
-        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root")))
+        ToolContext(session_id="s", notes=notes.NotesLedger(proposals, "root"),
+                    permissions=PermissionEngine(workspace_root=repo)))
     assert not result.is_error, result.content
     p = proposals.pending()[0]
     proposals.accept(p.id, digest=p.digest)

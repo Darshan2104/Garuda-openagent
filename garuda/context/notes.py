@@ -264,12 +264,14 @@ class ProposalStore:
         if project_id != self.project_id:
             raise NotesRefused("memory.foreign_project", "workspace belongs to another project")
 
-    async def search(self, query: str, env, *, max_chars: int = 2000, limit: int = 5) -> str:
+    async def search(self, query: str, env, *, max_chars: int = 2000, limit: int = 5,
+                     readable=None) -> str:
         from garuda.context.notes_retrieval import search
 
         self.check_environment(env)
         try:
-            return await search(self, query, env, max_chars=max_chars, limit=limit)
+            return await search(self, query, env, max_chars=max_chars, limit=limit,
+                                readable=readable)
         except ss.StorageError as exc:
             raise NotesRefused("memory.unavailable", "cannot read accepted decisions") from exc
 

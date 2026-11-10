@@ -6,6 +6,24 @@ from garuda.types import ToolResult
 from garuda.workspace.protocol import Environment
 
 
+async def _may_read(ctx: ToolContext, path: str, *, ask: bool) -> bool:
+    """Screen a source exactly as a ``read_file`` call on it; fail closed.
+
+    Without the run's permission engine, a model-named path is never observed.
+    Proposing may ask for approval like ``read_file``; search never prompts, so
+    an ``ask`` rule leaves that source unknown."""
+    permissions = getattr(ctx, "permissions", None)
+    if permissions is None:
+        return False
+    arguments = {"path": path}
+    if ask:
+        allowed, _reason = await permissions.evaluate_tool_call("read_file", arguments)
+        return allowed
+    from garuda.core.permissions import PermissionDecision
+
+    return permissions.decide("read_file", arguments)[0] == PermissionDecision.ALLOW
+
+
 class RememberTool:
     """Records a *proposal*. Nothing is remembered until the user accepts it with
     ``garuda memory review``; this tool changes no memory file."""
@@ -55,7 +73,8 @@ class RememberTool:
             if action == "search":
                 content = await ledger.proposals.search(
                     arguments.get("query", ""), env,
-                    max_chars=arguments.get("max_chars", 2000), limit=arguments.get("limit", 5))
+                    max_chars=arguments.get("max_chars", 2000), limit=arguments.get("limit", 5),
+                    readable=lambda path: _may_read(ctx, path, ask=False))
                 return ToolResult(tool_call_id="", content=content)
             if action != "propose":
                 raise NotesRefused("memory.invalid_action", "action must be propose or search")
@@ -64,7 +83,8 @@ class RememberTool:
             ledger.proposals.check_environment(env)
             provenance = await capture(
                 env, sources=arguments.get("sources"), evidence=arguments.get("evidence"),
-                supersedes=arguments.get("supersedes"), expires_at=arguments.get("expires_at"))
+                supersedes=arguments.get("supersedes"), expires_at=arguments.get("expires_at"),
+                readable=lambda path: _may_read(ctx, path, ask=True))
             proposal = ledger.propose(str(arguments.get("text", "")),
                                       str(arguments.get("scope", "")), ctx.session_id,
                                       provenance=provenance)

@@ -114,7 +114,10 @@ async def source_version(env, path: str) -> tuple[str, str | None]:
         return "unknown: source unavailable", None
 
 
-async def capture(env, *, sources=None, evidence=None, supersedes=None, expires_at=None) -> dict | None:
+async def capture(env, *, sources=None, evidence=None, supersedes=None, expires_at=None,
+                  readable=None) -> dict | None:
+    """``readable(path) -> bool`` is the caller's permission screen. Every path
+    is screened before any is observed, so one refused source runs nothing."""
     from garuda.context.notes import NotesRefused
 
     if sources is None:
@@ -130,6 +133,10 @@ async def capture(env, *, sources=None, evidence=None, supersedes=None, expires_
                         **({"supersedes": supersedes} if supersedes is not None else {}),
                         **({"expires_at": expires_at} if expires_at is not None else {}),
                         "sources": {p: "0" * 64 for p in paths}}) or {}
+    for path in paths:
+        if readable is not None and not await readable(path):
+            raise NotesRefused("memory.source_refused",
+                               "the permission policy does not allow reading a referenced source")
     versions = {}
     for path in paths:
         _status, digest = await source_version(env, path)

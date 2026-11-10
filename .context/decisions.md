@@ -2387,6 +2387,15 @@ budgets, handoff modes, textual summaries and sibling traces remain authoritativ
   each, using existing shell utilities and byte reads, never a workspace Python
   dependency or host-side substitute for Docker/remote files. Size is observed
   before the existing byte read; a size change during the read stays unknown.
+- Model-named source paths pass the run's permission screen as a `read_file`
+  call on the same path before any is observed. Proposing refuses the whole
+  proposal (`memory.source_refused`) on a refused source and runs nothing for
+  any source; search never prompts, and a non-allowed path stays unknown without
+  being observed. Without the run's permission engine, sources are refused.
+  `garuda memory search` is the user's own terminal command and is not screened.
+- Editing the memory file is the removal path, so search also requires the
+  note's `garuda-note` marker in the owner's memory file: an absent marker or
+  file is stale (removed), an unreadable or linked file unknown.
 - Source changes/deletion, expiry and accepted supersession are stale; absent,
   refused or exhausted evidence stays unknown. Shared source paths with distinct
   active note text are possible conflicts, not inferred semantic contradictions.

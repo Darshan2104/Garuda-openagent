@@ -343,6 +343,9 @@ The same `remember` tool can attach optional evidence when proposing a note:
 ```
 
 Garuda fingerprints the referenced files through the active workspace Environment.
+Each path must first pass the run's permission policy exactly as `read_file` on
+that path would; a refused source refuses the whole proposal
+(`memory.source_refused`) before any file is read.
 Docker/remote project scope uses the owner's mount mapping, never the shared
 `/workspace` execution path; an unavailable mapping refuses access.
 The review displays those SHA-256 versions and evidence references before you
@@ -365,8 +368,11 @@ originating there. Pending/rejected proposals and other projects are excluded.
 It does not index manually written memory lines or session transcripts.
 
 Results are labelled data. Referenced files that changed or disappeared make a
-note **stale**; missing provenance, inaccessible/oversized sources and exhausted
-source checks leave freshness **unknown**. Search checks at most eight distinct
+note **stale**, and so does deleting the note's line (its `garuda-note` marker)
+from the memory file, which is how you remove an accepted note; missing
+provenance, inaccessible/oversized sources, sources the agent's permission policy
+does not allow, an unreadable memory file and exhausted source checks leave
+freshness **unknown**. Search checks at most eight distinct
 regular files with an observed size of at most 1 MiB each. A `current` label means
 the observed bytes match the recorded version, not that the note's claim is verified.
 Output defaults to 2,000 characters and five
