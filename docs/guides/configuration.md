@@ -155,8 +155,8 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
   work; a value other than `true`/`false` counts as required. Optional servers
   (the default) that fail are skipped, and `garuda mcp list` shows each server's
   state and reason. An untrusted project server marked required also refuses.
-- A stdio server whose process exits is relaunched up to 3 times with backoff,
-  only while its entry is unchanged and, for a project server, still trusted.
+- A stdio server whose process exits is relaunched up to 3 times per run with
+  backoff (a server that keeps exiting after it reconnects ends failed), only while its entry is unchanged and, for a project server, still trusted.
   A call in flight when it exited fails and is never replayed; the run keeps
   the tools it admitted at startup. Remote (HTTP/SSE) servers are not
   reconnected. Each run records the per-server states as `mcp_servers` in the

@@ -121,6 +121,53 @@ garuda run --name fix-tests -t "Fix the failing tests by changing src/ only" --c
 - A check can't pass if it changes the code it checks, or if the session
   changed the test setup it relies on (for example `conftest.py` for pytest).
 
+## Inspect post-edit diagnostics
+
+Native `write_file`, `edit` and `multi_edit` keep successful, clean edits quiet.
+Direct tool callers can inspect advisory checker state without treating silence
+as proof that a checker ran:
+
+```python
+import asyncio
+from tempfile import TemporaryDirectory
+
+from garuda.tools.files import WriteFileTool
+from garuda.tools.protocol import ToolContext
+from garuda.workspace.local import LocalEnvironment
+
+async def demo():
+    with TemporaryDirectory() as workspace:
+        result = await WriteFileTool().execute(
+            {"path": "example.json", "content": '{"answer": 42}\n'},
+            LocalEnvironment(workspace_root=workspace),
+            ToolContext(session_id="diagnostic-demo"),
+        )
+        syntax = result.metadata["diagnostics"]["checkers"]["syntax"]
+        print(syntax["status"], syntax["ran"], syntax["source_version"])
+        # clean True <SHA-256 of the checked file>
+
+asyncio.run(demo())
+```
+
+Each checker reports `available` (`None` if unobserved), `ran`, `source_version`,
+`status` and `duration_ms`. A missing executable is `unavailable`; crashes,
+timeouts and observed content changes are `error`. Compare the digest with the
+current file before reusing a result. Diagnostic lists and text are bounded;
+`complete: false` discloses omitted details.
+
+On violations, `edit` and `multi_edit` can compare known pre-edit content.
+Diagnostics are `introduced` against a clean baseline, or `preexisting` when
+the same diagnostic and its source prefix are unchanged. Ruff can also identify
+new diagnostic identities against a complete baseline. Changed/moved matches,
+failed or incomplete baselines, baselines over 64 KiB and Node module ambiguity
+stay `unknown`. Whole-file writes do not read a baseline and use `unknown`.
+Clean edits do not run baseline checkers.
+
+This state is returned to direct tool callers; it is not an acceptance receipt
+or a persisted session verification result. Use an authorized
+[`--check`](#verify-the-result-with-your-own-check) for acceptance verification.
+Project-aware commands retain their existing trust requirements.
+
 ## Make Garuda prove the fix
 
 <p class="gd-facts">Changes files: yes · Costs: extra model calls</p>
@@ -204,6 +251,46 @@ garuda run --workspace-kind sandbox --allow-network -t "Install the dependencies
     `--allow-unsandboxed` turns the refusal into unconfined host execution. It
     is an availability escape hatch, not a safety boundary.
 
+## Refuse edits to files that changed since they were read
+
+<p class="gd-facts">Opt-in per agent · Works with any workspace · A precondition, not a lock</p>
+
+**Use it when** files may change under the agent (you edit alongside it, or
+another tool writes to the tree) and a still-matching replacement must not
+land on content the agent never saw.
+
+```yaml
+# .garuda/agents/careful.yaml
+version: 1
+extends: garuda/build
+tools:
+  options:
+    edit: {contract: versioned}
+    multi_edit: {contract: versioned}
+```
+
+```bash
+garuda run --agent careful -t "Rename the retry setting in config.py"
+```
+
+**What happens**
+
+- Every `read_file` reports `(version: v1:…)`, a token for the full content
+  of the file (not only the lines shown), this session and this path. A
+  `tail` or `bounded` read of a large file reports `version: unknown`, and an
+  edit naming it is refused until the file is read without them.
+- `edit` and `multi_edit` must pass that token as `expected_version`. If the
+  file changed since, or the token belongs to another file or session, the
+  edit is refused and nothing is written; the agent reads the file again.
+- A successful edit reads the file back and reports the version that read
+  sees, so a following edit can chain. If the file cannot be read back as the
+  edit wrote it (another writer got there first), the version is reported as
+  unknown and the agent reads the file again.
+- With the default `legacy` contract, edits work as before. A token is
+  optional there and checked only when given.
+- The check runs on the content the edit itself reads. A writer that changes
+  the file in the moment between that read and the write is not prevented.
+
 ## Cap time, turns, and cost
 
 <p class="gd-facts">Works with: any native run</p>
@@ -217,6 +304,34 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 - `--deadline-sec` sets a wall-clock budget. The agent paces itself against it
   and keeps turns in reserve to finish cleanly.
 - `--max-turns` caps the number of agent turns.
+- `--max-run-tokens` caps tokens across the whole native run tree: the main
+  calls, summaries, the verifier, rigorous mode's plan and critic, and every
+  subagent share one budget. Each call reserves its estimate first, so parallel
+  calls cannot spend the same remainder; a call whose provider reports no token
+  usage is charged that estimate. When the budget is gone the run stops with
+  `spend_limit`, and the session records the final `spend_gate` snapshot.
+- `--max-run-cost-usd` stops admitting calls once provider-reported spend
+  reaches the amount. It is a stop, not a prepaid maximum: a call in flight
+  can overshoot. If a completed call returns no provider-reported cost, the
+  dollar budget cannot be enforced for that model and no further calls are
+  admitted, unless `--max-run-tokens` is also set; use it for models whose
+  pricing is unavailable. A call the provider rejected outright (for example
+  an oversized prompt) does not count as unpriced.
+- Both caps bound Garuda's native loop only. An ACP runtime makes its own model
+  calls, so `garuda run` refuses either flag there rather than ignore it; a
+  token cap below 1 or a cost that is not a finite amount above 0 is refused too.
+
+```bash
+garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache module"
+```
+
+- A resumed run (`--resume`) with these flags continues from the source
+  session's recorded tree spend (`spend_gate` in its `meta.json`) instead of
+  starting at zero; the new session records what it inherited under
+  `spend_inherited`. If the source recorded no spend (it ran without these
+  flags), prior spend is unknown: a dollar-only budget then refuses to admit
+  calls, and a token budget starts from zero and says so.
+
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.
 - Your provider's billing page is the authority on cost. Garuda does not guess
@@ -303,11 +418,138 @@ does not guess from content, tool calls, stream exhaustion, or `done=True`.
 Empty terminal chunks and later usage-only chunks preserve an observed value.
 
 These are model-helper APIs. Native `garuda run` and `garuda chat` still call
-`complete()` and render completed turns; this does not add live token rendering
-to the native loop. External harness streaming follows its separate runtime
-path.
+`complete()` and render completed turns; live output is an opt-in for code that
+drives the loop itself (below). External harness streaming follows its separate
+runtime path.
+
+### Show model output live from your own driver
+
+Code that calls the native loop directly can pass a delta consumer. Each model
+call then streams, while tools, permissions, the completion gate and accounting
+still act on the complete response:
+
+```python
+from garuda.core.loop import DefaultAgent
+
+def show(delta):
+    if delta.kind == "text":
+        print(delta.text, end="", flush=True)
+    elif delta.kind == "discard":
+        print("\n[stream interrupted; answer follows from the retry]")
+
+result = await DefaultAgent().run(
+    task="Summarize the repository", model=model, env=env, tools=tools,
+    model_delta_consumer=show,
+)
+```
+
+The consumer receives `text` and `reasoning` fragments, and `discard` if a stream
+fails before it finishes. Tool calls are never streamed: they run only after the
+whole response has arrived. A failed stream is replaced by exactly one ordinary
+`complete()` call; its answer is not re-sent as fragments, so render it from the
+turn's `model_response` event. That event's `live_coverage` is `streamed`,
+`fallback` (with the bounded `stream_error`) or `not_streamed` for a model without
+`stream()`. A consumer that raises is detached for the rest of that call and
+recorded as `live_consumer_error`; the run continues. Cancelling the run stops the
+stream and dispatches nothing. Without a consumer nothing changes, and
+`garuda run`, `garuda chat` and the dashboard do not attach one yet.
+
+## Inspect retry and failed-call usage
+
+Using `model` and `messages` from the model-helper example above:
+
+```python
+try:
+    response = await model.complete(messages)
+except Exception as error:
+    print(getattr(error, "usage", {}))
+    print(getattr(error, "attempt_usage", []))
+else:
+    print(response.usage)
+    print(response.attempt_usage)
+```
+
+`usage` is the known subtotal across every attempt in this logical call.
+`attempt_usage` contains entries such as
+`{"usage": {"prompt_tokens": 10, "cost_usd": 0.1}, "outcome": "failed"}`.
+An attempt with no reported usage has `"usage": {}`; it is unknown, not free.
+If another attempt reports $0.30, the subtotal is $0.40 only when both amounts
+are reported. A missing invoice leaves the known subtotal incomplete. Ambiguous
+zero token fields normalized by LiteLLM also remain unknown.
+
+`complete_streaming()` includes interrupted-stream usage alongside its ordinary
+fallback call. Stream usage reports are snapshots of the same attempt, so
+repeated snapshots are counted once. Raised errors retain their original type
+and carry the same usage attributes, including when fallback fails.
+
+Native loop and auxiliary failures each produce one `model_call_failed` event
+with `outcome: failed`, never a `model_response`, so transcripts and exports show
+no empty reply. Its `usage_unknown` list names fields missing from any attempt.
+The session metrics and usage ledger count known subtotals once and expose unknown
+coverage separately; usage views label incomplete cost as partial or unknown.
+No new option is needed, and retry counts and fallback behavior stay the same.
 
 ---
 
 **Next:** make every run understand your project in
 [Level 3 · Teach it your project](customize.md).
+
+## Preview a Python import migration
+
+The opt-in `python_codemod` tool renames an imported API name across an explicit
+list of Python files. Add it to a native agent definition (see
+[agent definitions](customize.md#create-your-own-agent)):
+
+```yaml
+version: 1
+extends: garuda/build
+tools:
+  add: [python_codemod]
+```
+
+Ask the agent to call it with these arguments:
+
+```json
+{
+  "action": "preview",
+  "paths": ["client.py", "worker.py"],
+  "transformation": {
+    "kind": "rename_import", "module": "api", "old": "fetch", "new": "fetch_one"
+  }
+}
+```
+
+For `from api import fetch`, preview proposes `from api import fetch_one` and
+updates unambiguous `fetch(...)` references in that file. For
+`from api import fetch as load`, it changes the imported name and retains `load`.
+Review each diff, SHA-256 `before_digest`, and `issues`, then explicitly apply:
+
+```json
+{"action": "apply", "preview_token": "<exact token returned by preview>"}
+```
+
+Preview reads through the Environment and parses on the host without executing
+workspace code or requiring Python in a container. It preserves comments,
+spacing, line endings, and all text outside replaced name tokens. The limits are
+16 relative `.py` paths, 128 KiB per input/output file, and 1,000 replacements
+across the plan. Only ASCII rename identifiers and UTF-8 source without a BOM
+are supported. Strings and attribute names remain unchanged and are listed as
+skipped; shadowed/rebound names, star imports, dynamic lookup, nested target
+imports, uncertain token positions, and syntax errors block the entire plan.
+This tool does not resolve symbols across modules or migrate `module.fetch`.
+
+Apply screens each selected path through the current read/write permission
+engine and checks every original byte digest before the first write, including
+files with no changes. Tokens are single-use after admission, bound to the same
+session context and Environment instance; only the latest four previews are
+retained in memory, and resume requires a fresh preview. Read-only mode refuses
+the tool, including preview. Existing default edit tools are unchanged.
+
+A failed write restores every attempted file, including a partially written
+failing file, and verifies restoration by reading it back. The report gives
+per-file `status`, `write`, and `restoration` results, distinguishing restored,
+unattempted, and unknown restoration. Cancellation settles the active write and
+attempts restoration before propagating. This is a bounded restoration protocol,
+not a filesystem transaction: other processes can observe intermediate writes,
+and concurrent external writers, process death, or an unavailable Environment
+can prevent restoration. Review any `restoration_failed` report before continuing.

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -172,6 +173,64 @@ async def test_reconnect_is_bounded(tmp_path: Path):
         assert "was not called" in result.content
     finally:
         await manager.close()
+
+
+async def test_reconnect_budget_spans_the_run_for_a_crash_looping_server(tmp_path: Path):
+    log = tmp_path / "server.log"
+    manager = McpClientManager()
+    await manager.start([_lifecycle("life", log)])
+    try:
+        crash = _tool(manager, "mcp__life__crash")
+        # Every relaunch connects and then exits again: a crash loop, not one loss.
+        for relaunched in range(1, client_mod.MCP_RECONNECT_ATTEMPTS + 1):
+            await crash.execute({}, None, None)
+            await _until(lambda n=relaunched: _state(manager, "life")["reconnects"] == n
+                         and _state(manager, "life")["state"] == "ready")
+        await crash.execute({}, None, None)
+        await _until(lambda: _state(manager, "life")["state"] == "failed"
+                     or _state(manager, "life")["reconnects"] > client_mod.MCP_RECONNECT_ATTEMPTS)
+        state = _state(manager, "life")
+        assert state["state"] == "failed"
+        assert "restart the run" in state["reason"]
+        assert len(_launch_pids(log)) == 1 + client_mod.MCP_RECONNECT_ATTEMPTS
+    finally:
+        await manager.close()
+    assert not any(_alive(pid) for pid in _launch_pids(log))
+
+
+async def test_handshake_finishing_at_the_startup_verdict_is_not_reported_ready(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(client_mod, "MCP_STARTUP_DEADLINE", 4.0)
+    verdict = asyncio.Event()
+
+    class _OnVerdict(logging.Handler):
+        def emit(self, record):
+            if "was not ready within" in record.getMessage():
+                verdict.set()
+
+    class _LateHandshake(McpClientManager):
+        async def _connect(self, server, stack, lost):
+            # A real handshake whose result lands in the barrier's verdict tick.
+            connected = await super()._connect(server, stack, lost)
+            await verdict.wait()
+            return connected
+
+    handler = _OnVerdict()
+    client_mod.logger.addHandler(handler)
+    log = tmp_path / "late.log"
+    manager = _LateHandshake()
+    try:
+        with pytest.raises(McpStartupError, match="late"):
+            await manager.start([_lifecycle("late", log, required=True)])
+    finally:
+        client_mod.logger.removeHandler(handler)
+    assert verdict.is_set()
+    assert _state(manager, "late")["state"] == "failed"
+    assert "not ready within" in _state(manager, "late")["reason"]
+    assert manager.get_tools() == []
+    [pid] = _launch_pids(log)
+    await _until(lambda: not _alive(pid))
 
 
 async def test_changed_configuration_is_not_relaunched(tmp_path: Path):

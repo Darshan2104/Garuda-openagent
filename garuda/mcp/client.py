@@ -41,8 +41,9 @@ MCP_CALL_TIMEOUT = 120.0
 # by then is stopped. A required one refuses the run; an optional one is skipped.
 MCP_STARTUP_DEADLINE = 60.0
 
-# Reconnect bounds after a stdio server's process exits: attempts per loss, and
-# the first backoff delay (doubled each attempt, capped).
+# Reconnect bounds after a stdio server's process exits: relaunches per run (a
+# server that handshakes and exits again spends the same budget), and the first
+# backoff delay (doubled each relaunch, capped).
 MCP_RECONNECT_ATTEMPTS = 3
 MCP_RECONNECT_BACKOFF = 0.5
 MCP_RECONNECT_BACKOFF_MAX = 8.0
@@ -530,6 +531,9 @@ class McpClientManager:
             pass
         late = [owner for owner in owners if not owner.settled.is_set()]
         for owner in late:
+            # Stopped before any await, so a handshake finishing in the same tick
+            # sees the verdict and cannot report the owner ready.
+            owner.stop.set()
             owner.transition(McpServerState.FAILED, f"not ready within {deadline:g}s")
             logger.warning(
                 "MCP server %s was not ready within %gs; stopping it", owner.config.name, deadline
@@ -597,11 +601,12 @@ class McpClientManager:
         Transport contexts are entered and exited by the same task (anyio
         requires it), so teardown never races a half-open connection. A server
         that never became ready is not retried; one whose stdio process exits
-        is relaunched a bounded number of times. In-flight calls on a lost
-        connection fail and are never replayed.
+        is relaunched at most ``MCP_RECONNECT_ATTEMPTS`` times per run, counting
+        relaunches that connected and then exited again. In-flight calls on a
+        lost connection fail and are never replayed.
         """
         name = owner.config.name
-        attempt = 0
+        relaunches = 0
         while True:
             lost = asyncio.Event()
             stack = AsyncExitStack()
@@ -623,17 +628,22 @@ class McpClientManager:
                     logger.warning("MCP server %s failed to start (%s); skipping it", name, reason)
                     owner.transition(McpServerState.FAILED, reason)
                     return
-                if attempt >= MCP_RECONNECT_ATTEMPTS:
+                if relaunches >= MCP_RECONNECT_ATTEMPTS:
                     owner.transition(
                         McpServerState.FAILED,
-                        f"reconnect failed after {attempt} attempt(s): {reason}",
+                        f"reconnect failed after {relaunches} attempt(s): {reason}",
                     )
                     logger.warning("MCP server %s: %s", name, owner.reason)
                     return
-                if not await self._backoff(owner, attempt + 1):
+                if not await self._backoff(owner, relaunches + 1):
                     return
-                attempt += 1
+                relaunches += 1
                 continue
+            if owner.stop.is_set() or owner.state is McpServerState.FAILED:
+                # Stopped (startup verdict or close) while the handshake finished:
+                # never report ready, and release the connection here.
+                await _close_quietly(stack, name)
+                return
             owner.session = session
             owner.capabilities = capabilities
             owner.listed = {tool.name: tool for tool in listed.tools}
@@ -641,7 +651,6 @@ class McpClientManager:
                 owner.reconnects += 1
                 self._refresh(owner)
             owner.transition(McpServerState.READY)
-            attempt = 0
             try:
                 await _first_of(owner.stop, lost)
             finally:
@@ -654,11 +663,19 @@ class McpClientManager:
                 owner.transition(McpServerState.FAILED, f"connection lost; {refusal}")
                 logger.warning("MCP server %s: %s", name, owner.reason)
                 return
+            if relaunches >= MCP_RECONNECT_ATTEMPTS:
+                owner.transition(
+                    McpServerState.FAILED,
+                    f"connection lost: server process exited after {relaunches} "
+                    "relaunch(es) this run; restart the run",
+                )
+                logger.warning("MCP server %s: %s", name, owner.reason)
+                return
             owner.transition(McpServerState.RECONNECTING, "connection lost: server process exited")
             logger.warning("MCP server %s exited; reconnecting", name)
-            if not await self._backoff(owner, 1):
+            if not await self._backoff(owner, relaunches + 1):
                 return
-            attempt = 1
+            relaunches += 1
 
     async def _backoff(self, owner: _ServerOwner, attempt: int) -> bool:
         """Wait before reconnect ``attempt``; False if the server was stopped meanwhile."""
