@@ -205,7 +205,7 @@ async def test_outline_parse_cache_uses_content_and_settings_not_path(tmp_path, 
 @pytest.mark.parametrize(("source", "expected"), [
     ("", "Original source omitted: none (empty file)"),
     ("# just a comment\n", "Original source omitted: lines 1-1"),
-    ("\fdef f():\r\n    pass\r\n", "hidden body f [lines 2-2]"),
+    ("\fdef f():\r\n    pass\r\n", "hidden body f [lines 3-3]"),
     ("class Box[T]:\n    def get(self) -> T: pass", "signature: class Box[T]:"),
 ], ids=["empty", "comment-only", "physical-lines", "type-parameters"])
 async def test_outline_empty_sources_and_host_python_syntax(tmp_path, source, expected):
@@ -214,3 +214,17 @@ async def test_outline_empty_sources_and_host_python_syntax(tmp_path, source, ex
     result = await ReadFileTool().execute({"path": "source.pyi", "outline": True}, LocalEnvironment(tmp_path), CTX)
     assert result.content.startswith("Python AST outline")
     assert expected in result.content
+
+
+async def test_outline_ranges_use_read_file_line_numbers(tmp_path):
+    source = "import os\n\x0c\ndef f():\n    return 1\n\n\ndef g():\n    \"\"\"a\u2028b\"\"\"\n    return 2\n"
+    (tmp_path / "m.py").write_bytes(source.encode())
+    env = LocalEnvironment(tmp_path)
+    outline = await ReadFileTool().execute({"path": "m.py", "outline": True}, env, CTX)
+    raw = await ReadFileTool().execute({"path": "m.py"}, env, CTX)
+    numbered = dict(line.lstrip().split("\t", 1) for line in raw.content.split("\n"))
+    assert numbered["8"] == "def g():" and numbered["11"] == "    return 2"
+    assert "Original source omitted: lines 1-11" in outline.content
+    assert "function g [lines 8-11]" in outline.content
+    assert "hidden body g [lines 9-11]" in outline.content
+    assert "import in <module> [lines 1-1]" in outline.content

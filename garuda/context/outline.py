@@ -21,8 +21,22 @@ class Outline:
     content: str
 
 
+def _read_file_lines(normalized: str) -> list[tuple[int, int]]:
+    """Map each AST physical line to its first/last read_file (str.splitlines) line."""
+    spans = [(0, 0)]
+    next_line = 1
+    for physical in normalized.split("\n"):
+        # read_file also breaks on \f, \v, \x1c-\x1e, \x85, U+2028 and U+2029, so one
+        # physical line may span several read_file lines; ranges cover all of them.
+        count = len((physical + "\n").splitlines())
+        spans.append((next_line, next_line + count - 1))
+        next_line += count
+    return spans
+
+
 class _Declarations(ast.NodeVisitor):
     def __init__(self, source: str):
+        self.spans = _read_file_lines(source)
         self.scope: list[str] = []
         self.lines: list[str] = []
         self.decorators: list[tuple[int, int]] = []
@@ -41,6 +55,9 @@ class _Declarations(ast.NodeVisitor):
                     start = token.start[0]
                 statement_start = False
         self.decorator_starts = [start for start, _ in self.decorators]
+
+    def _range(self, first: int, last: int) -> str:
+        return f"lines {self.spans[first][0]}-{self.spans[last][1]}"
 
     def _decorator_range(self, node: ast.expr) -> tuple[int, int]:
         # AST expression ranges omit a decorator's @ and surrounding parentheses.
@@ -65,17 +82,17 @@ class _Declarations(ast.NodeVisitor):
         header.body = []
         header.decorator_list = []
         self.lines.extend([
-            f"{kind} {name} [lines {start}-{node.end_lineno}]",
+            f"{kind} {name} [{self._range(start, node.end_lineno)}]",
             f"  signature: {ast.unparse(header)}",
         ])
         for decorator in node.decorator_list:
             first, last = self._decorator_range(decorator)
             self.lines.append(
-                f"  decorator [lines {first}-{last}]: "
+                f"  decorator [{self._range(first, last)}]: "
                 f"@{ast.unparse(decorator)}"
             )
         body_start = self._start(node.body[0])
-        self.lines.append(f"  hidden body {name} [lines {body_start}-{node.end_lineno}]")
+        self.lines.append(f"  hidden body {name} [{self._range(body_start, node.end_lineno)}]")
         self.scope.append(node.name)
         self.generic_visit(node)
         self.scope.pop()
@@ -87,7 +104,7 @@ class _Declarations(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         scope = ".".join(self.scope) or "<module>"
         self.lines.append(
-            f"import in {scope} [lines {node.lineno}-{node.end_lineno}]: {ast.unparse(node)}"
+            f"import in {scope} [{self._range(node.lineno, node.end_lineno)}]: {ast.unparse(node)}"
         )
 
     visit_ImportFrom = visit_Import
@@ -118,7 +135,7 @@ class PythonOutlineCache:
                 normalized = source.replace("\r\n", "\n").replace("\r", "\n")
                 declarations = _Declarations(normalized)
                 declarations.visit(tree)
-                total = normalized.count("\n") + (1 if normalized and not normalized.endswith("\n") else 0)
+                total = len(source.splitlines())
                 omitted = f"lines 1-{total}" if total else "none (empty file)"
                 content = "\n".join([
                     "Python AST outline (normalized metadata; not a full source read)",

@@ -2370,9 +2370,9 @@ and parses the returned text on the host; it adds no workspace interpreter or
 execution requirement. Outline and explicit paging refuse when combined.
 
 Outlines contain qualified definitions, normalized signatures, decorators,
-scoped imports and original inclusive ranges. Each hidden body is named with its
-range (nested ranges may overlap), and all original source text is explicitly
-omitted. The content identity is SHA-256 of the returned text encoded as UTF-8,
+scoped imports and original inclusive ranges in raw `read_file` line numbering.
+Each hidden body is named with its range (nested ranges may overlap), and all
+original source text is explicitly omitted. The content identity is SHA-256 of the returned text encoded as UTF-8,
 not an assertion about pre-decoding file bytes. Unsupported languages, invalid
 host-parser syntax and parsing/output bounds yield no outline and explain the
 raw-read fallback.

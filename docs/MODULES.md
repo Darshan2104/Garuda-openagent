@@ -227,7 +227,8 @@ tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
 `outline.py` parses Python on the host and renders qualified definitions,
 normalized signatures, decorators, scoped imports and original inclusive line
-ranges. Every definition names its hidden body range; the original source is
+ranges, numbered as raw `read_file` numbers lines (`str.splitlines`), so a range
+covers every line a form feed or Unicode line separator adds. Every definition names its hidden body range; the original source is
 explicitly omitted in full, including comments and executable statements.
 Nested body ranges may overlap. A SHA-256 identifies the UTF-8 encoding of the
 text returned by `Environment.read_file`, rather than claiming on-disk byte
