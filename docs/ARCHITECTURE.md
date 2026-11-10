@@ -368,7 +368,7 @@ fastest way to learn the system.
    optional failures stay visible in `McpClientManager.server_states()`. One
    owner task per server holds its connection until `close()`, so late startup
    or a reconnect cannot outlive teardown. Only a stdio process exit is treated
-   as a proved loss and relaunched (bounded, same unchanged and still-trusted
+   as a proved loss and relaunched (bounded per run, same unchanged and still-trusted
    entry); in-flight calls fail rather than replay, and the admitted tool list,
    effects and trust never widen.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps

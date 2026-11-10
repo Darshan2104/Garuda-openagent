@@ -2380,10 +2380,13 @@ probes a server.
 
 Only a stdio read stream ending by itself is a proved connection loss. The
 owner relaunches the configuration admitted at startup at most
-`MCP_RECONNECT_ATTEMPTS` times with capped backoff, and only while its source
-entry still has the same `spec_digest` and, for a project server, the trust
-grant still holds. Remote transports are not reconnected. A call in flight on a
+`MCP_RECONNECT_ATTEMPTS` times per run with capped backoff (a relaunch that
+connects and exits again spends the same budget, so a crash-looping server
+ends failed), and only while its source entry still has the same `spec_digest`
+and, for a project server, the trust grant still holds. Remote transports are not reconnected. A call in flight on a
 lost connection fails with the transport's error and is never replayed; calls
 while the server is not ready fail without being queued. Admitted tool objects
 keep their effect and trust; schemas refresh in place, tools the server drops
-refuse, and newly listed tools wait for a new run.
+refuse, and newly listed tools wait for a new run. A server the startup barrier
+stops is stopped before its verdict is published, so a handshake that finishes
+in the same instant can never mark it ready.
