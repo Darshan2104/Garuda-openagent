@@ -440,3 +440,22 @@ async def test_an_acp_runtime_refuses_the_tree_budget_flags(launches, capsys):
     assert "cannot be enforced on the ACP runtime" in capsys.readouterr().err
     with pytest.raises(_Started, match="pi"):  # without a cap the runtime starts
         await launches("--runtime", "pi")
+
+
+async def test_one_priced_attempt_does_not_price_a_whole_call():
+    """A failed unpriced attempt followed by a priced fallback is still unknown cost."""
+    from garuda.model import accounting
+    from garuda.model.usage import attach_usage, usage_attempt
+
+    gate = SpendGate(max_cost_usd=5.0)
+    response = ModelResponse(content="ok", tool_calls=[])
+    attach_usage(response, [
+        usage_attempt({"prompt_tokens": 50_000, "completion_tokens": 4_000}, "failed"),
+        usage_attempt({"prompt_tokens": 10, "cost_usd": 0.001}, "success"),
+    ])
+    reservation = await gate.admit("main", estimate_tokens=100)
+    await accounting.settle(gate, reservation, response=response)
+    assert gate.settled_cost_usd == 0.001  # the known part is still charged
+    assert gate.cost_unknown_calls == 1   # and the call is not treated as priced
+    with pytest.raises(SpendLimitExceeded):
+        await gate.admit("main", estimate_tokens=100)

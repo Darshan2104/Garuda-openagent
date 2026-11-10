@@ -305,9 +305,9 @@ def models_used(store, session_id: str, meta: dict, ledger, consults=()) -> dict
         row["total_tokens"] += (record["total_tokens"] if record.get("total_tokens") is not None
                                 else (record.get("input_tokens") or 0)
                                 + (record.get("output_tokens") or 0))
-        if record.get("cost_usd") is None:
+        if record.get("cost_usd") is None or "cost_usd" in (record.get("usage_unknown") or []):
             row["cost_unknown"] += 1
-        else:
+        if record.get("cost_usd") is not None:
             row["cost_usd"] = round(row["cost_usd"] + record["cost_usd"], 8)
     source, label = "ledger", None
     if not rows and not snapshots:

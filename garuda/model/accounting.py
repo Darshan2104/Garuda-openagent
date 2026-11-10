@@ -6,6 +6,7 @@ extractor, the completion verifier and the rigorous planner/critic — and their
 invisible. :func:`complete` makes such a call and records it as a ``model_response`` event
 tagged with its ``call_purpose``, on the event store of the run that is executing, so
 ``aggregate_model_metrics`` and the usage ledger both see it, once.
+Failed calls use ``model_call_failed`` so response consumers ignore them.
 
 The run's store is found through a context variable bound by the loop for the duration of
 a run; outside a run (a unit test calling a helper directly) nothing is recorded and the
@@ -19,6 +20,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
+from garuda.model.usage import usage_metadata
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
 _gate: ContextVar[Any] = ContextVar("garuda_accounting_spend_gate", default=None)
@@ -50,23 +52,25 @@ def current() -> EventStore | None:
     return _events.get()
 
 
-def record(purpose: str, model: Any, response: Any, duration_ms: float) -> None:
+def record(purpose: str, model: Any, response: Any, duration_ms: float, *, failed: bool = False) -> None:
     events = _events.get()
     if events is None:
         return
     usage = getattr(response, "usage", None)
-    events.append(EventType.MODEL_RESPONSE, {
+    events.append(EventType.MODEL_CALL_FAILED if failed else EventType.MODEL_RESPONSE, {
         "call_purpose": purpose,
         "usage": dict(usage) if isinstance(usage, dict) else {},
         "duration_ms": round(duration_ms, 3),
         "model": getattr(model, "model_name", None),
         "accounting": "auxiliary",
+        **usage_metadata(response, failed=failed),
+        **({"outcome": "failed"} if failed else {}),
     })
 
 
 async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwargs: Any):
-    """``await model.complete(...)``, recorded as a ``purpose`` call. A failed call is
-    not recorded: it produced no usage to count.
+    """``await model.complete(...)``, recorded as a ``purpose`` call, including known
+    usage and unknown coverage when it fails.
 
     Under a run-tree spend gate the call is admitted first (a refusal raises
     :class:`~garuda.core.spend.SpendLimitExceeded`, which every auxiliary caller
@@ -80,6 +84,8 @@ async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwarg
     try:
         response = await model.complete(messages, *args, **kwargs)
     except BaseException as exc:
+        if isinstance(exc, Exception):
+            record(purpose, model, exc, (time.monotonic() - started) * 1000, failed=True)
         if reservation is not None:
             await settle(gate, reservation, error=exc, model=model)
         raise
@@ -111,10 +117,22 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     A raised call is settled as failed with whatever usage the exception carries
     (usually none), so a provider rejection does not read as an unpriced call.
     """
-    usage = getattr(error if error is not None else response, "usage", None)
+    from garuda.core.spend import usage_tokens
+
+    source = error if error is not None else response
+    usage = getattr(source, "usage", None)
+    attempts = getattr(source, "attempt_usage", None) or []
+    # An attempt that used tokens without a price leaves the call's cost unknown,
+    # whatever the other attempts reported.
+    cost_partial = any(
+        isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict)
+        and usage_tokens(attempt["usage"])
+        and not isinstance(attempt["usage"].get("cost_usd"), (int, float))
+        for attempt in attempts)
     warning = await gate.settle(reservation, dict(usage) if isinstance(usage, dict) else None,
                                 failed=error is not None,
-                                model=getattr(model, "model_name", None))
+                                model=getattr(model, "model_name", None),
+                                cost_partial=cost_partial)
     events = _events.get()
     if warning is not None and events is not None:
         events.append(EventType.BUDGET, {"spend": warning})

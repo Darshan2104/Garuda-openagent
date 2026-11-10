@@ -2362,6 +2362,23 @@ identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
 
+
+## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
+
+- Model responses and original raised exception types carry `attempt_usage` and
+  known `usage` subtotals. Stream snapshots update one attempt; fallback is a
+  separate attempt in the same logical call. Retry policy remains unchanged.
+- Missing telemetry stays unknown. LiteLLM's normalized zero token defaults are
+  ambiguous and withheld; explicit raw dictionary zeros remain known. Reported
+  cost survives absent token usage, with no inferred provider prices.
+- The timed loop boundary and auxiliary accounting emit one event per logical
+  call: `model_response` on success, and `model_call_failed` with
+  `outcome: failed` and per-field unknown coverage on failure, so transcript,
+  trajectory, export and runtime readers never see a failed call as a reply. Existing event identities make ledger replay idempotent.
+  Known subtotals and unknown coverage coexist in aggregates and usage views;
+  ordinary legacy model responses need no new fields. Context gauges use the
+  final request's usage rather than repeated-prompt spend totals.
+
 ## 2026-11-07 — The advisor is a consult, its advice is steering data (#385)
 
 An agent's optional `advisor.role` is asked only when it is one of the run's

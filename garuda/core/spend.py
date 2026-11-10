@@ -158,11 +158,15 @@ class SpendGate:
         return None
 
     async def settle(self, reservation: SpendReservation, usage: dict | None, *,
-                     failed: bool = False, model: str | None = None) -> dict | None:
+                     failed: bool = False, model: str | None = None,
+                     cost_partial: bool = False) -> dict | None:
         """Release ``reservation`` and charge reported usage; returns a warning once.
 
         ``failed`` marks a call that raised; ``usage`` is then whatever the
-        exception carried, usually nothing.
+        exception carried, usually nothing. ``cost_partial`` marks a call whose
+        attempts (a retry, a stream fallback) used tokens that some attempt
+        reported no price for: its known cost is charged and it still counts as
+        unknown cost, so one priced attempt cannot make the whole call look priced.
         """
         tokens = usage_tokens(usage)
         cost = usage.get("cost_usd") if isinstance(usage, dict) else None
@@ -182,7 +186,7 @@ class SpendGate:
                 self.settled_tokens += tokens
                 if isinstance(cost, (int, float)):
                     self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
-                else:
+                if not isinstance(cost, (int, float)) or cost_partial:
                     # Reported usage without a price: spend happened and its price
                     # is unknown — never zero.
                     self.cost_unknown_calls += 1

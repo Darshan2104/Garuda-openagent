@@ -335,6 +335,41 @@ These are model-helper APIs. Native `garuda run` and `garuda chat` still call
 to the native loop. External harness streaming follows its separate runtime
 path.
 
+## Inspect retry and failed-call usage
+
+Using `model` and `messages` from the model-helper example above:
+
+```python
+try:
+    response = await model.complete(messages)
+except Exception as error:
+    print(getattr(error, "usage", {}))
+    print(getattr(error, "attempt_usage", []))
+else:
+    print(response.usage)
+    print(response.attempt_usage)
+```
+
+`usage` is the known subtotal across every attempt in this logical call.
+`attempt_usage` contains entries such as
+`{"usage": {"prompt_tokens": 10, "cost_usd": 0.1}, "outcome": "failed"}`.
+An attempt with no reported usage has `"usage": {}`; it is unknown, not free.
+If another attempt reports $0.30, the subtotal is $0.40 only when both amounts
+are reported. A missing invoice leaves the known subtotal incomplete. Ambiguous
+zero token fields normalized by LiteLLM also remain unknown.
+
+`complete_streaming()` includes interrupted-stream usage alongside its ordinary
+fallback call. Stream usage reports are snapshots of the same attempt, so
+repeated snapshots are counted once. Raised errors retain their original type
+and carry the same usage attributes, including when fallback fails.
+
+Native loop and auxiliary failures each produce one `model_call_failed` event
+with `outcome: failed`, never a `model_response`, so transcripts and exports show
+no empty reply. Its `usage_unknown` list names fields missing from any attempt.
+The session metrics and usage ledger count known subtotals once and expose unknown
+coverage separately; usage views label incomplete cost as partial or unknown.
+No new option is needed, and retry counts and fallback behavior stay the same.
+
 ---
 
 **Next:** make every run understand your project in
