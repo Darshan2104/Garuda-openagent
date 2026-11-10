@@ -179,9 +179,10 @@ class SandboxEnvironment:
         return await self._inner.read_text_page(path, offset=offset, limit=limit, tail=tail,
                                                  digest=digest)
 
-    async def read_bytes(self, path: str) -> bytes:
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
         self._confine_real_path(path)
-        return await self._inner.read_bytes(path)
+        options = {} if max_bytes is None else {"max_bytes": max_bytes}
+        return await self._inner.read_bytes(path, **options)
 
     async def write_file(self, path: str, content: str) -> None:
         self._confine_real_path(path)
