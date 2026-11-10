@@ -24,6 +24,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
 | Bounded search | grep stops once a page is captured, reports totals as exact or "at least", pages with a stale-checked cursor, windows long lines and can cap matches per file | `garuda run --mode readonly -t "Find every TODO"` | [Level 1](../use-cases/explore.md#search-large-trees-without-flooding-the-context) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
+| Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
 
 ## Where commands run
 

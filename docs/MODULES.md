@@ -73,6 +73,11 @@ output by path (the grep fallback greps a sorted file list), offer an opt-in con
 lines around the match, and bind `next_cursor` to the search options and a
 digest of earlier results so changed scope is refused as stale),
 `diagnostics.py` (post-edit syntax + lint).
+`files.py::ReadFileTool` keeps raw/range reads as the default; `outline=true`
+requests Python AST metadata from `context/outline.py` after the same
+`Environment.read_file` call. It never launches an interpreter in the workspace.
+Outline and offset/limit are mutually exclusive; unsupported syntax/languages or
+an oversized outline return an explicit fallback without source or partial outline.
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.
@@ -226,6 +231,24 @@ read-only detached copy.
 `manager.py` holds history and decides when to act. `shaper.py` caps and shapes
 tool output, `condenser.py` compacts (`microcompact` by default) and demotes
 pruned history into buffers, `summarizer.py` produces the summaries.
+`outline.py` parses Python on the host and renders qualified definitions,
+normalized signatures, decorators, scoped imports and original inclusive line
+ranges, numbered as raw `read_file` numbers lines (`str.splitlines`), so a range
+covers every line a form feed or Unicode line separator adds. Every definition names its hidden body range; the original source is
+explicitly omitted in full, including comments and executable statements.
+Nested body ranges may overlap. A SHA-256 identifies the UTF-8 encoding of the
+text returned by `Environment.read_file`, rather than claiming on-disk byte
+identity. The 32-entry cache stores only rendered metadata/fallbacks keyed by
+digest and output settings, never paths, source text or ASTs. Parsing is limited
+to 1 MiB of source text; output must fit the ordinary line bounds and 30 KiB
+default observation ceiling or no outline is returned. The runner may apply its
+smaller live output budget as usual.
+`core/action_memo.py` bypasses filesystem-result memoization for outline calls,
+so each request rechecks workspace content/policy before consulting the AST cache.
+Outline results publish partial `artifact_source` evidence with their source
+identity and unknown omitted byte count. Hidden bodies never become complete
+source-read evidence; edit tools retain their existing current-content matching
+rules and have no prior-read gate.
 `state_card.py` is `WorkingState`, the hard-bounded state card assembled from
 the side-effect ledger, goal, todos, acceptance contract and checked commands
 with their exit codes, rendered deterministically and re-pinned after every

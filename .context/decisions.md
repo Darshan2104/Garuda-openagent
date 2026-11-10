@@ -2375,3 +2375,26 @@ stops it early (listing or grep errors still fail the search). Cursors bind the
 search options, workspace root and a digest of the claimed earlier results; any
 change is refused as stale. Glob still sorts the full
 listing, so only its capture (not traversal) is bounded.
+
+## 2026-11-06 — Opt-in host Python outlines are partial source evidence (#366)
+
+`read_file` accepts `outline=true` for Python AST metadata, leaving ordinary raw
+and offset/limit reads unchanged. The tool reads through `Environment.read_file`
+and parses the returned text on the host; it adds no workspace interpreter or
+execution requirement. Outline and explicit paging refuse when combined.
+
+Outlines contain qualified definitions, normalized signatures, decorators,
+scoped imports and original inclusive ranges in raw `read_file` line numbering.
+Each hidden body is named with its range (nested ranges may overlap), and all
+original source text is explicitly omitted. The content identity is SHA-256 of the returned text encoded as UTF-8,
+not an assertion about pre-decoding file bytes. Unsupported languages, invalid
+host-parser syntax and parsing/output bounds yield no outline and explain the
+raw-read fallback.
+
+A bounded cache holds only rendered metadata/fallbacks by digest and settings.
+Outline calls bypass the path-based action memo so each request reads current
+workspace text under current policy. Results carry partial artifact source
+evidence and an unknown omitted byte count, preserved by the ordinary runner.
+No hidden body receives full-read evidence. Edit and multi-edit still compare
+against current workspace content; neither currently has a prior-read gate.
+The digest identifies an observation and does not lock later reads or edits.
