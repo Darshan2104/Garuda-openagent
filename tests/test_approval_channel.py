@@ -231,7 +231,8 @@ async def test_a_crash_between_reservation_and_acknowledgement_is_never_resent(t
     assert channel.unacknowledged() == []
 
 
-async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("answer_via", ["cli", "broker"])
+async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch, capsys, answer_via):
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.main import build_parser, run_approvals
     from garuda.interfaces.run_guard import session_approval_channel
@@ -239,7 +240,7 @@ async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch
     store = SessionStore()
     store.begin(SID, task="t", model="m", agent="a", workspace=str(tmp_path))
     channel = session_approval_channel(store, SID)
-    broker = ApprovalBroker(engine=PermissionEngine(), timeout_sec=3.0, channel=channel)
+    broker = ApprovalBroker(engine=PermissionEngine(), store=store, timeout_sec=3.0, channel=channel)
     task = asyncio.ensure_future(broker.handler(session_id=SID)("bash(make release)"))
     request = await _parked(channel)
     parse = build_parser().parse_args
@@ -247,11 +248,17 @@ async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch
     assert run_approvals(parse(["approvals", "list", SID, "--workspace", str(tmp_path)])) == 0
     listed = capsys.readouterr().out
     assert "bash(make release)" in listed and f"digest={request['digest']}" in listed
+    digest = listed.strip().rsplit("digest=", 1)[1]
     stale = parse(["approvals", "answer", SID, request["approval_id"], "--allow",
                    "--digest", "0" * 64, "--workspace", str(tmp_path)])
     assert run_approvals(stale) == 2  # not the request the answerer was shown
     answer = parse(["approvals", "answer", SID, request["approval_id"], "--deny",
-                    "--digest", request["digest"], "--workspace", str(tmp_path)])
-    assert run_approvals(answer) == 0
+                    "--digest", digest, "--workspace", str(tmp_path)])
+    if answer_via == "cli":
+        assert run_approvals(answer) == 0
+    else:
+        broker.answer(request["approval_id"], False, digest=digest)
     assert bool(await task) is False
+    record = store.load_meta(SID)[f"approval:{request['approval_id']}"]
+    assert record["request_digest"] == digest
     assert run_approvals(answer) == 2  # one answer only
