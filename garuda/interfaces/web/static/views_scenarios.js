@@ -321,15 +321,18 @@ function renderStarterOperation(state, row, approvals) {
     '<div class="starter-operation-approvals">' + (row.background ? '<p class="stat-sub">Background approvals use the session channel.</p>' : approvals.length ? approvals.map(function (ask) {
       return '<div class="notice warn"><div class="notice-title">Approval required</div><div class="notice-body"><code>' +
         esc(ask.action) + '</code></div><button type="button" class="btn btn-primary" data-flow-approval="' +
-        esc(ask.ask_id) + '" data-approved="true">Allow</button><button type="button" class="btn" data-flow-approval="' +
-        esc(ask.ask_id) + '" data-approved="false">Deny</button></div>';
+        esc(ask.ask_id) + '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) +
+        '" data-approved="true">Allow</button><button type="button" class="btn" data-flow-approval="' +
+        esc(ask.ask_id) + '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) +
+        '" data-approved="false">Deny</button></div>';
     }).join("") : '<p class="stat-sub">No approval is waiting.</p>') + '</div></section>';
   host.querySelectorAll("[data-flow-approval]").forEach(function (button) {
     button.addEventListener("click", function () {
       var ask = this.getAttribute("data-flow-approval");
       this.disabled = true;
       api("/api/approvals/" + encodeURIComponent(ask), { method: "POST", body: {
-        approved: this.getAttribute("data-approved") === "true"
+        approved: this.getAttribute("data-approved") === "true",
+        owner: this.getAttribute("data-owner"), digest: this.getAttribute("data-digest")
       }}).then(function () { pollStarterOperation(state); }).catch(function (err) { toast(err.message); });
     });
   });

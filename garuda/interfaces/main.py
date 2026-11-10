@@ -233,6 +233,25 @@ def build_parser():
         ),
     )
     run_parser.add_argument(
+        "--max-run-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Token budget shared by the whole native run tree: main calls, summaries, "
+            "verifier/critic and subagents. Calls reserve their estimate before sending."
+        ),
+    )
+    run_parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Stop admitting model calls once provider-reported spend reaches this. "
+            "Not a prepaid maximum; unreported cost stops admission unless "
+            "--max-run-tokens is also set."
+        ),
+    )
+    run_parser.add_argument(
         "--reasoning-effort",
         choices=["minimal", "low", "medium", "high"],
         help="Enable extended thinking at this effort (cross-provider)",
@@ -662,6 +681,8 @@ def build_parser():
     decision.add_argument("--allow", action="store_true")
     decision.add_argument("--deny", action="store_true")
     approvals_answer.add_argument("--workspace", default=".")
+    approvals_answer.add_argument(
+        "--digest", help="Refuse unless the pending request has this digest (from `approvals list`)")
 
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
@@ -1425,7 +1446,8 @@ def run_approvals(args) -> int:
     directory = store.session_dir(session_id) / "approvals"
     if args.approvals_command == "answer":
         try:
-            write_answer(directory, session_id, args.approval_id, allow=args.allow)
+            write_answer(directory, session_id, args.approval_id, allow=args.allow,
+                         expect_digest=getattr(args, "digest", None))
         except FileExistsError:
             print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
             return 2
@@ -1440,7 +1462,8 @@ def run_approvals(args) -> int:
         print("No parked approvals.")
         return 0
     for request in pending:
-        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
+        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
+              f"  digest={request.get('digest')}")
     return 0
 
 
@@ -1557,6 +1580,15 @@ def run_dual_model_report(args) -> int:
     return 0
 
 
+def _print_mcp_states(states: list[dict]) -> None:
+    """One line per server: lifecycle state, required/optional, and why it failed."""
+    print("Server status:")
+    for state in states:
+        need = "required" if state["required"] else "optional"
+        reason = f": {state['reason']}" if state["reason"] else ""
+        print(f"  - {state['name']} [{need}] {state['state']}{reason} ({state['tools']} tool(s))")
+
+
 async def run_mcp_list(args) -> int:
     """Show which MCP config file(s) resolve and the tools each server exposes."""
     from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
@@ -1584,7 +1616,8 @@ async def run_mcp_list(args) -> int:
     print(f"\n{len(servers) + len(untrusted)} server(s) configured:")
     for server in servers:
         target = server.url or f"{server.command} {' '.join(server.args)}".strip()
-        print(f"  - {server.name} [{server.transport}] {target}")
+        required = "  (required)" if server.required else ""
+        print(f"  - {server.name} [{server.transport}] {target}{required}")
     for server in untrusted:
         target = server.url or f"{server.command} {' '.join(server.args)}".strip()
         print(
@@ -1595,14 +1628,23 @@ async def run_mcp_list(args) -> int:
     if args.no_connect:
         return 0
 
+    from garuda.mcp.client import McpStartupError
+
     print("\nConnecting to enumerate tools...")
-    tools, manager = await build_toolkit(
-        [], paths, workspace=args.workspace, mcp_user_paths=user_paths
-    )
     try:
+        tools, manager = await build_toolkit(
+            [], paths, workspace=args.workspace, mcp_user_paths=user_paths
+        )
+    except McpStartupError as exc:
+        _print_mcp_states(exc.states)
+        print(f"\nError: {exc}")
+        return 1
+    try:
+        _print_mcp_states(manager.server_states() if manager is not None else [])
+        print("Tools:")
         mcp_tools = [t for t in tools if t.name.startswith("mcp__")]
         if not mcp_tools:
-            print("  (no tools registered — servers may have failed to start; check logs)")
+            print("  (no tools registered — see the server status above)")
         for tool in mcp_tools:
             print(f"  {tool.name}")
     finally:

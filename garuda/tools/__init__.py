@@ -24,6 +24,7 @@ from garuda.tools.goal import UpdateGoalTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolEffect, tool_effect
+from garuda.tools.python_codemod import PythonCodemodTool
 from garuda.tools.registry import (
     ToolRegistry,
     builtin_registry,
@@ -73,6 +74,7 @@ __all__ = [
     "LsTool",
     "McpClientManager",
     "MultiEditTool",
+    "PythonCodemodTool",
     "ReadFileTool",
     "ReadPdfTool",
     "ReadSpreadsheetTool",
@@ -109,6 +111,7 @@ def _bootstrap_registry() -> None:
         WriteFileTool(),
         EditTool(),
         MultiEditTool(),
+        PythonCodemodTool(),
         GrepTool(),
         GlobTool(),
         LsTool(),
@@ -274,7 +277,7 @@ async def build_toolkit(
         if mcp_configs is not None:
             if paths:
                 raise ValueError("choose resolved MCP configurations or paths")
-            manager = McpClientManager()
+            manager = McpClientManager(workspace=workspace)
             await manager.start(list(mcp_configs))
         else:
             manager = await McpClientManager.from_paths(

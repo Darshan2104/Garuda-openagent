@@ -354,9 +354,13 @@ def approval_answerer(
 
         return _deny_all
 
-    async def _answer(request) -> bool:
+    async def _answer(request):
+        from garuda.acp.broker import Unanswered
+
         try:
-            return bool(await handler(request.action))
+            result = await handler(request.action)
+            # A responder's timeout/disconnect stays distinct from a "no".
+            return result if isinstance(result, Unanswered) else bool(result)
         except Exception:
             logger.warning("Approval answerer failed; denying", exc_info=True)
             return False
@@ -382,7 +386,8 @@ def install_session_broker(permissions, store, session_id: str, *, external=Fals
     from garuda.acp.broker import ApprovalBroker
 
     broker = ApprovalBroker(engine=permissions, store=store,
-                            channel=session_approval_channel(store, session_id))
+                            channel=session_approval_channel(store, session_id),
+                            ceiling_source=f"run-permission-engine:{getattr(permissions, 'mode', None)}")
     broker.set_answerer(None if external else approval_answerer(permissions.approval_handler))
     permissions.install_approval_handler(broker.handler(session_id=session_id))
     return broker
@@ -426,9 +431,12 @@ def broker_approval_handler(
     from garuda.acp.broker import ApprovalBroker
     from garuda.core.permissions import PermissionEngine
 
+    # Garuda's ceiling does not screen what a vendor agent asks for; the record
+    # says so rather than presenting the default engine as the run's ceiling.
     broker = ApprovalBroker(
         engine=PermissionEngine(), store=store, timeout_sec=timeout_sec,
         channel=session_approval_channel(store, session_id),
+        ceiling_source="acp-request:not-screened",
     )
     broker.set_answerer(None if external else approval_answerer(handler))
     return broker.handler(session_id=session_id, runtime_id=runtime_id), broker

@@ -64,12 +64,11 @@ judgement, and the judge is the run's answer for it. Recorded as permanent becau
 the alternative (a per-benchmark oracle mirroring each grader) is the benchmark's
 job, not the agent's.
 
-**Three unreproduced hazards, each needing a live provider or a race.** MCP client
-start/close cross-task cancel-scope hazard (anyio); possible consecutive USER
-messages (a budget notice landing after a tool result); `cache_control` on a
+**Two unreproduced hazards, each needing a live provider.** Possible consecutive
+USER messages (a budget notice landing after a tool result); `cache_control` on a
 trailing tool-role message surviving litellm's Anthropic translation. Guessing at
 a fix for an unconfirmed fault is how a previous suggested fix shipped as a no-op,
-and none of the three has a local reproduction. Left alone deliberately.
+and neither has a local reproduction. Left alone deliberately.
 
 **Per-turn checkpoints are O(n²), permanently.** `sessions.py::checkpoint_messages`
 re-serialises and rewrites the whole transcript every turn.
