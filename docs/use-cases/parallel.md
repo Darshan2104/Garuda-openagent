@@ -156,12 +156,12 @@ somewhere else.
 
 ```bash
 garuda approvals list latest
-garuda approvals answer latest apr-1-1791279590045 --allow
+garuda approvals answer latest apr-1-1791279590045-9f3c2a1b --allow --digest 5e0c…
 ```
 
 ```text
-apr-1-1791279590045  approval   bash({'command': 'chmod +x scripts/test.sh'})
-[garuda] answered apr-1-1791279590045: allow (the session decides once; a late or mismatched answer is a denial)
+apr-1-1791279590045-9f3c2a1b  approval   bash({'command': 'chmod +x scripts/test.sh'})  digest=5e0c…
+[garuda] answered apr-1-1791279590045-9f3c2a1b: allow (the session decides once; a late or mismatched answer is a denial)
 ```
 
 **What happens**
@@ -171,7 +171,15 @@ apr-1-1791279590045  approval   bash({'command': 'chmod +x scripts/test.sh'})
   (`#/inbox`) and `garuda approvals answer` race to answer it; the first answer
   counts and the rest lose.
 - An answer is bound to that exact request. A replayed, edited, expired or
-  late answer is a denial.
+  late answer is a denial. Pass `--digest` to refuse if the pending request
+  is no longer the one you listed; the dashboard sends the same binding.
+- The terminal, a dashboard chat card and a file answer are all rechecked
+  when they arrive: if the run's permission ceiling changed while the ask was
+  pending, an allow becomes a denial.
+- The session records every outcome as `approval:<id>` with the request
+  digest, the ceiling fingerprint and its source, the expiry, and how it was
+  answered. A timeout, a closed dashboard tab (`disconnected`) and a cancelled
+  run (`cancelled`) are recorded as themselves, not as a "no".
 - `--deny` refuses. An unanswered request times out after five minutes and is
   denied.
 - `garuda run` and `--bg` runs don't wait: their approvals are denied as soon
