@@ -2372,7 +2372,9 @@ dashboard chat, headless answerer or file — is honoured only if the request
 has not expired and the ceiling fingerprint is unchanged; an answer naming a
 digest must match it. Responders report non-answers as a falsy `Unanswered`
 (timeout/disconnected), never as a truthy enum, so any caller unaware of it
-still denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
+still denies. An owned role's control socket carries the non-answer to the
+worker's broker as a "no" plus its outcome, and a worker that cannot parse
+the reply denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
 must echo the ask's owner and digest. ACP requests record
 `acp-request:not-screened`: Garuda's ceiling does not confine vendor tools,
 and the record does not pretend it does. Direct `session/approve` on Garuda's

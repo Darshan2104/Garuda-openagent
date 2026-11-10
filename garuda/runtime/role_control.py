@@ -19,6 +19,8 @@ from garuda.workspace.lease import LeaseError
 CONTROL_LIMIT = 65_536
 #: The most bytes of step output a role child may hand back.
 MAX_RESULT_OUTPUT = 32_768
+#: The most characters of a responder's non-answer reason relayed to a role child.
+MAX_UNANSWERED_REASON = 1_024
 
 
 def bounded_output(text: str) -> str:
@@ -119,11 +121,7 @@ class RoleControl:
                         or request["sequence"] != sequence):
                     raise ValueError("invalid control request")
                 sequence += 1
-                try:
-                    response = await self._dispatch(request["op"], request["value"])
-                    reply = {"ok": True, "value": response}
-                except Exception:
-                    reply = {"ok": False, "value": "role-control-refused"}
+                reply = await self._respond(request["op"], request["value"])
                 writer.write(json.dumps(reply, allow_nan=False).encode() + b"\n")
                 await writer.drain()
         except (Exception, asyncio.CancelledError):
@@ -134,6 +132,22 @@ class RoleControl:
             await writer.wait_closed()
             self._writers.discard(writer)
             self._handlers.discard(task)
+
+    async def _respond(self, operation, value):
+        try:
+            response = await self._dispatch(operation, value)
+        except Exception:
+            return {"ok": False, "value": "role-control-refused"}
+        from garuda.acp.broker import Unanswered
+
+        if isinstance(response, Unanswered):
+            # The value stays a "no"; the extra field carries why nobody answered,
+            # and a peer that does not expect it refuses the reply and denies.
+            reason = response.reason if isinstance(response.reason, str) else None
+            return {"ok": True, "value": False, "unanswered": {
+                "outcome": response.outcome.value,
+                "reason": reason[:MAX_UNANSWERED_REASON] if reason is not None else None}}
+        return {"ok": True, "value": response}
 
     async def _dispatch(self, operation, value):
         if operation == "quarantine" and value is None:
@@ -150,7 +164,13 @@ class RoleControl:
         if operation == "approve" and isinstance(value, str) and len(value) <= 16_384:
             if self._released:
                 raise LeaseError("role already released")
-            return bool(await self.approval(value)) if self.approval else False
+            if self.approval is None:
+                return False
+            from garuda.acp.broker import Unanswered
+
+            answer = await self.approval(value)
+            # A timeout or lost person stays a non-answer for the worker's broker to audit.
+            return answer if isinstance(answer, Unanswered) else bool(answer)
         if operation == "result" and self.result is None:
             if (not isinstance(value, dict) or set(value) != {"session_id", "success", "output"}
                     or not isinstance(value["session_id"], str)
@@ -218,6 +238,9 @@ class RoleControlClient:
         self._reader = self._socket.makefile("rb")
 
     def request(self, op, value=None):
+        return self._exchange(op, value)["value"]
+
+    def _exchange(self, op, value, *, unanswered=False):
         message = {"nonce": self.nonce, "sequence": self.sequence, "op": op, "value": value}
         raw = json.dumps(message, allow_nan=False).encode() + b"\n"
         if len(raw) > CONTROL_LIMIT:
@@ -225,10 +248,10 @@ class RoleControlClient:
         self._socket.sendall(raw)
         self.sequence += 1
         reply = json.loads(self._reader.readline(CONTROL_LIMIT + 1))
-        if (not isinstance(reply, dict) or set(reply) != {"ok", "value"}
-                or reply["ok"] is not True):
+        shapes = ({"ok", "value"}, {"ok", "value", "unanswered"}) if unanswered else ({"ok", "value"},)
+        if not isinstance(reply, dict) or set(reply) not in shapes or reply["ok"] is not True:
             raise LeaseError("role control refused or disconnected")
-        return reply["value"]
+        return reply
 
     def guard(self, *, capacity_key=None):
         if capacity_key != self.capacity_key:
@@ -257,7 +280,24 @@ class RoleControlClient:
         self.request("release")
 
     async def approve(self, action):
-        return self.request("approve", action)
+        """The parent's yes or no, or an :class:`~garuda.acp.broker.Unanswered`
+        (falsy) when its responder timed out or lost its person."""
+        from garuda.acp.broker import ApprovalOutcome, Unanswered
+
+        reply = self._exchange("approve", action, unanswered=True)
+        if type(reply["value"]) is not bool:
+            raise LeaseError("role approval is neither a yes nor a no")
+        if "unanswered" not in reply:
+            return reply["value"]
+        detail = reply["unanswered"]
+        if (reply["value"] is not False or not isinstance(detail, dict)
+                or set(detail) != {"outcome", "reason"}
+                or not (detail["reason"] is None or isinstance(detail["reason"], str))):
+            raise LeaseError("invalid role approval non-answer")
+        try:
+            return Unanswered(ApprovalOutcome(detail["outcome"]), detail["reason"])
+        except ValueError:
+            raise LeaseError("invalid role approval non-answer") from None
 
     def close(self):
         self._reader.close()
