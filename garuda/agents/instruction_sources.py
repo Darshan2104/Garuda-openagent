@@ -125,7 +125,9 @@ def inventory(agent, workspace, sections: list[dict] | None) -> dict:
         owner = next((source for source in reversed(agent.chain)
                       if source.root and path.is_relative_to(source.root)), None)
         if owner:
-            paths.append((path, owner.root.resolve(), owner.authority))
+            # Rebase onto the canonical root: the definition paths keep the caller's spelling.
+            boundary = owner.root.resolve()
+            paths.append((boundary / path.relative_to(owner.root), boundary, owner.authority))
     loaded = []
     for index, section in enumerate(sections or []):
         kind, source = section["section"], section["source"]
@@ -203,7 +205,8 @@ def inventory(agent, workspace, sections: list[dict] | None) -> dict:
                 row["loaded"] = True
                 row["loaded_via"].append(source)
                 row["precedence"] = index
-        relative = str(path.relative_to(root)) if scope == "project" else None
+        relative = (str(path.relative_to(root))
+                    if scope == "project" and path.is_relative_to(root) else None)
         row["configured_order"] = configured.index(relative) if relative in configured else None
         if profile.memory_project_mode == "first" and row["configured_order"] is not None:
             winner = next((source for _path, source, _index in loaded if source in configured), None)

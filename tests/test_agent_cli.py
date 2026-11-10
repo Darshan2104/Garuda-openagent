@@ -262,6 +262,30 @@ def test_instruction_inspection_reports_explicit_files_user_memory_and_trimmed_s
     assert rows[str(ws / ".agent/agents/CLAUDE.md")]["loaded"] is False
 
 
+@pytest.mark.parametrize("spelling", ["dot", "symlink"])
+def test_instruction_inspection_accepts_relative_and_symlinked_workspace(
+        ws, tmp_path, monkeypatch, capsys, spelling):
+    (ws / ".agent/agents/RULES.md").write_text("EXPLICIT-TEXT")
+    _write(ws, "a", "version: 1\ninstructions: {files: [RULES.md]}\n")
+    if spelling == "dot":
+        monkeypatch.chdir(ws)
+        workspace = "."
+    else:
+        (tmp_path / "link").symlink_to(ws, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+        workspace = str(tmp_path / "link")
+    code, out = _main(monkeypatch, capsys, "agent", "show", "a", "--instruction-sources",
+                      "--json", "--workspace", workspace)
+    assert code == 0, out
+    report = json.loads(out)
+    real = ws.resolve()
+    rows = {row["path"]: row for row in report["instruction_sources"]["sources"]}
+    row = rows[str(real / ".agent/agents/RULES.md")]
+    assert row["status"] == "read" and row["loaded"] is True
+    assert row["scope"] == "project" and row["configured_order"] is None
+    assert row["canonical_path"] == str(real / ".agent/agents/RULES.md")
+
+
 def test_instruction_inspection_withholds_escaped_special_and_oversized_content(ws, tmp_path):
     outside = tmp_path / "outside.md"
     outside.write_text("PRIVATE-OUTSIDE")
