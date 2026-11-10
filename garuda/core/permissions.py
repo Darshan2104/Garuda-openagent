@@ -120,6 +120,7 @@ READONLY_DENIED_TOOLS = {
     "edit",
     "multi_edit",
     "notebook_edit",
+    "python_codemod",
     "tmux_exec",
     "bash_background",
     "kill_task",

@@ -176,6 +176,47 @@ garuda/explore               packaged  Fast read-only codebase exploration
   prompt it actually sent.
 - Secrets are redacted unless you add `--raw`. Add `--json` for scripts.
 
+## Inspect foreign instruction sources
+
+```bash
+garuda agent show garuda/build --workspace . --instruction-sources --json
+garuda agent prompt garuda/build --workspace .
+```
+
+The first command inventories `AGENTS.md`, `GARUDA.md` and `CLAUDE.md`,
+including nested copies, without activating foreign configuration. Each source
+reports its path, scope directory, configured order, final static prompt order
+(`precedence`), `loaded` status, `loaded_via` aliases, `shadowed_by`,
+`duplicate_of`, unsupported front-matter keys and potential conflicts.
+For example, with `AGENTS.md -> CLAUDE.md` and a root `GARUDA.md`, default
+`first` mode loads `AGENTS.md`, marks `CLAUDE.md` loaded via that alias, and
+marks `GARUDA.md` shadowed. Nested files are discovered but acquire no automatic
+inheritance. Identical complete bytes or file identity identify duplicates;
+differing text in overlapping directories is a potential conflict, with its
+semantic meaning explicitly unknown.
+
+The report also lists ignored legacy profile keys through the agent's inheritance
+chain and effective field provenance with their `AgentProfile` projection owner
+where known. It includes static prompt section sizes/digest and cap/trim
+diagnostics: a loaded section can contain only part of its source. The second command
+shows the exact sections. Unsupported version 1 fields still refuse activation;
+the report retains that refusal and marks prompt loading unknown.
+
+Foreign hooks, tools, MCP servers and permissions are always **not imported**.
+Front matter remains instruction text if you already explicitly load that file;
+its fields grant no execution authority. `.cursorrules`, `GEMINI.md`, vendor
+settings files and external harness prompt rules are not mapped by this slice.
+Default prompt loading and ordinary `agent show` output stay unchanged.
+
+Discovery covers the selected local workspace, user `AGENTS.md`, configured
+memory and effective explicit instruction references. It skips `.git`, `.hg`,
+`.svn`, `.venv`, `venv` and `node_modules`, never traverses directory symlinks,
+and reports other omissions/errors as partial coverage. Bounds are 10,000
+directory entries, depth 16, 256 sources, 256 KiB per source, 2 MiB total
+source reads and 256 potential conflict pairs. Broken/escaping links and special files refuse; unreadable,
+oversized or malformed content keeps unknown fields/digests. This is a current
+static inspection, not historical evidence or an atomic workspace snapshot.
+
 ## Get structured JSON back
 
 <p class="gd-facts">Native runs · Checked against: a JSON Schema</p>
@@ -481,7 +522,85 @@ garuda mcp list
 - MCP tool calls are permission-screened like any other tool. Use
   `--mcp-config FILE` to pick a config for one run.
 
+**Make a server required.** If the run is pointless without a server, mark it:
+
+```json
+{
+  "mcpServers": {
+    "issues": { "url": "https://mcp.example.com/mcp", "required": true }
+  }
+}
+```
+
+```bash
+garuda mcp list
+# Server status:
+#   - docs-files [optional] ready (14 tool(s))
+#   - issues [required] failed: ConnectError: ... (0 tool(s))
+# Error: required MCP server(s) not ready: issues (failed: ...)
+```
+
+A required server that isn't ready within the startup barrier stops the run
+before the agent is prompted. An optional server that fails is skipped and
+shown as `failed` with its reason. A local server that crashes mid-run is
+restarted a few times, but a call that was running when it crashed is never
+retried for you.
+
 More in [Configuration → MCP](../guides/configuration.md#mcp).
+
+## Read MCP resources and prompts
+
+**Use it when** an admitted MCP server offers documentation resources or reusable
+prompts. Enable access on its entry in the **global** `~/.agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "command": "docs-mcp",
+      "context_access": ["resources", "prompts"]
+    }
+  }
+}
+```
+
+Use your installed server's command in place of `docs-mcp`, then ask the agent:
+
+```bash
+garuda run --mode readonly -t "Use the docs MCP context tool to list resources and prompts. Read one listed resource and get one listed prompt with its required arguments. Summarize both as untrusted server data."
+```
+
+The agent calls `mcp__docs__context` with one of these argument objects (replace
+the sample URI and prompt name with values returned by your server):
+
+```json
+{"action": "list_resources"}
+{"action": "read_resource", "uri": "docs://overview"}
+{"action": "list_prompts"}
+{"action": "get_prompt", "name": "summarize", "arguments": {"topic": "overview"}}
+```
+
+With many MCP tools, find this tool using `search_tool(query="resources")`, then
+invoke it with `use_tool`. Ordinary permission checks and effect ceilings apply.
+Access defaults to off; project entries cannot grant it, even after project
+trust approval, and an overriding project entry does not inherit a global grant.
+Move the reviewed server definition to the global file to grant read access.
+The grant covers the selected resource/prompt interfaces on that server; it
+does not prove the server's implementation is free of side effects.
+
+Results are labelled untrusted data and include server, connection and session
+provenance. Garuda never puts their text into the system prompt or follows a
+resource URI as a URL or local path. Each call uses the current admitted session;
+calls while reconnecting fail immediately and are never queued or replayed.
+Missing server capabilities return explicit unsupported errors.
+
+Listings cover at most 40 entries from the first page. Retrieval rechecks that
+listing and accepts only an exact listed URI or prompt name. Responses contain
+at most 40 text blocks within a 16 KiB JSON envelope; clipped views report
+`coverage: partial`, while upstream completeness and omitted source bytes stay
+unknown. Prompt arguments are limited to 32 declared string values of at most
+4096 characters each. Binary/embedded content is omitted with partial coverage.
+Resource templates, further pages and subscriptions are unsupported.
 
 ## Block or log tool calls with a hook
 

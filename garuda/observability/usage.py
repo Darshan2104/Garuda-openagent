@@ -47,7 +47,7 @@ def _usage_fields(usage: dict) -> dict:
         "input_tokens": count("prompt_tokens", "input_tokens"),
         "output_tokens": count("completion_tokens", "output_tokens"),
         "total_tokens": count("total_tokens"),
-        "cache_tokens": count("cache_read_input_tokens", "cached_tokens"),
+        "cache_tokens": count("cache_read_tokens", "cache_read_input_tokens", "cached_tokens"),
         "cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool)
         and cost >= 0 else None,
     }
@@ -59,7 +59,7 @@ def native_records(event: dict, index: int, context: dict) -> list[dict]:
     session = event.get("session_id")
     when = _parse_time(event.get("timestamp"))
     base = {"kind": NATIVE, "time": when, "session_id": session, **context}
-    if event.get("type") == "model_response":
+    if event.get("type") in ("model_response", "model_call_failed"):
         if payload.get("truncated") and not payload.get("usage"):
             return []
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -67,7 +67,9 @@ def native_records(event: dict, index: int, context: dict) -> list[dict]:
                  "model": payload.get("model"), "binding_role": payload.get("model_binding_role"),
                  "call_purpose": payload.get("call_purpose"),
                  "calls": max(1, int(payload.get("model_calls", 1) or 1)),
-                 "duration_ms": payload.get("duration_ms"), "accounting": payload.get("accounting")}]
+                 "duration_ms": payload.get("duration_ms"), "accounting": payload.get("accounting"),
+                 **({"outcome": payload["outcome"]} if "outcome" in payload else {}),
+                 **({"usage_unknown": payload["usage_unknown"]} if payload.get("usage_unknown") else {})}]
     if event.get("type") == "collection" and isinstance(payload.get("attempt_metrics"), list):
         out = []
         for position, attempt in enumerate(payload["attempt_metrics"]):
@@ -137,7 +139,7 @@ class NativeUsageObserver:
         return context
 
     def __call__(self, event: dict, events) -> None:
-        if event.get("type") not in ("model_response", "collection"):
+        if event.get("type") not in ("model_response", "model_call_failed", "collection"):
             return
         records = native_records(event, events.count() - 1,
                                  {k: v for k, v in self._context_for(event["session_id"]).items()
@@ -170,7 +172,9 @@ def reconcile(store, session_id: str, *, ledger: Ledger | None = None) -> int:
             event = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event, dict) and event.get("type") in ("model_response", "collection"):
+        if isinstance(event, dict) and event.get("type") in (
+            "model_response", "model_call_failed", "collection"
+        ):
             added += observer._ledger.append_many(_clean(native_records(event, index, context)))
     return added
 
