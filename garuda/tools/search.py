@@ -22,12 +22,28 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
     what `find` returned, so escaping `[` would make it *stricter* than the
     prefilter and `src/[ab].ts` would silently match nothing.
     """
+    return re.compile(_glob_translate(pattern, ere=False))
+
+
+# Characters a backslash makes literal in a POSIX extended regular expression.
+_ERE_SPECIAL = set("\\^.[$()|*+?{")
+
+
+def _glob_translate(pattern: str, *, ere: bool) -> str:
+    """The anchored regex for ``pattern``: Python syntax, or POSIX ERE for `grep -E`."""
+    group = "(" if ere else "(?:"
+
+    def escape(char: str) -> str:
+        if not ere:
+            return re.escape(char)
+        return "\\" + char if char in _ERE_SPECIAL else char
+
     pat = pattern.removeprefix("./")
-    parts = ["(?:\\./)?"]
+    parts = [f"{group}\\./)?"]
     index = 0
     while index < len(pat):
         if pat.startswith("**/", index):
-            parts.append("(?:[^/]+/)*")
+            parts.append(f"{group}[^/]+/)*")
             index += 3
         elif pat.startswith("**", index):
             parts.append(".*")
@@ -36,14 +52,21 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
             parts.append("[^/]*")
             index += 1
         elif pat[index] == "?":
-            parts.append("[^/]")
+            # grep runs bytewise (LC_ALL=C) and only has to keep a superset for
+            # the exact Python filter: one character is one to four UTF-8 bytes.
+            parts.append("[^/]{1,4}" if ere else "[^/]")
             index += 1
         elif pat[index] == "[":
             close = pat.find("]", index + 1)
             if close == -1:
                 # Unterminated: a literal bracket, as the shell treats it.
-                parts.append(re.escape("["))
+                parts.append(escape("["))
                 index += 1
+                continue
+            if ere:
+                # Classes differ between ERE and Python; the exact filter decides.
+                parts.append("[^/]{1,4}")
+                index = close + 1
                 continue
             body = pat[index + 1 : close]
             # glob negates with `!`, regex with `^`.
@@ -52,9 +75,9 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
             parts.append(f"[{body}]")
             index = close + 1
         else:
-            parts.append(re.escape(pat[index]))
+            parts.append(escape(pat[index]))
             index += 1
-    return re.compile("^" + "".join(parts) + "$")
+    return "^" + "".join(parts) + "$"
 
 
 DEFAULT_GREP_MAX_RESULTS = 100
@@ -463,6 +486,7 @@ class GlobTool:
         base = arguments.get("path") or "."
 
         segment_filter: "re.Pattern[str] | None" = None
+        refine = ""
         if "/" not in pattern:
             # Bare filename glob: match anywhere under the base path.
             matcher = f"-name {shlex.quote(pattern)}"
@@ -470,21 +494,26 @@ class GlobTool:
             # Path glob. `find -path` lets `*` match `/` as well, so `src/*.ts`
             # also returned `src/nested/b.ts` — a single `*` is meant to stay within
             # one path segment. `find` cannot express that, so it stays the broad
-            # prefilter and the exact semantics are applied here.
+            # prefilter and `grep -E` applies the exact semantics before capture
+            # is bounded: otherwise early-sorting non-matches (`src/node_modules/`)
+            # could fill the capture and hide every real match. grep exits 1 when
+            # nothing matches, which is not a failure here.
             converted = pattern.replace("**/", "*")
             if not converted.startswith(("./", "/", "*")):
                 converted = "./" + converted
             matcher = f"-path {shlex.quote(converted)}"
             segment_filter = _glob_regex(pattern)
+            ere = shlex.quote(_glob_translate(pattern, ere=True))
+            refine = f" | {{ LC_ALL=C grep -E -e {ere} || [ $? -eq 1 ]; }}"
 
         # `-L` follows symlinks so a symlinked directory under the base is
         # traversed (matches shell globbing / bash reach).
         command = (
             f"cd {shlex.quote(base)} && "
-            f"find -L . -type f {matcher} -not -path '*/.git/*' | sort"
+            f"find -L . -type f {matcher} -not -path '*/.git/*' | sort{refine}"
         )
-        # Sorting needs the whole listing, but capture stays bounded; the path
-        # filter below runs after capture, so no line cap is applied here.
+        # Sorting needs the whole listing, but capture of the filtered list stays
+        # bounded; the result cap is applied below, so no line cap is applied here.
         result = await env.execute(_bounded(command, None, SEARCH_CAPTURE_BYTES))
         if result.exit_code != 0:
             return ToolResult(
@@ -504,6 +533,8 @@ class GlobTool:
             captured = captured[:-1]  # a cut path is not a real file name
         lines = [line for line in captured if line.strip()]
         if segment_filter is not None:
+            # The shell filter already ran; this keeps Python's exact semantics
+            # if a grep implementation reads the expression more loosely.
             lines = [line for line in lines if segment_filter.match(line.strip())]
         if not lines and status is not None:
             return ToolResult(tool_call_id="", content=f"No files matched pattern {pattern}")

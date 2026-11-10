@@ -229,3 +229,39 @@ async def test_glob_capture_is_bounded_and_never_returns_a_cut_path(tmp_path, mo
     assert listed and all(line.endswith(".py") and len(line) == len("./file_0000.py")
                           for line in listed)
     assert "capture limit" in result.content
+
+
+async def test_glob_filters_paths_before_capture(tmp_path):
+    # `find -path './src/*.ts'` also matches everything under src/node_modules, which
+    # sorts before src/y.ts; filtering after capture once returned no files at all.
+    noise = tmp_path / "src" / "node_modules"
+    noise.mkdir(parents=True)
+    listing_bytes = 0
+    for index in range(3000):
+        name = f"{index:04d}_{'x' * 180}.ts"
+        (noise / name).touch()
+        listing_bytes += len(f"./src/node_modules/{name}\n".encode())
+    assert listing_bytes > search.SEARCH_CAPTURE_BYTES
+    for name in ("z.ts", "y.ts", "a+b(1).ts"):
+        (tmp_path / "src" / name).touch()
+
+    env = _Recording(tmp_path)
+    result = await GlobTool().execute({"pattern": "src/*.ts"}, env, CTX)
+    assert not result.is_error
+    assert result.content.splitlines() == ["./src/a+b(1).ts", "./src/y.ts", "./src/z.ts"]
+    assert env.captured[-1] <= search.SEARCH_CAPTURE_BYTES
+    # ERE metacharacters in the pattern stay literal.
+    literal = await GlobTool().execute({"pattern": "src/a+b(1).ts"}, env, CTX)
+    assert literal.content == "./src/a+b(1).ts"
+
+
+async def test_glob_path_patterns_match_multibyte_names(tmp_path):
+    # grep filters bytewise; `?` and classes must still match one whole character.
+    (tmp_path / "src").mkdir()
+    for name in ("é.ts", "a.ts", "ab.ts"):
+        (tmp_path / "src" / name).touch()
+    env = _Recording(tmp_path)
+    single = await GlobTool().execute({"pattern": "src/?.ts"}, env, CTX)
+    assert single.content.splitlines() == ["./src/a.ts", "./src/é.ts"]
+    chosen = await GlobTool().execute({"pattern": "src/[é].ts"}, env, CTX)
+    assert chosen.content == "./src/é.ts"
