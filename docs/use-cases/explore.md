@@ -43,6 +43,47 @@ garuda run --mode readonly -t "Explain how this project is organized and where t
     `--agent explore` is a fast, read-only search profile with a smaller turn
     budget, good for "find where…" questions.
 
+## Outline Python before reading bodies
+
+Use an outline to locate relevant declarations before asking for source ranges:
+
+```bash
+garuda run --mode readonly -t "Use read_file with outline=true on garuda/tools/files.py, then read the raw ranges for ReadFileTool.execute and explain its behavior"
+```
+
+The native agent can call `read_file` with these arguments:
+
+```json
+{"path": "garuda/tools/files.py", "outline": true}
+```
+
+The result lists qualified definitions, normalized signatures, decorators and
+imports with original inclusive line ranges. Each hidden body has a named range;
+all original source text, including comments and executable statements, is
+explicitly omitted. Nested body ranges can overlap. The SHA-256 identifies the
+UTF-8 encoding of the text returned by the workspace environment. Parsing runs
+on the Garuda host, so Docker and remote workspaces need no Python interpreter
+for this feature.
+
+Retrieve a body using an ordinary read, for example:
+
+```json
+{"path": "garuda/tools/files.py", "offset": 40, "limit": 30}
+```
+
+Use the ranges in your actual outline; line numbers change as files change.
+Outline reads carry partial source evidence and never count as having read a
+hidden body. Read relevant raw source before editing. Each outline request
+reads current workspace text again; only deterministic AST results are cached
+by digest and settings. An outline's identity does not lock a later range read
+to that version.
+
+Outline mode supports `.py` and `.pyi` with the host Python parser. Unsupported
+languages, invalid syntax, source above 1 MiB or outlines above the output bounds
+return a fallback message and no outline. Omit `outline` to read raw source;
+`outline=true` cannot be combined with `offset` or `limit`. Existing raw reads
+and their paging behavior are unchanged.
+
 ## Make sure a run changes nothing
 
 <p class="gd-facts">Read-only · Checked afterwards · Works with external harnesses too</p>
