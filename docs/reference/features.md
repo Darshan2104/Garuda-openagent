@@ -72,6 +72,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
 | Tool options | Bash timeouts, web domain allowlists, subagent limits | `tools.options` in an agent | [Agents guide](../guides/agents.md#tools) |
 | MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| MCP resources and prompts | Opt-in bounded lists and text retrieval through admitted sessions; untrusted data, read-only effects and explicit unsupported capabilities | Global `context_access`, `mcp__<server>__context` | [Level 3](../use-cases/customize.md#read-mcp-resources-and-prompts) |
 | Required MCP servers | A required server must be ready by the startup barrier or the run refuses; per-server state, reason and bounded stdio reconnects are inspectable | `"required": true` in `mcp.json`, `garuda mcp list` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | Hooks | Your script guards every direct or discovered target call | `hooks:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#block-or-log-tool-calls-with-a-hook) |
 | Python tools | Your own tools, opt-in | `garuda run --load-project-tools -t "…"` | [Level 3](../use-cases/customize.md#add-your-own-python-tools) |

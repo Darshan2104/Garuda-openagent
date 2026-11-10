@@ -16,6 +16,7 @@ from garuda.mcp import client as client_mod
 from garuda.mcp.client import McpClientManager, McpStartupError
 from garuda.mcp.config import McpServerConfig, load_mcp_config
 from garuda.tools import build_toolkit
+from garuda.tools.protocol import ToolContext, ToolEffect
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _LIFECYCLE = str(_FIXTURES / "mcp_lifecycle_server.py")
@@ -275,3 +276,212 @@ async def test_mcp_list_shows_optional_failure_beside_ready_server(tmp_path: Pat
     assert "broken [optional] failed:" in out
     assert "echo [optional] ready (1 tool(s))" in out
     assert "mcp__echo__ping" in out
+
+
+def _context_config(tmp_path: Path, monkeypatch, **env: str) -> tuple[Path, Path]:
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(global_dir / "settings.yaml"))
+    cfg = global_dir / "mcp.json"
+    log = tmp_path / "context.log"
+    cfg.write_text(json.dumps({"mcpServers": {"life": {
+        "command": sys.executable, "args": [_LIFECYCLE],
+        "env": {"MCP_LIFECYCLE_LOG": str(log), **env},
+        "context_access": ["resources", "prompts"],
+    }}}), encoding="utf-8")
+    return cfg, log
+
+
+@pytest.mark.parametrize("mode", ["", "no_tools"])
+async def test_mcp_context_roundtrip_through_lazy_toolkit(tmp_path: Path, monkeypatch, mode):
+    from garuda.core.collection import trusted_collection_effect
+    from garuda.core.permissions import PermissionEngine
+
+    cfg, log = _context_config(tmp_path, monkeypatch, MCP_LIFECYCLE_CONTEXT=mode)
+    tools, manager = await build_toolkit([], str(cfg), lazy_mcp_threshold=0)
+    try:
+        search = next(t for t in tools if t.name == "search_tool")
+        use = next(t for t in tools if t.name == "use_tool")
+        ctx = ToolContext(session_id="context-test", allowed_tool_effects=frozenset({ToolEffect.READ_ONLY}))
+        assert "mcp__life__context" in (await search.execute({"query": "resources"}, None, ctx)).content
+        context = _tool(manager, "mcp__life__context")
+        assert trusted_collection_effect(context) is ToolEffect.READ_ONLY
+        assert _log(log)[0].startswith("launch ") and len(_log(log)) == 1
+
+        async def call(**arguments):
+            return await use.execute({"name": context.name, "arguments": arguments}, None, ctx)
+
+        resources = await call(action="list_resources")
+        resource = json.loads(resources.content)["data"]["resources"][0]
+        assert resource["uri"] == "fixture://notes"
+        prompts = await call(action="list_prompts")
+        prompt = json.loads(prompts.content)["data"]["prompts"][0]
+        assert prompt["name"] == "summarize" and prompt["arguments"][0]["name"] == "topic"
+        read = await call(action="read_resource", uri=resource["uri"])
+        got = await call(action="get_prompt", name=prompt["name"], arguments={"topic": "MCP"})
+        for result, expected in [(read, "fixture notes"), (got, "Summarize MCP")]:
+            assert not result.is_error and expected in result.content
+            data = json.loads(result.content)
+            assert data["trust"] == "untrusted_data" and data["server"] == "life"
+            assert data["session_id"] == "context-test" and data["connection_ready_at"]
+            assert data["trust_scope"] == "user_config"
+            assert data["source_completeness"] == "unknown" and data["omitted_source_bytes"] is None
+            assert data["subscriptions"] == data["resource_templates"] == "unsupported"
+            assert result.metadata["artifact_source"]["completeness"] == "unknown"
+        before = _log(log)
+        for arguments in [
+            {"action": "read_resource", "uri": "http://127.0.0.1/private"},
+            {"action": "get_prompt", "name": "summarize", "arguments": {"undeclared": "x"}},
+            {"action": "get_prompt", "name": "summarize", "arguments": {}},
+        ]:
+            assert (await call(**arguments)).is_error
+        assert _log(log).count("read_resource") == before.count("read_resource")
+        assert _log(log).count("get_prompt") == before.count("get_prompt")
+        ctx.permissions = PermissionEngine(tool_rules={context.name: "deny"})
+        before = _log(log)
+        assert (await call(action="list_resources")).is_error
+        assert _log(log) == before
+        ctx.permissions = None
+        ctx.allowed_tool_effects = frozenset()
+        assert (await context.execute({"action": "list_resources"}, None, ctx)).is_error
+        assert _log(log) == before
+    finally:
+        await manager.close()
+
+
+async def test_project_cannot_grant_context_access_or_launch_without_trust(tmp_path: Path, monkeypatch):
+    from garuda.mcp.trust import grant
+
+    cfg, log = _context_config(tmp_path, monkeypatch)
+    project = tmp_path / "repo"
+    project.mkdir()
+    project_cfg = project / "mcp.json"
+    project_cfg.write_bytes(cfg.read_bytes())
+    manager = await McpClientManager.from_paths([str(project_cfg)], workspace=str(project))
+    try:
+        assert manager.get_tools() == [] and not log.exists()
+    finally:
+        await manager.close()
+    [server] = load_mcp_config(project_cfg)
+    assert server.context_access == ()
+    grant(server, project)
+    # A trusted project entry still cannot inherit global read-effect authority
+    # on a name collision, even when it copies context_access into its own text.
+    manager = await McpClientManager.from_paths([str(project_cfg), str(cfg)], workspace=str(project))
+    try:
+        assert {t.tool_name for t in manager.get_tools()} == {"ping", "crash"}
+        assert len(_launch_pids(log)) == 1
+    finally:
+        await manager.close()
+
+
+def test_invalid_context_grant_preserves_required_server(tmp_path: Path, monkeypatch):
+    cfg, _ = _context_config(tmp_path, monkeypatch)
+    data = json.loads(cfg.read_text())
+    data["mcpServers"]["life"].update(required=True, context_access=["resources", "execute"])
+    cfg.write_text(json.dumps(data), encoding="utf-8")
+    [server] = load_mcp_config(cfg)
+    assert server.required and server.context_access == ()
+
+
+async def test_mcp_context_bounds_multibyte_content_and_listing(tmp_path: Path, monkeypatch):
+    cfg, log = _context_config(tmp_path, monkeypatch, MCP_LIFECYCLE_CONTEXT="huge")
+    manager = await McpClientManager.from_paths([str(cfg)])
+    try:
+        context = _tool(manager, "mcp__life__context")
+        for arguments in [{"action": "list_resources"}, {"action": "read_resource", "uri": "fixture://notes"}]:
+            result = await context.execute(arguments, None, ToolContext(session_id="bounds"))
+            assert not result.is_error
+            assert len(result.content.encode("utf-8")) <= 16 * 1024
+            assert json.loads(result.content)["coverage"] == "partial"
+            source = result.metadata["artifact_source"]
+            assert source["completeness"] == "partial" and source["omitted_source_bytes"] is None
+        denied = await context.execute({"action": "read_resource", "uri": "fixture://extra/99"}, None, None)
+        assert denied.is_error and "outside the bounded" in denied.content
+        assert _log(log).count("read_resource") == 1
+    finally:
+        await manager.close()
+
+
+@pytest.mark.parametrize("mode", ["absent", "malformed", "mismatch", "hang"])
+async def test_mcp_context_refuses_unsupported_invalid_and_hung_reads(tmp_path: Path, monkeypatch, mode):
+    cfg, log = _context_config(tmp_path, monkeypatch, MCP_LIFECYCLE_CONTEXT=mode)
+    manager = await McpClientManager.from_paths([str(cfg)])
+    try:
+        context = _tool(manager, "mcp__life__context")
+        monkeypatch.setattr(client_mod, "MCP_CALL_TIMEOUT", 0.2)
+        result = await context.execute({"action": "read_resource", "uri": "fixture://notes"}, None, None)
+        assert result.is_error
+        if mode == "absent":
+            assert "resources unsupported" in result.content
+            result = await context.execute({"action": "list_prompts"}, None, None)
+            assert result.is_error and "prompts unsupported" in result.content
+            assert len(_log(log)) == 1
+        elif mode == "mismatch":
+            assert "URI differs" in result.content
+        elif mode == "malformed":
+            assert "ValidationError" in result.content
+        else:
+            assert "timed out" in result.content
+            reading = asyncio.create_task(context.execute(
+                {"action": "read_resource", "uri": "fixture://notes"}, None, None))
+            await _until(lambda: _log(log).count("read_resource") == 2)
+            reading.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reading
+            ping = await _tool(manager, "mcp__life__ping").execute({"message": "after cancel"}, None, None)
+            assert ping.content == "pong:after cancel"
+            assert _log(log).count("read_resource") == 2
+    finally:
+        await manager.close()
+
+
+async def test_context_read_crash_is_not_replayed_and_reconnect_refuses_calls(tmp_path: Path, monkeypatch):
+    cfg, log = _context_config(tmp_path, monkeypatch, MCP_LIFECYCLE_CONTEXT="crash")
+    monkeypatch.setattr(client_mod, "MCP_RECONNECT_BACKOFF", 0.5)
+    manager = await McpClientManager.from_paths([str(cfg)])
+    try:
+        context = _tool(manager, "mcp__life__context")
+        first_connection = _state(manager, "life")["ready_at"]
+        assert (await context.execute({"action": "read_resource", "uri": "fixture://notes"}, None, None)).is_error
+        await _until(lambda: _state(manager, "life")["state"] == "reconnecting")
+        before = _log(log)
+        result = await asyncio.wait_for(context.execute({"action": "list_resources"}, None, None), 0.1)
+        assert result.is_error and "reconnecting" in result.content
+        assert _log(log) == before
+        await _until(lambda: _state(manager, "life")["reconnects"] == 1
+                     and _state(manager, "life")["state"] == "ready")
+        assert _log(log).count("read_resource") == 1
+        result = await context.execute({"action": "list_resources"}, None, None)
+        assert not result.is_error
+        assert json.loads(result.content)["connection_ready_at"] != first_connection
+    finally:
+        await manager.close()
+    before = _log(log)
+    result = await context.execute({"action": "list_prompts"}, None, None)
+    assert result.is_error and "closed" in result.content and _log(log) == before
+
+
+async def test_context_grant_scope_and_capabilities_are_checked_after_reconnect(tmp_path: Path, monkeypatch):
+    absent = tmp_path / "absent"
+    cfg, log = _context_config(tmp_path, monkeypatch, MCP_LIFECYCLE_CONTEXT_ABSENT_IF=str(absent))
+    data = json.loads(cfg.read_text())
+    data["mcpServers"]["life"]["context_access"] = ["resources"]
+    cfg.write_text(json.dumps(data), encoding="utf-8")
+    manager = await McpClientManager.from_paths([str(cfg)])
+    try:
+        context = _tool(manager, "mcp__life__context")
+        assert not (await context.execute({"action": "list_resources"}, None, None)).is_error
+        before = _log(log)
+        denied = await context.execute({"action": "list_prompts"}, None, None)
+        assert denied.is_error and "not authorized" in denied.content and _log(log) == before
+        absent.touch()
+        await _tool(manager, "mcp__life__crash").execute({}, None, None)
+        await _until(lambda: _state(manager, "life")["reconnects"] == 1
+                     and _state(manager, "life")["state"] == "ready")
+        before = _log(log)
+        unsupported = await context.execute({"action": "list_resources"}, None, None)
+        assert unsupported.is_error and "resources unsupported" in unsupported.content
+        assert _log(log) == before
+    finally:
+        await manager.close()

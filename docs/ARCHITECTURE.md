@@ -394,6 +394,19 @@ fastest way to learn the system.
    as a proved loss and relaunched (bounded per run, same unchanged and still-trusted
    entry); in-flight calls fail rather than replay, and the admitted tool list,
    effects and trust never widen.
+   The global MCP entry can opt into `context_access: [resources, prompts]`.
+   This adds a read-only `mcp__<server>__context` tool through the same toolkit,
+   effect provenance and lazy dispatch; project entries cannot grant it or
+   inherit it when overriding a global entry. Lists and text retrieval use
+   the existing owner's current session, check its advertised capabilities,
+   and refuse immediately while not ready. Reads accept only exact identifiers
+   in the first bounded listing page; URIs are sent to the MCP session, never
+   fetched or opened by Garuda. Results carry server, connection and calling
+   session provenance in a bounded untrusted-data envelope, with source facts
+   for the existing artifact capture owner. No resource or prompt text enters
+   the system prompt. Templates, subscriptions, pagination and binary delivery
+   remain unsupported.
+
 
    The opt-in `python_codemod` keeps immutable, versioned previews in that context;
    only declarative host-parsed import renames are admitted. Environment reads

@@ -2387,6 +2387,35 @@ and, for a project server, the trust grant still holds. Remote transports are no
 lost connection fails with the transport's error and is never replayed; calls
 while the server is not ready fail without being queued. Admitted tool objects
 keep their effect and trust; schemas refresh in place, tools the server drops
+refuse, and newly listed tools wait for a new run.
+
+## 2026-11-06 — MCP context reads share admitted sessions and global effect authority (#373)
+
+Resource and prompt access defaults to off. A server entry in the user-owned
+global MCP config may opt into `context_access: [resources, prompts]`, together
+or individually. Project entries cannot self-grant or inherit this read-effect
+authority on a name collision, even after launch trust approval. The generated
+context tool is an identity-trusted read-only `McpRemoteTool`, so existing
+toolkit assembly, permissions, collection selectors and lazy dispatch apply.
+No extra server, workspace command or interpreter is launched for discovery.
+
+Lists and retrieval run only through an already-ready owner's current session.
+Capabilities are refreshed on reconnect; absent interfaces explicitly refuse.
+Retrieval accepts exact identifiers from the first bounded listing page; Garuda
+never dereferences resource URLs or filesystem paths. Changed connections
+discard late results; disconnected calls fail immediately without replay.
+The global interface grant covers the selected server's current catalog, not a
+per-resource immutable content grant or a proof of server behavior.
+
+Only bounded text and whitelisted metadata are returned, labelled untrusted data
+with server, connection, calling session and trust scope. The view is capped at
+40 entries/blocks and 16 KiB, with partial coverage for omissions. Shared
+artifact capture receives source facts; upstream completeness and omitted
+source bytes remain unknown. Resources/prompts are never auto-injected into
+the system prompt. Pagination, templates, subscriptions and binary/embedded
+content delivery remain unsupported; the SDK still decodes transport responses
+before Garuda projects them, so this view bound is not a transport memory limit.
+
 refuse, and newly listed tools wait for a new run. A server the startup barrier
 stops is stopped before its verdict is published, so a handshake that finishes
 in the same instant can never mark it ready.

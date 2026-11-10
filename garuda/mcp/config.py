@@ -53,6 +53,8 @@ class McpServerConfig:
     # A required server must be ready by the startup barrier or the run refuses;
     # an optional one (the default) may fail and the run continues without it.
     required: bool = False
+    # Read-side access is opt-in authority from the same global file as effects.
+    context_access: tuple[str, ...] = ()
 
 
 # Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
@@ -266,6 +268,7 @@ def _dict_to_server_configs(
                     trusted_tool_effects=trusted_tool_effects,
                     spec_digest=spec_digest,
                     required=_required_flag(entry, str(name)),
+                    context_access=_context_access(entry, str(name), trusted_source=trusted_source),
                 )
             )
         except Exception as exc:
@@ -277,6 +280,19 @@ def _dict_to_server_configs(
                 exc,
             )
     return configs
+
+
+def _context_access(entry: dict, name: str, *, trusted_source: bool) -> tuple[str, ...]:
+    raw = entry.get("context_access", [])
+    if not raw:
+        return ()
+    if not trusted_source:
+        logger.warning("Ignoring context_access for MCP server %r: authority is global-only", name)
+        return ()
+    if not isinstance(raw, list) or any(value not in ("resources", "prompts") for value in raw):
+        logger.warning("Ignoring invalid context_access for MCP server %r; expected resources and/or prompts", name)
+        return ()
+    return tuple(dict.fromkeys(raw))
 
 
 def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
