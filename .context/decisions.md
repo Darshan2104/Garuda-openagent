@@ -2369,8 +2369,9 @@ interpreter is required in the workspace. The command is wrapped so `head`
 stops the producer after one page plus a look-ahead line or 512 KiB, and the
 producer's exit status is emitted as a final marker line: its absence proves
 the result is partial, so totals are exact only when the producer finished.
-rg output is sorted by path. Cursors bind the search options, workspace root
-and a digest of the claimed earlier results; any change is refused as stale.
-The grep fallback keeps directory order, which is stable while the tree is
-unchanged and otherwise detected by the same digest. Glob still sorts the full
+Output is sorted by path: rg sorts itself, and the grep fallback greps a
+`find | LC_ALL=C sort -z` file list through `xargs`, streaming so `head` still
+stops it early (listing or grep errors still fail the search). Cursors bind the
+search options, workspace root and a digest of the claimed earlier results; any
+change is refused as stale. Glob still sorts the full
 listing, so only its capture (not traversal) is bounded.

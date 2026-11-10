@@ -115,6 +115,10 @@ def _split_capture(stdout: str) -> tuple[list[str], int | None, bool]:
             return lines[:-1], int(lines[-1][len(_EXIT_MARKER):]), False
         except ValueError:
             pass
+    if partial and (_EXIT_MARKER.startswith(lines[-1]) or lines[-1].startswith(_EXIT_MARKER)):
+        # The byte cap cut the status marker itself: every line before it is whole,
+        # but the producer's status is unknown.
+        return lines[:-1], None, False
     return lines, None, partial
 
 
@@ -204,8 +208,14 @@ def _grep_variant(
     q_pattern: str, q_path: str, glob: str | None, output_mode: str,
     context: int, before: int, after: int, per_file: int | None = None,
 ) -> str:
-    """GNU/BSD grep command (the fallback when ripgrep is not installed)."""
-    include = f" --include={shlex.quote(glob)}" if glob else ""
+    """GNU/BSD grep command (the fallback when ripgrep is not installed).
+
+    Directories are searched file by file in ``LC_ALL=C`` path order (``grep -R``
+    follows the filesystem's order, which may change between calls and would make
+    cursors stale), so pages and cursors are reproducible as with rg. Files stream
+    through grep in order, so ``head`` still stops production early.
+    """
+    name = f" -name {shlex.quote(glob)}" if glob else ""
     if output_mode == "files_with_matches":
         mode_flags = " -l"
         line_flags = "-H"
@@ -224,13 +234,24 @@ def _grep_variant(
                 mode_flags += f" -A {after}"
     # Branch on file vs directory so single-file and symlinked targets work
     # reliably across GNU and BSD/macOS grep. Directories (incl. symlinks to
-    # dirs) use `-R` with a trailing slash — BSD grep won't descend into a
-    # symlink-to-dir given directly, but the trailing slash forces it. Single
-    # files use plain `grep -nH` (no recursion; `-r <file>` is unreliable on BSD).
+    # dirs) are listed with `find -L` and a trailing slash, which follows
+    # symlinks as `grep -R` did. Single files use plain `grep -nH` (no recursion).
+    # xargs statuses differ (BSD reports 1 for any failed batch), so each step
+    # reports `match`/`error` on fd 3 instead, while results go straight to the
+    # real stdout (fd 4). Any listing, sorting or grep error yields grep's exit 2,
+    # so files are never silently omitted; otherwise 0 with a match, else 1.
+    listing = (
+        f'{{ find -L "$p/" \\( -name .git -type d -prune \\) -o \\( -type f{name} -print0 \\) '
+        "|| echo error >&3; } | { LC_ALL=C sort -z || echo error >&3; } | "
+        "xargs -0 -r sh -c '\"$@\"; s=$?; [ \"$s\" -ne 0 ] || echo match >&3; "
+        "[ \"$s\" -le 1 ] || exit 255' sh "
+        f"grep {line_flags} -E{mode_flags} -e {q_pattern} -- || echo error >&3"
+    )
     return (
         f"p={q_path}; "
         f'if [ -d "$p" ]; then '
-        f'grep -R {line_flags} -E{mode_flags}{include} --exclude-dir=.git -e {q_pattern} -- "$p/"; '
+        f"{{ r=$( {{ {listing}; }} 3>&1 1>&4 ); }} 4>&1; "
+        'case "$r" in *error*) (exit 2) ;; *match*) ;; *) false ;; esac; '
         f"else "
         f'grep {line_flags} -E{mode_flags} -e {q_pattern} -- "$p"; '
         f"fi"

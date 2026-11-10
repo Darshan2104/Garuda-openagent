@@ -23,8 +23,9 @@ def test_command_prefers_rg_with_grep_fallback():
     cmd = _build_search_command("needle", ".", None, "content", 0, 0, 0, False)
     assert cmd.startswith("if command -v rg >/dev/null 2>&1; then rg ")
     assert "; else " in cmd and cmd.rstrip().endswith("fi")
-    # grep fallback is present after the else.
-    assert "grep -R" in cmd
+    # The grep fallback, over a path-sorted file listing, is present after the else.
+    fallback = cmd.split("; else ", 1)[1]
+    assert "find -L" in fallback and "LC_ALL=C sort -z" in fallback and "grep -nH -E" in fallback
 
 
 def test_rg_content_flags_and_glob():
@@ -122,7 +123,7 @@ def backend(request, tmp_path, monkeypatch):
         return "rg"
     bin_dir = tmp_path.parent / f"{tmp_path.name}-bin"
     bin_dir.mkdir()
-    for tool in ("grep", "head", "sort", "find", "cat"):
+    for tool in ("grep", "head", "sort", "find", "cat", "xargs", "sh"):
         os.symlink(shutil.which(tool), bin_dir / tool)
     monkeypatch.setenv("PATH", str(bin_dir))
     return "grep"
@@ -144,9 +145,9 @@ async def test_per_file_limit_keeps_one_hot_file_from_hiding_others(tmp_path, ba
     (tmp_path / "m.txt").write_text("needle m\n" * 500)
     (tmp_path / "z.txt").write_text("needle z\n")
     env = LocalEnvironment(workspace_root=tmp_path)
-    if backend == "rg":  # sorted by path, so the hot file fills the page before z.txt
-        crowded = await GrepTool().execute({"pattern": "needle", "max_results": 10}, env, CTX)
-        assert "z.txt" not in crowded.content
+    # Sorted by path, so the hot file fills the page before z.txt.
+    crowded = await GrepTool().execute({"pattern": "needle", "max_results": 10}, env, CTX)
+    assert "z.txt" not in crowded.content
     fair = await GrepTool().execute(
         {"pattern": "needle", "max_results": 10, "per_file_limit": 2}, env, CTX)
     assert all(name in fair.content for name in ("a.txt", "m.txt", "z.txt"))
@@ -205,8 +206,7 @@ async def test_cursor_pages_are_contiguous_and_stale_scope_is_refused(tmp_path, 
     pages = [line for page in (first, second, third) for line in page.content.splitlines()
              if line.startswith(("./a.txt", "./b.txt", "./c.txt"))]
     assert len(pages) == 30 and len(set(pages)) == 30
-    if backend == "rg":
-        assert pages == expected
+    assert pages == expected
 
     other = await GrepTool().execute({"pattern": "needle a", "cursor": cursor}, env, CTX)
     assert other.is_error and "different search" in other.content
@@ -216,6 +216,51 @@ async def test_cursor_pages_are_contiguous_and_stale_scope_is_refused(tmp_path, 
     stale = await GrepTool().execute(
         {"pattern": "needle", "max_results": 12, "cursor": cursor}, env, CTX)
     assert stale.is_error and "stale cursor" in stale.content
+
+
+async def test_results_are_sorted_by_path_with_either_backend(tmp_path, backend):
+    # Created out of order, so a filesystem-order walk (grep -R) would not be sorted.
+    for name in ("z.txt", "m.txt", "c-d.txt", "y.txt", "b.txt", "a.txt", "d/x.txt", "d/a/b.txt"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("needle 1\nneedle 2\n")
+    env = LocalEnvironment(workspace_root=tmp_path)
+    for mode, per_line in (("content", 2), ("files_with_matches", 1), ("count", 1)):
+        result = await GrepTool().execute({"pattern": "needle", "output_mode": mode}, env, CTX)
+        paths = [line.split(":", 1)[0] for line in result.content.splitlines()]
+        assert len(paths) == 8 * per_line
+        assert paths == sorted(paths), mode
+    content = await GrepTool().execute({"pattern": "needle"}, env, CTX)
+    assert content.content.splitlines()[:2] == ["./a.txt:1:needle 1", "./a.txt:2:needle 2"]
+    none = await GrepTool().execute({"pattern": "absent", "glob": "*.txt"}, env, CTX)
+    assert not none.is_error and "No matches found" in none.content
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
+async def test_an_unreadable_directory_fails_the_search(tmp_path, backend):
+    (tmp_path / "a.txt").write_text("needle\n")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "b.txt").write_text("needle\n")
+    locked.chmod(0)
+    try:
+        result = await GrepTool().execute(
+            {"pattern": "needle"}, LocalEnvironment(workspace_root=tmp_path), CTX)
+    finally:
+        locked.chmod(0o755)
+    assert result.is_error and "exit 2" in result.content
+
+
+async def test_a_cut_exit_marker_is_never_shown_as_a_result(tmp_path, backend, monkeypatch):
+    (tmp_path / "a.txt").write_text("needle\n")
+    line = "./a.txt:1:needle\n"
+    for kept in (1, 5, len(search._EXIT_MARKER) + 1):
+        monkeypatch.setattr(search, "SEARCH_CAPTURE_BYTES", len(line) + kept)
+        result = await GrepTool().execute(
+            {"pattern": "needle"}, LocalEnvironment(workspace_root=tmp_path), CTX)
+        assert not result.is_error
+        assert result.content.splitlines()[0] == line.strip()
+        assert "__G" not in result.content
+        assert "capture limit" in result.content
 
 
 async def test_glob_capture_is_bounded_and_never_returns_a_cut_path(tmp_path, monkeypatch):

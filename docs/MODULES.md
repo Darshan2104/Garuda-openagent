@@ -68,8 +68,8 @@ on it), `background.py`, `tmux.py`.
 Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed;
 grep/glob stop the producer through the Environment once a page plus one
 look-ahead line or 512 KiB is captured, keep the producer's exit status via a
-marker line so early stopping is distinguishable from completion, sort rg
-output by path, offer an opt-in content-mode `per_file_limit`, window long
+marker line so early stopping is distinguishable from completion, sort
+output by path (the grep fallback greps a sorted file list), offer an opt-in content-mode `per_file_limit`, window long
 lines around the match, and bind `next_cursor` to the search options and a
 digest of earlier results so changed scope is refused as stale),
 `diagnostics.py` (post-edit syntax + lint).

@@ -181,7 +181,8 @@ next_cursor: eyJ2IjoxLCJxIjoi…
 - `grep` stops rg or grep as soon as one page plus one extra line (or 512 KiB)
   has been captured, so a hot log does not have to be read to the end.
 - A total is reported as exact only when the search finished; otherwise it is
-  "at least N". Output from rg is sorted by path, so pages are reproducible.
+  "at least N". Output is sorted by path (the grep fallback searches a sorted
+  file list), so pages are reproducible.
 - To read on, the agent passes `next_cursor`. If results before that page
   changed in the meantime, the cursor is refused as stale instead of silently
   skipping or repeating lines.
