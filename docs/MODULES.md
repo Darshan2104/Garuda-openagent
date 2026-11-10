@@ -285,7 +285,8 @@ the last attempt's usage, not the sum of repeated prompts.
 
 The loop records failed calls at its timed model boundary (including recovered
 context overflow and final submission); `accounting.complete` records auxiliary
-failures. Each emits one `model_response` event per logical call, with
+failures. Each emits one `model_call_failed` event per logical call — never a
+`model_response`, whose readers treat every one as a real reply — with
 `outcome: failed`, known `usage`, `attempt_usage`, and `usage_unknown` listing
 fields missing from any attempt. Successful calls carry the same additive
 coverage metadata. No per-attempt accounting events are emitted.

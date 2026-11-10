@@ -94,6 +94,7 @@ KNOWN_EVENT_TYPES = frozenset(
     {
         "user_message",
         "model_response",
+        "model_call_failed",
         "tool_call",
         "tool_result",
         "permission_ask",

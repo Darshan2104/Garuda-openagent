@@ -110,7 +110,7 @@ def aggregate_model_metrics(events: list[dict]) -> dict:
 
     for event in events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if event.get("type") == "model_response":
+        if event.get("type") in ("model_response", "model_call_failed"):
             if payload.get("truncated") and not payload.get("usage"):
                 continue
             note(by_role, str(payload.get("model_binding_role") or "unknown"), payload)

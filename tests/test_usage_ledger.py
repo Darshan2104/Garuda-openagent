@@ -363,9 +363,10 @@ async def test_retry_call_is_one_persisted_accounting_event(
         finally:
             accounting.reset(token)
     assert calls == 2
-    responses = [e for e in events.get_all() if e["type"] == "model_response"
+    responses = [e for e in events.get_all() if e["type"] in ("model_response", "model_call_failed")
                  and not e["payload"].get("truncated")]
     assert len(responses) == 1
+    assert responses[0]["type"] == ("model_response" if succeeds else "model_call_failed")
     payload = responses[0]["payload"]
     assert payload.get("outcome") == (None if succeeds else "failed")
     assert len(payload["attempt_usage"]) == 2
