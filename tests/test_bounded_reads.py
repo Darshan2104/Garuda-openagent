@@ -13,6 +13,9 @@ from garuda.workspace.local import LocalEnvironment
 
 @pytest.mark.asyncio
 async def test_page_does_not_use_whole_file_read(tmp_path, monkeypatch):
+    import garuda.workspace.text_reads as reads
+
+    monkeypatch.setattr(reads, 'SCAN_BLOCK_BYTES', reads.CHUNK_BYTES)
     path = tmp_path / 'large.txt'
     with path.open('w') as f:
         for _ in range(30000):
@@ -44,9 +47,12 @@ async def test_unicode_line_semantics_and_tail(tmp_path, text):
 
 
 @pytest.mark.asyncio
-async def test_long_lines_have_bounded_allocation(tmp_path):
+async def test_long_lines_have_bounded_allocation(tmp_path, monkeypatch):
     import tracemalloc
 
+    import garuda.workspace.text_reads as reads
+
+    monkeypatch.setattr(reads, 'SCAN_BLOCK_BYTES', 64 * 1024)
     path = tmp_path / 'long'
     with path.open('wb') as f:
         for _ in range(500):
@@ -69,8 +75,10 @@ async def test_long_lines_have_bounded_allocation(tmp_path):
 async def test_actual_read_sizes_and_unknown_totals(tmp_path, monkeypatch):
     import os
 
+    import garuda.workspace.text_reads as reads
     from garuda.workspace.text_reads import CHUNK_BYTES
 
+    monkeypatch.setattr(reads, 'SCAN_BLOCK_BYTES', CHUNK_BYTES)
     path = tmp_path / 'large'
     path.write_bytes(b'row\n' * 50000)
     original = os.fdopen
@@ -103,18 +111,99 @@ async def test_actual_read_sizes_and_unknown_totals(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scan_ceiling_and_missing_file(tmp_path, monkeypatch):
+async def test_large_file_offset_and_tail_reads_succeed_with_bounded_tail_io(tmp_path, monkeypatch):
     import garuda.workspace.text_reads as reads
 
-    monkeypatch.setattr(reads, 'MAX_SCAN_BYTES', 8192)
-    (tmp_path / 'large').write_bytes(b'x' * 20000)
+    # Shrink any total scan ceiling: a late offset must still read like the
+    # whole-file path did, and a tail must seek from EOF instead of scanning.
+    monkeypatch.setattr(reads, 'MAX_SCAN_BYTES', 8192, raising=False)
+    path = tmp_path / 'big.log'
+    with path.open('w') as f:
+        for i in range(1, 300001):
+            f.write(f'line {i}\n')
+    size = path.stat().st_size
+    assert size > 2 * 1024 * 1024
+    ctx = ToolContext(session_id='test')
+    env = monitored(LocalEnvironment(tmp_path))
+    page = await ReadFileTool().execute({'path': 'big.log', 'offset': 250000, 'limit': 2}, env, ctx)
+    assert not page.is_error, page.content
+    assert page.content.startswith('250000\tline 250000\n250001\tline 250001')
+
+    tail = await ReadFileTool().execute({'path': 'big.log', 'tail': True, 'limit': 3}, env, ctx)
+    assert not tail.is_error, tail.content
+    assert tail.content.startswith('line 299998\nline 299999\nline 300000\n')
+    assert 'line numbers and total lines unknown' in tail.content
+    assert tail.metadata['total_lines'] is None
+    assert tail.metadata['bytes_read'] <= 2 * reads.CHUNK_BYTES < size
+    assert env.is_alive
+
+
+@pytest.mark.asyncio
+async def test_tail_seek_handles_breaks_across_blocks(tmp_path, monkeypatch):
+    import random
+
+    import garuda.workspace.text_reads as reads
+
+    # Tiny blocks put CRLF pairs and multi-byte separators across every
+    # backward block boundary; tails must still match str.splitlines.
+    monkeypatch.setattr(reads, 'CHUNK_BYTES', 3)
+    monkeypatch.setattr(reads, 'EXACT_TAIL_BYTES', 0)
+    rng = random.Random(404)
     env = LocalEnvironment(tmp_path)
-    with pytest.raises(OSError, match='scan budget'):
-        await env.read_text_page('large', tail=True)
+    for _ in range(300):
+        text = ''.join(rng.choice(['a', 'β', '\n', '\r', '\r\n', '\x85', '\u2028', '\v'])
+                       for _ in range(rng.randrange(1, 30)))
+        (tmp_path / 'a').write_bytes(text.encode())
+        expected = text.splitlines()
+        limit = rng.randrange(1, 6)
+        page = await env.read_text_page('a', limit=limit, tail=True)
+        assert page.lines == tuple(expected[-limit:]), (text, limit)
+        if page.offset is None:
+            assert page.total_lines is None and len(expected) > limit
+        else:
+            assert page.total_lines == len(expected)
+
+
+@pytest.mark.asyncio
+async def test_chunked_forward_scan_matches_splitlines(tmp_path, monkeypatch):
+    import random
+
+    import garuda.workspace.text_reads as reads
+
+    rng = random.Random(4040)
+    env = LocalEnvironment(tmp_path)
+    pieces = ['a', 'β', '€', '\n', '\r', '\r\n', '\x0b', '\x0c', '\x1c', '\x1d', '\x1e',
+              '\x85', '\u2028', '\u2029', 'z' * 2003]
+    for _ in range(400):
+        # Tiny blocks split CRLF pairs, multi-byte characters and long lines.
+        monkeypatch.setattr(reads, 'SCAN_BLOCK_BYTES', rng.randrange(1, 6))
+        text = ''.join(rng.choice(pieces) for _ in range(rng.randrange(0, 25)))
+        (tmp_path / 'a').write_bytes(text.encode())
+        lines = text.splitlines()
+        offset, limit = rng.randrange(1, len(lines) + 3), rng.randrange(1, 5)
+        page = await env.read_text_page('a', offset=offset, limit=limit)
+        expected = tuple(line[:2001] for line in lines[offset - 1:offset - 1 + limit])
+        assert (page.lines, page.offset) == (expected, offset), ascii(text[:80])
+        if page.total_lines is None:
+            # Existing contract: only files of at least one chunk stop early.
+            assert len(text.encode()) >= reads.CHUNK_BYTES and len(lines) >= offset + limit
+            assert page.has_more
+        else:
+            assert page.total_lines == len(lines)
+            assert page.has_more == (len(lines) >= offset + len(expected))
+        tail = await env.read_text_page('a', limit=limit, tail=True)
+        assert tail.lines == tuple(line[:2001] for line in lines[-limit:]), ascii(text[:80])
+        assert tail.total_lines == len(lines)
+
+
+@pytest.mark.asyncio
+async def test_missing_file_and_invalid_tail(tmp_path):
+    (tmp_path / 'small').write_bytes(b'x' * 20000)
+    env = LocalEnvironment(tmp_path)
     with pytest.raises(FileNotFoundError):
         await env.read_text_page('missing')
     with pytest.raises(ValueError):
-        await env.read_text_page('large', offset=2, tail=True)
+        await env.read_text_page('small', offset=2, tail=True)
 
 
 @pytest.mark.asyncio

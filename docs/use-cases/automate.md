@@ -551,13 +551,16 @@ async def inspect():
 asyncio.run(inspect())
 ```
 
-Local and sandbox reads scan UTF-8 in 8 KiB chunks, retain at most 2000 lines
-and 2000 displayed characters per line, and stop at a 64 MiB scan ceiling.
-Offsets scan the preceding bytes; tail scans to EOF within that ceiling. This
-bounds allocation, but does not promise constant-time late pages or tail access.
-A scan-ceiling error returns no partial page. Counts are exact only after EOF;
-otherwise `total_lines` is unknown. Concurrent changes are not a file snapshot.
-Newline handling retains existing `str.splitlines()` semantics.
+Local and sandbox reads decode UTF-8 in 1 MiB blocks and retain at most 2000
+lines and 2000 displayed characters per line. Offsets stream through the
+preceding bytes without a total-size ceiling, so a late page costs I/O like the
+whole-file read it replaces but bounded memory. Tail seeks backwards from EOF in
+8 KiB blocks and decodes only the located tail, so its cost follows the tail's
+size, not the file's; when that tail starts beyond the first 1 MiB, line numbers
+and `total_lines` are unknown and earlier bytes are not UTF-8 validated. Counts
+are exact only after a scan from the start reaches EOF; otherwise `total_lines`
+is unknown. Concurrent changes are not a file snapshot. Newline handling
+retains existing `str.splitlines()` semantics.
 
 Docker and remote backends explicitly do not support bounded text reads yet.
 `bounded=True` or `tail=True` refuses there; ordinary reads keep their existing

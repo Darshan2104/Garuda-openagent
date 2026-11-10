@@ -85,9 +85,17 @@ class ReadFileTool:
             selected = lines[start : start + limit]
         else:
             total = page.total_lines
+            selected = page.lines
+            if page.offset is None:
+                # A tail of a large file: line numbers are unknown, never guessed.
+                body = "\n".join(line if len(line) <= MAX_LINE_CHARS
+                                 else line[:MAX_LINE_CHARS] + "... (line truncated)"
+                                 for line in selected)
+                return ToolResult(
+                    tool_call_id="", metadata=metadata,
+                    content=f"{body}\n(last {len(selected)} lines; line numbers and total lines unknown)")
             offset = page.offset
             start = offset - 1
-            selected = page.lines
         if total == 0:
             return ToolResult(tool_call_id="", content="(empty file)", metadata=metadata)
         if not selected:
