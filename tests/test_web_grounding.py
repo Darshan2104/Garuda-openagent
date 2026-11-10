@@ -22,6 +22,7 @@ from garuda.interfaces.web.live import LiveRuns
 from garuda.interfaces.web.routes import DashboardContext, dispatch
 from garuda.interfaces.web.security import TOKEN_HEADER
 from garuda.interfaces.web.wire import Request
+from garuda.tools.web import FetchedPage
 from tests.test_web_live_runs import (
     PORT,
     TOKEN,
@@ -29,10 +30,15 @@ from tests.test_web_live_runs import (
     call,
     payload_of,
 )
+from tests.test_web_tools import DOC
+from tests.test_web_tools import site as _web_site
 
 
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
+
+
+site = _web_site
 
 
 @pytest.fixture
@@ -59,7 +65,9 @@ async def grounded(store, tmp_path, monkeypatch):
     monkeypatch.setattr("garuda.interfaces.runner.resolve_environment", fake_env)
     ctx = DashboardContext(port=PORT, token=TOKEN, store=store, allow_run=True,
                            loop=live.loop, live=live)
-    chat_id = payload_of(await call(ctx, "/api/chat", method="POST", body={}))["chat_id"]
+    opened = await call(ctx, "/api/chat", method="POST", body={})
+    assert opened.status == 201, payload_of(opened)
+    chat_id = payload_of(opened)["chat_id"]
     return ctx, live, session, chat_id, workspace
 
 
@@ -163,33 +171,27 @@ async def test_a_repeated_name_is_suffixed_not_overwritten(tmp_path):
 # --- URLs go through the vetted fetcher --------------------------------------
 
 
-async def test_a_url_source_uses_the_web_tools_fetcher(tmp_path, monkeypatch):
+async def test_a_url_source_uses_the_web_tools_fetcher(tmp_path, site):
     """Not a second ``urlopen`` here: ``tools/web.py``'s fetcher resolves the host, refuses
     private addresses and pins the connection to the vetted IP. A separate network path would
     be a proxy into everything ``web_fetch`` is not allowed to reach."""
-    seen = {}
-
-    def fake_fetch(url, max_bytes):
-        seen["url"] = url
-        seen["max_bytes"] = max_bytes
-        return (None, "The page body.")
-
-    monkeypatch.setattr("garuda.tools.web._blocking_fetch", fake_fetch)
-    source = await grounding.store_url(tmp_path, "https://example.com/guide")
-    assert seen["url"] == "https://example.com/guide"
-    assert seen["max_bytes"] == grounding.MAX_URL_TEXT_BYTES
+    source = await grounding.store_url(tmp_path, f"{site}/hop")
     body = (tmp_path / source.path).read_text(encoding="utf-8")
-    assert "The page body." in body
-    # The provenance is in the file as well as the record: a slugged filename alone cannot
-    # answer "where did this claim come from".
-    assert "https://example.com/guide" in body
-    assert source.origin == "https://example.com/guide"
+    assert body.endswith("Version 2\n\nAdds provenance.")
+    assert source.origin == f"{site}/hop"
+    provenance = source.as_dict()["web_source"]
+    assert provenance["final_url"] == f"{site}/doc"
+    assert provenance["body_bytes"] == len(DOC)
+    assert provenance["sections"][0]["title"] == "Version 2"
+    assert provenance["redirect_chain"][0]["status"] == 302
+    assert body.startswith(f"Source: {site}/doc\nRequested: {site}/hop (redirected)\n")
+    assert "Completeness: complete" in body and "Last-Modified: 2026-10-21T07:28:00Z" in body
 
 
 async def test_a_refused_address_surfaces_the_fetchers_own_message(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "garuda.tools.web._blocking_fetch",
-        lambda url, max_bytes: ("Refusing to fetch a private address.", ""),
+        "garuda.tools.web._fetch_page",
+        lambda url, max_bytes: ("Refusing to fetch a private address.", None),
     )
     with pytest.raises(SourceError, match="private address"):
         await grounding.store_url(tmp_path, "http://169.254.169.254/latest/meta-data/")
@@ -201,13 +203,13 @@ async def test_a_non_http_url_is_refused_before_any_network_call(tmp_path, url, 
     def explode(*args, **kwargs):  # pragma: no cover - must not be reached
         raise AssertionError("the fetcher must not be reached for an invalid URL")
 
-    monkeypatch.setattr("garuda.tools.web._blocking_fetch", explode)
+    monkeypatch.setattr("garuda.tools.web._fetch_page", explode)
     with pytest.raises(SourceError):
         await grounding.store_url(tmp_path, url)
 
 
 async def test_an_empty_page_is_refused_rather_than_saved(tmp_path, monkeypatch):
-    monkeypatch.setattr("garuda.tools.web._blocking_fetch", lambda url, n: (None, "   \n "))
+    monkeypatch.setattr("garuda.tools.web._fetch_page", lambda url, n: (None, FetchedPage("   \n ", {}, "   \n ")))
     with pytest.raises(SourceError, match="no readable text"):
         await grounding.store_url(tmp_path, "https://example.com/empty")
 
@@ -261,15 +263,15 @@ async def test_a_source_is_announced_on_the_next_turn_and_only_once(grounded):
     assert "grounding/spec.txt" not in session.tasks[1]
 
 
-async def test_a_url_source_is_reachable_through_the_route(grounded, monkeypatch):
+async def test_a_url_source_is_reachable_through_the_route(grounded, site):
     ctx, live, session, chat_id, workspace = grounded
-    monkeypatch.setattr("garuda.tools.web._blocking_fetch", lambda url, n: (None, "Fetched."))
     response = await call(ctx, f"/api/chat/{chat_id}/sources", method="POST",
-                          body={"kind": "url", "url": "https://example.com/a"})
+                          body={"kind": "url", "url": f"{site}/doc"})
     assert response.status == 201
     source = payload_of(response)["source"]
     assert source["kind"] == "url"
     assert (workspace / source["path"]).is_file()
+    assert source["web_source"]["final_url"] == f"{site}/doc"
 
 
 async def test_a_failed_fetch_is_a_502_naming_the_failure(grounded, monkeypatch):
@@ -277,8 +279,8 @@ async def test_a_failed_fetch_is_a_502_naming_the_failure(grounded, monkeypatch)
     The message is the fetcher's own, so it says *which* address was refused."""
     ctx, live, session, chat_id, workspace = grounded
     monkeypatch.setattr(
-        "garuda.tools.web._blocking_fetch",
-        lambda url, n: ("HTTP error 404 fetching https://example.com/x: Not Found", ""),
+        "garuda.tools.web._fetch_page",
+        lambda url, n: ("HTTP error 404 fetching https://example.com/x: Not Found", None),
     )
     response = await call(ctx, f"/api/chat/{chat_id}/sources", method="POST",
                           body={"kind": "url", "url": "https://example.com/x"})

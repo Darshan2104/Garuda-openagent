@@ -74,6 +74,13 @@ URL after redirects, status, charset and its source, retrieval time,
 Last-Modified or `unknown`, body bytes and SHA-256, completeness) and returns
 it as `metadata["web_source"]` plus an `artifact_source` capture;
 `web_search` names its single provider (no fallback) in `metadata["web_search"]`.
+The same source record includes heading-delimited character ranges and per-section
+omission evidence, plus each vetted redirect's URL/status (at most five redirects).
+`web_store.py` owns opt-in rendered snapshots (`retain: true`), isolated by session
+in a bounded process-local LRU. `web_fetch` accepts `ref`, `section`, and `offset`
+to read them without network access; missing or evicted references fail closed.
+Dashboard grounding saves the shared source header and carries `web_source` on its
+existing `Source` record; `_blocking_fetch` retains its bare `(error, text)` contract.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.
 Collection: `collection.py` — trusted parent `delegate_collection` and internal
 child-only `submit_collection`; neither is registered as an ordinary built-in.

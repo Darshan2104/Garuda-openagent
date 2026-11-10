@@ -87,6 +87,7 @@ class Source:
     #: Which tool to read it with, when it is not just ``read_file``.
     reader: str | None = None
     added_at: float = 0.0
+    web_source: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -200,7 +201,7 @@ async def store_url(workspace: Path, url: Any) -> Source:
     and exactly the same code; a fresh ``urlopen`` here would be a second network path with
     none of the vetting, which is the thing worth avoiding.
     """
-    from garuda.tools.web import _blocking_fetch, validate_http_url
+    from garuda.tools.web import _fetch_page, render_source_header, validate_http_url
 
     if not isinstance(url, str) or not url.strip():
         raise SourceError("`url` is required and must be an http(s) URL.")
@@ -209,17 +210,17 @@ async def store_url(workspace: Path, url: Any) -> Source:
     if complaint:
         raise SourceError(complaint)
     try:
-        error, text = await asyncio.wait_for(
-            asyncio.to_thread(_blocking_fetch, url, MAX_URL_TEXT_BYTES),
+        error, page = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_page, url, MAX_URL_TEXT_BYTES),
             timeout=FETCH_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
         raise SourceError(f"Timed out fetching {url}.") from None
     if error:
         raise SourceError(error)
-    if not text.strip():
+    if page is None or not page.rendered_body.strip():
         raise SourceError(f"{url} returned no readable text.")
-    body = f"<!-- fetched from {url} -->\n\n{text}"
+    body = f"{render_source_header(page.source)}\n\n{page.text}"
     data = body.encode("utf-8")
     target = await asyncio.to_thread(_write_bytes, workspace, url_filename(url), data)
     relative = f"{GROUNDING_DIR}/{target.name}"
@@ -230,6 +231,7 @@ async def store_url(workspace: Path, url: Any) -> Source:
         origin=url,
         reader=None,
         added_at=time.time(),
+        web_source=page.source,
     )
 
 
