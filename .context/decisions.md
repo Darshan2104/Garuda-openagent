@@ -2373,6 +2373,31 @@ verify work or replace review. Notes are capped per run and deduplicated, and
 a failed or busy advisor changes nothing. Plan-ready and candidate-ready
 checkpoints, and spend shared with the run-tree gate, are follow-ups.
 
+
+## 2026-11-10 — Advisor checkpoints preserve completion and lifecycle ownership (#385)
+
+- Definitions may select `repeated-failure`, `plan-ready` and `candidate-ready`;
+  omission retains repeated-failure only. Unknown selections refuse at load.
+- Planning uses successful nonempty todo/goal-plan signals, once per run.
+  Candidate-ready uses the first terminal submission (or ungated tool-free
+  completion), before verification. A delivered note defers that submission
+  once for one ordinary budgeted turn; completion and independent final review
+  retain their existing authority.
+- Literal evidence citations are checked against the bounded brief or bounded
+  shell existence checks through the existing Environment. No workspace
+  interpreter is added. Uncited notes spend no delivery allowance; this check
+  establishes citation presence, never correctness or verification. The check
+  and deduplication read the answer extracted from the consult envelope (line
+  quoting and HTML escaping undone); the model still receives the labelled
+  envelope.
+- The existing consult service owns admission, snapshots, deadlines and receipts;
+  the existing steering queue owns advice. Consults remain awaited, close with
+  their run, and recheck cancellation/deadline/turn limits before delivery. A late
+  answer cannot queue a note or restart a cancelled run, even if a dependency
+  returns after cancellation cleanup.
+- Run-tree spend charging for advisor calls remains out of scope pending the
+  shared spend-gate work; ordinary consult accounting remains in force.
+
 ## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
 
 The session broker binds each parked request to a digest (id, session,

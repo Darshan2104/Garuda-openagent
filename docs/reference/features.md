@@ -83,7 +83,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Flow recovery | Continue after the last finished step | `garuda flow resume FLOW_ID` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Automatic Codex quota recovery | Hourly, evidence-gated continuation of eligible sequential CLI flows without replaying completed work | `garuda recovery enable` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
 | Recovery schedule diagnostics | Verify the selected root's cron entry and private wrapper, with a reason for missing or mismatched installation | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
-| Advisor checkpoints | A granted consult target gives capped, labelled advice when a run keeps failing | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
+| Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
 | Read-only external roles | A harness in a proven read-only container | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |

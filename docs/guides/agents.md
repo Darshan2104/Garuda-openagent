@@ -81,7 +81,7 @@ the effective value of each.
 | | `tools.add`, `tools.remove` | Edit the list |
 | | `tools.options` | Per-tool settings ([below](#tools)) |
 | | `tools.subagents` | Agents `invoke_subagent` may start |
-| | `advisor.role`, `advisor.max_notes` | A consult target asked for advice at the repeated-failure checkpoint, and its per-run note cap |
+| | `advisor.role`, `advisor.max_notes`, `advisor.checkpoints` | A granted consult target, per-run note cap (default 2), and selected checkpoints: `repeated-failure` (default), `plan-ready`, `candidate-ready`; an empty list disables checkpoints. Notes require evidence citations; advice never verifies work |
 | | `tools.mcp`, `tools.mcp_config` | Which MCP servers start, and from which config |
 | | `tools.tmux`, `tools.marker_polling` | Terminal tool behaviour |
 | Permissions | `permissions.mode` | `readonly`, `smart`, `auto` or `yolo` |

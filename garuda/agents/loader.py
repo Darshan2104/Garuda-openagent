@@ -66,6 +66,7 @@ class AgentProfile:
     # Read-only advisor (#385): a consult target, and its per-run note cap.
     advisor: str | None = None
     advisor_max_notes: int = 2
+    advisor_checkpoints: list[str] = field(default_factory=lambda: ["repeated-failure"])
     # Skill sources and selection (H.5). None: a legacy profile's project dirs.
     skills_from: list[str] | None = None
     skills_exclude: list[str] | None = None
@@ -144,6 +145,7 @@ class AgentProfile:
             thinking_budget_tokens=self.thinking_budget_tokens,
             advisor=self.advisor,
             advisor_max_notes=self.advisor_max_notes,
+            advisor_checkpoints=list(self.advisor_checkpoints),
         )
 
 

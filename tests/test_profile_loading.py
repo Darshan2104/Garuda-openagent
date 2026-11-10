@@ -76,6 +76,7 @@ async def test_agent_md_fields_reach_the_run(tmp_path):
 NON_DEFAULTS = {
     "advisor": "reviewer",
     "advisor_max_notes": 1,
+    "advisor_checkpoints": ["plan-ready", "candidate-ready"],
     "description": "d",
     "permission_mode": "readonly",
     "mode": "eval",

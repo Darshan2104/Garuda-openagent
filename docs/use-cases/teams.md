@@ -342,7 +342,7 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
 <p class="gd-facts">Opt-in · Uses a role you already let it consult · Advice only</p>
 
 **Use it when** you want a stronger or different model to look in once a run
-is stuck, without letting it act.
+is stuck, or at its first plan or completion claim, without letting it act.
 
 ```yaml
 # garuda.yaml: the coder may consult the planner
@@ -352,23 +352,38 @@ roles:
 ```
 
 ```yaml
-# .garuda/agents/careful.yaml
+# .agent/agents/careful.yaml
 version: 1
 extends: garuda/build
 advisor:
   role: planner     # must be one of the coder's consult targets
-  max_notes: 2      # advisor notes per run (default 2)
+  max_notes: 2      # delivered notes per run (default 2)
+  checkpoints: [repeated-failure, plan-ready, candidate-ready]
 ```
 
 **What happens**
 
-- After three consecutive failed tool steps (the same point at which Garuda
-  already nudges the agent), the planner is asked for next steps through the
-  ordinary consult path: read-only, on a snapshot, with its own receipt.
+- With `checkpoints` omitted, only three consecutive failed tool steps trigger
+  advice, at the existing stuck-agent nudge. The example also selects the first
+  successful nonempty `todo` or `update_goal(plan=...)` and the first completion
+  claim. Plan-ready and candidate-ready each run at most once; `checkpoints: []`
+  disables all checkpoints. Unknown checkpoint names refuse the definition.
+- Each checkpoint uses the ordinary consult path: read-only, on a snapshot,
+  with its own receipt. Candidate advice arrives before the completion gate and
+  can give the run one more ordinary turn to weigh it, within existing turn and
+  deadline limits. The agent must submit again through the same gate.
 - Its answer arrives before the next turn, labelled as advice. It cannot grant
   permissions, approve or verify work, or replace an independent review.
-- Notes are capped per run and repeated advice is dropped. An advisor that
-  fails or is busy changes nothing about the run.
+- Notes must cite a path, quoted command or quoted error in the bounded brief,
+  or a workspace path whose existence the Environment can confirm. This cheap
+  citation check does not establish that the advice is correct. Uncited notes
+  are suppressed as `no evidence cited` and do not spend the note cap.
+- All selected checkpoints share the note cap; repeated advice is dropped.
+  An advisor that fails or is busy changes nothing about the run. Stop/cancel and deadline or
+  turn exhaustion suppress advice; late answers never resume a cancelled or
+  ended run. Provider quota failures do not create an advisor retry or restart.
+  Consult admission and receipts retain their existing spend limits/accounting;
+  charging advisor spend to the run-tree spend gate remains a follow-up.
 - If `advisor.role` isn't one of the role's consult targets, no advisor runs
   and the session records why.
 - Each request, delivered note and suppression is an `advisor` event in the

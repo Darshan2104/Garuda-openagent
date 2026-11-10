@@ -106,6 +106,7 @@ class RunState:
     advisor: object = None
     advisor_failures: list = field(default_factory=list)
     advisor_pending: bool = False
+    advisor_plan: str = ""
 
     def accumulate_usage(self, usage: dict[str, int]) -> None:
         self.metrics.note_usage(usage)

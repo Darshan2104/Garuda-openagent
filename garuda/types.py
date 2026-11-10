@@ -152,10 +152,11 @@ class AgentConfig:
     consult_service: Any = None
     consult_targets: list[str] = field(default_factory=list)
     consult_root: str | None = None
-    # Optional read-only advisor (#385): a granted consult target asked at the
-    # repeated-failure checkpoint, at most ``advisor_max_notes`` times per run.
+    # Optional read-only advisor (#385): a granted consult target at selected
+    # checkpoints, at most ``advisor_max_notes`` delivered notes per run.
     advisor: str | None = None
     advisor_max_notes: int = 2
+    advisor_checkpoints: list[str] = field(default_factory=lambda: ["repeated-failure"])
     # Delegation bounds shared down a subagent tree (H.6): how deep this run
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0

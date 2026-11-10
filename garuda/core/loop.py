@@ -18,9 +18,11 @@ Names re-exported here (``CONTINUE_NUDGE``, ``PARALLEL_SAFE_TOOLS``,
 from this module; they keep working from here.
 """
 
+import asyncio
 import logging
 
 from garuda.context.manager import ContextManager
+from garuda.core.advisor import MAX_BRIEF_CHARS, candidate_brief
 from garuda.core.completion import CONTRACT_REJECT_LIMIT
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
@@ -176,6 +178,8 @@ class DefaultAgent:
 
                 return await self._final_submission(state, model, turn)
             finally:
+                if state.advisor is not None:
+                    state.advisor.active = False
                 accounting.reset(accounting_token)
 
     async def _final_submission(
@@ -244,6 +248,7 @@ class DefaultAgent:
             # The run had already failed; a model error here changes nothing about
             # that, so it is logged and the ordinary exhausted result stands.
             logger.warning("Final submission call failed: %s: %s", type(exc).__name__, exc)
+            await self._advise(state, "candidate-ready", [], turn, ending="model error")
             record = state.metrics.current
             if record is not None:
                 record.model_ms = model_ms[0]
@@ -274,6 +279,7 @@ class DefaultAgent:
             return self._exhausted(state, turn)
 
         try:
+            await self._advise(state, "candidate-ready", candidate_brief(call), turn)
             decision = await state.terminal.attempt(call, turn=turn)
         except EnvironmentUnavailableError as exc:
             # Nearly moot — the workspace is gone and this transcript will not be
@@ -468,6 +474,7 @@ class DefaultAgent:
             if record is not None:
                 record.model_ms = model_ms[0]
             logger.exception("Model call failed after retries")
+            await self._advise(state, "candidate-ready", [], turn, ending="model error")
             if state.emit_session_events:
                 state.events.append(
                     EventType.SESSION_END,
@@ -491,6 +498,8 @@ class DefaultAgent:
         if not response.tool_calls:
             state.final_message = response.content or ""
             if not state.config.enable_verifier and state.config.output_schema is None:
+                if await self._advise(state, "candidate-ready", [state.final_message], turn):
+                    return None
                 if state.emit_session_events:
                     state.events.append(
                         EventType.SESSION_END, {"success": True, "turns": turn}
@@ -631,6 +640,7 @@ class DefaultAgent:
         # image_read is parallel-safe, so a batch can carry images. They used to be
         # dropped here: this path only saw result counts, never the results.
         self._surface_images(state, [img for _, result in executed for img in result.images])
+        await self._advise_pending(state, turn)
 
     @staticmethod
     def _surface_images(state: RunState, images: list[str]) -> None:
@@ -666,11 +676,17 @@ class DefaultAgent:
             # The whole response's calls travel with the segment: an accepted
             # completion has to answer every call in the assistant message it came
             # from, including those in segments this run will now never reach.
-            outcome = await self._run_group_sequentially(
+            outcome, deferred = await self._run_group_sequentially(
                 state, group, turn, turn_images, response_calls=calls
             )
             if outcome is not None:
                 return outcome
+            if deferred:
+                # The run continues, so the response's images and its repetition
+                # signal still count; only the calls after the deferral were closed.
+                state.steering.note_repetition(batch_signature(calls))
+                self._surface_images(state, turn_images)
+                return None
 
         # Repetition is reported once for the whole response, whatever shape it had.
         # Per-call signatures cannot express "this same response again": a repeated
@@ -680,11 +696,39 @@ class DefaultAgent:
         # changes there.
         state.steering.note_repetition(batch_signature(calls))
         self._surface_images(state, turn_images)
+        await self._advise_pending(state, turn)
+        return None
+
+    async def _advise(self, state: RunState, kind: str, brief: list[str], turn: int,
+                      *, ending: str | None = None) -> bool:
+        if state.advisor is None:
+            return False
+
+        def unavailable() -> str | None:
+            if ending:
+                return ending
+            if state.steering.deadline_exceeded():
+                return "deadline exhausted"
+            if turn >= state.config.max_turns or state.steering.final_turn_forced:
+                return "turn budget exhausted"
+            return None
+
+        delivered = await state.advisor.checkpoint(
+            kind, brief, state.steering, state.events, turn,
+            env=state.runner.env, unavailable=unavailable)
+        # A dependency can finish cancellation cleanup by returning a late answer.
+        # It must not swallow the user's stop and allow the loop to continue.
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError
+        return delivered
+
+    async def _advise_pending(self, state: RunState, turn: int) -> None:
+        if state.advisor_plan:
+            brief, state.advisor_plan = state.advisor_plan, ""
+            await self._advise(state, "plan-ready", [brief], turn)
         if state.advisor_pending:
             state.advisor_pending = False
-            await state.advisor.checkpoint("repeated-failure", state.advisor_failures,
-                                           state.steering, state.events, turn)
-        return None
+            await self._advise(state, "repeated-failure", state.advisor_failures, turn)
 
     def _note_call_outcome(
         self, state: RunState, call, tool_result, turn: int, note_repetition: bool = True
@@ -707,9 +751,15 @@ class DefaultAgent:
             turn=turn,
         )
         if state.advisor is not None:
+            if not tool_result.is_error and (
+                (call.name == "todo" and call.arguments.get("todos"))
+                or (call.name == "update_goal" and call.arguments.get("plan"))
+            ) and not state.advisor_plan:
+                state.advisor_plan = str(tool_result.content or "")[:MAX_BRIEF_CHARS]
             if tool_result.is_error:
                 first = (str(tool_result.content or "").strip().splitlines() or [""])[0]
-                state.advisor_failures = [*state.advisor_failures, f"{call.name}: {first[:200]}"][-5:]
+                failure = f"{call.name} {str(call.arguments)[:200]}\nError: {first[:200]}"
+                state.advisor_failures = [*state.advisor_failures, failure][-5:]
             # Consulted after the step, never mid-step: the advice joins the
             # same between-turn queue as the steering nudge.
             state.advisor_pending = state.advisor_pending or steered
@@ -726,15 +776,21 @@ class DefaultAgent:
 
     async def _run_group_sequentially(
         self, state: RunState, calls, turn: int, turn_images: list[str], response_calls=None
-    ) -> AgentResult | None:
-        """Run one segment's calls one at a time. Returns a result only if the run ends.
+    ) -> tuple[AgentResult | None, bool]:
+        """Run one segment. Return the result, and whether advice deferred completion.
 
         ``response_calls`` is the full set of calls from the assistant message this
-        segment belongs to, used only to close the transcript when a completion is
-        accepted. Defaults to this segment's calls for callers with no wider context.
+        segment belongs to, used to close the transcript when completion is
+        accepted or deferred. Defaults to this segment's calls for callers with no wider context.
         """
         for call in calls:
             if call.name == state.terminal.tool_name:
+                await self._advise_pending(state, turn)
+                if await self._advise(state, "candidate-ready", candidate_brief(call), turn):
+                    state.answer_open_calls(
+                        response_calls or calls, None,
+                        reason="Completion deferred: weigh the advisor note, then submit again.")
+                    return None, True
                 decision = await state.terminal.attempt(call, turn=turn)
                 if decision.accepted:
                     # Close the response's tool_calls block before returning: the
@@ -755,12 +811,12 @@ class DefaultAgent:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}
                         )
-                    return state.result(True, decision.summary, turn, output=decision.output)
+                    return state.result(True, decision.summary, turn, output=decision.output), False
                 if decision.failure:
                     state.answer_open_calls(
                         response_calls or calls, None, reason="Not executed: the run ended here."
                     )
-                    return self._output_failed(state, decision, turn)
+                    return self._output_failed(state, decision, turn), False
                 state.steering.note_completion_rejection()
                 continue
 
@@ -779,7 +835,7 @@ class DefaultAgent:
             tool_result = await state.runner.run_one(call, turn)
             turn_images.extend(tool_result.images)
             self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
-        return None
+        return None, False
 
     @staticmethod
     def _scrub(response) -> None:
