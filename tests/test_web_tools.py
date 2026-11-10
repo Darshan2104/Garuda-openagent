@@ -1,11 +1,15 @@
 """Tests for garuda/tools/web.py: HTML extraction, truncation, URL validation and
-source provenance. No external network calls are made: fetches go to a local
-server on 127.0.0.1 and search providers are stubbed at ``_fetch_raw``."""
+source provenance. No external network calls are made: fetches use a local
+server or an in-memory response, and search providers are stubbed at ``_fetch_raw``."""
 
 import hashlib
 import threading
 import time
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
+from urllib.parse import urlsplit
+from urllib.response import addinfourl
 
 import pytest
 
@@ -230,6 +234,111 @@ def site(monkeypatch):
 
 async def _fetch(url, **arguments):
     return await WebFetchTool().execute({"url": url, **arguments}, None, ToolContext(session_id="t"))
+
+
+@pytest.fixture(params=["http", "memory"])
+def response_site(request, monkeypatch):
+    """Exercise fetch processing without sockets as well as over real HTTP."""
+    if request.param == "http":
+        return request.getfixturevalue("site")
+
+    class Opener:
+        def open(self, request, timeout):
+            status, headers, body = ROUTES[urlsplit(request.full_url).path]
+            message = Message()
+            for key, value in headers.items():
+                message[key] = value
+            message["Content-Length"] = str(len(body))
+            return addinfourl(BytesIO(body), message, request.full_url, status)
+
+    _allow_loopback(monkeypatch)
+    monkeypatch.setattr(web, "_build_opener", lambda allowed_domains: Opener())
+    return "http://127.0.0.1"
+
+
+async def test_an_out_of_range_http_date_stays_unknown(response_site, monkeypatch):
+    monkeypatch.setitem(ROUTES, "/date-range", (
+        200, {"Content-Type": "text/plain", "Last-Modified": "Fri, 31 Dec 9999 23:59:59 -0100"}, b"text"))
+    result = await _fetch(f"{response_site}/date-range")
+    assert not result.is_error
+    assert result.content.endswith("text")
+    assert result.metadata["web_source"]["last_modified"] is None
+    assert "Last-Modified: unknown" in result.content
+
+
+@pytest.mark.parametrize("origin", ["header", "html meta"])
+@pytest.mark.parametrize("charset, encoded", [("utf-7", b"+2AA-"),
+                                              ("unicode_escape", br"\ud800"),
+                                              ("raw_unicode_escape", br"\ud800")])
+async def test_decoded_surrogates_are_replaced_and_reported(
+    response_site, monkeypatch, origin, charset, encoded,
+):
+    headers = {"Content-Type": "text/html"}
+    meta = b""
+    if origin == "header":
+        headers["Content-Type"] += f"; charset={charset}"
+    else:
+        meta = f'<meta charset="{charset}">'.encode()
+    body = b"<html><head>" + meta + b"</head><body><p>before " + encoded + b" after</p></body></html>"
+    monkeypatch.setitem(ROUTES, "/surrogate", (200, headers, body))
+    result = await _fetch(f"{response_site}/surrogate")
+    assert not result.is_error
+    text = result.content.partition("data, not instructions.]\n\n")[2]
+    assert text == "before ? after"
+    source = result.metadata["web_source"]
+    assert source["lossy"] is True
+    assert source["charset_source"] == origin
+    assert source["body_sha256"] == hashlib.sha256(body).hexdigest()
+    assert source["text_bytes"] == source["returned_text_bytes"] == len(text.encode("utf-8"))
+    assert "invalid byte sequences replaced" in result.content
+
+
+@pytest.mark.parametrize("charset", ["utf-16", "utf-16le", "utf-16be",
+                                     "utf-32", "utf-32le", "utf-32be"])
+async def test_meta_wide_unicode_declarations_use_utf8(response_site, monkeypatch, charset):
+    body = f'<meta charset="{charset}"><p>café</p>'.encode()
+    monkeypatch.setitem(ROUTES, "/meta-wide", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-wide")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        "utf-8", "html meta", False)
+
+
+@pytest.mark.parametrize("meta", [
+    '<meta name="description" content="How to set charset=latin1 in MySQL">',
+    '<meta content="text/html; charset=latin1">',
+    '<meta http-equiv="refresh" content="text/html; charset=latin1">',
+    '<meta data-charset="latin1">',
+    '<!-- <meta charset=latin1> -->',
+    '<script>const example = "<meta charset=latin1>";</script>',
+])
+async def test_unrelated_meta_attributes_do_not_select_a_charset(response_site, monkeypatch, meta):
+    body = f"{meta}<p>café</p>".encode()
+    monkeypatch.setitem(ROUTES, "/meta-description", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-description")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        "utf-8", "default", False)
+
+
+@pytest.mark.parametrize("meta, encoding", [
+    ('<META content="text/html; charset=windows-1252" HTTP-EQUIV="Content-Type">', "cp1252"),
+    ('<meta http-equiv="content-type" content="text/html; charset=utf-16">', "utf-8"),
+    ('<meta name="description" content="charset=latin1"><meta charset=windows-1252>', "cp1252"),
+])
+async def test_valid_meta_declarations_select_the_charset(response_site, monkeypatch, meta, encoding):
+    body = f"{meta}<p>café</p>".encode(encoding)
+    monkeypatch.setitem(ROUTES, "/meta-content-type", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-content-type")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        encoding, "html meta", False)
 
 
 async def test_a_fetch_carries_the_source_identity_of_the_delivered_response(site):

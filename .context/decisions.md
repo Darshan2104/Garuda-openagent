@@ -2371,13 +2371,19 @@ the last vetted hop rather than the request. Results start with a short source
 block and return the same facts in `ToolResult.metadata["web_source"]`: requested
 and final URL (userinfo removed, 2048 characters at most), status, declared
 content type, charset and where it came from, lossy decoding, retrieval time,
-`Last-Modified` (unparseable or absent stays unknown, never the retrieval time),
+`Last-Modified` (unparseable, absent, or overflowing during UTC conversion stays
+unknown, never the retrieval time),
 received body bytes and SHA-256, and completeness. Page-controlled text (the
 title) comes after the observed fields and the block ends by marking the page as
 data. The text that follows is unchanged from earlier releases except for
 extraction fixes (inline word breaks, `<pre>` indentation, `<meta>` and BOM
 charsets) and new markers for a body clipped by the raw read limit or shorter
 than its `Content-Length`.
+
+Decoded lone surrogates are replaced before extraction and UTF-8 byte accounting,
+with `lossy` set. HTML charset sniffing accepts only a `charset` attribute or the
+content charset of a `http-equiv="content-type"` declaration; meta-declared
+UTF-16/32 means UTF-8. Descriptions containing `charset=` are not declarations.
 
 Completeness is `partial` for any of those cuts or a `max_bytes` clip. The
 omitted size is exact only when the whole body arrived; past a clipped body it is

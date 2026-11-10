@@ -370,7 +370,10 @@ fastest way to learn the system.
    status, declared content type, charset with its source (byte-order mark,
    header, HTML `<meta>`, or UTF-8 default; an unsupported declaration falls
    back and is named), lossy decoding, retrieval time, `Last-Modified` or
-   `None`, received body bytes and SHA-256, and completeness. A body past the
+   `None`, received body bytes and SHA-256, and completeness. Dates that overflow
+   during UTC conversion stay unknown. Decoded surrogates are replaced and marked
+   lossy. HTML charset hints require a `charset` attribute or a `content-type`
+   http-equiv declaration; meta-declared UTF-16/32 selects UTF-8. A body past the
    raw read limit or shorter than its `Content-Length` is `partial` with an
    in-text marker and an unknown omitted size; a `max_bytes` cut is `partial`
    with an exact omitted count. The same facts reach the artifact read model
