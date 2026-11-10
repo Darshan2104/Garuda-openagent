@@ -29,6 +29,11 @@ ORIGIN = "origin"
 ASK_COMMAND = "rm -rf build/"
 
 
+def _answer(ask, approved):
+    """An answer naming the exact ask it was shown, as the dashboard client sends it."""
+    return {"approved": approved, "owner": ask["owner"], "digest": ask["digest"]}
+
+
 def request_for(path, method="GET", query="", body=None):
     from urllib.parse import parse_qs
 
@@ -97,7 +102,7 @@ async def test_a_smart_mode_ask_parks_and_an_approval_lets_the_tool_run(wired):
     assert [item["ask_id"] for item in listed] == [ask["ask_id"]]
 
     response = await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST",
-                          body={"approved": True})
+                          body=_answer(ask, True))
     assert response.status == 200
     allowed, reason = await asyncio.wait_for(screening, timeout=2)
     assert allowed is True
@@ -111,7 +116,7 @@ async def test_a_denial_reads_exactly_like_answering_n_at_the_prompt(wired):
         engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
     )
     ask = await _wait_for_ask(broker)
-    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body={"approved": False})
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, False))
 
     allowed, reason = await asyncio.wait_for(screening, timeout=2)
     assert allowed is False
@@ -141,7 +146,7 @@ async def test_the_arguments_are_recovered_from_the_newest_model_response(wired)
     # The raw string still travels: it is what the engine actually screened.
     assert ASK_COMMAND in ask["action"]
 
-    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body={"approved": False})
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, False))
     await asyncio.wait_for(screening, timeout=2)
 
 
@@ -162,7 +167,7 @@ async def test_no_matching_response_degrades_to_the_raw_string(wired):
     assert ask["arguments"] is None
     assert ASK_COMMAND in ask["action"]
 
-    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body={"approved": False})
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, False))
     await asyncio.wait_for(screening, timeout=2)
 
 
@@ -182,7 +187,7 @@ async def test_only_the_newest_response_is_searched(wired):
     screening = asyncio.ensure_future(engine.evaluate_tool_call("bash", arguments))
     ask = await _wait_for_ask(broker)
     assert ask["tool_call_id"] == "new"
-    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body={"approved": False})
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, False))
     await asyncio.wait_for(screening, timeout=2)
 
 
@@ -231,7 +236,7 @@ async def test_polling_keeps_an_ask_alive(wired):
         await call(ctx, "/api/approvals", query="owner=chat-1")
         assert broker.reap() == 0, "a watched ask was reaped"
 
-    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body={"approved": True})
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, True))
     allowed, _ = await asyncio.wait_for(screening, timeout=2)
     assert allowed is True
 
@@ -263,7 +268,8 @@ async def test_resolution_works_from_an_arbitrary_thread(wired):
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         outcome = await asyncio.wrap_future(
-            pool.submit(broker.resolve_from_thread, ask["ask_id"], True, loop=loop)
+            pool.submit(broker.resolve_from_thread, ask["ask_id"], True, loop=loop,
+                        owner=ask["owner"], digest=ask["digest"])
         )
     assert outcome == "resolved"
     allowed, _ = await asyncio.wait_for(screening, timeout=2)
@@ -282,9 +288,9 @@ async def test_a_double_answer_is_a_409_and_raises_nothing(wired):
     ask = await _wait_for_ask(broker)
 
     first = await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST",
-                       body={"approved": True})
+                       body=_answer(ask, True))
     second = await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST",
-                        body={"approved": False})
+                        body=_answer(ask, False))
     assert first.status == 200
     # 409, not 200: the second answer is not what the agent acted on.
     assert second.status in (404, 409)
@@ -297,7 +303,8 @@ async def test_a_double_answer_is_a_409_and_raises_nothing(wired):
 
 async def test_an_unknown_ask_is_a_404(wired):
     _, _, _, ctx = wired
-    response = await call(ctx, "/api/approvals/deadbeef", method="POST", body={"approved": True})
+    response = await call(ctx, "/api/approvals/deadbeef", method="POST",
+                          body={"approved": True, "owner": "chat-1", "digest": "0" * 64})
     assert response.status == 404
 
 

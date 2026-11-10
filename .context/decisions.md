@@ -2362,6 +2362,24 @@ identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
 
+## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
+
+The session broker binds each parked request to a digest (id, session,
+action, family, runtime, ceiling fingerprint, expiry, and the file channel's
+nonce once published, so the listed digest is the audited one) and the ceiling source,
+and records them with the outcome. An allow from any channel — terminal,
+dashboard chat, headless answerer or file — is honoured only if the request
+has not expired and the ceiling fingerprint is unchanged; an answer naming a
+digest must match it. Responders report non-answers as a falsy `Unanswered`
+(timeout/disconnected), never as a truthy enum, so any caller unaware of it
+still denies. An owned role's control socket carries the non-answer to the
+worker's broker as a "no" plus its outcome, and a worker that cannot parse
+the reply denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
+must echo the ask's owner and digest. ACP requests record
+`acp-request:not-screened`: Garuda's ceiling does not confine vendor tools,
+and the record does not pretend it does. Direct `session/approve` on Garuda's
+own ACP server still answers by id without the broker (tracked as residual).
+
 ## 2026-11-06 — Reviews bind to a frozen candidate packet (#362)
 
 Each review round freezes a packet from the reviewed step's own receipt and
