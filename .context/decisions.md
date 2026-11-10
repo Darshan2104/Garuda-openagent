@@ -2517,3 +2517,17 @@ records `spend_inherited`. A source without a snapshot has unknown prior spend:
 it counts as an unknown-cost call, so a dollar-only cap refuses admission, and
 prior tokens are reported as not inherited. Fresh runs start at zero. Turn and
 deadline budgets are unchanged on resume.
+
+## 2026-11-06 — Search bounds production in the environment shell (#367)
+
+grep and glob keep running rg/grep/find through `Environment.execute`; no
+interpreter is required in the workspace. The command is wrapped so `head`
+stops the producer after one page plus a look-ahead line or 512 KiB, and the
+producer's exit status is emitted as a final marker line: its absence proves
+the result is partial, so totals are exact only when the producer finished.
+Output is sorted by path: rg sorts itself, and the grep fallback greps a
+`find | LC_ALL=C sort -z` file list through `xargs`, streaming so `head` still
+stops it early (listing or grep errors still fail the search). Cursors bind the
+search options, workspace root and a digest of the claimed earlier results; any
+change is refused as stale. Glob still sorts the full
+listing, so only its capture (not traversal) is bounded.
