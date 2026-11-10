@@ -2472,4 +2472,14 @@ cost that is not a finite amount above 0) is refused before any runtime is
 selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
 does not see that agent's model calls. Defaults stay unlimited. Not yet
 covered: collection workers keep their own ledger, consult children are
-separate roots, failed-attempt usage is #406, and resume accounting is #407.
+separate roots, and failed-attempt usage is #406.
+
+## 2026-11-06 — Resumed runs continue the source tree's spend (#407)
+
+A resumed run is the same work continued, so caps given to it cover what the
+source already spent. The root runner records the gate snapshot (children
+included) as session meta `spend_gate`; a resumed run with caps inherits it and
+records `spend_inherited`. A source without a snapshot has unknown prior spend:
+it counts as an unknown-cost call, so a dollar-only cap refuses admission, and
+prior tokens are reported as not inherited. Fresh runs start at zero. Turn and
+deadline budgets are unchanged on resume.

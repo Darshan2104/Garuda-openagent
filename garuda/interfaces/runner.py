@@ -378,7 +378,16 @@ async def run_agent_task(
             # The definition may have changed since the session being resumed
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
-            before = (source_records.load_meta(resumed_from) or {}).get("agent_digest")
+            source_meta = source_records.load_meta(resumed_from) or {}
+            if config.spend_gate is None:
+                # Fresh runs start at zero; a resumed run continues the source's
+                # tree spend (#407), or records that it is unknown.
+                from garuda.core.spend import gate_for
+
+                if gate_for(config) is not None:
+                    update_session_meta(store, events.session_id, {
+                        "spend_inherited": config.spend_gate.inherit(source_meta.get("spend_gate"))})
+            before = source_meta.get("agent_digest")
             if before and agent_digest and before != agent_digest:
                 update_session_meta(store, events.session_id, {"agent_segment": {
                     "previous_digest": before, "digest": agent_digest,
@@ -428,6 +437,15 @@ async def run_agent_task(
         await hooks.on_session_start(task=task, session_id=events.session_id)
 
         async def _driver(*, task: str, turn: int, trail: EventStore):
+            try:
+                return await _run_agent(task=task, trail=trail)
+            finally:
+                if config.spend_gate is not None:
+                    # The tree's settled spend, children included: what a resume continues from.
+                    update_session_meta(store, events.session_id,
+                                        {"spend_gate": config.spend_gate.snapshot()})
+
+        async def _run_agent(*, task: str, trail: EventStore):
             return await agent.run(
                 task=task,
                 model=model,
@@ -555,11 +573,6 @@ async def run_agent_task(
                     store, events.session_id, {"status": "failed", "state": interrupted()}
                 )
                 summary = {"session_id": events.session_id, "success": False, "turns": 0}
-            # The run tree's spend as the root gate ended it (#405), whichever
-            # phase stopped the run; absent when no cap was set.
-            if getattr(config, "spend_gate", None) is not None:
-                update_session_meta(store, events.session_id,
-                                    {"spend_gate": config.spend_gate.snapshot()})
             try:
                 await runtime.close()
             except Exception:
