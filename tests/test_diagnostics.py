@@ -184,6 +184,42 @@ async def test_missing_checker_is_unavailable(tmp_path: Path, monkeypatch, name)
     assert state["available"] is False and state["ran"] is False
 
 
+@pytest.mark.skipif(not HAS_RUFF, reason="ruff not installed")
+@pytest.mark.parametrize("body,status,reason", [
+    (None, "unavailable", "missing_checker"),
+    ("echo checker-crashed >&2\nexit 2\n", "error", "checker_failed"),
+    ("echo 'RuntimeError: checker-crashed' >&2\nexit 1\n", "error", "checker_failed"),
+    ("exec /bin/sleep 5\n", "error", "timeout"),
+], ids=["missing-python3", "checker-error", "runtime-error", "timeout"])
+async def test_lint_runs_when_syntax_is_inconclusive(tmp_path: Path, monkeypatch, body, status, reason):
+    from garuda.tools import diagnostics
+
+    ruff = shutil.which("ruff")
+    assert ruff
+    (tmp_path / "ruff").symlink_to(ruff)
+    if body is not None:
+        checker = tmp_path / "python3"
+        checker.write_text("#!/bin/sh\n" + body)
+        checker.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    if reason == "timeout":
+        monkeypatch.setattr(diagnostics, "DIAGNOSTIC_TIMEOUT", 0.1)
+    env = LocalEnvironment(workspace_root=tmp_path)
+    await env.write_file("app.py", "def f():\n    return 1\n")
+    result = await EditTool().execute(
+        {"path": "app.py", "old_string": "return 1", "new_string": "return ghost"}, env, CTX,
+    )
+    states = result.metadata["diagnostics"]["checkers"]
+    assert not result.is_error
+    assert states["syntax"]["status"] == status and states["syntax"]["reason"] == reason
+    assert states["syntax"]["available"] is (body is not None)
+    assert states["syntax"]["ran"] is (body is not None)
+    assert "Lint issues" in result.content and "F821" in result.content
+    assert states["lint"]["status"] == "violations" and states["lint"]["ran"] is True
+    assert states["lint"]["diagnostics"][0]["code"] == "F821"
+    assert states["lint"]["diagnostics"][0]["attribution"] == "introduced"
+
+
 @pytest.mark.parametrize("body,reason", [
     ("echo checker-crashed >&2\nexit 2\n", "checker_failed"),
     ("echo 'RuntimeError: checker-crashed' >&2\nexit 1\n", "checker_failed"),

@@ -229,7 +229,7 @@ async def _collect(
         return states
     version = hashlib.sha256(raw).hexdigest()
     for name in active:
-        if name == "lint" and syntax and states["syntax"]["status"] != "clean":
+        if name == "lint" and syntax and states["syntax"]["status"] == "violations":
             states[name] = _state("syntax_not_clean")
         else:
             checker = _syntax if name == "syntax" else _lint
