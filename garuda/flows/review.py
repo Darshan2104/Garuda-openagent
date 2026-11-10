@@ -236,9 +236,18 @@ def _changed_total(changed: list, recorded) -> int | None:
     return len(changed) if len(changed) < META_PATH_LIMIT else None
 
 
+def change_list_complete(changed: list | None, recorded) -> bool | None:
+    """Whether ``changed`` is the whole change set: ``None`` when that is unknown."""
+    if changed is None:
+        return None
+    total = _changed_total(changed, recorded)
+    return None if total is None else total == len(changed)
+
+
 def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate: dict,
                  changed: list | None, reviewer_plan: dict | None, no_edits: bool,
-                 changed_total: int | None = None, version_binds: bool = True) -> dict:
+                 changed_total: int | None = None, version_binds: bool = True,
+                 config: dict | None = None) -> dict:
     """The bounded evidence a reviewer is given, with a digest of it.
 
     Built from the reviewed step's own receipt and session records; a manifest
@@ -246,7 +255,8 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     that may have been cut is never reported complete. ``changed_total`` is the
     recorded size of the full change list, when it was recorded. The binding
     to the candidate is enforced only when its workspace version is known and
-    ``version_binds`` (the version can tell workspaces apart).
+    ``version_binds`` (the version can tell workspaces apart). ``config`` is the
+    loader evidence for changed configuration files, ``unknown`` when absent.
     """
     import hashlib
 
@@ -269,6 +279,7 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
                     "status": "unknown" if changed is None else "recorded"},
         "reviewer": {"step": reviewer["id"], "role": reviewer["role"], "no_edits": no_edits,
                      "plan": reviewer_plan},
+        "config": config or {"status": "unknown", "files": []},
         "checks": {"status": "not_in_packet",
                    "note": "acceptance checks run separately; a review is not verification"},
     }
