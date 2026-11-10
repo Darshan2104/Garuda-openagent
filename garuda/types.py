@@ -156,6 +156,11 @@ class AgentConfig:
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0
     delegation_budget: Any = None
+    # Run-tree spend (#405): optional caps, and the root's SpendGate shared by
+    # reference with every native subagent (None at the root until created).
+    max_run_tokens: int | None = None
+    max_run_cost_usd: float | None = None
+    spend_gate: Any = None
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared

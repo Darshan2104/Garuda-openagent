@@ -2361,3 +2361,29 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — One spend gate per native run tree (#363, #405)
+
+`--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,
+carried by reference to native subagents like `DelegationBudget`. The main loop
+and `model/accounting.complete` (summarizer, buffer_query, contract, verifier,
+critic) admit before sending and settle afterwards, failed or not. Tokens are
+reserved under a lock, so concurrent calls cannot reuse one remainder. Dollars
+are a post-response stop, not a prepaid maximum. Unknown cost is never zero:
+under a dollar-only cap the first completed unpriced call stops further
+admission with a reason saying the cap cannot be enforced for that model
+(pricing is only learned from a response, so this cannot be refused earlier).
+A call that raised before reporting usage (a context-overflow rejection) is
+not an unpriced call: it releases its reservation and is counted apart as
+failed without usage, so overflow recovery still runs under a dollar cap.
+A completed call that reports no token count at all is charged its reservation
+estimate (`estimated_token_calls`), so a missing usage report cannot disable the
+token cap. Rigorous mode creates the gate before its plan phase: plan, every
+build round and the critic all admit against it, and a refusal in any phase ends
+the run with `spend_limit`. The root runner records the final gate snapshot as
+session meta `spend_gate`. A cap that cannot bound spend (tokens below 1, a
+cost that is not a finite amount above 0) is refused before any runtime is
+selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
+does not see that agent's model calls. Defaults stay unlimited. Not yet
+covered: collection workers keep their own ledger, consult children are
+separate roots, failed-attempt usage is #406, and resume accounting is #407.
