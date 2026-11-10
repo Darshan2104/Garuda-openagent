@@ -34,6 +34,17 @@ async def test_incident_owner_boundary(case, tmp_path, monkeypatch):
     assert trial.cost_usd is None
 
 
+async def test_incident_fixtures_ignore_the_users_git_config(tmp_path, monkeypatch):
+    """A global commit.gpgsign with a failing signer must not turn the corpus to unknown."""
+    config = tmp_path / "gitconfig"
+    config.write_text("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /usr/bin/false\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setattr(ModelFactory, "build", lambda *a, **k: pytest.fail("provider built"))
+    case = next(c for c in incident_cases() if not c.get("expected_failure"))
+    trial = await run_incident(case, tmp_path / "run")
+    assert trial.evaluation.coverage == "pass", trial.to_dict()
+
+
 def test_incident_cli_persists_coverage_and_unknowns(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "garuda.eval.contract_matrix", "--incidents", "--out", str(tmp_path)],

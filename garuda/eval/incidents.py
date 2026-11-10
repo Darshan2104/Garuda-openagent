@@ -60,10 +60,12 @@ async def run_incident(case: dict, root: Path) -> HarnessTrial:
     env = LocalEnvironment(workspace_root=workspace)
     for path, content in case["files"].items():
         await env.write_file(path, content)
-    initialized = await env.execute("git init -q && git -c user.name=Fixture -c user.email=fixture@example.invalid "
-                                    "-c core.hooksPath=/dev/null add . && "
-                                    "git -c user.name=Fixture -c user.email=fixture@example.invalid "
-                                    "-c core.hooksPath=/dev/null commit -qm fixture --allow-empty")
+    # The fixture repository must not inherit the user's git config (a global
+    # commit.gpgsign would sign with their key or fail the offline run).
+    git = ("GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=Fixture "
+           "-c user.email=fixture@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false")
+    initialized = await env.execute(f"{git} init -q && {git} add . && "
+                                    f"{git} commit -qm fixture --allow-empty")
     if initialized.exit_code != 0:
         raise RuntimeError("synthetic fixture repository could not be initialized")
     minimal = MinimalConfig.load()
