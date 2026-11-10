@@ -200,7 +200,10 @@ async def test_approval_handler_answers_v1_permission_requests():
     runtime = _adapter("approval", approval_handler=deny)
     await runtime.start(task="t", session_id="h1")
     await asyncio.wait_for(runtime.prompt("drop the table"), 15)
-    assert asked == ["drop the table"]
+    [action] = asked
+    # The title the user reads, bound to this exact ACP request (#375).
+    assert action.startswith("drop the table [acp perm-")
+    assert "request=" in action and "kind=" in action
     events, _ = await runtime.poll_events(0)
     [result] = [e for e in events if e.kind.value == "tool_result"]
     assert (result.payload["status"], result.payload["content"]) == ("failed", "denied")
