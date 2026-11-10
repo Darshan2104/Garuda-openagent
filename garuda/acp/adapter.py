@@ -767,7 +767,7 @@ class AcpRuntime:
                 error={"code": _INVALID_PARAMS, "message": "malformed permission request"},
             )
             return
-        action = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")
+        action = _approval_action(tool_call, options, approval_id)
         self._pending_approvals[approval_id] = (request_id, options, action)
         if self._consult_host is not None and self._consult_host.allows_permission(
                 params, self._agent_info, agent_session_id=self._agent_session_id):
@@ -1013,3 +1013,25 @@ def _pick_option(options: list[dict[str, Any]], allow: bool) -> str | None:
             if option.get("kind") == kind and isinstance(option_id, str) and option_id:
                 return option_id
     return None
+
+
+def _approval_action(tool_call: dict, options: list, approval_id: str) -> str:
+    """The approval's screened description, bound to the whole request.
+
+    The title alone let two different requests share one description, and so
+    one approval digest. The full tool call (input, locations, kind) and the
+    offered options enter only as a digest, so nothing raw is displayed or
+    persisted, and the adapter's own request id links the broker record back
+    to the ACP request it answers.
+    """
+    import hashlib
+    import json
+
+    title = str(tool_call.get("title") or tool_call.get("toolCallId") or "permission")[:300]
+    payload = json.dumps({"tool_call": tool_call, "options": options}, sort_keys=True,
+                         separators=(",", ":"), default=str)
+    request = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    kind = str(tool_call.get("kind") or "unknown")[:40]
+    call = str(tool_call.get("toolCallId") or "")[:80]
+    return f"{title} [acp {approval_id}; kind={kind}; call={call}; request={request}]"
+

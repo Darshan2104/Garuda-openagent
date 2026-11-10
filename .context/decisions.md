@@ -2362,6 +2362,92 @@ identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
 
+## 2026-11-07 — The advisor is a consult, its advice is steering data (#385)
+
+An agent's optional `advisor.role` is asked only when it is one of the run's
+granted consult targets, so admission, snapshot isolation, its read-only
+profile, deadlines and receipts stay with the consult service. The first
+checkpoint is the steering's existing repeated-failure streak; the answer is
+queued between turns as labelled advice that cannot grant permissions,
+verify work or replace review. Notes are capped per run and deduplicated, and
+a failed or busy advisor changes nothing. Plan-ready and candidate-ready
+checkpoints, and spend shared with the run-tree gate, are follow-ups.
+
+
+## 2026-11-10 — Advisor checkpoints preserve completion and lifecycle ownership (#385)
+
+- Definitions may select `repeated-failure`, `plan-ready` and `candidate-ready`;
+  omission retains repeated-failure only. Unknown selections refuse at load.
+- Planning uses successful nonempty todo/goal-plan signals, once per run.
+  Candidate-ready uses the first terminal submission (or ungated tool-free
+  completion), before verification. A delivered note defers that submission
+  once for one ordinary budgeted turn; completion and independent final review
+  retain their existing authority.
+- Literal evidence citations are checked against the bounded brief or bounded
+  shell existence checks through the existing Environment. No workspace
+  interpreter is added. Uncited notes spend no delivery allowance; this check
+  establishes citation presence, never correctness or verification. The check
+  and deduplication read the answer extracted from the consult envelope (line
+  quoting and HTML escaping undone); the model still receives the labelled
+  envelope.
+- The existing consult service owns admission, snapshots, deadlines and receipts;
+  the existing steering queue owns advice. Consults remain awaited, close with
+  their run, and recheck cancellation/deadline/turn limits before delivery. A late
+  answer cannot queue a note or restart a cancelled run, even if a dependency
+  returns after cancellation cleanup.
+- Run-tree spend charging for advisor calls remains out of scope pending the
+  shared spend-gate work; ordinary consult accounting remains in force.
+
+## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
+
+The session broker binds each parked request to a digest (id, session,
+action, family, runtime, ceiling fingerprint, expiry, and the file channel's
+nonce once published, so the listed digest is the audited one) and the ceiling source,
+and records them with the outcome. An allow from any channel — terminal,
+dashboard chat, headless answerer or file — is honoured only if the request
+has not expired and the ceiling fingerprint is unchanged; an answer naming a
+digest must match it. Responders report non-answers as a falsy `Unanswered`
+(timeout/disconnected), never as a truthy enum, so any caller unaware of it
+still denies. An owned role's control socket carries the non-answer to the
+worker's broker as a "no" plus its outcome, and a worker that cannot parse
+the reply denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
+must echo the ask's owner and digest. ACP requests record
+`acp-request:not-screened`: Garuda's ceiling does not confine vendor tools,
+and the record does not pretend it does. Direct `session/approve` on Garuda's
+own ACP server still answers by id without the broker (tracked as residual).
+
+## 2026-11-06 — Reviews bind to a frozen candidate packet (#362)
+
+Each review round freezes a packet from the reviewed step's own receipt and
+session records: candidate workspace version, recorded changed files (or
+`unknown`, never empty), reviewer role, plan and no-edits posture, and a
+digest recorded with the round. A workspace that differs from the candidate
+before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
+Reviewers may return a strict version 2 structured review; invalid structured
+findings stop the flow and never approve, and the legacy line format is parsed
+exactly as before. Effective-config and check-receipt evidence are #421.
+
+## 2026-11-07 — Review packets show the real loader's view of changed config (#421)
+
+For each changed `garuda.yaml` or `.agent/agents/` / `.garuda/agents/`
+definition, the review packet records what the ordinary loader makes of the
+candidate: loaded with an effective-config digest, project-supplied keys and
+values withheld because the project file is untrusted, or the loader's
+refusal. An outcome is attributed only to the file the loader actually read:
+a nested `garuda.yaml` is `not-loaded`, and a definition outranked by a
+same-name one (`.agent/agents` before `.garuda/agents`) is `shadowed` with
+the winning path. This is parsing and resolution only; nothing runs. It makes a field the loader rejects or ignores
+visible to the reviewer instead of only the author's text.
+The block reads the same change list as the packet, so it is `complete`
+only when that list is whole: a cut list makes it incomplete and a list of
+unknown size makes it unknown (`complete: null`), with a reason and no total.
+
 ## 2026-11-06 — One spend gate per native run tree (#363, #405)
 
 `--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,

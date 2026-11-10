@@ -273,7 +273,7 @@ class Steering:
 
     def record_failure_streak(
         self, had_error: bool, had_success: bool, events: EventStore, turn: int
-    ) -> None:
+    ) -> bool:
         """Update the consecutive-failure streak for a tool step and steer if stuck.
 
         A step with any success resets the streak; an all-error step increments it.
@@ -282,7 +282,7 @@ class Steering:
         """
         if had_success:
             self.failure_streak = 0
-            return
+            return False
         if had_error:
             self.failure_streak += 1
         if self.failure_streak >= FAILURE_STREAK_THRESHOLD:
@@ -292,6 +292,8 @@ class Steering:
                 {"failure_streak": self.failure_streak, "steered": True, "turn": turn},
             )
             self.failure_streak = 0
+            return True
+        return False
 
     def note_progress(self) -> None:
         """A tool step did something; the completion-retry counter no longer applies."""

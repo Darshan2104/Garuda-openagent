@@ -11,8 +11,13 @@ Four decisions carry it, each fixing a failure that is otherwise silent:
 closed mid-ask must not wedge the run — and its container, its MCP subprocess and its
 persistent shell — for the full timeout, so the poll doubles as a heartbeat and an owner
 that has not been seen in ``HEARTBEAT_GRACE_SECONDS`` gets its pending asks denied. The
-result is an ordinary denial, exactly what answering ``n`` at the CLI prompt produces, and
-the agent carries on.
+agent sees a denial and carries on, but the handler returns a falsy
+:class:`~garuda.acp.broker.Unanswered` (timeout or disconnect) so the audit records what
+actually happened rather than a "no" nobody gave.
+
+**An answer names the ask it saw.** Each ask carries a digest of its id, owner and screened
+action; an answer must name the same owner and digest, so a stale card or another chat's
+listing cannot settle it.
 
 **Resolution happens on the loop, and its outcome comes back from there.** A future is
 loop-affine, so ``set_result`` from an HTTP thread is undefined behaviour that usually looks
@@ -41,6 +46,7 @@ the ``await`` inside ``evaluate_tool_call``; the handler's ``finally`` unparks t
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -48,6 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from garuda.acp.broker import ApprovalOutcome, Unanswered
 from garuda.core.events import EventStore
 
 logger = logging.getLogger(__name__)
@@ -75,10 +82,17 @@ class PendingAsk:
     tool_call_id: str | None = None
     arguments: dict[str, Any] | None = None
 
+    @property
+    def digest(self) -> str:
+        """Binds an answer to this ask's id, owner and the exact screened action."""
+        material = "\x00".join((self.ask_id, self.owner, self.action))
+        return hashlib.sha256(material.encode()).hexdigest()
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "ask_id": self.ask_id,
             "owner": self.owner,
+            "digest": self.digest,
             # The raw string always travels, even when the structure was recovered: it is
             # what the permission engine actually screened, and the two disagreeing would
             # be worth seeing.
@@ -126,7 +140,7 @@ class ApprovalBroker:
         which reaches into a private field to work around an ordering problem.
         """
 
-        async def handler(action: str) -> bool:
+        async def handler(action: str) -> "bool | Unanswered":
             ask = self._park(owner, action, events)
             try:
                 # No `shield`: `wait_for` cancelling the future on timeout is exactly the
@@ -135,7 +149,8 @@ class ApprovalBroker:
                 return await asyncio.wait_for(ask.future, self._timeout)
             except asyncio.TimeoutError:
                 logger.info("Approval %s timed out; denying", ask.ask_id)
-                return False
+                return Unanswered(ApprovalOutcome.TIMEOUT,
+                                  "dashboard approval timed out without an answer")
             finally:
                 # Also the cancellation path: an unparked ask cannot be answered by a
                 # browser that no longer has anything to answer.
@@ -200,7 +215,8 @@ class ApprovalBroker:
     # -- answering -----------------------------------------------------------
 
     def resolve_from_thread(
-        self, ask_id: str, approved: bool, *, loop: asyncio.AbstractEventLoop
+        self, ask_id: str, approved: bool, *, loop: asyncio.AbstractEventLoop,
+        owner: str | None = None, digest: str | None = None,
     ) -> str:
         """Answer an ask from an HTTP thread. Returns the outcome, accurately.
 
@@ -212,6 +228,9 @@ class ApprovalBroker:
         ask = self._pending.get(ask_id)
         if ask is None:
             return "unknown"
+        # Read on the HTTP thread, but owner/action/id never change after parking.
+        if owner != ask.owner or digest != ask.digest:
+            return "mismatch"
 
         async def settle() -> bool:
             return self.settle(ask, approved)
@@ -223,7 +242,7 @@ class ApprovalBroker:
             return "already_resolved"
         return "resolved" if done else "already_resolved"
 
-    def settle(self, ask: PendingAsk, approved: bool) -> bool:
+    def settle(self, ask: PendingAsk, approved: "bool | Unanswered") -> bool:
         """Complete one ask. **Must be called on the agent loop** — a future is loop-affine,
         and `set_result` from another thread is undefined behaviour that usually appears to
         work. Returns False if it was already resolved."""
@@ -259,7 +278,8 @@ class ApprovalBroker:
             if self._seen.get(ask.owner, 0.0) >= cutoff:
                 continue
             logger.info("Owner %s went quiet; denying approval %s", ask.owner, ask.ask_id)
-            if self.settle(ask, False):
+            if self.settle(ask, Unanswered(ApprovalOutcome.DISCONNECTED,
+                                           "dashboard stopped polling for this approval")):
                 denied += 1
         return denied
 
@@ -268,7 +288,8 @@ class ApprovalBroker:
         self._seen.pop(owner, None)
         denied = 0
         for ask in list(self._pending.values()):
-            if ask.owner == owner and self.settle(ask, False):
+            if ask.owner == owner and self.settle(ask, Unanswered(
+                    ApprovalOutcome.DISCONNECTED, "dashboard owner went away")):
                 denied += 1
         return denied
 
