@@ -36,6 +36,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda serve` | Run the authenticated JSON-RPC job service |
 | Agents | `garuda agent list` | Every agent, where it comes from, what it extends, and which ones a nearer file shadows |
 | | `garuda agent show NAME [--json]` | Each effective field with its source (`packaged`, `user`, `project`, `extends:<agent>`, `default`); secrets redacted, unsupported fields labelled |
+| | `garuda agent show NAME --instruction-sources [--json]` | Opt-in instruction inventory, actual native static loading, duplicates/shadowing, ignored fields and potential conflicts; foreign configuration is not imported |
 | | `garuda agent prompt NAME [--json] [--raw]` | The static system prompt by section, with bytes, characters, estimated tokens and a digest |
 | | `garuda agent check NAME_OR_PATH [--json]` | Every diagnostic, each with its code, field path and fix; exits 1 on an error |
 | | `garuda agent new NAME [--from AGENT] [--project]` | Write a minimal definition (your agents directory by default); never overwrites |

@@ -64,6 +64,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Project instructions | `AGENTS.md` in every run | `AGENTS.md` at the project root | [Level 3](../use-cases/customize.md#give-garuda-project-instructions) |
 | Agent definitions | Your own agents that extend packaged ones | `garuda agent new NAME --from garuda/build` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Agent inspection | Every effective setting and the exact prompt | `garuda agent show NAME`, `garuda agent prompt NAME` | [Level 3](../use-cases/customize.md#see-exactly-what-an-agent-will-do) |
+| Instruction source inspection | Native loading, nested sources, aliases, duplicates, shadowing, ignored fields and potential text conflicts; foreign execution settings are not imported | `garuda agent show NAME --instruction-sources --json` | [Level 3](../use-cases/customize.md#inspect-foreign-instruction-sources) |
 | Agent check | Catch mistakes before a run | `garuda agent check NAME` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Profile migration | Move an old profile to version 1 | `garuda agent migrate PATH` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Structured output | A JSON result checked against a schema | `output.schema` in an agent | [Level 3](../use-cases/customize.md#get-structured-json-back) |
