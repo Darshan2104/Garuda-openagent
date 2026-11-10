@@ -19,6 +19,9 @@ SUBAGENT_LOG_DIR = "subagents"
 class EventType(str, Enum):
     USER_MESSAGE = "user_message"
     MODEL_RESPONSE = "model_response"
+    # A model call that raised: its known usage and unknown coverage only. Kept
+    # apart from MODEL_RESPONSE, whose readers treat each one as a real response.
+    MODEL_CALL_FAILED = "model_call_failed"
     # The digest of the system message actually sent, recorded whenever it
     # changes (H.2): runtime blocks make it differ from the static prompt.
     SYSTEM_PROMPT = "system_prompt"
@@ -85,7 +88,7 @@ class EventStore:
         return self._persist_path
 
     def append(self, event_type: EventType, payload: dict[str, Any]) -> None:
-        if event_type is EventType.MODEL_RESPONSE:
+        if event_type in (EventType.MODEL_RESPONSE, EventType.MODEL_CALL_FAILED):
             payload = dict(payload)
             if self.model_binding_role is not None:
                 payload.setdefault("model_binding_role", self.model_binding_role)

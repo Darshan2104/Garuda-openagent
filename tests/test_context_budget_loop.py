@@ -18,8 +18,11 @@ from garuda.core.run_state import (
     reinject_pinned_state,
     reserved_output_tokens,
 )
+from garuda.eval.atif_export import events_to_atif
 from garuda.model.protocol import ContextOverflowError, ModelResponse
 from garuda.model.script_model import ScriptModel
+from garuda.model.usage import attach_usage, usage_attempt
+from garuda.observability.usage import native_records
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
@@ -275,12 +278,72 @@ async def test_context_overflow_compacts_and_retries_instead_of_dying(tmp_path: 
     ]
     assert recovery and recovery[0]["recovered"] is True
     failed_calls = [e["payload"] for e in result.metadata["events"]
-                    if e["type"] == "model_response" and e["payload"].get("outcome") == "failed"]
+                    if e["type"] == "model_call_failed"]
     assert len(failed_calls) == 1
     assert failed_calls[0]["usage"] == {}
     assert failed_calls[0]["usage_unknown"] == [
         "completion_tokens", "cost_usd", "prompt_tokens", "total_tokens",
     ]
+
+
+class _BilledOverflowOnceModel(_OverflowOnceModel):
+    """An overflow whose rejected request the provider still billed."""
+
+    async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+        try:
+            return await super().complete(messages, tools, temperature, max_tokens)
+        except ContextOverflowError as exc:
+            attach_usage(exc, [usage_attempt({"prompt_tokens": 70, "cost_usd": 0.07}, "failed")])
+            raise
+
+
+async def test_failed_then_retried_call_is_one_response_with_its_usage_kept(tmp_path: Path):
+    """A turn whose first call fails and whose retry succeeds made one reply. Every
+    reader of ``model_response`` — trajectory turn bands, ATIF export, collection,
+    dual-model, the runtime MESSAGE mapping, CLI and chat — treats each one as a real
+    assistant reply, so the failed call must not be one, while its billed usage is
+    still counted once."""
+    env = LocalEnvironment(workspace_root=tmp_path)
+    reply = _complete("finished after recovering")
+    reply.usage = {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35,
+                   "cost_usd": 0.03}
+    # The forced compaction's summarizer takes the first scripted response.
+    model = _BilledOverflowOnceModel([ModelResponse(content="summary", tool_calls=[]), reply])
+    context = ContextManager(model=model, max_context_tokens=20_000, keep_recent_turns=2)
+    context.seed(
+        [Message(role=Role.SYSTEM, content="sys"), Message(role=Role.USER, content="task")]
+    )
+    for i in range(12):
+        context.append(Message(role=Role.ASSISTANT, content="",
+                               tool_calls=[ToolCall(id=f"c{i}", name="bash",
+                                                    arguments={"command": "ls"})]))
+        context.append(Message(role=Role.TOOL, content="y" * 4000, name="bash",
+                               tool_call_id=f"c{i}"))
+
+    result = await DefaultAgent().run(
+        task="task", model=model, env=env, tools=default_tools(),
+        config=AgentConfig(max_turns=3, enable_verifier=False), context=context,
+    )
+    assert result.success, result.final_message
+    events = result.metadata["events"]
+    controller = [e["payload"] for e in events if e["type"] == "model_response"
+                  and e["payload"].get("call_purpose") == "controller"]
+    assert len(controller) == 1
+    assert [c["name"] for c in controller[0]["tool_calls"]] == ["task_complete"]
+    # No empty agent step from the loop's own calls. (Auxiliary accounting events carry
+    # no content and are left out: their export is not what this test is about.)
+    own = [e for e in events if e["payload"].get("accounting") != "auxiliary"]
+    agent_steps = [s for s in events_to_atif(own, "s")["steps"] if s["source"] == "agent"]
+    assert agent_steps and all(s["message"] for s in agent_steps)
+
+    failed = [e["payload"] for e in events if e["type"] == "model_call_failed"]
+    assert len(failed) == 1 and failed[0]["usage"] == {"prompt_tokens": 70, "cost_usd": 0.07}
+    totals = result.metadata["metrics"]["by_call_purpose"]["controller"]
+    assert (totals["calls"], totals["prompt_tokens"], totals["cost_usd"]) == (2, 100, 0.1)
+    records = [r for i, e in enumerate(events) for r in native_records(e, i, {})
+               if r.get("call_purpose") == "controller"]
+    assert sorted((r.get("outcome") or "success", r["input_tokens"]) for r in records) == [
+        ("failed", 70), ("success", 30)]
 
 
 async def test_overflow_books_compaction_time_as_compaction_not_model(tmp_path: Path):

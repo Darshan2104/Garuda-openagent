@@ -369,7 +369,7 @@ class DefaultAgent:
             usage = usage if isinstance(usage, dict) else {}
             live = getattr(exc, "live", None)
             state.accumulate_usage(usage)
-            state.events.append(EventType.MODEL_RESPONSE, {
+            state.events.append(EventType.MODEL_CALL_FAILED, {
                 "turn": state.metrics.current.turn if state.metrics.current else None,
                 "usage": usage,
                 "duration_ms": elapsed[0],

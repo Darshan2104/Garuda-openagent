@@ -59,7 +59,7 @@ def native_records(event: dict, index: int, context: dict) -> list[dict]:
     session = event.get("session_id")
     when = _parse_time(event.get("timestamp"))
     base = {"kind": NATIVE, "time": when, "session_id": session, **context}
-    if event.get("type") == "model_response":
+    if event.get("type") in ("model_response", "model_call_failed"):
         if payload.get("truncated") and not payload.get("usage"):
             return []
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -139,7 +139,7 @@ class NativeUsageObserver:
         return context
 
     def __call__(self, event: dict, events) -> None:
-        if event.get("type") not in ("model_response", "collection"):
+        if event.get("type") not in ("model_response", "model_call_failed", "collection"):
             return
         records = native_records(event, events.count() - 1,
                                  {k: v for k, v in self._context_for(event["session_id"]).items()
@@ -172,7 +172,9 @@ def reconcile(store, session_id: str, *, ledger: Ledger | None = None) -> int:
             event = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event, dict) and event.get("type") in ("model_response", "collection"):
+        if isinstance(event, dict) and event.get("type") in (
+            "model_response", "model_call_failed", "collection"
+        ):
             added += observer._ledger.append_many(_clean(native_records(event, index, context)))
     return added
 

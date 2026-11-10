@@ -6,6 +6,7 @@ extractor, the completion verifier and the rigorous planner/critic — and their
 invisible. :func:`complete` makes such a call and records it as a ``model_response`` event
 tagged with its ``call_purpose``, on the event store of the run that is executing, so
 ``aggregate_model_metrics`` and the usage ledger both see it, once.
+Failed calls use ``model_call_failed`` so response consumers ignore them.
 
 The run's store is found through a context variable bound by the loop for the duration of
 a run; outside a run (a unit test calling a helper directly) nothing is recorded and the
@@ -42,7 +43,7 @@ def record(purpose: str, model: Any, response: Any, duration_ms: float, *, faile
     if events is None:
         return
     usage = getattr(response, "usage", None)
-    events.append(EventType.MODEL_RESPONSE, {
+    events.append(EventType.MODEL_CALL_FAILED if failed else EventType.MODEL_RESPONSE, {
         "call_purpose": purpose,
         "usage": dict(usage) if isinstance(usage, dict) else {},
         "duration_ms": round(duration_ms, 3),

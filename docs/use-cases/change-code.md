@@ -367,8 +367,9 @@ fallback call. Stream usage reports are snapshots of the same attempt, so
 repeated snapshots are counted once. Raised errors retain their original type
 and carry the same usage attributes, including when fallback fails.
 
-Native loop and auxiliary failures each produce one `model_response` event with
-`outcome: failed`. Its `usage_unknown` list names fields missing from any attempt.
+Native loop and auxiliary failures each produce one `model_call_failed` event
+with `outcome: failed`, never a `model_response`, so transcripts and exports show
+no empty reply. Its `usage_unknown` list names fields missing from any attempt.
 The session metrics and usage ledger count known subtotals once and expose unknown
 coverage separately; usage views label incomplete cost as partial or unknown.
 No new option is needed, and retry counts and fallback behavior stay the same.
