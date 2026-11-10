@@ -157,6 +157,40 @@ garuda run --mode readonly -t "In data/sales.xlsx, which region had the biggest 
 - The agent uses its PDF and spreadsheet readers instead of dumping the whole
   file into the prompt.
 
+## Search large trees without flooding the context
+
+<p class="gd-facts">Read-only · Local, Docker and remote · Needs only rg or grep</p>
+
+**Use it when** a pattern matches thousands of lines, one generated file has
+most of the hits, or matches sit inside minified one-line files.
+
+```bash
+garuda run --mode readonly -t "Find every call to legacy_auth and group them by module"
+```
+
+```text
+./src/api/login.py:12:    token = legacy_auth(user)
+./src/api/session.py:40:    if legacy_auth(user, refresh=True):
+(results capped at 100)
+(showing 1-100; total unknown, at least 101 lines)
+next_cursor: eyJ2IjoxLCJxIjoi…
+```
+
+**What happens**
+
+- `grep` stops rg or grep as soon as one page plus one extra line (or 512 KiB)
+  has been captured, so a hot log does not have to be read to the end.
+- A total is reported as exact only when the search finished; otherwise it is
+  "at least N". Output is sorted by path (the grep fallback searches a sorted
+  file list), so pages are reproducible.
+- To read on, the agent passes `next_cursor`. If results before that page
+  changed in the meantime, the cursor is refused as stale instead of silently
+  skipping or repeating lines.
+- `per_file_limit` caps matches per file so one generated file cannot fill the
+  page; the output says when the cap was reached. Counts are never capped.
+- A very long line is shown as a window around the match with
+  `[…N chars omitted]` markers.
+
 ## Browse past runs in the dashboard
 
 <p class="gd-facts">History only · Opens: a local web page</p>
