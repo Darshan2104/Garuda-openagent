@@ -43,6 +43,47 @@ garuda run --mode readonly -t "Explain how this project is organized and where t
     `--agent explore` is a fast, read-only search profile with a smaller turn
     budget, good for "find where…" questions.
 
+## Outline Python before reading bodies
+
+Use an outline to locate relevant declarations before asking for source ranges:
+
+```bash
+garuda run --mode readonly -t "Use read_file with outline=true on garuda/tools/files.py, then read the raw ranges for ReadFileTool.execute and explain its behavior"
+```
+
+The native agent can call `read_file` with these arguments:
+
+```json
+{"path": "garuda/tools/files.py", "outline": true}
+```
+
+The result lists qualified definitions, normalized signatures, decorators and
+imports with original inclusive line ranges. Each hidden body has a named range;
+all original source text, including comments and executable statements, is
+explicitly omitted. Nested body ranges can overlap. The SHA-256 identifies the
+UTF-8 encoding of the text returned by the workspace environment. Parsing runs
+on the Garuda host, so Docker and remote workspaces need no Python interpreter
+for this feature.
+
+Retrieve a body using an ordinary read, for example:
+
+```json
+{"path": "garuda/tools/files.py", "offset": 40, "limit": 30}
+```
+
+Use the ranges in your actual outline; line numbers change as files change.
+Outline reads carry partial source evidence and never count as having read a
+hidden body. Read relevant raw source before editing. Each outline request
+reads current workspace text again; only deterministic AST results are cached
+by digest and settings. An outline's identity does not lock a later range read
+to that version.
+
+Outline mode supports `.py` and `.pyi` with the host Python parser. Unsupported
+languages, invalid syntax, source above 1 MiB or outlines above the output bounds
+return a fallback message and no outline. Omit `outline` to read raw source;
+`outline=true` cannot be combined with `offset` or `limit`. Existing raw reads
+and their paging behavior are unchanged.
+
 ## Make sure a run changes nothing
 
 <p class="gd-facts">Read-only · Checked afterwards · Works with external harnesses too</p>
@@ -166,6 +207,24 @@ you want to know exactly which page, and how much of it, the agent read.
 
 ```bash
 garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and list the removed modules, citing the page"
+
+## Search large trees without flooding the context
+
+<p class="gd-facts">Read-only · Local, Docker and remote · Needs only rg or grep</p>
+
+**Use it when** a pattern matches thousands of lines, one generated file has
+most of the hits, or matches sit inside minified one-line files.
+
+```bash
+garuda run --mode readonly -t "Find every call to legacy_auth and group them by module"
+```
+
+```text
+./src/api/login.py:12:    token = legacy_auth(user)
+./src/api/session.py:40:    if legacy_auth(user, refresh=True):
+(results capped at 100)
+(showing 1-100; total unknown, at least 101 lines)
+next_cursor: eyJ2IjoxLCJxIjoi…
 ```
 
 **What happens**
@@ -185,6 +244,12 @@ garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and list the r
   ```
 
 - A redirect adds a `Requested:` line and each hop's URL/status. A missing date stays `unknown`. A body
+
+- A redirect adds a `Requested:` line. A missing, invalid, or out-of-range date
+  stays `unknown`. Decoding replaces lone surrogates and flags the text as lossy.
+  HTML encoding hints come from `<meta charset=...>` or a `content-type`
+  http-equiv declaration; UTF-16/32 hints in meta tags select UTF-8, and
+  `charset=` text in descriptions does not select an encoding. A body
   cut off by the read limit or shorter than it claimed is marked `partial` in
   the text and in the source block, never silently complete. Re-fetching the
   `Source` URL and comparing the SHA-256 tells you whether the page changed.
@@ -229,6 +294,19 @@ the extraction before `max_bytes` clipping, with its original retrieval time
 and body digest. Eviction or a process restart makes the reference unavailable;
 a miss returns an error and never refetches. Dashboard URL grounding also saves
 the source header and exposes the same metadata on its source record.
+
+- `grep` stops rg or grep as soon as one page plus one extra line (or 512 KiB)
+  has been captured, so a hot log does not have to be read to the end.
+- A total is reported as exact only when the search finished; otherwise it is
+  "at least N". Output is sorted by path (the grep fallback searches a sorted
+  file list), so pages are reproducible.
+- To read on, the agent passes `next_cursor`. If results before that page
+  changed in the meantime, the cursor is refused as stale instead of silently
+  skipping or repeating lines.
+- `per_file_limit` caps matches per file so one generated file cannot fill the
+  page; the output says when the cap was reached. Counts are never capped.
+- A very long line is shown as a window around the match with
+  `[…N chars omitted]` markers.
 
 ## Browse past runs in the dashboard
 

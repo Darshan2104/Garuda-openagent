@@ -297,3 +297,117 @@ def test_the_role_comes_from_the_shape_the_role_plan_really_records(tmp_path):
                                                        "total_tokens": 2}, "call_purpose": "controller"})
     (record,) = ledger.records()
     assert record["role"] == "reviewer"
+
+
+@pytest.mark.parametrize("boundary", ["loop", "auxiliary"])
+@pytest.mark.parametrize("reported", [True, False], ids=["partial-cost", "unknown"])
+@pytest.mark.parametrize("succeeds", [True, False], ids=["success", "failure"])
+async def test_retry_call_is_one_persisted_accounting_event(
+    tmp_path, monkeypatch, boundary, reported, succeeds
+):
+    import httpx
+    import litellm
+
+    from garuda.core.loop import DefaultAgent
+    from garuda.model.litellm_model import LitellmModel
+    from garuda.types import AgentConfig
+    from garuda.workspace.local import LocalEnvironment
+
+    store = SessionStore(tmp_path / "sessions")
+    events = EventStore("55555555-5555-5555-5555-555555555555", call_purpose="controller")
+    store.begin(events.session_id, task="t", model="m", agent="a", workspace=str(tmp_path))
+    events.attach_persistence(store.events_path(events.session_id))
+    ledger = Ledger(tmp_path / "usage")
+    usage.attach(events, store, ledger=ledger)
+    calls = 0
+
+    async def provider(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2 and succeeds:
+            return litellm.ModelResponse(
+                choices=[{"message": {"role": "assistant", "content": "done"}, "finish_reason": "length"}],
+                usage={"prompt_tokens": 20, "completion_tokens": 4, "total_tokens": 24, "cost": 0.3},
+            )
+        status = 529 if calls == 1 else 400
+        exc = litellm.APIError(message="failure", status_code=status, llm_provider="openai", model="m")
+        # The retry has a known invoice; the terminal failed attempt is unreported.
+        data = {"usage": {"prompt_tokens": 10, "cost": 0.1,
+                          "prompt_tokens_details": {"cached_tokens": 4}}} if calls == 1 and reported else {}
+        exc.response = httpx.Response(status, json=data)
+        raise exc
+
+    async def no_sleep(_):
+        pass
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr("garuda.model.litellm_model.asyncio.sleep", no_sleep)
+    model = LitellmModel("openai/gpt-4o-mini", max_retries=2)
+    if boundary == "loop":
+        result = await DefaultAgent().run(
+            task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path), tools=[],
+            config=AgentConfig(enable_verifier=False), events=events,
+        )
+        assert result.success is succeeds
+        assert result.metadata["usage"].get("cost_usd", 0) == pytest.approx(
+            (0.1 if reported else 0) + (0.3 if succeeds else 0)
+        )
+    else:
+        token = accounting.bind(events)
+        try:
+            if succeeds:
+                await accounting.complete(model, [], purpose="summarizer")
+            else:
+                with pytest.raises(litellm.APIError):
+                    await accounting.complete(model, [], purpose="summarizer")
+        finally:
+            accounting.reset(token)
+    assert calls == 2
+    responses = [e for e in events.get_all() if e["type"] in ("model_response", "model_call_failed")
+                 and not e["payload"].get("truncated")]
+    assert len(responses) == 1
+    assert responses[0]["type"] == ("model_response" if succeeds else "model_call_failed")
+    payload = responses[0]["payload"]
+    assert payload.get("outcome") == (None if succeeds else "failed")
+    assert len(payload["attempt_usage"]) == 2
+    assert "completion_tokens" in payload["usage_unknown"]
+    incomplete_cost = not reported or not succeeds
+    assert ("cost_usd" in payload["usage_unknown"]) is incomplete_cost
+    expected_prompt = (10 if reported else 0) + (20 if succeeds else 0)
+    expected_cost = (0.1 if reported else 0) + (0.3 if succeeds else 0)
+    records = list(ledger.records())
+    assert len(records) == 1
+    row = records[0]
+    assert row.get("input_tokens") == (expected_prompt if reported or succeeds else None)
+    assert row.get("cost_usd") == (pytest.approx(expected_cost) if reported or succeeds else None)
+    assert row["usage_unknown"] == payload["usage_unknown"]
+    assert row["cache_tokens"] == (4 if reported else None)
+    assert row.get("outcome") == payload.get("outcome")
+    purpose = "controller" if boundary == "loop" else "summarizer"
+    metrics = aggregate_model_metrics(events.get_all())["by_call_purpose"][purpose]
+    assert metrics["calls"] == 1
+    assert metrics["prompt_tokens"] == expected_prompt
+    assert metrics["cost_usd"] == pytest.approx(expected_cost)
+    assert metrics["cost_unknown_calls"] == int(incomplete_cost)
+    assert metrics["usage_unknown_calls"]["completion_tokens"] == 1
+    summary = totals(records)
+    assert summary["native_calls"] == 1
+    assert summary["cost_usd"] == metrics["cost_usd"]
+    assert summary["cost_unknown_records"] == int(incomplete_cost)
+    assert summary["usage_unknown_records"]["completion_tokens"] == 1
+    assert usage.reconcile(store, events.session_id, ledger=ledger) == 0
+    assert usage.reconcile(store, events.session_id, ledger=ledger) == 0
+
+    from garuda.core import conversation, usage_stats
+
+    stats = usage_stats.stats(records, "24h", records[0]["time"] + 1)
+    assert stats["measures"]["cost"]["known_usd"] == (
+        pytest.approx(expected_cost) if reported or succeeds else None
+    )
+    expected_state = "partial" if incomplete_cost and (reported or succeeds) else (
+        "unknown" if incomplete_cost else "known")
+    assert stats["measures"]["cost"]["state"] == expected_state
+    assert stats["coverage"]["native_calls_with_unknown_cost"] == int(incomplete_cost)
+    used = conversation.conversation(store, events.session_id, ledger=ledger)["models_used"]
+    assert used["rows"][0]["cost_usd"] == pytest.approx(expected_cost)
+    assert used["rows"][0]["cost_unknown"] == int(incomplete_cost)

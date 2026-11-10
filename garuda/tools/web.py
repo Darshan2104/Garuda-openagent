@@ -472,8 +472,26 @@ _BOMS = (
 )
 # Where an HTML page declares its own encoding. Browsers look in the first 1024
 # bytes; a little more slack costs nothing and finds late <meta> tags.
-_META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""", re.I)
+_CONTENT_CHARSET = re.compile(r"""(?:^|;)\s*charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""", re.I)
 _META_SNIFF_BYTES = 4096
+
+
+class _MetaCharsetParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.charset: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "meta" or self.charset is not None:
+            return
+        attributes = dict(attrs)
+        charset = (attributes.get("charset") or "").strip()
+        if charset:
+            self.charset = charset
+        elif (attributes.get("http-equiv") or "").lower() == "content-type":
+            match = _CONTENT_CHARSET.search(attributes.get("content") or "")
+            if match:
+                self.charset = match.group(1)
 
 
 def _decode_body(raw: bytes, declared: str | None, html: bool) -> tuple[str, dict[str, Any]]:
@@ -491,16 +509,27 @@ def _decode_body(raw: bytes, declared: str | None, html: bool) -> tuple[str, dic
     if declared:
         candidates.append((declared, "header"))
     elif html:
-        match = _META_CHARSET.search(raw[:_META_SNIFF_BYTES])
-        if match:
-            candidates.append((match.group(1).decode("ascii"), "html meta"))
+        parser = _MetaCharsetParser()
+        try:
+            parser.feed(raw[:_META_SNIFF_BYTES].decode("latin1"))
+        except Exception:
+            logger.debug("HTML charset parsing error; using observed declarations", exc_info=True)
+        if parser.charset:
+            candidates.append((parser.charset, "html meta"))
     for name, origin in candidates:
         try:
             codec = codecs.lookup(name)
         except LookupError:
             codec = None
         if codec is not None and getattr(codec, "_is_text_encoding", True):
-            return _decode_as(raw, codec.name, origin)
+            try:
+                # HTML treats meta-declared wide Unicode encodings as UTF-8.
+                encoding = codec.name
+                if origin == "html meta" and encoding.startswith(("utf-16", "utf-32")):
+                    encoding = "utf-8"
+                return _decode_as(raw, encoding, origin)
+            except UnicodeError:  # "undefined" and "idna" refuse any body, even with errors="replace"
+                pass
         text, info = _decode_as(raw, "utf-8", "default")
         info["unsupported_charset"] = name[:64]
         return text, info
@@ -508,11 +537,16 @@ def _decode_body(raw: bytes, declared: str | None, html: bool) -> tuple[str, dic
 
 
 def _decode_as(raw: bytes, codec: str, origin: str) -> tuple[str, dict[str, Any]]:
+    lossy = False
     try:
-        return raw.decode(codec), {"charset": codec, "charset_source": origin, "lossy": False}
+        text = raw.decode(codec)
     except UnicodeDecodeError:
         text = raw.decode(codec, errors="replace")
-        return text, {"charset": codec, "charset_source": origin, "lossy": True}
+        lossy = True
+    # Some text codecs successfully decode lone surrogates, which cannot be
+    # stored or counted as UTF-8. Record their replacement as lossy too.
+    safe_text = text.encode("utf-8", errors="replace").decode("utf-8")
+    return safe_text, {"charset": codec, "charset_source": origin, "lossy": lossy or safe_text != text}
 
 
 def _source_url(url: str) -> str:
@@ -532,11 +566,11 @@ def _http_date(value: str | None) -> str | None:
         return None
     try:
         parsed = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError, IndexError):
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _utc_now() -> str:

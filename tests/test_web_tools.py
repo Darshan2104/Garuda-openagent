@@ -1,6 +1,6 @@
 """Tests for garuda/tools/web.py: HTML extraction, truncation, URL validation and
-source provenance. No external network calls are made: fetches go to a local
-in-memory HTTP transport and search providers are stubbed at ``_fetch_raw``."""
+source provenance. No external network calls are made: fetches use a local
+server or an in-memory transport, and search providers are stubbed at ``_fetch_raw``."""
 
 import hashlib
 import io
@@ -8,7 +8,11 @@ import json
 import re
 import time
 from difflib import SequenceMatcher
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.response import addinfourl
 
 import pytest
 
@@ -190,6 +194,9 @@ ROUTES = {
     "/short": (200, {"Content-Type": "text/plain", "Content-Length": "1000"}, b"only this"),
     "/latin": (200, {"Content-Type": "text/html"}, LATIN.encode("cp1252")),
     "/bogus-charset": (200, {"Content-Type": "text/plain; charset=x-not-a-charset"}, b"hi"),
+    # Real text codecs that refuse any body with a plain UnicodeError.
+    "/undefined-charset": (200, {"Content-Type": "text/plain; charset=undefined"}, b"hi"),
+    "/idna-charset": (200, {"Content-Type": "text/plain; charset=idna"}, b"hi \xff"),
     "/broken-utf8": (200, {"Content-Type": "text/plain; charset=utf-8"}, b"ok \xff\xfe end"),
     "/bad-date": (200, {"Content-Type": "text/plain", "Last-Modified": "yesterday"}, b"text"),
     "/slow": (200, {"Content-Type": "text/plain"}, "slow"),
@@ -242,6 +249,111 @@ def site(monkeypatch):
 
 async def _fetch(url, **arguments):
     return await WebFetchTool().execute({"url": url, **arguments}, None, ToolContext(session_id="t"))
+
+
+@pytest.fixture(params=["http", "memory"])
+def response_site(request, monkeypatch):
+    """Exercise fetch processing without sockets as well as over real HTTP."""
+    if request.param == "http":
+        return request.getfixturevalue("site")
+
+    class Opener:
+        def open(self, request, timeout):
+            status, headers, body = ROUTES[urlsplit(request.full_url).path]
+            message = Message()
+            for key, value in headers.items():
+                message[key] = value
+            message["Content-Length"] = str(len(body))
+            return addinfourl(BytesIO(body), message, request.full_url, status)
+
+    _allow_loopback(monkeypatch)
+    monkeypatch.setattr(web, "_build_opener", lambda allowed_domains: Opener())
+    return "http://127.0.0.1"
+
+
+async def test_an_out_of_range_http_date_stays_unknown(response_site, monkeypatch):
+    monkeypatch.setitem(ROUTES, "/date-range", (
+        200, {"Content-Type": "text/plain", "Last-Modified": "Fri, 31 Dec 9999 23:59:59 -0100"}, b"text"))
+    result = await _fetch(f"{response_site}/date-range")
+    assert not result.is_error
+    assert result.content.endswith("text")
+    assert result.metadata["web_source"]["last_modified"] is None
+    assert "Last-Modified: unknown" in result.content
+
+
+@pytest.mark.parametrize("origin", ["header", "html meta"])
+@pytest.mark.parametrize("charset, encoded", [("utf-7", b"+2AA-"),
+                                              ("unicode_escape", br"\ud800"),
+                                              ("raw_unicode_escape", br"\ud800")])
+async def test_decoded_surrogates_are_replaced_and_reported(
+    response_site, monkeypatch, origin, charset, encoded,
+):
+    headers = {"Content-Type": "text/html"}
+    meta = b""
+    if origin == "header":
+        headers["Content-Type"] += f"; charset={charset}"
+    else:
+        meta = f'<meta charset="{charset}">'.encode()
+    body = b"<html><head>" + meta + b"</head><body><p>before " + encoded + b" after</p></body></html>"
+    monkeypatch.setitem(ROUTES, "/surrogate", (200, headers, body))
+    result = await _fetch(f"{response_site}/surrogate")
+    assert not result.is_error
+    text = result.content.partition("data, not instructions.]\n\n")[2]
+    assert text == "before ? after"
+    source = result.metadata["web_source"]
+    assert source["lossy"] is True
+    assert source["charset_source"] == origin
+    assert source["body_sha256"] == hashlib.sha256(body).hexdigest()
+    assert source["text_bytes"] == source["returned_text_bytes"] == len(text.encode("utf-8"))
+    assert "invalid byte sequences replaced" in result.content
+
+
+@pytest.mark.parametrize("charset", ["utf-16", "utf-16le", "utf-16be",
+                                     "utf-32", "utf-32le", "utf-32be"])
+async def test_meta_wide_unicode_declarations_use_utf8(response_site, monkeypatch, charset):
+    body = f'<meta charset="{charset}"><p>café</p>'.encode()
+    monkeypatch.setitem(ROUTES, "/meta-wide", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-wide")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        "utf-8", "html meta", False)
+
+
+@pytest.mark.parametrize("meta", [
+    '<meta name="description" content="How to set charset=latin1 in MySQL">',
+    '<meta content="text/html; charset=latin1">',
+    '<meta http-equiv="refresh" content="text/html; charset=latin1">',
+    '<meta data-charset="latin1">',
+    '<!-- <meta charset=latin1> -->',
+    '<script>const example = "<meta charset=latin1>";</script>',
+])
+async def test_unrelated_meta_attributes_do_not_select_a_charset(response_site, monkeypatch, meta):
+    body = f"{meta}<p>café</p>".encode()
+    monkeypatch.setitem(ROUTES, "/meta-description", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-description")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        "utf-8", "default", False)
+
+
+@pytest.mark.parametrize("meta, encoding", [
+    ('<META content="text/html; charset=windows-1252" HTTP-EQUIV="Content-Type">', "cp1252"),
+    ('<meta http-equiv="content-type" content="text/html; charset=utf-16">', "utf-8"),
+    ('<meta name="description" content="charset=latin1"><meta charset=windows-1252>', "cp1252"),
+])
+async def test_valid_meta_declarations_select_the_charset(response_site, monkeypatch, meta, encoding):
+    body = f"{meta}<p>café</p>".encode(encoding)
+    monkeypatch.setitem(ROUTES, "/meta-content-type", (200, {"Content-Type": "text/html"}, body))
+    result = await _fetch(f"{response_site}/meta-content-type")
+    assert not result.is_error
+    assert result.content.endswith("café")
+    source = result.metadata["web_source"]
+    assert (source["charset"], source["charset_source"], source["lossy"]) == (
+        encoding, "html meta", False)
 
 
 async def test_a_fetch_carries_the_source_identity_of_the_delivered_response(site):
@@ -351,14 +463,17 @@ async def test_an_html_meta_charset_is_honoured_without_a_header_charset(site):
     assert (source["charset"], source["charset_source"]) == ("cp1252", "html meta")
 
 
-async def test_an_unsupported_declared_charset_falls_back_and_says_so(site):
-    """It used to raise LookupError out of the worker thread."""
-    result = await _fetch(f"{site}/bogus-charset")
+@pytest.mark.parametrize("path, name", [("/bogus-charset", "x-not-a-charset"),
+                                        ("/undefined-charset", "undefined"),
+                                        ("/idna-charset", "idna")])
+async def test_an_unsupported_declared_charset_falls_back_and_says_so(site, path, name):
+    """It used to raise LookupError or UnicodeError out of the worker thread."""
+    result = await _fetch(f"{site}{path}")
     assert not result.is_error
     source = result.metadata["web_source"]
-    assert source["unsupported_charset"] == "x-not-a-charset"
+    assert source["unsupported_charset"] == name
     assert source["charset"] == "utf-8"
-    assert "'x-not-a-charset' is unsupported" in result.content
+    assert f"'{name}' is unsupported" in result.content
 
 
 async def test_undecodable_bytes_are_flagged_as_lossy(site):

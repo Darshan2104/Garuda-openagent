@@ -152,10 +152,20 @@ class AgentConfig:
     consult_service: Any = None
     consult_targets: list[str] = field(default_factory=list)
     consult_root: str | None = None
+    # Optional read-only advisor (#385): a granted consult target at selected
+    # checkpoints, at most ``advisor_max_notes`` delivered notes per run.
+    advisor: str | None = None
+    advisor_max_notes: int = 2
+    advisor_checkpoints: list[str] = field(default_factory=lambda: ["repeated-failure"])
     # Delegation bounds shared down a subagent tree (H.6): how deep this run
     # is, and the root's launch budget object (None: this run is the root).
     delegation_depth: int = 0
     delegation_budget: Any = None
+    # Run-tree spend (#405): optional caps, and the root's SpendGate shared by
+    # reference with every native subagent (None at the root until created).
+    max_run_tokens: int | None = None
+    max_run_cost_usd: float | None = None
+    spend_gate: Any = None
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared

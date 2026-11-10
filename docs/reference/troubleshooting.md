@@ -324,6 +324,13 @@ Click a problem to see the fix.
     reviewer a different model, or remove the reviewer from the reviewed role's
     `consult:` list.
 
+??? question "A flow stops with `flow.review_candidate_unknown`"
+
+    The reviewed step's workspace version can't tell candidates apart, usually
+    because the workspace isn't a git work tree, so Garuda can't prove the
+    reviewer saw what the step produced. Run the flow in a git repository, or
+    set `independent: false` on the review to accept an unenforced binding.
+
 ??? question "`garuda flow show` says no such file"
 
     `flow show` and `flow resume` need the full flow ID that `garuda flow run`

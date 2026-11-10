@@ -18,14 +18,17 @@ Names re-exported here (``CONTINUE_NUDGE``, ``PARALLEL_SAFE_TOOLS``,
 from this module; they keep working from here.
 """
 
+import asyncio
 import logging
 
 from garuda.context.manager import ContextManager
+from garuda.core.advisor import MAX_BRIEF_CHARS, candidate_brief
 from garuda.core.completion import CONTRACT_REJECT_LIMIT
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
 from garuda.core.permissions import PermissionEngine, permission_workspace
 from garuda.core.run_state import RunState, prepare_run
+from garuda.core.spend import SpendLimitExceeded
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
     CONTEXT_WARNING_NUDGE,
@@ -44,9 +47,10 @@ from garuda.core.steering import (
 )
 from garuda.core.termination import TerminalStrategy
 from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
-from garuda.model import accounting
+from garuda.model import accounting, streaming
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import ContextOverflowError, Model
+from garuda.model.usage import usage_metadata
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig, AgentResult, Message, Role
@@ -76,6 +80,11 @@ __all__ = [
     "TASK_COMPLETE_STUCK_NUDGE",
     "DefaultAgent",
 ]
+
+
+def _live_metadata(response) -> dict:
+    live = (response.raw or {}).get("live")
+    return live if isinstance(live, dict) else {}
 
 
 class DefaultAgent:
@@ -112,7 +121,15 @@ class DefaultAgent:
         collection_model=None,
         collection_policy=None,
         allowed_tool_effects=None,
+        model_delta_consumer=None,
     ) -> AgentResult:
+        """Drive one task to a result.
+
+        ``model_delta_consumer`` opts this run into live output: each model call
+        streams when the model supports it, the consumer receives
+        ``garuda.model.streaming.LiveDelta`` text/reasoning fragments, and the
+        call still yields the complete response everything else acts on.
+        """
         with permission_workspace(getattr(env, "workspace_root", None)):
             state = await prepare_run(
                 task=task,
@@ -141,10 +158,11 @@ class DefaultAgent:
                 collection_policy=collection_policy,
                 allowed_tool_effects=allowed_tool_effects,
             )
+            state.delta_consumer = model_delta_consumer
 
             # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
             # run's store for as long as it runs.
-            accounting_token = accounting.bind(state.events)
+            accounting_token = accounting.bind(state.events, state.config.spend_gate)
             try:
                 turn = 0
                 for turn in range(1, state.config.max_turns + 1):
@@ -175,6 +193,8 @@ class DefaultAgent:
 
                 return await self._final_submission(state, model, turn)
             finally:
+                if state.advisor is not None:
+                    state.advisor.active = False
                 accounting.reset(accounting_token)
 
     async def _final_submission(
@@ -243,6 +263,7 @@ class DefaultAgent:
             # The run had already failed; a model error here changes nothing about
             # that, so it is logged and the ordinary exhausted result stands.
             logger.warning("Final submission call failed: %s: %s", type(exc).__name__, exc)
+            await self._advise(state, "candidate-ready", [], turn, ending="model error")
             record = state.metrics.current
             if record is not None:
                 record.model_ms = model_ms[0]
@@ -253,7 +274,9 @@ class DefaultAgent:
         if record is not None:
             record.model_ms = model_ms[0]
         state.accumulate_usage(response.usage)
-        state.context.note_usage(response.usage)
+        state.context.note_usage(
+            response.attempt_usage[-1]["usage"] if response.attempt_usage else response.usage
+        )
         self._record_response(state, response, turn, model_ms[0])
 
         call = next(
@@ -273,6 +296,7 @@ class DefaultAgent:
             return self._exhausted(state, turn)
 
         try:
+            await self._advise(state, "candidate-ready", candidate_brief(call), turn)
             decision = await state.terminal.attempt(call, turn=turn)
         except EnvironmentUnavailableError as exc:
             # Nearly moot — the workspace is gone and this transcript will not be
@@ -323,24 +347,69 @@ class DefaultAgent:
         elapsed = [0.0]
         messages = state.context.get_messages()
         _record_system_digest(state, messages)
+        tools = state.tools_schema if tools is None else tools
+        gate = state.config.spend_gate
+        reservation = None
+        if gate is not None:
+            # Prompt as the context gauge measures it, plus the requested output
+            # ceiling. A refusal raises before anything is sent.
+            estimate = (state.context.budget_snapshot()["used_tokens"]
+                        + (state.config.max_tokens or accounting.AUXILIARY_OUTPUT_ESTIMATE))
+            reservation = await accounting.admit(gate, "main", estimate)
+        response = error = None
         try:
             with stopwatch() as holder:
                 elapsed = holder
-                return await model.complete(
-                    messages,
-                    tools=state.tools_schema if tools is None else tools,
-                    # Sent, not merely reserved against. run_state.reserved_output_tokens
-                    # takes this as the ceiling on the response and shrinks the prompt
-                    # budget to match; if the provider were never told, a smaller
-                    # max_tokens would shrink the reserve while leaving the response
-                    # free to exceed it — making the budget less safe on exactly the
-                    # config that reads as tightening it.
-                    max_tokens=state.config.max_tokens,
+                if state.delta_consumer is None:
+                    response = await model.complete(
+                        messages,
+                        tools=tools,
+                        # Sent, not merely reserved against. run_state.reserved_output_tokens
+                        # takes this as the ceiling on the response and shrinks the prompt
+                        # budget to match; if the provider were never told, a smaller
+                        # max_tokens would shrink the reserve while leaving the response
+                        # free to exceed it — making the budget less safe on exactly the
+                        # config that reads as tightening it.
+                        max_tokens=state.config.max_tokens,
+                    )
+                    return response
+                # Live output is a view of the same call: the response is assembled
+                # in full before anything below dispatches a tool from it.
+                call = await streaming.stream_complete(
+                    model, messages, tools=tools, max_tokens=state.config.max_tokens,
+                    consumer=state.delta_consumer,
                 )
+                call.response.raw = {**call.response.raw, "live": call.metadata()}
+                response = call.response
+                return response
+        except BaseException as exc:
+            error = exc
+            if isinstance(exc, Exception):
+                usage = getattr(exc, "usage", {})
+                usage = usage if isinstance(usage, dict) else {}
+                live = getattr(exc, "live", None)
+                state.accumulate_usage(usage)
+                state.events.append(EventType.MODEL_CALL_FAILED, {
+                    "turn": state.metrics.current.turn if state.metrics.current else None,
+                    "usage": usage,
+                    "duration_ms": elapsed[0],
+                    "outcome": "failed",
+                    **usage_metadata(exc, failed=True),
+                    **(live if isinstance(live, dict) and state.delta_consumer is not None else {}),
+                })
+            raise
         finally:
             # Runs after the stopwatch's own exit has filled the holder, so this is
             # correct on the raising path too — which is the one that matters here.
             model_ms[0] = round(model_ms[0] + elapsed[0], 3)
+            if reservation is not None:
+                # Settled failed or not. A raised call is charged the usage its
+                # exception carries (failed and retried attempts); one that carries
+                # none (a context-overflow rejection) releases its reservation and is
+                # counted as failed without usage, so the overflow retry below is
+                # still admitted under a dollar-only cap.
+                await accounting.settle(gate, reservation, response=response, error=error,
+                                        model=model)
 
     async def _complete_or_shrink(
         self,
@@ -429,10 +498,25 @@ class DefaultAgent:
         model_ms = [0.0]
         try:
             response = await self._complete_or_shrink(state, model, turn, model_ms)
+        except SpendLimitExceeded as exc:
+            if record is not None:
+                record.model_ms = model_ms[0]
+            if state.emit_session_events:
+                state.events.append(
+                    EventType.SESSION_END,
+                    {"success": False, "reason": "spend_limit", "spend_cause": exc.cause,
+                     "error": str(exc)},
+                )
+            what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
+            result = state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turn)
+            # Read by a caller that runs phases of its own (rigorous) to stop there.
+            result.metadata["spend_limit"] = exc.cause
+            return result
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
             logger.exception("Model call failed after retries")
+            await self._advise(state, "candidate-ready", [], turn, ending="model error")
             if state.emit_session_events:
                 state.events.append(
                     EventType.SESSION_END,
@@ -449,13 +533,17 @@ class DefaultAgent:
         if record is not None:
             record.model_ms = model_ms[0]
         state.accumulate_usage(response.usage)
-        state.context.note_usage(response.usage)
+        state.context.note_usage(
+            response.attempt_usage[-1]["usage"] if response.attempt_usage else response.usage
+        )
         self._scrub(response)
         self._record_response(state, response, turn, model_ms[0])
 
         if not response.tool_calls:
             state.final_message = response.content or ""
             if not state.config.enable_verifier and state.config.output_schema is None:
+                if await self._advise(state, "candidate-ready", [state.final_message], turn):
+                    return None
                 if state.emit_session_events:
                     state.events.append(
                         EventType.SESSION_END, {"success": True, "turns": turn}
@@ -543,6 +631,10 @@ class DefaultAgent:
                 for call in response.tool_calls
             ],
             "usage": response.usage,
+            **usage_metadata(response),
+            # Present only on a run with a delta consumer: whether this response
+            # reached it live, and any stream failure the fallback replaced.
+            **(_live_metadata(response) if state.delta_consumer is not None else {}),
         }
         # Gives observability/tracing.py the extent its `llm` spans lacked: they were
         # emitted with start_time == end_time, so every model call in a trace showed
@@ -596,6 +688,7 @@ class DefaultAgent:
         # image_read is parallel-safe, so a batch can carry images. They used to be
         # dropped here: this path only saw result counts, never the results.
         self._surface_images(state, [img for _, result in executed for img in result.images])
+        await self._advise_pending(state, turn)
 
     @staticmethod
     def _surface_images(state: RunState, images: list[str]) -> None:
@@ -631,11 +724,17 @@ class DefaultAgent:
             # The whole response's calls travel with the segment: an accepted
             # completion has to answer every call in the assistant message it came
             # from, including those in segments this run will now never reach.
-            outcome = await self._run_group_sequentially(
+            outcome, deferred = await self._run_group_sequentially(
                 state, group, turn, turn_images, response_calls=calls
             )
             if outcome is not None:
                 return outcome
+            if deferred:
+                # The run continues, so the response's images and its repetition
+                # signal still count; only the calls after the deferral were closed.
+                state.steering.note_repetition(batch_signature(calls))
+                self._surface_images(state, turn_images)
+                return None
 
         # Repetition is reported once for the whole response, whatever shape it had.
         # Per-call signatures cannot express "this same response again": a repeated
@@ -645,7 +744,39 @@ class DefaultAgent:
         # changes there.
         state.steering.note_repetition(batch_signature(calls))
         self._surface_images(state, turn_images)
+        await self._advise_pending(state, turn)
         return None
+
+    async def _advise(self, state: RunState, kind: str, brief: list[str], turn: int,
+                      *, ending: str | None = None) -> bool:
+        if state.advisor is None:
+            return False
+
+        def unavailable() -> str | None:
+            if ending:
+                return ending
+            if state.steering.deadline_exceeded():
+                return "deadline exhausted"
+            if turn >= state.config.max_turns or state.steering.final_turn_forced:
+                return "turn budget exhausted"
+            return None
+
+        delivered = await state.advisor.checkpoint(
+            kind, brief, state.steering, state.events, turn,
+            env=state.runner.env, unavailable=unavailable)
+        # A dependency can finish cancellation cleanup by returning a late answer.
+        # It must not swallow the user's stop and allow the loop to continue.
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError
+        return delivered
+
+    async def _advise_pending(self, state: RunState, turn: int) -> None:
+        if state.advisor_plan:
+            brief, state.advisor_plan = state.advisor_plan, ""
+            await self._advise(state, "plan-ready", [brief], turn)
+        if state.advisor_pending:
+            state.advisor_pending = False
+            await self._advise(state, "repeated-failure", state.advisor_failures, turn)
 
     def _note_call_outcome(
         self, state: RunState, call, tool_result, turn: int, note_repetition: bool = True
@@ -661,12 +792,25 @@ class DefaultAgent:
         repeated multi-call response never repeats consecutively call-by-call. The
         parameter stays for a caller with a single call and no response context.
         """
-        state.steering.record_failure_streak(
+        steered = state.steering.record_failure_streak(
             had_error=tool_result.is_error,
             had_success=not tool_result.is_error,
             events=state.events,
             turn=turn,
         )
+        if state.advisor is not None:
+            if not tool_result.is_error and (
+                (call.name == "todo" and call.arguments.get("todos"))
+                or (call.name == "update_goal" and call.arguments.get("plan"))
+            ) and not state.advisor_plan:
+                state.advisor_plan = str(tool_result.content or "")[:MAX_BRIEF_CHARS]
+            if tool_result.is_error:
+                first = (str(tool_result.content or "").strip().splitlines() or [""])[0]
+                failure = f"{call.name} {str(call.arguments)[:200]}\nError: {first[:200]}"
+                state.advisor_failures = [*state.advisor_failures, failure][-5:]
+            # Consulted after the step, never mid-step: the advice joins the
+            # same between-turn queue as the steering nudge.
+            state.advisor_pending = state.advisor_pending or steered
         state.steering.note_progress()  # progress made; reset completion-retry counter
 
         signature = call_signature(call)
@@ -680,15 +824,21 @@ class DefaultAgent:
 
     async def _run_group_sequentially(
         self, state: RunState, calls, turn: int, turn_images: list[str], response_calls=None
-    ) -> AgentResult | None:
-        """Run one segment's calls one at a time. Returns a result only if the run ends.
+    ) -> tuple[AgentResult | None, bool]:
+        """Run one segment. Return the result, and whether advice deferred completion.
 
         ``response_calls`` is the full set of calls from the assistant message this
-        segment belongs to, used only to close the transcript when a completion is
-        accepted. Defaults to this segment's calls for callers with no wider context.
+        segment belongs to, used to close the transcript when completion is
+        accepted or deferred. Defaults to this segment's calls for callers with no wider context.
         """
         for call in calls:
             if call.name == state.terminal.tool_name:
+                await self._advise_pending(state, turn)
+                if await self._advise(state, "candidate-ready", candidate_brief(call), turn):
+                    state.answer_open_calls(
+                        response_calls or calls, None,
+                        reason="Completion deferred: weigh the advisor note, then submit again.")
+                    return None, True
                 decision = await state.terminal.attempt(call, turn=turn)
                 if decision.accepted:
                     # Close the response's tool_calls block before returning: the
@@ -709,12 +859,12 @@ class DefaultAgent:
                         state.events.append(
                             EventType.SESSION_END, {"success": True, "turns": turn}
                         )
-                    return state.result(True, decision.summary, turn, output=decision.output)
+                    return state.result(True, decision.summary, turn, output=decision.output), False
                 if decision.failure:
                     state.answer_open_calls(
                         response_calls or calls, None, reason="Not executed: the run ended here."
                     )
-                    return self._output_failed(state, decision, turn)
+                    return self._output_failed(state, decision, turn), False
                 state.steering.note_completion_rejection()
                 continue
 
@@ -733,7 +883,7 @@ class DefaultAgent:
             tool_result = await state.runner.run_one(call, turn)
             turn_images.extend(tool_result.images)
             self._note_call_outcome(state, call, tool_result, turn, note_repetition=False)
-        return None
+        return None, False
 
     @staticmethod
     def _scrub(response) -> None:

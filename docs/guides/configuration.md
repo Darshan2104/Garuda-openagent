@@ -150,6 +150,17 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
 - Above the direct-tool threshold (`GARUDA_MCP_MAX_DIRECT_TOOLS`), Garuda
   exposes lazy `search_tool` and `use_tool` meta-tools.
 - `--mcp-config FILE` picks an explicit config for one run.
+- Servers start together behind one startup barrier (60 seconds). An entry with
+  `"required": true` must be ready by then or the run refuses before any prompt
+  work; a value other than `true`/`false` counts as required. Optional servers
+  (the default) that fail are skipped, and `garuda mcp list` shows each server's
+  state and reason. An untrusted project server marked required also refuses.
+- A stdio server whose process exits is relaunched up to 3 times per run with
+  backoff (a server that keeps exiting after it reconnects ends failed), only while its entry is unchanged and, for a project server, still trusted.
+  A call in flight when it exited fails and is never replayed; the run keeps
+  the tools it admitted at startup. Remote (HTTP/SSE) servers are not
+  reconnected. Each run records the per-server states as `mcp_servers` in the
+  session's `meta.json`.
 
 ```bash
 garuda mcp list --no-connect
@@ -179,6 +190,15 @@ This declaration is a trusted guardrail assertion, not confinement or proof
 about the remote implementation. Side-effecting and unknown tools stay
 unavailable to collection workers, and lazy `use_tool` calls re-check the
 selected tool.
+
+Resource and prompt access is separately opt-in: add
+`"context_access": ["resources", "prompts"]` to the exact server's **global**
+entry (either interface can be enabled alone). This grants the generated context
+tool a trusted read-only effect through the same MCP authority path. Project
+entries, including project overrides of global names, cannot grant or inherit
+this access. The default remains tools only. See the
+[resource and prompt example](../use-cases/customize.md#read-mcp-resources-and-prompts)
+for calls, bounds and unsupported capabilities.
 
 ## Initial runtime selection
 

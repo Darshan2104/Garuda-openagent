@@ -98,14 +98,21 @@ def aggregate_model_metrics(events: list[dict]) -> dict:
             record["duration_ms"] + float(payload.get("duration_ms", 0) or 0), 3
         )
         cost = known_cost(usage)
-        if cost is None and usage:
+        unknown = payload.get("usage_unknown") or []
+        if cost is None or "cost_usd" in unknown:
             record["cost_unknown_calls"] += 1
-        elif cost is not None:
+        if cost is not None:
             record["cost_usd"] = round(record["cost_usd"] + cost, 8)
+        if unknown:
+            counts = record.setdefault("usage_unknown_calls", {})
+            for name in unknown:
+                counts[name] = counts.get(name, 0) + 1
 
     for event in events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if event.get("type") == "model_response":
+        if event.get("type") in ("model_response", "model_call_failed"):
+            if payload.get("truncated") and not payload.get("usage"):
+                continue
             note(by_role, str(payload.get("model_binding_role") or "unknown"), payload)
             note(by_purpose, str(payload.get("call_purpose") or "unknown"), payload)
         elif event.get("type") == "collection" and isinstance(
