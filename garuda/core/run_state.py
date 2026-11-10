@@ -763,6 +763,10 @@ async def prepare_run(
     # command can block for minutes.
     started_at = time.monotonic()
     deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
+    # One spend gate per run tree: created at the root, inherited by children.
+    from garuda.core.spend import gate_for
+
+    gate_for(config)
 
     # Session-wide record of what has already been asked and whether a writer is
     # loose. The collection coordinator samples the same object before/after a
@@ -879,6 +883,7 @@ async def prepare_run(
             notes=notes_ledger,
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
+            spend_gate=config.spend_gate,
             deadline_monotonic=deadline_at,
             workspace_kind=config.workspace_kind,
             workspace_evidence_root=(

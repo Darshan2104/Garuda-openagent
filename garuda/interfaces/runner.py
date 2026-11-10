@@ -555,6 +555,11 @@ async def run_agent_task(
                     store, events.session_id, {"status": "failed", "state": interrupted()}
                 )
                 summary = {"session_id": events.session_id, "success": False, "turns": 0}
+            # The run tree's spend as the root gate ended it (#405), whichever
+            # phase stopped the run; absent when no cap was set.
+            if getattr(config, "spend_gate", None) is not None:
+                update_session_meta(store, events.session_id,
+                                    {"spend_gate": config.spend_gate.snapshot()})
             try:
                 await runtime.close()
             except Exception:
