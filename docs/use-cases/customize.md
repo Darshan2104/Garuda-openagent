@@ -424,6 +424,30 @@ garuda mcp list
 - MCP tool calls are permission-screened like any other tool. Use
   `--mcp-config FILE` to pick a config for one run.
 
+**Make a server required.** If the run is pointless without a server, mark it:
+
+```json
+{
+  "mcpServers": {
+    "issues": { "url": "https://mcp.example.com/mcp", "required": true }
+  }
+}
+```
+
+```bash
+garuda mcp list
+# Server status:
+#   - docs-files [optional] ready (14 tool(s))
+#   - issues [required] failed: ConnectError: ... (0 tool(s))
+# Error: required MCP server(s) not ready: issues (failed: ...)
+```
+
+A required server that isn't ready within the startup barrier stops the run
+before the agent is prompted. An optional server that fails is skipped and
+shown as `failed` with its reason. A local server that crashes mid-run is
+restarted a few times, but a call that was running when it crashed is never
+retried for you.
+
 More in [Configuration → MCP](../guides/configuration.md#mcp).
 
 ## Block or log tool calls with a hook

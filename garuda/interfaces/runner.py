@@ -95,6 +95,20 @@ def update_session_meta(store: SessionStore, session_id: str, updates: dict) -> 
         pass
 
 
+def _record_mcp_states(store: SessionStore, session_id: str, mcp_manager) -> None:
+    """Patch the MCP manager's per-server status into meta.json as ``mcp_servers``."""
+    states = getattr(mcp_manager, "server_states", None)
+    if not callable(states):
+        return
+    try:
+        snapshot = states()
+    except Exception:
+        logger.debug("MCP server status unavailable", exc_info=True)
+        return
+    if isinstance(snapshot, list):
+        update_session_meta(store, session_id, {"mcp_servers": snapshot})
+
+
 def _with_current_system_prompt(messages: list[Message], system_prompt: str) -> list[Message]:
     """Replace the replayed history's leading system message with the current one.
 
@@ -373,6 +387,8 @@ async def run_agent_task(
         agent_digest = getattr(config, "agent_digest", None)
         if agent_digest:
             update_session_meta(store, events.session_id, {"agent_digest": agent_digest})
+        # Which MCP servers this run started with, including optional failures.
+        _record_mcp_states(store, events.session_id, mcp_manager)
         if resumed_from:
             update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
             # The definition may have changed since the session being resumed
@@ -534,6 +550,8 @@ async def run_agent_task(
                 await cleanup_workspace(handle)
             except Exception:
                 logger.warning("Workspace cleanup failed", exc_info=True)
+            # Before close, so a reconnect or failure during the run stays visible.
+            _record_mcp_states(store, events.session_id, mcp_manager)
             if close_mcp and mcp_manager is not None:
                 try:
                     await mcp_manager.close()

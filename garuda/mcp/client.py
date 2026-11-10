@@ -4,9 +4,12 @@ import logging
 import re
 import weakref
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -33,6 +36,20 @@ MCP_HTTP_CONNECT_TIMEOUT = 30.0
 # Timeout (seconds) for a single MCP tool invocation.
 MCP_CALL_TIMEOUT = 120.0
 
+# Startup barrier (seconds): every server is launched at once, and one not ready
+# by then is stopped. A required one refuses the run; an optional one is skipped.
+MCP_STARTUP_DEADLINE = 60.0
+
+# Reconnect bounds after a stdio server's process exits: relaunches per run (a
+# server that handshakes and exits again spends the same budget), and the first
+# backoff delay (doubled each relaunch, capped).
+MCP_RECONNECT_ATTEMPTS = 3
+MCP_RECONNECT_BACKOFF = 0.5
+MCP_RECONNECT_BACKOFF_MAX = 8.0
+
+# How long close() waits for a server's owner task before cancelling it.
+MCP_CLOSE_TIMEOUT = 10.0
+
 # Maximum length of an exposed MCP tool name.
 MCP_TOOL_NAME_MAX_LEN = 64
 
@@ -53,6 +70,9 @@ class McpRemoteTool:
     _session: ClientSession
     name_override: str | None = None
     effect: ToolEffect = ToolEffect.UNKNOWN
+    # The connection owner when a manager created this tool: calls go to its
+    # current session, and fail fast while it is not connected.
+    _owner: "_ServerOwner | None" = field(default=None, repr=False)
 
     @property
     def effect_trusted(self) -> bool:
@@ -71,11 +91,21 @@ class McpRemoteTool:
         env: object,
         ctx: ToolContext,
     ) -> ToolResult:
+        session = self._session
+        if self._owner is not None:
+            session = self._owner.session_for(self.tool_name)
+            if session is None:
+                # Never queued for a later connection: a call is sent at most once.
+                return ToolResult(
+                    tool_call_id="",
+                    content=self._owner.unavailable_message(self.tool_name),
+                    is_error=True,
+                )
         # A hung or failing MCP server must not hang or crash the agent turn:
         # bound the call with a timeout and return an error observation instead.
         try:
             result = await asyncio.wait_for(
-                self._session.call_tool(self.tool_name, arguments),
+                session.call_tool(self.tool_name, arguments),
                 timeout=MCP_CALL_TIMEOUT,
             )
         except (TimeoutError, asyncio.TimeoutError):
@@ -119,11 +149,155 @@ class McpTrustError(ConfigError):
     """A run requires a project MCP server the user has not trusted."""
 
 
+class McpStartupError(ConfigError):
+    """A required MCP server was not ready by the startup barrier."""
+
+    def __init__(self, message: str, states: list[dict[str, Any]]):
+        super().__init__(message)
+        #: Per-server status at the barrier, for callers that show what failed.
+        self.states = states
+
+
+class McpServerState(str, Enum):
+    STARTING = "starting"
+    READY = "ready"
+    FAILED = "failed"
+    RECONNECTING = "reconnecting"
+    CLOSED = "closed"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """A bounded, redacted reason; transport errors can echo URLs or arguments."""
+    from garuda.context.redact import redact_text
+
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        text = "timed out"
+    elif isinstance(exc, asyncio.CancelledError):
+        text = "cancelled during connect"
+    else:
+        text = f"{type(exc).__name__}: {exc}"
+    return redact_text(text)[0][:300]
+
+
+class _ServerOwner:
+    """One server's connection, held by a single task from launch to teardown."""
+
+    def __init__(self, config: McpServerConfig):
+        self.config = config
+        self.state = McpServerState.STARTING
+        self.reason = ""
+        self.session: ClientSession | None = None
+        # Tools the live connection lists, by remote name, and the ones this run
+        # admitted at startup. Only admitted tools are ever exposed.
+        self.listed: dict[str, Any] = {}
+        self.admitted: list[McpRemoteTool] = []
+        self.reconnects = 0
+        self.started_at = _now()
+        self.ready_at: str | None = None
+        self.changed_at = self.started_at
+        self.settled = asyncio.Event()
+        self.stop = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    def transition(self, state: McpServerState, reason: str = "") -> None:
+        self.state = state
+        self.reason = reason
+        self.changed_at = _now()
+        if state is McpServerState.READY:
+            self.ready_at = self.changed_at
+        if state is not McpServerState.STARTING:
+            self.settled.set()
+
+    def session_for(self, tool_name: str) -> ClientSession | None:
+        if self.state is McpServerState.READY and tool_name in self.listed:
+            return self.session
+        return None
+
+    def unavailable_message(self, tool_name: str) -> str:
+        name = self.config.name
+        if self.state is McpServerState.READY:
+            if tool_name in self.listed:
+                # Between a lost connection and the owner recording it.
+                return f"MCP server {name!r} lost its connection; tool {tool_name!r} was not called."
+            return (
+                f"MCP tool {tool_name!r} is no longer offered by server {name!r} "
+                "after it reconnected; it was not called."
+            )
+        detail = f" ({self.reason})" if self.reason else ""
+        return (
+            f"MCP server {name!r} is {self.state.value}{detail}; "
+            f"tool {tool_name!r} was not called."
+        )
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "name": self.config.name,
+            "transport": normalize_transport(self.config.transport, has_url=bool(self.config.url)),
+            "required": self.config.required,
+            "state": self.state.value,
+            "reason": self.reason,
+            "tools": len(self.admitted),
+            "reconnects": self.reconnects,
+            "started_at": self.started_at,
+            "ready_at": self.ready_at,
+            "changed_at": self.changed_at,
+        }
+
+
+async def _first_of(*events: asyncio.Event) -> None:
+    waiters = [asyncio.ensure_future(event.wait()) for event in events]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+
+
+async def _watch_stream(source, stack: AsyncExitStack, lost: asyncio.Event):
+    """Forward a transport's read stream, setting ``lost`` when it ends by itself.
+
+    A stdio server's stream ends exactly when the server closes its stdout,
+    normally because the process exited: the one connection loss Garuda can
+    prove. Teardown on our side cancels the pump instead, which is not a loss.
+    """
+    sink, forwarded = anyio.create_memory_object_stream(0)
+
+    async def pump() -> None:
+        try:
+            async with sink:
+                async for item in source:
+                    await sink.send(item)
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            return
+        lost.set()
+
+    group = await stack.enter_async_context(anyio.create_task_group())
+    stack.callback(group.cancel_scope.cancel)
+    group.start_soon(pump)
+    return forwarded
+
+
+async def _close_quietly(stack: AsyncExitStack, name: str) -> None:
+    try:
+        await stack.aclose()
+    except Exception:
+        # anyio can complain when tearing down a half-initialized or already
+        # dead transport; the launch failure or loss is what matters.
+        logger.debug("Error closing MCP server %s", name, exc_info=True)
+
+
 class McpClientManager:
-    def __init__(self):
-        self._stack = AsyncExitStack()
+    def __init__(self, *, workspace: str | None = None):
+        self._owners: list[_ServerOwner] = []
         self._tools: list[McpRemoteTool] = []
         self._started = False
+        # Re-checked before a project server is relaunched after a loss.
+        self._workspace = workspace
 
     @classmethod
     async def from_config(cls, path: str) -> "McpClientManager":
@@ -149,9 +323,9 @@ class McpClientManager:
         With ``workspace``, a server defined by the project's own config needs a
         user trust grant (``garuda mcp trust``). An untrusted one is skipped with
         a warning before anything starts; one that ``allowed_servers`` names
-        explicitly refuses the run instead, because the profile requires it.
+        explicitly, or that is marked ``required``, refuses the run instead.
         """
-        manager = cls()
+        manager = cls(workspace=workspace)
         await manager.start(cls.resolve_configs(
             paths, allowed_servers, workspace=workspace, user_paths=user_paths))
         return manager
@@ -169,6 +343,12 @@ class McpClientManager:
         )
         allow = set(allowed_servers) if allowed_servers is not None else None
         required = sorted({s.name for s in untrusted if allow is not None and s.name in allow})
+        # A server its entry marks required, and the profile does not exclude, is
+        # needed by the run as well: refusing beats going on without it.
+        required += sorted({
+            s.name for s in untrusted
+            if s.required and (allow is None or s.name in allow) and s.name not in required
+        })
         if required:
             raise McpTrustError(
                 f"{UNTRUSTED_CODE}: the profile requires project MCP server(s) "
@@ -191,41 +371,82 @@ class McpClientManager:
         return servers
 
     async def start(self, servers: list[McpServerConfig]) -> None:
-        """Connect to each configured server. A failing server is logged and skipped
-        so one broken server cannot take down the others."""
+        """Launch every server at once behind one bounded startup barrier.
+
+        Each server is owned by its own task from launch to teardown. One not
+        ready by ``MCP_STARTUP_DEADLINE`` is stopped, so it can never register
+        tools after the run's tool list is fixed. An optional failure is logged,
+        skipped and kept in :meth:`server_states`; a required one closes every
+        server and raises :class:`McpStartupError` before any prompt work.
+        """
         if self._started:
             return
-        for server in servers:
-            try:
-                await self._start_server(server)
-            except Exception as exc:
-                logger.warning(
-                    "MCP server %s failed to start (%s: %s); skipping it",
-                    server.name,
-                    type(exc).__name__,
-                    exc,
-                )
-            except asyncio.CancelledError:
-                # HTTP/SSE transports run their own anyio task group; a failed
-                # connect can surface as CancelledError from that *inner* scope.
-                # If our own task wasn't actually cancelled, isolate this server
-                # like any other failure instead of aborting every server. If we
-                # were genuinely cancelled (e.g. Ctrl-C), re-raise.
-                task = asyncio.current_task()
-                if task is not None and task.cancelling() > 0:
-                    raise
-                logger.warning(
-                    "MCP server %s failed to start (cancelled during connect); skipping it",
-                    server.name,
-                )
         self._started = True
+        self._owners = [_ServerOwner(server) for server in servers]
+        for owner in self._owners:
+            owner.task = asyncio.create_task(
+                self._own(owner), name=f"mcp-server:{owner.config.name}"
+            )
+        try:
+            await self._barrier(self._owners)
+        except BaseException:
+            # Cancelled while waiting (e.g. Ctrl-C): nothing started may outlive it.
+            await self.close()
+            raise
+        missing = [
+            owner for owner in self._owners
+            if owner.config.required and owner.state is not McpServerState.READY
+        ]
+        if missing:
+            states = self.server_states()
+            await self.close()
+            detail = "; ".join(
+                f"{o.config.name} ({o.state.value}: {o.reason or 'no reason recorded'})"
+                for o in missing
+            )
+            raise McpStartupError(
+                f"required MCP server(s) not ready: {detail}. Fix the server, or mark it "
+                "`required: false` to let runs continue without it.",
+                states,
+            )
+        # Admitted in configuration order, so exposed names stay deterministic.
+        for owner in self._owners:
+            if owner.state is McpServerState.READY:
+                self._admit(owner)
 
-    async def _open_transport(self, server: McpServerConfig, server_stack: AsyncExitStack):
+    async def _barrier(self, owners: list[_ServerOwner]) -> None:
+        deadline = MCP_STARTUP_DEADLINE
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(owner.settled.wait() for owner in owners)), deadline
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        late = [owner for owner in owners if not owner.settled.is_set()]
+        for owner in late:
+            # Stopped before any await, so a handshake finishing in the same tick
+            # sees the verdict and cannot report the owner ready.
+            owner.stop.set()
+            owner.transition(McpServerState.FAILED, f"not ready within {deadline:g}s")
+            logger.warning(
+                "MCP server %s was not ready within %gs; stopping it", owner.config.name, deadline
+            )
+        await asyncio.gather(*(self._stop(owner) for owner in late))
+
+    async def _open_transport(
+        self,
+        server: McpServerConfig,
+        server_stack: AsyncExitStack,
+        *,
+        lost: asyncio.Event | None = None,
+    ):
         """Open the configured transport and return its ``(read, write)`` streams.
 
         stdio launches a subprocess; ``http`` (streamable-HTTP) and ``sse`` connect
         to a remote ``url`` with optional ``headers`` (e.g. bearer auth). An unknown
         transport raises so the caller logs and skips the server rather than hanging.
+        With ``lost``, a stdio stream that ends by itself sets it (see
+        ``_watch_stream``); remote transports report no proved loss.
         """
         transport = normalize_transport(server.transport, has_url=bool(server.url))
         if transport == "stdio":
@@ -235,6 +456,8 @@ class McpClientManager:
                 env=server.env or None,
             )
             read, write = await server_stack.enter_async_context(stdio_client(params))
+            if lost is not None:
+                read = await _watch_stream(read, server_stack, lost)
             return read, write
         if transport in ("http", "sse"):
             if not server.url:
@@ -254,36 +477,142 @@ class McpClientManager:
             return read, write
         raise ValueError(f"Unknown MCP transport {transport!r} for server {server.name!r}")
 
-    async def _start_server(self, server: McpServerConfig) -> None:
-        # Per-server exit stack: on failure only this server's resources are
-        # torn down; on success ownership moves to the manager's stack.
-        server_stack = AsyncExitStack()
-        try:
-            read, write = await self._open_transport(server, server_stack)
-            session = await server_stack.enter_async_context(ClientSession(read, write))
-            await asyncio.wait_for(session.initialize(), MCP_HANDSHAKE_TIMEOUT)
-            listed = await asyncio.wait_for(session.list_tools(), MCP_HANDSHAKE_TIMEOUT)
-        except BaseException:
+    async def _connect(self, server: McpServerConfig, stack: AsyncExitStack, lost: asyncio.Event):
+        read, write = await self._open_transport(server, stack, lost=lost)
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await asyncio.wait_for(session.initialize(), MCP_HANDSHAKE_TIMEOUT)
+        listed = await asyncio.wait_for(session.list_tools(), MCP_HANDSHAKE_TIMEOUT)
+        return session, listed
+
+    async def _own(self, owner: _ServerOwner) -> None:
+        """Hold one server's connection for its whole life, in this task only.
+
+        Transport contexts are entered and exited by the same task (anyio
+        requires it), so teardown never races a half-open connection. A server
+        that never became ready is not retried; one whose stdio process exits
+        is relaunched at most ``MCP_RECONNECT_ATTEMPTS`` times per run, counting
+        relaunches that connected and then exited again. In-flight calls on a
+        lost connection fail and are never replayed.
+        """
+        name = owner.config.name
+        relaunches = 0
+        while True:
+            lost = asyncio.Event()
+            stack = AsyncExitStack()
             try:
-                await server_stack.aclose()
+                session, listed = await self._connect(owner.config, stack, lost)
+            except BaseException as exc:
+                await _close_quietly(stack, name)
+                if isinstance(exc, asyncio.CancelledError):
+                    # HTTP/SSE transports run their own anyio task group; a failed
+                    # connect can surface as CancelledError from that inner scope.
+                    # Only a cancellation of this task itself ends the owner.
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling() > 0:
+                        raise
+                elif not isinstance(exc, Exception):
+                    raise
+                reason = _describe_failure(exc)
+                if owner.ready_at is None:
+                    logger.warning("MCP server %s failed to start (%s); skipping it", name, reason)
+                    owner.transition(McpServerState.FAILED, reason)
+                    return
+                if relaunches >= MCP_RECONNECT_ATTEMPTS:
+                    owner.transition(
+                        McpServerState.FAILED,
+                        f"reconnect failed after {relaunches} attempt(s): {reason}",
+                    )
+                    logger.warning("MCP server %s: %s", name, owner.reason)
+                    return
+                if not await self._backoff(owner, relaunches + 1):
+                    return
+                relaunches += 1
+                continue
+            if owner.stop.is_set() or owner.state is McpServerState.FAILED:
+                # Stopped (startup verdict or close) while the handshake finished:
+                # never report ready, and release the connection here.
+                await _close_quietly(stack, name)
+                return
+            owner.session = session
+            owner.listed = {tool.name: tool for tool in listed.tools}
+            if owner.ready_at is not None:
+                owner.reconnects += 1
+                self._refresh(owner)
+            owner.transition(McpServerState.READY)
+            try:
+                await _first_of(owner.stop, lost)
+            finally:
+                owner.session = None
+                await _close_quietly(stack, name)
+            if owner.stop.is_set():
+                return
+            refusal = self._reconnect_refusal(owner.config)
+            if refusal:
+                owner.transition(McpServerState.FAILED, f"connection lost; {refusal}")
+                logger.warning("MCP server %s: %s", name, owner.reason)
+                return
+            if relaunches >= MCP_RECONNECT_ATTEMPTS:
+                owner.transition(
+                    McpServerState.FAILED,
+                    f"connection lost: server process exited after {relaunches} "
+                    "relaunch(es) this run; restart the run",
+                )
+                logger.warning("MCP server %s: %s", name, owner.reason)
+                return
+            owner.transition(McpServerState.RECONNECTING, "connection lost: server process exited")
+            logger.warning("MCP server %s exited; reconnecting", name)
+            if not await self._backoff(owner, relaunches + 1):
+                return
+            relaunches += 1
+
+    async def _backoff(self, owner: _ServerOwner, attempt: int) -> bool:
+        """Wait before reconnect ``attempt``; False if the server was stopped meanwhile."""
+        owner.transition(McpServerState.RECONNECTING, owner.reason or "reconnecting")
+        delay = min(MCP_RECONNECT_BACKOFF * 2 ** (attempt - 1), MCP_RECONNECT_BACKOFF_MAX)
+        try:
+            await asyncio.wait_for(owner.stop.wait(), delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            return True
+        return False
+
+    def _reconnect_refusal(self, server: McpServerConfig) -> str | None:
+        """Why a lost server must not be relaunched, or None if it may be.
+
+        A reconnect relaunches exactly the configuration admitted at startup, and
+        only while that is still what the user configured and trusted: a changed
+        entry or a withdrawn project trust grant ends the server instead.
+        """
+        if normalize_transport(server.transport, has_url=bool(server.url)) != "stdio":
+            return "only a stdio server's exit is a proved loss; restart the run"
+        if server.source_path:
+            try:
+                current = [c for c in load_mcp_config(server.source_path) if c.name == server.name]
             except Exception:
-                # anyio can complain when tearing down a half-initialized
-                # transport; the launch failure is what matters.
-                logger.debug("Error closing failed MCP server %s", server.name, exc_info=True)
-            raise
-        await self._stack.enter_async_context(server_stack)
+                current = []
+            if len(current) != 1 or current[0].spec_digest != server.spec_digest:
+                return "its configuration changed since the run started; restart the run"
+        if server.project_scoped:
+            from garuda.mcp.trust import is_trusted
+
+            if self._workspace is None or not is_trusted(server, self._workspace):
+                return "its project trust grant no longer holds; review it with `garuda mcp trust`"
+        return None
+
+    def _admit(self, owner: _ServerOwner) -> None:
+        server = owner.config
         existing = {t.name for t in self._tools}
-        for tool in listed.tools:
+        for tool in owner.listed.values():
             schema = tool.inputSchema if hasattr(tool, "inputSchema") else {"type": "object", "properties": {}}
             remote = McpRemoteTool(
                 server_name=server.name,
                 tool_name=tool.name,
                 description=tool.description or tool.name,
                 parameters=schema,
-                _session=session,
+                _session=owner.session,
                 effect=server.trusted_tool_effects.get(
                     tool.name, ToolEffect.UNKNOWN
                 ),
+                _owner=owner,
             )
             if tool.name in server.trusted_tool_effects:
                 _trust_remote_effect(remote)
@@ -298,12 +627,65 @@ class McpClientManager:
                     remote.name_override,
                 )
             existing.add(remote.name)
+            owner.admitted.append(remote)
             self._tools.append(remote)
+
+    def _refresh(self, owner: _ServerOwner) -> None:
+        """Update admitted tools' schemas from a reconnected server.
+
+        The run's admitted tools stay the only ones exposed, each keeping the
+        effect and trust it was admitted with. A tool the server stopped listing
+        refuses calls; one it newly lists waits for a new run.
+        """
+        admitted = set()
+        for remote in owner.admitted:
+            admitted.add(remote.tool_name)
+            tool = owner.listed.get(remote.tool_name)
+            if tool is None:
+                continue
+            remote.description = tool.description or tool.name
+            if hasattr(tool, "inputSchema"):
+                remote.parameters = tool.inputSchema
+        added = sorted(set(owner.listed) - admitted)
+        if added:
+            logger.warning(
+                "MCP server %s now lists tool(s) %s; not exposed until a new run",
+                owner.config.name,
+                ", ".join(added),
+            )
+
+    async def _stop(self, owner: _ServerOwner) -> None:
+        """Stop one owner and wait for its task; nothing it opened outlives this."""
+        owner.stop.set()
+        task = owner.task
+        if task is not None and not task.done():
+            if owner.state is not McpServerState.READY:
+                # Mid-launch or mid-backoff: no connection to release gracefully.
+                task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=MCP_CLOSE_TIMEOUT)
+            if not done:
+                task.cancel()
+                await asyncio.wait({task})
+        if task is not None and not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "MCP server %s owner failed", owner.config.name, exc_info=task.exception()
+            )
 
     def get_tools(self) -> list[Tool]:
         return list(self._tools)
 
+    def server_states(self) -> list[dict[str, Any]]:
+        """Per-server lifecycle status: state, reason, counts and timestamps.
+
+        A read of what the manager already knows; it never probes a server.
+        """
+        return [owner.status() for owner in self._owners]
+
     async def close(self) -> None:
-        await self._stack.aclose()
+        owners = self._owners
+        await asyncio.gather(*(self._stop(owner) for owner in owners))
+        for owner in owners:
+            if owner.state is not McpServerState.FAILED:
+                owner.transition(McpServerState.CLOSED)
         self._started = False
         self._tools = []

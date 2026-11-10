@@ -186,12 +186,12 @@ async def test_global_effect_is_attached_to_the_exact_remote_tool(
 
     manager = McpClientManager()
 
-    async def fake_transport(server, stack):
+    async def fake_transport(server, stack, **_):
         return object(), object()
 
     monkeypatch.setattr(client_module, "ClientSession", FakeSession)
     monkeypatch.setattr(manager, "_open_transport", fake_transport)
-    await manager._start_server(server)
+    await manager.start([server])
     tools = {tool.tool_name: tool for tool in manager.get_tools()}
 
     assert tools["fetch"].effect is ToolEffect.READ_ONLY

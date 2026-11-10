@@ -277,7 +277,7 @@ async def build_toolkit(
         if mcp_configs is not None:
             if paths:
                 raise ValueError("choose resolved MCP configurations or paths")
-            manager = McpClientManager()
+            manager = McpClientManager(workspace=workspace)
             await manager.start(list(mcp_configs))
         else:
             manager = await McpClientManager.from_paths(

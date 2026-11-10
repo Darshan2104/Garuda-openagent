@@ -50,6 +50,9 @@ class McpServerConfig:
     # (which needs a user trust grant before it may start or connect).
     source_path: str | None = None
     project_scoped: bool = False
+    # A required server must be ready by the startup barrier or the run refuses;
+    # an optional one (the default) may fail and the run continues without it.
+    required: bool = False
 
 
 # Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
@@ -170,6 +173,23 @@ def _string_map(entry: dict, key: str, name: str) -> dict[str, str]:
     return {str(k): _interpolate(str(v)) for k, v in value.items()}
 
 
+def _required_flag(entry: dict, name: str) -> bool:
+    """The entry's ``required`` flag, read so a typo cannot drop a critical server.
+
+    Anything other than a boolean is treated as required: the run then refuses
+    loudly if the server is not ready, instead of silently going without it.
+    """
+    value = entry.get("required", False)
+    if isinstance(value, bool):
+        return value
+    logger.warning(
+        "MCP server %r: required should be true or false; treating %r as required",
+        name,
+        value,
+    )
+    return True
+
+
 def _trusted_tool_effects(
     entry: dict, server_name: str, *, trusted_source: bool
 ) -> dict[str, ToolEffect]:
@@ -245,6 +265,7 @@ def _dict_to_server_configs(
                     headers=headers,
                     trusted_tool_effects=trusted_tool_effects,
                     spec_digest=spec_digest,
+                    required=_required_flag(entry, str(name)),
                 )
             )
         except Exception as exc:
