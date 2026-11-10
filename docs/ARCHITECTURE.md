@@ -121,9 +121,17 @@ fastest way to learn the system.
    existing budgets; it never counts as verification or independent review.
    Awaited consults recheck run liveness before delivery, including cancellation
    during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
-   The loop calls `Model.complete()`; model streaming APIs and renderer delta
-   hooks do not yet provide native token-by-token loop rendering. External
-   harness streaming is a separate runtime path. Standalone ACP runs can use
+   The loop calls `Model.complete()` unless the run was given a
+   `model_delta_consumer`. Then `_timed_complete` makes the call through
+   `model/streaming.py`: text and reasoning deltas reach the consumer, the
+   stream is assembled into the same `ModelResponse` before any tool is
+   dispatched, a stream that fails before its terminal chunk falls back once to
+   `complete()` (the consumer is told to discard what it showed), overflow
+   propagates to the shrink-and-retry path, and cancellation propagates with
+   nothing assembled. The `model_response` event records `live_coverage`
+   (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
+   call outcome. No interface attaches a consumer yet. External harness
+   streaming is a separate runtime path. Standalone ACP runs can use
    explicit post-run acceptance checks even though the native completion gate
    does not run inside the external harness.
    `Model.complete()` and LiteLLM's `complete_streaming()` preserve the

@@ -263,14 +263,23 @@ OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,
 
 `protocol.py` is the `Model` interface. `litellm_model.py` is the real
 implementation (streaming, tool calls, reasoning effort, prompt caching, retries);
-the streaming API is available to callers, while the native loop currently uses
-`complete()` and renders completed turns rather than token deltas. `StreamDelta`
+`streaming.py` is the one accumulator that turns `stream()` into the response
+`complete()` would return: fragmented tool calls are parsed only after the
+terminal chunk, usage snapshots and `attempt_usage` are kept once, a failed or
+unterminated stream falls back once to `complete()` with both attempts' usage,
+and `ContextOverflowError` and cancellation propagate without fallback. It
+forwards `LiveDelta` text/reasoning (and `discard` before a fallback) to an
+optional consumer, detaching a consumer that raises. `complete_streaming()` and
+the loop's opt-in `model_delta_consumer` path both use it; without a consumer
+the loop calls `complete()` as before. `StreamDelta`
 has optional provider terminal fields. `litellm_model.py` emits them even when a
 terminal chunk has no content, retains the latest non-null values across trailing
 usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is
 reported as `None`; Garuda does not infer it from content, tools, exhaustion, or
 the synthetic `done` delta. `script_model.py` carries explicitly scripted
-metadata through the same public stream contract.
+metadata through the same public stream contract, streams reasoning and usage,
+and replays a queued `ScriptedStream` exactly, including fragments, a raised
+mid-stream failure or a missing terminal chunk.
 
 `usage.py` owns logical-call usage subtotals and coverage. LiteLLM responses and
 raised errors expose `attempt_usage`: one `{usage, outcome}` entry per provider

@@ -18,7 +18,7 @@ from garuda.model.protocol import (
     StreamDelta,
     estimate_tools_tokens,
 )
-from garuda.model.usage import attach_usage, attempts_for, sum_usage, usage_attempt
+from garuda.model.usage import attach_usage, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,8 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520
 
 # Upper bound on any single backoff/Retry-After sleep.
 _MAX_RETRY_SLEEP = 60.0
+# Response statuses that end a stream; ``in_progress``/``queued`` do not.
+_TERMINAL_STATUSES = frozenset({"completed", "incomplete", "failed", "cancelled"})
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -631,6 +633,7 @@ class LitellmModel:
         attempts: list[dict] = []
         response_stream = await self._complete_with_retries(kwargs, attempts)
         usage: dict = {}
+        terminal = False
         try:
             async for chunk in response_stream:
                 # Usage chunks are cumulative snapshots of this attempt, not deltas.
@@ -640,13 +643,21 @@ class LitellmModel:
                 if reported:
                     yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
                 for delta in _stream_deltas_from_chunk(chunk):
+                    terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
                     yield delta
         except Exception as exc:
             usage.update(_error_usage(exc))
             attach_usage(exc, attempts + [usage_attempt(usage, "failed")])
             raise
+        # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
+        # provider closed without a finish reason; only one the provider sent counts.
+        if hasattr(response_stream, "received_finish_reason"):
+            terminal = terminal and bool(response_stream.received_finish_reason
+                                         or getattr(response_stream, "intermittent_finish_reason", None))
         current = attempts + [usage_attempt(usage, "success")]
-        yield StreamDelta(done=True, usage=sum_usage(current) if not usage and attempts else None,
+        # Without a terminal chunk the stream ends without ``done``: a connection
+        # closed cleanly mid-answer is incomplete, not an answer.
+        yield StreamDelta(done=terminal, usage=sum_usage(current) if not usage and attempts else None,
                           attempt_usage=current)
 
     async def complete_streaming(
@@ -659,82 +670,22 @@ class LitellmModel:
     ) -> ModelResponse:
         """Consume ``stream`` into a full ModelResponse.
 
-        Accumulates content and tool-call fragments while invoking the optional
-        ``on_delta(text)`` callback (sync or async) for each text chunk, so a
-        caller can render tokens live and still receive the assembled response.
+        Invokes the optional ``on_delta(text)`` callback (sync or async) for each
+        text chunk, so a caller can render tokens live and still receive the
+        assembled response. Accumulation and the one non-streaming fallback are
+        ``garuda.model.streaming``'s, shared with the agent loop.
         """
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        thinking_blocks: list[dict] | None = None
-        tool_frags: dict = {}
-        usage: dict = {}
-        attempts: list[dict] = []
-        finish_reason: str | None = None
-        status: str | None = None
-        try:
-            async for delta in self.stream(messages, tools, temperature, max_tokens):
-                if delta.content_delta:
-                    content_parts.append(delta.content_delta)
-                    if on_delta is not None:
-                        result = on_delta(delta.content_delta)
-                        if inspect.isawaitable(result):
-                            await result
-                if delta.reasoning_delta:
-                    reasoning_parts.append(delta.reasoning_delta)
-                if delta.thinking_blocks:
-                    # Streamed thinking blocks arrive assembled per chunk; keep the
-                    # latest complete set (loop uses complete(), so this is best-effort).
-                    thinking_blocks = delta.thinking_blocks
-                if delta.tool_call_delta:
-                    _merge_tool_fragment(tool_frags, delta.tool_call_delta)
-                if delta.usage:
-                    usage = delta.usage
-                if delta.attempt_usage is not None:
-                    attempts = delta.attempt_usage
-                observed_finish_reason = getattr(delta, "finish_reason", None)
-                if observed_finish_reason is not None:
-                    finish_reason = observed_finish_reason
-                observed_status = getattr(delta, "status", None)
-                if observed_status is not None:
-                    status = observed_status
-        except Exception as exc:
-            # A stream that dies mid-response cannot be safely resumed; fall back to
-            # a fresh non-streaming completion rather than returning a partial answer.
-            logger.warning("Streaming failed mid-response; retrying without streaming", exc_info=True)
-            failed = getattr(exc, "attempt_usage", None) or attempts or [usage_attempt(usage, "failed")]
-            failed = [dict(a) for a in failed]
-            failed[-1]["outcome"] = "failed"
-            try:
-                response = await self.complete(messages, tools, temperature, max_tokens)
-            except Exception as fallback_exc:
-                attach_usage(fallback_exc, failed + attempts_for(fallback_exc, "failed"))
-                raise
-            response.attempt_usage = failed + attempts_for(response, "success")
-            response.usage = sum_usage(response.attempt_usage)
-            return response
+        # Imported here: garuda.model.streaming builds on this module's parsers.
+        from garuda.model.streaming import stream_complete
 
-        content = "".join(content_parts) or None
-        raw_calls = [
-            {
-                "id": slot["id"] or str(uuid.uuid4()),
-                "function": {"name": slot["name"] or "", "arguments": slot["arguments"] or "{}"},
-            }
-            for slot in _ordered_slots(tool_frags)
-        ]
-        return ModelResponse(
-            content=content,
-            tool_calls=_parse_tool_calls(raw_calls),
-            raw={
-                "model": self._model_name,
-                "streamed": True,
-                "finish_reason": finish_reason,
-                "status": status,
-            },
-            usage=usage,
-            reasoning_content="".join(reasoning_parts) or None,
-            thinking_blocks=thinking_blocks,
-            attempt_usage=attempts,
-        )
+        async def text_only(delta):
+            if delta.kind == "text" and on_delta is not None:
+                result = on_delta(delta.text)
+                if inspect.isawaitable(result):
+                    await result
+
+        call = await stream_complete(self, messages, tools, temperature, max_tokens, consumer=text_only)
+        return call.response
 
     def count_tokens(self, messages: list[Message]) -> int:
         return self.count_request_tokens(messages, None)

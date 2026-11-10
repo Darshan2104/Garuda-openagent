@@ -47,7 +47,7 @@ from garuda.core.steering import (
 )
 from garuda.core.termination import TerminalStrategy
 from garuda.core.tool_runner import PARALLEL_SAFE_TOOLS
-from garuda.model import accounting
+from garuda.model import accounting, streaming
 from garuda.model.litellm_model import TOOL_ARG_PARSE_ERROR_KEY
 from garuda.model.protocol import ContextOverflowError, Model
 from garuda.model.usage import usage_metadata
@@ -80,6 +80,11 @@ __all__ = [
     "TASK_COMPLETE_STUCK_NUDGE",
     "DefaultAgent",
 ]
+
+
+def _live_metadata(response) -> dict:
+    live = (response.raw or {}).get("live")
+    return live if isinstance(live, dict) else {}
 
 
 class DefaultAgent:
@@ -116,7 +121,15 @@ class DefaultAgent:
         collection_model=None,
         collection_policy=None,
         allowed_tool_effects=None,
+        model_delta_consumer=None,
     ) -> AgentResult:
+        """Drive one task to a result.
+
+        ``model_delta_consumer`` opts this run into live output: each model call
+        streams when the model supports it, the consumer receives
+        ``garuda.model.streaming.LiveDelta`` text/reasoning fragments, and the
+        call still yields the complete response everything else acts on.
+        """
         with permission_workspace(getattr(env, "workspace_root", None)):
             state = await prepare_run(
                 task=task,
@@ -145,6 +158,7 @@ class DefaultAgent:
                 collection_policy=collection_policy,
                 allowed_tool_effects=allowed_tool_effects,
             )
+            state.delta_consumer = model_delta_consumer
 
             # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
             # run's store for as long as it runs.
@@ -333,6 +347,7 @@ class DefaultAgent:
         elapsed = [0.0]
         messages = state.context.get_messages()
         _record_system_digest(state, messages)
+        tools = state.tools_schema if tools is None else tools
         gate = state.config.spend_gate
         reservation = None
         if gate is not None:
@@ -345,23 +360,34 @@ class DefaultAgent:
         try:
             with stopwatch() as holder:
                 elapsed = holder
-                response = await model.complete(
-                    messages,
-                    tools=state.tools_schema if tools is None else tools,
-                    # Sent, not merely reserved against. run_state.reserved_output_tokens
-                    # takes this as the ceiling on the response and shrinks the prompt
-                    # budget to match; if the provider were never told, a smaller
-                    # max_tokens would shrink the reserve while leaving the response
-                    # free to exceed it — making the budget less safe on exactly the
-                    # config that reads as tightening it.
-                    max_tokens=state.config.max_tokens,
+                if state.delta_consumer is None:
+                    response = await model.complete(
+                        messages,
+                        tools=tools,
+                        # Sent, not merely reserved against. run_state.reserved_output_tokens
+                        # takes this as the ceiling on the response and shrinks the prompt
+                        # budget to match; if the provider were never told, a smaller
+                        # max_tokens would shrink the reserve while leaving the response
+                        # free to exceed it — making the budget less safe on exactly the
+                        # config that reads as tightening it.
+                        max_tokens=state.config.max_tokens,
+                    )
+                    return response
+                # Live output is a view of the same call: the response is assembled
+                # in full before anything below dispatches a tool from it.
+                call = await streaming.stream_complete(
+                    model, messages, tools=tools, max_tokens=state.config.max_tokens,
+                    consumer=state.delta_consumer,
                 )
+                call.response.raw = {**call.response.raw, "live": call.metadata()}
+                response = call.response
                 return response
         except BaseException as exc:
             error = exc
             if isinstance(exc, Exception):
                 usage = getattr(exc, "usage", {})
                 usage = usage if isinstance(usage, dict) else {}
+                live = getattr(exc, "live", None)
                 state.accumulate_usage(usage)
                 state.events.append(EventType.MODEL_CALL_FAILED, {
                     "turn": state.metrics.current.turn if state.metrics.current else None,
@@ -369,6 +395,7 @@ class DefaultAgent:
                     "duration_ms": elapsed[0],
                     "outcome": "failed",
                     **usage_metadata(exc, failed=True),
+                    **(live if isinstance(live, dict) and state.delta_consumer is not None else {}),
                 })
             raise
         finally:
@@ -605,6 +632,9 @@ class DefaultAgent:
             ],
             "usage": response.usage,
             **usage_metadata(response),
+            # Present only on a run with a delta consumer: whether this response
+            # reached it live, and any stream failure the fallback replaced.
+            **(_live_metadata(response) if state.delta_consumer is not None else {}),
         }
         # Gives observability/tracing.py the extent its `llm` spans lacked: they were
         # emitted with start_time == end_time, so every model call in a trace showed

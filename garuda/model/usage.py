@@ -18,11 +18,16 @@ def attempts_for(value: Any, outcome: str) -> list[dict]:
 
 
 def sum_usage(attempts: list[dict]) -> dict:
-    """Sum reported fields only; missing fields remain absent, never zero-filled."""
+    """Sum reported numeric fields only; missing fields remain absent, never zero-filled.
+
+    ``None`` and nested provider detail (e.g. ``prompt_tokens_details``) are not
+    reported counts and are left out rather than added.
+    """
     total: dict = {}
     for attempt in attempts:
         for name, value in attempt["usage"].items():
-            total[name] = total.get(name, 0) + value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total[name] = total.get(name, 0) + value
     return total
 
 

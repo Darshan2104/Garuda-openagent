@@ -21,6 +21,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Budgets | Wall-clock and turn limits | `garuda run --deadline-sec 900 --max-turns 30 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
 | Run-tree spend budget | One token/dollar budget shared by main calls, auxiliaries and subagents, with reservations and unknown cost never counted as free | `garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
 | Any model | A LiteLLM `provider/model`, reasoning effort | `garuda run --model provider/model -t "…"` | [Level 2](../use-cases/change-code.md#use-a-different-model-for-one-run) |
+| Live model output | Opt-in text and reasoning deltas from native loop model calls; tools still run only on complete responses | `DefaultAgent().run(..., model_delta_consumer=show)` | [Level 2](../use-cases/change-code.md#show-model-output-live-from-your-own-driver) |
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
 
