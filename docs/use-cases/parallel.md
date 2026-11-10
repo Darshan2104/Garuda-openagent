@@ -105,8 +105,10 @@ garuda sessions show docstrings --json | jq '.ownership | {owner, waiting: .prog
   `quarantine`, `approval` or `quota`.
 - `reconciliation.status` is one of `not_needed`, `owner_running`,
   `owner_scheduled` (quota recovery owns it), `blocked`, `unknown` or
-  `eligible`. Only `eligible` names a path — `garuda runtime recover --session
-  ID` — and that command checks every prerequisite again itself.
+  `eligible`. Only `eligible` names a repair path — `garuda runtime recover
+  --session ID` — and that command checks every prerequisite again itself.
+  When quota recovery owns the session (`owner_scheduled`, or `blocked` on a
+  quota-recovery state) the path is `garuda recovery status`, which only reports.
 - Inspection starts, stops and repairs nothing, and the dashboard's session
   page shows the same view and adds no controls. A record Garuda cannot read makes
   the status `unknown`, never `eligible`.
