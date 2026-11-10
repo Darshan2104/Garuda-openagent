@@ -63,6 +63,9 @@ class AgentProfile:
     memory_max_total_chars: int = 32_000
     memory_context_pack: bool = False
     memory_notes: str = "off"
+    # Read-only advisor (#385): a consult target, and its per-run note cap.
+    advisor: str | None = None
+    advisor_max_notes: int = 2
     # Skill sources and selection (H.5). None: a legacy profile's project dirs.
     skills_from: list[str] | None = None
     skills_exclude: list[str] | None = None
@@ -139,6 +142,8 @@ class AgentProfile:
             skills_dirs=self.skills_dirs,
             reasoning_effort=self.reasoning_effort,
             thinking_budget_tokens=self.thinking_budget_tokens,
+            advisor=self.advisor,
+            advisor_max_notes=self.advisor_max_notes,
         )
 
 

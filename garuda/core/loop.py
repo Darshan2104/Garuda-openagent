@@ -680,6 +680,10 @@ class DefaultAgent:
         # changes there.
         state.steering.note_repetition(batch_signature(calls))
         self._surface_images(state, turn_images)
+        if state.advisor_pending:
+            state.advisor_pending = False
+            await state.advisor.checkpoint("repeated-failure", state.advisor_failures,
+                                           state.steering, state.events, turn)
         return None
 
     def _note_call_outcome(
@@ -696,12 +700,19 @@ class DefaultAgent:
         repeated multi-call response never repeats consecutively call-by-call. The
         parameter stays for a caller with a single call and no response context.
         """
-        state.steering.record_failure_streak(
+        steered = state.steering.record_failure_streak(
             had_error=tool_result.is_error,
             had_success=not tool_result.is_error,
             events=state.events,
             turn=turn,
         )
+        if state.advisor is not None:
+            if tool_result.is_error:
+                first = (str(tool_result.content or "").strip().splitlines() or [""])[0]
+                state.advisor_failures = [*state.advisor_failures, f"{call.name}: {first[:200]}"][-5:]
+            # Consulted after the step, never mid-step: the advice joins the
+            # same between-turn queue as the steering nudge.
+            state.advisor_pending = state.advisor_pending or steered
         state.steering.note_progress()  # progress made; reset completion-retry counter
 
         signature = call_signature(call)
