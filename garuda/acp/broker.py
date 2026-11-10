@@ -457,6 +457,9 @@ class ApprovalBroker:
         except (ChannelError, FileExistsError):
             logger.warning("Approval %s has no file channel", request.approval_id, exc_info=True)
             return None
+        # One request, one digest: the published one (with its nonce) is what
+        # `approvals list` and the inbox show, what answers name, and what is audited.
+        request.digest = published.digest
 
         def poll() -> None:
             result = channel.poll(published, ceiling_now=ceiling_fingerprint(self._engine))

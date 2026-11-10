@@ -2365,7 +2365,8 @@ budgets, handoff modes, textual summaries and sibling traces remain authoritativ
 ## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
 
 The session broker binds each parked request to a digest (id, session,
-action, family, runtime, ceiling fingerprint, expiry) and the ceiling source,
+action, family, runtime, ceiling fingerprint, expiry, and the file channel's
+nonce once published, so the listed digest is the audited one) and the ceiling source,
 and records them with the outcome. An allow from any channel — terminal,
 dashboard chat, headless answerer or file — is honoured only if the request
 has not expired and the ceiling fingerprint is unchanged; an answer naming a
