@@ -233,7 +233,10 @@ garuda run --agent careful -t "Rename the retry setting in config.py"
 - `edit` and `multi_edit` must pass that token as `expected_version`. If the
   file changed since, or the token belongs to another file or session, the
   edit is refused and nothing is written; the agent reads the file again.
-- A successful edit reports the new version, so a following edit can chain.
+- A successful edit reads the file back and reports the version that read
+  sees, so a following edit can chain. If the file cannot be read back as the
+  edit wrote it (another writer got there first), the version is reported as
+  unknown and the agent reads the file again.
 - With the default `legacy` contract, edits work as before. A token is
   optional there and checked only when given.
 - The check runs on the content the edit itself reads. A writer that changes

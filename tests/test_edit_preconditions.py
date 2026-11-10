@@ -89,6 +89,42 @@ async def test_the_versioned_contract_requires_and_chains_versions(tmp_path):
     assert refused.is_error
 
 
+@pytest.mark.parametrize("tool", ["edit", "multi_edit"])
+async def test_a_chained_version_is_what_the_next_read_reports(tmp_path, tool):
+    # Writing "\r\n" or "\r" reads back as "\n", so the token must name the re-read text.
+    (tmp_path / "b.txt").write_text("one\ntwo\n")
+    env, ctx = LocalEnvironment(workspace_root=tmp_path), _ctx(options=VERSIONED)
+    token, _ = await _version(env, ctx, "b.txt")
+    change = {"old_string": "one", "new_string": "1\r\n1b\r1c"}
+    if tool == "edit":
+        first = await EditTool().execute({"path": "b.txt", **change, "expected_version": token}, env, ctx)
+    else:
+        first = await MultiEditTool().execute(
+            {"path": "b.txt", "edits": [change], "expected_version": token}, env, ctx)
+    assert not first.is_error
+    chained = first.metadata["source_version"]
+    assert f"(version: {chained})" in first.content
+    assert chained == (await _version(env, ctx, "b.txt"))[0]
+    second = await EditTool().execute({"path": "b.txt", "old_string": "two", "new_string": "2",
+                                       "expected_version": chained}, env, ctx)
+    assert not second.is_error
+
+
+async def test_an_edit_read_back_as_other_content_reports_an_unknown_version(tmp_path):
+    class Overwritten(LocalEnvironment):
+        async def write_file(self, path, content):
+            await super().write_file(path, "# another writer\n" + content)
+
+    (tmp_path / "a.py").write_text("a = 1\n")
+    env, ctx = Overwritten(workspace_root=tmp_path), _ctx(options=VERSIONED)
+    token, _ = await _version(env, ctx, "a.py")
+    result = await EditTool().execute({"path": "a.py", "old_string": "a = 1", "new_string": "a = 2",
+                                       "expected_version": token}, env, ctx)
+    assert not result.is_error
+    assert result.metadata["source_version"] is None
+    assert "(version: unknown" in result.content
+
+
 def test_an_unknown_contract_refuses_the_definition(tmp_path):
     agents = tmp_path / "agents"
     agents.mkdir()

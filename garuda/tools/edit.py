@@ -301,11 +301,29 @@ def resolve_edit(
     )
 
 
-def _with_version(message: str, ctx, env, path: str, updated: str) -> ToolResult:
-    """The edit result, carrying the new content's version for a chained edit."""
-    token = version_token(ctx, env, path, updated)
+async def _with_version(message: str, ctx, env, path: str, updated: str) -> ToolResult:
+    """The edit result, carrying the new content's version for a chained edit.
+
+    The token must be what the next read_file reports, so it comes from a re-read:
+    a read may translate newlines (``\r\n`` or ``\r`` read back as ``\n``). If the
+    re-read fails or shows other content (another writer), the version is unknown.
+    """
+    if not versioned_reads(ctx) and "\r" not in updated:
+        # Legacy contract: the token is metadata only, and with no CR to translate
+        # the next read returns exactly what was written; spare the extra read.
+        current = updated
+    else:
+        try:
+            current = await env.read_file(path)
+        except Exception:  # The edit is written; only its version is unknown.
+            current = None
+    if current in (updated, _normalize_eol(updated)):
+        token = version_token(ctx, env, path, current)
+        shown = token
+    else:
+        token, shown = None, "unknown; read the file again before the next edit"
     if versioned_reads(ctx):
-        message += f"\n(version: {token})"
+        message += f"\n(version: {shown})"
     return ToolResult(tool_call_id="", content=message, metadata={"source_version": token})
 
 
@@ -408,4 +426,4 @@ class EditTool:
         from garuda.tools.diagnostics import post_edit_report
 
         message += await post_edit_report(env, path, ctx)
-        return _with_version(message, ctx, env, path, outcome.updated)
+        return await _with_version(message, ctx, env, path, outcome.updated)

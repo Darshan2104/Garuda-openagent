@@ -133,7 +133,7 @@ class MultiEditTool:
         message += await post_edit_report(env, path, ctx)
         from garuda.tools.edit import _with_version
 
-        return _with_version(message, ctx, env, path, working)
+        return await _with_version(message, ctx, env, path, working)
 
     @staticmethod
     def _validate(edit: object, index: int) -> str | None:

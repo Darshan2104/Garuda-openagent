@@ -2371,5 +2371,7 @@ existing validated `tools.options` (`legacy` default: tokens optional;
 `versioned`: required), so an unknown value refuses the definition and the
 selection is visible in agent inspection. The token is a precondition checked
 on the content the edit transforms, not a compare-and-write: no backend offers
-an atomic write here, and none is claimed. String matching and its formatting
+an atomic write here, and none is claimed. The version an edit reports comes
+from reading the file back (reads may translate newlines); if that read fails or
+shows other content, the version is unknown rather than guessed. String matching and its formatting
 recovery are unchanged; no alternate anchored edit format is introduced.
