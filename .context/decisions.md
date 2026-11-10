@@ -2369,6 +2369,12 @@ session records: candidate workspace version, recorded changed files (or
 `unknown`, never empty), reviewer role, plan and no-edits posture, and a
 digest recorded with the round. A workspace that differs from the candidate
 before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
 Reviewers may return a strict version 2 structured review; invalid structured
 findings stop the flow and never approve, and the legacy line format is parsed
 exactly as before. Effective-config and check-receipt evidence are #421.

@@ -422,3 +422,76 @@ async def test_a_candidate_changed_before_review_is_refused(repo, monkeypatch):
     result = await _run(repo, script, _config(max_rounds=0)).run()
     assert result.stopped.code == "flow.review_stale_candidate"
     assert ("review", 1) not in script.sequence  # no reviewer ran on a stale candidate
+
+
+class ManyFilesScript(Script):
+    """The coder changes more files than session meta keeps, recorded by the real finish."""
+
+    def __init__(self, reviews, count, *, record_total=True):
+        super().__init__(reviews)
+        self.count, self.record_total = count, record_total
+
+    async def __call__(self, launch):
+        from garuda.workspace import evidence
+
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            from pathlib import Path
+
+            store, workspace = SessionStore(), Path(launch.workspace)
+            store.begin(result.session_id, task="t", model="m", agent="a",
+                        workspace=str(workspace))
+            evidence.begin_session_evidence(store, result.session_id, workspace, "local")
+            for n in range(self.count):
+                (workspace / f"f{n:03}.txt").write_text("x\n")
+            evidence.finish_session_evidence(store, result.session_id, workspace)
+            if not self.record_total:  # a session finished before totals were recorded
+                store.update_meta(result.session_id, {"delta_changed_total": None})
+        return result
+
+
+@pytest.mark.parametrize("record_total, total, complete", [(True, 451, False),
+                                                           (False, None, None)])
+async def test_a_cut_change_list_is_never_reported_complete(repo, record_total, total, complete):
+    script = ManyFilesScript([APPROVE], 451, record_total=record_total)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert f"&quot;complete&quot;: {json.dumps(complete)}" in prompt
+    assert f"&quot;total&quot;: {json.dumps(total)}" in prompt
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (total, complete)
+
+
+async def test_a_short_change_list_is_complete(repo):
+    script = ManyFilesScript([APPROVE], 3)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert "&quot;complete&quot;: true" in script.prompts[("review", 1)]
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (3, True)
+
+
+@pytest.fixture
+def plain_dir(tmp_path):
+    path = tmp_path / "plain"  # not a git repository: no workspace version
+    path.mkdir()
+    (path / "a.txt").write_text("a\n")
+    return path
+
+
+async def test_an_unknown_candidate_refuses_an_independent_review(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0)).run()
+    assert result.stopped.code == "flow.review_candidate_unknown"
+    assert ("review", 1) not in script.sequence
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert packet["binding"]["enforced"] is False
+
+
+async def test_an_unknown_candidate_is_not_called_frozen(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0, independent=False)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert "not enforced" in prompt
+    assert "frozen" not in prompt and "will be refused" not in prompt

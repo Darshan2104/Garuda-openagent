@@ -184,7 +184,13 @@ sequenceDiagram
   permissions, and a digest. The flow records the digest with the round. If the
   workspace changed after the reviewed step, or changes while the review runs,
   the flow stops with `flow.review_stale_candidate` instead of trusting a
-  review of something else.
+  review of something else. A change list that session records cut short is
+  marked incomplete, or `complete: null` when its full size wasn't recorded.
+- That binding needs a workspace version that tells candidates apart, which
+  only a git work tree has. Otherwise the packet says the binding is not
+  enforced, and a review that must be independent stops with
+  `flow.review_candidate_unknown` before the reviewer runs; with
+  `independent: false` the review runs and is told the binding is unenforced.
 - A reviewer may answer with the line format or a structured JSON review
   (`"version": 2`) whose findings each give a severity, a workspace-relative
   path and line range, the message, the evidence and how to verify a fix.
