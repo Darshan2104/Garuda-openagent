@@ -439,7 +439,10 @@ def _decode_body(raw: bytes, declared: str | None, html: bool) -> tuple[str, dic
         except LookupError:
             codec = None
         if codec is not None and getattr(codec, "_is_text_encoding", True):
-            return _decode_as(raw, codec.name, origin)
+            try:
+                return _decode_as(raw, codec.name, origin)
+            except UnicodeError:  # "undefined" and "idna" refuse any body, even with errors="replace"
+                pass
         text, info = _decode_as(raw, "utf-8", "default")
         info["unsupported_charset"] = name[:64]
         return text, info

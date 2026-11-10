@@ -186,6 +186,9 @@ ROUTES = {
     "/short": (200, {"Content-Type": "text/plain", "Content-Length": "1000"}, b"only this"),
     "/latin": (200, {"Content-Type": "text/html"}, LATIN.encode("cp1252")),
     "/bogus-charset": (200, {"Content-Type": "text/plain; charset=x-not-a-charset"}, b"hi"),
+    # Real text codecs that refuse any body with a plain UnicodeError.
+    "/undefined-charset": (200, {"Content-Type": "text/plain; charset=undefined"}, b"hi"),
+    "/idna-charset": (200, {"Content-Type": "text/plain; charset=idna"}, b"hi \xff"),
     "/broken-utf8": (200, {"Content-Type": "text/plain; charset=utf-8"}, b"ok \xff\xfe end"),
     "/bad-date": (200, {"Content-Type": "text/plain", "Last-Modified": "yesterday"}, b"text"),
     "/slow": (200, {"Content-Type": "text/plain"}, "slow"),
@@ -336,14 +339,17 @@ async def test_an_html_meta_charset_is_honoured_without_a_header_charset(site):
     assert (source["charset"], source["charset_source"]) == ("cp1252", "html meta")
 
 
-async def test_an_unsupported_declared_charset_falls_back_and_says_so(site):
-    """It used to raise LookupError out of the worker thread."""
-    result = await _fetch(f"{site}/bogus-charset")
+@pytest.mark.parametrize("path, name", [("/bogus-charset", "x-not-a-charset"),
+                                        ("/undefined-charset", "undefined"),
+                                        ("/idna-charset", "idna")])
+async def test_an_unsupported_declared_charset_falls_back_and_says_so(site, path, name):
+    """It used to raise LookupError or UnicodeError out of the worker thread."""
+    result = await _fetch(f"{site}{path}")
     assert not result.is_error
     source = result.metadata["web_source"]
-    assert source["unsupported_charset"] == "x-not-a-charset"
+    assert source["unsupported_charset"] == name
     assert source["charset"] == "utf-8"
-    assert "'x-not-a-charset' is unsupported" in result.content
+    assert f"'{name}' is unsupported" in result.content
 
 
 async def test_undecodable_bytes_are_flagged_as_lossy(site):
