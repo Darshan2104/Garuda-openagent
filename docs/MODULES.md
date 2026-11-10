@@ -75,7 +75,21 @@ marker line so early stopping is distinguishable from completion, sort
 output by path (the grep fallback greps a sorted file list), offer an opt-in content-mode `per_file_limit`, window long
 lines around the match, and bind `next_cursor` to the search options and a
 digest of earlier results so changed scope is refused as stale),
-`diagnostics.py` (post-edit syntax + lint).
+`diagnostics.py` (post-edit syntax + lint). Successful write/edit/multi-edit
+results expose bounded `metadata["diagnostics"]` with `advisory: true` and
+`checkers.syntax` / `checkers.lint`: availability (`null` when unobserved), ran,
+SHA-256 source version, status (`clean`, `violations`, `unavailable`, `error`),
+duration in milliseconds, reason, bounded details/diagnostics and completeness.
+Source digests use `Environment.read_bytes`; an observed change during checks
+invalidates results with `error` / `source_changed`. Disabled, unsupported and
+syntax-blocked checks remain explicitly unavailable. Clean tool text stays quiet.
+On violations, edit/multi-edit can check their known pre-edit content through the
+same fixed checkers (up to 64 KiB). Per-diagnostic attribution is introduced,
+preexisting or unknown; incomplete/failed baselines and ambiguous locations stay
+unknown. Whole-file writes have no baseline. External commands still use
+`Environment.execute`; JSON/YAML retain their existing in-process parsers.
+These results are advisory ToolResult metadata, not persisted acceptance receipts;
+project commands and verification remain with their existing trusted owners.
 `files.py::ReadFileTool` keeps raw/range reads as the default; `outline=true`
 requests Python AST metadata from `context/outline.py` after the same
 `Environment.read_file` call. It never launches an interpreter in the workspace.

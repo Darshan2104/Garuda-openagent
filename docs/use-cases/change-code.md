@@ -121,6 +121,53 @@ garuda run --name fix-tests -t "Fix the failing tests by changing src/ only" --c
 - A check can't pass if it changes the code it checks, or if the session
   changed the test setup it relies on (for example `conftest.py` for pytest).
 
+## Inspect post-edit diagnostics
+
+Native `write_file`, `edit` and `multi_edit` keep successful, clean edits quiet.
+Direct tool callers can inspect advisory checker state without treating silence
+as proof that a checker ran:
+
+```python
+import asyncio
+from tempfile import TemporaryDirectory
+
+from garuda.tools.files import WriteFileTool
+from garuda.tools.protocol import ToolContext
+from garuda.workspace.local import LocalEnvironment
+
+async def demo():
+    with TemporaryDirectory() as workspace:
+        result = await WriteFileTool().execute(
+            {"path": "example.json", "content": '{"answer": 42}\n'},
+            LocalEnvironment(workspace_root=workspace),
+            ToolContext(session_id="diagnostic-demo"),
+        )
+        syntax = result.metadata["diagnostics"]["checkers"]["syntax"]
+        print(syntax["status"], syntax["ran"], syntax["source_version"])
+        # clean True <SHA-256 of the checked file>
+
+asyncio.run(demo())
+```
+
+Each checker reports `available` (`None` if unobserved), `ran`, `source_version`,
+`status` and `duration_ms`. A missing executable is `unavailable`; crashes,
+timeouts and observed content changes are `error`. Compare the digest with the
+current file before reusing a result. Diagnostic lists and text are bounded;
+`complete: false` discloses omitted details.
+
+On violations, `edit` and `multi_edit` can compare known pre-edit content.
+Diagnostics are `introduced` against a clean baseline, or `preexisting` when
+the same diagnostic and its source prefix are unchanged. Ruff can also identify
+new diagnostic identities against a complete baseline. Changed/moved matches,
+failed or incomplete baselines, baselines over 64 KiB and Node module ambiguity
+stay `unknown`. Whole-file writes do not read a baseline and use `unknown`.
+Clean edits do not run baseline checkers.
+
+This state is returned to direct tool callers; it is not an acceptance receipt
+or a persisted session verification result. Use an authorized
+[`--check`](#verify-the-result-with-your-own-check) for acceptance verification.
+Project-aware commands retain their existing trust requirements.
+
 ## Make Garuda prove the fix
 
 <p class="gd-facts">Changes files: yes · Costs: extra model calls</p>

@@ -235,3 +235,26 @@ async def test_an_empty_file_reports_its_version_under_the_versioned_contract(tm
                                        env, ctx)
     assert refused.is_error and "not the version you read" in refused.content
     assert path.read_text() == "value = 1\n"
+
+
+@pytest.mark.parametrize("tool", ["edit", "multi_edit"])
+async def test_a_versioned_edit_result_carries_diagnostics_and_its_version(tmp_path, tool):
+    # Post-edit diagnostics (#369) and the chained version (#368) share one result.
+    (tmp_path / "app.py").write_text("def f():\n    return 1\n")
+    env = LocalEnvironment(workspace_root=tmp_path)
+    ctx = ToolContext(session_id="s1", tool_options=VERSIONED)
+    token, _ = await _version(env, ctx, "app.py")
+    change = {"old_string": "return 1", "new_string": "return ("}
+    if tool == "edit":
+        result = await EditTool().execute({"path": "app.py", **change, "expected_version": token},
+                                          env, ctx)
+    else:
+        result = await MultiEditTool().execute(
+            {"path": "app.py", "edits": [change], "expected_version": token}, env, ctx)
+    assert not result.is_error and "Syntax check failed" in result.content
+    syntax = result.metadata["diagnostics"]["checkers"]["syntax"]
+    assert syntax["status"] == "violations"
+    assert syntax["diagnostics"][0]["attribution"] == "introduced"
+    chained = result.metadata["source_version"]
+    assert chained == (await _version(env, ctx, "app.py"))[0]
+    assert f"(version: {chained})" in result.content

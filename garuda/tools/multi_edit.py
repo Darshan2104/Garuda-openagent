@@ -130,10 +130,11 @@ class MultiEditTool:
             message += f"\n\nSnippet near first change:\n{snippet}"
         from garuda.tools.diagnostics import post_edit_report
 
-        message += await post_edit_report(env, path, ctx)
+        metadata = {}
+        message += await post_edit_report(env, path, ctx, metadata=metadata, baseline=content)
         from garuda.tools.edit import _with_version
 
-        return await _with_version(message, ctx, env, path, working)
+        return await _with_version(message, ctx, env, path, working, metadata)
 
     @staticmethod
     def _validate(edit: object, index: int) -> str | None:
