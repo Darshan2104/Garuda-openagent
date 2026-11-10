@@ -301,7 +301,8 @@ def resolve_edit(
     )
 
 
-async def _with_version(message: str, ctx, env, path: str, updated: str) -> ToolResult:
+async def _with_version(message: str, ctx, env, path: str, updated: str,
+                        metadata: dict | None = None) -> ToolResult:
     """The edit result, carrying the new content's version for a chained edit.
 
     The token must be what the next read_file reports, so it comes from a re-read:
@@ -324,7 +325,8 @@ async def _with_version(message: str, ctx, env, path: str, updated: str) -> Tool
         token, shown = None, "unknown; read the file again before the next edit"
     if versioned_reads(ctx):
         message += f"\n(version: {shown})"
-    return ToolResult(tool_call_id="", content=message, metadata={"source_version": token})
+    return ToolResult(tool_call_id="", content=message,
+                      metadata={**(metadata or {}), "source_version": token})
 
 
 class EditTool:
@@ -425,5 +427,6 @@ class EditTool:
             message += f"\n\nSnippet of new content:\n{snippet}"
         from garuda.tools.diagnostics import post_edit_report
 
-        message += await post_edit_report(env, path, ctx)
-        return await _with_version(message, ctx, env, path, outcome.updated)
+        metadata = {}
+        message += await post_edit_report(env, path, ctx, metadata=metadata, baseline=content)
+        return await _with_version(message, ctx, env, path, outcome.updated, metadata)

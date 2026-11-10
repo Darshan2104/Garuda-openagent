@@ -240,5 +240,6 @@ class WriteFileTool:
         message = f"Wrote {path} ({size} bytes, {line_count} lines)"
         from garuda.tools.diagnostics import post_edit_report
 
-        message += await post_edit_report(env, path, ctx)
-        return ToolResult(tool_call_id="", content=message)
+        metadata = {}
+        message += await post_edit_report(env, path, ctx, metadata=metadata)
+        return ToolResult(tool_call_id="", content=message, metadata=metadata)

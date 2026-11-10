@@ -2579,3 +2579,22 @@ explicit tail/bounded read keeps its I/O bound and, unless it covered the whole
 file, reports the version as unknown. An unknown version is never a page-only
 token: edits refuse it and ask for a full read. An empty file is whole content
 too, so its read reports a version like any other.
+
+## 2026-11-06 — Post-edit diagnostics disclose checker state and attribution (#369)
+
+Native write/edit/multi-edit tools retain quiet clean text and return bounded
+advisory checker state in `ToolResult.metadata["diagnostics"]`. Availability,
+execution, SHA-256 file content version, status and timing are separate facts.
+Missing executables are unavailable; checker failures/timeouts and observed
+content changes are errors. Environment reads bind the checked version without
+introducing a workspace interpreter dependency. External checkers still execute
+through Environment; JSON/YAML keep their existing in-process parser paths.
+
+Edit/multi-edit may compare their known pre-edit content through the same fixed
+checkers on violations, bounded to 64 KiB. A complete successful baseline supports
+introduced findings; preexisting matches require unchanged diagnostic identity,
+location and source prefix. Ambiguous, missing, failed or incomplete comparisons
+remain unknown. Writes have no baseline, and Node stdin is not substituted for
+its package/module-aware file check. No baseline content or unbounded checker
+output is persisted here. These observations remain separate from acceptance
+receipts and cannot grant verification or authorize project-supplied commands.
