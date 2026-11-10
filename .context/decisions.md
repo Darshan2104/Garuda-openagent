@@ -2362,6 +2362,23 @@ identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
 
+## 2026-11-06 — Reviews bind to a frozen candidate packet (#362)
+
+Each review round freezes a packet from the reviewed step's own receipt and
+session records: candidate workspace version, recorded changed files (or
+`unknown`, never empty), reviewer role, plan and no-edits posture, and a
+digest recorded with the round. A workspace that differs from the candidate
+before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
+Reviewers may return a strict version 2 structured review; invalid structured
+findings stop the flow and never approve, and the legacy line format is parsed
+exactly as before. Effective-config and check-receipt evidence are #421.
+
 ## 2026-11-06 — One spend gate per native run tree (#363, #405)
 
 `--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,

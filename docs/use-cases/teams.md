@@ -178,6 +178,24 @@ sequenceDiagram
   with the findings, for up to `max_rounds` more rounds. The flow ends
   `review_approved` or `review_changes_requested`. A review is not
   verification.
+- Before each review, the reviewer gets a **review packet**: the candidate it
+  is reviewing (the reviewed step's session and workspace version), the files
+  that step changed (or `unknown` if they weren't recorded), its own role and
+  permissions, and a digest. The flow records the digest with the round. If the
+  workspace changed after the reviewed step, or changes while the review runs,
+  the flow stops with `flow.review_stale_candidate` instead of trusting a
+  review of something else. A change list that session records cut short is
+  marked incomplete, or `complete: null` when its full size wasn't recorded.
+- That binding needs a workspace version that tells candidates apart, which
+  only a git work tree has. Otherwise the packet says the binding is not
+  enforced, and a review that must be independent stops with
+  `flow.review_candidate_unknown` before the reviewer runs; with
+  `independent: false` the review runs and is told the binding is unenforced.
+- A reviewer may answer with the line format or a structured JSON review
+  (`"version": 2`) whose findings each give a severity, a workspace-relative
+  path and line range, the message, the evidence and how to verify a fix.
+  Structured findings are checked strictly; an invalid one stops the flow and
+  is never an approval. A finding's `confidence` is the reviewer's own claim.
 - Repeated `--check` commands run on Linux only after every required step and
   review settles. The parent flow keeps the workspace lease until candidate-bound
   receipts and the final verdict are published. `build-review` starters select

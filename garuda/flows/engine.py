@@ -291,6 +291,19 @@ class FlowRunner:
     async def _version_for_flow(self) -> str | None:
         return await self._evidence.version() if self._evidence is not None else self._version()
 
+    def _version_binds(self) -> bool:
+        """Whether a workspace version can tell candidates apart at all.
+
+        Outside a git work tree every state fingerprints alike, so a matching
+        version proves nothing; an unreadable repository proves nothing either.
+        """
+        from garuda.workspace.diff import BASELINE_UNSUPPORTED_NONREPO, DiffError, capture_baseline
+
+        try:
+            return capture_baseline(self.workspace).state != BASELINE_UNSUPPORTED_NONREPO
+        except DiffError:
+            return False
+
     def _role_plan(self, role: str):
         if self.prepared_roles is not None:
             if role not in self.prepared_roles:
@@ -986,10 +999,14 @@ class FlowRunner:
                         "version": 1, "build": step["id"], "reviewer": terminal["id"],
                         "round": pair, "pending": target["id"], "history": history,
                         "extra": extra}})
+                packet = None
+                if target is terminal:
+                    packet = await self._review_packet(step, terminal, done, spec, reviewer_plan)
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
-                receipt = await self._run_step(target, done, lease, attempt=tried[target["id"]],
-                                               prompt_extra=extra if target is step else "",
-                                               review_admission=admit_reviewer if target is terminal else None)
+                receipt = await self._run_step(
+                    target, done, lease, attempt=tried[target["id"]],
+                    prompt_extra=extra if target is step else rv.render_packet(packet),
+                    review_admission=admit_reviewer if target is terminal else None)
                 done.append(receipt)
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
                        if o["type"] == "review")
@@ -998,8 +1015,17 @@ class FlowRunner:
                                            workspace_version=await self._version_for_flow()))
             except (rv.ReviewInvalid, art.ArtifactError) as exc:
                 raise FlowStopped("flow.review_invalid", str(exc), step=terminal["id"]) from exc
+            candidate = packet["candidate"]["workspace_version"]
+            if candidate is not None and receipt.get("workspace_version_after") != candidate:
+                # The reviewer saw a candidate that no longer exists: never an approval.
+                raise FlowStopped("flow.review_stale_candidate",
+                                  "the workspace changed while the review ran; the review does "
+                                  "not describe the current candidate", step=terminal["id"])
             history.append({"round": pair + 1, "verdict": parsed.verdict,
-                            "approved": parsed.approved, "findings": parsed.findings})
+                            "approved": parsed.approved, "findings": parsed.findings,
+                            "packet_digest": packet["digest"],
+                            **({"structured": parsed.structured}
+                               if parsed.structured is not None else {})})
             independence = self._independence(step, terminal, done, spec, reviewed_plan,
                                               receipt)
             if independence["policy"] == "required" and independence["decision"] != "independent":
@@ -1029,6 +1055,55 @@ class FlowRunner:
         raise FlowStopped("flow.review_changes_requested",
                           f"the reviewer still requests changes after {rounds + 1} rounds",
                           step=terminal["id"])
+
+    async def _review_packet(self, step: dict, terminal: dict, done: list[dict], spec: dict,
+                             reviewer_plan) -> dict:
+        """Freeze what the reviewer is shown, from the reviewed step's own records.
+
+        Refuses when the workspace no longer is the candidate the reviewed step
+        produced; unknown identities and manifests stay explicitly unknown. A
+        candidate version that is unknown, or cannot tell workspaces apart,
+        leaves the binding unenforced, which a review that must be independent
+        refuses.
+        """
+        from garuda.flows import review as rv
+
+        reviewed = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
+        if reviewed is None:
+            raise FlowStopped("flow.review_packet", "no reviewed step receipt to review",
+                              step=terminal["id"])
+        candidate = reviewed.get("workspace_version_after")
+        current = await self._version_for_flow()
+        if candidate is not None and current != candidate:
+            raise FlowStopped("flow.review_stale_candidate",
+                              "the workspace changed after the reviewed step; its candidate is "
+                              "no longer what would be reviewed", step=terminal["id"])
+        try:
+            meta = self.store.load_meta(reviewed["session_id"]) if reviewed.get("session_id") else {}
+        except (OSError, ValueError):
+            meta = {}
+        changed = meta.get("delta_changed")
+        packet = rv.build_packet(
+            task=self.task, step=step, reviewer=terminal, spec=spec,
+            candidate={"step": step["id"], "session_id": reviewed.get("session_id"),
+                       "attempt": reviewed.get("attempt"), "workspace_version": candidate,
+                       "workspace_version_before": reviewed.get("workspace_version_before")},
+            changed=changed if isinstance(changed, list) else None,
+            changed_total=meta.get("delta_changed_total"),
+            version_binds=candidate is not None and self._version_binds(),
+            reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
+            no_edits=self._no_edits(terminal, terminal["role"]))
+        await self._publish(self.flow_session, {"review_packet": {
+            "digest": packet["digest"], "candidate": packet["candidate"],
+            "binding": packet["binding"], "changed_total": packet["changed"]["total"],
+            "changed_complete": packet["changed"]["complete"]}})
+        if not packet["binding"]["enforced"] and spec.get("independent", True):
+            # Without a candidate version a review cannot be shown to describe
+            # what it reviewed; an independent review must not rest on that.
+            raise FlowStopped("flow.review_candidate_unknown",
+                              "the reviewed step's workspace version is unknown, so the review "
+                              "cannot be bound to its candidate", step=terminal["id"])
+        return packet
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str = "", review_admission=None) -> dict:
