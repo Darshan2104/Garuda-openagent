@@ -470,3 +470,51 @@ def test_config_evidence_without_a_manifest_is_unknown(tmp_path):
     from garuda.flows.review_evidence import config_evidence
 
     assert config_evidence(str(tmp_path), None)["status"] == "unknown"
+
+
+def _write(root, files):
+    for path, text in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+
+def test_a_nested_garuda_yaml_is_not_reported_as_the_loaded_project_config(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n", "sub/garuda.yaml": "version: 1\nretry_budget: 5\n"})
+    evidence = config_evidence(str(tmp_path), ["sub/garuda.yaml"])
+    (entry,) = evidence["files"]
+    assert entry["status"] == "not-loaded"
+    assert "project-root garuda.yaml" in entry["reason"]
+    assert "config_digest" not in entry  # the root file's outcome is not borrowed
+
+
+def test_a_shadowed_agent_definition_names_the_definition_that_wins(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {".agent/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: wins\n",
+                      ".garuda/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: loses\n"})
+    evidence = config_evidence(str(tmp_path), [".garuda/agents/rev.yaml", ".agent/agents/rev.yaml"])
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert by_path[".garuda/agents/rev.yaml"]["status"] == "shadowed"
+    assert by_path[".garuda/agents/rev.yaml"]["loaded_from"] == ".agent/agents/rev.yaml"
+    assert "declared" not in by_path[".garuda/agents/rev.yaml"]
+    assert by_path[".agent/agents/rev.yaml"]["status"] == "loaded"
+    assert by_path[".agent/agents/rev.yaml"]["source"] == ".agent/agents/rev.yaml"
+    assert evidence["complete"] is True
+
+
+def test_agent_definitions_in_the_agent_home_are_evidenced(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {".agent/agents/careful/agent.md": "---\nversion: 1\nextends: garuda/build\n"
+                                                        "description: careful\n---\nBe careful.\n",
+                      ".agent/agents/careful/notes.md": "not a definition\n"})
+    evidence = config_evidence(str(tmp_path), [".agent/agents/careful/agent.md",
+                                               ".agent/agents/careful/notes.md"])
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert by_path[".agent/agents/careful/agent.md"]["status"] == "loaded"
+    assert by_path[".agent/agents/careful/agent.md"]["source"] == ".agent/agents/careful/agent.md"
+    assert "description" in by_path[".agent/agents/careful/agent.md"]["declared"]
+    assert by_path[".agent/agents/careful/notes.md"]["status"] == "not-loaded"

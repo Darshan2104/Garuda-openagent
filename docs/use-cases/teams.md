@@ -185,10 +185,13 @@ sequenceDiagram
   workspace changed after the reviewed step, or changes while the review runs,
   the flow stops with `flow.review_stale_candidate` instead of trusting a
   review of something else.
-- If the reviewed step changed `garuda.yaml` or a `.garuda/agents/` definition,
-  the packet also shows what Garuda's own loader made of it: loaded (with the
-  keys that file supplied and any values withheld because the project file is
-  not trusted) or refused with the loader's error. A field the loader rejects
+- If the reviewed step changed `garuda.yaml` or a `.agent/agents/` or
+  `.garuda/agents/` definition, the packet also shows what Garuda's own loader
+  made of it: loaded (with the keys that file supplied and any values withheld
+  because the project file is not trusted), refused with the loader's error,
+  `shadowed` by a same-name definition that takes precedence (named), or
+  `not-loaded` when Garuda never reads that path, such as a nested
+  `garuda.yaml`. A field the loader rejects
   or ignores is visible to the reviewer instead of only the text the author
   wrote. Loading only parses; nothing is run.
 - A reviewer may answer with the line format or a structured JSON review

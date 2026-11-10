@@ -2375,9 +2375,12 @@ exactly as before. Effective-config and check-receipt evidence are #421.
 
 ## 2026-11-07 — Review packets show the real loader's view of changed config (#421)
 
-For each changed `garuda.yaml` or `.garuda/agents/` definition, the review
-packet records what the ordinary loader makes of the candidate: loaded with
-an effective-config digest, project-supplied keys and values withheld because
-the project file is untrusted, or the loader's refusal. This is parsing and
-resolution only; nothing runs. It makes a field the loader rejects or ignores
+For each changed `garuda.yaml` or `.agent/agents/` / `.garuda/agents/`
+definition, the review packet records what the ordinary loader makes of the
+candidate: loaded with an effective-config digest, project-supplied keys and
+values withheld because the project file is untrusted, or the loader's
+refusal. An outcome is attributed only to the file the loader actually read:
+a nested `garuda.yaml` is `not-loaded`, and a definition outranked by a
+same-name one (`.agent/agents` before `.garuda/agents`) is `shadowed` with
+the winning path. This is parsing and resolution only; nothing runs. It makes a field the loader rejects or ignores
 visible to the reviewer instead of only the author's text.
