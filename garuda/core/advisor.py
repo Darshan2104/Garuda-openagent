@@ -21,6 +21,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Callable
 
+from garuda.consult.envelope import advice, advice_body
 from garuda.core.events import EventStore, EventType
 from garuda.workspace.protocol import Environment
 
@@ -137,16 +138,26 @@ class Advisor:
         if getattr(result, "outcome", None) != "answered":
             record("failed", reason=str(result.tool_text())[:300])
             return False
-        text = str(result.tool_text()).strip()[:MAX_NOTE_CHARS]
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if not text:
+        # The consult service returns the answer escaped and line-quoted inside its
+        # labelled envelope. Citations are matched against the answer itself; the
+        # model still receives the envelope, re-bounded here when it is too long.
+        text = str(result.tool_text()).strip()
+        answer = advice_body(text)
+        if answer is None:
+            answer = text = text[:MAX_NOTE_CHARS]
+        else:
+            if len(text) > MAX_NOTE_CHARS:
+                text = advice(answer.strip(), target=self.target, limit=MAX_NOTE_CHARS)
+            answer = answer.strip()[:MAX_NOTE_CHARS]
+        digest = hashlib.sha256(answer.encode("utf-8")).hexdigest()
+        if not answer:
             record("suppressed", reason="empty advice")
             return False
         if digest in self._seen:
             record("suppressed", reason="duplicate advice", digest=digest[:16])
             return False
         try:
-            cited = await cites_evidence(text, brief, env)
+            cited = await cites_evidence(answer, brief, env)
         except asyncio.CancelledError:
             record("suppressed", reason="run cancelled")
             raise

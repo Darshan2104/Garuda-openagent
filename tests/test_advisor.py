@@ -393,3 +393,59 @@ async def test_forced_final_submission_suppresses_candidate_advice(tmp_path):
     assert events and events[-1]["outcome"] == "suppressed" and events[-1]["reason"] == "turn budget exhausted"
     assert any(e["type"] == "budget" and e["payload"].get("stage") == "final_submission"
                for e in result.metadata["events"])
+
+
+class EnvelopedConsults(FakeConsults):
+    """Answers exactly as the real consult service returns them: escaped and enveloped."""
+
+    async def consult(self, request, quiesce=None):
+        from garuda.consult.envelope import advice
+
+        raw = await super().consult(request, quiesce)
+        text = advice(raw.tool_text(), target=request.target, limit=8000)
+        return SimpleNamespace(outcome="answered", tool_text=lambda: text)
+
+
+async def test_enveloped_consult_answers_are_cited_as_plain_text(tmp_path):
+    command = "test \"$MODE\" = 'ready' && true"
+    answer = f"Rerun `{command}` before completing."
+    service = EnvelopedConsults([answer])
+    result, model, events = await _run(
+        tmp_path, [_done(verification_commands=[command]), _done(call_id="again")], service,
+        advisor="advisor", consult_targets=["advisor"], advisor_checkpoints=["candidate-ready"])
+    assert result.success and result.turns == 2
+    assert [e["outcome"] for e in events] == ["requested", "delivered"]
+    # The model still receives the envelope's labelling, not a bare answer.
+    assert "[consult answer from role advisor" in str(model.requests[1])
+    assert "&quot;$MODE&quot;" in str(model.requests[1])
+
+
+async def test_an_identical_enveloped_answer_is_a_duplicate_and_an_empty_one_is_empty(tmp_path):
+    answer = "Read missing-2.py: it fails with 'No such file'."
+    service = EnvelopedConsults([answer, answer])
+    _, _, events = await _run(tmp_path, _failing_reads(6) + [_done()], service,
+                              advisor="advisor", consult_targets=["advisor"])
+    delivered = [e for e in events if e["outcome"] == "delivered"]
+    duplicate = [e for e in events if e.get("reason") == "duplicate advice"]
+    assert len(delivered) == 1 and len(duplicate) == 1
+    assert delivered[0]["digest"] == duplicate[0]["digest"]
+
+    service = EnvelopedConsults([" "])
+    _, _, events = await _run(tmp_path, _failing_reads(3) + [_done()], service,
+                              advisor="advisor", consult_targets=["advisor"])
+    assert [e.get("reason") for e in events if e["outcome"] == "suppressed"] == ["empty advice"]
+
+
+async def test_a_deferred_completion_still_shows_the_responses_images(tmp_path):
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"fakepixels" * 10)
+    first = ModelResponse(content=None, tool_calls=[
+        ToolCall(id="img", name="image_read", arguments={"path": "pic.png"}),
+        ToolCall(id="d", name="task_complete", arguments={"summary": "Looked at pic.png"})])
+    service = FakeConsults(["Compare pic.png with the expected layout first."])
+    result, model, events = await _run(tmp_path, [first, _done(call_id="again")], service,
+                                       advisor="advisor", consult_targets=["advisor"],
+                                       advisor_checkpoints=["candidate-ready"])
+    assert result.success and result.turns == 2
+    assert events and events[-1]["outcome"] == "delivered"
+    shown = [m for m in model.requests[1] if getattr(m, "images", None)]
+    assert len(shown) == 1 and shown[0].images[0].startswith("data:image/png;base64,")

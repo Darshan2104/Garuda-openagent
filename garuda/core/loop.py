@@ -644,8 +644,14 @@ class DefaultAgent:
             outcome, deferred = await self._run_group_sequentially(
                 state, group, turn, turn_images, response_calls=calls
             )
-            if deferred or outcome is not None:
+            if outcome is not None:
                 return outcome
+            if deferred:
+                # The run continues, so the response's images and its repetition
+                # signal still count; only the calls after the deferral were closed.
+                state.steering.note_repetition(batch_signature(calls))
+                self._surface_images(state, turn_images)
+                return None
 
         # Repetition is reported once for the whole response, whatever shape it had.
         # Per-call signatures cannot express "this same response again": a repeated
