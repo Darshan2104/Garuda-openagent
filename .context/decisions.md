@@ -2362,6 +2362,47 @@ identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
 
+
+## 2026-11-06 — Reviewed notes retain provenance and retrieve on demand (#371)
+
+- Ledger v2 adds optional evidence references, workspace-relative source SHA-256
+  versions and confirmation time, supersedes and expiry. The existing opaque
+  project identity binds both scopes; user-scope retrieval stays within its
+  originating project. Lost project keys refuse replacement when note ledgers
+  exist, even without persisted sessions.
+- `core/project_identity.py::environment_project_path` binds Docker/remote
+  notes to the owner's mount mapping instead of the shared `/workspace` path.
+  `RemoteEnvironment` carries that optional mapping like `DockerEnvironment`;
+  an absent mapping refuses notes access. The run-side ledger uses this shared
+  resolver; source bytes continue to come from the active Environment.
+- Explicit v1-to-v2 read-time migration preserves legacy proposal digests and
+  unknown provenance. Reads do not rewrite records; subsequent journal/decision
+  writes publish v2. New provenance participates in the reviewed digest.
+  Root-task duplicates retain their original proposal/decision, ignoring only
+  observation time when the evidence versions are unchanged.
+- `memory search` and `remember(action=search)` share bounded lexical retrieval
+  of accepted ledger decisions. Output is labelled data (2,000 characters/five
+  notes by default; hard maxima 4,000/ten), with explicit omission. Source checks
+  use the active Environment, at most eight distinct regular files of 1 MiB
+  each, using existing shell utilities and byte reads, never a workspace Python
+  dependency or host-side substitute for Docker/remote files. Size is observed
+  before the existing byte read; a size change during the read stays unknown.
+- Model-named source paths pass the run's permission screen as a `read_file`
+  call on the same path before any is observed. Proposing refuses the whole
+  proposal (`memory.source_refused`) on a refused source and runs nothing for
+  any source; search never prompts, and a non-allowed path stays unknown without
+  being observed. Without the run's permission engine, sources are refused.
+  `garuda memory search` is the user's own terminal command and is not screened.
+- Editing the memory file is the removal path, so search also requires the
+  note's `garuda-note` marker in the owner's memory file: an absent marker or
+  file is stale (removed), an unreadable or linked file unknown.
+- Source changes/deletion, expiry and accepted supersession are stale; absent,
+  refused or exhausted evidence stays unknown. Shared source paths with distinct
+  active note text are possible conflicts, not inferred semantic contradictions.
+  Current source and user instructions remain authoritative. Ledger scanning is
+  linear; manual memory lines and raw transcripts are not indexed. Existing
+  prompt loading and terminal-only human acceptance remain unchanged.
+
 ## 2026-11-06 — Foreign instruction discovery grants no authority (#374)
 
 The existing `agent show` API/CLI exposes an opt-in instruction-source report.

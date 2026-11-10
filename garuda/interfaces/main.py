@@ -630,6 +630,13 @@ def build_parser():
     memory_review = memory_sub.add_parser(
         "review", help="Accept, edit or reject each pending proposal (needs a terminal)")
     memory_review.add_argument("--workspace", default=".")
+    memory_search = memory_sub.add_parser("search", help="Search accepted notes in this project")
+    memory_search.add_argument("query")
+    memory_search.add_argument("--workspace", default=".")
+    memory_search.add_argument("--max-chars", type=int, default=2000,
+                               help="Output character budget, 256–4000 (default 2000)")
+    memory_search.add_argument("--limit", type=int, default=5,
+                               help="Maximum notes, 1–10 (default 5)")
 
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")

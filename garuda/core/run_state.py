@@ -822,8 +822,7 @@ async def prepare_run(
             from garuda.context.notes import NotesLedger
             from garuda.tools.remember import RememberTool
 
-            notes_ledger = config.notes_ledger or NotesLedger.create(
-                getattr(env, "workspace_root", None) or ".", events.session_id)
+            notes_ledger = config.notes_ledger or NotesLedger.for_environment(env, events.session_id)
             if not any(t.name == "remember" for t in tools):
                 tools = [*tools, RememberTool()]
         except Exception:

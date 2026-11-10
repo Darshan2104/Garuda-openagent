@@ -79,6 +79,7 @@ class RemoteWorkspace:
             self._docker_base(),
             self._container_name,
             workspace_root="/workspace",
+            host_workspace_root=self._workspace_host,
         )
 
     async def stop(self) -> None:
@@ -103,14 +104,22 @@ class RemoteWorkspace:
 
 
 class RemoteEnvironment:
-    def __init__(self, docker_base: list[str], container_name: str, workspace_root: str = "/workspace"):
+    def __init__(self, docker_base: list[str], container_name: str, workspace_root: str = "/workspace",
+                 host_workspace_root: str | Path | None = None):
         self._docker_base = docker_base
         self._container_name = container_name
         self._workspace_root = workspace_root
+        self._host_workspace_root = (
+            str(Path(host_workspace_root).resolve()) if host_workspace_root is not None else None
+        )
 
     @property
     def workspace_root(self) -> str:
         return self._workspace_root
+
+    @property
+    def host_workspace_root(self) -> str | None:
+        return self._host_workspace_root
 
     async def execute(
         self,
