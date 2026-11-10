@@ -404,6 +404,35 @@ fastest way to learn the system.
    uses exactly one provider (SerpAPI with a key, else DuckDuckGo) and reports
    an outage as unavailable rather than blending in the other.
 
+   Page sections use zero-based, half-open character ranges into the rendered
+   body, before output markers or the source header. Each heading starts a flat
+   section; introductory text gets an untitled section. At most 128 sections
+   and 300 title characters per section are indexed; omitted sections and
+   clipped titles are counted/flagged without dropping body text. Returned and
+   omitted characters are recorded per section. The final section's end and
+   omitted size stay unknown when the source body is incomplete. Redirect
+   provenance records every vetted source URL/status and the terminal response,
+   capped at five redirects; the existing domain, SSRF, and pinned-connect
+   checks still apply to every hop.
+
+   `retain: true` opts into `tools/web_store.py`'s session-keyed, process-local
+   LRU. The content-addressed reference binds the rendered body and its source
+   record, including retrieval time. Limits are 64 entries / 16 MB globally,
+   16 entries / 8 MB per session, and 5 MB per snapshot (UTF-8 body plus JSON
+   provenance bytes). Oversized snapshots are reported unavailable. Evictions
+   are recorded with at most 128 tombstones; older misses remain unknown.
+   `web_fetch(ref=..., section=..., offset=...)` pages the stored extraction
+   and recalculates delivery evidence without refetching. The visible header
+   lists up to 16 section titles/ranges; reference reads accept `sections_from`
+   (default zero) to page that inventory independently of the body selection,
+   with a visible next cursor until all indexed sections are discoverable.
+   The current domain allowlist must still admit every recorded URL. Unknown redirect evidence or
+   clipped URLs refuse allowlist admission. References expire on eviction or
+   process exit and are unavailable in another session. Dashboard grounding
+   uses `_fetch_page` and the shared header renderer, preserving its `Source`
+   return type with additive `web_source` metadata. No workspace execution or
+   new interpreter dependency is involved.
+
    MCP servers start behind one bounded barrier in `build_toolkit`, before the
    agent is created: a `required` server that is not ready refuses the run, and
    optional failures stay visible in `McpClientManager.server_states()`. One

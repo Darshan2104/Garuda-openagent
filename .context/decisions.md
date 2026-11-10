@@ -2396,6 +2396,39 @@ otherwise DuckDuckGo — and records provider, retrieval time and result count. 
 provider failure is an unavailable result; there is no silent fallback or
 blending. Snippets remain provider text, not page content.
 
+## 2026-11-10 — Reuse rendered web evidence within a session (#439)
+
+Extend #377's `web_source` record and source header in their existing owner.
+Heading-delimited sections use zero-based, half-open character ranges into the
+rendered body, excluding headers and truncation markers. Titles and the section
+inventory are bounded (300 characters and 128 sections); clipped titles and
+omitted sections are explicit. Each delivery records per-section returned and
+omitted characters. A source body cut short leaves its final boundary and
+omission size unknown. The validating redirect handler records every vetted
+hop's URL/status, with a hard five-redirect limit; domain and SSRF checks and
+pinned connects remain authoritative.
+
+Rendered-body retention is opt-in (`retain: true`). `tools/web_store.py` owns
+session-keyed process-local snapshots addressed by the digest of the extraction
+and its provenance. The store caps snapshot, session, and global bytes/entries,
+including serialized provenance, with LRU eviction and bounded tombstones.
+`web_fetch` accepts exactly one URL or reference; references support section
+selection and character offsets, plus `sections_from` (default zero) to list
+up to 16 section titles/ranges with a visible next cursor. Inventory discovery
+uses tool content because arbitrary `web_source` metadata does not reach the
+model or CLI run output. Inventory windows do not change body selection.
+References recalculate delivery completeness and never refetch on a miss.
+Current domain restrictions still apply to every recorded
+URL; clipped URLs or unknown redirect evidence refuse restricted admission.
+Snapshots do not survive process exit. This needs no workspace command or
+interpreter and keeps Docker/remote execution ownership unchanged.
+
+Dashboard grounding calls the existing `_fetch_page` owner, saves the shared
+header, and adds `web_source` to its existing `Source` record. `_blocking_fetch`
+keeps its `(error, bare_text)` contract. A committed four-page HTML corpus with
+independent expected text/section ranges measures extraction fidelity offline;
+the HTTP transport tests exercise urllib validation with in-memory sockets.
+
 
 ## 2026-11-06 — Reviewed notes retain provenance and retrieve on demand (#371)
 
