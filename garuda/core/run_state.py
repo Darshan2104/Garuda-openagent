@@ -101,6 +101,12 @@ class RunState:
     # usually holds the best answer the run produced, so an exhausted run reports
     # it rather than a bare "max turns exceeded" that discards real work.
     last_assistant_text: str = ""
+    # The run's advisor (#385), recent tool failures it is briefed with, and
+    # whether a checkpoint fired during the current tool step.
+    advisor: object = None
+    advisor_failures: list = field(default_factory=list)
+    advisor_pending: bool = False
+    advisor_plan: str = ""
 
     def accumulate_usage(self, usage: dict[str, int]) -> None:
         self.metrics.note_usage(usage)
@@ -949,7 +955,10 @@ async def prepare_run(
             )
         )
 
+    from garuda.core.advisor import build_advisor
+
     run_state = RunState(
+        advisor=build_advisor(config, consult_context, events),
         agent_segment={"id": str(uuid4()), "name": config.agent_name or profile_name,
                        "digest": config.agent_digest, "runtime": "native",
                        "kind": "native_execution",

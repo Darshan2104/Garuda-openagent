@@ -99,6 +99,7 @@ class SpendGate:
     settled_cost_usd: float = 0.0
     cost_unknown_calls: int = 0
     unpriced_model: str | None = None
+    prior_spend_unknown: bool = False
     failed_without_usage: int = 0
     estimated_token_calls: int = 0
     calls: int = 0
@@ -143,6 +144,11 @@ class SpendGate:
                 return "dollars", (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
                                    f"(${self.settled_cost_usd:.6f} settled)")
             if self.cost_unknown_calls and self.max_tokens is None:
+                if self.prior_spend_unknown and not self.unpriced_model:
+                    return "cost_unknown", (
+                        f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
+                        "a resumed session in this chain recorded no run-tree spend, so prior "
+                        "spend is unknown; use --max-run-tokens to bound this run")
                 model = f" ({self.unpriced_model})" if self.unpriced_model else ""
                 return "cost_unknown", (
                     f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced for "
@@ -191,6 +197,31 @@ class SpendGate:
                         f"{int(self.warn_fraction * 100)}% of its budget"}
         return None
 
+    def inherit(self, snapshot: Any) -> dict[str, Any]:
+        """Start from a resumed source session's recorded tree spend (#407).
+
+        A resumed run continues the same work, so its caps cover what the source
+        already spent. Without a recorded snapshot the prior spend is unknown:
+        it counts as one unknown-cost call (so a dollar-only cap cannot be
+        verified), and prior tokens are reported as not inherited.
+        """
+        fields = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
+        if not isinstance(snapshot, dict) or not all(
+                isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
+                and snapshot[k] >= 0 for k in fields):
+            self.cost_unknown_calls += 1
+            self.prior_spend_unknown = True
+            return {"source": "unavailable", "inherited_tokens": None, "inherited_cost_usd": None,
+                    "reason": "the resumed session recorded no run-tree spend; prior spend is unknown"}
+        self.settled_tokens += int(snapshot["settled_tokens"])
+        self.settled_cost_usd = round(self.settled_cost_usd + float(snapshot["settled_cost_usd"]), 8)
+        self.cost_unknown_calls += int(snapshot["cost_unknown_calls"])
+        self.prior_spend_unknown = self.prior_spend_unknown or snapshot.get("prior_spend_unknown") is True
+        self.unpriced_model = self.unpriced_model or snapshot.get("unpriced_model")
+        return {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
+                "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
+                "inherited_cost_unknown_calls": int(snapshot["cost_unknown_calls"])}
+
     def _fraction(self) -> float:
         parts = []
         if self.max_tokens is not None:
@@ -207,6 +238,8 @@ class SpendGate:
             "reserved_tokens": self.reserved_tokens,
             "settled_cost_usd": round(self.settled_cost_usd, 8),
             "cost_unknown_calls": self.cost_unknown_calls,
+            "prior_spend_unknown": self.prior_spend_unknown,
+            "unpriced_model": self.unpriced_model,
             "failed_without_usage": self.failed_without_usage,
             "estimated_token_calls": self.estimated_token_calls,
             "calls": self.calls,

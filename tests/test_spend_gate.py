@@ -158,6 +158,63 @@ def test_the_run_command_accepts_tree_budget_flags():
     assert args.max_run_tokens == 5000 and args.max_run_cost_usd == 2.5
 
 
+# --- resume continues the source's tree spend (#407) --------------------------
+
+from tests.test_resume_baseline import repo as _repo  # noqa: E402
+
+repo = _repo  # the git repository fixture
+
+
+def _priced_script(name, usage):
+    return ScriptModel([
+        _call("bash", "1", usage, command=f"touch {name}"),
+        _call("task_complete", "2", usage, summary="ok"),
+    ])
+
+
+async def _run_task(store, workspace, sid, usage, *, resume=None, **limits):
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.tools import tools_for_names
+
+    return await run_agent_task(
+        task=f"create {sid}", model=_priced_script(f"{sid}.txt", usage), agent=DefaultAgent(),
+        tools=tools_for_names(["bash", "task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo",
+                           max_tokens=50, **limits),
+        permissions=PermissionEngine(mode="yolo"), workspace=str(workspace),
+        events=EventStore(session_id=sid), store=store, resume=resume,
+    )
+
+
+async def test_a_resumed_run_continues_the_source_tree_spend(repo, tmp_path, monkeypatch):
+    from garuda.core.sessions import SessionStore
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    store = SessionStore(tmp_path / "sessions")
+    usage = {"total_tokens": 100, "cost_usd": 0.01}
+    assert (await _run_task(store, repo, "one", usage, max_run_tokens=1_000_000)).success
+    assert store.load_meta("one")["spend_gate"]["settled_tokens"] == 200
+
+    assert (await _run_task(store, repo, "two", usage, resume="one",
+                            max_run_tokens=1_000_000)).success
+    second = store.load_meta("two")
+    assert second["spend_inherited"]["source"] == "spend_gate"
+    assert second["spend_inherited"]["inherited_tokens"] == 200
+    assert second["spend_gate"]["settled_tokens"] == 400
+    assert second["spend_gate"]["settled_cost_usd"] == 0.04
+
+
+async def test_unknown_prior_spend_cannot_satisfy_a_dollar_only_cap(repo, tmp_path, monkeypatch):
+    from garuda.core.sessions import SessionStore
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    store = SessionStore(tmp_path / "sessions")
+    usage = {"total_tokens": 100, "cost_usd": 0.01}
+    assert (await _run_task(store, repo, "uncapped", usage)).success  # no gate recorded
+    resumed = await _run_task(store, repo, "capped", usage, resume="uncapped", max_run_cost_usd=5.0)
+    assert not resumed.success and "prior spend is unknown" in resumed.final_message
+    assert store.load_meta("capped")["spend_inherited"]["source"] == "unavailable"
+
 class _OverflowOnce(ScriptModel):
     """The provider rejects the first prompt as too long, billing nothing."""
 
