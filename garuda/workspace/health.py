@@ -192,8 +192,9 @@ class HealthMonitoredEnvironment:
     async def read_file(self, path: str) -> str:
         return await self._read("read_file", path)
 
-    async def read_bytes(self, path: str) -> bytes:
-        return await self._read("read_bytes", path)
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
+        options = {} if max_bytes is None else {"max_bytes": max_bytes}
+        return await self._read("read_bytes", path, **options)
 
     async def read_text_page(self, path: str, **kwargs: Any) -> Any:
         # Explicit so bounded reads get the same latch and classification as

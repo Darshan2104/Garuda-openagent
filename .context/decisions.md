@@ -2442,3 +2442,20 @@ remain unknown. Writes have no baseline, and Node stdin is not substituted for
 its package/module-aware file check. No baseline content or unbounded checker
 output is persisted here. These observations remain separate from acceptance
 receipts and cannot grant verification or authorize project-supplied commands.
+
+## 2026-11-06 — Bounded host Python codemod previews (#383)
+
+`python_codemod` is opt-in and supports only declarative `rename_import` data.
+Host AST/tokenize parsing proposes exact token replacements; workspace source is
+never executed and containers need no Python interpreter for this feature.
+Ambiguous bindings and parse uncertainty block the plan; strings and attributes
+are explicitly skipped. Preview state is immutable, bounded and session-context /
+Environment-instance bound, with versioned single-use tokens and byte digests.
+Existing edit tools and default tool selection retain their behavior.
+
+Environment binary reads accept an optional byte limit without changing existing
+calls. Apply requires the ordinary permission engine for every selected path,
+revalidates every source before writing, and verifies writes and restoration of
+all attempted files after failure. Cancellation retains ownership through
+settlement and restoration. Restoration failure stays explicit/unknown; this is
+not isolation from concurrent writers or a crash-safe cross-file transaction.
