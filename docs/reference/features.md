@@ -29,6 +29,8 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Bounded search | grep stops once a page is captured, reports totals as exact or "at least", pages with a stale-checked cursor, windows long lines and can cap matches per file | `garuda run --mode readonly -t "Find every TODO"` | [Level 1](../use-cases/explore.md#search-large-trees-without-flooding-the-context) |
 | Python codemod preview/apply | Bounded declarative import renames with diffs, source digests, per-path permissions and verified restoration on write failure | Opt in to `python_codemod` | [Level 2](../use-cases/change-code.md#preview-a-python-import-migration) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
+| Web source provenance | `web_fetch` results name the final URL, status, retrieval time, body digest and an honest completeness line; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
+
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
 
 ## Where commands run

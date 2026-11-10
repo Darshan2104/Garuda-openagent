@@ -103,6 +103,11 @@ Outline and offset/limit are mutually exclusive; unsupported syntax/languages or
 an oversized outline return an explicit fallback without source or partial outline.
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
+`web_fetch` heads its text with the delivered response's provenance (final
+URL after redirects, status, charset and its source, retrieval time,
+Last-Modified or `unknown`, body bytes and SHA-256, completeness) and returns
+it as `metadata["web_source"]` plus an `artifact_source` capture;
+`web_search` names its single provider (no fallback) in `metadata["web_search"]`.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.
 Collection: `collection.py` — trusted parent `delegate_collection` and internal
 child-only `submit_collection`; neither is registered as an ordinary built-in.
