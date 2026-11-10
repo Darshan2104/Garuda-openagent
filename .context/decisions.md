@@ -2395,3 +2395,125 @@ budgets, handoff modes, textual summaries and sibling traces remain authoritativ
 - `model_response` records `live_coverage` (`streamed`, `fallback`,
   `not_streamed`), a bounded `stream_error`, and `live_consumer_error` when a
   consumer raised and was detached, separately from `outcome`.
+
+## 2026-11-07 — The advisor is a consult, its advice is steering data (#385)
+
+An agent's optional `advisor.role` is asked only when it is one of the run's
+granted consult targets, so admission, snapshot isolation, its read-only
+profile, deadlines and receipts stay with the consult service. The first
+checkpoint is the steering's existing repeated-failure streak; the answer is
+queued between turns as labelled advice that cannot grant permissions,
+verify work or replace review. Notes are capped per run and deduplicated, and
+a failed or busy advisor changes nothing. Plan-ready and candidate-ready
+checkpoints, and spend shared with the run-tree gate, are follow-ups.
+
+
+## 2026-11-10 — Advisor checkpoints preserve completion and lifecycle ownership (#385)
+
+- Definitions may select `repeated-failure`, `plan-ready` and `candidate-ready`;
+  omission retains repeated-failure only. Unknown selections refuse at load.
+- Planning uses successful nonempty todo/goal-plan signals, once per run.
+  Candidate-ready uses the first terminal submission (or ungated tool-free
+  completion), before verification. A delivered note defers that submission
+  once for one ordinary budgeted turn; completion and independent final review
+  retain their existing authority.
+- Literal evidence citations are checked against the bounded brief or bounded
+  shell existence checks through the existing Environment. No workspace
+  interpreter is added. Uncited notes spend no delivery allowance; this check
+  establishes citation presence, never correctness or verification. The check
+  and deduplication read the answer extracted from the consult envelope (line
+  quoting and HTML escaping undone); the model still receives the labelled
+  envelope.
+- The existing consult service owns admission, snapshots, deadlines and receipts;
+  the existing steering queue owns advice. Consults remain awaited, close with
+  their run, and recheck cancellation/deadline/turn limits before delivery. A late
+  answer cannot queue a note or restart a cancelled run, even if a dependency
+  returns after cancellation cleanup.
+- Run-tree spend charging for advisor calls remains out of scope pending the
+  shared spend-gate work; ordinary consult accounting remains in force.
+
+## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
+
+The session broker binds each parked request to a digest (id, session,
+action, family, runtime, ceiling fingerprint, expiry, and the file channel's
+nonce once published, so the listed digest is the audited one) and the ceiling source,
+and records them with the outcome. An allow from any channel — terminal,
+dashboard chat, headless answerer or file — is honoured only if the request
+has not expired and the ceiling fingerprint is unchanged; an answer naming a
+digest must match it. Responders report non-answers as a falsy `Unanswered`
+(timeout/disconnected), never as a truthy enum, so any caller unaware of it
+still denies. An owned role's control socket carries the non-answer to the
+worker's broker as a "no" plus its outcome, and a worker that cannot parse
+the reply denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
+must echo the ask's owner and digest. ACP requests record
+`acp-request:not-screened`: Garuda's ceiling does not confine vendor tools,
+and the record does not pretend it does. Direct `session/approve` on Garuda's
+own ACP server still answers by id without the broker (tracked as residual).
+
+## 2026-11-06 — Reviews bind to a frozen candidate packet (#362)
+
+Each review round freezes a packet from the reviewed step's own receipt and
+session records: candidate workspace version, recorded changed files (or
+`unknown`, never empty), reviewer role, plan and no-edits posture, and a
+digest recorded with the round. A workspace that differs from the candidate
+before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
+Reviewers may return a strict version 2 structured review; invalid structured
+findings stop the flow and never approve, and the legacy line format is parsed
+exactly as before. Effective-config and check-receipt evidence are #421.
+
+## 2026-11-07 — Review packets show the real loader's view of changed config (#421)
+
+For each changed `garuda.yaml` or `.agent/agents/` / `.garuda/agents/`
+definition, the review packet records what the ordinary loader makes of the
+candidate: loaded with an effective-config digest, project-supplied keys and
+values withheld because the project file is untrusted, or the loader's
+refusal. An outcome is attributed only to the file the loader actually read:
+a nested `garuda.yaml` is `not-loaded`, and a definition outranked by a
+same-name one (`.agent/agents` before `.garuda/agents`) is `shadowed` with
+the winning path. This is parsing and resolution only; nothing runs. It makes a field the loader rejects or ignores
+visible to the reviewer instead of only the author's text.
+The block reads the same change list as the packet, so it is `complete`
+only when that list is whole: a cut list makes it incomplete and a list of
+unknown size makes it unknown (`complete: null`), with a reason and no total.
+
+## 2026-11-06 — One spend gate per native run tree (#363, #405)
+
+`--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,
+carried by reference to native subagents like `DelegationBudget`. The main loop
+and `model/accounting.complete` (summarizer, buffer_query, contract, verifier,
+critic) admit before sending and settle afterwards, failed or not. Tokens are
+reserved under a lock, so concurrent calls cannot reuse one remainder. Dollars
+are a post-response stop, not a prepaid maximum. Unknown cost is never zero:
+under a dollar-only cap the first completed unpriced call stops further
+admission with a reason saying the cap cannot be enforced for that model
+(pricing is only learned from a response, so this cannot be refused earlier).
+A call that raised before reporting usage (a context-overflow rejection) is
+not an unpriced call: it releases its reservation and is counted apart as
+failed without usage, so overflow recovery still runs under a dollar cap.
+A completed call that reports no token count at all is charged its reservation
+estimate (`estimated_token_calls`), so a missing usage report cannot disable the
+token cap. Rigorous mode creates the gate before its plan phase: plan, every
+build round and the critic all admit against it, and a refusal in any phase ends
+the run with `spend_limit`. The root runner records the final gate snapshot as
+session meta `spend_gate`. A cap that cannot bound spend (tokens below 1, a
+cost that is not a finite amount above 0) is refused before any runtime is
+selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
+does not see that agent's model calls. Defaults stay unlimited. Not yet
+covered: collection workers keep their own ledger, consult children are
+separate roots, and failed-attempt usage is #406.
+
+## 2026-11-06 — Resumed runs continue the source tree's spend (#407)
+
+A resumed run is the same work continued, so caps given to it cover what the
+source already spent. The root runner records the gate snapshot (children
+included) as session meta `spend_gate`; a resumed run with caps inherits it and
+records `spend_inherited`. A source without a snapshot has unknown prior spend:
+it counts as an unknown-cost call, so a dollar-only cap refuses admission, and
+prior tokens are reported as not inherited. Fresh runs start at zero. Turn and
+deadline budgets are unchanged on resume.

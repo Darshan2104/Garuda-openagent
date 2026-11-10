@@ -41,6 +41,7 @@ class EventType(str, Enum):
     TURN_METRICS = "turn_metrics"
     COLLECTION = "collection"
     MODEL_FALLBACK = "model_fallback"
+    ADVISOR = "advisor"
 
 
 class EventStore:

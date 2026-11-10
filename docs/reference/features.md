@@ -19,6 +19,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Acceptance checks | "Done" means your command passed | `garuda run --check "pytest -q" -t "…"` | [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check) |
 | Evidence modes | The agent proves its own work before stopping | `garuda run --mode rigorous -t "…"` | [Level 2](../use-cases/change-code.md#make-garuda-prove-the-fix) |
 | Budgets | Wall-clock and turn limits | `garuda run --deadline-sec 900 --max-turns 30 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
+| Run-tree spend budget | One token/dollar budget shared by main calls, auxiliaries and subagents, with reservations and unknown cost never counted as free | `garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
 | Any model | A LiteLLM `provider/model`, reasoning effort | `garuda run --model provider/model -t "…"` | [Level 2](../use-cases/change-code.md#use-a-different-model-for-one-run) |
 | Live model output | Opt-in text and reasoning deltas from native loop model calls; tools still run only on complete responses | `DefaultAgent().run(..., model_delta_consumer=show)` | [Level 2](../use-cases/change-code.md#show-model-output-live-from-your-own-driver) |
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
@@ -45,7 +46,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
 | Cancel | Remove from the queue, stop a worker, or revoke a pending quota continuation | `garuda sessions cancel NAME` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
 | Capacity | At most N runs per runtime; the rest queue | `capacity:` in `~/.agent/settings.yaml` | [Level 4](../use-cases/parallel.md#limit-how-many-runs-happen-at-once) |
-| Approvals from elsewhere | Answer a waiting prompt from another terminal | `garuda approvals answer latest ID --allow` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
+| Approvals from elsewhere | Answer a waiting prompt from another terminal, bound to the request you listed; every answer is rechecked against the ceiling in force and recorded with its digest, ceiling source, expiry and how it ended | `garuda approvals answer latest ID --allow --digest D` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
 | Trajectories | Export a run's events | `garuda run --trajectory run.jsonl -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 | Failure evidence | Inspect original and later failures with explicit coverage; preview/capture/export selected sanitized diagnostics | `garuda runtime support --session latest --select causes,identities --preview` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Artifact completeness | See complete, partial, failed or unavailable retained output, provenance and retention; malformed flow receipts retain valid sibling evidence with explicit coverage | `garuda sessions show latest --json` | [Use Garuda in scripts](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
@@ -77,11 +78,13 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Flows | Plan → build → review in one command | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
+| Review packets | Reviewers get a frozen, digest-bound candidate packet; stale candidates and invalid structured findings never approve | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Checked flows | Candidate-bound Linux checks before the flow releases its workspace | `garuda flow run plan-build-review -t "…" --check "pytest -q"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Custom flows | Your own steps and reviews | `garuda config show --flow NAME` | [Level 5](../use-cases/teams.md#write-your-own-flow) |
 | Flow recovery | Continue after the last finished step | `garuda flow resume FLOW_ID` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Automatic Codex quota recovery | Hourly, evidence-gated continuation of eligible sequential CLI flows without replaying completed work | `garuda recovery enable` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
 | Recovery schedule diagnostics | Verify the selected root's cron entry and private wrapper, with a reason for missing or mismatched installation | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
+| Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
 | Read-only external roles | A harness in a proven read-only container | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |

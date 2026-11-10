@@ -880,3 +880,33 @@ async def test_fork_context_true_still_means_the_whole_transcript(tmp_path: Path
     assert result.success
     subagent_prompt = "".join(m.content or "" for m in model.prompts[1])
     assert marker in subagent_prompt
+
+
+async def test_a_failed_calls_billed_usage_is_charged_to_the_spend_gate(tmp_path: Path):
+    """The usage a failed call carries is spend: the run-tree gate counts it, so a
+    billed rejection cannot slip past --max-run-tokens or --max-run-cost-usd."""
+    reply = _complete("finished after recovering")
+    reply.usage = {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35,
+                   "cost_usd": 0.03}
+    summary = ModelResponse(content="summary", tool_calls=[],
+                            usage={"total_tokens": 10, "cost_usd": 0.01})
+    model = _BilledOverflowOnceModel([summary, reply])
+    context = ContextManager(model=model, max_context_tokens=20_000, keep_recent_turns=2)
+    context.seed(
+        [Message(role=Role.SYSTEM, content="sys"), Message(role=Role.USER, content="task")]
+    )
+    for i in range(12):
+        context.append(Message(role=Role.ASSISTANT, content="",
+                               tool_calls=[ToolCall(id=f"c{i}", name="bash",
+                                                    arguments={"command": "ls"})]))
+        context.append(Message(role=Role.TOOL, content="y" * 4000, name="bash",
+                               tool_call_id=f"c{i}"))
+    config = AgentConfig(max_turns=3, enable_verifier=False, max_run_cost_usd=5.0)
+    result = await DefaultAgent().run(
+        task="task", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, context=context,
+    )
+    assert result.success, result.final_message
+    gate = config.spend_gate
+    assert gate.settled_cost_usd == 0.11  # the billed rejection, the summary, the reply
+    assert gate.failed_without_usage == 0 and gate.cost_unknown_calls == 0

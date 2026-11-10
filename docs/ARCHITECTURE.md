@@ -114,6 +114,13 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
+   An opt-in `core/advisor.py` reuses consult admission and between-turn steering.
+   Definitions select repeated-failure (the default), first-plan and
+   first-candidate checkpoints. Notes require literal evidence citations and are
+   capped and deduplicated. A candidate note may defer completion once within
+   existing budgets; it never counts as verification or independent review.
+   Awaited consults recheck run liveness before delivery, including cancellation
+   during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
    The loop calls `Model.complete()` unless the run was given a
    `model_delta_consumer`. Then `_timed_complete` makes the call through
    `model/streaming.py`: text and reasoning deltas reach the consumer, the
