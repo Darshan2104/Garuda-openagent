@@ -57,9 +57,11 @@ permissions, hooks, memo, effects ledger, output capture and event recording.
 Nested results stay out of the model transcript; the cell selects its result.
 Cell and nested events carry `cell_id` and `nested_index` (zero for the cell).
 Cells are mutating, excluded from defaults and broad presets, and denied in
-read-only mode. Code/input bytes, wall time, output and nested requests are bounded;
-death or interruption never authorizes automatic replay. These bounds include
-nested dispatch time, with bounded teardown additional to execution time.
+read-only mode. Code/input bytes, the cell's own time, output and nested requests
+are bounded; death or interruption never authorizes automatic replay. The time budget
+covers admission, launch, the cell's own code and delivery but pauses during each
+nested call, which its own tool timeout and approval path govern; the run deadline
+still caps the remaining budget. Bounded teardown is additional to execution time.
 
 Smart command screening checks original and continuation-joined text. Raw path
 tokens and raw root/home-removal refusals remain authoritative even if a comment

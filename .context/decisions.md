@@ -2377,5 +2377,7 @@ ToolRunner's dispatch, permissions, hooks, effects, memo and event/capture owner
 Every cell and nested receipt has cell id/index provenance. Nested results are
 recorded without becoming orphan tool messages in the model context. Broad/default
 tool selections do not opt in. Input, output, time and call counts are bounded;
+the cell time budget excludes nested calls, which keep their own tool timeout and
+approval, and the run deadline still caps it;
 namespace teardown cancels descendants, and interrupted effects never imply zero
 or authorize replay. No retained kernels or dependency installation are introduced.

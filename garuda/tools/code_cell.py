@@ -7,7 +7,7 @@ import time
 
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
-from garuda.workspace.cells import CellEnvironment, CellError, CellLimits, exchange_cell
+from garuda.workspace.cells import CellEnvironment, CellError, CellLimits, exchange_cell, uncharged
 from garuda.workspace.protocol import Environment
 
 
@@ -75,12 +75,22 @@ class CodeCellTool:
             values["timeout"] = min(values["timeout"], ctx.deadline_monotonic - time.monotonic())
             if values["timeout"] <= 0:
                 return error("Cell wall-time budget exhausted")
+        loop = asyncio.get_running_loop()
+        resume_by = None
+        if ctx.deadline_monotonic is not None:
+            resume_by = loop.time() + ctx.deadline_monotonic - time.monotonic()
         try:
-            # Admission, launch, nested calls and delivery all share one deadline.
-            async with asyncio.timeout(values["timeout"]):
+            # Admission, launch, the cell's own code and delivery share one budget.
+            # Nested calls are excluded: each is governed by its own tool timeout
+            # and approval, while the run deadline still caps the remaining budget.
+            async with asyncio.timeout(values["timeout"]) as budget:
+                async def bridge(name: str, arguments: dict, index: int) -> dict:
+                    async with uncharged(budget, resume_by=resume_by):
+                        return await ctx.cell_bridge(name, arguments, index)
+
                 async with env.open_code_cell() as process:
                     result = await exchange_cell(
-                        process, code, inputs, CellLimits(**values), ctx.cell_bridge,
+                        process, code, inputs, CellLimits(**values), bridge,
                     )
             content = json.dumps(result, ensure_ascii=False)
             if len(content.encode("utf-8")) > values["output_bytes"]:

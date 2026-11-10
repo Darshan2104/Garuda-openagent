@@ -78,6 +78,23 @@ async def finish_cleanup(task: asyncio.Task) -> None:
 
 
 @asynccontextmanager
+async def uncharged(budget: asyncio.Timeout, *, resume_by: float | None = None) -> AsyncIterator[None]:
+    """Pause a cell's own compute budget while one nested tool call runs.
+
+    The nested call stays bounded by its own tool timeout and approval path; on
+    return the unspent budget resumes, capped at ``resume_by`` (loop time).
+    """
+    loop = asyncio.get_running_loop()
+    remaining = budget.when() - loop.time()
+    budget.reschedule(None)
+    try:
+        yield
+    finally:
+        when = loop.time() + remaining
+        budget.reschedule(when if resume_by is None else min(when, resume_by))
+
+
+@asynccontextmanager
 async def cell_process(
     argv: list[str], *, env: dict[str, str] | None = None,
 ) -> AsyncIterator[asyncio.subprocess.Process]:
@@ -158,7 +175,9 @@ async def exchange_cell(
                     raise CellError("Cell exited before tool dispatch; no replay")
                 callback_active = True
                 try:
-                    reply = await callback(frame["tool"], frame["arguments"], calls)
+                    # Nested dispatch (including approval waits) is not cell compute.
+                    async with uncharged(budget):
+                        reply = await callback(frame["tool"], frame["arguments"], calls)
                 finally:
                     callback_active = False
                 encoded = (json.dumps(reply, ensure_ascii=True) + "\n").encode()
@@ -181,12 +200,13 @@ async def exchange_cell(
             else:
                 raise CellError("Invalid cell frame")
 
+    budget = asyncio.timeout(limits.timeout)
     exchange_task = asyncio.create_task(exchange())
     stderr_task = asyncio.create_task(stderr())
     exit_task = asyncio.create_task(process.wait())
     tasks = (exchange_task, stderr_task, exit_task)
     try:
-        async with asyncio.timeout(limits.timeout):
+        async with budget:
             pending = set(tasks)
             while not exchange_task.done():
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)

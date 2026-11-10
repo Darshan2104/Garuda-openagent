@@ -426,7 +426,10 @@ session events retain nested receipts with cell id and request index.
 
 Defaults are 10 seconds, 32 KiB output, eight nested requests, and 32 KiB combined
 code/input. Options may set positive values up to 30 seconds, 64 KiB output and
-32 requests; run deadlines may shorten execution. Bridge frames/replies are also
+32 requests; run deadlines may shorten execution. The timeout counts the cell's own
+launch and code, not time spent inside nested `tool` calls: a nested `bash` call
+waiting for your approval, or running its own longer timeout, does not use up the
+cell's budget. Bridge frames/replies are also
 bounded at 64 KiB. Cancellation, time/output/request limits and worker death
 terminate the cell; interrupted effects remain unknown and are never replayed
 automatically. Container/process cleanup can take additional bounded time.

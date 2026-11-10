@@ -326,6 +326,69 @@ tool("read_file", {"path": "unused"})
     assert "cancelled before dispatch" in receipts[0]["content"]
 
 
+class HostTransportEnvironment(LocalEnvironment):
+    """Runs the real worker on the host to time the bridge; not a confinement claim."""
+
+    def open_code_cell(self):
+        return cell_process([sys.executable, "-I", "-u", "-c", WORKER])
+
+
+async def test_approval_wait_is_not_charged_to_the_cell_budget(tmp_path):
+    asked = []
+
+    async def slow_human(action):
+        asked.append(action)
+        await asyncio.sleep(0.8)
+        return True
+
+    env = HostTransportEnvironment(tmp_path)
+    await env.write_file("data.txt", "alpha\nbeta\n")
+    runner = runner_for(env, tmp_path, options={"timeout": 0.5})
+    runner.permissions = PermissionEngine(
+        workspace_root=env.workspace_root, tool_rules={"read_file": "ask"}, approval_handler=slow_human,
+    )
+    result = await run_cell(runner, '''
+first = tool("read_file", {"path": "data.txt"})
+second = tool("read_file", {"path": "data.txt"})
+result = [first["is_error"], "beta" in second["content"]]
+''')
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["result"] == [False, True]
+    assert len(asked) == 2
+    receipts = [r["payload"] for r in runner.events.get_all() if r["type"] == "tool_result"]
+    assert [r["nested_index"] for r in receipts] == [1, 2, 0]
+    assert not any("cancelled" in r["content"] for r in receipts)
+
+
+async def test_cell_own_compute_stays_bounded_around_nested_calls(tmp_path):
+    env = HostTransportEnvironment(tmp_path)
+    runner = runner_for(env, tmp_path, options={"timeout": 0.5})
+
+    async def slow_hook(call, context):
+        await asyncio.sleep(0.8)
+        return call
+
+    runner.hooks.register_before_tool(slow_hook)
+    result = await run_cell(runner, 'tool("ls", {})\nwhile True: pass')
+    assert result.is_error and "wall-time" in result.content, result.content
+    receipts = [r["payload"] for r in runner.events.get_all() if r["type"] == "tool_result"]
+    assert [r["nested_index"] for r in receipts] == [1, 0]
+    assert not receipts[0]["is_error"]
+
+
+async def test_transport_budget_excludes_slow_callbacks():
+    async def callback(name, arguments, index):
+        await asyncio.sleep(0.4)
+        return {"content": "ok", "is_error": False}
+
+    async with cell_process([sys.executable, "-I", "-u", "-c", WORKER]) as process:
+        result = await exchange_cell(
+            process, "result=[tool('ls', {})['content'] for _ in range(2)]", {},
+            CellLimits(timeout=0.3), callback,
+        )
+    assert result["result"] == ["ok", "ok"]
+
+
 async def test_worker_death_settles_an_outstanding_callback():
     settled = asyncio.Event()
 
