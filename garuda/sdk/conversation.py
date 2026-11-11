@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from garuda.core.events import EventStore
 from garuda.interfaces.runner import resolve_environment
@@ -10,6 +10,9 @@ from garuda.interfaces.session import AgentSession
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.types import AgentResult
 from garuda.workspace.protocol import Environment
+
+if TYPE_CHECKING:
+    from garuda.model.streaming import DeltaConsumer
 
 
 class Conversation:
@@ -87,8 +90,17 @@ class Conversation:
             )
         return self._session
 
-    async def run(self, task: str) -> AgentResult:
-        """Run a task in this conversation."""
+    async def run(self, task: str, *, on_delta: "DeltaConsumer | None" = None) -> AgentResult:
+        """Run a task in this conversation.
+
+        ``on_delta`` (native runtime only) receives the live ``LiveDelta``
+        fragments the loop forwards while each model call streams; sync and async
+        callables are accepted. The result still comes from the assembled model
+        response, and a consumer that raises is detached for that call (recorded
+        as ``live_consumer_error``) without changing the turn's outcome.
+        """
+        if on_delta is not None and self._runtime_name != "native":
+            raise ValueError("live deltas are only available for the native runtime")
         if self._runtime_name != "native":
             return await self._run_acp(task)
         session = await self._ensure_session()
@@ -107,6 +119,7 @@ class Conversation:
             workspace_delta_loader=live.delta_loader,
             collection_model=getattr(session, "collection", None),
             collection_policy=getattr(session, "collection_policy", None),
+            model_delta_consumer=on_delta,
         ))
 
     async def _ensure_live(self, session: AgentSession, task: str):

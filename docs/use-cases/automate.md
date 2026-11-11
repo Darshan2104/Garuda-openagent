@@ -523,6 +523,47 @@ retain the permission engine's configured root.
 `agent.run(task, resume="latest")` continues this workspace's newest saved
 session; pass `resume_all_projects=True` for the newest one anywhere.
 
+### Stream live model deltas
+
+<p class="gd-facts">Native runtime · Opt-in · The result stays authoritative</p>
+
+Pass `on_delta` to `SoftwareAgent.run` or `Conversation.run` to receive the
+same `LiveDelta` fragments the native loop forwards while a model call streams.
+The callable may be synchronous or async; `delta.kind` is `text`, `reasoning`,
+or `discard`.
+
+```python
+import asyncio
+
+from garuda.sdk import SoftwareAgent
+
+
+async def main():
+    def show(delta):
+        if delta.kind == "text":
+            print(delta.text, end="", flush=True)
+        elif delta.kind == "discard":
+            print("\n[stream discarded; rendering the assembled answer]")
+
+    result = await SoftwareAgent(workspace=".").run(
+        "Summarize this repository", on_delta=show,
+    )
+    print("\n" + result.final_message)
+
+
+asyncio.run(main())
+```
+
+Deltas are advisory. Tool calls, usage, completion and the returned
+`AgentResult` still come from the fully assembled model response, so a consumer
+cannot change what the run does. A consumer that raises is detached for that
+model call; the run continues and the `model_response` event records
+`live_consumer_error`. When a broken stream falls back to a non-streaming call,
+the consumer receives one `discard` delta so a renderer drops what it already
+showed instead of duplicating it. Only the native runtime forwards deltas:
+passing `on_delta` with an ACP runtime raises `ValueError` before anything
+launches.
+
 ## Call Garuda over HTTP
 
 <p class="gd-facts">JSON-RPC 2.0 over HTTP POST · Loopback by default · Bearer token required</p>

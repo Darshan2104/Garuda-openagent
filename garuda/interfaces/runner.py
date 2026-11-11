@@ -232,6 +232,7 @@ async def run_agent_task(
     collection_policy=None,
     fork: str | None = None,
     fork_at: int | None = None,
+    model_delta_consumer=None,
 ) -> AgentResult:
     from garuda.core.session_fork import prepare_context_fork, validate_fork_request
 
@@ -523,6 +524,7 @@ async def run_agent_task(
                 workspace_delta_loader=workspace_delta_loader,
                 collection_model=collection_model,
                 collection_policy=collection_policy,
+                model_delta_consumer=model_delta_consumer,
                 **({"buffer": resumed_buffer} if resumed_buffer is not None and config.buffer_tool_output else {}),
             )
 

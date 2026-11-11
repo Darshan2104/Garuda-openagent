@@ -162,10 +162,11 @@ fastest way to learn the system.
    propagates to the shrink-and-retry path, and cancellation propagates with
    nothing assembled. The `model_response` event records `live_coverage`
    (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
-   call outcome. No interface attaches a consumer yet. External harness
-   streaming is a separate runtime path. Standalone ACP runs can use
-   explicit post-run acceptance checks even though the native completion gate
-   does not run inside the external harness.
+   call outcome. The SDK exposes the consumer as `on_delta` on
+   `SoftwareAgent.run` and `Conversation.run`; the CLI and dashboard chat do not
+   attach one yet. External harness streaming is a separate runtime path.
+   Standalone ACP runs can use explicit post-run acceptance checks even though
+   the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state
    in `ToolResult.metadata["diagnostics"]`. Each checker reports availability,
    execution, a source digest, status and timing; observed content changes
