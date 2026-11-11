@@ -61,7 +61,7 @@ class ToolRegistry:
         appended separately by :func:`build_toolkit` from the live client manager.
         """
         if names is None:
-            return self.all_tools()
+            return [tool for tool in self.all_tools() if not getattr(tool, "explicit_only", False)]
         tools: list[Tool] = []
         for name in names:
             tool = self.get(name)

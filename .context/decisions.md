@@ -2980,3 +2980,61 @@ requests. That is a classification of Garuda's requests, not proof that the
 server writes no caches or stays inside the workspace; it is a trusted local
 process, not a confined one. Runs without configuration are unchanged: no
 tool, no process and the same `mcp_manager`.
+
+## 2026-11-06 — WorkspaceEdits require run-bound previews and per-file write authority (#382)
+
+The existing optional local language service now offers rename and edit-only
+code-action previews through read-only `lsp`; separate mutating `lsp_apply`
+consumes a run/session/workspace-bound token. Previews retain exact original
+text, full-content SHA-256 digests and the client versions used for the request.
+Unknown targets are synced through Environment reads and the edit is requested
+again; the discovery edit is discarded. Server versions must match that snapshot.
+No unknown version is represented as zero. Bounds refuse an entire oversized
+preview rather than silently omitting files or replacements.
+
+Apply screens every retained path with the ordinary permission engine, checks
+all digests before any writes and uses only Environment writes/read-back. A
+failed or cancelled write triggers verified restoration of every attempted file,
+including the failing file because its write may have been partial. Per-file
+results distinguish applied, restored, untouched and failed restoration; failed
+restoration remains observable in the side-effect ledger. Cancellation settles
+writes/rollback and retains their result as its cause. Tokens are consumed on a
+write attempt, never persisted and cleared at run teardown.
+
+Resource operations, symlink aliases, overlapping/ambiguous ranges, code-action
+commands, unresolved actions and confirmation annotations are refused. Server
+`workspace/applyEdit` remains refused. This is compensating rollback without a
+filesystem transaction or compare-and-swap protection against external writers.
+A configured server does not widen a profile: `lsp_apply` joins only a toolset
+that is unrestricted or already names a file-writing tool, so read-only and
+`none` presets keep no writer while read-only `lsp` stays available.
+The local-only service boundary and unconfigured-run defaults remain unchanged;
+no new interpreter runs inside Docker/remote workspaces. LSP diagnostics do not
+replace candidate-bound verification.
+
+## 2026-11-06 — Optional local launch-only Python debugging (#388)
+
+Python DAP tools require explicit selection; default toolkits and presets stay
+unchanged. Launch is mutating and screened through the derived Python command
+and existing bash/path policy; execution control and `debug_variables` rendering
+are mutating. Basic `debug_inspect` cannot dispatch variables. Inspection returns
+bounded, versioned observations bound to an agent session, debug session and
+stop generation. Handles expire on resume and are never arbitrary DAP ids.
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw requests are unsupported. Debugpy summaries can invoke Python
+repr; inspection is not confinement or independent acceptance evidence.
+
+Only LocalEnvironment launches the optional adapter through the harness Python.
+Tools unwrap the run's HealthMonitoredEnvironment before enforcing that exact
+backend requirement. Adapter reply and stop waits have independent 15-second
+bounds; their timeout errors retain sessions, report running/unknown state and
+include the debug session id when launch has completed but its first stop is
+late. Only cancellation, expiry of the tool's run deadline and shared teardown
+reap all debug sessions owned by that agent session.
+Docker, remote, sandbox and tmux refuse without new interpreter requirements.
+An identity-bound supervisor anchors one POSIX session because debugpy places
+its debuggee in another process group. Cancellation and shared teardown kill
+and verify session membership; unknown closure remains cleanup unproved and
+quarantines ownership. Descendants that leave the POSIX session are outside
+this cleanup guardrail. Debugpy remains an optional, separately installed
+dependency; real adapter tests skip when it or required OS facilities are absent.

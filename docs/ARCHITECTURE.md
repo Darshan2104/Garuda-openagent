@@ -514,6 +514,26 @@ fastest way to learn the system.
    are byte-bounded. Apply uses current per-path permissions and source digests,
    verifies writes and attempts restoration on failure; restoration uncertainty
    is explicit and no cross-file isolation or crash transaction is claimed.
+
+   Optional Python DAP tools require explicit names (`tools.add`); neither the
+   default toolkit nor tool presets enable them. Launch is mutating and enters
+   the ordinary bash command/path permission screen with a derived Python argv.
+   Stepping/continue and variable rendering are mutating; basic inspection
+   exposes bounded observations with session identity and stop-scoped handles.
+   Debugpy can invoke Python `repr` while rendering values, so variables require
+   separate `debug_variables` authority. Inspection is not an execution isolation
+   boundary. Arbitrary object expansion, explicit getters, evaluate, attach,
+   writes, memory and raw requests refuse. Only local workspaces are supported;
+   tools unwrap the loop's health monitor before checking the exact backend.
+   Adapter reply/stop timeouts retain sessions with running or unknown state;
+   a launch stop timeout includes the debug session identity for later inspection
+   or disconnect. Cancellation and the tool's run deadline reap the agent's
+   owned debug sessions.
+   The local environment owns adapter launch and a private POSIX session spanning
+   debugpy's process groups. Cleanup kills and observes live session membership;
+   inability to verify retains “cleanup unproved” and quarantines the lease.
+   Descendants that detach into another POSIX session remain outside this cleanup
+   guardrail. Debug evidence never substitutes for independent acceptance checks.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
@@ -792,6 +812,43 @@ the MCP manager only on runs that have a language service. Diagnostics carry
 the document version Garuda sent and are labelled current, stale, unversioned
 or none. ACP harnesses keep their own tooling; subagents spawned by
 `invoke_subagent` build their toolkit without it.
+
+Rename and code-action edits (#382) use two separate tools: `lsp` requests a
+read-only preview and `lsp_apply` is mutating. `lsp` survives any profile `tools:`
+allowlist; `lsp_apply` is added only when that allowlist is unrestricted or names
+a file-writing tool (`write_file`, `edit`, `multi_edit`), so a read-only or
+`none` preset never gains it. A preview lists every replacement
+with 1-based character ranges, a full-content SHA-256 digest and the exact client
+version sent for each file. Initially unopened targets are discovered, read
+through the Environment, synced and requested again; a discovery response never
+authorizes writes. Explicit server versions must match the request snapshot;
+unversioned edits are bound to that snapshot rather than assigned a guessed
+server version. Stale server snapshots are refreshed and requested again;
+changes to the source or an already observed target refuse the preview.
+
+The run owns at most four previews, each limited to 32 files, 256 edits,
+4 MiB of original/result text each and 12,000 output bytes (or the smaller live inline allowance). Oversized previews
+are refused rather than truncated into applicable tokens. Tokens are scoped to
+the run, session and workspace, and consumed before the first write attempt.
+Only existing, direct workspace files are supported: resource operations,
+symlink aliases, overlapping/ambiguous edits, commands, unresolved code actions
+and confirmation annotations are refused. Server-initiated `workspace/applyEdit`
+continues to be refused; there is no raw request or execute-command tool.
+
+Apply evaluates `lsp_apply` through the ordinary permission engine for every
+stored path, then checks every original digest before writing through the
+Environment. Each write is read back, and successful edits are synced back to the server
+so later refactors see the applied documents. On failure or cancellation, every attempted
+file (including a possibly partial failed write) is restored from its exact
+original text and read back, with explicit per-file results. Cancellation waits
+for outstanding writes and restoration and retains the result in its exception
+cause. Failed restoration is reported and tracked in the side-effect ledger;
+it is never presented as atomic success. This is compensating rollback, without
+filesystem transactions or protection against concurrent external writers.
+Existing Docker/remote behavior stays unchanged; this local language-service
+slice introduces no interpreter requirement inside workspace environments.
+Diagnostics remain advisory; authorized candidate-bound checks establish
+verification independently.
 
 ## Conventions
 
