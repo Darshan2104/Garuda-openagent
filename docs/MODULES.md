@@ -50,11 +50,11 @@ a behaviour.
 | `buffer.py` | Session buffers holding large tool output and compacted history. Payload/descriptor publication, backups, rollback and resume copies use held no-follow directory descriptors and checked bindings; byte writes handle short progress and refuse stalled writes. The storage transaction stays in this owner. Descriptor reads revalidate regular-file size and digest; confirmed pruning survives resume and exact sibling reconciliation before verification limits. Unexplained missing payloads retain uncertainty when unverified. Legacy `.txt` captures retain observed bytes and unknown capture provenance. |
 | `session_artifact_resume.py` | Native resume's authorized artifact inheritance: carries the facade's retained source-directory binding through discovery and buffer-owner copies, rebinds selected-source capture facts and canonical typed child storage, and asks SessionStore to publish bounded metadata-only inheritance. It preserves producer lineage and failure/pruning facts without changing the original session or weakening digest checks. |
 | `artifact_read_model.py` | Versioned, bounded read-only artifact descriptor and selected-session projection. Adapts summary, transcript, buffer and flow owners without write, repair, execution or authority; carries producer/storage identity, media type, recorded/observed digest and size, redaction, completeness, source/view omissions, availability/integrity and retention policy. |
-| `ownership_read_model.py` | Versioned read-only ownership projection for one session (#376): recorded owner liveness, retained workspace leases, queue entry/claim and quarantine, capacity slots, recorded runtime children, waiting reasons (queue, quarantine, approval, quota) and reconciliation status/blockers/retained ownership. Takes no lock, writes and signals nothing, probes no process beyond the row's own owner check; names only the existing `garuda runtime recover` path and never performs it. Unreadable records stay `unavailable` and make reconciliation `unknown`. |
+| `ownership_read_model.py` | Versioned read-only ownership projection for one session (#376): recorded owner liveness, retained workspace leases, queue entry/claim and quarantine, capacity slots, recorded runtime children, bounded editing-worker inventory, waiting reasons (queue, quarantine, approval, quota) and reconciliation status/blockers/retained ownership. Takes no lock, writes and signals nothing, probes no process beyond the row's own owner check; names only the existing `garuda runtime recover` path and never performs it. Unreadable records stay `unavailable` and make reconciliation `unknown`. |
 | `child_result.py` | Versioned native child-result envelopes, accepted schema provenance, bounded inline delivery, parent-buffer publication and size/digest-checked reference resolution. The runner snapshots validated envelopes before hooks, retaining semantic facts independently of summary rendering. Referenced values carry the common artifact descriptor while pre-descriptor version-1 references remain readable. Failed publications share a stable unavailable capture adapter across live delivery, inspection and inheritance, without inventing a payload reference. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. Captures a child-scoped workspace baseline and attaches authoritative changed-path evidence or an explicit unsupported/error attribution state. |
-| `editing_worker.py` | Opt-in `EditingWorkerService` and sequential `LocalEditingWorkers`: detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Explicit integration uses the existing worktree checker and refuses changed candidates or stale destinations. Cancellation retains uncertain ownership; no automatic cleanup or replay. |
+| `editing_worker.py` | Opt-in `EditingWorkerService` and sequential `LocalEditingWorkers`: detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Explicit integration uses the existing worktree checker and refuses changed candidates or stale destinations. Cancellation retains uncertain ownership. Settled integrated or unchanged terminal repositories retire through `workspace/editing_workers.py`; receipts and patches remain, and recovery never replays candidates. |
 | `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports settled capture/process groups so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |
 
 ## `tools/` — what the agent can do
@@ -177,6 +177,19 @@ closes retained pipes after leader exit without signaling a reusable process-gro
 ID. `settlement.py` retains launch/cleanup ownership through repeated cancellation
 for both persistent and stateless local commands. `protocol.py` also defines
 `WorkspaceAccessDenied`, distinguishing policy refusals from OS permission errors.
+
+`editing_workers.py` owns bounded local editing-worker inventory and repository
+retirement (#384). It reads at most 128 storage entries and 64 KiB per receipt,
+without locks, Git or mutation; incomplete scans have unknown omitted counts.
+Cleanup checks recorded parent/worker bindings, inode identity, child settlement
+and positive release records from lease/capacity owners. It hashes actual content
+through the existing bounded snapshot owner and retains commits, index changes,
+extra refs and untracked/ignored data. `discard-worker` waives only content
+retention and requires released parent ownership. Receipts and candidate patches
+survive descriptor-relative repository removal. Missing or ambiguous records,
+legacy receipts and unproved descendants remain retained. No ownership is stolen
+or released by this service; non-local workers and concurrency remain unsupported.
+
 `paths.py` and `health.py` are path
 safety and liveness for text and binary reads. `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,

@@ -226,8 +226,15 @@ fastest way to learn the system.
    lease and capacity and block further editing dispatch. Cancelled integration
    settles its checker and retains an uncertain candidate. Durable receipts
    prevent a fresh service from bypassing retained uncertainty for that parent.
-   This first slice supports local native
-   execution only, with no automatic recovery/cleanup or concurrency claim;
+   Local worker receipts also bind parent ownership, repository identity and
+   child settlement for bounded inventory and conservative recovery through
+   `workspace/editing_workers.py`. Settled integrated or unchanged terminal
+   repositories retire automatically; receipts and patches remain. Session
+   ownership views expose uncertainty without executing Git or repairing it.
+   Operator orphan discard requires positive lease/capacity release evidence
+   and waives only the content check. Unknown descendants, absent records and
+   incomplete legacy receipts remain retained. This supports local native
+   execution only, with no restart integration or concurrency claim;
    ordinary subagents and read-only parallel flows keep their existing paths.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source

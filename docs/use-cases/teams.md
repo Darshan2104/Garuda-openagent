@@ -549,12 +549,53 @@ Local permission screening and workspace separation are guardrails, not
 confinement. Children use the same model, shared delegation bounds and a
 narrowed built-in toolkit. A finite native capacity must have room for the
 parent and child; an otherwise unlimited pool gives editing workers a ceiling
-of one. Repositories and receipts remain under the global worktrees directory.
+of one. Repositories and receipts use the global worktrees directory.
 Active-child cancellation, observed background launches and uncertain child cleanup
 retain worker ownership and block editing-worker retries. Cancelled integration
-settles its checker and retains an uncertain candidate. There is no automatic cleanup,
-recovery or restart integration; inspect the retained receipt and prove cleanup
-before any manual removal. No parallel latency or cost improvement is claimed.
+settles its checker and retains an uncertain candidate. Settled integrated workers
+and unchanged terminal workers retire automatically, including safe recovery on
+later editing-worker admission. There is no restart integration or replay.
+No parallel latency or cost improvement is claimed.
+
+### Inspect and resolve retained editing workers
+
+```bash
+garuda sessions show SESSION --json
+garuda sessions cleanup-workers SESSION
+garuda sessions discard-worker SESSION CANDIDATE_ID
+```
+
+`ownership.editing_workers` lists this parent's worker IDs, repository paths,
+state, cleanup evidence and repository retention, with the inspected storage root. The dashboard session's
+Ownership section shows the same inventory. Inspection reads at most 128 storage
+entries and 64 KiB per receipt, takes no locks, runs no Git and changes nothing.
+Unreadable/unattributed entries or a bounded scan report incomplete coverage and
+unknown omitted counts, never an empty inventory. Retained audit directories also
+count toward the scan bound; an overfull store blocks admission and cleanup
+until it can be inspected completely.
+
+`cleanup-workers` attempts conservative cleanup after parent ownership has been
+released and returns the inventory; retained entries are not cleanup successes.
+Automatic cleanup also runs inside the admitted local service under its own
+parent lease. It requires durable child settlement, readable released worker
+lease/capacity records, matching repository identity and no unintegrated or
+additional data. HEAD/index changes, extra refs/reflogs and untracked or ignored files
+prevent removal. Receipts and candidate patches remain as audit evidence.
+
+`discard-worker` explicitly discards the repository's changes for the exact
+candidate ID. It requires released parent ownership and re-proves all worker
+ownership and settlement checks. It refuses foreign sessions, linked/replaced
+repositories and retained or unknown ownership; it never removes the user
+workspace. Discard is a content decision, not permission to override uncertain
+process cleanup. Dead owners and expired heartbeats do not prove descendants
+stopped. Crash/cancellation workers with unproved descendants and older receipts
+without complete ownership evidence remain retained for supervised recovery.
+The CLI and session view inspect the standard global worker root. Callers using
+an explicit programmatic `root` inspect and resolve that store with
+`workers.repositories.inventory(session_id)`, `recover(session_id)` and
+`discard(session_id, candidate_id)`; custom locations are not auto-discovered.
+Keep the global ownership-store locations stable. Non-local workspaces and
+concurrent editing workers remain unsupported.
 
 ## Move runtime limits into garuda.yaml
 

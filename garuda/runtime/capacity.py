@@ -33,6 +33,7 @@ import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -303,6 +304,25 @@ class CapacityStore:
                 write_locked_document(directory_fd, self._path(reservation.key), document)
         except StorageError as exc:
             raise CapacityError(f"capacity storage unavailable: {exc}") from exc
+
+    def released(self, key: str, holder: str) -> bool:
+        """Prove release from an existing readable record, never a missing store."""
+        document = self._load(key)
+        path = self._path(key)
+        if not path.is_file() or path.is_symlink():
+            raise CapacityError("capacity release record is missing or ambiguous")
+        return holder not in document["slots"]
+
+    @contextmanager
+    def guard_released(self, key: str, holder: str):
+        """Keep a retired holder unreserved through repository removal."""
+        try:
+            with exclusive_lock(self.root):
+                if not self.released(key, holder) or self.slots_for_holder(holder):
+                    raise CapacityError("capacity ownership changed before retirement")
+                yield
+        except StorageError as exc:
+            raise CapacityError(str(exc)) from exc
 
     def holders(self, key: str) -> list[str]:
         """Inspect current holders. Never mutates."""

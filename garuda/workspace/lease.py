@@ -409,6 +409,26 @@ class LeaseStore:
         """Inspect current holders, if any. Never mutates."""
         return self._read_all(self._path_for(workspace_key(workspace)))
 
+    def released(self, workspace: str | Path) -> bool:
+        """Prove an issuing-owner release from a readable, empty lease record.
+
+        A missing record is not a settlement receipt. Expiry and owner death
+        never prove release; retained read-only holders also refuse cleanup.
+        """
+        path = self._path_for(workspace_key(workspace))
+        holders = self._read_all(path)
+        if not path.is_file() or path.is_symlink():
+            raise LeaseError("workspace release record is missing or ambiguous")
+        return not holders
+
+    @contextmanager
+    def guard_released(self, workspaces):
+        """Keep released workspaces unowned during repository retirement."""
+        with self._locked():
+            if not all(self.released(workspace) for workspace in workspaces):
+                raise LeaseError("workspace ownership changed before retirement")
+            yield
+
     def possibly_live_holders(self, *, now: float | None = None) -> list[Lease]:
         """Every retained lease whose descendants may still be running.
 

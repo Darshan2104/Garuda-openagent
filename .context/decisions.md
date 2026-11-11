@@ -3081,3 +3081,19 @@ reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
 snapshots preserve cumulative counts and disclose omissions through existing
 trajectory inspection. External harnesses retain their own loop and do not
 receive native reminders.
+
+## 2026-11-11 — Retire editing-worker repositories only after proved settlement (#384)
+
+- Extend the existing local editing-worker service with bounded receipt inventory,
+  automatic retirement of settled integrated or unchanged terminal repositories,
+  and explicit orphan discard. Keep receipts and candidate patches as audit evidence.
+- Record parent lease binding, worker repository identity and ownership-store roots.
+  A durable child-settlement receipt and readable released lease/capacity records
+  are prerequisites. Expired leases, dead owners, absent records and explicit
+  discard never substitute for descendant settlement. Older incomplete receipts
+  remain unknown; recovery neither releases retained ownership nor replays work.
+- Session ownership projections expose retained and uncertain repositories without
+  locks, Git execution or repair. Operator discard also requires released parent
+  ownership. Content checks include actual bounded snapshot hashes, index/HEAD,
+  extra refs and untracked/ignored data; deletion is descriptor-relative and
+  symlink resistant. Concurrent workers and non-local workspaces remain unsupported.

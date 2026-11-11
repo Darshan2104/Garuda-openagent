@@ -18,10 +18,15 @@ from garuda.core.permissions import (
     permission_workspace,
 )
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
-from garuda.runtime.capacity import CapacityError, configured_ceiling
-from garuda.runtime.strict_store import StorageError, exclusive_lock, read_document, write_locked_document
+from garuda.runtime.capacity import CapacityError, CapacityStore, configured_ceiling
+from garuda.runtime.strict_store import StorageError, exclusive_lock, write_locked_document
 from garuda.types import AgentResult
 from garuda.workspace import snapshot_proto as snap
+from garuda.workspace.editing_workers import (
+    EditingWorkerRepositories,
+    editing_workers_root,
+    repository_identity,
+)
 from garuda.workspace.health import HealthMonitoredEnvironment
 from garuda.workspace.lease import LeaseError
 from garuda.workspace.local import LocalEnvironment
@@ -31,7 +36,6 @@ from garuda.workspace.worktrees import (
     apply_snapshot_patch,
     check_snapshot_tree,
     snapshot_patch_paths,
-    worktrees_root,
 )
 
 
@@ -109,8 +113,9 @@ class _Worker:
 class LocalEditingWorkers:
     """Trusted programmatic opt-in, bound to one held mutating parent lease.
 
-    Repositories and receipts stay retained. No recovery, automatic cleanup,
-    parallel dispatch, or implicit integration authority is supplied here.
+    Receipts stay retained. Settled repositories retire only after ownership and
+    content checks; uncertain descendants retain their lease and capacity. No
+    parallel dispatch or implicit integration authority is supplied here.
     """
 
     def __init__(self, parent_guard: WorkspaceLeaseGuard, *, checks: list[str],
@@ -118,10 +123,10 @@ class LocalEditingWorkers:
         self.parent_guard = parent_guard
         self.checks = tuple(checks)
         self.image, self.timeout = image, timeout
-        self.root = Path(root) if root is not None else worktrees_root() / "editing-workers"
+        self.root = Path(root) if root is not None else editing_workers_root()
+        self.repositories = EditingWorkerRepositories(self.root)
         self._workers: dict[str, _Worker] = {}
         self._busy = False
-        self._uncertain = False
 
     def _authorize(self, env, session_id):
         backend = env
@@ -135,18 +140,14 @@ class LocalEditingWorkers:
                 or Path(env.workspace_root).resolve() != Path(self.parent_guard.workspace).resolve()):
             raise WorktreeError("worker.foreign_parent", "the service belongs to another parent")
         self.parent_guard.snapshot_ownership()
-        if self._uncertain:
-            raise WorktreeError("worker.uncertain", "a retained worker has unproved cleanup")
-        try:
-            for directory in self.root.glob("worker-*"):
-                receipt = read_document(directory / "receipt.json", versions=(1,))
-                if not receipt or "parent_session_id" not in receipt or "state" not in receipt:
-                    raise WorktreeError("worker.uncertain", "a retained worker receipt is incomplete")
-                if (receipt["parent_session_id"] == session_id
-                        and receipt["state"] not in {"ready", "failed", "integrated", "refused"}):
-                    raise WorktreeError("worker.uncertain", "retained worker cleanup is unproved")
-        except StorageError as exc:
-            raise WorktreeError("worker.uncertain", "retained worker ownership cannot be read") from exc
+        self.parent_guard.snapshot_lifetime()
+        inventory = self.repositories.recover(session_id, parent_guard=self.parent_guard)
+        if inventory["coverage"] != "complete":
+            raise WorktreeError("worker.uncertain", "retained worker ownership cannot be read completely")
+        if any(entry["repository_state"] != "removed" and entry["state"] not in {
+            "ready", "failed", "integrated", "refused",
+        } for entry in inventory["entries"]):
+            raise WorktreeError("worker.uncertain", "retained worker cleanup is unproved")
         if not self.checks or not self.image:
             raise WorktreeError("integration.no_trusted_check", "configure trusted integration checks")
 
@@ -157,8 +158,17 @@ class LocalEditingWorkers:
                                   {"version": 1, **worker.receipt})
         worker.events.append(EventType.EDITING_WORKER, dict(worker.receipt))
 
+    def _retire(self, worker):
+        try:
+            receipt = self.repositories.retire(
+                worker.receipt["parent_session_id"], worker.directory.name,
+                parent_guard=self.parent_guard,
+            )
+        except (OSError, StorageError, LeaseError, CapacityError, WorktreeError, snap.SnapshotRefused):
+            return
+        worker.receipt.update(receipt)
+
     async def _quarantine(self, worker):
-        self._uncertain = True
         # Mark ownership before any cancellable cleanup or evidence publication.
         await worker.guard.stop_heartbeat()
         self._record(worker, "uncertain", cleanup="unknown")
@@ -219,6 +229,9 @@ class LocalEditingWorkers:
             worker = _Worker(directory, workspace, None, index, head_ref, guard, {
                 "candidate_id": worker_id, "parent_session_id": runner.events.session_id,
                 "workspace": str(workspace), "cleanup": "unknown",
+                "parent_ownership": self.parent_guard.snapshot_lifetime(),
+                "lease_root": str(guard.leases.root.resolve()),
+                "capacity_root": str(CapacityStore().root.resolve()),
             }, runner.events)
             self._workers[worker_id] = worker
             self._record(worker, "admitted")
@@ -244,7 +257,8 @@ class LocalEditingWorkers:
                 parent_messages=None, allowed=[],
                 parent_permissions=_RelocatedPermissions(runner.parent_permissions, str(source), str(workspace)),
             )
-            self._record(worker, "running", base_commit=worker.base.commit,
+            self._record(worker, "running", repository_identity=repository_identity(workspace),
+                         base_commit=worker.base.commit,
                          source_head=worker.base.source_head, base_tree=worker.base.tree,
                          base_manifest_digest=worker.base.manifest_digest)
             result = await guard.race(child._run_child(profile_name, task, fork_parent_context="none"))
@@ -284,6 +298,8 @@ class LocalEditingWorkers:
                                  provenance_digest=_digest(canonical_json(provenance).encode()),
                                  provenance=provenance)
                 await guard.release()
+                self._record(worker, worker.receipt["state"], child_settled=True)
+                self._retire(worker)
             result.metadata["editing_worker"] = dict(worker.receipt)
             return result
         except asyncio.CancelledError as cancelled:
@@ -360,10 +376,10 @@ class LocalEditingWorkers:
                                  index_digest=worker.index_digest.removeprefix("sha256:"),
                                  head_ref=worker.head_ref, candidate_tree=worker.tree)
             self._record(worker, "integrated")
+            self._retire(worker)
             return dict(worker.receipt)
         except asyncio.CancelledError as cancelled:
             if owns_busy and worker is not None:
-                self._uncertain = True
                 try:
                     self._record(worker, "uncertain", cleanup="unknown")
                 except Exception as exc:
@@ -373,8 +389,6 @@ class LocalEditingWorkers:
             uncertain = (owns_busy and worker is not None
                          and worker.receipt["state"] in {"integrating", "integrated"}
                          and not isinstance(exc, WorktreeError))
-            if uncertain:
-                self._uncertain = True
             outcome = {"state": "uncertain" if uncertain else "refused", "candidate_id": candidate_id,
                        "code": getattr(exc, "code", "integration.failed"), "message": str(exc)}
             if owns_busy and worker is not None:

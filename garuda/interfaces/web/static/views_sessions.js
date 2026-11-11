@@ -190,6 +190,7 @@ function ownershipHtml(view) {
   var progress = view.progress || {};
   var rec = view.reconciliation || {};
   var leases = view.workspace_leases || {};
+  var workers = view.editing_workers || {};
   var waiting = (progress.waiting || []).map(function (w) {
     return w.reason + (w.position ? " #" + w.position : "") + (w.count ? " (" + w.count + ")" : "") +
       (w.operation ? " · " + w.operation : "");
@@ -203,6 +204,13 @@ function ownershipHtml(view) {
     chip("reconciliation", rec.status || "unknown", rec.status === "eligible" ? "chip-on" : "chip-off") + ' ' +
     chip("leases", leases.coverage === "complete" ? String((leases.holders || []).length) : "unknown") + '</p>' +
     (waiting.length ? '<p class="stat-sub">Waiting on: ' + esc(waiting.join(", ")) + '</p>' : '') +
+    (workers.coverage && workers.coverage !== "complete" ?
+      '<p class="stat-sub">Editing workers: unknown (incomplete inventory)</p>' : '') +
+    (workers.entries || []).filter(function (w) { return w.repository_state !== "removed"; }).map(function (w) {
+      return '<p class="stat-sub">Editing worker <code>' + esc(w.candidate_id) + '</code>: ' +
+        esc(w.state) + ' · cleanup ' + esc(w.cleanup) + ' · ownership ' + esc(w.ownership) +
+        '<br>Repository: <code>' + esc(w.workspace) + '</code></p>';
+    }).join('') +
     ((rec.blockers || []).length ? '<p class="stat-sub">Blocked by: ' + esc(rec.blockers.join(", ")) + '</p>' : '') +
     ((rec.retained || []).length ? '<p class="stat-sub">Still retained: ' + esc(rec.retained.join(", ")) + '</p>' : '') +
     (rec.path ? '<p class="stat-sub">Existing path: <code>' + esc(rec.path.command) + '</code></p>' : '') +
