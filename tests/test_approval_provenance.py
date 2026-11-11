@@ -267,13 +267,14 @@ async def test_native_unbound_and_foreign_answers_are_audited_without_settling_a
     with pytest.raises(RuntimeProtocolError):
         await other.permission_response(approval_id=request.approval_id, allow=True)
     assert decision_records(store, "other")[0]["outcome"] == "deny"
-    with pytest.raises(RuntimeProtocolError):
-        await runtime.permission_response(approval_id=request.approval_id, allow=True, digest="0" * 64)
+    for allow in (True, False):
+        with pytest.raises(RuntimeProtocolError):
+            await runtime.permission_response(approval_id=request.approval_id, allow=allow, digest="0" * 64)
     for unknown in ["unknown" * 10000, ["invalid"]]:
         with pytest.raises(RuntimeProtocolError):
             await runtime.permission_response(approval_id=unknown, allow=True)
     assert broker.pending() == [request]
-    assert len(decision_records(store, SID)) == 3
+    assert len(decision_records(store, SID)) == 4
     assert all(r["outcome"] == "deny" for r in decision_records(store, SID))
     await runtime.permission_response(approval_id=request.approval_id, allow=False, digest=request.digest)
     await asyncio.wait_for(prompting, 3)
@@ -370,6 +371,33 @@ async def test_acp_server_permission_roundtrip_publishes_the_native_binding(stor
     assert records[0]["ceiling"] == request["params"]["ceiling"]
 
 
+@pytest.mark.parametrize("approved", [True, False])
+async def test_acp_server_denies_the_request_an_editor_answered_stale(acp_native, store, tmp_path, approved):
+    from garuda.acp.protocol import decode_frame
+
+    server, duplex, sid, _, broker = acp_native
+    prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
+                                    "prompt": [{"type": "text", "text": "write proof"}]}))
+    request = None
+    for _ in range(200):
+        request = next((decode_frame(frame)[0] for frame in duplex.sent
+                        if decode_frame(frame)[0].get("method") == "session/request_permission"), None)
+        if request is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert request is not None
+    await server.handle({"jsonrpc": "2.0", "id": request["id"],
+                         "result": {"approved": approved, "request_digest": "0" * 64}})
+    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "end_turn"
+    assert broker.pending() == []
+    records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
+    assert len(records) == 1
+    assert records[0]["outcome"] == "deny" and records[0]["via"] == "permission_response"
+    assert any(r["outcome"] == "deny" and r["answered_approval_id"] == records[0]["approval_id"]
+               for r in decision_records(store, sid))
+    assert not (tmp_path / "proof.txt").exists()
+
+
 @pytest.mark.parametrize("policy, source, allowed", [
     ({"mode": "readonly"}, "mode", False),
     ({"mode": "yolo", "tool_rules": {"write_file": "deny"}}, "tool-rule", False),
@@ -407,13 +435,59 @@ async def test_native_disconnect_settles_and_audits_the_waiting_request(store, n
     prompting = asyncio.create_task(runtime.prompt("write proof"))
     request = await _parked(broker)
     await runtime.cancel(reason="client disconnected")
-    with pytest.raises(RuntimeProtocolError):
-        await runtime.permission_response(approval_id=request.approval_id, allow=True)
     with pytest.raises(RuntimeCancelledError):
         await asyncio.wait_for(prompting, 3)
+    with pytest.raises(RuntimeProtocolError):
+        await runtime.permission_response(approval_id=request.approval_id, allow=True)
     assert broker.pending() == []
     record = _records(store)[f"approval:{request.approval_id}"]
     assert record["outcome"] == "disconnected"
+    assert not (tmp_path / "proof.txt").exists()
+
+
+async def test_a_cancelled_turn_denies_asks_made_after_the_cancel(acp_native, store, tmp_path):
+    from garuda.acp.protocol import decode_frame
+    from garuda.model.protocol import ModelResponse
+    from garuda.types import ToolCall
+
+    _, duplex, sid, runtime, broker = acp_native
+    runtime._model._responses.insert(1, ModelResponse(content=None, tool_calls=[
+        ToolCall(id="second", name="write_file", arguments={"path": "second.txt", "content": "second"})]))
+    prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
+                                    "prompt": [{"type": "text", "text": "write twice"}]}))
+    for _ in range(200):
+        if any(decode_frame(frame)[0].get("method") == "session/request_permission" for frame in duplex.sent):
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("server did not request permission")
+    await duplex.call("session/cancel", {"sessionId": sid})
+    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "cancelled"
+    assert broker.pending() == []
+    requests = [decode_frame(frame)[0] for frame in duplex.sent
+                if decode_frame(frame)[0].get("method") == "session/request_permission"]
+    assert len(requests) == 1
+    records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
+    assert sorted(record["outcome"] for record in records) == ["cancelled", "disconnected"]
+    assert not (tmp_path / "proof.txt").exists()
+    assert not (tmp_path / "second.txt").exists()
+
+
+@pytest.mark.parametrize("allow", [True, False])
+async def test_an_answer_during_a_cancel_settles_the_ask_as_a_deny(store, tmp_path, native_factory, allow):
+    from garuda.runtime.protocol import RuntimeCancelledError
+
+    runtime, _, broker = native_factory()
+    await runtime.start(task="approval", session_id=SID)
+    prompting = asyncio.create_task(runtime.prompt("write proof"))
+    request = await _parked(broker)
+    await runtime.cancel(reason="client cancel")
+    await runtime.permission_response(approval_id=request.approval_id, allow=allow, digest="0" * 64)
+    assert broker.pending() == []
+    with pytest.raises(RuntimeCancelledError):
+        await asyncio.wait_for(prompting, 3)
+    record = _records(store)[f"approval:{request.approval_id}"]
+    assert record["outcome"] == "deny" and record["via"] == "permission_response"
     assert not (tmp_path / "proof.txt").exists()
 
 
@@ -426,6 +500,24 @@ async def test_policy_audit_failure_preserves_dispatch_decision(store, native_fa
     assert (tmp_path / "proof.txt").exists() is allowed
     assert "Decision observation could not be persisted" in caplog.text
     assert not any("audit failed" in (message.content or "").lower() for message in runtime.last_result.messages)
+
+
+async def test_an_observation_after_the_session_is_deleted_does_not_recreate_it(store, caplog):
+    """A late observation is dropped, never written into an orphan directory."""
+    import shutil
+
+    from garuda.core.permissions import PermissionDecision
+
+    engine = PermissionEngine(mode="readonly")
+    broker = ApprovalBroker(engine, store=store, session_id=SID)
+    await broker.record_policy("bash", PermissionDecision.DENY, "read-only", source="mode",
+                               mode="readonly", engine=engine)
+    assert (store.session_dir(SID) / "decision-audit" / "current.jsonl").is_file()
+    shutil.rmtree(store.session_dir(SID))
+    await broker.record_policy("bash", PermissionDecision.DENY, "read-only", source="mode",
+                               mode="readonly", engine=engine)
+    assert not store.session_dir(SID).exists()
+    assert "Decision observation could not be persisted" in caplog.text
 
 
 @pytest.mark.parametrize("delegated", [False, True])

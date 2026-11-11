@@ -363,13 +363,18 @@ class NativeGarudaRuntime:
         broker = getattr(self._permissions, "approval_broker", None)
         respond = self._parked_approvals.pop(approval_id, None) if isinstance(approval_id, str) else None
         try:
-            if (broker is None or respond is not None or self._cancel_requested is not None
+            if (broker is None or respond is not None
                     or self._state in (LifecycleState.CLOSED, LifecycleState.FAILED)):
                 # Legacy callbacks have no action/digest to authorize.
                 if broker is None:
                     raise ValueError("no session approval broker")
                 await broker.answer_bound(approval_id, False, session_id=self._session_id, digest="")
-            await broker.answer_bound(approval_id, allow, session_id=self._session_id, digest=digest)
+            # During cancellation, settle any live answer as a deny even if its
+            # digest is stale; refusing it would leave the request waiting.
+            cancelling = self._cancel_requested is not None
+            await broker.answer_bound(approval_id, False if cancelling else allow,
+                                      session_id=self._session_id,
+                                      digest=None if cancelling else digest)
         except (KeyError, ValueError) as exc:
             if respond is not None:
                 respond(False)
@@ -401,9 +406,9 @@ class NativeGarudaRuntime:
             self._move(LifecycleState.CLOSED)
         broker = getattr(self._permissions, "approval_broker", None)
         if broker is not None:
-            for request in broker.pending():
-                if request.session_id == self._session_id:
-                    broker.disconnected(request.approval_id)
+            # Disconnect the asks waiting now and deny the ones this turn still
+            # makes before its boundary, instead of parking them for the timeout.
+            broker.cancel_session(reason or "cancelled")
         if audit_error is not None:
             raise CancellationAuditError(
                 f"turn cancelled but its audit record failed: {audit_error}"

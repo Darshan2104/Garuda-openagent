@@ -3123,3 +3123,22 @@ reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
 snapshots preserve cumulative counts and disclose omissions through existing
 trajectory inspection. External harnesses retain their own loop and do not
 receive native reminders.
+
+## 2026-11-11 — Settle cancelled and refused approval requests promptly (#375)
+
+Native cancellation disconnects requests already parked and marks the session
+broker cancelled before the turn continues. Later ASK decisions return false
+and record `cancelled` without publishing another request. Answers delivered
+while cancellation is pending bind to the session's live request as a deny,
+even with a stale digest; ordinary answers retain their binding checks.
+
+The inbound ACP server retries any refused editor answer as an id-only denial
+for the request it sent. The broker records both the refusal observation and
+the settled denial. Foreign, unknown or already settled requests still refuse.
+
+Decision observations create only `decision-audit/` beneath an existing session
+directory. The shared lock keeps parent creation enabled by default for other
+storage owners; this writer disables it so late observations cannot recreate a
+deleted session. Failed observations are dropped with the existing warning.
+Execution remains with the existing tool and Environment owners; workspace
+interpreter requirements and ordinary permission outcomes are unchanged.

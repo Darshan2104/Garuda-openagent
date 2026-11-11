@@ -241,14 +241,21 @@ class AcpServer:
                 logger.debug("Client refused permission request; denying")
                 result = {"approved": False}
             if result is not None:  # session/approve may already have answered it
+                approval_id = event.payload.get("approval_id", "")
+                approved = bool(result.get("approved", False))
                 try:
                     await runtime.permission_response(
-                        approval_id=event.payload.get("approval_id", ""),
-                        allow=bool(result.get("approved", False)),
+                        approval_id=approval_id, allow=approved,
                         **({"digest": result["request_digest"]} if "request_digest" in result else {}),
                     )
                 except RuntimeProtocolError:
-                    logger.debug("Permission answer no longer binds to a live request")
+                    # The server knows which request it sent. A refused answer
+                    # must deny it rather than leave the prompt waiting.
+                    logger.debug("Permission answer refused; denying %s", approval_id)
+                    try:
+                        await runtime.permission_response(approval_id=approval_id, allow=False)
+                    except RuntimeProtocolError:
+                        logger.debug("Permission answer no longer binds to a live request")
             return
         if event.kind.value == "lifecycle" and event.payload.get("state") == "approval_settled":
             future = self._permission_requests.get((event.session_id, event.payload.get("approval_id", "")))

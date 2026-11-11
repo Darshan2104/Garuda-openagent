@@ -16,11 +16,14 @@ def append_decision(directory: Path, record: dict) -> None:
 
     Callers run this host-side I/O off the event loop. Rotation drops old
     observations; this trail never grants authority or claims complete history.
+
+    Create only ``decision-audit/`` inside an existing session directory, so a
+    late observation cannot recreate a deleted session.
     """
     data = (json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(data) > MAX_RECORD_BYTES:
         raise ValueError("decision audit record exceeds its byte limit")
-    with exclusive_lock(directory) as directory_fd:
+    with exclusive_lock(directory, parents=False) as directory_fd:
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
         fd = os.open("current.jsonl", flags, 0o600, dir_fd=directory_fd)
         try:

@@ -153,6 +153,7 @@ class ApprovalBroker:
         self._disconnected: set[str] = set()
         self._via: dict[str, tuple[str, str | None]] = {}
         self._terminal: dict[str, Unanswered] = {}
+        self._cancelled_reason: str | None = None
         self._seq = 0
 
     @property
@@ -174,6 +175,12 @@ class ApprovalBroker:
     def pending(self) -> list[ApprovalRequest]:
         """Parked approvals, oldest first — the single surface UI cards read."""
         return sorted(self._parked.values(), key=lambda r: r.requested_at)
+
+    def cancel_session(self, reason: str = "cancelled") -> None:
+        """Disconnect pending asks and deny future asks for this session."""
+        self._cancelled_reason = reason or "cancelled"
+        for request in list(self._parked.values()):
+            self.disconnected(request.approval_id)
 
     def answer(self, approval_id: str, allow: bool, *, via: str = "answerer",
                reason: str | None = None, digest: str | None = None) -> None:
@@ -349,6 +356,11 @@ class ApprovalBroker:
         """
         approval_id = approval_id or self._next_id()
         request = self._request(family, action, runtime_id, session_id, approval_id)
+        if self._cancelled_reason is not None:
+            reason = f"Approval cancelled with the turn ({self._cancelled_reason}): {action}"
+            err = self._audit(session_id, approval_id, ApprovalOutcome.CANCELLED, action, family,
+                              runtime_id, via="cancel", reason=reason, request=request)
+            return False, reason if err is None else f"{reason}; {err}"
         try:
             outcome, via, reason = await self._await_outcome(request)
         except asyncio.CancelledError:
