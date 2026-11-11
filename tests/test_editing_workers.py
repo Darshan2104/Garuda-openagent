@@ -578,6 +578,34 @@ async def test_failed_admission_receipt_never_publishes_a_worker(editing, monkey
     _receipt(await runner.run("editor", "admit after a write failure", editing_worker=True))
 
 
+@pytest.mark.parametrize("name", ["worker-vanished", ".admit-vanished"])
+async def test_worker_inventory_skips_entries_removed_after_scan(editing, monkeypatch, name):
+    from contextlib import contextmanager
+
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    vanished = workers.root / name
+    vanished.mkdir(mode=0o700)
+    scandir = os.scandir
+
+    @contextmanager
+    def removing_scan(path):
+        with scandir(path) as entries:
+            listing = list(entries)
+            for entry in listing:
+                if entry.name == name:
+                    assert entry.is_dir(follow_symlinks=False)
+                    vanished.rmdir()
+            yield iter(listing)
+
+    monkeypatch.setattr(os, "scandir", removing_scan)
+    view = workers.repositories.inventory(runner.events.session_id)
+    assert view["coverage"] == "complete" and view["omitted"] == 0
+    assert [entry["candidate_id"] for entry in view["entries"]] == [receipt["candidate_id"]]
+    assert view["orphans"] == []
+    assert not vanished.exists()
+
+
 async def test_receiptless_empty_and_staging_workers_are_reported_and_cleanable(editing):
     runner, workers, repo = editing
     workers.root.mkdir(mode=0o700, parents=True)

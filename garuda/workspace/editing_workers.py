@@ -116,7 +116,10 @@ class EditingWorkerRepositories:
                         if not entry.is_dir(follow_symlinks=False):
                             raise WorktreeError("worker.uncertain", "unrecognized worker entry")
                         if not entry.name.startswith("worker-"):
-                            state = self._orphan_state(self.root / entry.name, entry.name)
+                            try:
+                                state = self._orphan_state(self.root / entry.name, entry.name)
+                            except FileNotFoundError:
+                                continue
                             if state is None:
                                 raise WorktreeError("worker.uncertain", "unrecognized worker entry")
                             orphans.append({"directory": entry.name, "state": state})
@@ -166,6 +169,11 @@ class EditingWorkerRepositories:
             return None
         try:
             fd = open_directory(directory, private_ancestors=False)
+        except FileNotFoundError:
+            raise
+        except (OSError, StorageError):
+            return None
+        try:
             try:
                 if os.fstat(fd).st_uid != os.getuid():
                     return None
@@ -440,9 +448,9 @@ class EditingWorkerRepositories:
             with exclusive_lock(self.root) as root_fd:
                 with os.scandir(root_fd) as directories:
                     for entry in directories:
-                        if self._orphan_state(self.root / entry.name, entry.name) is None:
-                            continue
                         try:
+                            if self._orphan_state(self.root / entry.name, entry.name) is None:
+                                continue
                             if entry.name.startswith(STAGING_PREFIX):
                                 fd = open_directory(self.root / entry.name, private_ancestors=False)
                                 try:
