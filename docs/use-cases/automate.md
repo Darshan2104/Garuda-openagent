@@ -317,9 +317,13 @@ not finished, and `uncertain` when the latest attempt ended without recording a
 result. Otherwise it is the latest outcome: `disabled`, `zero-pending`,
 `probe-unavailable` (no quota observation), `quota-waiting`,
 `dispatch-in-progress` (another tick holds the claim), `dispatched`, `attention`
-(a flow is blocked or uncertain) or `failed`. `last_dispatch` changes only when a
-tick's own claim actually resumed a continuation. If the cron entry is installed
-but `last_attempt` is old, the scheduler is not running the wrapper.
+(a flow is blocked or uncertain; every later tick stays at `attention` and
+names the flow until you resolve or cancel it) or `failed`. `last_dispatch`
+changes only when a tick's own claim actually resumed a continuation. If the
+cron entry is installed but `last_attempt` is old, the scheduler is not running
+the wrapper. An unreadable `tick-health.json` never stops a tick or hides the
+schedule and flows: ticks still run and report `health_error`, and status shows
+`tick_health` as `unknown` with a reason until you inspect and remove the file.
 
 Enablement is published only after successful installation readback. If
 `enable` fails with an OS error such as `Operation not permitted`, recovery

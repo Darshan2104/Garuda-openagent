@@ -2373,4 +2373,7 @@ reads this file next to observed cron installation and never probes quota or
 runs the wrapper; an attempt without its own result is `running` or `uncertain`.
 Health never authorizes dispatch: account, version, workspace, receipt and
 exclusive-claim gates stay authoritative. A health-write failure on the error
-path never masks the tick's own exception.
+path never masks the tick's own exception, and an unreadable health file never
+stops a tick or hides status: the tick reports `health_error`, status reports
+`unknown`, and the corrupt file is left for the operator rather than replaced.
+A flow already blocked or uncertain keeps every later tick at `attention`.

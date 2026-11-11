@@ -406,18 +406,31 @@ class FlowRecovery:
 
     async def tick(self):
         tick_id = uuid.uuid4().hex
-        self.records.tick_started(tick_id)
+        health_errors = []
+        # Health is evidence, not control flow: an unwritable health record
+        # never stops the tick; the report says the health was not recorded.
+        try:
+            self.records.tick_started(tick_id)
+        except (OSError, ValueError, ss.StorageError) as exc:
+            health_errors.append(f"tick attempt not recorded: {exc}")
         outcomes, dispatched = [], None
         try:
             report = await self._tick(outcomes)
         except BaseException as exc:
-            # Health is evidence, not control flow: never mask the tick's own failure.
+            # Never mask the tick's own failure.
             with contextlib.suppress(OSError, ValueError, ss.StorageError):
                 self.records.tick_finished(tick_id, "failed", f"{type(exc).__name__}: {exc}",
                                            pending=None)
             raise
-        pending = sum(1 for row in self.records.records()
-                      if row and row.get("state") == "waiting-for-quota")
+        rows = [row for row in self.records.records() if row]
+        pending = sum(1 for row in rows if row.get("state") == "waiting-for-quota")
+        seen = {sid for _outcome, sid, _reason, _resumed in outcomes}
+        # A flow already blocked or uncertain still awaits the operator; it keeps
+        # every later tick at attention without being dispatched.
+        outcomes += [("attention", row["flow_session"], f"flow {row['flow_session']} is "
+                      f"{row['state']}: {row.get('reason') or 'no reason recorded'}", False)
+                     for row in rows if row.get("state") in {"blocked", "uncertain"}
+                     and row["flow_session"] not in seen]
         for _outcome, sid, _reason, resumed in outcomes:
             if resumed:
                 dispatched = sid
@@ -427,8 +440,16 @@ class FlowRecovery:
             outcome, reason = "zero-pending", "no continuation is waiting for quota"
         else:
             outcome, _, reason, _ = min(outcomes, key=lambda o: TICK_OUTCOMES.index(o[0]))
-        self.records.tick_finished(tick_id, outcome, reason, pending=pending,
-                                   dispatched_flow=dispatched)
+        try:
+            self.records.tick_finished(tick_id, outcome, reason, pending=pending,
+                                       dispatched_flow=dispatched)
+        except (OSError, ValueError, ss.StorageError) as exc:
+            health_errors.append(f"tick result not recorded: {exc}")
+        if health_errors:
+            from garuda.context.redact import redact_text
+
+            detail, _ = redact_text("; ".join(health_errors)[:MAX_HEALTH_REASON * 2])
+            report["health_error"] = detail[:MAX_HEALTH_REASON]
         return report
 
     async def _tick(self, outcomes):

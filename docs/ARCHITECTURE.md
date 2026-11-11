@@ -193,8 +193,11 @@ fastest way to learn the system.
    (`last_dispatch`) only to the tick whose own claim the flow service advanced
    to running; a tick that lost the claim reports the other owner. Status reads
    this file and derives `running` or `uncertain` for an attempt without its own
-   result. Health is evidence, never dispatch authority: account, version,
-   workspace, receipt and exclusive-claim gates still decide every dispatch.
+   result. A flow left blocked or uncertain keeps later ticks at `attention`.
+   Health is evidence, never dispatch authority: account, version, workspace,
+   receipt and exclusive-claim gates still decide every dispatch, and an
+   unreadable health file neither stops a tick (it reports `health_error`) nor
+   hides status (`tick_health.state` is `unknown`).
 
    Recovery records and version-1 scheduler settings live in a strict private
    user store. `GARUDA_RECOVERY_ROOT` selects a custom store consistently for

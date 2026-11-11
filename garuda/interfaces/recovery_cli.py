@@ -35,8 +35,12 @@ def run_recovery(args) -> int:
         else:
             # Installation and runtime health are observed separately; status
             # reads recorded tick health and never probes quota or runs a tick.
-            result = {"schedule": schedule_status(root),
-                      "tick_health": tick_health(records.health()),
+            try:
+                health = tick_health(records.health())
+            except (OSError, ValueError, ss.StorageError) as exc:
+                # Unreadable health is unknown, never a reason to hide the rest.
+                health = {"state": "unknown", "reason": f"tick health is unreadable: {exc}"}
+            result = {"schedule": schedule_status(root), "tick_health": health,
                       "flows": [project(row) for row in records.records()]}
         print(json.dumps(result, indent=2))
         if command == "tick" and any(

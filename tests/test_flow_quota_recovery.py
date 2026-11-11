@@ -508,3 +508,54 @@ async def test_tick_health_distinguishes_unavailable_probe_crash_and_failure(har
         await FlowRecovery().tick()
     assert h.records.health()["last_result"]["outcome"] == "failed"
     assert tick_health(h.records.health())["state"] == "failed"
+
+
+async def test_a_flow_left_blocked_or_uncertain_keeps_later_ticks_at_attention(harness):
+    h = harness
+    first = await h.service.run("pbr", "ship it", str(h.repo))
+    sid = first.flow.flow_session
+    claim = h.records.claim(sid, automatic=True)
+    h.records.update(sid, {"owner": {"pid": 2_000_000_000, "identity": "gone", "pgid": 1}},
+                     token=claim["token"])
+    await FlowRecovery().tick()
+    assert h.records.get(sid)["state"] == "uncertain"
+    assert h.records.health()["last_result"]["outcome"] == "attention"
+
+    # Nothing is waiting, but the operator still has to act on the uncertain flow.
+    h.clock.now += 3601
+    report = await FlowRecovery().tick()
+    assert report["flows"] == [] and h.records.get(sid)["state"] == "uncertain"
+    result = h.records.health()["last_result"]
+    assert result["outcome"] == "attention" and result["pending"] == 0
+    assert sid in result["reason"] and "uncertain" in result["reason"]
+    assert tick_health(h.records.health())["state"] == "attention"
+    assert "last_dispatch" not in h.records.health()
+
+
+async def test_unreadable_tick_health_neither_stops_ticks_nor_hides_status(harness, monkeypatch, capsys):
+    h = harness
+    first = await h.service.run("pbr", "ship it", str(h.repo))
+    sid = first.flow.flow_session
+    assert h.records.get(sid)["state"] == "waiting-for-quota"
+    (h.records.root / "tick-health.json").write_text("{not json")
+    h.script.exhausted = False
+    h.clock.now += 3601
+
+    report = await FlowRecovery().tick()
+    assert report["flows"][0]["state"] == "completed" and h.records.get(sid)["dispatches"] == 1
+    assert "not recorded" in report["health_error"]
+    # The corrupt evidence is reported, never silently replaced.
+    assert (h.records.root / "tick-health.json").read_text() == "{not json"
+
+    from garuda.interfaces import recovery_cli
+
+    monkeypatch.setattr("garuda.runtime.recovery_schedule.schedule_status",
+                        lambda root: {"installed": True, "reason": None})
+    capsys.readouterr()
+    assert recovery_cli.run_recovery(SimpleNamespace(root=str(h.records.root),
+                                                     recovery_command="status")) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["tick_health"]["state"] == "unknown"
+    assert "unreadable" in status["tick_health"]["reason"]
+    assert status["schedule"]["installed"] is True
+    assert [row["flow_session"] for row in status["flows"]] == [sid]
