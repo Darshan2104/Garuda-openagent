@@ -5,7 +5,9 @@ Present only when the user's global settings configure a language server (see
 environment (so workspace path policy applies), sends that exact text to the
 server, and converts positions both ways: the model speaks 1-based lines and
 columns in characters, as ``read_file`` shows them; the server speaks 0-based
-UTF-16. Result locations the run's path rules deny are withheld.
+UTF-16. Result locations the run's path rules deny are withheld. Rename and
+code-action previews share a run-owned store with the separate mutating
+``lsp_apply`` tool; all file writes go through the Environment.
 
 The effect is declared read-only because Garuda sends only read-labelled
 requests and refuses server-requested edits. That label is not proof: the
@@ -17,18 +19,20 @@ than served by a host process that would bypass their boundary.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
+from garuda.lsp.edits import MAX_PREVIEW_BYTES, WorkspaceEdits, workspace_path
 from garuda.lsp.positions import from_utf16, lsp_lines, to_utf16, uri_to_path
-from garuda.lsp.protocol import LanguageService, LanguageServiceError, Location, ServiceState
+from garuda.lsp.protocol import LanguageService, LanguageServiceError, Location, Range, ServiceState
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.paths import resolve_workspace_path
 from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
-ACTIONS = ("definition", "references", "hover", "symbols", "diagnostics", "status")
-_POSITION_ACTIONS = {"definition", "references", "hover"}
+ACTIONS = ("definition", "references", "hover", "symbols", "diagnostics", "status", "rename", "code_action")
+_POSITION_ACTIONS = {"definition", "references", "hover", "rename", "code_action"}
 MAX_SHOWN_LOCATIONS = 100
 MAX_SHOWN_SYMBOLS = 300
 MAX_SHOWN_DIAGNOSTICS = 100
@@ -71,11 +75,15 @@ class LanguageServerTool:
         "properties": {
             "action": {"type": "string", "enum": list(ACTIONS)},
             "path": {"type": "string", "description": "File path relative to workspace or absolute"},
-            "line": {"type": "integer", "description": "1-based line (definition/references/hover)"},
+            "line": {"type": "integer", "description": "1-based line for navigation, rename or code_action"},
             "column": {
                 "type": "integer",
                 "description": "1-based column in characters, as read_file shows the line",
             },
+            "new_name": {"type": "string", "description": "rename: new symbol name"},
+            "title": {"type": "string", "description": "code_action: exact title to preview; omit to list"},
+            "end_line": {"type": "integer", "description": "code_action: 1-based end line"},
+            "end_column": {"type": "integer", "description": "code_action: 1-based end column"},
             "include_declaration": {
                 "type": "boolean",
                 "description": "references: include the declaration itself (default true)",
@@ -85,6 +93,7 @@ class LanguageServerTool:
     }
 
     def __init__(self, services: list[LanguageService]):
+        self.edits = WorkspaceEdits()
         self._services = list(services)
         extensions = sorted({f".{e}" for s in self._services for e in s.extensions})
         self.description = (
@@ -93,7 +102,9 @@ class LanguageServerTool:
             "(document outline) and diagnostics for a file; status shows each server's "
             "state without starting it. Prefer this over text search to follow aliases, "
             "re-exports and inheritance. Diagnostics say whether they are current for the "
-            "file's present text or stale."
+            "file's present text or stale. rename (new_name) and code_action (title) return "
+            "read-only WorkspaceEdit previews; use lsp_apply with the preview_token to apply. "
+            "Omit code_action title to list choices. Commands and file operations are refused."
         )
 
     def _service_for(self, path: str) -> LanguageService | None:
@@ -136,10 +147,14 @@ class LanguageServerTool:
                 f"this run uses {type(getattr(env, 'inner', env)).__name__}.",
                 language_server=service.name,
             )
+        if action in {"rename", "code_action"} and ctx.permissions is None:
+            return _error("Language edit previews require the run's permission engine")
         try:
-            absolute = str(resolve_workspace_path(Path(root), path, True))
-            text = await env.read_file(path)
-        except (OSError, UnicodeError) as exc:
+            absolute = (workspace_path(root, path) if action in {"rename", "code_action"}
+                        else str(resolve_workspace_path(Path(root), path, True)))
+            text = ((await env.read_bytes(path)).decode("utf-8")
+                    if action in {"rename", "code_action"} else await env.read_file(path))
+        except (OSError, UnicodeError, LanguageServiceError) as exc:
             metadata = {"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {}
             return _error(f"Cannot read {path}: {exc}", **metadata)
         lines = lsp_lines(text)
@@ -155,10 +170,43 @@ class LanguageServerTool:
                 return _error(f"column {column} is beyond the end of line {line} "
                               f"({len(lines[line - 1])} characters)")
             position = (line - 1, to_utf16(lines[line - 1], column - 1))
+        if action == "rename" and (not isinstance(arguments.get("new_name"), str)
+                                   or not arguments["new_name"].strip()):
+            return _error("rename requires a non-empty new_name")
+        selection = None
+        if action == "code_action":
+            end_line = arguments.get("end_line", arguments["line"])
+            end_column = arguments.get("end_column", arguments["column"])
+            if (type(end_line) is not int or type(end_column) is not int
+                    or not 1 <= end_line <= len(lines)
+                    or not 1 <= end_column <= len(lines[end_line - 1]) + 1
+                    or (end_line, end_column) < (arguments["line"], arguments["column"])):
+                return _error("Invalid code_action end position")
+            selection = Range(*position, end_line - 1, to_utf16(lines[end_line - 1], end_column - 1))
         metadata = {"language_server": service.name}
         try:
             version = await service.sync(absolute, text, root)
             metadata["document_version"] = version
+            if action in {"rename", "code_action"}:
+                if action == "rename":
+                    async def request():
+                        return await service.rename(absolute, *position, arguments["new_name"])
+                else:
+                    if "title" not in arguments:
+                        actions = await service.code_actions(absolute, selection)
+                        titles = [{"title": a["title"], "previewable": bool(a.get("edit"))
+                                   and "command" not in a and "disabled" not in a}
+                                  for a in actions]
+                        content = json.dumps({"actions": titles}, ensure_ascii=False)
+                        if len(content.encode("utf-8")) > MAX_PREVIEW_BYTES:
+                            return _error("Code-action list exceeds the 12000-byte limit")
+                        return ToolResult(tool_call_id="", content=content, metadata=metadata)
+                    if not isinstance(arguments["title"], str):
+                        return _error("code_action title must be a string")
+
+                    async def request():
+                        return await service.code_action(absolute, selection, arguments["title"])
+                return await self.edits.preview(request, service, env, ctx, root, absolute, text)
             if action == "definition":
                 found = await service.definition(absolute, *position)
                 return await self._locations("definition", found, absolute, lines, env, ctx, root, metadata)
@@ -177,7 +225,9 @@ class LanguageServerTool:
                 return self._symbols(await service.symbols(absolute), lines, metadata)
             return self._diagnostics(await service.diagnostics(absolute, DIAGNOSTIC_WAIT),
                                      path, lines, metadata)
-        except LanguageServiceError as exc:
+        except (LanguageServiceError, OSError, UnicodeError) as exc:
+            if isinstance(exc, WorkspaceAccessDenied):
+                metadata["permission_denied"] = True
             return _error(str(exc), **metadata)
 
     async def _locations(self, noun, found: list[Location], absolute, lines, env, ctx, root,
@@ -286,3 +336,28 @@ def _display_path(path: str, root: str) -> str:
         except ValueError:
             continue
     return path
+
+
+class ApplyLanguageEditTool:
+    effect = ToolEffect.MUTATING
+    name = "lsp_apply"
+    description = (
+        "Apply an exact WorkspaceEdit previously previewed by lsp in this run. "
+        "Requires preview_token; checks every target's permissions and original digest "
+        "before writing. Reports each file's apply or rollback outcome. "
+        "A write attempt consumes the token."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"preview_token": {"type": "string"}},
+        "required": ["preview_token"],
+    }
+
+    def __init__(self, edits: WorkspaceEdits):
+        self.edits = edits
+
+    async def execute(self, arguments: dict, env: Environment, ctx: ToolContext) -> ToolResult:
+        root = _local_root(env)
+        if root is None:
+            return _error("Language edits are supported only in a local workspace")
+        return await self.edits.apply(arguments.get("preview_token"), env, ctx, root)
