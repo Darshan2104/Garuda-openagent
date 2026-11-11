@@ -261,3 +261,15 @@ def describe_unavailable() -> str:
 # Kept for callers that build a shell string rather than an argv (e.g. tmux).
 def to_shell_string(argv: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in argv)
+
+
+def build_bwrap_cell_command(bwrap: str, python: str, worker: str) -> list[str]:
+    """Scratch-only cell namespace, independent of broad workspace policy grants."""
+    argv = [
+        bwrap, "--die-with-parent", "--unshare-all", "--new-session", "--clearenv",
+        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chdir", "/tmp",
+        "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
+    ]
+    for path in _existing(("/usr", "/bin", "/lib", "/lib64")):
+        argv += ["--ro-bind", path, path]
+    return [*argv, python, "-I", "-u", "-c", worker]

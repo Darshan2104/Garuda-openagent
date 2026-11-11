@@ -166,6 +166,8 @@ class AgentConfig:
     max_run_tokens: int | None = None
     max_run_cost_usd: float | None = None
     spend_gate: Any = None
+    # Trusted programmatic service; absent keeps ordinary subagents unchanged.
+    editing_workers: Any = None
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720
     # Context window held back for the model's own response. The window is shared

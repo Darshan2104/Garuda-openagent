@@ -2,6 +2,8 @@ import fnmatch
 import os
 import posixpath
 import re
+import shlex
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -142,18 +144,22 @@ SEARCH_TOOLS = {
     "grep": ("path", "glob"),
     "glob": ("path", "pattern"),
     "ls": ("path",),
+    # The language-service tool sends the named file to a language server.
+    "lsp": ("path",),
 }
 
 # Canonical classification of file-operation tools that modify the filesystem.
 # The side-effect ledger takes an immutable import-time snapshot of this set.
 # `notebook_edit` does not ship today; retaining it preserves the existing
 # classification for a future implementation.
-WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit"}
+WRITE_TOOLS = {"write_file", "edit", "multi_edit", "notebook_edit", "lsp_apply"}
 
 # File-operation tools that only read.
 READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet", "image_read"}
 
 READONLY_DENIED_TOOLS = {
+    "lsp_apply",
+    "code_cell",
     "write_file",
     "edit",
     "multi_edit",
@@ -162,6 +168,10 @@ READONLY_DENIED_TOOLS = {
     "tmux_exec",
     "bash_background",
     "kill_task",
+    "integrate_editing_worker",
+    "debug_launch",
+    "debug_control",
+    "debug_variables",
 }
 
 
@@ -453,6 +463,8 @@ class PermissionEngine:
         :meth:`evaluate_tool_call` so a delegated engine can combine several
         policies into one decision and ask at most once.
         """
+        if tool_name in {"debug_launch", "debug_control", "debug_variables"} and self._mode == "readonly":
+            return PermissionDecision.DENY, f"Permission denied for {tool_name}: runs code"
         tool_decision = self.check_tool(tool_name)
         if tool_decision == PermissionDecision.DENY:
             return PermissionDecision.DENY, f"Permission denied for tool: {tool_name}"
@@ -461,7 +473,16 @@ class PermissionEngine:
         # screen are combined with the STRICTER winning — the command screen must
         # never silently downgrade a configured tool-level ASK to ALLOW.
         detail_decision = PermissionDecision.ALLOW
-        if tool_name in COMMAND_TOOLS:
+        if tool_name == "debug_launch":
+            program, args = arguments.get("program"), arguments.get("args", [])
+            if (not isinstance(program, str) or not program or not isinstance(args, list)
+                    or any(not isinstance(a, str) for a in args)):
+                return PermissionDecision.DENY, "Invalid Python debug launch"
+            # Build the command from the argv actually launched; caller-supplied
+            # command text cannot disguise an interpreter behind a read command.
+            command = shlex.join([sys.executable, program, *args])
+            detail_decision, _ = self.decide("bash", {"command": command})
+        elif tool_name in COMMAND_TOOLS:
             command = arguments.get(COMMAND_TOOLS[tool_name], "") or ""
             # Both screens apply: the regex screen catches dangerous *commands*,
             # the path screen catches dangerous *operands* (`cat .env`).

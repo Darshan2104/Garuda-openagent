@@ -21,7 +21,7 @@ garuda runtime inspect claude
 ```
 
 **What happens:** Garuda checks each entry in its trusted catalog (`claude`,
-`codex`, `cursor`, `opencode`, `pi`, `goose`): is the executable installed,
+`codex`, `cursor`, `opencode`, `pi`, `goose`, `omp`): is the executable installed,
 what version it is, what it can do, and setup hints. Login and quota show as
 `unknown` unless the vendor reports them; Garuda never reads credential files to
 find out. Add `--json` for machine-readable output.
@@ -97,6 +97,20 @@ never reads, copies, stores, or proxies your vendor login.
     goose --version
     garuda runtime inspect goose
     ```
+
+=== "oh-my-pi (omp)"
+
+    Install the `omp` CLI and log in with `omp login`, then:
+
+    ```bash
+    omp --version   # checked: omp/18.16.0
+    garuda runtime inspect omp
+    ```
+
+    `omp` is its own runtime (`omp acp`), not the `pi` adapter. Only its
+    launch, handshake, idle cancel and shutdown were checked, so prompted
+    turns, permission requests and harness modes are unverified. See the
+    [conformance report](../development/omp-acp-conformance.md).
 
 Node 22+ is recommended for both examples. In primary npm package metadata
 checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
@@ -265,6 +279,49 @@ Raw transcripts, reasoning, tool arguments, protocol frames and vendor auth are
 outside the schema. Older sessions can therefore show `unavailable`; Garuda
 does not infer a cause from event counts or a later quota refusal.
 
+## Fork an earlier conversation context
+
+Use a [collection brief](#add-a-cheaper-model-for-investigation) or a named
+session's brief when you only need findings. Use an explicit fork to continue
+from an earlier point in a saved native conversation:
+
+```bash
+garuda run --fork SOURCE_SESSION --fork-at 5 -t "Try the other approach"
+garuda sessions show latest --json
+```
+
+`--fork-at` is an inclusive, zero-based index in the source session's
+`messages.json` checkpoint, including system and tool messages. Index 5 retains
+messages 0 through 5. It addresses the saved checkpoint, which may already be
+compacted; it is not an index into the append-only event log. If the point cuts a
+tool batch, Garuda backs up before that batch and records the requested and
+effective indices (`-1` means the entire prefix was an incomplete batch).
+
+The new session records `forked_from`, source-file SHA-256 digests and
+`source_digest`, plus **context rewind only**: filesystem and processes were
+not restored. Your current workspace is used with ordinary lease and capacity
+admission and a fresh baseline. Earlier check results and candidate claims are
+stale; the fork must verify its current work. Constraints survive in the working
+state; source events, state and receipt locations remain historical references.
+Missing artifacts retain unavailable/unknown status instead of becoming evidence.
+`garuda sessions show` reads lineage without starting work.
+
+This slice accepts terminal native sessions without pending ownership or
+quarantine. It refuses ACP sources, live sources, `--resume`, `--as`, `--bg`, and
+worktree creation with a fork. To fork context from a worktree session, select
+its current directory explicitly with `--workspace`; no old worktree is restored.
+Session names, prefixes and `latest` use the same project selection as resume.
+
+The SDK uses the same runner and admission path:
+
+```python
+from garuda.sdk import SoftwareAgent
+
+result = await SoftwareAgent(workspace=".").run(
+    "Try the other approach", fork="SOURCE_SESSION", fork_at=5,
+)
+```
+
 ## Route tasks to runtimes automatically
 
 <p class="gd-facts">Configured in: <code>~/.agent/settings.yaml</code> (trusted, global)</p>
@@ -369,6 +426,68 @@ python -m garuda.acp.server --workspace /path/to/workspace
 Point an ACP-capable editor at this command to use Garuda's native agent from
 the editor.
 
+## Debug an agent-launched Python script
+
+Install `debugpy==1.8.19` into the Python environment running Garuda. Save this
+explicitly selected definition as `.agent/agents/debug-python.yaml`:
+
+```yaml
+version: 1
+extends: garuda/build
+tools:
+  add: [debug_launch, debug_inspect, debug_variables, debug_control]
+  options:
+    debug_launch:
+      max_variables: 30
+      max_depth: 2
+      max_chars: 8000
+      output_chars: 10000
+```
+
+```bash
+garuda run --agent-file .agent/agents/debug-python.yaml --workspace-kind local --permission-mode smart \
+  -t "Launch demo.py with a breakpoint at line 10. Inspect its stack and local variables, step into the failing function, then disconnect. Run pytest independently to check the fix."
+```
+
+The agent calls `debug_launch` with `program: demo.py` and `breakpoints: [10]`.
+It uses the returned `debug_session_id` for `debug_inspect` operations
+`stackTrace`, `scopes`, `output` and `status`; `debug_variables` accepts
+`operation: variables`. Frame and variable `handle` values come from the
+preceding inspection. `debug_control` supports
+`next`, `stepIn`, `stepOut`, `continue`, `disconnect` and `terminate`. Handles
+expire when execution resumes. Without breakpoints, launch stops on entry.
+
+Adapter replies and stop waits are bounded to 15 seconds. A timeout reports an
+error and retains owned sessions; a launch that is still running includes its
+`debug_session_id` in the error. Use `status` to observe a later stop or
+`disconnect` to close it. An unanswered request leaves state `unknown` until a
+later adapter event establishes it. Run cancellation or the run deadline reaps
+all debug sessions owned by that agent session.
+
+The tools are absent by default, including from `all` and `read-only` presets.
+Launch runs code and uses bash permission rules; readonly denies launch,
+execution control and variable rendering. Only agent-launched files physically
+inside a local workspace are accepted. Docker, remote, sandbox and tmux
+workspaces refuse debugging; their ordinary tools keep their existing requirements.
+
+Hard caps are 100 breakpoints, 32 stack frames, 100 variables across a recursive
+inspection, depth 3, 12,000 stack/scope/variable response characters and 20,000
+captured output characters. Options lower these limits; `max_chars` has a
+minimum of 1024 for the evidence envelope. Output is a bounded tail with a
+truncation flag. Adapter capabilities are reported separately from Garuda's
+supported subset.
+
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw DAP requests are unsupported. Debugpy may call user `repr` methods
+while rendering variable summaries, which require mutating authority. The
+service is a debugging guardrail, not confinement. Disconnect and teardown kill
+and verify the issued POSIX session,
+including the debuggee's process group. Unavailable process-table evidence or
+unsettled processes report **cleanup unproved** and retain quarantine; daemons
+that leave the session are outside this ownership proof. Process-table access
+and local sockets must be available. Debugger observations do not establish
+that a fix passes independent acceptance checks.
+
 ## Benchmark and evaluate
 
 <p class="gd-facts">For: measuring Garuda, not day-to-day work</p>
@@ -381,3 +500,76 @@ garuda run --mode eval --trajectory run.jsonl -t "Make the failing tests pass"
 `--trajectory` saves the run's events for analysis. For benchmark setups and
 paired dual-model reports (`garuda eval dual-model report ...`), see
 [Evaluation](../evaluation/index.md).
+
+## Run offline incident regressions
+
+```bash
+python -m garuda.eval.contract_matrix --incidents --out incident-reports
+```
+
+This opt-in corpus creates temporary synthetic Git repositories and runs
+ScriptModel responses without provider calls or credentials. Inspect
+`incident-reports/incidents-v1.json` for separate model completion, authorized
+acceptance, coverage and unknown cost. Six contracts currently pass; partial
+tool arguments are explicitly expected-fail because a well-formed prefix on
+a length-truncated response can execute. Exit zero means the corpus recorded
+its expected outcomes, including that gap. It does not mean every guard exists.
+See [Evaluation](../evaluation/index.md#offline-incident-evidence) for scope and
+controlled comparisons.
+
+## Aggregate tool results in a confined Python cell
+
+Add `code_cell` explicitly to an agent definition; it is absent from default
+and `all` tool selections. The cell is mutating and cannot run in read-only mode.
+
+```yaml
+version: 1
+name: cell-investigator
+extends: garuda/build
+tools:
+  add: [code_cell]
+  options:
+    code_cell:
+      timeout: 10
+      output_bytes: 32768
+      nested_calls: 8
+```
+
+Save this as `.agent/agents/cell-investigator.yaml`. With Docker available,
+preinstall `python:3.12-slim` on the selected daemon yourself (for example,
+`docker pull python:3.12-slim`), then run:
+
+```bash
+garuda run --agent cell-investigator --workspace-kind docker -t "Use a code cell to count lines in README.md and return only the count."
+```
+
+The model can call `code_cell` with this code:
+
+```python
+reply = tool("read_file", {"path": "README.md"})
+if reply["is_error"]:
+    raise RuntimeError(reply["content"])
+result = {"lines": len(reply["content"].splitlines())}
+```
+
+`inputs` is an optional JSON object. Assign a JSON-serializable `result`; printed
+text is also returned. The scratch worker has no workspace mount or network.
+Every `tool` request is screened and recorded by the ordinary host ToolRunner;
+a denied write stays denied. Intermediate replies stay inside the cell, while
+session events retain nested receipts with cell id and request index.
+
+Defaults are 10 seconds, 32 KiB output, eight nested requests, and 32 KiB combined
+code/input. Options may set positive values up to 30 seconds, 64 KiB output and
+32 requests; run deadlines may shorten execution. The timeout counts the cell's own
+launch and code, not time spent inside nested `tool` calls: a nested `bash` call
+waiting for your approval, or running its own longer timeout, does not use up the
+cell's budget. Bridge frames/replies are also
+bounded at 64 KiB. Cancellation, time/output/request limits and worker death
+terminate the cell; interrupted effects remain unknown and are never replayed
+automatically. Container/process cleanup can take additional bounded time.
+
+Linux `--workspace-kind sandbox` supports cells only when bubblewrap can launch
+and Garuda's Python resides in its mounted system runtime paths. macOS Seatbelt,
+local, tmux and environments without this capability explicitly refuse. Docker
+and remote Docker use a separate preinstalled cell image, so the workspace's own
+image does not need Python. Cells cannot invoke another code cell.

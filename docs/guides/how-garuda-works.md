@@ -28,7 +28,7 @@ authority. Garuda still records the session, but does not verify the result.
 
 | | Native (default) | External harness (ACP) |
 |---|---|---|
-| Who drives | Garuda's own model-and-tool loop | Claude Code, Codex, Cursor, OpenCode, Pi, or Goose |
+| Who drives | Garuda's own model-and-tool loop | Claude Code, Codex, Cursor, OpenCode, Pi, Goose, or oh-my-pi |
 | Credentials | An API key for your model provider | Your own login to the vendor's CLI |
 | Permission rules | Enforced by Garuda on every tool call | The harness acts with its own authority |
 | "Done" means | Garuda's completion checks accepted the result | The harness ended its turn. Garuda does **not** verify it |

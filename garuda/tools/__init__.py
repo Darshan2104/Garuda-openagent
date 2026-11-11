@@ -15,8 +15,10 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.code_cell import CodeCellTool
 from garuda.tools.collection import DelegateCollectionTool, SubmitCollectionTool
 from garuda.tools.contract import ContractTool
+from garuda.tools.debug import DebugControlTool, DebugInspectTool, DebugLaunchTool, DebugVariablesTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
@@ -104,6 +106,11 @@ __all__ = [
 def _bootstrap_registry() -> None:
     for tool in [
         BashTool(),
+        DebugLaunchTool(),
+        DebugInspectTool(),
+        DebugVariablesTool(),
+        DebugControlTool(),
+        CodeCellTool(),
         BashBackgroundTool(),
         TaskOutputTool(),
         KillTaskTool(),

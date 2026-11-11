@@ -150,6 +150,12 @@ garuda mcp list
 garuda run --mcp-config tools.json -t "Use the issue tracker to find open bugs"
 ```
 
+## Language servers
+
+```bash
+garuda lsp list
+```
+
 ## External harnesses
 
 ```bash

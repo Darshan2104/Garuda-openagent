@@ -645,7 +645,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the runtime contract matrix.")
     parser.add_argument("--out", default="contract-reports")
     parser.add_argument("--work-root", default=None)
+    parser.add_argument("--incidents", action="store_true", help="Run the offline synthetic incident corpus")
     args = parser.parse_args(argv)
+    if args.incidents:
+        from garuda.eval.incidents import run_incidents
+
+        trials = asyncio.run(run_incidents(args.out, work_root=args.work_root))
+        for trial in trials:
+            print(f"{trial.evaluation.coverage.upper()} {trial.task_id}")
+        print("Offline contract evidence only; no model uplift claim.")
+        return int(any(t.evaluation.coverage in {"fail", "unknown"} for t in trials))
     reports = asyncio.run(run_matrix(args.out, work_root=args.work_root))
     failed = [(r.adapter_id, c.scenario) for r in reports for c in r.results if c.status == FAIL]
     unsupported = [r.adapter_id for r in reports if not r.supported]
