@@ -43,6 +43,7 @@ class EventType(str, Enum):
     EDITING_WORKER = "editing_worker"
     MODEL_FALLBACK = "model_fallback"
     ADVISOR = "advisor"
+    REMINDER = "reminder"
 
 
 class EventStore:
@@ -60,6 +61,8 @@ class EventStore:
         self._persist_path: Path | None = None
         # Set by the native runtime before its driver; copied at run preparation.
         self.runtime_tenure: dict | None = None
+        # Native phases sharing this store also share their reminder budgets.
+        self.reminder_run: Any = None
         # Optional subscriber invoked after each append. Lets a live tracer (or
         # any observer) react to events without the agent loop knowing. It is
         # always wrapped in try/except and can never break appends.
