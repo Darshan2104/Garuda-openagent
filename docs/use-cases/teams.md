@@ -332,8 +332,15 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
   answer size. A consulted role can't consult in turn.
 - `garuda sessions show` lists each consult (who asked whom, the outcome,
   how long it took) but never the question or answer text.
+  For a capped run, inspect the asker's session for the shared spend snapshot;
+  each consult child's events and receipt retain its own usage, and its metadata
+  omits the shared `spend_gate` snapshot.
 - Native targets work everywhere. An external target runs only inside the
   Docker read-only confinement described [below](#keep-a-role-from-changing-anything).
+  With `--max-run-tokens` or `--max-run-cost-usd`, native consult calls share
+  the asker's run-tree cap. ACP targets refuse with `consult.spend_unsupported`
+  before dispatch because Garuda cannot meter their model calls. Without caps,
+  ACP consult usage stays separate and may be unknown.
   An external harness can't *ask* yet; see
   [External harnesses](../guides/external-harnesses.md#consult-transport).
 
@@ -361,6 +368,15 @@ advisor:
   checkpoints: [repeated-failure, plan-ready, candidate-ready]
 ```
 
+```bash
+garuda run --role coder --max-run-tokens 400000 --max-run-cost-usd 2 -t "Fix the failing tests; ask the planner at the configured checkpoints"
+```
+
+The caps cover the coder and its native planner consults together. Tokens are
+reserved before each call; dollars stop further calls after reported spend
+reaches the cap, so an in-flight call can overshoot. Unknown cost stays unknown;
+an unpriced completed consult stops further admission under a dollar-only cap.
+
 **What happens**
 
 - With `checkpoints` omitted, only three consecutive failed tool steps trigger
@@ -382,8 +398,9 @@ advisor:
   An advisor that fails or is busy changes nothing about the run. Stop/cancel and deadline or
   turn exhaustion suppress advice; late answers never resume a cancelled or
   ended run. Provider quota failures do not create an advisor retry or restart.
-  Consult admission and receipts retain their existing spend limits/accounting;
-  charging advisor spend to the run-tree spend gate remains a follow-up.
+  Consult admission, limits and receipts stay in force alongside the shared
+  run-tree spend gate. A refused advisor model call records failed advice and
+  leaves the run's permissions and completion requirements unchanged.
 - If `advisor.role` isn't one of the role's consult targets, no advisor runs
   and the session records why.
 - Each request, delivered note and suppression is an `advisor` event in the

@@ -2797,3 +2797,31 @@ revalidates every source before writing, and verifies writes and restoration of
 all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-11 — Native consults share the asker's run-tree spend gate (#385)
+
+The consult service takes the active gate from model accounting context and
+passes that same object on the child request into the native child config.
+The child's existing loop and auxiliary accounting own admission and settlement;
+its events, receipts, limits, read-only snapshot and cleanup remain unchanged.
+Replay returns the existing receipt without charging again. Failed and cancelled
+calls release reservations and charge whatever usage they actually report;
+missing usage/cost retains the gate's existing estimate/unknown semantics.
+
+A refused call fails the consult cleanly. The advisor records failed advice and
+cannot change permissions, verification, final review or run liveness. Defaults
+remain uncapped. With either run-tree cap active, an ACP consult target refuses
+before capacity acquisition, snapshot or dispatch (`consult.spend_unsupported`):
+Garuda cannot meter its model calls. Uncapped ACP consults retain their existing
+confinement requirement and separate, potentially unknown usage; no zero-spend
+claim is made. Dollar caps remain post-settlement stops and can overshoot on an
+in-flight call. No workspace interpreter or new execution path is introduced.
+
+## 2026-11-11 — Consult child metadata keeps spend ownership with the asker (#385)
+
+The native runner skips the `spend_gate` metadata snapshot for sessions launched
+with `origin: consult`. That gate covers the asker's entire run tree, so storing
+it on a child would misattribute spend and let a child resume inherit unrelated
+usage. The asker retains its existing snapshot and resume behavior; child events
+and receipts still record their own usage while calls settle against the shared
+gate. Capped ACP consult refusals are documented with the native-target remedy.

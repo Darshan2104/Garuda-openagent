@@ -120,7 +120,15 @@ fastest way to learn the system.
    capped and deduplicated. A candidate note may defer completion once within
    existing budgets; it never counts as verification or independent review.
    Awaited consults recheck run liveness before delivery, including cancellation
-   during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
+   during cleanup. Native consults, including advisor calls, receive the active
+   run-tree spend gate by reference through the consult service. Their own loop
+   and auxiliary accounting admit and settle against it while retaining child
+   events and receipts. Only the asker persists the shared `spend_gate` snapshot
+   for resume; consult child metadata does not claim the tree's spend as its own.
+   A refused call fails the consult; failed advice never changes the parent's
+   authority. Capped runs refuse ACP consult targets with
+   `consult.spend_unsupported` before dispatch because their model calls cannot
+   be metered; uncapped ACP consults retain separate, potentially unknown usage.
    The loop calls `Model.complete()` unless the run was given a
    `model_delta_consumer`. Then `_timed_complete` makes the call through
    `model/streaming.py`: text and reasoning deltas reach the consumer, the
