@@ -240,6 +240,9 @@ Click a problem to see the fix.
       is still in progress; consults run one at a time per asker.
     - `consult.capacity_unavailable`: the target's harness is at its
       `max_parallel`; consults never wait for a slot.
+    - `consult.spend_unsupported`: a run-tree token or dollar cap is active,
+      but the target uses ACP, whose model calls Garuda cannot meter. Choose a
+      native consult target to keep the run-tree cap enforced.
     - `consult.snapshot_unsupported`, `consult.snapshot_unstable`: the workspace
       is not a git checkout Garuda can snapshot, or it changed (or background
       processes ran, or pausing the asker failed) while the snapshot was
