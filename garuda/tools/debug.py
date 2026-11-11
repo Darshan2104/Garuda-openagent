@@ -7,6 +7,7 @@ from garuda.runtime.debug import UNSUPPORTED, DebugError
 from garuda.runtime.process_session import CleanupUnproved
 from garuda.tools.protocol import ToolEffect, positive_int
 from garuda.types import ToolResult
+from garuda.workspace.health import HealthMonitoredEnvironment
 from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.protocol import WorkspaceAccessDenied
 from garuda.workspace.settlement import settle_task
@@ -20,6 +21,8 @@ class _DebugTool:
     explicit_only = True
 
     async def execute(self, arguments, env, ctx):
+        while isinstance(env, HealthMonitoredEnvironment):
+            env = env.inner
         if type(env) is not LocalEnvironment:
             return ToolResult("", "Debugging supports local workspaces only; Docker, remote, "
                               "sandbox and tmux are unsupported.", is_error=True)
@@ -29,11 +32,12 @@ class _DebugTool:
         if self.name == "debug_variables" and arguments.get("operation") != "variables":
             return ToolResult("", UNSUPPORTED, is_error=True)
         service = env.debug_service()
+        timeout = None
+        if ctx.deadline_monotonic is not None:
+            timeout = max(0, ctx.deadline_monotonic - asyncio.get_running_loop().time())
+        deadline = asyncio.timeout(timeout)
         try:
-            timeout = None
-            if ctx.deadline_monotonic is not None:
-                timeout = max(0, ctx.deadline_monotonic - asyncio.get_running_loop().time())
-            async with asyncio.timeout(timeout):
+            async with deadline:
                 if self.name == "debug_launch":
                     caps = {"max_variables": 100, "max_depth": 3, "max_chars": 12_000,
                             "output_chars": 20_000}
@@ -52,6 +56,8 @@ class _DebugTool:
                     result = await service.control(ctx.session_id, arguments)
             return ToolResult("", json.dumps(result, ensure_ascii=True), metadata={"debug": result})
         except (asyncio.CancelledError, TimeoutError) as failed:
+            if isinstance(failed, TimeoutError) and not deadline.expired():
+                return ToolResult("", "Debug operation timed out.", is_error=True)
             # Cancellation settles every resource issued to this agent session,
             # including a launch that has not yet returned a debug session id.
             survivors = await settle_task(asyncio.create_task(service.reap(ctx.session_id)))

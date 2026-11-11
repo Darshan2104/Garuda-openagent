@@ -8,6 +8,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,16 +16,18 @@ import pytest_asyncio
 
 from garuda.agents.setup import reap_owned_processes
 from garuda.agents.spec_api import AgentSpec
+from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionDecision, PermissionEngine
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
-from garuda.runtime.debug_adapter import DebugError
+from garuda.runtime.debug_adapter import DebugAdapter, DebugError
 from garuda.runtime.process_session import CleanupUnproved, session_groups
 from garuda.tools import build_toolkit, default_tools, tools_for_names
 from garuda.tools.protocol import ToolContext
 from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.docker import DockerEnvironment
+from garuda.workspace.health import HealthMonitoredEnvironment
 from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.remote import RemoteEnvironment
 from garuda.workspace.sandbox import SandboxEnvironment
@@ -102,10 +105,13 @@ def test_debug_launch_honors_bash_and_path_policy(engine, arguments, expected):
 
 
 @pytest.mark.parametrize("factory", [DockerEnvironment, RemoteEnvironment, SandboxEnvironment, TmuxEnvironment])
-async def test_nonlocal_debugging_refuses_before_execution(factory, tmp_path):
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_nonlocal_debugging_refuses_before_execution(factory, wrapped, tmp_path):
     # Bypass constructors that would create/probe Docker/tmux: the real tool must
     # refuse based on backend, before touching any environment operation.
     env = object.__new__(factory)
+    if wrapped:
+        env = HealthMonitoredEnvironment(env)
     tool = tools_for_names(["debug_launch"])[0]
     result = await tool.execute({"program": "main.py"}, env, ToolContext("s"))
     assert result.is_error and "local workspaces only" in result.content
@@ -118,9 +124,22 @@ async def test_launch_refuses_outside_workspace_even_through_symlink(tmp_path, o
     (tmp_path / "outside.py").write_text("raise SystemExit(99)")
     (root / "link.py").symlink_to(tmp_path / "outside.py")
     env = LocalEnvironment(root, confine_to_workspace=False)
-    result = await tools_for_names(["debug_launch"])[0].execute(
-        {"program": outside}, env, ToolContext("s"))
-    assert result.is_error and "outside the workspace" in result.content
+    events = EventStore()
+    try:
+        result = await DefaultAgent().run(
+            task="debug", env=env, events=events, tools=tools_for_names(TOOLS),
+            model=ScriptModel([
+                ModelResponse(content=None, tool_calls=[
+                    ToolCall("launch", "debug_launch", {"program": outside})]),
+                ModelResponse(content="Stopped.", tool_calls=[])]),
+            config=AgentConfig(max_turns=2, permission_mode="auto", enable_verifier=False))
+        messages = [m for m in result.messages if m.role == Role.TOOL and m.name == "debug_launch"]
+        assert len(messages) == 1
+        assert "outside the workspace" in messages[0].content
+        outcomes = [e["payload"] for e in events.get_all() if e["type"] == EventType.TOOL_RESULT]
+        assert len(outcomes) == 1 and outcomes[0]["is_error"] is True
+    finally:
+        await env.aclose()
 
 
 @pytest.mark.parametrize("extra", [{"request": "attach"}, {"evaluate": "1+1"},
@@ -189,6 +208,125 @@ async def control(debug_env, session, operation):
                       operation=operation)
 
 
+async def test_real_agent_loop_launches_through_monitored_local_environment(debug_env):
+    env, _ = debug_env
+    result = await DefaultAgent().run(
+        task="debug", env=env, tools=tools_for_names(TOOLS),
+        model=ScriptModel([
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                "launch", "debug_launch", {"program": "debug_program.py", "breakpoints": [10]})]),
+            ModelResponse(content="Stopped.", tool_calls=[])]),
+        config=AgentConfig(max_turns=2, permission_mode="auto", enable_verifier=False))
+    messages = [m for m in result.messages if m.role == Role.TOOL and m.name == "debug_launch"]
+    assert len(messages) == 1
+    evidence = json.loads(messages[0].content)
+    assert evidence["state"] == "stopped"
+    assert evidence["data"]["breakpoints"][0]["verified"] is True
+    receipt = await call("debug_control", env, ToolContext(evidence["session_id"]),
+                         debug_session_id=evidence["debug_session_id"], operation="disconnect")
+    assert receipt["cleanup"].startswith("verified:")
+
+
+@pytest.mark.parametrize("operation", ["launch", "next"])
+async def test_real_stop_timeout_retains_owned_sessions(debug_env, monkeypatch, operation):
+    env, ctx = debug_env
+    sibling = await launch(debug_env)
+    root = Path(env.workspace_root)
+    (root / "wait.py").write_text(
+        "from pathlib import Path\nimport time\n"
+        "def wait():\n    while not Path('release').exists():\n        time.sleep(0.01)\n"
+        "wait()\nmarker = 1\n")
+    if operation == "next":
+        session = await launch(debug_env, "wait.py", 6)
+        arguments = {"debug_session_id": session["debug_session_id"], "operation": "next"}
+        name = "debug_control"
+    else:
+        arguments = {"program": "wait.py", "breakpoints": [7]}
+        name = "debug_launch"
+    with monkeypatch.context() as patch:
+        patch.setattr("garuda.runtime.debug_adapter.STOP_TIMEOUT", 0.1, raising=False)
+        result = await tools_for_names([name])[0].execute(arguments, env, ctx)
+    assert result.is_error and "timed out" in result.content.lower(), result.content
+    if operation == "launch":
+        session = {"debug_session_id": result.content.split("debug_session_id=")[1]}
+    status = await inspect(debug_env, session, "status")
+    assert status["state"] in {"running", "unknown"} and status["cleanup"] is None
+    assert (await inspect(debug_env, sibling, "status"))["state"] == "stopped"
+    (root / "release").touch()
+    async with asyncio.timeout(10):
+        while (await inspect(debug_env, session, "status"))["state"] not in {"stopped", "terminated"}:
+            await asyncio.sleep(0.05)
+    for owned in (session, sibling):
+        assert (await control(debug_env, owned, "disconnect"))["cleanup"].startswith("verified:")
+
+
+async def test_real_request_timeout_retains_owned_sessions(debug_env, monkeypatch):
+    env, ctx = debug_env
+    sibling = await launch(debug_env)
+    session = await launch(debug_env)
+    owned = env.debug_service().get(ctx.session_id, session["debug_session_id"])
+    table = subprocess.check_output(["/bin/ps", "-Ao", "pid=,ppid="], text=True)
+    adapter_pid = next(int(row.split()[0]) for row in table.splitlines()
+                       if len(row.split()) == 2 and int(row.split()[1]) == owned.adapter.process.pid)
+    os.kill(adapter_pid, signal.SIGSTOP)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr("garuda.runtime.debug_adapter.REQUEST_TIMEOUT", 0.05, raising=False)
+            result = await tools_for_names(["debug_inspect"])[0].execute(
+                {"debug_session_id": session["debug_session_id"], "operation": "stackTrace"}, env, ctx)
+        assert result.is_error and "timed out" in result.content, result.content
+        status = await inspect(debug_env, session, "status")
+        assert status["state"] == "unknown" and status["cleanup"] is None
+        assert (await inspect(debug_env, sibling, "status"))["state"] == "stopped"
+    finally:
+        try:
+            os.kill(adapter_pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+    for owned in (session, sibling):
+        assert (await control(debug_env, owned, "disconnect"))["cleanup"].startswith("verified:")
+
+
+@pytest.mark.parametrize("operation", ["request", "stop"])
+async def test_dap_transport_timeout_remains_recoverable(tmp_path, monkeypatch, operation):
+    release = tmp_path / "release"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-I", str(FIXTURES / "debug_adapter_peer.py"), str(release),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+
+    # This peer has no process tree; the real-DAP lifecycle tests cover ownership.
+    class Owner:
+        async def close(self):
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+
+    adapter = DebugAdapter(process, Owner())
+    try:
+        await adapter.request("initialize")
+        adapter.state = "running"
+        with monkeypatch.context() as patch:
+            patch.setattr("garuda.runtime.debug_adapter.REQUEST_TIMEOUT", 0.05, raising=False)
+            patch.setattr("garuda.runtime.debug_adapter.STOP_TIMEOUT", 0.05, raising=False)
+            with pytest.raises(DebugError, match="[Tt]imed out"):
+                if operation == "request":
+                    await adapter.request("stackTrace")
+                else:
+                    await adapter.request("next")
+                    await adapter.wait_stop()
+        assert adapter.state in {"running", "unknown"}
+        assert process.returncode is None
+        release.touch()
+        assert await adapter.request("threads") == {"command": "threads"}
+        if operation == "request":
+            await adapter.request("next")
+        await adapter.wait_stop()
+        assert adapter.state == "stopped" and adapter.thread == 1
+    finally:
+        await adapter.close()
+
+
 async def test_real_breakpoints_stack_scopes_variables_and_bounds(debug_env):
     session = await launch(debug_env)
     assert session["state"] == "stopped"
@@ -252,7 +390,7 @@ async def test_live_session_refuses_unsupported_requests(debug_env, operation):
         assert result.is_error and "unsupported" in result.content
 
 
-@pytest.mark.parametrize("finish", ["disconnect", "terminate", "teardown", "cancel", "crash"])
+@pytest.mark.parametrize("finish", ["disconnect", "terminate", "teardown", "cancel", "deadline", "crash"])
 async def test_real_lifecycle_kills_debuggee_and_its_child(debug_env, finish):
     env, ctx = debug_env
     session = await launch(debug_env, "debug_child.py", 8)
@@ -267,14 +405,19 @@ async def test_real_lifecycle_kills_debuggee_and_its_child(debug_env, finish):
         assert receipt["cleanup"].startswith("verified:")
     elif finish == "teardown":
         assert await reap_owned_processes(ctx.session_id, env) == []
-    elif finish == "cancel":
+    elif finish in {"cancel", "deadline"}:
         await control(debug_env, session, "next")
         await control(debug_env, session, "next")
-        task = asyncio.create_task(control(debug_env, session, "next"))
-        await asyncio.sleep(0.3)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        if finish == "deadline":
+            ctx.deadline_monotonic = asyncio.get_running_loop().time() + 0.1
+            with pytest.raises(TimeoutError):
+                await control(debug_env, session, "next")
+        else:
+            task = asyncio.create_task(control(debug_env, session, "next"))
+            await asyncio.sleep(0.3)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
     else:
         # Adapter is the supervisor's child in the same group; kill it without
         # killing the anchoring supervisor or the separate debuggee group.

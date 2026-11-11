@@ -2375,6 +2375,12 @@ memory and raw requests are unsupported. Debugpy summaries can invoke Python
 repr; inspection is not confinement or independent acceptance evidence.
 
 Only LocalEnvironment launches the optional adapter through the harness Python.
+Tools unwrap the run's HealthMonitoredEnvironment before enforcing that exact
+backend requirement. Adapter reply and stop waits have independent 15-second
+bounds; their timeout errors retain sessions, report running/unknown state and
+include the debug session id when launch has completed but its first stop is
+late. Only cancellation, expiry of the tool's run deadline and shared teardown
+reap all debug sessions owned by that agent session.
 Docker, remote, sandbox and tmux refuse without new interpreter requirements.
 An identity-bound supervisor anchors one POSIX session because debugpy places
 its debuggee in another process group. Cancellation and shared teardown kill

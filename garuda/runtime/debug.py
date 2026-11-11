@@ -156,9 +156,6 @@ class LocalDebugService:
                 if not launch.done():
                     launch.cancel()
                 await asyncio.gather(launch, return_exceptions=True)
-            await adapter.wait_stop()
-            return session.evidence({"capabilities": session.capabilities,
-                                     "unsupported": UNSUPPORTED, **breakpoints})
         except BaseException as failed:
             cleanup = asyncio.create_task(session.close())
             try:
@@ -168,6 +165,17 @@ class LocalDebugService:
                     raise failed from exc
                 raise
             raise
+
+        # A completed launch can keep running beyond the bounded stop wait.
+        # Keep its identity available for status, later stops and disconnect.
+        if adapter.state == "starting":
+            adapter.state = "running"
+        try:
+            await adapter.wait_stop()
+        except DebugError as exc:
+            raise DebugError(f"{exc}; debug_session_id={session.id}") from exc
+        return session.evidence({"capabilities": session.capabilities,
+                                 "unsupported": UNSUPPORTED, **breakpoints})
 
     async def _watch(self, session):
         await session.adapter.reader

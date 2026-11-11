@@ -79,7 +79,9 @@ exact character frames with optional child-result receipt validation. Discovery:
 `debug.py` exposes explicitly selected `debug_launch`, `debug_inspect`,
 `debug_variables` and `debug_control` tools. Variable rendering is mutating
 because debugpy can execute user repr methods; basic inspection is read-only.
-Presets and unrestricted default toolkits exclude them.
+Presets and unrestricted default toolkits exclude them. The tools unwrap health
+monitoring before requiring an exact local backend and distinguish the run
+deadline from adapter reply/stop timeouts, which retain owned sessions.
 `runtime/debug.py` defines the `DebugService` boundary and owns session identity,
 stop-scoped handles and bounded inspection; `runtime/debug_adapter.py` owns bounded
 DAP framing, capabilities, events and captured output. Only `LocalEnvironment`

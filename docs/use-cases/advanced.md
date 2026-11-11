@@ -400,6 +400,13 @@ preceding inspection. `debug_control` supports
 `next`, `stepIn`, `stepOut`, `continue`, `disconnect` and `terminate`. Handles
 expire when execution resumes. Without breakpoints, launch stops on entry.
 
+Adapter replies and stop waits are bounded to 15 seconds. A timeout reports an
+error and retains owned sessions; a launch that is still running includes its
+`debug_session_id` in the error. Use `status` to observe a later stop or
+`disconnect` to close it. An unanswered request leaves state `unknown` until a
+later adapter event establishes it. Run cancellation or the run deadline reaps
+all debug sessions owned by that agent session.
+
 The tools are absent by default, including from `all` and `read-only` presets.
 Launch runs code and uses bash permission rules; readonly denies launch,
 execution control and variable rendering. Only agent-launched files physically

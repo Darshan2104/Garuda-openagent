@@ -371,7 +371,12 @@ fastest way to learn the system.
    Debugpy can invoke Python `repr` while rendering values, so variables require
    separate `debug_variables` authority. Inspection is not an execution isolation
    boundary. Arbitrary object expansion, explicit getters, evaluate, attach,
-   writes, memory and raw requests refuse. Only local workspaces are supported.
+   writes, memory and raw requests refuse. Only local workspaces are supported;
+   tools unwrap the loop's health monitor before checking the exact backend.
+   Adapter reply/stop timeouts retain sessions with running or unknown state;
+   a launch stop timeout includes the debug session identity for later inspection
+   or disconnect. Cancellation and the tool's run deadline reap the agent's
+   owned debug sessions.
    The local environment owns adapter launch and a private POSIX session spanning
    debugpy's process groups. Cleanup kills and observes live session membership;
    inability to verify retains “cleanup unproved” and quarantines the lease.

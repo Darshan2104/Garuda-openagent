@@ -10,6 +10,8 @@ class DebugError(RuntimeError):
 
 MAX_FRAME = 1_048_576
 MAX_OUTPUT = 20_000
+REQUEST_TIMEOUT = 15
+STOP_TIMEOUT = 15
 
 
 class DebugAdapter:
@@ -112,17 +114,26 @@ class DebugAdapter:
         self.pending[sequence] = future
         try:
             await self._send({"type": "request", "command": command, "arguments": arguments or {}})
-            return await asyncio.wait_for(future, 15)
+            return await asyncio.wait_for(future, REQUEST_TIMEOUT)
+        except TimeoutError as exc:
+            if self.state not in {"terminated", "disconnected"}:
+                self.state = "unknown"
+                self.thread = None
+                self.generation += 1
+            raise DebugError(f"DAP {command} request timed out; debug state is {self.state}") from exc
         finally:
             self.pending.pop(sequence, None)
             if not future.done():
                 future.cancel()
 
     async def wait_stop(self):
-        async with asyncio.timeout(15):
-            while self.state not in {"stopped", "terminated", "disconnected"}:
-                self.changed.clear()
-                await self.changed.wait()
+        try:
+            async with asyncio.timeout(STOP_TIMEOUT):
+                while self.state not in {"stopped", "terminated", "disconnected"}:
+                    self.changed.clear()
+                    await self.changed.wait()
+        except TimeoutError as exc:
+            raise DebugError(f"Timed out waiting for debuggee to stop; debug state is {self.state}") from exc
         if self.failure:
             raise DebugError(self.failure)
 
