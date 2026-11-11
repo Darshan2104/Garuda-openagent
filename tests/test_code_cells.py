@@ -447,3 +447,27 @@ result = [denied, inspected]
               if r["type"] == "tool_result" and r["payload"].get("nested_index", 0) > 0]
     assert [r["name"] for r in nested] == ["debug_launch", "debug_inspect", "debug_launch"]
     assert runner.context.get_messages()[-1].metadata.get("nested_index") == 0
+
+
+async def test_nested_cell_results_queue_reminders_only_between_turns(tmp_path):
+    """#387 x #386: nested calls use the ordinary after-tool observation point."""
+    from garuda.plugins.reminders import ReminderConfig, ReminderRule, ReminderRun
+
+    env = HostTransportEnvironment(tmp_path)
+    await env.write_file("a.yaml", "ok\n")
+    runner = runner_for(env, tmp_path)
+    rule = ReminderRule("yaml", "global", "Check YAML.", "read_file", None, (), 8)
+    runner.reminders = ReminderRun(ReminderConfig(rules=[rule]), runner.events)
+    result = await run_cell(runner, '''
+tool("read_file", {"path": "a.yaml"})
+result = tool("read_file", {"path": "a.yaml"})["is_error"]
+''')
+    assert not result.is_error, result.content
+    assert json.loads(result.content)["result"] is False
+    # Nothing reaches the transcript mid-cell: only the outer cell result is there.
+    assert [m.metadata.get("nested_index") for m in runner.context.get_messages()] == [0]
+    counts = runner.reminders.counts[rule]
+    assert (counts.triggered, counts.duplicate, counts.injected) == (2, 1, 0)
+    queued = []
+    runner.reminders.flush(type("Queue", (), {"queue": lambda self, note: queued.append(note)})())
+    assert len(queued) == 1 and queued[0].startswith("[reminder id=yaml")

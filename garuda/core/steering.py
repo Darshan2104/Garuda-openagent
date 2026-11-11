@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
+from garuda.plugins.reminders import ReminderRun
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,7 @@ class Steering:
     budget_stage: int = 0
     final_turn_forced: bool = False
     final_turn_at: int = 0
+    reminders: ReminderRun | None = None
 
     # -- notes ----------------------------------------------------------------
 
@@ -182,6 +184,8 @@ class Steering:
 
     def flush(self, context: ContextManager) -> None:
         """Deliver queued notes, now that the previous turn's tool-result block is closed."""
+        if self.reminders is not None:
+            self.reminders.flush(self)
         for note in self.pending_notes:
             context.append(Message(role=Role.USER, content=note))
         self.pending_notes.clear()

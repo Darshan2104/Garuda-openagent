@@ -749,6 +749,51 @@ Hook command '~/.agent/hooks/no-rm.sh' blocked tool bash (exit code 2)
 
 More in [Configuration → permissions and hooks](../guides/configuration.md#permissions-and-hooks).
 
+## Remind the agent after relevant tool calls
+
+Add this to your global `~/.agent/settings.yaml` to remind a native agent to
+check effective configuration after reading a YAML file:
+
+```yaml
+reminders:
+  max_injections: 8
+  rules:
+    - id: verify-effective-config
+      text: "Before changing configuration, verify which settings actually apply."
+      max_injections: 2
+      when:
+        tool: read_file
+        outcome: success
+        arguments:
+          path: {glob: "*.yaml"}
+```
+
+```bash
+garuda run --mode readonly -t "Read .agent/settings.yaml and explain the effective settings"
+```
+
+If that completed read matches, the next existing turn receives a note labelled
+`[reminder id=verify-effective-config source=".../settings.yaml" count=1; advisory]`.
+It never interrupts a tool-result block or creates another turn. Repeated
+identical calls are deduplicated; different calls can remind again up to the
+rule limit and the shared run limit. Permission and completion checks still apply.
+
+Use `literal` instead of `glob` for a full, case-sensitive argument-string
+comparison. To remind after an observed tool error, use
+`when: {event: tool_result, outcome: error}`. No rules load by default.
+Project rules in `.agent/settings.yaml` or legacy `.garuda/settings.yaml` are
+reported and ignored unless you enable the existing **global**
+`trust_project_hooks: true` opt-in. This opt-in also enables project shell hooks;
+keep rules global if you do not want to grant that broader trust.
+
+Malformed rules produce a `reminder.invalid` warning and are skipped; global
+`reminders.strict: true` makes them refuse loading. Source and cumulative
+trigger/injection/duplicate/cap counts are in the dashboard's existing run JSON
+at `GET /api/runs/<session-id>` under `trajectory.reminders`, and in bounded
+`reminder` records in the session event log. Logs omit reminder text, tool
+arguments, results and model reasoning. Matching limits and the full schema are
+in [Configuration → conditional reminders](../guides/configuration.md#conditional-reminders).
+
 ## Add your own Python tools
 
 <p class="gd-facts">Applies to: runs where you opt in · Runs: repository code on your machine</p>
