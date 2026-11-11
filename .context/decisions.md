@@ -2923,3 +2923,25 @@ receipts preserve the refusal when the parent constructs a fresh service;
 automatic cleanup, recovery and concurrent editing are deferred. Unsupported
 editing backends refuse without changing ordinary backend execution. Local
 workspace separation and permission screening remain guardrails, not confinement.
+
+## 2026-11-06 — Frozen offline incident evaluation (#364)
+
+Evaluation's minimal-v1 configuration pins every AgentConfig field and is
+identified by version and canonical SHA-256. Schema drift refuses rather than
+silently inheriting new product defaults. Controlled scripted ablations change
+one supported boolean mechanism, retaining the same policy, tools, task and
+script. Ordinary evaluation defaults and output remain unchanged.
+
+The opt-in contract-matrix incident corpus uses synthetic local repositories,
+ScriptModel and existing loop/Environment/config/permission/no-edits/edit/flow
+recovery/quota claim owners. It introduces no workspace interpreter requirement
+or parallel runtime. Partial tool arguments on length-truncated native responses
+remain explicitly expected-fail; existing text-match refusal is not a claim of
+snapshot edit protection. Synthetic startup and claim contention do not establish
+vendor startup or provider quota integration behavior.
+
+Matrix provenance is additive and versioned. Unknown identities and cost stay
+null; model completion, authorized acceptance and contract coverage are separate.
+Fixture assertions never mint authorized acceptance, and single trials never
+establish uplift. No transcripts, credentials or provider experiments are part
+of the corpus. Validation and limitations are documented in docs/evaluation/index.md.

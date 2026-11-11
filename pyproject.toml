@@ -96,6 +96,7 @@ garuda = [
     "agents/defaults/schemas/*.json",
     "config/defaults/*.yaml",
     "acp/builtin/*.json",
+    "eval/fixtures/*.json",
     "scenarios/data/*.yaml",
     "scenarios/briefs/*.md",
     # The dashboard frontend. Without this the wheel installs a server that

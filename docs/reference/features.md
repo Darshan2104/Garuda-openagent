@@ -144,3 +144,4 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Collection model | A cheaper model for read-only investigation | `collection:` in settings | [Level 7](../use-cases/advanced.md#add-a-cheaper-model-for-investigation) |
 | ACP server | Use Garuda from an ACP editor | `python -m garuda.acp.server` | [Level 7](../use-cases/advanced.md#use-garuda-from-an-acp-editor) |
 | Evaluation | Benchmark modes and paired reports | `garuda eval dual-model report …` | [Evaluation](../evaluation/index.md) |
+| Offline incident regressions | Synthetic fixtures, frozen minimal config and explicit guard gaps | `python -m garuda.eval.contract_matrix --incidents --out incident-reports` | [Level 7](../use-cases/advanced.md#run-offline-incident-regressions) |
