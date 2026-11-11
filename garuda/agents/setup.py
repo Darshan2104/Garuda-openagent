@@ -33,7 +33,7 @@ from garuda.runtime.router import (
     route,
 )
 from garuda.tools import build_toolkit
-from garuda.tools.protocol import Tool
+from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool
 from garuda.types import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -1151,6 +1151,48 @@ def plan_agent_run(
     )
 
 
+class OwnedRunResources:
+    """Closes every live resource one activation owns, the last opened first.
+
+    Used in place of the bare MCP manager only when a run also owns a language
+    service, so a run without one keeps its historical ``mcp_manager``. Each
+    close is attempted even when an earlier one fails.
+    """
+
+    def __init__(self, *resources):
+        self._resources = [r for r in resources if r is not None]
+
+    async def close(self) -> None:
+        resources, self._resources = self._resources, []
+        for resource in reversed(resources):
+            try:
+                await resource.close()
+            except Exception:
+                logger.warning("Closing %s failed", type(resource).__name__, exc_info=True)
+
+
+def language_service_tools(workspace: str) -> tuple[list[Tool], list]:
+    """The ``lsp`` tool and its unstarted services, when trusted config names any.
+
+    Reads configuration only: no server starts until the tool is first used.
+    """
+    from garuda.lsp.config import load_language_servers
+
+    settings = load_language_servers(workspace)
+    if not settings.servers:
+        return [], []
+    from garuda.lsp.client import StdioLanguageServer
+    from garuda.tools.language import LanguageServerTool
+
+    services = [StdioLanguageServer(config) for config in settings.servers]
+    tool = LanguageServerTool(services)
+    # The user's global settings chose it, as explicitly as `register_tool`;
+    # a profile's `tools:` allowlist selects among discovered tools and keeps it
+    # (`tools.remove: [lsp]` still removes it).
+    setattr(tool, EXPLICIT_TOOL_ATTR, True)
+    return [tool], services
+
+
 async def activate_agent_plan(
     plan: NativeRunPlan,
     *,
@@ -1196,6 +1238,8 @@ async def activate_agent_plan(
         bash_rules=profile.bash_rules,
         approval_handler=approval_handler,
     )
+    # Configuration only, before anything starts, so a refusal here leaks nothing.
+    language_tools, language_services = language_service_tools(workspace)
     tools, mcp_manager = await build_toolkit(
         toolkit_names,
         mcp_paths,
@@ -1206,6 +1250,10 @@ async def activate_agent_plan(
         mcp_user_paths=mcp_user_paths,
         **({"mcp_configs": deepcopy(plan.mcp_configs)} if plan.mcp_configs is not None else {}),
     )
+    if language_services and not {t.name for t in language_tools} & {t.name for t in tools}:
+        # A caller-supplied tool of the same name wins; the services never start.
+        tools = tools + language_tools
+        mcp_manager = OwnedRunResources(mcp_manager, *language_services)
     if profile.tools_removed:
         # `tools.remove` also removes an explicit or custom tool of that name (H.6).
         tools = [tool for tool in tools if tool.name not in profile.tools_removed]

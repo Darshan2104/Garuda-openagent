@@ -729,6 +729,14 @@ def build_parser():
         help="Trust the listed servers without asking (you have reviewed them)",
     )
 
+    lsp_parser = subparsers.add_parser(
+        "lsp", help="Inspect trusted language-server configuration (starts nothing)")
+    lsp_sub = lsp_parser.add_subparsers(dest="lsp_command")
+    lsp_list = lsp_sub.add_parser(
+        "list", help="Show configured language servers, where each command resolves, "
+        "and ignored project entries")
+    lsp_list.add_argument("--workspace", default=".")
+
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
     recipe_run = recipe_sub.add_parser("run", help="Execute a recipe file")
@@ -1667,6 +1675,26 @@ async def run_mcp_list(args) -> int:
     return 0
 
 
+def run_lsp_list(args) -> int:
+    """Show the language servers a run here may use. Reads configuration only."""
+    from garuda.lsp.config import load_language_servers, locate_executable
+
+    settings = load_language_servers(args.workspace)
+    if settings.servers:
+        print(f"Language servers (from {settings.source}):")
+        for server in settings.servers:
+            found = locate_executable(server)
+            extensions = ", ".join("." + e for e in server.extensions)
+            print(f"  - {server.name} [{extensions}] {server.command_line}")
+            print(f"    executable: {found or 'NOT FOUND (the lsp tool will report it as failed)'}")
+        print("Each starts on its first lsp request in a local workspace and stops with the run.")
+    else:
+        print(f"No language servers configured in {settings.source}; runs offer no lsp tool.")
+    for problem in settings.problems:
+        print(f"  ! {problem}")
+    return 0
+
+
 def run_mcp_trust(args, *, ask=input) -> int:
     """Show each untrusted project MCP server and record the user's trust in it.
 
@@ -2278,6 +2306,11 @@ def main() -> None:
         if args.mcp_command == "trust":
             raise SystemExit(run_mcp_trust(args))
         parser.parse_args(["mcp", "--help"])
+        raise SystemExit(1)
+    if args.command == "lsp":
+        if args.lsp_command == "list":
+            raise SystemExit(run_lsp_list(args))
+        parser.parse_args(["lsp", "--help"])
         raise SystemExit(1)
     if args.command == "recipe" and args.recipe_command == "run":
         raise SystemExit(asyncio.run(run_recipe_command(args)))
