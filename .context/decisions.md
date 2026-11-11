@@ -2852,3 +2852,27 @@ re-proves leases, owners, trail and child identities itself. Retained capacity
 slots are listed because no path releases them automatically. Recorded children
 keep their recorded state with an unknown process. No new control, release,
 takeover or replay path was added; budget stays `unknown`.
+
+## 2026-11-06 — Ship oh-my-pi as a separate, no-prompt-proved ACP runtime (#380)
+
+`omp` (oh-my-pi) is a shipped ACP manifest of its own (`omp acp`), distinct from
+`pi`, whose `pi-acp` manifest is unchanged. It is an `AgentRuntime` only, never
+an inference `Model`. The evidence is a no-prompt spike against omp 18.16.0:
+ACP v1 `initialize`, `session/new` (offering `mode` default/plan and `thinking`
+off/auto; no `model` option without credentials), idle `session/cancel`, and
+clean single-process exit on stdin close or group SIGTERM, also through
+Garuda's own `AcpRuntime`. The spike ran under a temporary HOME with network
+and credential stores denied; `session/new` attempted omp's own model
+discovery, so a real launch is not network-free.
+
+Claims stay limited to that subset: the manifest declares the generic
+`prompt`/`cancel` contract with a warning naming what was not exercised
+(prompted turns, permission requests, mode/option selection, `session/load`,
+usage and error normalization). omp is absent from `PROVEN_OPTIONS`,
+`MODE_AUTHORITY` and `PROVEN_LOAD`, so role options are refused and resume uses
+a brief. Like the other vendors, the version is probed and reported but not
+gated at launch; only 18.16.0 is stated as checked. Authentication stays in
+omp's own login: no auth probe, and Garuda never runs `omp token`/`omp auth` or
+reads `~/.omp`. CI uses a replay of the redacted capture
+(`tests/fixtures/omp/`); the live handshake is opt-in
+(`GARUDA_LIVE_HARNESS=omp`). Report: `docs/development/omp-acp-conformance.md`.
