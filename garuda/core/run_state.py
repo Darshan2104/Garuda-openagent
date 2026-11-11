@@ -813,6 +813,12 @@ async def prepare_run(
 
         limited = InvokeSubagentTool.limited_to(config.subagents)
         tools = [limited if t.name == "invoke_subagent" else t for t in tools]
+    if config.editing_workers is not None and any(t.name == "invoke_subagent" for t in tools):
+        from garuda.tools.subagent import IntegrateEditingWorkerTool, InvokeSubagentTool
+
+        tools = [InvokeSubagentTool.with_editing_workers(t) if t.name == "invoke_subagent" else t
+                 for t in tools]
+        tools = [*tools, IntegrateEditingWorkerTool(config.editing_workers)]
     notes_ledger = None
     if config.memory_notes == "propose":
         # Reviewed notes (H.9): one ledger for the whole task tree, so the limit on
@@ -888,6 +894,8 @@ async def prepare_run(
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
             spend_gate=config.spend_gate,
+            editing_workers=config.editing_workers,
+            editing_max_tokens=config.max_tokens,
             deadline_monotonic=deadline_at,
             workspace_kind=config.workspace_kind,
             workspace_evidence_root=(
