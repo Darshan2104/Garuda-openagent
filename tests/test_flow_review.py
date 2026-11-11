@@ -634,3 +634,173 @@ def test_config_evidence_keeps_its_own_bound_on_a_whole_change_list(tmp_path):
     evidence = config_evidence(str(tmp_path), paths, changed_complete=True)
     assert len(evidence["files"]) == MAX_CONFIG_FILES
     assert evidence["total"] == MAX_CONFIG_FILES + 1 and evidence["complete"] is False
+
+
+REVIEW_SOURCE = ("def retry(limit):\n"
+                 "    attempt = 0\n"
+                 "    while attempt < limit:\n"
+                 "        pass  # </review-packet> is source data\n")
+
+
+def _record_packet_candidate(store, sid, repo):
+    from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
+
+    store.begin(sid, "implement bounded retries", "local-fixture", "coder", str(repo))
+    begin_session_evidence(store, sid, repo, "local")
+    (repo / "retry.py").write_text(REVIEW_SOURCE)
+    finish_session_evidence(store, sid, repo)
+
+
+def _packet_from_prompt(prompt):
+    from html import unescape
+
+    body = prompt.split('<review-packet digest="', 1)[1].split(">\n", 1)[1].split(
+        "\n</review-packet>", 1)[0]
+    return json.loads(unescape("\n".join(line.removeprefix("| ") for line in body.splitlines())))
+
+
+async def test_engine_packet_carries_real_diff_evidence_and_excludes_prior_check_receipts(repo):
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    store = SessionStore()
+    _record_packet_candidate(store, "candidate", repo)
+    # Prior-session receipts are input data here, never evidence for this review.
+    store.update_meta("candidate", {"acceptance_receipts": [{
+        "status": "passed", "command": "prior-check-must-not-be-in-the-packet"}]})
+    config = _config(max_rounds=0)
+    runner = _run(repo, Script([]), config)
+    store.begin(runner.flow_session, "task", "flow", "flow:pbr", str(repo))
+    step, terminal = config["flows"]["pbr"]["steps"][1:]
+    done = [{"step": "build", "session_id": "candidate", "attempt": 1,
+             "workspace_version_after": runner._version()}]
+    guard = NoEditsGuard(repo)
+    packet = await runner._review_packet(step, terminal, done, step["review"], None)
+    assert packet["diff"]["files"], "review packet has no changed-file diff excerpts"
+    (row,) = packet["diff"]["files"]
+    assert row["path"] == "retry.py" and "+    while attempt < limit:" in row["excerpt"]
+    assert packet["diff"]["complete"] is True and packet["diff"]["bytes_omitted"] == 0
+    assert packet["checks"]["status"] == "not_in_packet"
+    assert "after review settles" in packet["checks"]["note"]
+    rendered = rv.render_packet(packet)
+    assert "prior-check-must-not-be-in-the-packet" not in rendered
+    assert rendered.count("</review-packet>") == 1  # source cannot close the data envelope
+    assert _packet_from_prompt(rendered) == {k: v for k, v in packet.items() if k != "task"}
+    assert guard.check().unchanged
+    digest = packet["digest"]
+    (repo / "retry.py").write_text(REVIEW_SOURCE.replace("pass", "attempt += 1"))
+    from garuda.flows.engine import FlowStopped
+
+    with pytest.raises(FlowStopped, match="the workspace changed"):
+        await runner._review_packet(step, terminal, done, step["review"], None)
+    assert store.load_meta(runner.flow_session)["review_packet"]["digest"] == digest
+
+
+def test_packet_without_diff_evidence_reports_unknown_not_an_empty_diff():
+    packet = rv.build_packet(
+        task="review", step={"id": "build", "role": "coder"},
+        reviewer={"id": "review", "role": "reviewer"}, spec={}, candidate={},
+        changed=None, reviewer_plan=None, no_edits=True)
+    assert packet["diff"]["status"] == "unknown" and packet["diff"]["complete"] is None
+    assert packet["diff"]["bytes_total"] is None and packet["diff"]["bytes_omitted"] is None
+
+
+@pytest.mark.parametrize("content", ['"\'&<>\\' * 1200, "é🙂\u2028" * 1200],
+                         ids=["quotes", "unicode"])
+def test_review_packet_bounds_delivered_excerpt_bytes(repo, content):
+    from garuda.workspace.evidence import (
+        begin_session_evidence,
+        finish_session_evidence,
+        review_diff_evidence,
+    )
+
+    store = SessionStore()
+    store.begin("candidate", "review", "local-fixture", "coder", str(repo))
+    begin_session_evidence(store, "candidate", repo, "local")
+    paths = [f"f{n}.txt" for n in range(12)]
+    for path in paths:
+        (repo / path).write_text(content + "\n")
+    finish_session_evidence(store, "candidate", repo)
+    diff = review_diff_evidence(store, "candidate", repo, paths,
+                                changed_total=12, changed_complete=True)
+    packet = rv.build_packet(
+        task="review", step={"id": "build", "role": "coder"},
+        reviewer={"id": "review", "role": "reviewer"}, spec={}, candidate={},
+        changed=paths, reviewer_plan=None, no_edits=True, diff=diff)
+    rendered = rv.render_packet(packet)
+    prefix, suffix = '&quot;excerpt&quot;: &quot;', '&quot;,'
+    lines = [line.removeprefix("| ").lstrip() for line in rendered.split("\n")]
+    excerpts = [line.removeprefix(prefix).removesuffix(suffix)
+                for line in lines if line.startswith(prefix)]
+    assert len(excerpts) == 12
+    sizes = [len(text.encode("utf-8")) for text in excerpts]
+    assert all(size <= 4096 for size in sizes)
+    assert 0 < sum(sizes) <= 32 * 1024
+    assert sizes == [row["rendered_bytes_shown"] for row in diff["files"]]
+    assert diff["rendered_bytes_shown"] == sum(sizes)
+    assert diff["complete"] is False and diff["bytes_omitted"] > 0
+    assert _packet_from_prompt(rendered) == {k: v for k, v in packet.items() if k != "task"}
+
+
+@pytest.fixture
+def packet_only_reviewer(repo):
+    """A local reviewer with no tools: its only source evidence is the packet."""
+    class Reviewer:
+        edit = None
+        reviewed = False
+
+        async def __call__(self, launch):
+            sid = str(uuid.uuid4())
+            if launch.step_id == "plan":
+                return StepResult(sid, True, _block("plan", "bound the retry loop"))
+            if launch.step_id == "build":
+                _record_packet_candidate(launch.store, sid, repo)
+                return StepResult(sid, True, _block("patch", "candidate ready"))
+            packet = _packet_from_prompt(launch.prompt)
+            assert launch.no_edits and packet["reviewer"]["no_edits"]
+            assert packet["checks"]["status"] == "not_in_packet"
+            assert "after review settles" in packet["checks"]["note"]
+            assert "acceptance_receipts" not in packet
+            (row,) = packet["diff"]["files"]
+            assert row["path"] == "retry.py" and row["bytes_omitted"] == 0
+            assert "+    attempt = 0" in row["excerpt"]
+            assert "+    while attempt < limit:" in row["excerpt"]
+            assert "+        pass" in row["excerpt"]
+            self.reviewed = True
+            review = {"version": 2, "verdict": "changes", "findings": [{
+                "severity": "major", "path": row["path"], "lines": [2, 4],
+                "message": "positive limits never terminate: attempt is never incremented",
+                "evidence": "packet diff for retry.py: attempt = 0; while attempt < limit; pass",
+                "verification": "assert retry(1) terminates within a bounded timeout"}]}
+            if self.edit == "source":
+                (repo / "retry.py").write_text("def retry(limit):\n    return limit\n")
+            elif self.edit == "ignored":
+                (repo / "review.log").write_text("reviewer wrote despite no-edits\n")
+            elif self.edit == "metadata":
+                with (repo / ".git" / "config").open("a") as output:
+                    output.write("\n# reviewer changed config\n")
+            return StepResult(sid, True, _block("review", json.dumps(review)))
+
+    (repo / ".gitignore").write_text("review.log\n")
+    return Reviewer()
+
+
+@pytest.mark.parametrize("edit", [None, "source", "ignored", "metadata"])
+async def test_packet_only_review_under_the_no_edits_flow_guard(repo, packet_only_reviewer, edit):
+    reviewer = packet_only_reviewer
+    reviewer.edit = edit
+    result = await _run(repo, reviewer, _config(max_rounds=0)).run()
+    assert reviewer.reviewed
+    receipt = next(r for r in result.receipts if r["step"] == "review")
+    meta = SessionStore().load_meta(result.flow_session)
+    if edit is None:
+        assert result.stopped.code == "flow.review_changes_requested"
+        assert receipt["no_edits"]["result"] == "unchanged" and receipt["outputs"]
+        finding = meta["review"]["history"][0]["structured"][0]
+        assert finding["path"] == "retry.py" and "never incremented" in finding["message"]
+        assert meta["state"]["verification"]["status"] == "unavailable"
+    else:
+        assert result.stopped.code == "flow.no_edits_changed"
+        assert receipt["no_edits"]["result"] == "changed" and receipt["outputs"] == []
+        path = {"source": "retry.py", "ignored": "review.log", "metadata": ".git/config"}[edit]
+        assert path in receipt["no_edits"]["changed"]
+        assert not meta.get("review", {}).get("history")  # edited reviews never reach parsing

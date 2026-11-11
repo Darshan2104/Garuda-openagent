@@ -21,6 +21,7 @@ delta closed (`DiffError`) rather than being skipped.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -302,6 +303,39 @@ def load_session_delta(store, session_id: str, workspace: str | Path) -> Session
     if not recorded:
         raise DiffError(f"session {session_id} recorded no baseline")
     return session_delta(Baseline.from_dict(recorded), workspace)
+
+
+def review_diff_evidence(store, session_id: str | None, workspace: str | Path,
+                         changed: list[str] | None, *, changed_total: int | None,
+                         changed_complete: bool | None) -> dict:
+    """Review excerpts from this session's existing, host-backed diff owner."""
+    from garuda.workspace.diff_excerpts import diff_excerpts
+
+    unknown = {"status": "unknown", "files": [], "complete": None,
+               "files_omitted": changed_total, "bytes_total": None,
+               "bytes_shown": 0, "bytes_omitted": None}
+    if changed is None or not session_id:
+        return {**unknown, "reason": "the candidate session or changed files were not recorded"}
+    if any(not isinstance(path, str) for path in changed):
+        return {**unknown, "reason": "the recorded change list has invalid paths"}
+    try:
+        meta = store.load_meta(session_id)
+        if (not isinstance(meta, dict) or meta.get("baseline_state") != BASELINE_CAPTURED
+                or meta.get("baseline_workspace") != _resolved_workspace(workspace)):
+            return {**unknown, "reason": "no captured baseline for this host workspace"}
+        recorded = meta.get("baseline")
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("commit"), str):
+            return {**unknown, "reason": "the candidate session has no recorded baseline commit"}
+        baseline = Baseline.from_dict(recorded)
+        if baseline.commit and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.commit):
+            return {**unknown, "reason": "the recorded baseline commit is not an object id"}
+        delta = session_delta(baseline, workspace)
+        if not delta.attributable:
+            return {**unknown, "reason": delta.attribution}
+        return diff_excerpts(baseline, delta, workspace, changed, changed_total=changed_total,
+                             changed_complete=changed_complete)
+    except (DiffError, OSError, ValueError) as exc:
+        return {**unknown, "reason": str(exc)[:500]}
 
 
 def begin_session_evidence(

@@ -643,3 +643,255 @@ def test_new_file_at_a_renamed_path_is_its_own_change(repo):
     kinds = {f.path: f.kind for f in delta.files}
     assert kinds["moved.txt"] == "renamed"
     assert kinds["a.txt"] == "untracked"
+
+
+@pytest.mark.parametrize("per_file,total", [(181, 233), (0, 0), (10000, 20000)])
+def test_review_excerpts_bound_utf8_bytes_and_count_every_omission(repo, per_file, total):
+    from garuda.workspace.diff_excerpts import diff_excerpts
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    baseline = capture_baseline(repo)
+    (repo / "a.txt").write_text("é🙂\n" * 80)
+    (repo / "b.txt").unlink()
+    (repo / "new.txt").write_text("untracked content\n")
+    (repo / "binary").write_bytes(b"\0do not show this payload\xff")
+    delta = session_delta(baseline, repo)
+    guard = NoEditsGuard(repo)
+    view = diff_excerpts(baseline, delta, repo, list(delta.changed),
+                         changed_total=4, changed_complete=True,
+                         per_file_bytes=per_file, total_bytes=total)
+    expected_bytes, used = 0, 0
+    for row in view["files"]:
+        path = row["path"]
+        options = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames",
+                   "--unified=3", "--patch"]
+        args = (["--no-index", *options, "--", "/dev/null", "./" + path]
+                if path in {"new.txt", "binary"} else
+                [*options, "--relative", baseline.commit, "--", path])
+        patch = subprocess.run(["git", "-C", str(repo), "diff", *args],
+                               capture_output=True, check=False).stdout
+        shown = len(row["excerpt"].encode("utf-8"))
+        assert row["bytes_total"] == len(patch)
+        assert row["bytes_shown"] == shown <= min(per_file, total - used)
+        assert row["bytes_omitted"] == len(patch) - shown
+        expected_bytes += len(patch)
+        used += shown
+        if path == "binary":
+            assert row["binary"] is True and row["excerpt"] == ""
+        elif per_file == 10000:
+            assert row["bytes_omitted"] == 0
+    assert view["bytes_total"] == expected_bytes
+    assert view["bytes_shown"] == used
+    assert view["bytes_omitted"] == expected_bytes - used
+    assert view["files_omitted"] == 0
+    assert guard.check().unchanged  # no index, refs or metadata writes to get a patch
+
+
+def test_review_diff_uses_the_recorded_commit_and_discloses_preexisting_text(repo):
+    from garuda.workspace.diff_excerpts import diff_excerpts
+
+    (repo / "b.txt").write_text("preexisting text\n")
+    baseline = capture_baseline(repo)
+    _git(repo, "mv", "a.txt", "renamed.txt")
+    (repo / "b.txt").write_text("preexisting text\ncandidate addition\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "candidate committed before review")
+    delta = session_delta(baseline, repo)
+    view = diff_excerpts(baseline, delta, repo, list(delta.changed),
+                         changed_total=2, changed_complete=True)
+    by_path = {row["path"]: row for row in view["files"]}
+    assert "+preexisting text" in by_path["b.txt"]["excerpt"]
+    assert "+candidate addition" in by_path["b.txt"]["excerpt"]
+    assert by_path["b.txt"]["preexisting_at_start"] is True
+    renamed = by_path["renamed.txt"]
+    assert renamed["renamed_from"] == "a.txt"
+    assert "deleted file mode" in renamed["excerpt"] and "+one" in renamed["excerpt"]
+    assert view["baseline_commit"] == baseline.commit and view["complete"] is True
+
+
+def test_review_excerpts_handle_subtrees_literal_paths_and_never_run_diff_drivers(repo):
+    from garuda.workspace.diff_excerpts import diff_excerpts
+
+    sub = repo / "pkg"
+    sub.mkdir()
+    name = "[odd]\té.txt"
+    (sub / name).write_text("before\n")
+    (sub / ".gitattributes").write_text("*.txt diff=review\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "subtree")
+    marker = repo / "driver-ran"
+    _git(repo, "config", "diff.external", f"touch '{marker}'")
+    _git(repo, "config", "diff.review.textconv", f"touch '{marker}'")
+    baseline = capture_baseline(sub)
+    (sub / name).write_text("after\n")
+    (repo / "a.txt").write_text("must not leak into the subtree packet\n")
+    delta = session_delta(baseline, sub)
+    view = diff_excerpts(baseline, delta, sub, list(delta.changed),
+                         changed_total=1, changed_complete=True)
+    (row,) = view["files"]
+    assert row["path"] == name and "-before\n+after" in row["excerpt"]
+    assert "must not leak" not in row["excerpt"] and not marker.exists()
+
+
+@pytest.mark.parametrize("count,record_total,omitted,kind", [
+    (3, True, 0, "local"), (3, True, 0, "docker"), (205, True, 5, "local"),
+    (205, False, None, "local")])
+def test_review_diff_coverage_follows_the_real_session_manifest(
+        repo, monkeypatch, count, record_total, omitted, kind):
+    from garuda.core.sessions import SessionStore
+    from garuda.flows.review import change_list_complete, change_list_total
+    from garuda.workspace.evidence import (
+        begin_session_evidence,
+        finish_session_evidence,
+        review_diff_evidence,
+    )
+
+    if kind == "docker":
+        import shutil
+
+        # Host-backed Docker evidence requires Git, not a workspace interpreter.
+        bin_dir = repo.parent / "git-only"
+        bin_dir.mkdir()
+        (bin_dir / "git").symlink_to(shutil.which("git"))
+        monkeypatch.setenv("PATH", str(bin_dir))
+    store = SessionStore()
+    store.begin("candidate", "task", "model", "agent", str(repo))
+    begin_session_evidence(store, "candidate", repo, kind)
+    for n in range(count):
+        (repo / f"f{n:03}").write_text("candidate\n")
+    finish_session_evidence(store, "candidate", repo)
+    meta = store.load_meta("candidate")
+    recorded = meta["delta_changed_total"] if record_total else None
+    view = review_diff_evidence(
+        store, "candidate", repo, meta["delta_changed"],
+        changed_total=change_list_total(meta["delta_changed"], recorded),
+        changed_complete=change_list_complete(meta["delta_changed"], recorded))
+    assert len(view["files"]) == min(count, 200)
+    assert view["files_omitted"] == omitted
+    if count == 3:
+        assert view["complete"] is True and view["bytes_omitted"] == 0
+    else:
+        assert view["complete"] is (False if record_total else None)
+        assert view["bytes_total"] is None and view["bytes_omitted"] is None
+
+
+@pytest.mark.parametrize("missing", ["manifest", "baseline", "remote", "repository", "path",
+                                      "invalid-commit"])
+def test_review_diff_unknown_evidence_never_becomes_an_empty_patch(repo, missing):
+    import shutil
+
+    from garuda.core.sessions import SessionStore
+    from garuda.workspace.evidence import (
+        begin_session_evidence,
+        finish_session_evidence,
+        review_diff_evidence,
+    )
+
+    store = SessionStore()
+    store.begin("candidate", "task", "model", "agent", str(repo))
+    begin_session_evidence(store, "candidate", repo, "remote" if missing == "remote" else "local")
+    (repo / "a.txt").write_text("candidate\n")
+    finish_session_evidence(store, "candidate", repo)
+    if missing == "baseline":
+        store.update_meta("candidate", {"baseline": {}})
+    if missing == "repository":
+        shutil.rmtree(repo / ".git")
+    if missing == "invalid-commit":
+        baseline = store.load_meta("candidate")["baseline"]
+        store.update_meta("candidate", {"baseline": {**baseline, "commit": "--output=unsafe"}})
+    paths = None if missing == "manifest" else ["nonexistent" if missing == "path" else "a.txt"]
+    view = review_diff_evidence(store, "candidate", repo, paths,
+                                changed_total=None if paths is None else 1,
+                                changed_complete=None if paths is None else True)
+    assert view["bytes_total"] is None and view["bytes_omitted"] is None
+    assert view["complete"] is not True
+    if missing == "path":
+        (row,) = view["files"]
+        assert row["status"] == "unknown" and row["excerpt"] is None
+        assert row["bytes_total"] is None and row["bytes_omitted"] is None
+    else:
+        assert view["status"] == "unknown" and view["reason"]
+
+
+def test_review_diff_does_not_spool_into_the_reviewed_workspace(repo, monkeypatch):
+    import tempfile
+
+    from garuda.workspace.diff_excerpts import diff_excerpts
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    baseline = capture_baseline(repo)
+    (repo / "a.txt").write_text("candidate\n")
+    delta = session_delta(baseline, repo)
+    guard = NoEditsGuard(repo)
+    monkeypatch.setattr(tempfile, "tempdir", str(repo))
+    view = diff_excerpts(baseline, delta, repo, list(delta.changed),
+                         changed_total=1, changed_complete=True)
+    (row,) = view["files"]
+    assert row["status"] == "unknown" and "temporary directory" in row["reason"]
+    assert view["bytes_total"] is None and view["bytes_omitted"] is None
+    assert guard.check().unchanged
+
+
+@pytest.mark.parametrize("outside_file", [False, True])
+def test_review_diff_withholds_untracked_directory_symlinks(repo, outside_file):
+    from garuda.workspace.diff_excerpts import diff_excerpts
+
+    baseline = capture_baseline(repo)
+    outside = repo.parent / "outside"
+    outside.mkdir()
+    if outside_file:
+        (outside / "null").write_text("outside content must never reach review\n")
+    (repo / "dirlink").symlink_to(outside, target_is_directory=True)
+    delta = session_delta(baseline, repo)
+    view = diff_excerpts(baseline, delta, repo, list(delta.changed),
+                         changed_total=1, changed_complete=True)
+    (row,) = view["files"]
+    assert row["status"] == "unknown" and row["excerpt"] is None
+    assert row["bytes_total"] is None and row["bytes_omitted"] is None
+    assert view["complete"] is False and view["bytes_total"] is None
+    assert "outside content" not in str(view)
+
+
+@pytest.mark.parametrize("failure", ["empty", "stderr"])
+def test_review_diff_refuses_ambiguous_no_index_results(repo, monkeypatch, failure):
+    from garuda.workspace import diff_excerpts as excerpts
+
+    baseline = capture_baseline(repo)
+    (repo / "new.txt").write_text("candidate\n")
+    delta = session_delta(baseline, repo)
+    git = excerpts._git
+
+    def ambiguous_git(*args, output, **kwargs):
+        result = git(*args, output=output, **kwargs)
+        assert result.returncode == 1
+        if failure == "empty":
+            output.seek(0)
+            output.truncate()
+        return subprocess.CompletedProcess(result.args, 1, stderr=(
+            "diff observation failed" if failure == "stderr" else ""))
+
+    monkeypatch.setattr(excerpts, "_git", ambiguous_git)
+    view = excerpts.diff_excerpts(baseline, delta, repo, list(delta.changed),
+                                  changed_total=1, changed_complete=True)
+    (row,) = view["files"]
+    assert row["status"] == "unknown" and row["excerpt"] is None
+    assert row["bytes_total"] is None and row["bytes_omitted"] is None
+    assert view["complete"] is False
+
+
+@pytest.mark.parametrize("path", [".env", "a.txt"])
+def test_review_diff_withholds_excerpts_containing_secrets(repo, path):
+    from garuda.workspace.diff_excerpts import diff_excerpts
+
+    baseline = capture_baseline(repo)
+    secret = "sk-localfixturecredential123456"
+    (repo / path).write_text(f'API_KEY="{secret}"\n')
+    delta = session_delta(baseline, repo)
+    view = diff_excerpts(baseline, delta, repo, list(delta.changed),
+                         changed_total=1, changed_complete=True)
+    (row,) = view["files"]
+    assert secret not in str(view)
+    assert row["redacted"] is True and row["status"] == "redacted"
+    assert row["excerpt"] == "" and row["bytes_shown"] == 0
+    assert row["bytes_total"] == row["bytes_omitted"] > 0
+    assert view["complete"] is False and view["bytes_shown"] == 0

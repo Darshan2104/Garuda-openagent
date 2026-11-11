@@ -225,7 +225,7 @@ PACKET_VERSION = 1
 MAX_PACKET_FILES = 200
 
 
-def _changed_total(changed: list, recorded) -> int | None:
+def change_list_total(changed: list, recorded) -> int | None:
     """How many files really changed: the recorded total, else unknown at the cut."""
     from garuda.workspace.evidence import META_PATH_LIMIT
 
@@ -240,14 +240,14 @@ def change_list_complete(changed: list | None, recorded) -> bool | None:
     """Whether ``changed`` is the whole change set: ``None`` when that is unknown."""
     if changed is None:
         return None
-    total = _changed_total(changed, recorded)
+    total = change_list_total(changed, recorded)
     return None if total is None else total == len(changed)
 
 
 def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate: dict,
                  changed: list | None, reviewer_plan: dict | None, no_edits: bool,
                  changed_total: int | None = None, version_binds: bool = True,
-                 config: dict | None = None) -> dict:
+                 config: dict | None = None, diff: dict | None = None) -> dict:
     """The bounded evidence a reviewer is given, with a digest of it.
 
     Built from the reviewed step's own receipt and session records; a manifest
@@ -257,11 +257,12 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     to the candidate is enforced only when its workspace version is known and
     ``version_binds`` (the version can tell workspaces apart). ``config`` is the
     loader evidence for changed configuration files, ``unknown`` when absent.
+    ``diff`` carries bounded patch excerpts from the session's diff owner.
     """
     import hashlib
 
     files = None if changed is None else [str(p) for p in changed][:MAX_PACKET_FILES]
-    total = None if changed is None else _changed_total(changed, changed_total)
+    total = None if changed is None else change_list_total(changed, changed_total)
     enforced = candidate.get("workspace_version") is not None and version_binds
     packet = {
         "version": PACKET_VERSION,
@@ -280,8 +281,13 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
         "reviewer": {"step": reviewer["id"], "role": reviewer["role"], "no_edits": no_edits,
                      "plan": reviewer_plan},
         "config": config or {"status": "unknown", "files": []},
+        "diff": diff if diff is not None else {
+            "status": "unknown", "files": [], "complete": None,
+            "files_omitted": total, "bytes_shown": 0,
+            "bytes_total": None, "bytes_omitted": None},
         "checks": {"status": "not_in_packet",
-                   "note": "acceptance checks run separately; a review is not verification"},
+                   "note": "acceptance checks run separately after review settles; "
+                           "a review is not verification"},
     }
     packet["digest"] = "sha256:" + hashlib.sha256(
         json.dumps(packet, sort_keys=True, default=str).encode()).hexdigest()
