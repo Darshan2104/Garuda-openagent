@@ -3038,3 +3038,22 @@ and verify session membership; unknown closure remains cleanup unproved and
 quarantines ownership. Descendants that leave the POSIX session are outside
 this cleanup guardrail. Debugpy remains an optional, separately installed
 dependency; real adapter tests skip when it or required OS facilities are absent.
+
+## 2026-11-06 — Admit code cells only through confinement owners (#387)
+
+The optional mutating `code_cell` tool uses scratch-only workers. Linux/bwrap
+and Docker owners provide process/namespace lifetime; Seatbelt, unconfined
+fallbacks and unknown Environment capabilities refuse. Docker cells use a separate
+preinstalled Python image, no workspace mounts, no network, and explicit resource
+limits; neither ordinary workspace commands nor workspace images gain an interpreter
+requirement. Remote Docker uses the same cell owner on its selected daemon.
+
+The stdio bridge carries JSON tool requests only, through the active ordinary
+ToolRunner's dispatch, permissions, hooks, effects, memo and event/capture owners.
+Every cell and nested receipt has cell id/index provenance. Nested results are
+recorded without becoming orphan tool messages in the model context. Broad/default
+tool selections do not opt in. Input, output, time and call counts are bounded;
+the cell time budget excludes nested calls, which keep their own tool timeout and
+approval, and the run deadline still caps it;
+namespace teardown cancels descendants, and interrupted effects never imply zero
+or authorize replay. No retained kernels or dependency installation are introduced.
