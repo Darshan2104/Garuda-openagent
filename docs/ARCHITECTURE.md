@@ -781,6 +781,18 @@ shared agent resolver. Explicit/inherited replacement refuses before launch,
 regardless of text equality with the native base. Native assembly stays unchanged;
 ACP accepts appended instructions only as labelled task context.
 
+The optional language service (`garuda/lsp/`, #381) is wired once in
+`agents/setup.py::activate_agent_plan`, so CLI, SDK, web, serve and role
+workers share it. Activation reads `language_servers:` from the global settings
+file and constructs unstarted servers; nothing launches during setup,
+`garuda lsp list` or the tool's `status`. The first `lsp` request starts the
+server in the local workspace root (other workspace kinds are refused), and the
+run's teardown closes it through `OwnedRunResources`, which takes the place of
+the MCP manager only on runs that have a language service. Diagnostics carry
+the document version Garuda sent and are labelled current, stale, unversioned
+or none. ACP harnesses keep their own tooling; subagents spawned by
+`invoke_subagent` build their toolkit without it.
+
 ## Conventions
 
 - **`.agent/` is the project home.** Custom tools, MCP servers, skills, agent

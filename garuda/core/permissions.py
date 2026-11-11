@@ -104,6 +104,8 @@ SEARCH_TOOLS = {
     "grep": ("path", "glob"),
     "glob": ("path", "pattern"),
     "ls": ("path",),
+    # The language-service tool sends the named file to a language server.
+    "lsp": ("path",),
 }
 
 # Canonical classification of file-operation tools that modify the filesystem.

@@ -50,6 +50,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda config trust` | Review and trust this project's `garuda.yaml` checks and native models (exact bytes; needs a terminal) |
 | | `garuda mcp list` | Resolve and inspect MCP configuration |
 | | `garuda mcp trust` | Review and trust MCP servers the project's own config defines |
+| | `garuda lsp list [--workspace W]` | Show the globally configured language servers and ignored project entries; starts nothing |
 | Runtimes | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable) |
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |
 | | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime |
