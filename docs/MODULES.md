@@ -68,7 +68,8 @@ on it), `background.py`, `tmux.py`.
 Files: `files.py`, `edit.py`, `multi_edit.py`, `search.py` (ripgrep-backed),
 `diagnostics.py` (post-edit syntax + lint), `language.py` (`lsp` previews/navigation and
 `lsp_apply`, present only
-when the user's global settings configure a language server; see `lsp/`).
+when the user's global settings configure a language server, and `lsp_apply` only for a
+profile whose tools may write files; see `lsp/`).
 Reading: `documents.py`, `image_read.py`.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 Agent-facing state: `todo.py`, `goal.py`, `contract.py`, `task_complete.py`.

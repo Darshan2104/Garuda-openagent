@@ -499,7 +499,10 @@ written by preview. To list code actions at a position, use `action: code_action
 with the same path/line/column; add the exact `title` from that list to preview
 one. Optional `end_line` and `end_column` select a range.
 
-After inspecting the preview, the agent calls `lsp_apply`:
+After inspecting the preview, the agent calls `lsp_apply`. It is offered only to a
+profile whose tools may write files (such as `build`); a `tools: {preset: read-only}`
+or `preset: none` profile keeps `lsp` but not `lsp_apply` unless it adds a writer,
+for example `tools: {preset: read-only, add: [edit]}`:
 
 ```json
 {"preview_token":"<token returned by lsp in this run>"}

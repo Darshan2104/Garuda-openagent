@@ -2421,6 +2421,9 @@ Resource operations, symlink aliases, overlapping/ambiguous ranges, code-action
 commands, unresolved actions and confirmation annotations are refused. Server
 `workspace/applyEdit` remains refused. This is compensating rollback without a
 filesystem transaction or compare-and-swap protection against external writers.
+A configured server does not widen a profile: `lsp_apply` joins only a toolset
+that is unrestricted or already names a file-writing tool, so read-only and
+`none` presets keep no writer while read-only `lsp` stays available.
 The local-only service boundary and unconfigured-run defaults remain unchanged;
 no new interpreter runs inside Docker/remote workspaces. LSP diagnostics do not
 replace candidate-bound verification.

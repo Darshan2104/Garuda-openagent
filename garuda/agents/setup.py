@@ -11,7 +11,7 @@ from typing import Any, Iterator, Mapping
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.agents.native_plan import NativeRunPlan
 from garuda.core.modes import apply_mode_preset
-from garuda.core.permissions import PermissionEngine
+from garuda.core.permissions import WRITE_TOOLS, PermissionEngine
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.config import (
     CollectionPolicy,
@@ -1188,7 +1188,8 @@ def language_service_tools(workspace: str) -> tuple[list[Tool], list]:
     tool = LanguageServerTool(services)
     # The user's global settings chose it, as explicitly as `register_tool`;
     # a profile's `tools:` allowlist selects among discovered tools and keeps it
-    # (`tools.remove: [lsp]` still removes it).
+    # (`tools.remove: [lsp]` still removes it). `lsp_apply` writes files, so the
+    # caller keeps it only for a profile whose tools may write.
     apply = ApplyLanguageEditTool(tool.edits)
     for entry in (tool, apply):
         setattr(entry, EXPLICIT_TOOL_ATTR, True)
@@ -1242,6 +1243,10 @@ async def activate_agent_plan(
     )
     # Configuration only, before anything starts, so a refusal here leaks nothing.
     language_tools, language_services = language_service_tools(workspace)
+    if profile.tools is not None and not WRITE_TOOLS & set(profile.tools):
+        # A read-only or empty allowlist (`tools.preset: read-only`/`none`) must
+        # not gain a writer through the server configuration; `lsp` stays.
+        language_tools = [t for t in language_tools if t.name != "lsp_apply"]
     tools, mcp_manager = await build_toolkit(
         toolkit_names,
         mcp_paths,

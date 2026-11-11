@@ -643,7 +643,10 @@ or none. ACP harnesses keep their own tooling; subagents spawned by
 `invoke_subagent` build their toolkit without it.
 
 Rename and code-action edits (#382) use two separate tools: `lsp` requests a
-read-only preview and `lsp_apply` is mutating. A preview lists every replacement
+read-only preview and `lsp_apply` is mutating. `lsp` survives any profile `tools:`
+allowlist; `lsp_apply` is added only when that allowlist is unrestricted or names
+a file-writing tool (`write_file`, `edit`, `multi_edit`), so a read-only or
+`none` preset never gains it. A preview lists every replacement
 with 1-based character ranges, a full-content SHA-256 digest and the exact client
 version sent for each file. Initially unopened targets are discovered, read
 through the Environment, synced and requested again; a discovery response never

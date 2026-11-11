@@ -202,6 +202,35 @@ async def test_unconfigured_runs_are_unchanged(ws):
     assert prepared.mcp_manager is None
 
 
+@pytest.mark.parametrize(("tools", "admitted"), [
+    ("{preset: read-only}", False),
+    ("{preset: none, add: [read_file, task_complete]}", False),
+    ("{preset: none}", False),
+    ("{preset: read-only, add: [edit]}", True),
+])
+async def test_lsp_apply_follows_the_profiles_write_tools(ws, tmp_path, monkeypatch, tools,
+                                                          admitted):
+    from garuda.agents.setup import prepare_agent_run
+    from garuda.core.run_state import _filter_tools
+    from garuda.model.script_model import ScriptModel
+
+    _global(monkeypatch, tmp_path, [_entry(tmp_path)])
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    (agents / "custom.yaml").write_text(f"version: 1\ntools: {tools}\n")
+    prepared = await prepare_agent_run("custom", workspace=str(ws), agents_dir=agents,
+                                       permission_mode="normal", model=ScriptModel([]))
+    try:
+        allowed = prepared.profile.tools
+        # What the loop keeps: run_state filters only a non-empty allowlist.
+        names = {t.name for t in (_filter_tools(prepared.tools, allowed) if allowed
+                                  else prepared.tools)}
+        assert "lsp" in names
+        assert ("lsp_apply" in names) is admitted
+    finally:
+        await prepared.mcp_manager.close()
+
+
 # -- requests -----------------------------------------------------------------------
 
 
