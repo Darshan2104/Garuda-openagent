@@ -234,6 +234,28 @@ repo-subdirectory workspaces map to real files), hashes symlinks by link text,
 never opens FIFOs/devices, and raises on any git failure for a repository
 baseline rather than reporting an empty delta. A non-repo workspace records an
 explicit `unsupported_nonrepo` baseline.
+`diff_excerpts.py` projects that session delta into review patches: at most
+200 named files, 4 KiB of rendered excerpt contents per file and 32 KiB
+altogether, including UTF-8 JSON/HTML escaping (packet metadata is additional).
+`evidence.review_diff_evidence()` requires the candidate session's recorded
+host-backed baseline; missing, remote or unreadable evidence stays unknown.
+Patches compare its baseline commit with the candidate (including committed,
+staged, deleted and untracked work); files dirty at session start are labelled
+because fingerprints cannot subtract their preexisting text. Rename excerpts
+include both paths. Git's binary files are named without showing a patch;
+counts measure generated patch bytes, not binary payload sizes. File and byte
+omissions are exact when known; a cut manifest or failed read leaves aggregate
+byte counts unknown. Rendered-byte counts are separate from patch-byte counts.
+Untracked symlink excerpts and ambiguous Git output remain unknown. The shared
+context redactor scans captured text; a match withholds the whole excerpt,
+marks its row `redacted` and counts its patch bytes as omitted. This is
+best-effort pattern detection, not a secrecy guarantee. Git runs through
+`diff.py` with external diff/textconv disabled, spooling to temporary host
+storage outside the workspace to count
+without holding the full patch in memory. These are view limits, not a disk
+or Git computation limit. No workspace interpreter is added. The flow adds
+these excerpts to the existing packet digest; check receipts stay out because
+acceptance checks run after review settles.
 `flow_evidence.py` is the parent-baseline store for check-enabled flows. Under
 a retained mutating owner, its supervised worker captures bounded, immutable
 attempt boundaries and a cumulative manifest; reads validate the baseline and
@@ -392,7 +414,18 @@ and `ContextOverflowError` and cancellation propagate without fallback. It
 forwards `LiveDelta` text/reasoning (and `discard` before a fallback) to an
 optional consumer, detaching a consumer that raises. `complete_streaming()` and
 the loop's opt-in `model_delta_consumer` path both use it; without a consumer
-the loop calls `complete()` as before. `StreamDelta`
+the loop calls `complete()` as before. `interfaces/role_execution.py` attaches
+that consumer for native TTY `run` output through `interfaces/runner.py`;
+`interfaces/cli.py::stream_run_output` subscribes the existing event renderer
+only to the root run's events (not inherited child or auxiliary accounting
+records). `tui.py::ChatRenderer` keeps only a bounded preview tail, refreshed at
+most ten times per second: the last terminal-height-minus-one wrapped lines with
+Rich, or a single plain line. Dumb/unset terminals suppress previews and their
+erase codes. Discard, response assembly, failure and cancellation clear previews.
+The completed response renders in full; a final message identical to any already
+rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
+output withholding retain the ordinary model path. Chat, web, SDK and ACP do
+not attach the native consumer. `StreamDelta`
 has optional provider terminal fields. `litellm_model.py` emits them even when a
 terminal chunk has no content, retains the latest non-null values across trailing
 usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is
