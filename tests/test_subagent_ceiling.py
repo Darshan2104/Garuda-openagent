@@ -21,6 +21,7 @@ from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
+from tests.approval_helpers import decision_records
 
 
 def _call(name: str, call_id: str = "c", **arguments) -> ModelResponse:
@@ -120,10 +121,22 @@ async def test_a_parent_path_deny_and_tool_deny_hold_in_the_child(tmp_path):
         _done("d2"),
     ]
 
+    from garuda.acp.approval_channel import ceiling_fingerprint
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.run_guard import install_session_broker
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("parent", task="t", model="m", agent="a", workspace=str(tmp_path))
+    install_session_broker(parent, store, "parent")
     await _run_parent(tmp_path, script, parent)
 
     assert not (tmp_path / "secret.txt").exists()
     assert (tmp_path / "keep.txt").read_text() == "a\n"
+    records = decision_records(store, "parent")
+    assert len(records) == 3
+    denials = [r for r in records if r["outcome"] == "deny"]
+    assert {r["action"] for r in denials} == {"write_file", "multi_edit"}
+    assert all(r["ceiling"] != ceiling_fingerprint(parent) for r in denials)
 
 
 async def test_a_parent_ask_beats_a_childs_allow_prefix(tmp_path):

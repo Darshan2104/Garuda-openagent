@@ -2797,3 +2797,45 @@ revalidates every source before writing, and verifies writes and restoration of
 all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-11 — Complete native approval binding and policy decision audits (#375)
+
+Reuse the #403/#426 session `ApprovalBroker` for native `permission_response`
+and Garuda's inbound ACP approval paths. Native pending events expose the same
+request digest, ceiling/source and expiry as the broker; id-only answers bind to
+the live session/runtime request, while an optional digest must match. Unknown,
+foreign, replayed and callback-only answers fail closed and record a bounded
+refusal under a fresh id, preserving the original decision. A server-side
+`session/approve` also releases the editor request waiting on the same approval.
+Delegated fingerprints include both parent and child policies so either change
+invalidates a pending allow. Cancellation disconnects native pending requests.
+
+Non-ASK tool authorization emits one bounded record through the same broker,
+with `via: policy`, deciding rule category/index or mode, effective ceiling and
+source. The enforcer captures provenance during its existing decision, without
+re-evaluating rules or changing precedence. Unknown provenance remains null.
+Delegated engines inherit the parent's audit owner while recording their own
+effective ceiling; collection workers audit each existing parent/child check.
+Policy records retain only a bounded tool name, never arguments or content, and
+do not create inbox files. ASK lifecycle records and existing record keys retain
+their format; fields are additive. Audit failure denies as in existing broker
+channels. Execution remains with the existing tools and Environment backends.
+
+## 2026-11-11 — Bound decision observations and settle ACP permission waits (#375)
+
+Policy outcomes and refused unbound/replayed answers append to a separate
+`decision-audit/` JSONL trail under the session’s existing host storage, with
+a strict cross-process lock and at most two 1 MiB segments. Writes run off the
+event loop; failures log a warning without changing a policy decision or
+a refusal. Rotation discards old observations, so this is recent evidence,
+not complete approval history. Parked approval metadata, file decisions and
+their fail-closed persistence contract remain unchanged. This supersedes the
+preceding per-policy/per-refusal metadata storage and audit-failure behavior.
+
+Native bridges without a permission engine remain valid for handoff; other
+bridges install the broker before session creation. The inbound ACP server
+continues polling during editor requests. Native `approval_settled` lifecycle
+events and turn termination retire outstanding waits, client errors deny, and
+late/unmatched response ids are ignored. Refused late answers cannot abort the
+prompt or widen authority. Existing tool/Environment execution owners and
+workspace interpreter requirements are unchanged.

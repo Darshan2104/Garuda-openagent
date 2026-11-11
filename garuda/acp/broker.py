@@ -4,8 +4,9 @@ The one decision path for native and ACP approvals. A `PermissionEngine`
 still draws the ceiling (allow/deny/ask per tool, path, and command); the
 broker owns what happens at ASK and at every ACP request: park the approval
 where UI, CLI, and SDK all read it, await an answer, and fail closed on
-timeout or requester disconnect. Every outcome — allow, deny, timeout,
-disconnect — is persisted, so an audit can replay each one.
+timeout or requester disconnect. Parked outcomes — allow, deny, timeout,
+disconnect — are persisted, so an audit can replay each one. Policy and
+unbound-answer observations use a separate bounded, best-effort trail.
 
 Strict ceilings never silently downgrade: `describe_gaps` reports the
 capabilities a strict policy needs but the adapter lacks; negotiation itself
@@ -65,6 +66,11 @@ class ApprovalRecord:
     via: str | None = None
     reason: str | None = None
     request: ApprovalRequest | None = None
+    answered_approval_id: str | None = None
+    policy_source: str | None = None
+    policy_mode: str | None = None
+    ceiling: str | None = None
+    ceiling_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = {
@@ -84,6 +90,11 @@ class ApprovalRecord:
                           ceiling_source=self.request.ceiling_source,
                           requested_at=self.request.requested_at,
                           expires_at=self.request.expires_at)
+        if self.answered_approval_id is not None:
+            record["answered_approval_id"] = self.answered_approval_id
+        if self.via == "policy":
+            record.update(policy_source=self.policy_source, policy_mode=self.policy_mode,
+                          ceiling=self.ceiling, ceiling_source=self.ceiling_source)
         return record
 
 
@@ -125,8 +136,10 @@ class ApprovalBroker:
         answerer: Callable[[ApprovalRequest], Any] | None = None,
         channel=None,
         ceiling_source: str | None = None,
+        session_id: str = "",
     ):
         self._engine = engine
+        self.session_id = session_id
         # Where the effective ceiling came from (e.g. "--max-permission", "profile",
         # "acp:not-screened"); recorded with every approval, never used to decide.
         self._ceiling_source = ceiling_source
@@ -141,6 +154,10 @@ class ApprovalBroker:
         self._via: dict[str, tuple[str, str | None]] = {}
         self._terminal: dict[str, Unanswered] = {}
         self._seq = 0
+
+    @property
+    def answerer(self):
+        return self._answerer
 
     def set_answerer(
         self, answerer: Callable[[ApprovalRequest], Any] | None
@@ -178,6 +195,53 @@ class ApprovalBroker:
         future = self._answers.pop(approval_id, None)
         if future is not None and not future.done():
             future.set_result(bool(allow))
+
+    async def answer_bound(self, approval_id: str, allow: bool, *, session_id: str,
+                           runtime_id: str = "native", digest: str | None = None,
+                           via: str = "permission_response") -> None:
+        """Bind an interface answer to this session's live request, or audit refusal.
+
+        An id-only transport uses the broker's immutable, session-scoped request
+        digest. Rejections get a fresh id so a replay cannot overwrite its outcome.
+        """
+        request = self._parked.get(approval_id) if isinstance(approval_id, str) else None
+        if (request is None or request.session_id != session_id
+                or request.runtime_id != runtime_id or not request.digest
+                or (digest is not None and digest != request.digest)):
+            reason = "Answer cannot be bound to a pending request in this session"
+            answered_id = approval_id[:256] if isinstance(approval_id, str) else "invalid id"
+            await self._observe(session_id, ApprovalRecord(
+                self._next_id(), ApprovalOutcome.DENY, "unbound approval answer", "approval",
+                runtime_id, via=via, reason=reason, answered_approval_id=answered_id))
+            raise ValueError(reason)
+        self.answer(approval_id, allow, via=via, digest=request.digest)
+
+    async def record_policy(self, tool_name: str, decision: PermissionDecision, reason: str | None,
+                            *, source: str | None, mode: str | None, engine) -> tuple[bool, str | None]:
+        """One bounded record per non-ASK decision, without argument disclosure."""
+        from garuda.acp.approval_channel import ceiling_fingerprint
+
+        allowed = decision is PermissionDecision.ALLOW
+        await self._observe(self.session_id, ApprovalRecord(
+            self._next_id(), ApprovalOutcome.ALLOW if allowed else ApprovalOutcome.DENY,
+            tool_name[:256], "tool", "native", via="policy", reason=None,
+            policy_source=source[:128] if source is not None else None,
+            policy_mode=mode[:32] if mode is not None else None,
+            ceiling=ceiling_fingerprint(engine),
+            ceiling_source=self._ceiling_source[:128] if self._ceiling_source is not None else None,
+        ))
+        return allowed, reason
+
+    async def _observe(self, session_id: str, record: ApprovalRecord) -> None:
+        if self._store is None or not session_id:
+            return
+        from garuda.acp.decision_audit import append_decision
+
+        try:
+            await asyncio.to_thread(append_decision,
+                                    self._store.session_dir(session_id) / "decision-audit", record.to_dict())
+        except Exception:
+            logger.warning("Decision observation could not be persisted", exc_info=True)
 
     def handler(
         self, *, session_id: str = "", runtime_id: str = "native"

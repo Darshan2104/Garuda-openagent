@@ -927,6 +927,30 @@ checks completed retained loan ownership before returning capacity. Background
 children install their session broker with an external file answerer; native and
 ACP requests can outlive the server and retain existing timeout/audit delivery.
 
+Native permission engines attach to the session broker through
+`interfaces/run_guard.py::install_session_broker`. Non-ASK dispatch decisions
+append observations with `via: policy`, the deciding rule category/index or
+mode, and the effective ceiling fingerprint to the session’s `decision-audit/`
+JSONL trail. Host-side writes run off the event loop under a cross-process lock;
+rotation retains at most two 1 MiB segments. Arguments are omitted, no inbox
+request is published, and observation failures never change policy outcomes.
+Hook rewrites receive their own decision. `runtime/native.py` publishes pending
+broker requests as runtime events and routes `permission_response` through their
+session/runtime/digest binding.
+Callback-only, foreign and replayed answers deny with a separate observation
+in that same bounded trail, so they cannot overwrite the request’s outcome.
+`acp/server.py` forwards these bindings and lets `session/approve` settle the
+same editor request without a second answer. Permission-free native handoff
+bridges skip broker installation;
+other native bridges install it before creating session metadata. The server
+keeps pumping events while permission requests wait, retires waits on native
+`approval_settled` lifecycle events or turn termination, denies client errors,
+and ignores late or unmatched response ids. Delegated engines inherit the
+parent's audit owner and record their effective ceiling, whose fingerprint
+includes both parent and child.
+Collection workers retain their separate parent/child checks and audit each
+check actually evaluated through that session owner.
+
 `workspace/text_reads.py` owns the optional bounded UTF-8 range/tail protocol,
 page evidence, and chunked local scanner. `LocalEnvironment` owns asynchronous
 cancellation settlement; sandbox delegates after checking its ordinary real-path

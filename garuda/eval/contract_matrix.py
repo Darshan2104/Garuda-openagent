@@ -378,10 +378,24 @@ async def _check_permission(entry: AdapterEntry, scratch: Path) -> None:
     if entry.kind == "native":
         runtime = entry.make(scratch)
         await runtime.start(task="t", session_id="perm-1")
-        answered: list[bool] = []
-        runtime.park_approval("apr-1", answered.append)
-        await runtime.permission_response(approval_id="apr-1", allow=True)
-        assert answered == [True]
+        broker = runtime._permissions.approval_broker
+        broker.set_answerer(None)
+        pending = asyncio.create_task(broker.handler(session_id="perm-1")("matrix approval"))
+        try:
+            for _ in range(200):
+                events, _ = await runtime.poll_events(0)
+                asks = [e for e in events if e.kind.value == "approval_request"]
+                if asks:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("native runtime did not publish its pending request")
+            await runtime.permission_response(approval_id=asks[0].payload["approval_id"], allow=True)
+            assert await pending
+        finally:
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
         await runtime.close()
         return
     if entry.kind == "fake":

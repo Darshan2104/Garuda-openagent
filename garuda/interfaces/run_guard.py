@@ -385,11 +385,15 @@ def install_session_broker(permissions, store, session_id: str, *, external=Fals
     """
     from garuda.acp.broker import ApprovalBroker
 
-    broker = ApprovalBroker(engine=permissions, store=store,
+    previous = getattr(permissions, "approval_broker", None)
+    broker = ApprovalBroker(engine=permissions, store=store, session_id=session_id,
                             channel=session_approval_channel(store, session_id),
                             ceiling_source=f"run-permission-engine:{getattr(permissions, 'mode', None)}")
-    broker.set_answerer(None if external else approval_answerer(permissions.approval_handler))
+    broker.set_answerer(None if external else
+                        previous.answerer if previous is not None else
+                        approval_answerer(permissions.approval_handler))
     permissions.install_approval_handler(broker.handler(session_id=session_id))
+    permissions.approval_broker = broker
     return broker
 
 
