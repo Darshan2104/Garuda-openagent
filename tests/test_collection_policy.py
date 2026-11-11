@@ -14,6 +14,7 @@ from garuda.tools.discovery import UseToolTool
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.local import LocalEnvironment
+from tests.approval_helpers import decision_records
 
 
 def _names(tools):
@@ -240,7 +241,12 @@ async def test_lazy_dispatch_rechecks_effect_before_execution():
 
 
 @pytest.mark.asyncio
-async def test_lazy_dispatch_still_applies_ordinary_permissions():
+@pytest.mark.parametrize("collection", [False, True])
+async def test_lazy_dispatch_still_applies_ordinary_permissions(tmp_path, collection):
+    from garuda.core.collection import CollectionPermissionCeiling
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.run_guard import install_session_broker
+
     class Reader:
         name = "remote_read"
         description = "read"
@@ -252,6 +258,12 @@ async def test_lazy_dispatch_still_applies_ordinary_permissions():
             self.executed = True
             return ToolResult(tool_call_id="", content="ran")
 
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("parent", task="t", model="m", agent="a", workspace=str(tmp_path))
+    parent = PermissionEngine() if collection else PermissionEngine(tool_rules={Reader.name: "deny"})
+    install_session_broker(parent, store, "parent")
+    ceiling = (CollectionPermissionCeiling(parent, PermissionEngine(mode="readonly", tool_rules={Reader.name: "deny"}))
+               if collection else parent)
     target = Reader()
     result = await UseToolTool({target.name: target}).execute(
         {"name": target.name, "arguments": {}},
@@ -259,9 +271,15 @@ async def test_lazy_dispatch_still_applies_ordinary_permissions():
         ToolContext(
             session_id="collection",
             allowed_tool_effects=frozenset({ToolEffect.READ_ONLY}),
-            permissions=PermissionEngine(tool_rules={target.name: "deny"}),
+            permissions=ceiling,
         ),
     )
     assert result.is_error
     assert "permission denied" in result.content.lower()
     assert target.executed is False
+
+    records = decision_records(store, "parent")
+    assert len(records) == (2 if collection else 1)
+    expected = {("allow", "smart", "mode"), ("deny", "readonly", "tool-rule")} if collection else {
+        ("deny", "smart", "tool-rule")}
+    assert {(r["outcome"], r["policy_mode"], r["policy_source"]) for r in records} == expected

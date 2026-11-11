@@ -74,6 +74,7 @@ class NativeGarudaRuntime:
         resource_manager: Any | None = None,
         workspace: str | None = None,
         session_name: str | None = None,
+        external_approvals: bool = False,
     ):
         self._agent = agent
         self._model = model
@@ -89,6 +90,8 @@ class NativeGarudaRuntime:
         # workspace field, so without this every native session recorded ".".
         self._workspace = workspace
         self._session_name = session_name
+        self._external_approvals = external_approvals
+        self._announced_approvals: set[str] = set()
         self._state = LifecycleState.DISCOVERED
         self._session_id = ""
         self._turn = 0
@@ -158,6 +161,9 @@ class NativeGarudaRuntime:
             except ValueError:
                 native_kind = None
             kind = _EVENT_KIND_MAP.get(native_kind, RuntimeEventKind.MESSAGE)
+            if native_kind == EventType.PERMISSION_ASK:
+                # Dispatch refusals are observations, not new requests to answer.
+                kind = RuntimeEventKind.MESSAGE
             payload = dict(event.get("payload", {}))
             payload.setdefault("native_type", event.get("type"))
             turn = payload.get("turn", self._turn)
@@ -185,8 +191,8 @@ class NativeGarudaRuntime:
     def park_approval(self, approval_id: str, respond: Callable[[bool], None]) -> None:
         """Park a native approval so `permission_response` can answer it later.
 
-        Entry points install this as their approval handler; without one,
-        approvals flow exactly as they do today and a reply fails closed.
+        Legacy callbacks carry no request evidence. They receive a denial;
+        new callers park through the session's permission engine and broker.
         """
         self._parked_approvals[approval_id] = respond
 
@@ -200,6 +206,7 @@ class NativeGarudaRuntime:
             session_id = self._provided_trail.session_id
         self._session_id = session_id or EventStore().session_id
         self._trail = self._provided_trail or EventStore(session_id=self._session_id)
+        self._install_broker()
         self._store.begin(
             session_id=self._session_id,
             task=task,
@@ -248,9 +255,20 @@ class NativeGarudaRuntime:
             (e.get("payload", {}).get("turn", 0) for e in self._trail.get_all()),
             default=0,
         )
+        self._install_broker()
         self._move(LifecycleState.IDLE)
         self._emit(RuntimeEventKind.LIFECYCLE, {"state": "resumed"})
         return self._info()
+
+    def _install_broker(self) -> None:
+        from garuda.interfaces.run_guard import install_session_broker
+
+        if self._permissions is None:
+            return
+        broker = getattr(self._permissions, "approval_broker", None)
+        if broker is None or broker.session_id != self._session_id:
+            install_session_broker(self._permissions, self._store, self._session_id,
+                                   external=self._external_approvals)
 
     async def prompt(self, text: str) -> int:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -307,6 +325,24 @@ class NativeGarudaRuntime:
         return self._turn
 
     async def poll_events(self, cursor: int) -> tuple[list[RuntimeEvent], int]:
+        broker = getattr(self._permissions, "approval_broker", None)
+        if broker is not None and self._state not in (LifecycleState.CLOSED, LifecycleState.FAILED):
+            pending = broker.pending()
+            pending_ids = {request.approval_id for request in pending}
+            for approval_id in self._announced_approvals - pending_ids:
+                self._emit(RuntimeEventKind.LIFECYCLE, {
+                    "state": "approval_settled", "approval_id": approval_id,
+                })
+            self._announced_approvals.intersection_update(pending_ids)
+            for request in pending:
+                if request.session_id != self._session_id or request.approval_id in self._announced_approvals:
+                    continue
+                self._announced_approvals.add(request.approval_id)
+                self._emit(RuntimeEventKind.APPROVAL_REQUEST, {
+                    "approval_id": request.approval_id, "action": request.action,
+                    "request_digest": request.digest, "ceiling": request.ceiling,
+                    "ceiling_source": request.ceiling_source, "expires_at": request.expires_at,
+                })
         if cursor < 0:
             cursor = 0
         return list(self._events[cursor:]), len(self._events)
@@ -322,11 +358,27 @@ class NativeGarudaRuntime:
     async def resume_from_pause(self) -> None:
         self._move(LifecycleState.IDLE)
 
-    async def permission_response(self, *, approval_id: str, allow: bool) -> None:
-        respond = self._parked_approvals.pop(approval_id, None)
-        if respond is None:
-            raise RuntimeProtocolError(f"no pending approval {approval_id!r}")
-        respond(allow)
+    async def permission_response(self, *, approval_id: str, allow: bool,
+                                  digest: str | None = None) -> None:
+        broker = getattr(self._permissions, "approval_broker", None)
+        respond = self._parked_approvals.pop(approval_id, None) if isinstance(approval_id, str) else None
+        try:
+            if (broker is None or respond is not None
+                    or self._state in (LifecycleState.CLOSED, LifecycleState.FAILED)):
+                # Legacy callbacks have no action/digest to authorize.
+                if broker is None:
+                    raise ValueError("no session approval broker")
+                await broker.answer_bound(approval_id, False, session_id=self._session_id, digest="")
+            # During cancellation, settle any live answer as a deny even if its
+            # digest is stale; refusing it would leave the request waiting.
+            cancelling = self._cancel_requested is not None
+            await broker.answer_bound(approval_id, False if cancelling else allow,
+                                      session_id=self._session_id,
+                                      digest=None if cancelling else digest)
+        except (KeyError, ValueError) as exc:
+            if respond is not None:
+                respond(False)
+            raise RuntimeProtocolError(str(exc)) from exc
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -352,6 +404,11 @@ class NativeGarudaRuntime:
             self._move(LifecycleState.CANCELLING)
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": reason})
             self._move(LifecycleState.CLOSED)
+        broker = getattr(self._permissions, "approval_broker", None)
+        if broker is not None:
+            # Disconnect the asks waiting now and deny the ones this turn still
+            # makes before its boundary, instead of parking them for the timeout.
+            broker.cancel_session(reason or "cancelled")
         if audit_error is not None:
             raise CancellationAuditError(
                 f"turn cancelled but its audit record failed: {audit_error}"

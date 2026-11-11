@@ -37,6 +37,7 @@ from garuda.acp.protocol import (
     decode_frame,
     encode_frame,
 )
+from garuda.runtime.protocol import RuntimeCancelledError, RuntimeProtocolError
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class AcpServer:
         self._initialized = False
         self._next_client_request_id = 0
         self._client_requests: dict[int, asyncio.Future] = {}
+        self._permission_requests: dict[tuple[str, str], asyncio.Future] = {}
 
     async def _reply(self, call_id: Any, result: Any) -> None:
         await self._send(encode_frame({"jsonrpc": "2.0", "id": call_id, "result": result}))
@@ -82,32 +84,37 @@ class AcpServer:
             encode_frame({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
         )
 
-    async def _request_client(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _request_client(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         self._next_client_request_id += 1
         request_id = self._next_client_request_id
         future = asyncio.get_running_loop().create_future()
         self._client_requests[request_id] = future
-        await self._send(encode_frame({
-            "jsonrpc": "2.0", "id": request_id, "method": method, "params": params,
-        }))
+        binding = (params.get("sessionId", ""), params.get("approvalId", ""))
+        self._permission_requests[binding] = future
         try:
-            result = await future
-            return result if isinstance(result, dict) else {}
+            await self._send(encode_frame({
+                "jsonrpc": "2.0", "id": request_id, "method": method, "params": params,
+            }))
+            return await future
         finally:
             self._client_requests.pop(request_id, None)
+            self._permission_requests.pop(binding, None)
 
     async def handle(self, message: dict[str, Any]) -> None:
         """Dispatch one decoded frame. Unknown methods fail closed, never hang."""
         if not isinstance(message, dict):
             raise AcpProtocolError("message must be an object")
         if "method" not in message and "id" in message:
-            future = self._client_requests.get(message["id"])
-            if future is None:
-                raise AcpProtocolError("response does not match a pending request")
+            request_id = message["id"]
+            future = self._client_requests.get(request_id) if isinstance(request_id, (int, str)) else None
+            if future is None or future.done():
+                logger.debug("Ignoring response without a pending client request")
+                return
             if "error" in message:
                 future.set_exception(AcpProtocolError("client request was refused"))
             else:
-                future.set_result(message.get("result", {}))
+                result = message.get("result", {})
+                future.set_result(result if isinstance(result, dict) else {})
             return
         method = message.get("method", "")
         call_id = message.get("id")
@@ -127,7 +134,7 @@ class AcpServer:
             return
         try:
             await handler(call_id, params)
-        except AcpError as exc:
+        except (AcpError, RuntimeProtocolError) as exc:
             if call_id is not None:
                 await self._fail(call_id, str(exc))
         except Exception:
@@ -184,36 +191,76 @@ class AcpServer:
         before, _ = await runtime.poll_events(0)
         seen = len(before)
         prompt_task = asyncio.ensure_future(runtime.prompt(text))
+        deliveries: set[asyncio.Task] = set()
         try:
             while not prompt_task.done():
                 events, seen = await runtime.poll_events(seen)
                 for event in events:
-                    await self._deliver_event(runtime, event)
+                    if event.kind.value == "approval_request":
+                        deliveries.add(asyncio.create_task(self._deliver_event(runtime, event)))
+                    else:
+                        await self._deliver_event(runtime, event)
+                for delivery in list(deliveries):
+                    if delivery.done():
+                        deliveries.remove(delivery)
+                        await delivery
                 await asyncio.sleep(0.01)
             await prompt_task
             events, seen = await runtime.poll_events(seen)
             for event in events:
-                await self._deliver_event(runtime, event)
-        except AcpCancelledError:
+                if event.kind.value != "approval_request":
+                    await self._deliver_event(runtime, event)
+        except (AcpCancelledError, RuntimeCancelledError):
             await self._notify({"sessionUpdate": "error", "message": "cancelled by client"})
             await self._reply(call_id, {"stopReason": "cancelled"})
             return
+        finally:
+            for delivery in deliveries:
+                delivery.cancel()
+            await asyncio.gather(*deliveries, return_exceptions=True)
+            if not prompt_task.done():
+                await runtime.cancel(reason="prompt delivery stopped")
+                await asyncio.gather(prompt_task, return_exceptions=True)
         await self._reply(call_id, {"stopReason": "end_turn"})
 
     async def _deliver_event(self, runtime: Any, event: Any) -> None:
         if event.kind.value == "approval_request":
-            result = await self._request_client(
-                "session/request_permission",
-                {
-                    "sessionId": event.session_id,
-                    "approvalId": event.payload.get("approval_id", ""),
-                    "action": event.payload.get("action", ""),
-                },
-            )
-            await runtime.permission_response(
-                approval_id=event.payload.get("approval_id", ""),
-                allow=bool(result.get("approved", False)),
-            )
+            try:
+                result = await self._request_client(
+                    "session/request_permission",
+                    {
+                        "sessionId": event.session_id,
+                        "approvalId": event.payload.get("approval_id", ""),
+                        "action": event.payload.get("action", ""),
+                        **{key: event.payload[key] for key in
+                           ("request_digest", "ceiling", "ceiling_source", "expires_at")
+                           if key in event.payload},
+                    },
+                )
+            except AcpError:
+                logger.debug("Client refused permission request; denying")
+                result = {"approved": False}
+            if result is not None:  # session/approve may already have answered it
+                approval_id = event.payload.get("approval_id", "")
+                approved = bool(result.get("approved", False))
+                try:
+                    await runtime.permission_response(
+                        approval_id=approval_id, allow=approved,
+                        **({"digest": result["request_digest"]} if "request_digest" in result else {}),
+                    )
+                except RuntimeProtocolError:
+                    # The server knows which request it sent. A refused answer
+                    # must deny it rather than leave the prompt waiting.
+                    logger.debug("Permission answer refused; denying %s", approval_id)
+                    try:
+                        await runtime.permission_response(approval_id=approval_id, allow=False)
+                    except RuntimeProtocolError:
+                        logger.debug("Permission answer no longer binds to a live request")
+            return
+        if event.kind.value == "lifecycle" and event.payload.get("state") == "approval_settled":
+            future = self._permission_requests.get((event.session_id, event.payload.get("approval_id", "")))
+            if future is not None and not future.done():
+                future.set_result(None)
             return
         update = _to_update(event)
         if update is not None:
@@ -231,8 +278,12 @@ class AcpServer:
         if not approval_id:
             raise AcpProtocolError("session/approve needs an approvalId")
         await runtime.permission_response(
-            approval_id=approval_id, allow=bool(params.get("approved", False))
+            approval_id=approval_id, allow=bool(params.get("approved", False)),
+            **({"digest": params["request_digest"]} if "request_digest" in params else {}),
         )
+        future = self._permission_requests.get((params.get("sessionId", ""), approval_id))
+        if future is not None and not future.done():
+            future.set_result(None)
         if call_id is not None:
             await self._reply(call_id, {"approved": bool(params.get("approved", False))})
 
@@ -383,7 +434,7 @@ async def make_native_runtime(session_id: str, *, workspace: str = ".") -> Any:
     runtime = NativeGarudaRuntime(
         agent=agent, model=model, tools=tools, config=config,
         permissions=permissions, resource_manager=mcp_manager,
-        workspace=os.path.realpath(workspace),
+        workspace=os.path.realpath(workspace), external_approvals=True,
     )
 
     async def _driver(*, task: str, turn: int, trail: EventStore) -> Any:

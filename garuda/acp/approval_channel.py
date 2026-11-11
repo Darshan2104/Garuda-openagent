@@ -56,9 +56,10 @@ def ceiling_fingerprint(engine) -> str:
     for name in ("_mode", "_tool_rules", "_bash_rules", "_path_rules", "_allow_prefixes",
                  "_deny_bash", "_ask_bash", "_deny_paths", "_ask_paths", "_workspace_root"):
         parts.append(repr(getattr(engine, name, None)))
-    parent = getattr(engine, "_parent", None)
-    if parent is not None:
-        parts.append(ceiling_fingerprint(parent))
+    for name in ("_parent", "_child"):
+        policy = getattr(engine, name, None)
+        if policy is not None:
+            parts.append(ceiling_fingerprint(policy))
     return hashlib.sha256("\x00".join(parts).encode()).hexdigest()
 
 

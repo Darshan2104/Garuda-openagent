@@ -362,6 +362,11 @@ async def test_permission_request_roundtrip_streams_mid_turn():
     await asyncio.wait_for(prompt_task, 5)
     replies = [decode_frame(frame)[0] for frame in sent if decode_frame(frame)[0].get("id") == 3]
     assert replies[-1]["result"]["stopReason"] == "end_turn"
+    await server.handle({"jsonrpc": "2.0", "id": request["id"], "result": {"approved": True}})
+    await server.handle({"jsonrpc": "2.0", "id": "unknown", "error": {"code": -1}})
+    await server.handle({"jsonrpc": "2.0", "id": ["invalid"], "result": {}})
+    await server.handle({"jsonrpc": "2.0", "id": 4, "method": "session/new", "params": {}})
+    assert decode_frame(sent[-1])[0]["result"]["sessionId"] != session_id
 
 
 async def test_malformed_framing_exits_nonzero_without_details():
