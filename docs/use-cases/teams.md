@@ -81,7 +81,7 @@ A `garuda.yaml` you might end up with:
     ```
 
 - `harness` is a runtime ID from `garuda runtime list` (`native`, `claude`,
-  `codex`, `cursor`, `opencode`, `pi`, `goose`).
+  `codex`, `cursor`, `opencode`, `pi`, `goose`, `omp`).
 - `model_id` is used exactly as written, never matched loosely. For an
   external harness, Garuda selects that model in the harness before the first
   prompt, and refuses if the harness doesn't offer it.
