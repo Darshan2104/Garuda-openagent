@@ -2797,3 +2797,44 @@ revalidates every source before writing, and verifies writes and restoration of
 all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-11 — Review packets use bounded session-owned diff excerpts (#362)
+
+Review packets extend the existing candidate binding and digest with patches
+from the candidate session's recorded baseline/delta, through the workspace
+`diff.py` / `evidence.py` owners. Host-backed Docker keeps using host Git;
+remote, missing and failed observations remain unknown. No interpreter is
+required inside a workspace. External diff and textconv drivers are disabled.
+
+The view names at most 200 files and shows at most 4 KiB of UTF-8 patch text
+per file and 32 KiB overall. Git-classified binary patches are withheld.
+Exact generated-patch byte omissions are separate from source sizes; aggregate
+bytes remain unknown when the manifest is cut or a file read fails. Full Git
+output is temporarily spooled outside the workspace for counting, so these
+bounds do not cap disk usage or Git computation. The comparison is baseline
+commit to candidate, including committed work; preexisting text cannot be
+subtracted from fingerprints and is explicitly labelled. Rename evidence
+covers source and destination.
+
+The packet continues to exclude check receipts and states that acceptance
+checks run after review settles. A dedicated local packet-only reviewer fixture
+uses actual session/Git evidence under the existing flow no-edits guard, with
+source, ignored-file and Git-metadata edits withholding the review output.
+
+## 2026-11-11 — Review excerpts fail closed and bound rendered delivery (#362)
+
+Untracked symlinks never reach Git's no-index comparison; their excerpts stay
+unknown, with unknown source-byte totals. Git diagnostics or a change exit code
+without patch output likewise cannot become a complete empty diff. Existing
+host-backed evidence ownership and remote-unknown behavior are unchanged.
+
+The 4 KiB per-file and 32 KiB total excerpt budgets include the UTF-8 JSON/HTML
+escaping delivered to reviewers; packet metadata is additional. Rendered-byte
+counts remain separate from generated-patch bytes, preserving exact known
+omissions. Accounting includes ASCII expansion of non-ASCII characters,
+preserving the existing packet renderer's output format.
+
+Captured text passes through the existing context secret-pattern redactor. A
+match withholds the whole excerpt and flags its row as redacted, so source-byte
+omissions remain exact and review coverage is incomplete. Detection is best
+effort over captured text, not a guarantee against arbitrary secret formats.

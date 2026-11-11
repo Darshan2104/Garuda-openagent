@@ -1068,6 +1068,7 @@ class FlowRunner:
         """
         from garuda.flows import review as rv
         from garuda.flows.review_evidence import config_evidence
+        from garuda.workspace.evidence import review_diff_evidence
 
         reviewed = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
         if reviewed is None:
@@ -1084,21 +1085,25 @@ class FlowRunner:
         except (OSError, ValueError):
             meta = {}
         changed = meta.get("delta_changed")
+        changed = changed if isinstance(changed, list) else None
+        changed_total = None if changed is None else rv.change_list_total(
+            changed, meta.get("delta_changed_total"))
+        changed_complete = rv.change_list_complete(changed, meta.get("delta_changed_total"))
         packet = rv.build_packet(
             task=self.task, step=step, reviewer=terminal, spec=spec,
             candidate={"step": step["id"], "session_id": reviewed.get("session_id"),
                        "attempt": reviewed.get("attempt"), "workspace_version": candidate,
                        "workspace_version_before": reviewed.get("workspace_version_before")},
-            changed=changed if isinstance(changed, list) else None,
+            changed=changed,
             changed_total=meta.get("delta_changed_total"),
             version_binds=candidate is not None and self._version_binds(),
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
             no_edits=self._no_edits(terminal, terminal["role"]),
             config=await _settled_sync(
-                config_evidence, self.workspace, changed if isinstance(changed, list) else None,
-                changed_complete=rv.change_list_complete(
-                    changed if isinstance(changed, list) else None,
-                    meta.get("delta_changed_total"))))
+                config_evidence, self.workspace, changed, changed_complete=changed_complete),
+            diff=await _settled_sync(
+                review_diff_evidence, self.store, reviewed.get("session_id"), self.workspace,
+                changed, changed_total=changed_total, changed_complete=changed_complete))
         await self._publish(self.flow_session, {"review_packet": {
             "digest": packet["digest"], "candidate": packet["candidate"],
             "binding": packet["binding"], "changed_total": packet["changed"]["total"],
