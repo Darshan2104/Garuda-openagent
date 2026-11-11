@@ -173,6 +173,30 @@ fastest way to learn the system.
    environment's proved host bind root; container `/workspace` is never treated
    as a host evidence path when that identity is absent. Long paths are omitted
    with counts rather than presented as truncated filenames.
+   A trusted caller may supply `AgentConfig.editing_workers` (or the runner's
+   `editing_workers`) with a `LocalEditingWorkers` service bound to its held
+   mutating parent lease. Only then does `invoke_subagent` offer
+   `editing_worker: true` and shared run assembly add
+   `integrate_editing_worker`. Each sequential editing child gets a detached
+   snapshot repository, a unique session, mutating workspace lease and native
+   capacity reservation under the same `DelegationBudget`. With unlimited
+   configured native capacity this service still reserves against a ceiling
+   of one. Children require schema-bound output, inherit the model and narrowed
+   turn/output/deadline allowances, and receive only admitted stateless built-in
+   tools; nested delegation, MCP, tmux and parent-bound services are excluded.
+   Integration binds a retained binary patch, base snapshot/HEAD/index and
+   typed-output provenance by SHA-256. The existing confined integration checker
+   checks the exact candidate tree before destination revalidation and checked
+   patch application. It never merges, stages or advances parent refs. Dirty
+   parent content is captured and preserved; any base drift refuses. Receipts
+   and `editing_worker` events record admission through integration or refusal.
+   Active-child cancellation and uncertain child cleanup retain the repository,
+   lease and capacity and block further editing dispatch. Cancelled integration
+   settles its checker and retains an uncertain candidate. Durable receipts
+   prevent a fresh service from bypassing retained uncertainty for that parent.
+   This first slice supports local native
+   execution only, with no automatic recovery/cleanup or concurrency claim;
+   ordinary subagents and read-only parallel flows keep their existing paths.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source
    identity across named definition changes and snapshot workspace execution.

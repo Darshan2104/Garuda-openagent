@@ -40,6 +40,7 @@ class EventType(str, Enum):
     CONTRACT = "contract"
     TURN_METRICS = "turn_metrics"
     COLLECTION = "collection"
+    EDITING_WORKER = "editing_worker"
     MODEL_FALLBACK = "model_fallback"
     ADVISOR = "advisor"
 
