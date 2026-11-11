@@ -255,7 +255,7 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
 
 ## Continue quota-stopped Codex flows
 
-<p class="gd-facts">Changes user crontab: enable/disable · Schedule: minute 27 each hour · Output: JSON</p>
+<p class="gd-facts">Changes user crontab by default; optional macOS LaunchAgent · Schedule: minute 27 each hour · Output: JSON</p>
 
 **Use it when** a sequential CLI flow uses Codex and should continue after a
 proved subscription-quota reset even when the original Garuda process has
@@ -381,6 +381,45 @@ check-protected or dashboard-owned flows, parallel groups, or Claude quota
 stops. When recovery is enabled, an owned/check-protected/dashboard flow or a
 parallel flow projects an `unsupported` recovery state and reason in flow
 status instead of appearing enrolled.
+
+### macOS LaunchAgent backend
+
+On macOS, opt into a per-user LaunchAgent instead of cron. If another recovery
+backend is installed, disable it first:
+
+```bash
+garuda recovery disable
+garuda recovery enable --backend launchd
+garuda recovery status
+garuda recovery disable
+```
+
+The first disable targets the previously saved backend; subsequent status and
+disable commands use the saved `launchd` backend automatically. Enable without
+`--backend` continues to select cron. Switching requires the previous backend's
+verified removal; a failed disable must be resolved before enabling another.
+Off macOS, `--backend launchd` is refused without saving that backend. A
+`launchd` backend already saved for the root cannot have a loaded job there, so
+`garuda recovery disable` returns it to the cron default.
+
+The LaunchAgent has a label derived from the absolute recovery root and a `0600`
+plist under `~/Library/LaunchAgents`. It schedules minute 27 of each hour and
+invokes the same private wrapper with the installed interpreter, Codex path and
+guarded tick. Keep those executables available. Enable publishes `enabled: true`
+only after exact plist, private wrapper and loaded-job readback. A launchctl or
+platform failure leaves recovery disabled. Disable unloads only the matching
+label and removes only its exact plist, preserving unrelated jobs. A failed
+enable can leave disabled artifacts for inspection; retry disable after resolving
+the reported failure.
+
+`status` reports installation separately from `tick_health` and never runs the
+wrapper or probes quota. If launchctl cannot establish state, `installed` is
+false and `job_count` is null, rather than claiming zero jobs. A loaded job can
+be idle between checks; installation does not prove successful ticks. Launchctl
+uses the current user's GUI login domain; unavailable domains fail installation.
+Sleep, wake, logout/login and reboot catch-up behavior have not been validated
+in a live platform smoke test for this backend. No wake or catch-up guarantee is
+claimed; inspect recorded tick times after those transitions.
 
 ## Call Garuda from Python
 

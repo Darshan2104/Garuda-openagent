@@ -188,7 +188,8 @@ fastest way to learn the system.
    configuration/source facts at admission, checkpoints receipts, review-loop
    state and workspace content at settled boundaries under the flow's retained
    lease, and enrolls only future sequential CLI flows with eligible Codex
-   steps. The hourly `runtime/recovery_schedule.py` user-cron wrapper invokes
+   steps. The hourly `runtime/recovery_schedule.py` wrapper (user cron by
+   default, or an opt-in macOS LaunchAgent) invokes
    `-m garuda.interfaces.main recovery tick` outside any workspace, using the
    absolute current interpreter path without resolving away a virtualenv
    entrypoint. One tick can reserve and dispatch at most one continuation
@@ -206,6 +207,20 @@ fastest way to learn the system.
    Status reports persisted `enabled` separately from observed `installed` and
    supplies a `reason` when installation is missing or mismatched. These local
    checks do not execute the wrapper or probe provider quota.
+
+   `recovery enable --backend launchd` installs a root-derived label under
+   `~/Library/LaunchAgents` with an owner-only `0600` plist. It uses the same
+   private wrapper, interpreter and Codex binding. Exact plist bytes, private
+   wrapper content and launchctl's loaded identity/state must read back before
+   enablement. Launchctl operations use the current user's GUI domain, never
+   the system domain. Disable publishes disabled first, unloads only that exact
+   label, verifies absence and removes only its matching plist. Ambiguous OS
+   errors and unrecognized launchctl diagnostics fail closed; unavailable job
+   counts remain unknown. Switching backends requires verified prior removal.
+   Off macOS the launchd backend is refused before it is saved, and a saved
+   launchd backend there counts as nothing loaded, so disable resets it to cron.
+   No wake, login/reboot catch-up or runtime-success guarantee follows from
+   installation; recorded tick health remains the evidence of execution.
 
    Runtime health is recorded separately from installation. Each tick writes a
    bounded `tick-health.json` in the private recovery root: a `last_attempt`
