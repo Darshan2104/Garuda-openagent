@@ -669,6 +669,10 @@ def build_parser():
     ):
         command_parser = recovery_sub.add_parser(command, help=help_text)
         command_parser.add_argument("--root", help="Private recovery store (operator override)")
+        if command == "enable":
+            command_parser.add_argument(
+                "--backend", choices=("cron", "launchd"), default="cron",
+                help="Scheduler backend (launchd is opt-in and requires macOS)")
         if command == "cancel":
             command_parser.add_argument("flow_session")
 
