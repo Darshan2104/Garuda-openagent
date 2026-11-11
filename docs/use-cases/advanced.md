@@ -21,7 +21,7 @@ garuda runtime inspect claude
 ```
 
 **What happens:** Garuda checks each entry in its trusted catalog (`claude`,
-`codex`, `cursor`, `opencode`, `pi`, `goose`): is the executable installed,
+`codex`, `cursor`, `opencode`, `pi`, `goose`, `omp`): is the executable installed,
 what version it is, what it can do, and setup hints. Login and quota show as
 `unknown` unless the vendor reports them; Garuda never reads credential files to
 find out. Add `--json` for machine-readable output.
@@ -97,6 +97,20 @@ never reads, copies, stores, or proxies your vendor login.
     goose --version
     garuda runtime inspect goose
     ```
+
+=== "oh-my-pi (omp)"
+
+    Install the `omp` CLI and log in with `omp login`, then:
+
+    ```bash
+    omp --version   # checked: omp/18.16.0
+    garuda runtime inspect omp
+    ```
+
+    `omp` is its own runtime (`omp acp`), not the `pi` adapter. Only its
+    launch, handshake, idle cancel and shutdown were checked, so prompted
+    turns, permission requests and harness modes are unverified. See the
+    [conformance report](../development/omp-acp-conformance.md).
 
 Node 22+ is recommended for both examples. In primary npm package metadata
 checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
