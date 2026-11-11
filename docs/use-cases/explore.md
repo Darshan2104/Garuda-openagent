@@ -84,6 +84,31 @@ return a fallback message and no outline. Omit `outline` to read raw source;
 `outline=true` cannot be combined with `offset` or `limit`. Existing raw reads
 and their paging behavior are unchanged.
 
+## Investigate without filling the main conversation
+
+<p class="gd-facts">Read-only · Returns a validated report · Uses the ordinary subagent handoff</p>
+
+**Use it when** a question needs a lot of reading and dead ends, but the main
+run only needs the answer and how it was reached.
+
+```bash
+garuda run --agent build -t "Use the investigate subagent to find where the retry budget is configured, then raise it to 5"
+```
+
+**What happens**
+
+- The parent starts `garuda/investigate` with `invoke_subagent`. It can read,
+  search and run read-only commands, but cannot change files.
+- It must finish with a report that matches a fixed schema: the question,
+  conclusions that each cite their evidence, the sources it read or ran,
+  approaches it ruled out and why, and what it did and did not examine.
+- A report that doesn't match (for example, a conclusion without evidence) is
+  refused and the investigator must fix it.
+- The parent receives only the validated report. Everything the investigator
+  read along the way stays in its own session, so dead ends don't crowd the
+  main conversation. Confidence values are the investigator's own claim, not a
+  measured probability.
+
 ## Make sure a run changes nothing
 
 <p class="gd-facts">Read-only · Checked afterwards · Works with external harnesses too</p>

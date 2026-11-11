@@ -2876,3 +2876,13 @@ omp's own login: no auth probe, and Garuda never runs `omp token`/`omp auth` or
 reads `~/.omp`. CI uses a replay of the redacted capture
 (`tests/fixtures/omp/`); the live handshake is opt-in
 (`GARUDA_LIVE_HARNESS=omp`). Report: `docs/development/omp-acp-conformance.md`.
+
+## 2026-11-06 — Investigation scopes are typed read-only subagents (#370)
+
+The first slice of #370 adds no new execution path. `garuda/investigate`
+extends `explore` (read-only permissions and tools) and declares an output
+schema, so the existing typed child-result handoff (#357) is the report
+boundary: the parent receives only a validated report of question,
+evidence-backed conclusions, sources, rejected approaches and coverage, and
+the exploration stays in the child's session. Confidence is an uncalibrated
+assertion. Context forks and named rewinds are #415.
