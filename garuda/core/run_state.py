@@ -472,7 +472,7 @@ class RunState:
             self.tool_map,
             self.events.session_id,
             contract=self.completion_contract,
-            state=self.refresh_state() if self.config.enable_working_state_card else None,
+            state=self.refresh_state() if self.config.enable_working_state_card or self.state.context_fork else None,
         )
 
 
@@ -985,7 +985,7 @@ async def prepare_run(
             ledger=ledger,
             metrics=metrics,
             max_parallel_reads=config.max_parallel_reads,
-            state=state if config.enable_working_state_card else None,
+            state=state if config.enable_working_state_card or state.context_fork else None,
         ),
         terminal=terminal_strategy,
         steering=Steering(
@@ -997,7 +997,7 @@ async def prepare_run(
         ledger=ledger,
         emit_session_events=emit_session_events,
         checkpoint=checkpoint,
-        state_checkpoint=state_checkpoint if config.enable_working_state_card else None,
+        state_checkpoint=state_checkpoint if config.enable_working_state_card or state.context_fork else None,
         pack_manager=pack_manager,
         pack_source_runtime=pack_source_runtime or "native",
         pack_git_evidence=pack_git_evidence or "",
@@ -1005,7 +1005,7 @@ async def prepare_run(
         tools_schema=tools_schema,
         state=state,
     )
-    if config.enable_working_state_card:
+    if config.enable_working_state_card or state.context_fork:
         # A callable, not the object: the card needs the contract and the tool map,
         # which only exist once the run is assembled — and passing a callable keeps
         # garuda/context from having to import garuda/core to read them.

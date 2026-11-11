@@ -43,6 +43,7 @@ a behaviour.
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
 | `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command, plus the canonical file-write tool classification consumed by the side-effect ledger. Normalizes path spellings against the workspace and explicit command cwd. Screens original and joined continuations without treating in-word hashes as comments; allow prefixes must match both forms. Incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
+| `session_fork.py` | Context-only fork planning over a selected native checkpoint. Validates a terminal source, moves an inclusive message index back to a complete tool batch, binds source-file digests and historical references, and discards inherited candidate/check state. The runner reuses resume context construction and artifact inheritance after ordinary admission, skips source recovery, and captures a fresh workspace baseline. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `session_records.py` | Shared bounded, no-follow session record access. `BoundedSessionRecords` accounts for aggregate reads, including failed attempts, across a projection or support summary. Authorized native selection retains existing project/name semantics while resolving through this reader before workspace/lease setup; exhausted metadata allowances refuse. Recovery and replay then read metadata, checkpoints and events through that retained directory binding, with separate full-snapshot allowances. |
@@ -300,6 +301,11 @@ atomically, and refuses any other target. The pack lives in the session's own
 directory in the session store, never the workspace (B.3). `RunState` syncs the pack at the
 checkpoint boundary and re-syncs after every compaction; resume restores the
 persisted working state first, so compaction and restart preserve pack facts.
+Context forks retain source task/constraint references and an explicit stale-evidence
+notice in the working-state card, even when ordinary working-state cards are disabled.
+Source checks, files, todos and narrative are historical references rather than live
+fork evidence. `sessions show` projects fork lineage from saved metadata without
+recovery, execution or restoration.
 `redact.py` validates packs (size, workspace-relative paths, no-reasoning
 markers) and best-effort redacts secret patterns (full PEM blocks, tokens,
 credential assignments) recursively over every string and key; the writer
