@@ -142,6 +142,17 @@ fastest way to learn the system.
    existing budgets; it never counts as verification or independent review.
    Awaited consults recheck run liveness before delivery, including cancellation
    during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
+   Optional declarative reminders (`plugins/reminders.py`) observe completed
+   tool results through the existing after-tool hook point, including parallel
+   and discovered calls. Only global settings and project settings enabled by
+   the existing global `trust_project_hooks: true` opt-in supply rules. The
+   matcher reads complete, bounded arguments or the observed result outcome;
+   rules cannot supply regexes, callables or commands. Per-run state queues
+   source-labelled advisory text for `steering.flush`, with pending and repeated
+   trigger deduplication, per-rule limits and a shared injection ceiling. It
+   survives compaction, adds no turns, and never changes permissions, schemas or
+   completion gates. Bounded text-free audit snapshots retain trigger, injection
+   and suppression counts for trajectory inspection. No rules is the default.
    The loop calls `Model.complete()` unless the run was given a
    `model_delta_consumer`. Then `_timed_complete` makes the call through
    `model/streaming.py`: text and reasoning deltas reach the consumer, the
