@@ -52,6 +52,11 @@ def current() -> EventStore | None:
     return _events.get()
 
 
+def current_gate() -> Any:
+    """The active run tree's gate, for child runs that bind their own event store."""
+    return _gate.get()
+
+
 def record(purpose: str, model: Any, response: Any, duration_ms: float, *, failed: bool = False) -> None:
     events = _events.get()
     if events is None:

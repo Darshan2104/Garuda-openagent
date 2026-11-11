@@ -629,7 +629,12 @@ async def test_a_consult_never_sets_verification_passed(world):
     assert "verification" not in json.dumps(result.receipt).replace("not verification", "")
 
 
-async def test_an_external_child_never_runs_on_the_host(world, monkeypatch):
+@pytest.mark.parametrize("caps", [None, {"max_tokens": 50_000}, {"max_cost_usd": 1}])
+async def test_an_external_child_never_runs_on_the_host(world, monkeypatch, caps):
+    from garuda.core.events import EventStore
+    from garuda.core.spend import SpendGate
+    from garuda.model import accounting
+
     doc = {**DOC, "harnesses": {"claude": {}},
            "roles": {**DOC["roles"], "reviewer": {"harness": "claude", "model_id": "claude-x"}}}
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
@@ -644,11 +649,21 @@ async def test_an_external_child_never_runs_on_the_host(world, monkeypatch):
 
     monkeypatch.setattr("garuda.consult.service.native_child", must_not_start)
     resolved = make_resolved(doc)
-    with pytest.raises(ConsultRefused) as caught:
-        # the real runner: an ACP target goes to the confined path, which refuses without
-        # a proven Docker confinement image
-        await ConsultService(world.store, resolved).consult(request(world))
-    assert caught.value.code == "consult.isolation_unavailable" and started == []
+    gate = SpendGate(**caps) if caps else None
+    token = accounting.bind(EventStore(world.asker), gate)
+    try:
+        with pytest.raises(ConsultRefused) as caught:
+            # Uncapped ACP still needs Docker confinement; capped ACP cannot be metered.
+            await ConsultService(world.store, resolved).consult(request(world))
+        expected = "consult.spend_unsupported" if caps else "consult.isolation_unavailable"
+        assert caught.value.code == expected and started == []
+        if gate is not None:
+            assert gate.calls == 0 and gate.settled_tokens == 0
+            assert "cannot be metered" in str(caught.value)
+            assert ConsultState(world.store, world.asker).snapshot()["count"] == 0
+            assert not (Path(world.store.root) / ".consult" / world.asker / "scratch").exists()
+    finally:
+        accounting.reset(token)
 
 
 @needs_docker

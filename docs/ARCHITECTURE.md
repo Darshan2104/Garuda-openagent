@@ -141,7 +141,15 @@ fastest way to learn the system.
    capped and deduplicated. A candidate note may defer completion once within
    existing budgets; it never counts as verification or independent review.
    Awaited consults recheck run liveness before delivery, including cancellation
-   during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
+   during cleanup. Native consults, including advisor calls, receive the active
+   run-tree spend gate by reference through the consult service. Their own loop
+   and auxiliary accounting admit and settle against it while retaining child
+   events and receipts. Only the asker persists the shared `spend_gate` snapshot
+   for resume; consult child metadata does not claim the tree's spend as its own.
+   A refused call fails the consult; failed advice never changes the parent's
+   authority. Capped runs refuse ACP consult targets with
+   `consult.spend_unsupported` before dispatch because their model calls cannot
+   be metered; uncapped ACP consults retain separate, potentially unknown usage.
    Optional declarative reminders (`plugins/reminders.py`) observe completed
    tool results through the existing after-tool hook point, including parallel
    and discovered calls. Only global settings and project settings enabled by
@@ -171,8 +179,9 @@ fastest way to learn the system.
    terminals suppress previews. Completed responses render in full, and final
    output is deduplicated against all rendered responses of the run.
    Tool arguments and reasoning are never
-   displayed as live text. Chat, web, SDK and ACP surfaces do not attach this
-   native consumer; external harness streaming is a separate runtime path.
+   displayed as live text. The SDK exposes the same consumer as `on_delta` on
+   `SoftwareAgent.run` and `Conversation.run`. Chat, web and ACP surfaces do not
+   attach it; external harness streaming is a separate runtime path.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state
