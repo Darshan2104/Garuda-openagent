@@ -337,7 +337,11 @@ reported. Unknown prompt/content/semantic-conflict facts remain unknown.
 `loader.py` reads YAML profiles (and records which fields were declared, so mode
 presets don't override authored intent); `md_loader.py` + `frontmatter.py` read
 OpenCode-style `agent.md`. Built-ins in `defaults/`: `build`, `plan`, `explore`,
-`harbor`, `reviewer`.
+`harbor`, `reviewer`, and `investigate` (#370): a read-only investigation scope
+extending `explore` whose output schema (`defaults/schemas/investigation-report.json`)
+makes the validated report — question, evidence-backed conclusions, sources,
+rejected approaches and coverage — the only thing its parent receives through the
+ordinary typed child-result handoff.
 
 ## `model/` — provider access
 
