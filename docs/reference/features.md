@@ -130,6 +130,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Recipes | Parameterised multi-step YAML | `garuda recipe run file.yaml` | [Level 6](../use-cases/automate.md#run-a-multi-step-recipe) |
 | CI and scripts | Exit status and JSON events | `garuda run --json -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 | Python SDK | `SoftwareAgent`, conversations, your own tools | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
+| Live model deltas | Native SDK runs forward text/reasoning fragments while the model generates | `await agent.run("…", on_delta=show)` | [Level 6](../use-cases/automate.md#stream-live-model-deltas) |
 | `AgentSpec` | Load and narrow an agent from Python | `AgentSpec.load(NAME).narrow(...)` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
 | HTTP service | JSON-RPC jobs with an agent allowlist and operator-owned launch settings when restricted | `garuda serve --allow-agent reviewer` | [Level 6](../use-cases/automate.md#call-garuda-over-http) |
 

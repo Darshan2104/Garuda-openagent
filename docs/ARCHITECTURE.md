@@ -179,8 +179,9 @@ fastest way to learn the system.
    terminals suppress previews. Completed responses render in full, and final
    output is deduplicated against all rendered responses of the run.
    Tool arguments and reasoning are never
-   displayed as live text. Chat, web, SDK and ACP surfaces do not attach this
-   native consumer; external harness streaming is a separate runtime path.
+   displayed as live text. The SDK exposes the same consumer as `on_delta` on
+   `SoftwareAgent.run` and `Conversation.run`. Chat, web and ACP surfaces do not
+   attach it; external harness streaming is a separate runtime path.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state

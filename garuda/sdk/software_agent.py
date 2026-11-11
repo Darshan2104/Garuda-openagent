@@ -16,6 +16,7 @@ from garuda.types import AgentResult
 if TYPE_CHECKING:
     # Only for the return-type annotation on conversation(); the runtime import
     # stays inside the method to avoid a circular import with garuda.sdk.conversation.
+    from garuda.model.streaming import DeltaConsumer
     from garuda.sdk.conversation import Conversation
 
 
@@ -89,6 +90,7 @@ class SoftwareAgent:
         resume_all_projects: bool = False,
         fork: str | None = None,
         fork_at: int | None = None,
+        on_delta: "DeltaConsumer | None" = None,
     ) -> AgentResult:
         """Execute a task and return the agent result.
 
@@ -98,9 +100,17 @@ class SoftwareAgent:
         execute one ACP turn per run through the selected harness.
         ``fork`` with ``fork_at`` starts a native context-only fork through an
         inclusive zero-based saved message index; files/processes are not restored.
+
+        ``on_delta`` (native runtime only) receives the live ``LiveDelta``
+        fragments the loop forwards while each model call streams; sync and async
+        callables are accepted. The result still comes from the assembled model
+        response, and a consumer that raises is detached for that call (recorded
+        as ``live_consumer_error``) without changing the run's outcome.
         """
         from garuda.core.session_fork import validate_fork_request
 
+        if on_delta is not None and self.runtime_name != "native":
+            raise ValueError("live deltas are only available for the native runtime")
         validate_fork_request(fork=fork, fork_at=fork_at, resume=resume)
         if fork is not None and self.runtime_name != "native":
             raise ValueError("context fork requires the native runtime")
@@ -151,6 +161,7 @@ class SoftwareAgent:
             store=self._store,
             collection_model=prepared.collection,
             collection_policy=prepared.collection_policy,
+            model_delta_consumer=on_delta,
         )
 
     async def _run_acp(self, task: str) -> AgentResult:

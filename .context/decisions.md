@@ -3180,3 +3180,15 @@ reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
 snapshots preserve cumulative counts and disclose omissions through existing
 trajectory inspection. External harnesses retain their own loop and do not
 receive native reminders.
+
+## 2026-11-11 — SDK runs can receive native live deltas (#389)
+
+`SoftwareAgent.run` and `Conversation.run` accept the same opt-in
+`model_delta_consumer` the native loop already gives the CLI/web paths, exposed
+as `on_delta`. It only observes `LiveDelta` text/reasoning fragments (plus the
+fallback `discard` signal); tool calls, usage, terminal reasons and the returned
+result still come from the assembled model response. Consumer failures detach
+that consumer for the call and surface as `live_consumer_error` rather than
+failing the run. ACP runtimes refuse `on_delta` before launch; no harness
+streaming or fallback is implied. The default `None` keeps every existing path
+unchanged.
