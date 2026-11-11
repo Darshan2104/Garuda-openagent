@@ -29,7 +29,7 @@ a behaviour.
 | `acceptance_records.py` | Private, phase-scoped intent, launch authorization and immutable receipt records. Duplicate attempts reconcile without replay; lost authorization or receipt publication remains uncertain. |
 | `acceptance_work.py`, `acceptance_worker.py` | Fixed supervised helpers for source/lease/candidate validation and durable publication, keeping filesystem locks, Git and writers off the event loop. |
 | `steering.py` | Every message the harness injects between turns: budget notices, the budget-review and final-turn nudges, repetition and failure-streak detection. Notes are *queued*, never appended mid-turn — see its docstring for why. |
-| `tool_runner.py` | Executing direct and discovered target calls through permissions, hooks, validation, memo, ledger, output shaping/buffering and events. Rechecks parallel eligibility after hooks. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
+| `tool_runner.py` | Executing direct, discovered and code-cell bridge target calls through permissions, hooks, validation, memo, ledger, output shaping/buffering and events. Rechecks parallel eligibility after hooks. `PARALLEL_SAFE_TOOLS` lives here and the fan-out is bounded by `AgentConfig.max_parallel_reads`. |
 | `metrics.py` | Per-turn model latency, tool latency and wall-clock, compaction and checkpoint time, cache-hit rate. Rolls up onto `AgentResult.metadata["metrics"]` and emits one `turn_metrics` event per turn. |
 | `completion.py` | The `task_complete` gate: acceptance contract, side-effect sweep, verification, and the yield-breaker that stops it livelocking. |
 | `termination.py` | The run-scoped terminal-tool strategy boundary, plus the adapter that preserves the default `task_complete` gate. |
@@ -70,6 +70,16 @@ without another connection or workspace command. `mcp/content.py` projects
 bounded resource/prompt text and metadata as untrusted data, with provenance,
 explicit omissions and `artifact_source` facts for the shared artifact owner.
 Upstream completeness and omitted source bytes remain unknown.
+
+`code_cell.py` is an explicitly selected mutating Python tool: validates cell
+inputs and budgets, exchanges bounded JSON with the worker and returns only the
+selected result/output. `ToolRunner` supplies its invocation-scoped bridge and
+records cell/nested provenance without adding intermediate TOOL messages to the
+model context. `workspace/cells.py` owns the stdio protocol and process-group
+lifetime; `workspace/sandbox.py` and `sandbox_policy.py` admit only a scratch
+bubblewrap namespace; `workspace/docker_cells.py` owns disposable cell containers
+for both Docker environments. No existing Environment method or workspace image
+acquires a Python dependency. Unsupported environments refuse before launch.
 
 Execution: `bash.py` (a command that backgrounds something also records the
 process group it leaves behind, so the pre-completion sweep has an exact handle

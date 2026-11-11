@@ -15,6 +15,7 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.code_cell import CodeCellTool
 from garuda.tools.collection import DelegateCollectionTool, SubmitCollectionTool
 from garuda.tools.contract import ContractTool
 from garuda.tools.debug import DebugControlTool, DebugInspectTool, DebugLaunchTool, DebugVariablesTool
@@ -109,6 +110,7 @@ def _bootstrap_registry() -> None:
         DebugInspectTool(),
         DebugVariablesTool(),
         DebugControlTool(),
+        CodeCellTool(),
         BashBackgroundTool(),
         TaskOutputTool(),
         KillTaskTool(),

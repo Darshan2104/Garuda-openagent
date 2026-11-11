@@ -516,3 +516,60 @@ a length-truncated response can execute. Exit zero means the corpus recorded
 its expected outcomes, including that gap. It does not mean every guard exists.
 See [Evaluation](../evaluation/index.md#offline-incident-evidence) for scope and
 controlled comparisons.
+
+## Aggregate tool results in a confined Python cell
+
+Add `code_cell` explicitly to an agent definition; it is absent from default
+and `all` tool selections. The cell is mutating and cannot run in read-only mode.
+
+```yaml
+version: 1
+name: cell-investigator
+extends: garuda/build
+tools:
+  add: [code_cell]
+  options:
+    code_cell:
+      timeout: 10
+      output_bytes: 32768
+      nested_calls: 8
+```
+
+Save this as `.agent/agents/cell-investigator.yaml`. With Docker available,
+preinstall `python:3.12-slim` on the selected daemon yourself (for example,
+`docker pull python:3.12-slim`), then run:
+
+```bash
+garuda run --agent cell-investigator --workspace-kind docker -t "Use a code cell to count lines in README.md and return only the count."
+```
+
+The model can call `code_cell` with this code:
+
+```python
+reply = tool("read_file", {"path": "README.md"})
+if reply["is_error"]:
+    raise RuntimeError(reply["content"])
+result = {"lines": len(reply["content"].splitlines())}
+```
+
+`inputs` is an optional JSON object. Assign a JSON-serializable `result`; printed
+text is also returned. The scratch worker has no workspace mount or network.
+Every `tool` request is screened and recorded by the ordinary host ToolRunner;
+a denied write stays denied. Intermediate replies stay inside the cell, while
+session events retain nested receipts with cell id and request index.
+
+Defaults are 10 seconds, 32 KiB output, eight nested requests, and 32 KiB combined
+code/input. Options may set positive values up to 30 seconds, 64 KiB output and
+32 requests; run deadlines may shorten execution. The timeout counts the cell's own
+launch and code, not time spent inside nested `tool` calls: a nested `bash` call
+waiting for your approval, or running its own longer timeout, does not use up the
+cell's budget. Bridge frames/replies are also
+bounded at 64 KiB. Cancellation, time/output/request limits and worker death
+terminate the cell; interrupted effects remain unknown and are never replayed
+automatically. Container/process cleanup can take additional bounded time.
+
+Linux `--workspace-kind sandbox` supports cells only when bubblewrap can launch
+and Garuda's Python resides in its mounted system runtime paths. macOS Seatbelt,
+local, tmux and environments without this capability explicitly refuse. Docker
+and remote Docker use a separate preinstalled cell image, so the workspace's own
+image does not need Python. Cells cannot invoke another code cell.

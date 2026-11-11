@@ -12,8 +12,10 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from uuid import uuid4
 
 from garuda.context.manager import ContextManager
 from garuda.context.state_card import WorkingState
@@ -30,6 +32,10 @@ from garuda.workspace.health import EnvironmentUnavailableError
 from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 logger = logging.getLogger(__name__)
+
+# Task-local: concurrent ordinary reads never inherit another cell's provenance.
+_cell_provenance: ContextVar[tuple[object, dict, int] | None] = ContextVar("cell_provenance", default=None)
+
 
 # Tools with no side effects, safe to run concurrently within one model response.
 # Batching independent reads into one turn is a direct latency/cost win (one model
@@ -113,6 +119,10 @@ class ToolRunner:
     # The run's working state. The runner is the only place that sees every command
     # and every error, so it is where checks and failures get recorded.
     state: WorkingState | None = None
+
+    def _cell_scope(self) -> dict | None:
+        scope = _cell_provenance.get()
+        return scope[1] if scope is not None and scope[0] is self else None
 
     # -- gating ---------------------------------------------------------------
 
@@ -200,6 +210,9 @@ class ToolRunner:
         # call it blocked, and a reader had to collapse four distinct outcomes —
         # denied, hook-blocked, argument-parse failure, never reached — into one
         # "this tool call has no result" state that suggests different fixes.
+        provenance = self._cell_scope()
+        if provenance is None and call.name == "code_cell":
+            provenance = {"cell_id": uuid4().hex, "nested_index": 0}
         self.events.append(
             EventType.PERMISSION_ASK,
             {
@@ -208,6 +221,7 @@ class ToolRunner:
                 "name": call.name,
                 "id": call.id,
                 "turn": turn,
+                **(provenance or {}),
             },
         )
         return self.error_message(call, denial_reason or "Permission denied")
@@ -217,19 +231,43 @@ class ToolRunner:
             "turn": turn,
             "session_id": self.events.session_id,
             "deadline_monotonic": getattr(self.ctx, "deadline_monotonic", None),
+            **(self._cell_scope() or {}),
         }
 
     # -- single call ----------------------------------------------------------
 
     async def run_one(self, call: ToolCall, turn: int) -> ToolResult:
         """Execute one already-screened call, emitting events and appending the result."""
+        provenance = self._cell_scope()
+        if call.name == "code_cell" and provenance is None:
+            token = _cell_provenance.set((self, {"cell_id": uuid4().hex, "nested_index": 0}, turn))
+            try:
+                return await self.run_one(call, turn)
+            finally:
+                _cell_provenance.reset(token)
         self.events.append(
             EventType.TOOL_CALL,
-            {"id": call.id, "name": call.name, "arguments": call.arguments, "turn": turn},
+            {"id": call.id, "name": call.name, "arguments": call.arguments, "turn": turn,
+             **(provenance or {})},
         )
-        tool_result, duration_ms = await self._execute_timed(call)
+        try:
+            tool_result, duration_ms = await self._execute_timed(call)
+        except EnvironmentUnavailableError:
+            if provenance is not None:
+                self.record(call, ToolResult(
+                    tool_call_id=call.id, content="Cell environment lost; side effects unknown; no replay.",
+                    is_error=True,
+                ), turn=turn)
+            raise
+        except asyncio.CancelledError:
+            if provenance is not None:
+                self.record(call, ToolResult(
+                    tool_call_id=call.id, content="Cell call cancelled; side effects unknown; no replay.",
+                    is_error=True,
+                ), turn=turn)
+            raise
         # A sequential call's own duration *is* the wall-clock it consumed.
-        if self.metrics is not None:
+        if self.metrics is not None and (provenance is None or provenance["nested_index"] == 0):
             self.metrics.note_tool_wall(duration_ms)
         capture = self._capture_snapshot(tool_result)
         child = self._child_snapshot(call, tool_result)
@@ -348,6 +386,10 @@ class ToolRunner:
             "is_error": tool_result.is_error,
             "turn": turn,
         }
+        provenance = self._cell_scope()
+        if provenance is not None:
+            payload.update(provenance)
+            message_metadata.update(provenance)
         child_result = message_metadata.get("child_result")
         if child_result is not None:
             # Only validated child metadata is retained alongside the capture
@@ -364,6 +406,8 @@ class ToolRunner:
             payload["duration_ms"] = duration_ms
         self.events.append(EventType.TOOL_RESULT, payload)
         self._note_state(call, tool_result)
+        if provenance is not None and provenance["nested_index"] > 0:
+            return
         self.context.append(
             Message(
                 role=Role.TOOL,
@@ -428,7 +472,16 @@ class ToolRunner:
                 )
                 return cached
         try:
-            result = await tool.execute(call.arguments, self.env, self.ctx)
+            ctx = self.ctx
+            provenance = self._cell_scope()
+            if call.name == "code_cell" and provenance is not None:
+                turn = _cell_provenance.get()[2]
+
+                async def bridge(name: str, arguments: dict, index: int) -> dict:
+                    return await self._run_cell_tool(name, arguments, index, turn, provenance["cell_id"])
+
+                ctx = replace(ctx, cell_bridge=bridge)
+            result = await tool.execute(call.arguments, self.env, ctx)
             content = result.content if isinstance(result.content, str) else str(result.content)
             result.content = self._shape_or_buffer(content, call, result)
             # Access refusals must be evaluated and recorded on each attempt.
@@ -458,6 +511,41 @@ class ToolRunner:
             )
         result.tool_call_id = call.id
         return result
+
+    async def _run_cell_tool(self, name: str, arguments: dict, index: int, turn: int, cell_id: str) -> dict:
+        """Enter the ordinary dispatcher, screen and execution lifecycle once."""
+        token = _cell_provenance.set((self, {"cell_id": cell_id, "nested_index": index}, turn))
+        call = ToolCall(id=f"{cell_id}:{index}", name=name, arguments=arguments)
+        entered = False
+        try:
+            screened, denial = await self.screen(call, turn)
+            if screened is None:
+                result = ToolResult(tool_call_id=call.id, content=denial.content, is_error=True)
+                # Ordinary denials have a permission event; add the bridge receipt
+                # without appending an orphan TOOL message to the model transcript.
+                self.record(call, result, turn=turn)
+            elif screened.name == "code_cell":
+                result = ToolResult(tool_call_id=call.id, content="Nested code cells are unsupported", is_error=True)
+                self.record(screened, result, turn=turn)
+            else:
+                entered = True
+                result = await self.run_one(screened, turn)
+            return {"content": result.content, "is_error": result.is_error}
+        except asyncio.CancelledError:
+            if not entered:
+                self.record(call, ToolResult(
+                    tool_call_id=call.id, content="Cell call cancelled before dispatch; no replay.",
+                    is_error=True,
+                ), turn=turn)
+            raise
+        except Exception:
+            if not entered:
+                self.record(call, ToolResult(
+                    tool_call_id=call.id, content="Cell request screening failed; no replay.", is_error=True,
+                ), turn=turn)
+            raise
+        finally:
+            _cell_provenance.reset(token)
 
     def _shape_or_buffer(self, content, call: ToolCall, result: ToolResult) -> str:
         """Large output → store full body in the buffer + return a stub; else shape inline.
