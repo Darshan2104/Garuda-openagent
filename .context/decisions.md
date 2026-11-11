@@ -2980,3 +2980,34 @@ requests. That is a classification of Garuda's requests, not proof that the
 server writes no caches or stays inside the workspace; it is a trusted local
 process, not a confined one. Runs without configuration are unchanged: no
 tool, no process and the same `mcp_manager`.
+
+## 2026-11-06 — WorkspaceEdits require run-bound previews and per-file write authority (#382)
+
+The existing optional local language service now offers rename and edit-only
+code-action previews through read-only `lsp`; separate mutating `lsp_apply`
+consumes a run/session/workspace-bound token. Previews retain exact original
+text, full-content SHA-256 digests and the client versions used for the request.
+Unknown targets are synced through Environment reads and the edit is requested
+again; the discovery edit is discarded. Server versions must match that snapshot.
+No unknown version is represented as zero. Bounds refuse an entire oversized
+preview rather than silently omitting files or replacements.
+
+Apply screens every retained path with the ordinary permission engine, checks
+all digests before any writes and uses only Environment writes/read-back. A
+failed or cancelled write triggers verified restoration of every attempted file,
+including the failing file because its write may have been partial. Per-file
+results distinguish applied, restored, untouched and failed restoration; failed
+restoration remains observable in the side-effect ledger. Cancellation settles
+writes/rollback and retains their result as its cause. Tokens are consumed on a
+write attempt, never persisted and cleared at run teardown.
+
+Resource operations, symlink aliases, overlapping/ambiguous ranges, code-action
+commands, unresolved actions and confirmation annotations are refused. Server
+`workspace/applyEdit` remains refused. This is compensating rollback without a
+filesystem transaction or compare-and-swap protection against external writers.
+A configured server does not widen a profile: `lsp_apply` joins only a toolset
+that is unrestricted or already names a file-writing tool, so read-only and
+`none` presets keep no writer while read-only `lsp` stays available.
+The local-only service boundary and unconfigured-run defaults remain unchanged;
+no new interpreter runs inside Docker/remote workspaces. LSP diagnostics do not
+replace candidate-bound verification.

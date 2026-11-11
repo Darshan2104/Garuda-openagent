@@ -1,7 +1,8 @@
 """The optional language-service boundary: semantic navigation for agent tools.
 
 A :class:`LanguageService` answers definition, references, hover, document
-symbol and diagnostic questions about workspace files. The agent-facing tool
+symbol and diagnostic questions about workspace files, and returns rename or
+code-action WorkspaceEdits bound to its request snapshots. The agent-facing tool
 (:mod:`garuda.tools.language`) depends only on this protocol; the stdio JSON-RPC
 client in :mod:`garuda.lsp.client` is one implementation.
 
@@ -42,6 +43,8 @@ REQUEST_CAPABILITIES = {
     "references": "referencesProvider",
     "hover": "hoverProvider",
     "symbols": "documentSymbolProvider",
+    "rename": "renameProvider",
+    "code_action": "codeActionProvider",
 }
 
 
@@ -51,6 +54,19 @@ class Range:
     start_character: int  # UTF-16 code units
     end_line: int
     end_character: int
+
+
+@dataclass(frozen=True)
+class DocumentSnapshot:
+    path: str
+    version: int
+    text: str
+
+
+@dataclass(frozen=True)
+class WorkspaceEditResponse:
+    edit: dict | None
+    documents: tuple[DocumentSnapshot, ...]
 
 
 @dataclass(frozen=True)
@@ -136,5 +152,15 @@ class LanguageService(Protocol):
     async def symbols(self, path: str) -> list[Symbol]: ...
 
     async def diagnostics(self, path: str, wait: float) -> DiagnosticsReport: ...
+
+    async def rename(
+        self, path: str, line: int, character: int, new_name: str
+    ) -> WorkspaceEditResponse: ...
+
+    async def code_actions(self, path: str, selection: Range) -> list[dict]: ...
+
+    async def code_action(
+        self, path: str, selection: Range, title: str
+    ) -> WorkspaceEditResponse: ...
 
     async def close(self) -> None: ...
