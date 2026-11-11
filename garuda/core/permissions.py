@@ -121,6 +121,7 @@ READ_TOOLS = {"read_file", "read_pdf", "read_spreadsheet", "image_read"}
 
 READONLY_DENIED_TOOLS = {
     "lsp_apply",
+    "code_cell",
     "write_file",
     "edit",
     "multi_edit",

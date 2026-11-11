@@ -8,6 +8,7 @@ EXPECTED_BUILTIN_EFFECTS = {
     "debug_inspect": ToolEffect.READ_ONLY,
     "debug_variables": ToolEffect.MUTATING,
     "debug_control": ToolEffect.MUTATING,
+    "code_cell": ToolEffect.MUTATING,
     "bash_background": ToolEffect.MUTATING,
     "task_output": ToolEffect.READ_ONLY,
     "kill_task": ToolEffect.MUTATING,

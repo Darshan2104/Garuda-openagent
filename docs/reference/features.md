@@ -34,6 +34,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
 | Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
+| Confined Python cells | Opt-in aggregation with screened nested tools, bounded lifetime and cell provenance | Agent `tools.add: [code_cell]` | [Confined code cells](../use-cases/advanced.md#aggregate-tool-results-in-a-confined-python-cell) |
 
 ## Where commands run
 

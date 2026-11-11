@@ -106,6 +106,11 @@ class DockerEnvironment:
     def host_workspace_root(self) -> str | None:
         return self._host_workspace_root
 
+    def open_code_cell(self):
+        from garuda.workspace.docker_cells import docker_code_cell
+
+        return docker_code_cell(["docker"], self._container_name)
+
     async def execute(
         self,
         command: str,
