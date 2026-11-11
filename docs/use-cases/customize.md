@@ -602,6 +602,105 @@ unknown. Prompt arguments are limited to 32 declared string values of at most
 4096 characters each. Binary/embedded content is omitted with partial coverage.
 Resource templates, further pages and subscriptions are unsupported.
 
+## Navigate code with a language server
+
+<p class="gd-facts">Applies to: every native run on your machine · Needs: a language server installed locally</p>
+
+**Use it when** text search keeps finding the wrong thing: aliases, re-exports
+and inherited methods need the definition a language server resolves, not a
+spelling match.
+
+Name the server in your **global** `~/.agent/settings.yaml` (never the project's):
+
+```yaml
+language_servers:
+  - name: pyright
+    command: pyright-langserver
+    args: ["--stdio"]
+    extensions: [py, pyi]
+```
+
+Check what a run would use. This reads configuration only and starts nothing:
+
+```bash
+garuda lsp list
+```
+
+Then ask as usual; the agent gets an `lsp` tool:
+
+```bash
+garuda run -t "Find every caller of load_profile, following re-exports"
+```
+
+**What happens**
+
+- The `lsp` tool answers `definition`, `references`, `hover`, `symbols` and
+  `diagnostics` for one file, using 1-based lines and character columns as
+  `read_file` shows them. `status` reports each server's state without
+  starting it.
+- The server starts on the first request, in the workspace root, and stops with
+  the run. A server that is missing, fails to start in time, or exits is
+  reported as failed and is not restarted. A slow request is cancelled after
+  the configured `request_timeout`.
+- Diagnostics are tied to the file version Garuda last sent. Older ones are
+  labelled stale, ones the server didn't tie to a version are labelled
+  unknown, and none at all is never reported as a clean file.
+- A request the server didn't declare support for is refused by name. Server
+  requests to edit files are refused. Path rules screen the file you ask about
+  and hide results in denied files.
+- `language_servers` in a project's `settings.yaml` is ignored and reported, so
+  a repository can't choose what runs. Only local workspaces are served; Docker,
+  remote, tmux and sandbox runs get an explicit refusal.
+- The tool is labelled read-only because Garuda only sends read requests, but
+  the server itself is not confined and may write caches or index files.
+
+## Preview and apply a semantic refactor
+
+With the global language-server configuration above, ask the native agent:
+
+```bash
+garuda run -t "Preview renaming helper to renamed across this workspace, inspect every replacement, then apply the preview and run the relevant tests"
+```
+
+The agent first calls the read-only `lsp` tool, for example:
+
+```json
+{"action":"rename","path":"main.py","line":1,"column":14,"new_name":"renamed"}
+```
+
+The result includes `preview_token` and every file's `document_version`,
+`sha256` and `edits` (each `range` is `[start_line, start_column, end_line,
+end_column]`, 1-based character columns, with an exclusive end). No file is
+written by preview. To list code actions at a position, use `action: code_action`
+with the same path/line/column; add the exact `title` from that list to preview
+one. Optional `end_line` and `end_column` select a range.
+
+After inspecting the preview, the agent calls `lsp_apply`. It is offered only to a
+profile whose tools may write files (such as `build`); a `tools: {preset: read-only}`
+or `preset: none` profile keeps `lsp` but not `lsp_apply` unless it adds a writer,
+for example `tools: {preset: read-only, add: [edit]}`:
+
+```json
+{"preview_token":"<token returned by lsp in this run>"}
+```
+
+Every target passes the ordinary write permission screen, including any approval
+rules. Any changed file refuses the whole edit; request a fresh preview after
+reviewing the change. Successful apply reports `applied` for each file. Failed
+writes trigger restoration of all attempted files, reported as `restored` or
+`rollback_failed`; untouched files report `not_written`. Inspect any restoration
+failure before continuing. A write attempt consumes the token.
+
+This supports existing local workspace files only. File create/rename/delete
+operations, symlink aliases, overlapping edits, code actions containing commands,
+and unresolved actions are refused. Previews are bounded (32 files, 256 edits,
+4 MiB of source/result text each, 12,000 output bytes or the smaller live
+inline allowance), and only the four most
+recent are retained in the run. Larger refactors need smaller previews. The
+Environment provides compensating rollback, not a cross-file transaction;
+external concurrent writers can still race an apply. Diagnostics are advisory,
+so run the relevant authorized checks after applying.
+
 ## Block or log tool calls with a hook
 
 <p class="gd-facts">Configured in: <code>~/.agent/settings.yaml</code> · Runs: your shell command before or after a tool</p>
@@ -649,6 +748,51 @@ Hook command '~/.agent/hooks/no-rm.sh' blocked tool bash (exit code 2)
   closed.
 
 More in [Configuration → permissions and hooks](../guides/configuration.md#permissions-and-hooks).
+
+## Remind the agent after relevant tool calls
+
+Add this to your global `~/.agent/settings.yaml` to remind a native agent to
+check effective configuration after reading a YAML file:
+
+```yaml
+reminders:
+  max_injections: 8
+  rules:
+    - id: verify-effective-config
+      text: "Before changing configuration, verify which settings actually apply."
+      max_injections: 2
+      when:
+        tool: read_file
+        outcome: success
+        arguments:
+          path: {glob: "*.yaml"}
+```
+
+```bash
+garuda run --mode readonly -t "Read .agent/settings.yaml and explain the effective settings"
+```
+
+If that completed read matches, the next existing turn receives a note labelled
+`[reminder id=verify-effective-config source=".../settings.yaml" count=1; advisory]`.
+It never interrupts a tool-result block or creates another turn. Repeated
+identical calls are deduplicated; different calls can remind again up to the
+rule limit and the shared run limit. Permission and completion checks still apply.
+
+Use `literal` instead of `glob` for a full, case-sensitive argument-string
+comparison. To remind after an observed tool error, use
+`when: {event: tool_result, outcome: error}`. No rules load by default.
+Project rules in `.agent/settings.yaml` or legacy `.garuda/settings.yaml` are
+reported and ignored unless you enable the existing **global**
+`trust_project_hooks: true` opt-in. This opt-in also enables project shell hooks;
+keep rules global if you do not want to grant that broader trust.
+
+Malformed rules produce a `reminder.invalid` warning and are skipped; global
+`reminders.strict: true` makes them refuse loading. Source and cumulative
+trigger/injection/duplicate/cap counts are in the dashboard's existing run JSON
+at `GET /api/runs/<session-id>` under `trajectory.reminders`, and in bounded
+`reminder` records in the session event log. Logs omit reminder text, tool
+arguments, results and model reasoning. Matching limits and the full schema are
+in [Configuration → conditional reminders](../guides/configuration.md#conditional-reminders).
 
 ## Add your own Python tools
 

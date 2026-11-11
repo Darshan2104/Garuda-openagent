@@ -43,6 +43,27 @@ do, and only one is a real boundary:
 
 If a change depends on one of these holding, check which one you actually have.
 
+Opt-in `code_cell` tools run short Python cells in a scratch-only confinement.
+`SandboxEnvironment` admits Linux/bwrap with a private PID/network/mount namespace
+and runtime read mounts; Seatbelt and unsandboxed fallbacks refuse. The check is
+made on the backend under the loop's health monitor, as for the debug tools. Docker and
+remote Docker owners first check the existing workspace container, then create a
+separate, resource-limited, network-disabled container with no workspace mounts.
+The preinstalled `python:3.12-slim` cell image supplies Python independently of the
+workspace image; execution never pulls or installs dependencies. The environment
+owns launch, namespace/container teardown and cancellation, including descendants.
+The worker has no host filesystem or socket bridge. JSON `tool(name, arguments)`
+requests return through the active `ToolRunner`'s ordinary target resolution,
+permissions, hooks, memo, effects ledger, output capture and event recording.
+Nested results stay out of the model transcript; the cell selects its result.
+Cell and nested events carry `cell_id` and `nested_index` (zero for the cell).
+Cells are mutating, excluded from defaults and broad presets, and denied in
+read-only mode. Code/input bytes, the cell's own time, output and nested requests
+are bounded; death or interruption never authorizes automatic replay. The time budget
+covers admission, launch, the cell's own code and delivery but pauses during each
+nested call, which its own tool timeout and approval path govern; the run deadline
+still caps the remaining budget. Bounded teardown is additional to execution time.
+
 Smart command screening checks original and continuation-joined text. Raw path
 tokens and raw root/home-removal refusals remain authoritative even if a comment
 view disagrees. Denied paths mentioned in comments can therefore refuse a call.
@@ -121,6 +142,17 @@ fastest way to learn the system.
    existing budgets; it never counts as verification or independent review.
    Awaited consults recheck run liveness before delivery, including cancellation
    during cleanup. Advisor spend is not yet charged to the run-tree spend gate.
+   Optional declarative reminders (`plugins/reminders.py`) observe completed
+   tool results through the existing after-tool hook point, including parallel
+   and discovered calls. Only global settings and project settings enabled by
+   the existing global `trust_project_hooks: true` opt-in supply rules. The
+   matcher reads complete, bounded arguments or the observed result outcome;
+   rules cannot supply regexes, callables or commands. Per-run state queues
+   source-labelled advisory text for `steering.flush`, with pending and repeated
+   trigger deduplication, per-rule limits and a shared injection ceiling. It
+   survives compaction, adds no turns, and never changes permissions, schemas or
+   completion gates. Bounded text-free audit snapshots retain trigger, injection
+   and suppression counts for trajectory inspection. No rules is the default.
    The loop calls `Model.complete()` unless the run was given a
    `model_delta_consumer`. Then `_timed_complete` makes the call through
    `model/streaming.py`: text and reasoning deltas reach the consumer, the
@@ -182,6 +214,30 @@ fastest way to learn the system.
    environment's proved host bind root; container `/workspace` is never treated
    as a host evidence path when that identity is absent. Long paths are omitted
    with counts rather than presented as truncated filenames.
+   A trusted caller may supply `AgentConfig.editing_workers` (or the runner's
+   `editing_workers`) with a `LocalEditingWorkers` service bound to its held
+   mutating parent lease. Only then does `invoke_subagent` offer
+   `editing_worker: true` and shared run assembly add
+   `integrate_editing_worker`. Each sequential editing child gets a detached
+   snapshot repository, a unique session, mutating workspace lease and native
+   capacity reservation under the same `DelegationBudget`. With unlimited
+   configured native capacity this service still reserves against a ceiling
+   of one. Children require schema-bound output, inherit the model and narrowed
+   turn/output/deadline allowances, and receive only admitted stateless built-in
+   tools; nested delegation, MCP, tmux and parent-bound services are excluded.
+   Integration binds a retained binary patch, base snapshot/HEAD/index and
+   typed-output provenance by SHA-256. The existing confined integration checker
+   checks the exact candidate tree before destination revalidation and checked
+   patch application. It never merges, stages or advances parent refs. Dirty
+   parent content is captured and preserved; any base drift refuses. Receipts
+   and `editing_worker` events record admission through integration or refusal.
+   Active-child cancellation and uncertain child cleanup retain the repository,
+   lease and capacity and block further editing dispatch. Cancelled integration
+   settles its checker and retains an uncertain candidate. Durable receipts
+   prevent a fresh service from bypassing retained uncertainty for that parent.
+   This first slice supports local native
+   execution only, with no automatic recovery/cleanup or concurrency claim;
+   ordinary subagents and read-only parallel flows keep their existing paths.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source
    identity across named definition changes and snapshot workspace execution.
@@ -197,7 +253,8 @@ fastest way to learn the system.
    configuration/source facts at admission, checkpoints receipts, review-loop
    state and workspace content at settled boundaries under the flow's retained
    lease, and enrolls only future sequential CLI flows with eligible Codex
-   steps. The hourly `runtime/recovery_schedule.py` user-cron wrapper invokes
+   steps. The hourly `runtime/recovery_schedule.py` wrapper (user cron by
+   default, or an opt-in macOS LaunchAgent) invokes
    `-m garuda.interfaces.main recovery tick` outside any workspace, using the
    absolute current interpreter path without resolving away a virtualenv
    entrypoint. One tick can reserve and dispatch at most one continuation
@@ -215,6 +272,35 @@ fastest way to learn the system.
    Status reports persisted `enabled` separately from observed `installed` and
    supplies a `reason` when installation is missing or mismatched. These local
    checks do not execute the wrapper or probe provider quota.
+
+   `recovery enable --backend launchd` installs a root-derived label under
+   `~/Library/LaunchAgents` with an owner-only `0600` plist. It uses the same
+   private wrapper, interpreter and Codex binding. Exact plist bytes, private
+   wrapper content and launchctl's loaded identity/state must read back before
+   enablement. Launchctl operations use the current user's GUI domain, never
+   the system domain. Disable publishes disabled first, unloads only that exact
+   label, verifies absence and removes only its matching plist. Ambiguous OS
+   errors and unrecognized launchctl diagnostics fail closed; unavailable job
+   counts remain unknown. Switching backends requires verified prior removal.
+   Off macOS the launchd backend is refused before it is saved, and a saved
+   launchd backend there counts as nothing loaded, so disable resets it to cron.
+   No wake, login/reboot catch-up or runtime-success guarantee follows from
+   installation; recorded tick health remains the evidence of execution.
+
+   Runtime health is recorded separately from installation. Each tick writes a
+   bounded `tick-health.json` in the private recovery root: a `last_attempt`
+   (tick id, start time, owner) before any work, then its own `last_result`
+   with an outcome of `disabled`, `zero-pending`, `probe-unavailable`,
+   `quota-waiting`, `dispatch-in-progress`, `dispatched`, `attention` or
+   `failed`, a redacted reason and the pending count. A dispatch is credited
+   (`last_dispatch`) only to the tick whose own claim the flow service advanced
+   to running; a tick that lost the claim reports the other owner. Status reads
+   this file and derives `running` or `uncertain` for an attempt without its own
+   result. A flow left blocked or uncertain keeps later ticks at `attention`.
+   Health is evidence, never dispatch authority: account, version, workspace,
+   receipt and exclusive-claim gates still decide every dispatch, and an
+   unreadable health file neither stops a tick (it reports `health_error`) nor
+   hides status (`tick_health.state` is `unknown`).
 
    Recovery records and version-1 scheduler settings live in a strict private
    user store. `GARUDA_RECOVERY_ROOT` selects a custom store consistently for
@@ -469,6 +555,26 @@ fastest way to learn the system.
    are byte-bounded. Apply uses current per-path permissions and source digests,
    verifies writes and attempts restoration on failure; restoration uncertainty
    is explicit and no cross-file isolation or crash transaction is claimed.
+
+   Optional Python DAP tools require explicit names (`tools.add`); neither the
+   default toolkit nor tool presets enable them. Launch is mutating and enters
+   the ordinary bash command/path permission screen with a derived Python argv.
+   Stepping/continue and variable rendering are mutating; basic inspection
+   exposes bounded observations with session identity and stop-scoped handles.
+   Debugpy can invoke Python `repr` while rendering values, so variables require
+   separate `debug_variables` authority. Inspection is not an execution isolation
+   boundary. Arbitrary object expansion, explicit getters, evaluate, attach,
+   writes, memory and raw requests refuse. Only local workspaces are supported;
+   tools unwrap the loop's health monitor before checking the exact backend.
+   Adapter reply/stop timeouts retain sessions with running or unknown state;
+   a launch stop timeout includes the debug session identity for later inspection
+   or disconnect. Cancellation and the tool's run deadline reap the agent's
+   owned debug sessions.
+   The local environment owns adapter launch and a private POSIX session spanning
+   debugpy's process groups. Cleanup kills and observes live session membership;
+   inability to verify retains “cleanup unproved” and quarantines the lease.
+   Descendants that detach into another POSIX session remain outside this cleanup
+   guardrail. Debug evidence never substitutes for independent acceptance checks.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
@@ -736,6 +842,55 @@ shared agent resolver. Explicit/inherited replacement refuses before launch,
 regardless of text equality with the native base. Native assembly stays unchanged;
 ACP accepts appended instructions only as labelled task context.
 
+The optional language service (`garuda/lsp/`, #381) is wired once in
+`agents/setup.py::activate_agent_plan`, so CLI, SDK, web, serve and role
+workers share it. Activation reads `language_servers:` from the global settings
+file and constructs unstarted servers; nothing launches during setup,
+`garuda lsp list` or the tool's `status`. The first `lsp` request starts the
+server in the local workspace root (other workspace kinds are refused), and the
+run's teardown closes it through `OwnedRunResources`, which takes the place of
+the MCP manager only on runs that have a language service. Diagnostics carry
+the document version Garuda sent and are labelled current, stale, unversioned
+or none. ACP harnesses keep their own tooling; subagents spawned by
+`invoke_subagent` build their toolkit without it.
+
+Rename and code-action edits (#382) use two separate tools: `lsp` requests a
+read-only preview and `lsp_apply` is mutating. `lsp` survives any profile `tools:`
+allowlist; `lsp_apply` is added only when that allowlist is unrestricted or names
+a file-writing tool (`write_file`, `edit`, `multi_edit`), so a read-only or
+`none` preset never gains it. A preview lists every replacement
+with 1-based character ranges, a full-content SHA-256 digest and the exact client
+version sent for each file. Initially unopened targets are discovered, read
+through the Environment, synced and requested again; a discovery response never
+authorizes writes. Explicit server versions must match the request snapshot;
+unversioned edits are bound to that snapshot rather than assigned a guessed
+server version. Stale server snapshots are refreshed and requested again;
+changes to the source or an already observed target refuse the preview.
+
+The run owns at most four previews, each limited to 32 files, 256 edits,
+4 MiB of original/result text each and 12,000 output bytes (or the smaller live inline allowance). Oversized previews
+are refused rather than truncated into applicable tokens. Tokens are scoped to
+the run, session and workspace, and consumed before the first write attempt.
+Only existing, direct workspace files are supported: resource operations,
+symlink aliases, overlapping/ambiguous edits, commands, unresolved code actions
+and confirmation annotations are refused. Server-initiated `workspace/applyEdit`
+continues to be refused; there is no raw request or execute-command tool.
+
+Apply evaluates `lsp_apply` through the ordinary permission engine for every
+stored path, then checks every original digest before writing through the
+Environment. Each write is read back, and successful edits are synced back to the server
+so later refactors see the applied documents. On failure or cancellation, every attempted
+file (including a possibly partial failed write) is restored from its exact
+original text and read back, with explicit per-file results. Cancellation waits
+for outstanding writes and restoration and retains the result in its exception
+cause. Failed restoration is reported and tracked in the side-effect ledger;
+it is never presented as atomic success. This is compensating rollback, without
+filesystem transactions or protection against concurrent external writers.
+Existing Docker/remote behavior stays unchanged; this local language-service
+slice introduces no interpreter requirement inside workspace environments.
+Diagnostics remain advisory; authorized candidate-bound checks establish
+verification independently.
+
 ## Conventions
 
 - **`.agent/` is the project home.** Custom tools, MCP servers, skills, agent
@@ -779,6 +934,20 @@ ACP accepts appended instructions only as labelled task context.
   creation/use revalidates the parent's complete issuing-store authority under
   the lease lock without renewal; copied flags cannot authorize released,
   missing, changed, unknown or fork-inherited parent bindings.
+- **Ownership inspection is not authority (#376).** `core/ownership_read_model.py`
+  joins one session's recorded owner liveness (as the row already derived it),
+  retained workspace leases, queue entry or claim, capacity slots across runtime
+  keys, recorded runtime children, pending approvals and quota recovery into the
+  `ownership` field of `garuda sessions show --json` and `/api/sessions/<id>`.
+  It takes no lock, writes nothing, probes no further process and never calls
+  recovery. An unreadable lease, queue or capacity record makes reconciliation
+  `unknown`; a retained lease, quarantined or retained queue claim, or quota
+  `blocked`/`uncertain` state makes it `blocked`. Only a dead owner with none of
+  those is `eligible`, and then it names the existing `garuda runtime recover`
+  path, which re-proves every prerequisite. Retained capacity slots are listed
+  because nothing releases them automatically. Children are reported as recorded
+  with an unknown process, and progress recorded after owner death never makes
+  the owner alive.
 - **Quarantine retains ownership through teardown.** The shared run guard
   stops renewal but retains its workspace lease and runtime reservation. Later
   release/finalizer calls cannot undo quarantine. A borrowed flow step also

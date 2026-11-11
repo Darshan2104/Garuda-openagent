@@ -294,10 +294,13 @@ def build_parser():
         help="Resume a saved session (full id, unique prefix, or 'latest' for this "
         "project's newest)",
     )
+    run_parser.add_argument("--fork", metavar="SESSION", help="Fork a saved native session's context into a new session")
+    run_parser.add_argument("--fork-at", type=int, metavar="MESSAGE_INDEX",
+                            help="With --fork, retain through this zero-based saved message index (inclusive); context rewind only")
     run_parser.add_argument(
         "--all-projects",
         action="store_true",
-        help="With --resume latest, resume the newest session from any project",
+        help="With --resume latest or --fork latest, select the newest session from any project",
     )
     run_parser.add_argument(
         "--name",
@@ -671,6 +674,10 @@ def build_parser():
     ):
         command_parser = recovery_sub.add_parser(command, help=help_text)
         command_parser.add_argument("--root", help="Private recovery store (operator override)")
+        if command == "enable":
+            command_parser.add_argument(
+                "--backend", choices=("cron", "launchd"), default="cron",
+                help="Scheduler backend (launchd is opt-in and requires macOS)")
         if command == "cancel":
             command_parser.add_argument("flow_session")
 
@@ -723,6 +730,14 @@ def build_parser():
         action="store_true",
         help="Trust the listed servers without asking (you have reviewed them)",
     )
+
+    lsp_parser = subparsers.add_parser(
+        "lsp", help="Inspect trusted language-server configuration (starts nothing)")
+    lsp_sub = lsp_parser.add_subparsers(dest="lsp_command")
+    lsp_list = lsp_sub.add_parser(
+        "list", help="Show configured language servers, where each command resolves, "
+        "and ignored project entries")
+    lsp_list.add_argument("--workspace", default=".")
 
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
@@ -1662,6 +1677,26 @@ async def run_mcp_list(args) -> int:
     return 0
 
 
+def run_lsp_list(args) -> int:
+    """Show the language servers a run here may use. Reads configuration only."""
+    from garuda.lsp.config import load_language_servers, locate_executable
+
+    settings = load_language_servers(args.workspace)
+    if settings.servers:
+        print(f"Language servers (from {settings.source}):")
+        for server in settings.servers:
+            found = locate_executable(server)
+            extensions = ", ".join("." + e for e in server.extensions)
+            print(f"  - {server.name} [{extensions}] {server.command_line}")
+            print(f"    executable: {found or 'NOT FOUND (the lsp tool will report it as failed)'}")
+        print("Each starts on its first lsp request in a local workspace and stops with the run.")
+    else:
+        print(f"No language servers configured in {settings.source}; runs offer no lsp tool.")
+    for problem in settings.problems:
+        print(f"  ! {problem}")
+    return 0
+
+
 def run_mcp_trust(args, *, ask=input) -> int:
     """Show each untrusted project MCP server and record the user's trust in it.
 
@@ -2189,6 +2224,14 @@ async def run_task_guarded(args) -> int:
 
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    except (ValueError, OSError) as exc:
+        # After the typed refusals above: GarudaConfigError is a ValueError too.
+        if getattr(args, "fork", None) is None and getattr(args, "fork_at", None) is None:
+            raise
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 def main() -> None:
@@ -2265,6 +2308,11 @@ def main() -> None:
         if args.mcp_command == "trust":
             raise SystemExit(run_mcp_trust(args))
         parser.parse_args(["mcp", "--help"])
+        raise SystemExit(1)
+    if args.command == "lsp":
+        if args.lsp_command == "list":
+            raise SystemExit(run_lsp_list(args))
+        parser.parse_args(["lsp", "--help"])
         raise SystemExit(1)
     if args.command == "recipe" and args.recipe_command == "run":
         raise SystemExit(asyncio.run(run_recipe_command(args)))

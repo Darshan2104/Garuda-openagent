@@ -29,6 +29,12 @@ starts. Background runs bind the existing durable queue and continue under
 a detached owned worker with file-backed approvals. See the
 [finalized workflow plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md).
 
+Sequential Codex flow recovery also offers an optional macOS LaunchAgent
+scheduler (#379), while cron stays the default. Both enter the same guarded tick;
+installation and recorded execution health remain separate. See the
+[LaunchAgent demonstration](../use-cases/automate.md#macos-launchagent-backend).
+Sleep/login/reboot behavior still requires live platform validation.
+
 ## Why this boundary
 
 An external coding agent already has its own context, tool execution, permissions, retry behavior, and session lifecycle. Wrapping it as a Garuda model would create two competing agent loops.

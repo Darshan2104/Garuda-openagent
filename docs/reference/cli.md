@@ -29,7 +29,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
 | Quota recovery | `garuda recovery enable [--root PATH]` | Enable future eligible flows and install the hourly user-cron entry; `--root` selects the store for this command only |
 | | `garuda recovery disable [--root PATH]` | Disable future automatic dispatch and remove Garuda's cron block; does not stop live work |
-| | `garuda recovery status [--root PATH]` | Print persisted enablement, verified local installation and mismatch reason, plus continuation status; does not launch work |
+| | `garuda recovery status [--root PATH]` | Print persisted enablement, verified local installation and mismatch reason, recorded tick health (last attempt, result, dispatch), plus continuation status; does not launch work or probe quota |
 | | `garuda recovery tick [--root PATH]` | Check quota now and dispatch at most one eligible continuation; exits 3 when a checked flow is blocked or uncertain |
 | | `garuda recovery cancel FLOW_ID [--root PATH]` | Cancel one pending continuation; refuses work that already dispatched |
 | Interfaces | `garuda web` | Serve the local dashboard (alias: `garuda dashboard`) |
@@ -50,6 +50,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda config trust` | Review and trust this project's `garuda.yaml` checks and native models (exact bytes; needs a terminal) |
 | | `garuda mcp list` | Resolve and inspect MCP configuration |
 | | `garuda mcp trust` | Review and trust MCP servers the project's own config defines |
+| | `garuda lsp list [--workspace W]` | Show the globally configured language servers and ignored project entries; starts nothing |
 | Runtimes | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable) |
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |
 | | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime |
@@ -67,7 +68,7 @@ ACP runtime continues through the agent's own reload where that is proven for
 the adapter version, and otherwise through a new linked session started from
 its brief; a session whose owner is still running refuses.
 
-Session arguments (`--resume`, `--session`) accept a full ID, a unique prefix
+Session arguments (`--resume`, `--fork`, `--session`) accept a full ID, a unique prefix
 from `garuda sessions`, a session name, or `latest`. Names, prefixes and
 `latest` are looked up in the current project; add `--all-projects` to search
 every project. A full ID always resolves.
@@ -81,7 +82,8 @@ every project. A full ID always resolves.
     | `-t, --task TEXT` | Task text |
     | `-f, --file PATH` | Read the task from a file |
     | `--resume ID` | Continue a saved session (ID, prefix, or `latest`: this project's newest) |
-    | `--all-projects` | With `--resume latest`, take the newest session from any project |
+    | `--fork SESSION --fork-at MESSAGE_INDEX` | Context-only fork of a terminal native checkpoint through an inclusive zero-based message index; complete tool batches only, fresh workspace evidence, no file/process restoration. See [example](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
+    | `--all-projects` | With `--resume latest` or `--fork latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
     | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |

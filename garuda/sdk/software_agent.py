@@ -87,6 +87,8 @@ class SoftwareAgent:
         events: EventStore | None = None,
         resume: str | None = None,
         resume_all_projects: bool = False,
+        fork: str | None = None,
+        fork_at: int | None = None,
     ) -> AgentResult:
         """Execute a task and return the agent result.
 
@@ -94,7 +96,14 @@ class SoftwareAgent:
         seed the run with a prior session's conversation. ``"latest"`` is this
         workspace's newest session unless ``resume_all_projects`` is true. Non-native runtimes
         execute one ACP turn per run through the selected harness.
+        ``fork`` with ``fork_at`` starts a native context-only fork through an
+        inclusive zero-based saved message index; files/processes are not restored.
         """
+        from garuda.core.session_fork import validate_fork_request
+
+        validate_fork_request(fork=fork, fork_at=fork_at, resume=resume)
+        if fork is not None and self.runtime_name != "native":
+            raise ValueError("context fork requires the native runtime")
         if self.runtime_name != "native":
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
@@ -137,6 +146,9 @@ class SoftwareAgent:
             agents_dir=agents_dir,
             resume=resume,
             resume_all_projects=resume_all_projects,
+            fork=fork,
+            fork_at=fork_at,
+            store=self._store,
             collection_model=prepared.collection,
             collection_policy=prepared.collection_policy,
         )

@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = os.path.join(os.path.dirname(__file__), "builtin")
 BUILTIN_MANIFEST_FILES = (
-    "claude.json", "codex.json", "cursor.json", "opencode.json", "pi.json", "goose.json"
+    "claude.json", "codex.json", "cursor.json", "opencode.json", "pi.json", "goose.json",
+    "omp.json",
 )
 
 #: Tested vendor command pairs. Other trusted ACP manifests use the generic
@@ -48,6 +49,7 @@ BUILTIN_COMMANDS = {
     "opencode": ("opencode", "acp"),
     "pi": ("pi-acp",),
     "goose": ("goose", "acp"),
+    "omp": ("omp", "acp"),
 }
 GENERIC_WARNING = (
     "generic adapter: standard capability set only; "
@@ -86,6 +88,11 @@ BUILTIN_STUBS: tuple[dict[str, str], ...] = (
     {
         "runtime_id": "goose",
         "description": "Goose (subscription-backed, user-authenticated).",
+        "setup": "Add a global harness manifest with its ACP launch command.",
+    },
+    {
+        "runtime_id": "omp",
+        "description": "oh-my-pi (user-authenticated; separate from pi).",
         "setup": "Add a global harness manifest with its ACP launch command.",
     },
 )

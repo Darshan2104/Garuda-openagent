@@ -2827,3 +2827,287 @@ Final output is compared with every assistant response already rendered in the
 root run, so budget exhaustion cannot repeat an earlier candidate after a later
 forced response. Model assembly, execution and Environment requirements stay
 with their existing owners.
+
+## 2026-11-06 — Recovery tick health is evidence, not dispatch authority (#378)
+
+Each quota-recovery tick records a bounded `tick-health.json` in the private
+recovery root under the root's exclusive lock: its attempt (id, time, owner)
+before any work, then its own classified result and redacted reason. Only the
+tick whose own claim the flow service advanced to running is credited with a
+dispatch; a tick that loses the claim reports the other owner. `recovery status`
+reads this file next to observed cron installation and never probes quota or
+runs the wrapper; an attempt without its own result is `running` or `uncertain`.
+Health never authorizes dispatch: account, version, workspace, receipt and
+exclusive-claim gates stay authoritative. A health-write failure on the error
+path never masks the tick's own exception, and an unreadable health file never
+stops a tick or hides status: the tick reports `health_error`, status reports
+`unknown`, and the corrupt file is left for the operator rather than replaced.
+A flow already blocked or uncertain keeps every later tick at `attention`.
+
+## 2026-11-06 — Opt-in verified macOS recovery scheduling (#379)
+
+- Cron remains the default. `recovery enable --backend launchd` selects a
+  per-user GUI-domain LaunchAgent whose label is derived from the absolute
+  recovery root. Status and disable use the saved backend; switching requires
+  disabled settings and verified prior removal.
+- The `0600` plist under `~/Library/LaunchAgents` invokes the existing private
+  wrapper with the installed interpreter and Codex binding. Exact plist bytes,
+  private wrapper content and loaded-job identity/state must read back before
+  publishing enabled. Non-macOS, OS errors and unknown diagnostics fail closed.
+  The non-macOS refusal saves no launchd backend; a launchd backend already
+  saved off macOS counts as nothing loaded, so disable resets it to cron and
+  the schedule is never left unchangeable.
+- Disable publishes disabled before unloading only the exact matching label,
+  verifies absence and removes only its matching plist. Status never runs a
+  tick or probes quota; unobserved job counts stay unknown. Tick health from
+  #378 remains independent execution evidence. No sleep/login/reboot catch-up
+  guarantee is inferred without live platform observations.
+
+## 2026-11-06 — Ownership and reconciliation are a read-only projection (#376)
+
+`garuda sessions show --json` and `/api/sessions/<id>` carry an additive,
+versioned `ownership` field built by `core/ownership_read_model.py`. It joins
+the existing durable owners — recorded owner liveness, retained workspace
+leases, queue entry/claim and quarantine, capacity slots for the session across
+runtime keys, recorded runtime children, pending approvals and quota recovery —
+without a lock, write, signal, recovery call or process probe beyond the
+liveness check the session row already makes. Session list rows are unchanged.
+
+Reconciliation is reported, never performed. Unreadable lease, queue or capacity
+records make it `unknown`; retained leases, quarantined/retained queue claims and
+quota `blocked`/`uncertain` make it `blocked`; quota waiting/dispatch is owned by
+the quota scheduler. Only a confirmed-dead owner with none of those blockers is
+`eligible`, and it names the existing `garuda runtime recover` path, which
+re-proves leases, owners, trail and child identities itself. Retained capacity
+slots are listed because no path releases them automatically. Recorded children
+keep their recorded state with an unknown process. No new control, release,
+takeover or replay path was added; budget stays `unknown`.
+
+## 2026-11-06 — Ship oh-my-pi as a separate, no-prompt-proved ACP runtime (#380)
+
+`omp` (oh-my-pi) is a shipped ACP manifest of its own (`omp acp`), distinct from
+`pi`, whose `pi-acp` manifest is unchanged. It is an `AgentRuntime` only, never
+an inference `Model`. The evidence is a no-prompt spike against omp 18.16.0:
+ACP v1 `initialize`, `session/new` (offering `mode` default/plan and `thinking`
+off/auto; no `model` option without credentials), idle `session/cancel`, and
+clean single-process exit on stdin close or group SIGTERM, also through
+Garuda's own `AcpRuntime`. The spike ran under a temporary HOME with network
+and credential stores denied; `session/new` attempted omp's own model
+discovery, so a real launch is not network-free.
+
+Claims stay limited to that subset: the manifest declares the generic
+`prompt`/`cancel` contract with a warning naming what was not exercised
+(prompted turns, permission requests, mode/option selection, `session/load`,
+usage and error normalization). omp is absent from `PROVEN_OPTIONS`,
+`MODE_AUTHORITY` and `PROVEN_LOAD`, so role options are refused and resume uses
+a brief. Like the other vendors, the version is probed and reported but not
+gated at launch; only 18.16.0 is stated as checked. Authentication stays in
+omp's own login: no auth probe, and Garuda never runs `omp token`/`omp auth` or
+reads `~/.omp`. CI uses a replay of the redacted capture
+(`tests/fixtures/omp/`); the live handshake is opt-in
+(`GARUDA_LIVE_HARNESS=omp`). Report: `docs/development/omp-acp-conformance.md`.
+
+## 2026-11-06 — Investigation scopes are typed read-only subagents (#370)
+
+The first slice of #370 adds no new execution path. `garuda/investigate`
+extends `explore` (read-only permissions and tools) and declares an output
+schema, so the existing typed child-result handoff (#357) is the report
+boundary: the parent receives only a validated report of question,
+evidence-backed conclusions, sources, rejected approaches and coverage, and
+the exploration stays in the child's session. Confidence is an uncalibrated
+assertion. Context forks and named rewinds are #415.
+
+## 2026-11-06 — Context forks preserve history without restoring execution (#415)
+
+An explicit native fork creates a new session through ordinary workspace and
+capacity admission. Its inclusive saved-message index backs up before an
+incomplete tool batch; source-file digests bind provenance. It reuses resume
+context construction and artifact inheritance, but never source recovery,
+process ownership, old worktree selection or baseline inheritance. Source events
+remain append-only and untouched. Only context is rewound: filesystem and
+processes are not restored. Source candidate/check claims are stale; constraints
+and historical event/state/receipt references survive compaction and resume in
+the working-state card. Fork lineage inspection reads persisted metadata only.
+Terminal native sources without pending ownership or quarantine are supported;
+ACP state, live-source forks and combined workspace isolation are refused.
+
+## 2026-11-06 — Sequential isolated native editing workers (#384)
+
+Editing workers are an explicit programmatic service opt-in on native subagents.
+The first slice uses the existing detached snapshot repository owner for local
+environments, with independent child sessions, mutating leases and native
+capacity reservations under the parent's shared DelegationBudget. Ordinary
+subagents and read-only flow parallel groups retain their current behavior.
+Schema-bound children inherit the model and narrowed budgets/tools; parent-bound
+services and nested delegation are excluded.
+
+The parent integrates only through an explicit candidate/digest request. A
+retained binary patch binds base snapshot, source HEAD, staged index, candidate
+tree and typed-output provenance. The existing confined worktree checker checks
+the candidate, then application revalidates the destination and refuses drift or
+conflicts without merging or staging. Dirty parent content is included in the
+base. Receipts and events retain outcomes. Active-child cancellation and unproved
+child cleanup retain workspace/lease/capacity and block further editing launches;
+cancelled integration settles checks and retains an uncertain candidate. Durable
+receipts preserve the refusal when the parent constructs a fresh service;
+automatic cleanup, recovery and concurrent editing are deferred. Unsupported
+editing backends refuse without changing ordinary backend execution. Local
+workspace separation and permission screening remain guardrails, not confinement.
+
+## 2026-11-06 — Frozen offline incident evaluation (#364)
+
+Evaluation's minimal-v1 configuration pins every AgentConfig field and is
+identified by version and canonical SHA-256. Schema drift refuses rather than
+silently inheriting new product defaults. Controlled scripted ablations change
+one supported boolean mechanism, retaining the same policy, tools, task and
+script. Ordinary evaluation defaults and output remain unchanged.
+
+The opt-in contract-matrix incident corpus uses synthetic local repositories,
+ScriptModel and existing loop/Environment/config/permission/no-edits/edit/flow
+recovery/quota claim owners. It introduces no workspace interpreter requirement
+or parallel runtime. Partial tool arguments on length-truncated native responses
+remain explicitly expected-fail; existing text-match refusal is not a claim of
+snapshot edit protection. Synthetic startup and claim contention do not establish
+vendor startup or provider quota integration behavior.
+
+Matrix provenance is additive and versioned. Unknown identities and cost stay
+null; model completion, authorized acceptance and contract coverage are separate.
+Fixture assertions never mint authorized acceptance, and single trials never
+establish uplift. No transcripts, credentials or provider experiments are part
+of the corpus. Validation and limitations are documented in docs/evaluation/index.md.
+
+## 2026-11-06 — Language servers are a trusted, run-owned, read-labelled service (#381)
+
+Semantic navigation sits behind one optional `LanguageService` protocol
+(`garuda/lsp/`) and one agent tool, `lsp`, added by shared setup. Only the
+user's global settings may name a server command; a project's
+`language_servers:` is reported as `agent.untrusted_project_language_server`
+and ignored, never merged, so a repository can neither add a server nor change
+a configured command. Relative command paths are refused because they would
+resolve against an unspecified directory. The server inherits a short
+environment allowlist plus configured `env`, not the harness environment.
+
+Configuration reads and status inspection never launch a server. The first
+request starts it in the local workspace root; Docker, remote, tmux and
+OS-sandbox workspaces are refused because a host process would bypass their
+boundary. Startup and requests are time-bounded; timeouts and caller
+cancellation send `$/cancelRequest`. A missing executable, startup failure,
+crash, oversized message or protocol error moves the server to `failed`, and
+it is not restarted within the run. Teardown sends `shutdown`/`exit` and kills
+the process group.
+
+Positions are converted between Garuda's 1-based character columns and LSP's
+0-based UTF-16 offsets using LSP line separators; URIs are percent-escaped
+both ways and non-`file` URIs are shown, not guessed. Diagnostics are bound
+to the version Garuda sent: only an exact version match is current; older
+versions are stale, unversioned publications are of unknown currency, and the
+absence of a publication is not evidence of a clean file. Unsupported
+requests are refused by capability name; `workspace/applyEdit` is refused.
+Path rules screen the requested file and withhold denied result locations.
+
+The tool declares `READ_ONLY` because Garuda sends only read-labelled
+requests. That is a classification of Garuda's requests, not proof that the
+server writes no caches or stays inside the workspace; it is a trusted local
+process, not a confined one. Runs without configuration are unchanged: no
+tool, no process and the same `mcp_manager`.
+
+## 2026-11-06 — WorkspaceEdits require run-bound previews and per-file write authority (#382)
+
+The existing optional local language service now offers rename and edit-only
+code-action previews through read-only `lsp`; separate mutating `lsp_apply`
+consumes a run/session/workspace-bound token. Previews retain exact original
+text, full-content SHA-256 digests and the client versions used for the request.
+Unknown targets are synced through Environment reads and the edit is requested
+again; the discovery edit is discarded. Server versions must match that snapshot.
+No unknown version is represented as zero. Bounds refuse an entire oversized
+preview rather than silently omitting files or replacements.
+
+Apply screens every retained path with the ordinary permission engine, checks
+all digests before any writes and uses only Environment writes/read-back. A
+failed or cancelled write triggers verified restoration of every attempted file,
+including the failing file because its write may have been partial. Per-file
+results distinguish applied, restored, untouched and failed restoration; failed
+restoration remains observable in the side-effect ledger. Cancellation settles
+writes/rollback and retains their result as its cause. Tokens are consumed on a
+write attempt, never persisted and cleared at run teardown.
+
+Resource operations, symlink aliases, overlapping/ambiguous ranges, code-action
+commands, unresolved actions and confirmation annotations are refused. Server
+`workspace/applyEdit` remains refused. This is compensating rollback without a
+filesystem transaction or compare-and-swap protection against external writers.
+A configured server does not widen a profile: `lsp_apply` joins only a toolset
+that is unrestricted or already names a file-writing tool, so read-only and
+`none` presets keep no writer while read-only `lsp` stays available.
+The local-only service boundary and unconfigured-run defaults remain unchanged;
+no new interpreter runs inside Docker/remote workspaces. LSP diagnostics do not
+replace candidate-bound verification.
+
+## 2026-11-06 — Optional local launch-only Python debugging (#388)
+
+Python DAP tools require explicit selection; default toolkits and presets stay
+unchanged. Launch is mutating and screened through the derived Python command
+and existing bash/path policy; execution control and `debug_variables` rendering
+are mutating. Basic `debug_inspect` cannot dispatch variables. Inspection returns
+bounded, versioned observations bound to an agent session, debug session and
+stop generation. Handles expire on resume and are never arbitrary DAP ids.
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw requests are unsupported. Debugpy summaries can invoke Python
+repr; inspection is not confinement or independent acceptance evidence.
+
+Only LocalEnvironment launches the optional adapter through the harness Python.
+Tools unwrap the run's HealthMonitoredEnvironment before enforcing that exact
+backend requirement. Adapter reply and stop waits have independent 15-second
+bounds; their timeout errors retain sessions, report running/unknown state and
+include the debug session id when launch has completed but its first stop is
+late. Only cancellation, expiry of the tool's run deadline and shared teardown
+reap all debug sessions owned by that agent session.
+Docker, remote, sandbox and tmux refuse without new interpreter requirements.
+An identity-bound supervisor anchors one POSIX session because debugpy places
+its debuggee in another process group. Cancellation and shared teardown kill
+and verify session membership; unknown closure remains cleanup unproved and
+quarantines ownership. Descendants that leave the POSIX session are outside
+this cleanup guardrail. Debugpy remains an optional, separately installed
+dependency; real adapter tests skip when it or required OS facilities are absent.
+
+## 2026-11-06 — Admit code cells only through confinement owners (#387)
+
+The optional mutating `code_cell` tool uses scratch-only workers. Linux/bwrap
+and Docker owners provide process/namespace lifetime; Seatbelt, unconfined
+fallbacks and unknown Environment capabilities refuse. Docker cells use a separate
+preinstalled Python image, no workspace mounts, no network, and explicit resource
+limits; neither ordinary workspace commands nor workspace images gain an interpreter
+requirement. Remote Docker uses the same cell owner on its selected daemon.
+
+The stdio bridge carries JSON tool requests only, through the active ordinary
+ToolRunner's dispatch, permissions, hooks, effects, memo and event/capture owners.
+Every cell and nested receipt has cell id/index provenance. Nested results are
+recorded without becoming orphan tool messages in the model context. Broad/default
+tool selections do not opt in. Input, output, time and call counts are bounded;
+the cell time budget excludes nested calls, which keep their own tool timeout and
+approval, and the run deadline still caps it;
+namespace teardown cancels descendants, and interrupted effects never imply zero
+or authorize replay. No retained kernels or dependency installation are introduced.
+
+## 2026-11-06 — Trusted declarative reminders use native steering (#386)
+
+Reminder rules live in global settings or project settings enabled through the
+existing global `trust_project_hooks: true` mechanism. That is the existing broad
+project-hook opt-in, not a new content-bound file grant; a project cannot opt
+itself in or set the shared run cap. The `garuda.yaml` content-trust mechanism
+remains separate. Invalid rules warn and are omitted, or refuse loading when the
+user selects strict mode. Defaults contain no rules.
+
+The shared after-tool hook point observes completed resolved calls/results;
+there is no workspace execution, stream matcher, user regex or callable. Matching
+has explicit rule, tree, string and pattern limits. Per-run state queues advisory
+notes through steering, deduplicates pending and delivered identical triggers,
+and bounds injections per rule and across the run. Compaction cannot reset these
+budgets, reminders add no turns, and permission/tool/completion owners retain
+all authority. Native phases sharing a session span share their budget; a fresh
+native run, including resume, starts a fresh budget.
+
+Bounded audit records contain source, rule/run identity and counters, never
+reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
+snapshots preserve cumulative counts and disclose omissions through existing
+trajectory inspection. External harnesses retain their own loop and do not
+receive native reminders.

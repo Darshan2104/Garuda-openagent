@@ -131,9 +131,12 @@ def build_resumed_context(
     task: str,
     model,
     config: AgentConfig,
+    *,
+    messages: list[Message] | None = None,
 ) -> ContextManager:
     """Seed a ContextManager with a prior session's messages plus the new task."""
-    messages = store.load_messages(resumed_session_id)
+    if messages is None:
+        messages = store.load_messages(resumed_session_id)
     # Replay the conversation but not its stale system prompt. The saved messages
     # carry the prompt from the original run, so skills added since, an edited
     # AGENTS.md, or a changed profile were all silently ignored on resume — the
@@ -147,6 +150,7 @@ def build_resumed_context(
         max_context_tokens=config.max_context_tokens,
         enable_three_step_summary=config.enable_three_step_summary,
         task=task,
+        condenser=config.condenser,
         reserved_output_tokens=reserved_output_tokens(config),
         safety_margin_tokens=config.context_safety_margin_tokens,
         adaptive_output=config.enable_adaptive_output,
@@ -155,6 +159,43 @@ def build_resumed_context(
     context.seed(messages)
     context.append(Message(role=Role.USER, content=task))
     return context
+
+
+async def _recover_resumed_context(store, source_records, resumed_from, lease, context, task, model, config):
+    # Recover the retained session before resuming it (resume only; a
+    # fresh run has nothing to recover): a live owner or lease holder
+    # refuses, prepared switches roll back (marked failed), orphans
+    # whose persisted identity still matches are reaped, ambiguous
+    # trails refuse, and a session an external runtime owns (an
+    # acknowledged handoff) is never taken back. Fail-closed.
+    from garuda.runtime.recovery import recover, require_native_resumable
+
+    # Off the loop: probes shell out to `ps` and reaping polls for death.
+    recovery_task = asyncio.create_task(asyncio.to_thread(
+        recover, store, resumed_from, leases=lease.leases, source_reader=source_records,
+    ))
+    try:
+        report = await asyncio.shield(recovery_task)
+    except asyncio.CancelledError as cancelled:
+        from garuda.workspace.settlement import settle_task
+
+        try:
+            await settle_task(recovery_task)
+        except BaseException as settlement_error:
+            raise cancelled from settlement_error
+        raise
+    require_native_resumable(report)
+    if source_records.load_meta(resumed_from).get("session_id") != resumed_from:
+        raise ValueError("resumed source identity conflicts with its selected directory")
+    if context is None:
+        context = build_resumed_context(source_records, resumed_from, task, model, config)
+    # Restore pack facts through the same selected source binding.
+    try:
+        initial_state = source_records.load_state(resumed_from) or None
+    except Exception:
+        logger.warning("Failed to load persisted working state", exc_info=True)
+        initial_state = None
+    return context, initial_state
 
 
 async def run_agent_task(
@@ -191,7 +232,12 @@ async def run_agent_task(
     collection_model=None,
     collection_policy=None,
     model_delta_consumer: DeltaConsumer | None = None,
+    fork: str | None = None,
+    fork_at: int | None = None,
 ) -> AgentResult:
+    from garuda.core.session_fork import prepare_context_fork, validate_fork_request
+
+    validate_fork_request(fork=fork, fork_at=fork_at, resume=resume, context=context, isolation=isolation)
     # Selection happens before sessions, leases, environments, hooks, tools, or
     # prompts. A disabled runtime must therefore be unable to cause even a
     # partial launch. ACP execution is introduced by the ACP adapter work; until
@@ -209,22 +255,26 @@ async def run_agent_task(
     # back to the worktree it ran in.
     from garuda.interfaces import session_service
 
+    if fork is not None and store.session_dir(events.session_id).exists():
+        raise ValueError("context fork requires a new session identity")
+    source_ref = fork if fork is not None else resume
+    fork_plan = None
     resumed_from: str | None = None
     source_scope = ExitStack()
     source_records = source_binding = None
     try:
-        if resume:
+        if source_ref:
             from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
             from garuda.core.session_records import BoundedSessionRecords
 
             source_records = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
             resumed_from = source_records.resolve_for_resume(
-                resume, workspace=workspace, all_projects=resume_all_projects,
+                source_ref, workspace=workspace, all_projects=resume_all_projects,
             )
             source_binding = source_scope.enter_context(source_records.selected_session(resumed_from))
         workspace, workspace_plan = session_service.choose_workspace(
             source_records if resume else store, workspace, events.session_id, isolation, workspace_kind,
-            resume=resumed_from, resume_all_projects=resume_all_projects,
+            resume=resumed_from if fork is None else None, resume_all_projects=resume_all_projects,
         )
         # Every native run — CLI, SDK, server, web — executes through the
         # NativeGarudaRuntime boundary (P0.7). The bridge owns the unified session
@@ -263,7 +313,34 @@ async def run_agent_task(
         source_scope.close()
         raise
 
+    resumed_buffer = None
+    initial_state: dict | None = None
+    if source_ref:
+        try:
+            source_binding.check()
+            if fork is not None:
+                fork_plan = prepare_context_fork(source_records, resumed_from, fork_at)
+                context = build_resumed_context(
+                    source_records, resumed_from, task, model, config, messages=fork_plan.messages,
+                )
+                from garuda.context.state_card import WorkingState
+
+                initial_state = fork_plan.initial_state
+                context.append(Message(role=Role.USER, content=WorkingState.from_dict(initial_state).render()))
+            else:
+                context, initial_state = await _recover_resumed_context(
+                    store, source_records, resumed_from, lease, context, task, model, config,
+                )
+        except BaseException as exc:
+            try:
+                source_scope.__exit__(type(exc), exc, exc.__traceback__)
+            finally:
+                await lease.release()
+            raise
+
     try:
+        if fork is not None:
+            store.session_dir(events.session_id).mkdir(exist_ok=False)
         if initial_selection is not None:
             # NativeGarudaRuntime.start() merges this initial session record
             # rather than replacing it. Persist after the lease exists but
@@ -286,51 +363,6 @@ async def run_agent_task(
         finally:
             await lease.release()
         raise
-
-    resumed_buffer = None
-    initial_state: dict | None = None
-    if resume:
-        try:
-            source_binding.check()
-            # Recover the retained session before resuming it (resume only; a
-            # fresh run has nothing to recover): a live owner or lease holder
-            # refuses, prepared switches roll back (marked failed), orphans
-            # whose persisted identity still matches are reaped, ambiguous
-            # trails refuse, and a session an external runtime owns (an
-            # acknowledged handoff) is never taken back. Fail-closed.
-            from garuda.runtime.recovery import recover, require_native_resumable
-
-            # Off the loop: probes shell out to `ps` and reaping polls for death.
-            recovery_task = asyncio.create_task(asyncio.to_thread(
-                recover, store, resumed_from, leases=lease.leases, source_reader=source_records,
-            ))
-            try:
-                report = await asyncio.shield(recovery_task)
-            except asyncio.CancelledError as cancelled:
-                from garuda.workspace.settlement import settle_task
-
-                try:
-                    await settle_task(recovery_task)
-                except BaseException as settlement_error:
-                    raise cancelled from settlement_error
-                raise
-            require_native_resumable(report)
-            if source_records.load_meta(resumed_from).get("session_id") != resumed_from:
-                raise ValueError("resumed source identity conflicts with its selected directory")
-            if context is None:
-                context = build_resumed_context(source_records, resumed_from, task, model, config)
-            # Restore pack facts through the same selected source binding.
-            try:
-                initial_state = source_records.load_state(resumed_from) or None
-            except Exception:
-                logger.warning("Failed to load persisted working state", exc_info=True)
-                initial_state = None
-        except BaseException as exc:
-            try:
-                source_scope.__exit__(type(exc), exc, exc.__traceback__)
-            finally:
-                await lease.release()
-            raise
 
     # One approval path for every run through this facade (P0.17): the engine's
     # ASK responder becomes the session broker, so native tool approvals and
@@ -379,7 +411,7 @@ async def run_agent_task(
         # session's baseline carries forward when it provably still applies,
         # so prior-session work is not misread as preexisting dirt.
         workspace_delta_loader = begin_session_evidence(
-            store, events.session_id, workspace, workspace_kind, inherit_from=resumed_from
+            store, events.session_id, workspace, workspace_kind, inherit_from=resumed_from if fork is None else None
         )
         events_path = store.events_path(events.session_id)
         events.attach_persistence(events_path)
@@ -392,14 +424,20 @@ async def run_agent_task(
         # Which MCP servers this run started with, including optional failures.
         _record_mcp_states(store, events.session_id, mcp_manager)
         if resumed_from:
-            update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
+            if fork_plan is not None:
+                store.update_meta(events.session_id, fork_plan.record)
+                store.checkpoint_state(events.session_id, initial_state)
+            else:
+                update_session_meta(store, events.session_id, {"resumed_from": resumed_from})
             # The definition may have changed since the session being resumed
             # started. The old run is never altered: this is a new, identified
             # segment, recorded so it can be told apart afterwards (H.8).
             source_meta = source_records.load_meta(resumed_from) or {}
-            if config.spend_gate is None:
+            if config.spend_gate is None and fork_plan is None:
                 # Fresh runs start at zero; a resumed run continues the source's
-                # tree spend (#407), or records that it is unknown.
+                # tree spend (#407), or records that it is unknown. A context
+                # fork is a new run tree (#415): it starts at zero like a fresh
+                # run and never inherits the source's spend.
                 from garuda.core.spend import gate_for
 
                 if gate_for(config) is not None:
@@ -422,6 +460,9 @@ async def run_agent_task(
                 threshold_bytes=config.buffer_threshold_bytes,
                 source_records=source_records, source_binding=source_binding,
             )
+            if fork_plan is not None:
+                fork_plan.check_source(source_records, source_binding)
+                store.checkpoint_messages(events.session_id, context.get_messages())
             source_scope.close()
 
         if hooks is None:
@@ -534,9 +575,9 @@ async def run_agent_task(
             # Kill any background tasks this session left running before tearing down
             # the workspace (essential for the local env, where nothing else reaps them).
             try:
-                from garuda.tools.background import reap_session_verified
+                from garuda.agents.setup import reap_owned_processes
 
-                survivors = await reap_session_verified(events.session_id, env)
+                survivors = await reap_owned_processes(events.session_id, env)
             except Exception:
                 survivors = []
             # Close a persistent shell if the local env opened one.
