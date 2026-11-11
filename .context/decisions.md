@@ -2813,3 +2813,22 @@ path never masks the tick's own exception, and an unreadable health file never
 stops a tick or hides status: the tick reports `health_error`, status reports
 `unknown`, and the corrupt file is left for the operator rather than replaced.
 A flow already blocked or uncertain keeps every later tick at `attention`.
+
+## 2026-11-06 — Opt-in verified macOS recovery scheduling (#379)
+
+- Cron remains the default. `recovery enable --backend launchd` selects a
+  per-user GUI-domain LaunchAgent whose label is derived from the absolute
+  recovery root. Status and disable use the saved backend; switching requires
+  disabled settings and verified prior removal.
+- The `0600` plist under `~/Library/LaunchAgents` invokes the existing private
+  wrapper with the installed interpreter and Codex binding. Exact plist bytes,
+  private wrapper content and loaded-job identity/state must read back before
+  publishing enabled. Non-macOS, OS errors and unknown diagnostics fail closed.
+  The non-macOS refusal saves no launchd backend; a launchd backend already
+  saved off macOS counts as nothing loaded, so disable resets it to cron and
+  the schedule is never left unchangeable.
+- Disable publishes disabled before unloading only the exact matching label,
+  verifies absence and removes only its matching plist. Status never runs a
+  tick or probes quota; unobserved job counts stay unknown. Tick health from
+  #378 remains independent execution evidence. No sleep/login/reboot catch-up
+  guarantee is inferred without live platform observations.

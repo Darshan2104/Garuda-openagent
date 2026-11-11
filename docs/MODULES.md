@@ -423,6 +423,19 @@ reports observed installation separately, and includes a failure `reason`
 without calling providers. The recovery CLI reports bounded, redacted subprocess
 stderr so an OS crontab refusal remains actionable. Redaction runs before and
 after control-character normalization to cover original and reassembled token shapes.
+The opt-in `launchd` backend writes a root-derived `com.garuda.quota-recovery.*`
+label and exact `0600` plist under `~/Library/LaunchAgents`, with no-follow
+checks that preserve existing shared directory permissions. It uses the same
+wrapper, verifies its content digest, reads back exact plist bytes and the
+GUI-domain loaded job's identity/state before enabling. Re-enable unloads and
+reloads the matching job under disabled settings. Disable verifies unload before
+deleting only the matching private plist. All launchctl calls go through the
+injectable subprocess boundary, with bounded timeouts; there is no plutil or
+workspace interpreter dependency. The saved backend selects status/disable;
+cron remains the default for enable. Status never launches the wrapper and
+reports an unavailable launchctl read with a null job count. Launchctl's
+unversioned diagnostic text has no stable API guarantee, so unfamiliar formats
+refuse installation verification.
 `flows/quota_recovery.default_root()`
 uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
 `--root` remains a one-command control override.
