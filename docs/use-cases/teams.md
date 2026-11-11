@@ -186,6 +186,26 @@ sequenceDiagram
   the flow stops with `flow.review_stale_candidate` instead of trusting a
   review of something else. A change list that session records cut short is
   marked incomplete, or `complete: null` when its full size wasn't recorded.
+- The packet includes diff excerpts for up to 200 changed files: 4 KiB per
+  file and 32 KiB in total after UTF-8 JSON/HTML escaping of excerpt contents
+  (packet metadata is additional). For example, run
+  `garuda flow run pair -t "Fix the unbounded retry loop in retry.py"` with
+  your no-edits reviewer role. The reviewer can cite the `retry.py` hunk in
+  `diff.files` without running Git itself. Each entry names its path and exact
+  shown/omitted patch-byte counts; binary files are named with their patch
+  withheld. File omissions are counted too, or `null` if the manifest's total
+  is unknown. Missing baselines and failed reads remain unknown, rather than
+  empty diffs. The comparison uses the coder session's baseline commit, so it
+  includes committed work; preexisting text in files already dirty at session
+  start is labelled. Bounds limit the delivered excerpts; full Git output is
+  temporarily spooled on the host to count omissions. Check receipts are
+  excluded: acceptance checks run only after review settles. If the coder adds
+  an `.env` containing `API_KEY=example-placeholder`, the shared secret-pattern
+  redactor withholds that excerpt and marks its row `redacted: true`; its patch
+  bytes count as omitted. Pattern detection is best effort, so avoid placing
+  credentials in candidate files. Untracked symlink excerpts stay unknown and
+  never follow a link into an outside directory. Empty or diagnostic-bearing
+  Git failures also stay unknown.
 - That binding needs a workspace version that tells candidates apart, which
   only a git work tree has. Otherwise the packet says the binding is not
   enforced, and a review that must be independent stops with
