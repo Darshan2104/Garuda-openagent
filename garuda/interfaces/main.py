@@ -285,6 +285,8 @@ def build_parser():
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
+    run_parser.add_argument("--no-stream", action="store_true", help="Disable live assistant text in a terminal")
+    run_parser.add_argument("--quiet", action="store_true", help="Suppress native model notices and live output")
     run_parser.add_argument("--trajectory", help="Save event trajectory to JSONL file")
     run_parser.add_argument(
         "--resume",

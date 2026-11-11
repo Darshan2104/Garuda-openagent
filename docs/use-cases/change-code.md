@@ -417,10 +417,41 @@ values on `StreamDelta`. A provider that omits a value produces `None`; Garuda
 does not guess from content, tool calls, stream exhaustion, or `done=True`.
 Empty terminal chunks and later usage-only chunks preserve an observed value.
 
-These are model-helper APIs. Native `garuda run` and `garuda chat` still call
-`complete()` and render completed turns; live output is an opt-in for code that
-drives the loop itself (below). External harness streaming follows its separate
-runtime path.
+These are model-helper APIs. Native `garuda run` attaches live output in a
+terminal as described below; `garuda chat` still renders completed turns.
+External harness streaming follows its separate runtime path.
+
+### Watch assistant text live in the terminal
+
+```bash
+garuda run -t "Explain how the request router works"
+garuda run --no-stream -t "Explain how the request router works"
+garuda run --quiet -t "Explain how the request router works"
+garuda run --json -t "Explain how the request router works" > events.jsonl
+TERM=dumb garuda run -t "Explain how the request router works"
+```
+
+On a TTY, native `run` shows assistant text as it arrives. The preview is
+transient: the assembled response replaces it once. If streaming fails, the
+preview is erased before the ordinary retry, whose completed answer replaces
+it. Cancellation or a failed call closes the preview. Only assistant text is
+shown live; reasoning and tool argument fragments are not. Complete tool calls
+and results use the existing terminal renderer.
+
+`--no-stream` keeps ordinary final-message output. `--quiet` also suppresses the
+native startup/model notices. JSON and redirected stdout automatically keep the
+ordinary path, without terminal control codes. No-edits runs also keep that path
+so outputs can be withheld if their check fails. A model without a streaming API
+still works through `complete()`.
+
+Rich is optional. With it, the preview shows the last terminal-height-minus-one
+wrapped lines; without it, a bounded single-line preview shows the latest text.
+Previews refresh at most ten times per second. Dumb terminals (or an unset
+`TERM`) show completed responses without previews or preview erase codes. The full
+assembled response is always printed, and final output that repeats any already
+rendered response is suppressed, including when the run exhausts its turn budget.
+This native consumer is still not attached to
+chat, the web dashboard, SDK entry points or ACP surfaces.
 
 ### Show model output live from your own driver
 
@@ -452,7 +483,8 @@ turn's `model_response` event. That event's `live_coverage` is `streamed`,
 `stream()`. A consumer that raises is detached for the rest of that call and
 recorded as `live_consumer_error`; the run continues. Cancelling the run stops the
 stream and dispatches nothing. Without a consumer nothing changes, and
-`garuda run`, `garuda chat` and the dashboard do not attach one yet.
+`garuda chat`, the dashboard, SDK entry points and ACP surfaces do not attach
+one. Native TTY `garuda run` attaches it as described above.
 
 ## Inspect retry and failed-call usage
 

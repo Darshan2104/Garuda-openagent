@@ -381,7 +381,10 @@ async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: P
     assert server.streamed == [True, False]
     [response] = _of(events.get_all(), "model_response")
     assert response["live_coverage"] == "fallback"
-    assert response["stream_error"].startswith("IncompleteStreamError")
+    # Either Garuda's own check or a newer LiteLLM (1.109 raises MidStreamFallbackError
+    # "Stream ended before a finish...") may notice the early end; both must fall back.
+    error = response["stream_error"]
+    assert error.startswith("IncompleteStreamError") or "Stream ended before" in error, error
     assert response["content"] == "All done."
     assert _of(events.get_all(), "tool_call") == []
     assert not (tmp_path / "a.txt").exists()
