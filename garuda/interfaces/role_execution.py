@@ -15,6 +15,7 @@ from garuda.core.events import EventStore
 async def run_task(args) -> int:
     import sys
 
+    from garuda.core.session_fork import validate_fork_request
     from garuda.interfaces.main import (
         _accept_session,
         _apply_role,
@@ -33,6 +34,13 @@ async def run_task(args) -> int:
         run_agent_task,
     )
 
+    fork = getattr(args, "fork", None)
+    validate_fork_request(fork=fork, fork_at=getattr(args, "fork_at", None),
+                          resume=getattr(args, "resume", None), isolation=getattr(args, "isolation", "shared"))
+    if fork is not None:
+        if getattr(args, "as_runtime", None) or getattr(args, "runtime", None) not in (None, "native"):
+            raise ValueError("context fork requires the native runtime")
+        args.runtime = "native"
     task = args.task
     if args.file:
         task = Path(args.file).read_text(encoding="utf-8")
@@ -281,6 +289,8 @@ async def run_task(args) -> int:
         agents_dir=agents_dir,
         resume=args.resume,
         resume_all_projects=getattr(args, "all_projects", False),
+        fork=fork,
+        fork_at=getattr(args, "fork_at", None),
         session_name=getattr(args, "name", None),
         isolation=getattr(args, "isolation", "shared"),
         context_attached=getattr(args, "_attached", None),

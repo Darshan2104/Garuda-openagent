@@ -279,6 +279,49 @@ Raw transcripts, reasoning, tool arguments, protocol frames and vendor auth are
 outside the schema. Older sessions can therefore show `unavailable`; Garuda
 does not infer a cause from event counts or a later quota refusal.
 
+## Fork an earlier conversation context
+
+Use a [collection brief](#add-a-cheaper-model-for-investigation) or a named
+session's brief when you only need findings. Use an explicit fork to continue
+from an earlier point in a saved native conversation:
+
+```bash
+garuda run --fork SOURCE_SESSION --fork-at 5 -t "Try the other approach"
+garuda sessions show latest --json
+```
+
+`--fork-at` is an inclusive, zero-based index in the source session's
+`messages.json` checkpoint, including system and tool messages. Index 5 retains
+messages 0 through 5. It addresses the saved checkpoint, which may already be
+compacted; it is not an index into the append-only event log. If the point cuts a
+tool batch, Garuda backs up before that batch and records the requested and
+effective indices (`-1` means the entire prefix was an incomplete batch).
+
+The new session records `forked_from`, source-file SHA-256 digests and
+`source_digest`, plus **context rewind only**: filesystem and processes were
+not restored. Your current workspace is used with ordinary lease and capacity
+admission and a fresh baseline. Earlier check results and candidate claims are
+stale; the fork must verify its current work. Constraints survive in the working
+state; source events, state and receipt locations remain historical references.
+Missing artifacts retain unavailable/unknown status instead of becoming evidence.
+`garuda sessions show` reads lineage without starting work.
+
+This slice accepts terminal native sessions without pending ownership or
+quarantine. It refuses ACP sources, live sources, `--resume`, `--as`, `--bg`, and
+worktree creation with a fork. To fork context from a worktree session, select
+its current directory explicitly with `--workspace`; no old worktree is restored.
+Session names, prefixes and `latest` use the same project selection as resume.
+
+The SDK uses the same runner and admission path:
+
+```python
+from garuda.sdk import SoftwareAgent
+
+result = await SoftwareAgent(workspace=".").run(
+    "Try the other approach", fork="SOURCE_SESSION", fork_at=5,
+)
+```
+
 ## Route tasks to runtimes automatically
 
 <p class="gd-facts">Configured in: <code>~/.agent/settings.yaml</code> (trusted, global)</p>

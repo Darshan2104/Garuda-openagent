@@ -223,6 +223,12 @@ def session(store, session_id: str, *, queue=None) -> dict:
     # One queue read feeds both the row and the ownership projection.
     entries = _queue_entries(queue) if queue is not None else None
     row = session_row(store, meta, queue_index={} if queue is None else _index_entries(entries))
+    if meta.get("forked_from") is not None:
+        row["context_fork"] = {key: meta.get(key) for key in (
+            "forked_from", "fork_at", "fork_requested_at", "fork_adjustment", "source_digest",
+            "source_files", "rewind", "filesystem_restored", "processes_restored", "inherited_evidence", "references",
+            "receipt_references", "receipt_reference_coverage",
+        )}
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
     from garuda.core.ownership_read_model import project as project_ownership
