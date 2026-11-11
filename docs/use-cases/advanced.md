@@ -426,6 +426,68 @@ python -m garuda.acp.server --workspace /path/to/workspace
 Point an ACP-capable editor at this command to use Garuda's native agent from
 the editor.
 
+## Debug an agent-launched Python script
+
+Install `debugpy==1.8.19` into the Python environment running Garuda. Save this
+explicitly selected definition as `.agent/agents/debug-python.yaml`:
+
+```yaml
+version: 1
+extends: garuda/build
+tools:
+  add: [debug_launch, debug_inspect, debug_variables, debug_control]
+  options:
+    debug_launch:
+      max_variables: 30
+      max_depth: 2
+      max_chars: 8000
+      output_chars: 10000
+```
+
+```bash
+garuda run --agent-file .agent/agents/debug-python.yaml --workspace-kind local --permission-mode smart \
+  -t "Launch demo.py with a breakpoint at line 10. Inspect its stack and local variables, step into the failing function, then disconnect. Run pytest independently to check the fix."
+```
+
+The agent calls `debug_launch` with `program: demo.py` and `breakpoints: [10]`.
+It uses the returned `debug_session_id` for `debug_inspect` operations
+`stackTrace`, `scopes`, `output` and `status`; `debug_variables` accepts
+`operation: variables`. Frame and variable `handle` values come from the
+preceding inspection. `debug_control` supports
+`next`, `stepIn`, `stepOut`, `continue`, `disconnect` and `terminate`. Handles
+expire when execution resumes. Without breakpoints, launch stops on entry.
+
+Adapter replies and stop waits are bounded to 15 seconds. A timeout reports an
+error and retains owned sessions; a launch that is still running includes its
+`debug_session_id` in the error. Use `status` to observe a later stop or
+`disconnect` to close it. An unanswered request leaves state `unknown` until a
+later adapter event establishes it. Run cancellation or the run deadline reaps
+all debug sessions owned by that agent session.
+
+The tools are absent by default, including from `all` and `read-only` presets.
+Launch runs code and uses bash permission rules; readonly denies launch,
+execution control and variable rendering. Only agent-launched files physically
+inside a local workspace are accepted. Docker, remote, sandbox and tmux
+workspaces refuse debugging; their ordinary tools keep their existing requirements.
+
+Hard caps are 100 breakpoints, 32 stack frames, 100 variables across a recursive
+inspection, depth 3, 12,000 stack/scope/variable response characters and 20,000
+captured output characters. Options lower these limits; `max_chars` has a
+minimum of 1024 for the evidence envelope. Output is a bounded tail with a
+truncation flag. Adapter capabilities are reported separately from Garuda's
+supported subset.
+
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw DAP requests are unsupported. Debugpy may call user `repr` methods
+while rendering variable summaries, which require mutating authority. The
+service is a debugging guardrail, not confinement. Disconnect and teardown kill
+and verify the issued POSIX session,
+including the debuggee's process group. Unavailable process-table evidence or
+unsettled processes report **cleanup unproved** and retain quarantine; daemons
+that leave the session are outside this ownership proof. Process-table access
+and local sockets must be available. Debugger observations do not establish
+that a fix passes independent acceptance checks.
+
 ## Benchmark and evaluate
 
 <p class="gd-facts">For: measuring Garuda, not day-to-day work</p>

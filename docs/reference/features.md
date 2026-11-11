@@ -33,6 +33,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
 
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
+| Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
 
 ## Where commands run
 

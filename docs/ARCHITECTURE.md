@@ -514,6 +514,26 @@ fastest way to learn the system.
    are byte-bounded. Apply uses current per-path permissions and source digests,
    verifies writes and attempts restoration on failure; restoration uncertainty
    is explicit and no cross-file isolation or crash transaction is claimed.
+
+   Optional Python DAP tools require explicit names (`tools.add`); neither the
+   default toolkit nor tool presets enable them. Launch is mutating and enters
+   the ordinary bash command/path permission screen with a derived Python argv.
+   Stepping/continue and variable rendering are mutating; basic inspection
+   exposes bounded observations with session identity and stop-scoped handles.
+   Debugpy can invoke Python `repr` while rendering values, so variables require
+   separate `debug_variables` authority. Inspection is not an execution isolation
+   boundary. Arbitrary object expansion, explicit getters, evaluate, attach,
+   writes, memory and raw requests refuse. Only local workspaces are supported;
+   tools unwrap the loop's health monitor before checking the exact backend.
+   Adapter reply/stop timeouts retain sessions with running or unknown state;
+   a launch stop timeout includes the debug session identity for later inspection
+   or disconnect. Cancellation and the tool's run deadline reap the agent's
+   owned debug sessions.
+   The local environment owns adapter launch and a private POSIX session spanning
+   debugpy's process groups. Cleanup kills and observes live session membership;
+   inability to verify retains “cleanup unproved” and quarantines the lease.
+   Descendants that detach into another POSIX session remain outside this cleanup
+   guardrail. Debug evidence never substitutes for independent acceptance checks.
 6. **Context** — `context/manager.py` holds the conversation; `shaper.py` caps
    output, `condenser.py` compacts when the window fills, `summarizer.py` produces
    the summaries. Compacted history is archived to session buffers
