@@ -298,6 +298,33 @@ wrapper. If installation is missing or mismatched, `reason` explains why;
 `reason` is null when installation is verified. Status does not run the wrapper
 or check whether its interpreter and packages remain usable.
 
+`tick_health` answers whether ticks actually ran, separately from installation.
+Every tick records its attempt first and then its own result, including ticks
+with nothing to do:
+
+```json
+"tick_health": {
+  "state": "zero-pending",
+  "last_attempt": {"tick_id": "…", "started_at": 1800003600.0, "owner": {"pid": 4242}},
+  "last_result": {"tick_id": "…", "outcome": "zero-pending", "pending": 0, "dispatches": 0,
+                  "reason": "no continuation is waiting for quota"},
+  "last_dispatch": null, "attempts": 12, "dispatches": 1
+}
+```
+
+`state` is `never-ran` before the first tick, `running` while a live tick has
+not finished, and `uncertain` when the latest attempt ended without recording a
+result. Otherwise it is the latest outcome: `disabled`, `zero-pending`,
+`probe-unavailable` (no quota observation), `quota-waiting`,
+`dispatch-in-progress` (another tick holds the claim), `dispatched`, `attention`
+(a flow is blocked or uncertain; every later tick stays at `attention` and
+names the flow until you resolve or cancel it) or `failed`. `last_dispatch`
+changes only when a tick's own claim actually resumed a continuation. If the
+cron entry is installed but `last_attempt` is old, the scheduler is not running
+the wrapper. An unreadable `tick-health.json` never stops a tick or hides the
+schedule and flows: ticks still run and report `health_error`, and status shows
+`tick_health` as `unknown` with a reason until you inspect and remove the file.
+
 Enablement is published only after successful installation readback. If
 `enable` fails with an OS error such as `Operation not permitted`, recovery
 stays disabled. Resolve the reported user-crontab error before retrying
