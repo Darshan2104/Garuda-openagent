@@ -3,7 +3,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from garuda.agents.loader import resolve_system_prompt
 from garuda.context.manager import (
@@ -21,6 +21,9 @@ from garuda.types import DEFAULT_SYSTEM_PROMPT, AgentResult, Message, Role
 from garuda.workspace.protocol import Environment
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from garuda.core.editing_worker import EditingWorkerService
 
 def persist_child_events(parent: EventStore, child: EventStore) -> None:
     """Give a subagent's event store a log file next to its parent's.
@@ -146,6 +149,9 @@ class SubagentRunner:
     workspace_evidence_root: str | None = None
     # The root's run-tree SpendGate (#405): children admit against the same budget.
     spend_gate: Any = None
+    editing_workers: "EditingWorkerService | None" = None
+    child_session_id: str | None = None
+    editing_max_tokens: int | None = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -204,10 +210,9 @@ class SubagentRunner:
         task: str,
         *,
         fork_parent_context: bool | str | None = None,
+        editing_worker: bool = False,
     ) -> AgentResult:
         import time
-
-        from garuda.core.loop import DefaultAgent
 
         # The allowlist is enforced here, not only in the tool schema: a model
         # (or a caller) naming another agent directly is refused all the same.
@@ -224,12 +229,33 @@ class SubagentRunner:
                             f"this run has started its {budget.max_launches} subagents")
         if self.busy:
             return _refused("agent.delegation_busy", "a subagent is already running")
+        if editing_worker and self.editing_workers is None:
+            return _refused("worker.disabled", "editing workers were not enabled by the caller")
         remaining = None
         if self.deadline_monotonic is not None:
             remaining = self.deadline_monotonic - time.monotonic()
             if remaining <= 0:
                 return _refused("agent.delegation_deadline", "the run's deadline has passed")
         budget.launches += 1
+
+        if editing_worker:
+            self.busy = True
+            try:
+                return await self.editing_workers.run(
+                    self, profile_name, task, fork_parent_context=fork_parent_context
+                )
+            finally:
+                self.busy = False
+        return await self._run_child(profile_name, task, fork_parent_context=fork_parent_context)
+
+    async def _run_child(self, profile_name, task, *, fork_parent_context=None) -> AgentResult:
+        import time
+
+        from garuda.core.loop import DefaultAgent
+
+        budget = self.budget
+        remaining = (self.deadline_monotonic - time.monotonic()
+                     if self.deadline_monotonic is not None else None)
 
         # The same pure resolver every entry point uses; activation below is the
         # parent's already-authorized toolkit and permissions, never a fresh one.
@@ -243,12 +269,18 @@ class SubagentRunner:
             config.workspace_kind = self.workspace_kind
         parent_left = self.turns_left() if callable(self.turns_left) else self.max_turns
         config.max_turns = max(1, min(config.max_turns, self.max_turns, parent_left))
+        if self.child_session_id is not None and self.editing_max_tokens is not None:
+            config.max_tokens = min(config.max_tokens or self.editing_max_tokens,
+                                    self.editing_max_tokens)
         if remaining is not None:
             config.deadline_sec = min(config.deadline_sec or remaining, remaining)
         config.delegation_depth = self.depth
         config.delegation_budget = budget
         config.spend_gate = self.spend_gate
         config.notes_ledger = self.notes
+        if self.child_session_id is not None:
+            config.memory_notes = "off"
+            config.enable_tmux = False
         if self.allowed is not None:
             child = config.subagents if config.subagents is not None else self.allowed
             config.subagents = [name for name in child if name in self.allowed]
@@ -279,7 +311,7 @@ class SubagentRunner:
             tools = delegated_tools(profile.tools, self.parent_tools, profile.name)
         else:
             tools, mcp_manager = await build_toolkit(profile.tools, None)
-        sub_events = EventStore()
+        sub_events = EventStore(session_id=self.child_session_id)
         persist_child_events(self.events, sub_events)
         agent = DefaultAgent(profile_name=profile.name)
 
@@ -364,7 +396,7 @@ class SubagentRunner:
 
 # Tools a run inserts for itself; a child gets its own copies from its own setup
 # when its configuration enables them, never the parent's bound instances.
-_RUN_SCOPED_TOOLS = frozenset({"delegate_collection", "submit_collection"})
+_RUN_SCOPED_TOOLS = frozenset({"delegate_collection", "submit_collection", "integrate_editing_worker"})
 _MCP_META_TOOLS = frozenset({"search_tool", "use_tool"})
 
 

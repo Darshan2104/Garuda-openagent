@@ -124,6 +124,7 @@ READONLY_DENIED_TOOLS = {
     "tmux_exec",
     "bash_background",
     "kill_task",
+    "integrate_editing_worker",
 }
 
 
