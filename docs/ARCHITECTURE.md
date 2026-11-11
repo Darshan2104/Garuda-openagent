@@ -207,6 +207,21 @@ fastest way to learn the system.
    supplies a `reason` when installation is missing or mismatched. These local
    checks do not execute the wrapper or probe provider quota.
 
+   Runtime health is recorded separately from installation. Each tick writes a
+   bounded `tick-health.json` in the private recovery root: a `last_attempt`
+   (tick id, start time, owner) before any work, then its own `last_result`
+   with an outcome of `disabled`, `zero-pending`, `probe-unavailable`,
+   `quota-waiting`, `dispatch-in-progress`, `dispatched`, `attention` or
+   `failed`, a redacted reason and the pending count. A dispatch is credited
+   (`last_dispatch`) only to the tick whose own claim the flow service advanced
+   to running; a tick that lost the claim reports the other owner. Status reads
+   this file and derives `running` or `uncertain` for an attempt without its own
+   result. A flow left blocked or uncertain keeps later ticks at `attention`.
+   Health is evidence, never dispatch authority: account, version, workspace,
+   receipt and exclusive-claim gates still decide every dispatch, and an
+   unreadable health file neither stops a tick (it reports `health_error`) nor
+   hides status (`tick_health.state` is `unknown`).
+
    Recovery records and version-1 scheduler settings live in a strict private
    user store. `GARUDA_RECOVERY_ROOT` selects a custom store consistently for
    flow enrollment and controls; a CLI `--root` selects only that control
