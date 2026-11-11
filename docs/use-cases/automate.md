@@ -394,6 +394,9 @@ The first disable targets the previously saved backend; subsequent status and
 disable commands use the saved `launchd` backend automatically. Enable without
 `--backend` continues to select cron. Switching requires the previous backend's
 verified removal; a failed disable must be resolved before enabling another.
+Off macOS, `--backend launchd` is refused without saving that backend. A
+`launchd` backend already saved for the root cannot have a loaded job there, so
+`garuda recovery disable` returns it to the cron default.
 
 The LaunchAgent has a label derived from the absolute recovery root and a `0600`
 plist under `~/Library/LaunchAgents`. It schedules minute 27 of each hour and

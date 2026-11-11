@@ -628,6 +628,37 @@ def test_launchd_rejects_non_macos_without_any_os_command(launchd, monkeypatch):
     assert h.os.calls == []
 
 
+def test_launchd_refused_off_macos_leaves_cron_schedule_usable(launchd, monkeypatch, capsys):
+    h = launchd
+    monkeypatch.setattr(recovery_schedule.sys, "platform", "linux")
+    result = run_recovery(SimpleNamespace(recovery_command="enable", root=str(h.root), backend="launchd"))
+    assert result == 2
+    assert "requires macOS" in capsys.readouterr().err
+    assert not (h.root / "settings.json").exists()
+    enabled = recovery_schedule.install(h.root)
+    assert enabled["enabled"] is enabled["installed"] is True
+    disabled = recovery_schedule.disable(h.root)
+    assert disabled["enabled"] is disabled["installed"] is False
+    assert h.os.cron.content == "9 * * * * /unrelated/watchdog\n"
+    assert h.os.calls == []
+
+
+def test_stored_launchd_backend_off_macos_can_be_disabled_and_replaced(launchd, monkeypatch):
+    h = launchd
+    recovery_schedule.install(h.root, backend="launchd")
+    monkeypatch.setattr(recovery_schedule.sys, "platform", "linux")
+    h.os.calls.clear()
+    with pytest.raises(RuntimeError, match="disable the previous"):
+        recovery_schedule.install(h.root)
+    disabled = recovery_schedule.disable(h.root)
+    assert disabled["enabled"] is disabled["installed"] is False
+    assert "backend" not in json.loads((h.root / "settings.json").read_text())
+    enabled = recovery_schedule.install(h.root)
+    assert enabled["enabled"] is enabled["installed"] is True
+    assert recovery_schedule.schedule_status(h.root)["installed"] is True
+    assert h.os.calls == []
+
+
 def test_launchd_requires_removal_before_switching_backends(launchd):
     h = launchd
     recovery_schedule.install(h.root, backend="launchd")

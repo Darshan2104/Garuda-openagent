@@ -2385,6 +2385,9 @@ path never masks the tick's own exception.
   wrapper with the installed interpreter and Codex binding. Exact plist bytes,
   private wrapper content and loaded-job identity/state must read back before
   publishing enabled. Non-macOS, OS errors and unknown diagnostics fail closed.
+  The non-macOS refusal saves no launchd backend; a launchd backend already
+  saved off macOS counts as nothing loaded, so disable resets it to cron and
+  the schedule is never left unchangeable.
 - Disable publishes disabled before unloading only the exact matching label,
   verifies absence and removes only its matching plist. Status never runs a
   tick or probes quota; unobserved job counts stay unknown. Tick health from

@@ -194,6 +194,8 @@ fastest way to learn the system.
    label, verifies absence and removes only its matching plist. Ambiguous OS
    errors and unrecognized launchctl diagnostics fail closed; unavailable job
    counts remain unknown. Switching backends requires verified prior removal.
+   Off macOS the launchd backend is refused before it is saved, and a saved
+   launchd backend there counts as nothing loaded, so disable resets it to cron.
    No wake, login/reboot catch-up or runtime-success guarantee follows from
    installation; recorded tick health remains the evidence of execution.
 

@@ -283,7 +283,9 @@ def disable(root: Path) -> dict:
         existing = ss.read_document(settings_path, versions=(1,)) or {}
         if existing.get("backend", "cron") not in {"cron", "launchd"}:
             raise ValueError("unknown stored recovery scheduler backend")
-        if existing.get("backend") == "launchd":
+        # Off macOS a stored launchd backend has nothing loaded; disabling it
+        # falls through to the cron path, which records the cron default.
+        if existing.get("backend") == "launchd" and sys.platform == "darwin":
             disabled = {**existing, "enabled": False}
             ss.write_locked_document(directory_fd, settings_path, disabled)
             return _disable_launchd(disabled, root)
@@ -463,9 +465,11 @@ def _check_backend_change(root: Path, backend: str) -> None:
     if prior not in {"cron", "launchd"}:
         raise ValueError("unknown stored recovery scheduler backend")
     if prior == "launchd":
-        remaining = _read_launchd(root) is not None
+        # Off macOS no LaunchAgent can be loaded, so a stored launchd backend
+        # must not block replacing it once it is disabled.
         _, path, _ = _launchd_paths(root)
-        remaining = remaining or os.path.lexists(path)
+        remaining = sys.platform == "darwin" and (
+            _read_launchd(root) is not None or os.path.lexists(path))
     else:
         _, blocks = _split_crontab(_read_crontab())
         remaining = bool(blocks)
@@ -479,9 +483,14 @@ def _install_launchd(root: Path) -> dict:
     with ss.exclusive_lock(root) as directory_fd:
         _check_backend_change(root, "launchd")
         existing = ss.read_document(settings_path, versions=(1,)) or {}
+        if sys.platform != "darwin":
+            # Never record a backend this host cannot run, but still withdraw
+            # any enablement already stored for this root.
+            if existing and existing.get("enabled") is not False:
+                ss.write_locked_document(directory_fd, settings_path, {**existing, "enabled": False})
+            _require_launchd()
         ss.write_locked_document(directory_fd, settings_path, {**existing, "version": 1,
                                                              "enabled": False, "backend": "launchd"})
-        _require_launchd()
         codex = _resolved_executable("codex", required=True)
         assert codex is not None
         python = str(_absolute(Path(sys.executable)))
