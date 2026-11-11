@@ -145,7 +145,7 @@ def _waiting(row: dict, approvals_pending: int, queue: dict, quota: dict | None)
 
 
 def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue: dict,
-                    capacity: dict, quota: dict | None) -> dict:
+                    capacity: dict, quota: dict | None, workers: dict) -> dict:
     active = row["state"].get("work") in ACTIVE_WORK
     blockers, retained = [], []
     if leases["coverage"] != "complete":
@@ -166,6 +166,11 @@ def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue
         blockers.append("capacity_unreadable")
     elif capacity["slots"]:
         retained.append("capacity_slot")
+    if workers["coverage"] != "complete":
+        blockers.append("editing_workers_unreadable")
+    elif any(e["repository_state"] != "removed" for e in workers["entries"]):
+        blockers.append("editing_worker_retained")
+        retained.append("editing_worker")
     quota_state = (quota or {}).get("state")
     result: dict[str, Any] = {"status": "not_needed", "blockers": [], "retained": retained,
                               "path": None, "performs_repair": False}
@@ -195,7 +200,7 @@ def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue
                                                 if owner["liveness"] == UNKNOWN else []) + blockers)
         return result
     if any(b in blockers for b in ("workspace_lease_retained", "queue_claim_quarantined",
-                                   "queue_claim_retained")):
+                                   "queue_claim_retained", "editing_worker_retained")):
         result.update(status="blocked", blockers=blockers)
         return result
     result.update(status="eligible", path={
@@ -218,6 +223,9 @@ def project(row: dict, meta: dict, *, approvals_pending: int, queue=None,
     lease_view = _leases(session_id)
     capacity_view = _capacity(session_id, queue)
     quota = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else None
+    from garuda.workspace.editing_workers import EditingWorkerRepositories
+
+    workers = EditingWorkerRepositories().inventory(session_id)
     entry = queue_view.get("entry") or {}
     return {
         "schema": SCHEMA,
@@ -235,6 +243,7 @@ def project(row: dict, meta: dict, *, approvals_pending: int, queue=None,
         "workspace_leases": lease_view,
         "queue": queue_view,
         "capacity": capacity_view,
+        "editing_workers": workers,
         "reconciliation": _reconciliation(session_id, row, owner, lease_view, queue_view,
-                                          capacity_view, quota),
+                                          capacity_view, quota, workers),
     }

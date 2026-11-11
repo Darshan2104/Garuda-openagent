@@ -548,6 +548,15 @@ def build_parser():
     sessions_show.add_argument("session", help="Session id, unique prefix, or name")
     sessions_show.add_argument("--json", action="store_true")
     sessions_show.add_argument("--workspace", default=".")
+    workers_cleanup = sessions_sub.add_parser(
+        "cleanup-workers", help="Retire proven settled editing-worker repositories without losing changes")
+    workers_cleanup.add_argument("session", help="Parent session id, unique prefix, or name")
+    workers_cleanup.add_argument("--workspace", default=".")
+    workers_discard = sessions_sub.add_parser(
+        "discard-worker", help="Explicitly discard one proven-orphan editing-worker repository")
+    workers_discard.add_argument("session", help="Parent session id, unique prefix, or name")
+    workers_discard.add_argument("candidate", help="Exact editing-worker candidate id")
+    workers_discard.add_argument("--workspace", default=".")
     sessions_cancel = sessions_sub.add_parser(
         "cancel", help="Stop a background session: remove it from the queue, or stop its worker"
     )
@@ -972,6 +981,8 @@ def run_init(args) -> int:
 def run_sessions(args) -> int:
     from garuda.core.sessions import SessionStore
 
+    if getattr(args, "sessions_command", None) in {"cleanup-workers", "discard-worker"}:
+        return run_sessions_workers(args)
     if getattr(args, "sessions_command", None) == "cancel":
         return run_sessions_cancel(args)
     if getattr(args, "sessions_command", None) in ("merge", "remove-worktree"):
@@ -1526,6 +1537,34 @@ def run_sessions_cancel(args) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     return 0
+
+
+def run_sessions_workers(args) -> int:
+    """Explicit local repository recovery; inspection never invokes this path."""
+    import json
+    import os
+    import sys
+
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.capacity import CapacityError
+    from garuda.runtime.strict_store import StorageError
+    from garuda.workspace.editing_workers import EditingWorkerRepositories
+    from garuda.workspace.lease import LeaseError
+    from garuda.workspace.snapshot_proto import SnapshotRefused
+    from garuda.workspace.worktrees import WorktreeError
+
+    try:
+        session_id = SessionStore().resolve(args.session, workspace=os.path.realpath(args.workspace))
+        repositories = EditingWorkerRepositories()
+        if args.sessions_command == "discard-worker":
+            result = repositories.discard(session_id, args.candidate)
+        else:
+            result = repositories.recover(session_id)
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError, StorageError, CapacityError, LeaseError, SnapshotRefused, WorktreeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 def run_sessions_merge(args) -> int:

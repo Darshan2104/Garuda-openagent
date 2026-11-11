@@ -49,10 +49,26 @@ class CorruptRecord(StorageError):
 
 
 def ensure_private_dir(directory: Path, *, parents: bool = True) -> None:
+    """Create ``directory`` private, creating missing ancestors private too.
+
+    Ancestors are created one by one because ``mkdir(parents=True)`` ignores their
+    mode. ``parents=False`` requires the parent to exist instead of recreating it.
+    """
     if directory.is_symlink():
         raise StorageUnavailable(f"{directory} is a symlink; refusing to use it")
+    path = Path(os.path.abspath(directory))
+    missing = []
+    while not path.exists():
+        missing.append(path)
+        if path.parent == path:
+            break
+        path = path.parent
     try:
-        directory.mkdir(mode=0o700, parents=parents, exist_ok=True)
+        if not parents and len(missing) > 1:
+            raise FileNotFoundError(f"parent of {directory} does not exist")
+        for ancestor in reversed(missing):
+            ancestor.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(ancestor, 0o700)
         os.chmod(directory, 0o700)
     except OSError as exc:
         raise StorageUnavailable(f"cannot create {directory}: {exc}") from exc

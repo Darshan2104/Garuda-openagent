@@ -244,8 +244,26 @@ fastest way to learn the system.
    lease and capacity and block further editing dispatch. Cancelled integration
    settles its checker and retains an uncertain candidate. Durable receipts
    prevent a fresh service from bypassing retained uncertainty for that parent.
-   This first slice supports local native
-   execution only, with no automatic recovery/cleanup or concurrency claim;
+   Local worker receipts also bind parent ownership, repository identity and
+   child settlement for bounded inventory and conservative recovery through
+   `workspace/editing_workers.py`. Admission validates the source before any
+   worker directory exists, stages under a non-`worker-` name, writes the
+   admission receipt, and publishes by atomic rename, so every `worker-*` entry
+   carries a receipt. Inventory's 128-entry bound counts only entries that can
+   belong to the inspected session; valid receipts of other sessions do not
+   make it unknown. Discovery work scales with the shared store. Receipt-less
+   empty directories and unpublished admission metadata are reported as
+   removable orphans; unknown non-empty leftovers remain retained. Settled
+   integrated or unchanged terminal repositories retire automatically. Content proof runs before the global
+   lease/capacity locks; those locks cover only the released recheck, intent
+   write and atomic repository rename, and deletion runs after they are
+   dropped. Receipts and patches for retained workers remain; a later cleanup
+   run prunes fully retired receipt directories. Session ownership views expose
+   uncertainty without executing Git or repairing it.
+   Operator orphan discard requires positive lease/capacity release evidence
+   and waives only the content check. Unknown descendants, absent records and
+   incomplete legacy receipts remain retained. This supports local native
+   execution only, with no restart integration or concurrency claim;
    ordinary subagents and read-only parallel flows keep their existing paths.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source

@@ -19,6 +19,8 @@ for your installed version. For ready-made examples, see the
 | | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
 | | `garuda sessions cancel S` | Stop a background session, or revoke a pending quota continuation through the shared session Stop path |
 | | `garuda sessions merge S --check CMD [--into BRANCH] [--image IMAGE] [--timeout SEC]` | Check a worktree session merged into a branch (in Docker, no network; default image `python:3.12-slim`, 600 s per check) and publish `refs/garuda/integration/<S>`; never changes your checkout |
+| | `garuda sessions cleanup-workers S` | Attempt cleanup of proved settled editing-worker repositories; retained or unknown ownership and unintegrated data remain |
+| | `garuda sessions discard-worker S CANDIDATE_ID` | Explicitly discard one proven orphan's repository; rechecks ownership and settlement, requires released parent ownership |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda approvals list S` | List a running session's parked approvals with each request digest |
 | | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed |
@@ -174,7 +176,7 @@ isolation boundary.
     `garuda sessions [--limit N] [--json]` lists this project's recent
     sessions with ID prefix, name, state, queue position, update time, and
     task. `--json` prints the same model the dashboard serves. The
-    subcommands (`show`, `cancel`, `merge`, `remove-worktree`) take
+    subcommands (`show`, `cancel`, `merge`, `remove-worktree`, `cleanup-workers`, `discard-worker`) take
     `--workspace DIR` to pick the project.
 
 === "web"

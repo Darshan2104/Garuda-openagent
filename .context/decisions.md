@@ -3223,6 +3223,46 @@ snapshots preserve cumulative counts and disclose omissions through existing
 trajectory inspection. External harnesses retain their own loop and do not
 receive native reminders.
 
+## 2026-11-11 — Retire editing-worker repositories only after proved settlement (#384)
+
+- Extend the existing local editing-worker service with bounded receipt inventory,
+  automatic retirement of settled integrated or unchanged terminal repositories,
+  and explicit orphan discard. Keep receipts and candidate patches as audit evidence.
+- Record parent lease binding, worker repository identity and ownership-store roots.
+  A durable child-settlement receipt and readable released lease/capacity records
+  are prerequisites. Expired leases, dead owners, absent records and explicit
+  discard never substitute for descendant settlement. Older incomplete receipts
+  remain unknown; recovery neither releases retained ownership nor replays work.
+- Session ownership projections expose retained and uncertain repositories without
+  locks, Git execution or repair. Operator discard also requires released parent
+  ownership. Content checks include actual bounded snapshot hashes, index/HEAD,
+  extra refs and untracked/ignored data; deletion is descriptor-relative and
+  symlink resistant. Concurrent workers and non-local workspaces remain unsupported.
+
+## 2026-11-11 — Publish admissions atomically and bound inventory per session (#384)
+
+- Admission validates the source before any worker directory exists, stages the
+  receipt under a non-`worker-` name and publishes by atomic rename, so a
+  `worker-*` entry always carries its receipt. A failed admission therefore
+  cannot publish a receipt-less worker. Receipt-less empty directories and
+  unpublished admission metadata are reported and removed as orphans; unknown
+  non-empty data remains retained.
+- Inventory's per-session bound counts only entries that can belong to the
+  inspected session; valid receipts of other sessions do not turn its
+  reconciliation unknown. Attribution scans the shared store, so total discovery
+  work scales with that store. A later cleanup run prunes fully retired receipt
+  directories (never the run that retired them), preventing permanent inventory
+  exhaustion by retired audit records.
+- The worker store and its entries are created owner-only regardless of umask.
+  Only that root and its entries are the privacy boundary; the reader does not
+  require a private user home. Ancestor traversal still refuses symlinks and
+  foreign owners, and refused paths are named in errors.
+- Repository content proof runs before the global lease/capacity locks. Those
+  locks cover only the released recheck, intent receipt and atomic rename of the
+  repository aside; deletion runs after they are dropped. Admission recovery
+  and retirement run off the event loop; cancellation settles that work before
+  returning ownership to the caller.
+
 ## 2026-11-11 — Settle cancelled and refused approval requests promptly (#375)
 
 Native cancellation disconnects requests already parked and marks the session

@@ -3,6 +3,7 @@
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -86,6 +87,18 @@ def test_a_worktree_gets_its_own_branch_and_does_not_inherit_uncommitted_edits(r
     assert plan.dirty_source and plan.dirty_fingerprint
     assert plan.source_head == sh(repo, "rev-parse", "HEAD")
     assert (repo / "app.txt").read_text() == "uncommitted\n"  # source untouched
+
+
+def test_worktree_store_is_private_under_umask_002(repo):
+    previous = os.umask(0o002)
+    try:
+        plan = wt.prepare_workspace(repo, "s1", "worktree")
+    finally:
+        os.umask(previous)
+    root = wt.worktrees_root()
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(Path(plan.path).parent.stat().st_mode) == 0o700
+    assert Path(plan.path).is_dir()
 
 
 def test_the_session_branch_has_one_owner(repo):
