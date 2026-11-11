@@ -1,22 +1,8 @@
-"""Rich terminal rendering for the interactive chat (Garuda D2).
+"""Terminal rendering shared by native runs and interactive chat.
 
-What is LIVE vs POST-HOC
-------------------------
-The agent loop (:mod:`garuda.core.loop`) drives the model through
-``model.complete()`` — a blocking call that returns a whole turn at once — so
-there is no token-by-token stream flowing through the loop yet. To stay honest
-about that, this renderer is driven by the EventStore rather than by the model:
-
-* LIVE (per event, as they are emitted during a turn): tool calls, tool
-  results, todo-list updates, and the assistant text of each model turn. The
-  chat driver in ``cli.py`` runs the agent as a background task and drains new
-  events while a "thinking" spinner is shown, so these surface as they happen.
-* POST-HOC: nothing extra — the final message is just the last thing rendered.
-
-* NOT YET LIVE: true token-level streaming of assistant text. The loop can
-  stream into an opt-in ``model_delta_consumer`` (``garuda.model.streaming``),
-  and ``on_assistant_delta`` accepts incremental chunks, but the chat driver does
-  not attach a consumer yet, so it still renders each completed turn.
+TTY runs attach the loop's delta consumer for a transient assistant preview;
+completed response events replace it with the authoritative text. Chat still
+drains completed-turn events without attaching a token consumer.
 
 The renderer degrades gracefully: if ``rich`` is not installed it falls back to
 plain ``print`` output with an identical method surface. It is intentionally
@@ -28,7 +14,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import shutil
 import sys
+from time import monotonic
 from typing import Any
 
 _TODO_MARKS = {"pending": "☐", "in_progress": "▶", "completed": "☑"}
@@ -69,8 +58,9 @@ class ChatRenderer:
     """Renders chat events to the terminal, with a rich and a plain backend.
 
     The public method surface is identical in both modes:
-    ``header``, ``on_assistant_delta``, ``on_tool_call``, ``on_tool_result``,
-    ``on_todo``, ``on_done`` and the ``thinking`` context manager.
+    ``header``, ``on_assistant_delta``, ``on_model_delta``, ``on_assistant_response``,
+    ``discard_assistant``, ``on_tool_call``, ``on_tool_result``, ``on_todo``,
+    ``on_done`` and the ``thinking`` context manager.
     """
 
     def __init__(self, use_rich: bool | None = None, stream=None):
@@ -82,6 +72,10 @@ class ChatRenderer:
         # each write so tests that swap sys.stdout still capture output.
         self._stream = stream
         self._console = None
+        self._assistant_text = ""
+        self._assistant_live = None
+        self._assistant_refreshed: float | None = None
+        self.rendered_assistant_text: set[str] = set()
         if self._rich:
             try:
                 from rich.console import Console
@@ -128,6 +122,68 @@ class ChatRenderer:
         yield
 
     # -- assistant text ----------------------------------------------------
+    def on_model_delta(self, delta) -> None:
+        if delta.kind == "discard":
+            self.discard_assistant()
+        elif delta.kind == "text" and delta.text:
+            if os.environ.get("TERM", "").lower() in {"", "dumb", "unknown"}:
+                return
+            console = self._console
+            rich_preview = (self._rich and console is not None
+                            and console.is_terminal and not console.is_dumb_terminal)
+            width, height = (console.size if rich_preview else shutil.get_terminal_size())
+            rows = max(1, height - 1) if rich_preview else 1
+            # Only the preview needs a tail; the response event owns the full text.
+            limit = max(1, width) * rows
+            self._assistant_text = (self._assistant_text + delta.text[-limit:])[-limit:]
+            now = monotonic()
+            if self._assistant_refreshed is not None and now - self._assistant_refreshed < 0.1:
+                return
+            self._assistant_refreshed = now
+            if rich_preview:
+                from rich.live import Live
+                from rich.text import Text
+
+                lines = Text(self._assistant_text).wrap(console, max(1, width))
+                preview = Text("\n").join(lines[-rows:])
+                if self._assistant_live is None:
+                    self._assistant_live = Live(
+                        preview, console=console,
+                        auto_refresh=False, transient=True,
+                    )
+                    self._assistant_live.start(refresh=True)
+                else:
+                    self._assistant_live.update(preview, refresh=True)
+            else:
+                # Keep the plain preview on one line so discard can erase it,
+                # even without Rich. Allow two terminal cells per character.
+                width = max(0, (width - 1) // 2)
+                text = "".join(c if c.isprintable() else " " for c in self._assistant_text)
+                self._out("\r\033[2K" + (text[-width:] if width else ""), end="")
+
+    def discard_assistant(self) -> None:
+        text, live = self._assistant_text, self._assistant_live
+        self._assistant_text = ""
+        self._assistant_live = None
+        self._assistant_refreshed = None
+        if live is not None:
+            # Rich's stop renders once with overflow visible; clear first so a
+            # long discarded answer cannot spill into terminal scrollback.
+            try:
+                live.update("", refresh=True)
+            finally:
+                live.stop()
+        elif text:
+            self._out("\r\033[2K", end="")
+
+    def on_assistant_response(self, text: str | None) -> None:
+        self.discard_assistant()
+        if text:
+            self.on_assistant_delta(text)
+            if not self._rich:
+                self._out("")
+            self.rendered_assistant_text.add(text.strip())
+
     def on_assistant_delta(self, text: str) -> None:
         if not text:
             return
