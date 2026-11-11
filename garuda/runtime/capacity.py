@@ -307,3 +307,26 @@ class CapacityStore:
     def holders(self, key: str) -> list[str]:
         """Inspect current holders. Never mutates."""
         return sorted(self._load(key)["slots"])
+
+    def slots_for_holder(self, holder: str) -> list[dict]:
+        """Every recorded slot of ``holder`` across runtime keys, for inspection.
+
+        Never locks, creates or upgrades anything. A record whose key does not
+        match its file, or that fails the ordinary read validation, raises
+        (fail closed) rather than being skipped.
+        """
+        if not self.root.is_dir():
+            return []
+        out = []
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                document = read_document(path, versions=(1, 2))
+            except StorageError as exc:
+                raise CapacityError(str(exc)) from exc
+            key = (document or {}).get("key")
+            if not isinstance(key, str) or self._path(key).name != path.name:
+                raise CapacityError(f"capacity record {path.name} does not match its key; refusing")
+            slot = self._load(key)["slots"].get(holder)
+            if slot is not None:
+                out.append({"key": key, **slot})
+        return out
