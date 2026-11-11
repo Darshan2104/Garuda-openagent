@@ -800,6 +800,20 @@ ACP accepts appended instructions only as labelled task context.
   creation/use revalidates the parent's complete issuing-store authority under
   the lease lock without renewal; copied flags cannot authorize released,
   missing, changed, unknown or fork-inherited parent bindings.
+- **Ownership inspection is not authority (#376).** `core/ownership_read_model.py`
+  joins one session's recorded owner liveness (as the row already derived it),
+  retained workspace leases, queue entry or claim, capacity slots across runtime
+  keys, recorded runtime children, pending approvals and quota recovery into the
+  `ownership` field of `garuda sessions show --json` and `/api/sessions/<id>`.
+  It takes no lock, writes nothing, probes no further process and never calls
+  recovery. An unreadable lease, queue or capacity record makes reconciliation
+  `unknown`; a retained lease, quarantined or retained queue claim, or quota
+  `blocked`/`uncertain` state makes it `blocked`. Only a dead owner with none of
+  those is `eligible`, and then it names the existing `garuda runtime recover`
+  path, which re-proves every prerequisite. Retained capacity slots are listed
+  because nothing releases them automatically. Children are reported as recorded
+  with an unknown process, and progress recorded after owner death never makes
+  the owner alive.
 - **Quarantine retains ownership through teardown.** The shared run guard
   stops renewal but retains its workspace lease and runtime reservation. Later
   release/finalizer calls cannot undo quarantine. A borrowed flow step also

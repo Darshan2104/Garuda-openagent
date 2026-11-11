@@ -2832,3 +2832,23 @@ A flow already blocked or uncertain keeps every later tick at `attention`.
   tick or probes quota; unobserved job counts stay unknown. Tick health from
   #378 remains independent execution evidence. No sleep/login/reboot catch-up
   guarantee is inferred without live platform observations.
+
+## 2026-11-06 — Ownership and reconciliation are a read-only projection (#376)
+
+`garuda sessions show --json` and `/api/sessions/<id>` carry an additive,
+versioned `ownership` field built by `core/ownership_read_model.py`. It joins
+the existing durable owners — recorded owner liveness, retained workspace
+leases, queue entry/claim and quarantine, capacity slots for the session across
+runtime keys, recorded runtime children, pending approvals and quota recovery —
+without a lock, write, signal, recovery call or process probe beyond the
+liveness check the session row already makes. Session list rows are unchanged.
+
+Reconciliation is reported, never performed. Unreadable lease, queue or capacity
+records make it `unknown`; retained leases, quarantined/retained queue claims and
+quota `blocked`/`uncertain` make it `blocked`; quota waiting/dispatch is owned by
+the quota scheduler. Only a confirmed-dead owner with none of those blockers is
+`eligible`, and it names the existing `garuda runtime recover` path, which
+re-proves leases, owners, trail and child identities itself. Retained capacity
+slots are listed because no path releases them automatically. Recorded children
+keep their recorded state with an unknown process. No new control, release,
+takeover or replay path was added; budget stays `unknown`.

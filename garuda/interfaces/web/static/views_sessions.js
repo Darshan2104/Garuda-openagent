@@ -184,6 +184,33 @@ function artifactProjectionHtml(projection) {
     '<p class="stat-sub">Completeness describes the captured source; retention is best effort.</p></section>';
 }
 
+function ownershipHtml(view) {
+  if (!view) return "";
+  var owner = view.owner || {};
+  var progress = view.progress || {};
+  var rec = view.reconciliation || {};
+  var leases = view.workspace_leases || {};
+  var waiting = (progress.waiting || []).map(function (w) {
+    return w.reason + (w.position ? " #" + w.position : "") + (w.count ? " (" + w.count + ")" : "") +
+      (w.operation ? " · " + w.operation : "");
+  });
+  var coverage = ["workspace_leases", "queue", "capacity"].filter(function (k) {
+    return view[k] && view[k].coverage === "unavailable";
+  });
+  return '<section class="ownership" id="session-ownership"><h2>Ownership</h2>' +
+    '<p>' + chip("owner", owner.liveness || "unknown",
+      owner.liveness === "alive" ? "chip-on" : (owner.liveness === "dead" ? "chip-bad" : "chip-off")) + ' ' +
+    chip("reconciliation", rec.status || "unknown", rec.status === "eligible" ? "chip-on" : "chip-off") + ' ' +
+    chip("leases", leases.coverage === "complete" ? String((leases.holders || []).length) : "unknown") + '</p>' +
+    (waiting.length ? '<p class="stat-sub">Waiting on: ' + esc(waiting.join(", ")) + '</p>' : '') +
+    ((rec.blockers || []).length ? '<p class="stat-sub">Blocked by: ' + esc(rec.blockers.join(", ")) + '</p>' : '') +
+    ((rec.retained || []).length ? '<p class="stat-sub">Still retained: ' + esc(rec.retained.join(", ")) + '</p>' : '') +
+    (rec.path ? '<p class="stat-sub">Existing path: <code>' + esc(rec.path.command) + '</code></p>' : '') +
+    (coverage.length ? '<p class="stat-sub">Unreadable: ' + esc(coverage.join(", ")) + '</p>' : '') +
+    '<p class="stat-sub">Inspection is read-only: it starts, stops and repairs nothing. ' +
+    'The named path re-proves every prerequisite itself.</p></section>';
+}
+
 function sessionDetailView(id) {
   render('<div class="loading">Loading session…</div>');
   return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
@@ -206,6 +233,7 @@ function sessionDetailView(id) {
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
         return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
       }).join("") + "</ul>" : "") +
+      ownershipHtml(row.ownership) +
       artifactProjectionHtml(row.artifacts) +
       failureEvidenceHtml(row.failure_evidence) +
       flowHtml(row.flow) +
