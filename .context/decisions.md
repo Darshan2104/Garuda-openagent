@@ -2797,3 +2797,19 @@ revalidates every source before writing, and verifies writes and restoration of
 all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-06 — Recovery tick health is evidence, not dispatch authority (#378)
+
+Each quota-recovery tick records a bounded `tick-health.json` in the private
+recovery root under the root's exclusive lock: its attempt (id, time, owner)
+before any work, then its own classified result and redacted reason. Only the
+tick whose own claim the flow service advanced to running is credited with a
+dispatch; a tick that loses the claim reports the other owner. `recovery status`
+reads this file next to observed cron installation and never probes quota or
+runs the wrapper; an attempt without its own result is `running` or `uncertain`.
+Health never authorizes dispatch: account, version, workspace, receipt and
+exclusive-claim gates stay authoritative. A health-write failure on the error
+path never masks the tick's own exception, and an unreadable health file never
+stops a tick or hides status: the tick reports `health_error`, status reports
+`unknown`, and the corrupt file is left for the operator rather than replaced.
+A flow already blocked or uncertain keeps every later tick at `attention`.

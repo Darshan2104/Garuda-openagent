@@ -7,6 +7,7 @@ remain owned by the existing engine. A lost dispatch is never blindly replayed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -27,6 +28,12 @@ QUOTA_ERROR = re.compile(
     r"(?:reached|exceeded|exhausted)|usage limit|quota exceeded|insufficient_quota",
     re.I)
 NON_QUOTA = re.compile(r"cancelled|canceled|permission|denied|approval|internal error", re.I)
+
+
+# Tick outcomes, most significant first: one tick reports the strongest of its rows.
+TICK_OUTCOMES = ("failed", "attention", "dispatched", "dispatch-in-progress",
+                 "quota-waiting", "probe-unavailable", "zero-pending", "disabled")
+MAX_HEALTH_REASON = 512
 
 
 class RecoveryWaiting(ValueError):
@@ -125,6 +132,38 @@ class RecoveryStore:
             ss.write_locked_document(fd, self._path(session_id), record)
             return record
 
+    def _health_path(self):
+        return self.root / "tick-health.json"
+
+    def health(self):
+        """Last tick attempt/result as recorded; never probes or runs a tick."""
+        return ss.read_document(self._health_path(), versions=(1,))
+
+    def tick_started(self, tick_id):
+        with ss.exclusive_lock(self.root) as fd:
+            prior = self.health() or {}
+            attempt = {"tick_id": tick_id, "started_at": time.time(),
+                       "owner": current_owner().to_dict()}
+            value = {**prior, "version": 1, "last_attempt": attempt,
+                     "attempts": int(prior.get("attempts") or 0) + 1}
+            ss.write_locked_document(fd, self._health_path(), value)
+
+    def tick_finished(self, tick_id, outcome, reason, *, pending, dispatched_flow=None):
+        """Record this tick's own result; a dispatch is credited only to its claimant."""
+        from garuda.context.redact import redact_text
+
+        reason, _ = redact_text(str(reason)[:MAX_HEALTH_REASON * 2])
+        result = {"tick_id": tick_id, "finished_at": time.time(), "outcome": outcome,
+                  "reason": reason[:MAX_HEALTH_REASON], "pending": pending,
+                  "dispatches": 1 if dispatched_flow else 0}
+        with ss.exclusive_lock(self.root) as fd:
+            prior = self.health() or {}
+            value = {**prior, "version": 1, "last_result": result}
+            if dispatched_flow:
+                value["last_dispatch"] = {**result, "flow_session": dispatched_flow}
+                value["dispatches"] = int(prior.get("dispatches") or 0) + 1
+            ss.write_locked_document(fd, self._health_path(), value)
+
     def cancel(self, session_id):
         with ss.exclusive_lock(self.root) as fd:
             record = self.get(session_id)
@@ -145,6 +184,43 @@ def project(record):
     fields = ("flow_session", "state", "reason", "next_check", "reset_at", "last_probe",
               "pending_step", "dispatches", "updated_at", "continuation_mode")
     return {k: record.get(k) for k in fields}
+
+
+def tick_health(health):
+    """Read-only view: an attempt without its own result is running or uncertain."""
+    if not health:
+        return {"state": "never-ran", "last_attempt": None, "last_result": None}
+    attempt, result = health.get("last_attempt") or {}, health.get("last_result") or {}
+    view = {k: health.get(k) for k in ("last_attempt", "last_result", "last_dispatch",
+                                       "attempts", "dispatches")}
+    if attempt and attempt.get("tick_id") != result.get("tick_id"):
+        alive = owner_liveness(attempt.get("owner") or {})
+        if alive is True:
+            return {**view, "state": "running"}
+        if alive is False or not result or result.get("finished_at", 0) < attempt.get("started_at", 0):
+            return {**view, "state": "uncertain",
+                    "reason": "latest tick attempt ended without recording a result"}
+    return {**view, "state": result.get("outcome") or "uncertain"}
+
+
+def _dispatch_outcome(record, sid, claimed, reason=None):
+    """Outcome of a tick whose own claim on ``sid`` may have resumed the continuation.
+
+    Only a claim that the flow service advanced to running (its dispatch count
+    rose) is credited as a dispatch; the label reflects where the flow ended.
+    """
+    record = record or {}
+    resumed = record.get("dispatches", 0) > claimed.get("dispatches", 0)
+    state = record.get("state")
+    if state in {"blocked", "uncertain", "cancelled"}:
+        outcome = "attention"
+    elif state == "waiting-for-quota":
+        outcome = "quota-waiting"
+    elif resumed:
+        outcome = "dispatched"
+    else:
+        outcome = "attention"
+    return outcome, sid, record.get("reason") or reason or state or "continuation state unknown", resumed
 
 
 def publish(record):
@@ -329,6 +405,54 @@ class FlowRecovery:
         await runner._publish(runner.flow_session, {"quota_recovery": project(row)})
 
     async def tick(self):
+        tick_id = uuid.uuid4().hex
+        health_errors = []
+        # Health is evidence, not control flow: an unwritable health record
+        # never stops the tick; the report says the health was not recorded.
+        try:
+            self.records.tick_started(tick_id)
+        except (OSError, ValueError, ss.StorageError) as exc:
+            health_errors.append(f"tick attempt not recorded: {exc}")
+        outcomes, dispatched = [], None
+        try:
+            report = await self._tick(outcomes)
+        except BaseException as exc:
+            # Never mask the tick's own failure.
+            with contextlib.suppress(OSError, ValueError, ss.StorageError):
+                self.records.tick_finished(tick_id, "failed", f"{type(exc).__name__}: {exc}",
+                                           pending=None)
+            raise
+        rows = [row for row in self.records.records() if row]
+        pending = sum(1 for row in rows if row.get("state") == "waiting-for-quota")
+        seen = {sid for _outcome, sid, _reason, _resumed in outcomes}
+        # A flow already blocked or uncertain still awaits the operator; it keeps
+        # every later tick at attention without being dispatched.
+        outcomes += [("attention", row["flow_session"], f"flow {row['flow_session']} is "
+                      f"{row['state']}: {row.get('reason') or 'no reason recorded'}", False)
+                     for row in rows if row.get("state") in {"blocked", "uncertain"}
+                     and row["flow_session"] not in seen]
+        for _outcome, sid, _reason, resumed in outcomes:
+            if resumed:
+                dispatched = sid
+        if not report["enabled"]:
+            outcome, reason = "disabled", "automatic quota recovery is disabled"
+        elif not outcomes:
+            outcome, reason = "zero-pending", "no continuation is waiting for quota"
+        else:
+            outcome, _, reason, _ = min(outcomes, key=lambda o: TICK_OUTCOMES.index(o[0]))
+        try:
+            self.records.tick_finished(tick_id, outcome, reason, pending=pending,
+                                       dispatched_flow=dispatched)
+        except (OSError, ValueError, ss.StorageError) as exc:
+            health_errors.append(f"tick result not recorded: {exc}")
+        if health_errors:
+            from garuda.context.redact import redact_text
+
+            detail, _ = redact_text("; ".join(health_errors)[:MAX_HEALTH_REASON * 2])
+            report["health_error"] = detail[:MAX_HEALTH_REASON]
+        return report
+
+    async def _tick(self, outcomes):
         from garuda.flows.engine import FlowStopped
         from garuda.flows.service import FlowExecutionService
         from garuda.observability.limits import recovery_availability
@@ -345,6 +469,9 @@ class FlowRecovery:
                     row = self.records.update(sid, {"state": "uncertain", "reason":
                         "dispatch owner lost; automatic replay is refused"}, token=row["token"])
                     publish(row)
+                    outcomes.append(("attention", sid, row["reason"], False))
+                else:
+                    outcomes.append(("dispatch-in-progress", sid, "another owner holds the dispatch", False))
                 reports.append(project(row))
                 continue
             if state != "waiting-for-quota":
@@ -359,13 +486,17 @@ class FlowRecovery:
                     row = self.records.update(sid, {"reason": reason, "next_check": next_check(time.time()),
                         "last_probe": observation.observed_at if observation else None})
                     publish(row)
+                    outcomes.append(("probe-unavailable" if observation is None else "quota-waiting",
+                                     sid, reason, False))
                     reports.append(project(row))
                     continue
                 claimed = self.records.claim(sid, automatic=True)
                 sessions = SessionStore(root=row["sessions_root"])
                 service = FlowExecutionService(sessions)
                 await service.resume(sid, recovery_record=claimed, recovery_root=self.records.root)
-                reports.append(project(self.records.get(sid)))
+                current = self.records.get(sid)
+                outcomes.append(_dispatch_outcome(current, sid, claimed))
+                reports.append(project(current))
                 break  # at most one dispatch per tick; later ticks can admit other flows
             except (OSError, ValueError, ss.StorageError, FlowStopped, CapacityError, LeaseError) as exc:
                 current = self.records.get(sid)
@@ -378,5 +509,14 @@ class FlowRecovery:
                     current = self.records.update(sid, {"state": "blocked", "reason": str(exc)},
                                                   token=claimed["token"])
                     publish(current)
+                if claimed is None:
+                    # Lost the claim race or failed before claiming: never this tick's dispatch.
+                    other = (current or {}).get("state")
+                    outcome = ("dispatch-in-progress" if other in {"dispatch-reserved", "running"}
+                               else "attention" if other in {"blocked", "uncertain"}
+                               else "quota-waiting")
+                    outcomes.append((outcome, sid, str(exc), False))
+                else:
+                    outcomes.append(_dispatch_outcome(current, sid, claimed, str(exc)))
                 reports.append(project(current))
         return {"enabled": True, "flows": reports}
