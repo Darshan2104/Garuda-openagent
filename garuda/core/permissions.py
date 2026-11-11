@@ -6,6 +6,7 @@ import shlex
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -44,6 +45,43 @@ _DECISION_PRECEDENCE = {
 def _strictest(*decisions: PermissionDecision) -> PermissionDecision:
     """Return the strictest decision (DENY > ASK > ALLOW)."""
     return max(decisions, key=lambda d: _DECISION_PRECEDENCE[d])
+
+
+@dataclass
+class _PolicySource:
+    """The strongest observed check, captured without a second policy evaluation."""
+
+    decision: PermissionDecision = PermissionDecision.ALLOW
+    source: str | None = None
+    mode: str | None = None
+
+
+_policy_source: ContextVar[_PolicySource | None] = ContextVar("policy_source", default=None)
+
+
+def _policy_decision(decision: PermissionDecision, source: str, mode: str) -> PermissionDecision:
+    trace = _policy_source.get()
+    if trace is not None and (trace.source is None or
+                             _DECISION_PRECEDENCE[decision] > _DECISION_PRECEDENCE[trace.decision] or
+                             (decision == trace.decision and trace.source == "mode" and source != "mode")):
+        trace.decision, trace.source, trace.mode = decision, source, mode
+    return decision
+
+
+async def _evaluate_tool(engine, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
+    trace = _PolicySource()
+    token = _policy_source.set(trace)
+    try:
+        decision, reason = engine.decide(tool_name, arguments)
+    finally:
+        _policy_source.reset(token)
+    broker = getattr(engine, "approval_broker", None)
+    if broker is not None and decision != PermissionDecision.ASK:
+        known = trace.decision == decision
+        return await broker.record_policy(tool_name, decision, reason,
+                                    source=trace.source if known else None, mode=trace.mode if known else None,
+                                    engine=engine)
+    return await _resolve_decision(decision, reason, tool_name, arguments, engine.approval_handler)
 
 
 # Shell metacharacters that chain/redirect/substitute a second command. A command
@@ -261,6 +299,7 @@ class PermissionEngine:
         self._path_rules = path_rules or {}
         self._bash_rules = bash_rules or {}
         self._approval_handler = approval_handler
+        self.approval_broker = None
         self._deny_paths = self._path_rules.get("deny", [])
         self._ask_paths = self._path_rules.get("ask", [])
         self._deny_bash = [re.compile(p) for p in self._bash_rules.get("deny", [])]
@@ -297,14 +336,11 @@ class PermissionEngine:
 
     def check_tool(self, tool_name: str) -> PermissionDecision:
         if tool_name in self._tool_rules:
-            return PermissionDecision(self._tool_rules[tool_name])
-        if self._mode == "auto" or self._mode == "yolo":
-            return PermissionDecision.ALLOW
-        if self._mode == "readonly":
-            if tool_name in READONLY_DENIED_TOOLS:
-                return PermissionDecision.DENY
-            return PermissionDecision.ALLOW
-        return PermissionDecision.ALLOW
+            return _policy_decision(PermissionDecision(self._tool_rules[tool_name]), "tool-rule", self._mode)
+        decision = (PermissionDecision.DENY
+                    if self._mode == "readonly" and tool_name in READONLY_DENIED_TOOLS
+                    else PermissionDecision.ALLOW)
+        return _policy_decision(decision, "mode", self._mode)
 
     @property
     def _workspace_root(self) -> str:
@@ -335,23 +371,23 @@ class PermissionEngine:
                    for form in forms for rule in patterns)
 
     def _match_path_rules(self, path: str, cwd: str | None = None) -> PermissionDecision | None:
-        for pattern in self._deny_paths:
+        for index, pattern in enumerate(self._deny_paths):
             if self._path_matches(path, pattern, cwd):
-                return PermissionDecision.DENY
-        for pattern in self._ask_paths:
+                return _policy_decision(PermissionDecision.DENY, f"path-rule:deny:{index}", self._mode)
+        for index, pattern in enumerate(self._ask_paths):
             if self._path_matches(path, pattern, cwd):
-                return PermissionDecision.ASK
+                return _policy_decision(PermissionDecision.ASK, f"path-rule:ask:{index}", self._mode)
         return None
 
     def check_path(self, path: str, operation: str, *, cwd: str | None = None) -> PermissionDecision:
         if self._mode in ("auto", "yolo"):
-            return PermissionDecision.ALLOW
+            return _policy_decision(PermissionDecision.ALLOW, "mode", self._mode)
         rule = self._match_path_rules(path, cwd)
         if rule:
             return rule
         if self._mode == "readonly" and operation in ("write", "patch"):
-            return PermissionDecision.DENY
-        return PermissionDecision.ALLOW
+            return _policy_decision(PermissionDecision.DENY, "mode", self._mode)
+        return _policy_decision(PermissionDecision.ALLOW, "mode", self._mode)
 
     def _check_paths(self, paths: list[str], operation: str, *, cwd: str | None = None) -> PermissionDecision:
         """Strictest ``check_path`` decision across several paths (ALLOW if none)."""
@@ -363,7 +399,7 @@ class PermissionEngine:
 
     def check_command(self, command: str) -> PermissionDecision:
         if self._mode in ("auto", "yolo"):
-            return PermissionDecision.ALLOW
+            return _policy_decision(PermissionDecision.ALLOW, "mode", self._mode)
         if self._mode == "readonly":
             # Reads are permitted; anything else is denied. Blanket-denying every
             # command made `readonly` unusable rather than safe: `plan`, `explore`
@@ -381,32 +417,31 @@ class PermissionEngine:
             # stay refused exactly as before.
             from garuda.core.evidence import is_side_effect_free
 
-            return (
-                PermissionDecision.ALLOW
-                if is_side_effect_free(command)
-                else PermissionDecision.DENY
+            return _policy_decision(
+                PermissionDecision.ALLOW if is_side_effect_free(command) else PermissionDecision.DENY,
+                "readonly-command", self._mode,
             )
         joined = command.replace("\\\n", "")
         forms = {command, joined}
         # The raw hard refusal is independent of our best-effort comment view.
         if any(_root_removal_decision(text, strip_comments=False) == PermissionDecision.DENY
                for text in forms):
-            return PermissionDecision.DENY
+            return _policy_decision(PermissionDecision.DENY, "root-removal", self._mode)
         decision = _strictest(*(_root_removal_decision(text) for text in forms))
         if decision == PermissionDecision.DENY:
-            return PermissionDecision.DENY
-        for pattern in self._deny_bash + DENY_COMMAND_PATTERNS:
+            return _policy_decision(PermissionDecision.DENY, "root-removal", self._mode)
+        for index, pattern in enumerate(self._deny_bash + DENY_COMMAND_PATTERNS):
             if any(pattern.search(text) for text in forms):
-                return PermissionDecision.DENY
+                return _policy_decision(PermissionDecision.DENY, f"command-rule:deny:{index}", self._mode)
         # An allow prefix cannot bypass uncertainty, but approval can resolve it.
         if decision == PermissionDecision.ASK:
             return decision
         if all(self._matches_allow_prefix(text) for text in forms):
-            return PermissionDecision.ALLOW
+            return _policy_decision(PermissionDecision.ALLOW, "command-allow-prefix", self._mode)
         for pattern in self._ask_bash + ASK_COMMAND_PATTERNS:
             if any(pattern.search(text) for text in forms):
                 return PermissionDecision.ASK
-        return PermissionDecision.ALLOW
+        return _policy_decision(PermissionDecision.ALLOW, "mode", self._mode)
 
     def _matches_allow_prefix(self, command: str) -> bool:
         stripped = command.lstrip(SHELL_BLANKS)
@@ -476,10 +511,7 @@ class PermissionEngine:
         return decision, None
 
     async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
-        decision, reason = self.decide(tool_name, arguments)
-        return await _resolve_decision(
-            decision, reason, tool_name, arguments, self._approval_handler
-        )
+        return await _evaluate_tool(self, tool_name, arguments)
 
     def decide_acceptance(self, arguments: dict) -> tuple[PermissionDecision, str | None]:
         """Explicit check ceilings retain deny/ask rules even in auto tool mode."""
@@ -549,6 +581,15 @@ class DelegatedPermissionEngine:
         self._child = child
         self._parent = parent
         self._handler_override: ApprovalHandler | None = None
+        self._approval_broker = None
+
+    @property
+    def approval_broker(self):
+        return self._approval_broker or getattr(self._parent, "approval_broker", None)
+
+    @approval_broker.setter
+    def approval_broker(self, broker) -> None:
+        self._approval_broker = broker
 
     @property
     def child(self) -> PermissionEngine:
@@ -607,7 +648,4 @@ class DelegatedPermissionEngine:
         return decision, child_reason
 
     async def evaluate_tool_call(self, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
-        decision, reason = self.decide(tool_name, arguments)
-        return await _resolve_decision(
-            decision, reason, tool_name, arguments, self.approval_handler
-        )
+        return await _evaluate_tool(self, tool_name, arguments)

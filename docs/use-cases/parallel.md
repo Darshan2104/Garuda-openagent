@@ -223,10 +223,70 @@ apr-1-1791279590045-9f3c2a1b  approval   bash({'command': 'chmod +x scripts/test
   digest, the ceiling fingerprint and its source, the expiry, and how it was
   answered. A timeout, a closed dashboard tab (`disconnected`) and a cancelled
   run (`cancelled`) are recorded as themselves, not as a "no".
+- Cancelling a turn disconnects the asks waiting at that moment and denies any
+  ask the turn still makes before its boundary, recorded as `cancelled`, so
+  these requests do not wait out the five-minute timeout.
 - `--deny` refuses. An unanswered request times out after five minutes and is
   denied.
 - `garuda run` and `--bg` runs don't wait: their approvals are denied as soon
   as they're asked, so there is nothing to answer.
+
+The same audit covers Garuda's native runtime and its own ACP server. An ACP
+editor can answer the pending `approvalId` using `session/approve`; it may also
+echo the `request_digest` from `session/request_permission`. The broker binds an
+id-only answer to the live request in that session and rechecks its ceiling and
+expiry. Unknown, foreign, replayed or mismatched answers refuse and leave a
+separate denial observation in the bounded decision trail. A legacy callback
+without a broker request also refuses. If an editor replies with a stale or
+mismatched `request_digest`, the server records the refusal and denies the
+request it sent, whether the editor tried to allow or deny it. The prompt then
+proceeds without waiting out the timeout.
+
+For example, cancel an ACP prompt while its first `write_file` request is waiting:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"session/cancel","params":{"sessionId":"YOUR_SESSION_ID"}}
+```
+
+If that turn attempts a second ASK before reaching its boundary, it is denied
+and recorded as `cancelled` without another editor prompt. The original prompt
+returns `stopReason: cancelled`; neither write receives permission.
+
+To inspect recent ordinary tool decisions and refused answers after a run, read
+the bounded decision trail with Garuda’s session store from the host installation:
+
+```python
+import json
+from garuda.core.sessions import SessionStore
+
+store = SessionStore()
+directory = store.session_dir(store.resolve("latest")) / "decision-audit"
+for name in ("previous.jsonl", "current.jsonl"):
+    path = directory / name
+    if path.exists():
+        for line in path.read_text().splitlines():
+            print(json.loads(line))
+```
+
+In this trail, a tool allowed by policy has an observation such as
+`{"outcome":"allow","action":"read_file","via":"policy",
+"policy_source":"mode","policy_mode":"smart"}` (other existing identity and
+timestamp fields are retained). A denied path rule reports, for example,
+`policy_source: path-rule:deny:0`; the index refers to the effective rule list.
+Each decision has one record, including reauthorization after a hook rewrite.
+These records omit tool arguments, create no approval prompt or inbox file, and
+preserve the policy’s allow/deny result even when an observation cannot be
+written (a warning is logged). Two segments retain at most 2 MiB of recent
+observations; rotation discards older entries, so missing history is unknown.
+The trail only ever creates `decision-audit/` inside an existing session
+directory: an observation written after the session was deleted is dropped with
+a warning rather than recreating the session as an orphan. Parked approvals keep
+their existing durable metadata and inbox records; a failure to persist their
+authoritative decision still refuses a grant.
+
+An editor request also ends when another channel answers, the approval times
+out, or the turn is cancelled. A client error denies the pending request; a
+late editor reply is ignored and cannot reopen the decision or end the server.
 
 ## Limit how many runs happen at once
 

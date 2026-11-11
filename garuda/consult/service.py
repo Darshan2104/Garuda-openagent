@@ -77,6 +77,7 @@ class ChildRequest:
     store: object
     source_workspace: str = "."
     capacity_loan: object = field(default=None, repr=False)
+    spend_gate: object = field(default=None, repr=False)
 
 
 @dataclass
@@ -194,11 +195,17 @@ class ConsultService:
                              receipt=result.get("receipt", {}), replay=True)
 
     async def _run(self, req, role, request_id, child_id, state, started, held) -> ConsultResult:
+        from garuda.model.accounting import current_gate
         from garuda.runtime.capacity import CapacityStore, CapacityUnavailable, configured_ceiling
 
         deadline = started + self.limits.timeout_sec
         plan = self._resolve_target(req.target, req.workspace)
         held.plan = plan
+        gate = current_gate()
+        if plan.kind == "acp" and gate is not None and gate.limited:
+            raise ConsultRefused("consult.spend_unsupported",
+                                 "ACP consult model calls cannot be metered against the "
+                                 "run-tree spend caps; choose a native consult target")
         # 3. capacity, immediately and without waiting
         ceiling = configured_ceiling(plan.runtime_id)
         if ceiling is not None:
@@ -246,7 +253,7 @@ class ConsultService:
             deadline_sec=max(1.0, deadline - self._clock()), child_id=child_id,
             asker_session=req.asker_session, root_session=req.root_session,
             request_id=request_id, store=self.store, source_workspace=req.workspace,
-            capacity_loan=loan)
+            capacity_loan=loan, spend_gate=gate)
         # 5-6. dispatch is recorded first; from here a failure counts
         self._check_deadline(deadline)
         state.mark_dispatched(request_id)
@@ -473,6 +480,7 @@ async def native_child(child: ChildRequest) -> ChildOutcome:
         permission_mode="readonly", reasoning_effort=plan.effort, no_collection=True,
         load_project_tools=False)
     config = prepared.config
+    config.spend_gate = child.spend_gate
     config.max_turns = child.limits.max_turns
     config.max_tokens = child.limits.max_output_tokens
     config.deadline_sec = child.deadline_sec

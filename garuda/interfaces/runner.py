@@ -499,7 +499,7 @@ async def run_agent_task(
             try:
                 return await _run_agent(task=task, trail=trail)
             finally:
-                if config.spend_gate is not None:
+                if config.spend_gate is not None and (session_record or {}).get("origin") != "consult":
                     # The tree's settled spend, children included: what a resume continues from.
                     update_session_meta(store, events.session_id,
                                         {"spend_gate": config.spend_gate.snapshot()})

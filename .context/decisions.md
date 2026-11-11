@@ -2798,6 +2798,76 @@ all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
 
+## 2026-11-11 — Complete native approval binding and policy decision audits (#375)
+
+Reuse the #403/#426 session `ApprovalBroker` for native `permission_response`
+and Garuda's inbound ACP approval paths. Native pending events expose the same
+request digest, ceiling/source and expiry as the broker; id-only answers bind to
+the live session/runtime request, while an optional digest must match. Unknown,
+foreign, replayed and callback-only answers fail closed and record a bounded
+refusal under a fresh id, preserving the original decision. A server-side
+`session/approve` also releases the editor request waiting on the same approval.
+Delegated fingerprints include both parent and child policies so either change
+invalidates a pending allow. Cancellation disconnects native pending requests.
+
+Non-ASK tool authorization emits one bounded record through the same broker,
+with `via: policy`, deciding rule category/index or mode, effective ceiling and
+source. The enforcer captures provenance during its existing decision, without
+re-evaluating rules or changing precedence. Unknown provenance remains null.
+Delegated engines inherit the parent's audit owner while recording their own
+effective ceiling; collection workers audit each existing parent/child check.
+Policy records retain only a bounded tool name, never arguments or content, and
+do not create inbox files. ASK lifecycle records and existing record keys retain
+their format; fields are additive. Audit failure denies as in existing broker
+channels. Execution remains with the existing tools and Environment backends.
+
+## 2026-11-11 — Bound decision observations and settle ACP permission waits (#375)
+
+Policy outcomes and refused unbound/replayed answers append to a separate
+`decision-audit/` JSONL trail under the session’s existing host storage, with
+a strict cross-process lock and at most two 1 MiB segments. Writes run off the
+event loop; failures log a warning without changing a policy decision or
+a refusal. Rotation discards old observations, so this is recent evidence,
+not complete approval history. Parked approval metadata, file decisions and
+their fail-closed persistence contract remain unchanged. This supersedes the
+preceding per-policy/per-refusal metadata storage and audit-failure behavior.
+
+Native bridges without a permission engine remain valid for handoff; other
+bridges install the broker before session creation. The inbound ACP server
+continues polling during editor requests. Native `approval_settled` lifecycle
+events and turn termination retire outstanding waits, client errors deny, and
+late/unmatched response ids are ignored. Refused late answers cannot abort the
+prompt or widen authority. Existing tool/Environment execution owners and
+workspace interpreter requirements are unchanged.
+
+## 2026-11-11 — Native consults share the asker's run-tree spend gate (#385)
+
+The consult service takes the active gate from model accounting context and
+passes that same object on the child request into the native child config.
+The child's existing loop and auxiliary accounting own admission and settlement;
+its events, receipts, limits, read-only snapshot and cleanup remain unchanged.
+Replay returns the existing receipt without charging again. Failed and cancelled
+calls release reservations and charge whatever usage they actually report;
+missing usage/cost retains the gate's existing estimate/unknown semantics.
+
+A refused call fails the consult cleanly. The advisor records failed advice and
+cannot change permissions, verification, final review or run liveness. Defaults
+remain uncapped. With either run-tree cap active, an ACP consult target refuses
+before capacity acquisition, snapshot or dispatch (`consult.spend_unsupported`):
+Garuda cannot meter its model calls. Uncapped ACP consults retain their existing
+confinement requirement and separate, potentially unknown usage; no zero-spend
+claim is made. Dollar caps remain post-settlement stops and can overshoot on an
+in-flight call. No workspace interpreter or new execution path is introduced.
+
+## 2026-11-11 — Consult child metadata keeps spend ownership with the asker (#385)
+
+The native runner skips the `spend_gate` metadata snapshot for sessions launched
+with `origin: consult`. That gate covers the asker's entire run tree, so storing
+it on a child would misattribute spend and let a child resume inherit unrelated
+usage. The asker retains its existing snapshot and resume behavior; child events
+and receipts still record their own usage while calls settle against the shared
+gate. Capped ACP consult refusals are documented with the native-target remedy.
+
 ## 2026-11-11 — Native run terminal attaches the shared live consumer (#389)
 
 Native `garuda run` supplies #432's `model_delta_consumer` through the shared
@@ -3192,3 +3262,34 @@ receive native reminders.
   repository aside; deletion runs after they are dropped. Admission recovery
   and retirement run off the event loop; cancellation settles that work before
   returning ownership to the caller.
+
+## 2026-11-11 — Settle cancelled and refused approval requests promptly (#375)
+
+Native cancellation disconnects requests already parked and marks the session
+broker cancelled before the turn continues. Later ASK decisions return false
+and record `cancelled` without publishing another request. Answers delivered
+while cancellation is pending bind to the session's live request as a deny,
+even with a stale digest; ordinary answers retain their binding checks.
+
+The inbound ACP server retries any refused editor answer as an id-only denial
+for the request it sent. The broker records both the refusal observation and
+the settled denial. Foreign, unknown or already settled requests still refuse.
+
+Decision observations create only `decision-audit/` beneath an existing session
+directory. The shared lock keeps parent creation enabled by default for other
+storage owners; this writer disables it so late observations cannot recreate a
+deleted session. Failed observations are dropped with the existing warning.
+Execution remains with the existing tool and Environment owners; workspace
+interpreter requirements and ordinary permission outcomes are unchanged.
+
+## 2026-11-11 — SDK runs can receive native live deltas (#389)
+
+`SoftwareAgent.run` and `Conversation.run` accept the same opt-in
+`model_delta_consumer` the native loop already gives the CLI/web paths, exposed
+as `on_delta`. It only observes `LiveDelta` text/reasoning fragments (plus the
+fallback `discard` signal); tool calls, usage, terminal reasons and the returned
+result still come from the assembled model response. Consumer failures detach
+that consumer for the call and surface as `live_consumer_error` rather than
+failing the run. ACP runtimes refuse `on_delta` before launch; no harness
+streaming or fallback is implied. The default `None` keeps every existing path
+unchanged.

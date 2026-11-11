@@ -564,6 +564,7 @@ class CollectionPermissionCeiling:
     async def evaluate_tool_call(
         self, tool_name: str, arguments: dict
     ) -> tuple[bool, str | None]:
+        self.child.approval_broker = getattr(self.parent, "approval_broker", None)
         parent_allowed, parent_reason = await self.parent.evaluate_tool_call(
             tool_name, arguments
         )
