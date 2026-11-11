@@ -162,9 +162,18 @@ fastest way to learn the system.
    propagates to the shrink-and-retry path, and cancellation propagates with
    nothing assembled. The `model_response` event records `live_coverage`
    (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
-   call outcome. The SDK exposes the consumer as `on_delta` on
-   `SoftwareAgent.run` and `Conversation.run`; the CLI and dashboard chat do not
-   attach one yet. External harness streaming is a separate runtime path.
+   call outcome. Native `garuda run` attaches the consumer through the shared
+   runner when stdout is a TTY, unless `--no-stream`, `--quiet`, `--json` or
+   output-withholding `--no-edits` is selected. Its existing CLI event renderer
+   replaces the transient text preview on discard or response assembly and
+   closes it on failure/cancellation. Preview storage and rendering are bounded
+   to a terminal tail and refreshed at most ten times per second; dumb/unset
+   terminals suppress previews. Completed responses render in full, and final
+   output is deduplicated against all rendered responses of the run.
+   Tool arguments and reasoning are never
+   displayed as live text. The SDK exposes the same consumer as `on_delta` on
+   `SoftwareAgent.run` and `Conversation.run`. Chat, web and ACP surfaces do not
+   attach it; external harness streaming is a separate runtime path.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state

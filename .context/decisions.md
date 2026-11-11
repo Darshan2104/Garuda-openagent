@@ -2798,6 +2798,77 @@ all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
 
+## 2026-11-11 — Native run terminal attaches the shared live consumer (#389)
+
+Native `garuda run` supplies #432's `model_delta_consumer` through the shared
+runner for TTY stdout unless `--no-stream`, `--quiet` or `--json` is selected.
+No-edits output withholding also keeps the ordinary path. Other runner callers
+retain their defaults; no environment execution or interpreter requirement is
+added. The existing CLI event renderer observes only the root run, excluding
+inherited child events and auxiliary accounting records.
+
+Assistant text has a transient preview (Rich when available, otherwise a bounded
+single line). Discard erases it before fallback; assembled responses replace it
+once, including complete-only models. Failure and cancellation close it. Reasoning
+and tool argument fragments never enter this text display. Completed tools still
+render from the ordinary events; identical final text is not printed twice.
+Assembly, fallback, permissions, dispatch and usage remain owned by the existing
+loop. Chat, web dashboard, SDK and ACP surfaces still do not attach this native
+consumer; external harness streaming remains its own runtime path.
+
+## 2026-11-11 — Bound terminal previews and deduplicate exhausted output (#389)
+
+The terminal renderer keeps only a bounded tail for its transient preview and
+refreshes at most ten times per second. Rich wraps that tail to the last
+terminal-height-minus-one lines; plain output keeps one line. Dumb, unknown or
+unset `TERM` suppresses preview output and its erase codes. The authoritative
+response event still renders the full assembled answer, without truncation.
+Final output is compared with every assistant response already rendered in the
+root run, so budget exhaustion cannot repeat an earlier candidate after a later
+forced response. Model assembly, execution and Environment requirements stay
+with their existing owners.
+
+## 2026-11-11 — Review packets use bounded session-owned diff excerpts (#362)
+
+Review packets extend the existing candidate binding and digest with patches
+from the candidate session's recorded baseline/delta, through the workspace
+`diff.py` / `evidence.py` owners. Host-backed Docker keeps using host Git;
+remote, missing and failed observations remain unknown. No interpreter is
+required inside a workspace. External diff and textconv drivers are disabled.
+
+The view names at most 200 files and shows at most 4 KiB of UTF-8 patch text
+per file and 32 KiB overall. Git-classified binary patches are withheld.
+Exact generated-patch byte omissions are separate from source sizes; aggregate
+bytes remain unknown when the manifest is cut or a file read fails. Full Git
+output is temporarily spooled outside the workspace for counting, so these
+bounds do not cap disk usage or Git computation. The comparison is baseline
+commit to candidate, including committed work; preexisting text cannot be
+subtracted from fingerprints and is explicitly labelled. Rename evidence
+covers source and destination.
+
+The packet continues to exclude check receipts and states that acceptance
+checks run after review settles. A dedicated local packet-only reviewer fixture
+uses actual session/Git evidence under the existing flow no-edits guard, with
+source, ignored-file and Git-metadata edits withholding the review output.
+
+## 2026-11-11 — Review excerpts fail closed and bound rendered delivery (#362)
+
+Untracked symlinks never reach Git's no-index comparison; their excerpts stay
+unknown, with unknown source-byte totals. Git diagnostics or a change exit code
+without patch output likewise cannot become a complete empty diff. Existing
+host-backed evidence ownership and remote-unknown behavior are unchanged.
+
+The 4 KiB per-file and 32 KiB total excerpt budgets include the UTF-8 JSON/HTML
+escaping delivered to reviewers; packet metadata is additional. Rendered-byte
+counts remain separate from generated-patch bytes, preserving exact known
+omissions. Accounting includes ASCII expansion of non-ASCII characters,
+preserving the existing packet renderer's output format.
+
+Captured text passes through the existing context secret-pattern redactor. A
+match withholds the whole excerpt and flags its row as redacted, so source-byte
+omissions remain exact and review coverage is incomplete. Detection is best
+effort over captured text, not a guarantee against arbitrary secret formats.
+
 ## 2026-11-06 — Recovery tick health is evidence, not dispatch authority (#378)
 
 Each quota-recovery tick records a bounded `tick-health.json` in the private
