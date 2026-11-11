@@ -16,6 +16,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Headless run | One task, an answer, a saved session | `garuda run -t "…"` | [Level 2](../use-cases/change-code.md#fix-a-bug-with-a-git-safety-net) |
 | Interactive chat | Turn-by-turn work with `y/N` approvals | `garuda chat` | [Level 2](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
 | Read-only mode | Inspection only, blocked writes | `garuda run --mode readonly -t "…"` | [Level 1](../use-cases/explore.md#ask-questions-about-a-codebase) |
+| Investigation scopes | A read-only subagent that hands back only a validated report of evidence, conclusions, rejected approaches and coverage | `invoke_subagent` with `profile: investigate` | [Level 1](../use-cases/explore.md#investigate-without-filling-the-main-conversation) |
 | No-edits guard | A run that is checked to have changed nothing | `garuda run --no-edits -t "…"` | [Level 1](../use-cases/explore.md#make-sure-a-run-changes-nothing) |
 | Acceptance checks | "Done" means your command passed | `garuda run --check "pytest -q" -t "…"` | [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check) |
 | Versioned edits | Edits refused when the file changed since it was read, opt-in per agent | `tools.options: {edit: {contract: versioned}}` | [Level 2](../use-cases/change-code.md#refuse-edits-to-files-that-changed-since-they-were-read) |
@@ -32,6 +33,8 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
 
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
+| Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
+| Confined Python cells | Opt-in aggregation with screened nested tools, bounded lifetime and cell provenance | Agent `tools.add: [code_cell]` | [Confined code cells](../use-cases/advanced.md#aggregate-tool-results-in-a-confined-python-cell) |
 
 ## Where commands run
 
@@ -49,6 +52,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
 | Session record | Every run saved with its events and state | `garuda sessions show latest` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
+| Context fork | New session from a complete conversation prefix; current workspace, stale inherited evidence, inspectable lineage | `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
 | Resume | Continue a conversation | `garuda run --resume latest -t "…"` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Names and briefs | Hand one run's outcome to another | `garuda run -t "… @fix-tests …"` | [Level 2](../use-cases/change-code.md#name-a-session-and-build-on-it) |
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
@@ -57,6 +61,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Approvals from elsewhere | Answer a waiting prompt from another terminal, bound to the request you listed; every answer is rechecked against the ceiling in force and recorded with its digest, ceiling source, expiry and how it ended | `garuda approvals answer latest ID --allow --digest D` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
 | Trajectories | Export a run's events | `garuda run --trajectory run.jsonl -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 | Failure evidence | Inspect original and later failures with explicit coverage; preview/capture/export selected sanitized diagnostics | `garuda runtime support --session latest --select causes,identities --preview` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
+| Ownership and reconciliation | One read-only view of who owns a session (owner liveness, leases, queue claim, capacity slots, children), what it waits on, and whether the existing recover path is eligible, blocked or unknown | `garuda sessions show latest --json` | [Level 4](../use-cases/parallel.md#see-who-owns-a-session-and-whether-it-can-be-recovered) |
 | Artifact completeness | See complete, partial, failed or unavailable retained output, provenance and retention; malformed flow receipts retain valid sibling evidence with explicit coverage | `garuda sessions show latest --json` | [Use Garuda in scripts](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 
 ## Agents and project knowledge
@@ -71,6 +76,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Profile migration | Move an old profile to version 1 | `garuda agent migrate PATH` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Structured output | A JSON result checked against a schema | `output.schema` in an agent | [Level 3](../use-cases/customize.md#get-structured-json-back) |
 | Typed child results | Accepted schema output survives ordinary subagent handoff, inline or by verified buffer reference; post-tool hooks cannot replace its validated facts | `invoke_subagent` with a schema-bound child | [Level 3](../use-cases/customize.md#delegate-a-typed-result) |
+| Isolated editing workers | Opt-in sequential local native children edit detached repositories; explicit integration checks a provenance-bound patch and refuses stale bases; cancellation retains uncertain ownership | Programmatic `LocalEditingWorkers`, `editing_worker: true`, `integrate_editing_worker` | [Level 5](../use-cases/teams.md#isolate-a-native-editing-worker) |
 | Memory notes | The agent proposes; you accept | `garuda memory review` | [Level 3](../use-cases/customize.md#let-the-agent-propose-notes-to-remember) |
 | Reviewed note retrieval | Project-scoped, bounded search with evidence and freshness labels | `garuda memory search` | [Retrieve notes](../use-cases/customize.md#retrieve-reviewed-notes-with-source-evidence) |
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
@@ -78,7 +84,10 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | MCP resources and prompts | Opt-in bounded lists and text retrieval through admitted sessions; untrusted data, read-only effects and explicit unsupported capabilities | Global `context_access`, `mcp__<server>__context` | [Level 3](../use-cases/customize.md#read-mcp-resources-and-prompts) |
 | Required MCP servers | A required server must be ready by the startup barrier or the run refuses; per-server state, reason and bounded stdio reconnects are inspectable | `"required": true` in `mcp.json`, `garuda mcp list` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| Semantic edit preview/apply | Version/digest-bound rename and edit-only code actions, per-path permissions, explicit apply/rollback results | `lsp` rename/code_action → `lsp_apply` preview token | [Level 3](../use-cases/customize.md#preview-and-apply-a-semantic-refactor) |
+| Language server navigation | Definition, references, hover, symbols and version-bound diagnostics from a server you configure globally | `garuda lsp list`, `language_servers:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#navigate-code-with-a-language-server) |
 | Hooks | Your script guards every direct or discovered target call | `hooks:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#block-or-log-tool-calls-with-a-hook) |
+| Conditional reminders | Trusted declarative rules queue bounded advisory notes after tool results, with inspectable source and counts | `reminders:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#remind-the-agent-after-relevant-tool-calls) |
 | Python tools | Your own tools, opt-in | `garuda run --load-project-tools -t "…"` | [Level 3](../use-cases/customize.md#add-your-own-python-tools) |
 
 ## Roles, flows and teams
@@ -96,6 +105,8 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Flow recovery | Continue after the last finished step | `garuda flow resume FLOW_ID` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Automatic Codex quota recovery | Hourly, evidence-gated continuation of eligible sequential CLI flows without replaying completed work | `garuda recovery enable` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
 | Recovery schedule diagnostics | Verify the selected root's cron entry and private wrapper, with a reason for missing or mismatched installation | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
+| macOS recovery LaunchAgent | Opt into an owner-only plist and verified launchctl installation using the same guarded tick; cron stays the default | `garuda recovery enable --backend launchd` | [Level 6](../use-cases/automate.md#macos-launchagent-backend) |
+| Recovery tick health | See whether recovery ticks actually ran, separately from cron installation: last attempt, outcome (zero-pending, quota-waiting, probe-unavailable, dispatched, attention, failed) and last dispatch | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
 | Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
@@ -128,6 +139,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Runtime catalog | Which harnesses are installed and ready | `garuda runtime list` | [Level 7](../use-cases/advanced.md#see-which-external-harnesses-are-ready) |
 | ACP runs | Claude Code, Codex and others on your login | `garuda run --runtime claude -t "…"` | [Level 7](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
+| oh-my-pi runtime | omp's native `omp acp` as its own runtime, separate from `pi`; no-prompt conformance only (omp 18.16.0) | `garuda runtime inspect omp` | [Level 7](../use-cases/advanced.md#install-a-harness), [conformance report](../development/omp-acp-conformance.md) |
 | Standalone ACP acceptance | Explicit post-run checks verify selected criteria separately from harness completion | `garuda run --runtime codex -t "…" --check "pytest -q"` | [Harness acceptance checks](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
 | Handoff | Move a native session to a harness | `garuda runtime handoff --session latest --to codex` | [Level 7](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
 | Recover and reclaim | Repair ownership after an interruption | `garuda runtime recover --session latest` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
@@ -137,3 +149,4 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Collection model | A cheaper model for read-only investigation | `collection:` in settings | [Level 7](../use-cases/advanced.md#add-a-cheaper-model-for-investigation) |
 | ACP server | Use Garuda from an ACP editor | `python -m garuda.acp.server` | [Level 7](../use-cases/advanced.md#use-garuda-from-an-acp-editor) |
 | Evaluation | Benchmark modes and paired reports | `garuda eval dual-model report …` | [Evaluation](../evaluation/index.md) |
+| Offline incident regressions | Synthetic fixtures, frozen minimal config and explicit guard gaps | `python -m garuda.eval.contract_matrix --incidents --out incident-reports` | [Level 7](../use-cases/advanced.md#run-offline-incident-regressions) |

@@ -75,6 +75,8 @@ class WorkingState:
     failures: list[str] = field(default_factory=list)
     acceptance: str = ""
     narrative: str = ""
+    context_fork: dict = field(default_factory=dict)
+    source_task: str = ""
 
     # -- recording ------------------------------------------------------------
 
@@ -108,6 +110,23 @@ class WorkingState:
         a heading with nothing under it costs tokens and says nothing."""
         parts: list[str] = [STATE_CARD_HEADER]
         _section(parts, "Task", _clip(self.task, MAX_TASK_CHARS))
+        if self.context_fork:
+            from garuda.core.session_fork import CONTEXT_REWIND_NOTICE
+
+            source = self.context_fork.get("forked_from")
+            point = self.context_fork.get("fork_at")
+            digest = self.context_fork.get("source_digest")
+            _section(parts, "Context fork", f"{CONTEXT_REWIND_NOTICE}\nSource: {source}, message {point}, SHA-256 {digest}.")
+            _section(parts, "Source task constraints (historical task; full text in source meta.json)",
+                     _clip(self.source_task, MAX_TASK_CHARS))
+            _section(parts, "Historical references (availability unverified)", "\n".join(
+                f"  - {ref.get('session_id')}/{ref.get('path')}: {ref.get('purpose')}"
+                for ref in self.context_fork.get("references", [])[:4]
+            ))
+            receipts = self.context_fork.get("receipt_references", [])
+            _section(parts, "Source receipt references (stale, availability unverified)", "\n".join(
+                f"  - {ref.get('session_id')}/{ref.get('path')}" for ref in receipts[:4]
+            ))
         _section(parts, "Goal", self.goal)
         if self.todos:
             _section(parts, "Todos", _render_todos(self.todos))
@@ -138,13 +157,14 @@ class WorkingState:
         """True when the card would say nothing beyond the task it started with."""
         return not any(
             (self.goal, self.todos, self.files_modified, self.checks, self.failures,
-             self.acceptance, self.narrative)
+             self.acceptance, self.narrative, self.context_fork)
         )
 
     # -- persistence ----------------------------------------------------------
 
     def to_dict(self) -> dict:
         return {
+            **({"context_fork": self.context_fork, "source_task": self.source_task} if self.context_fork else {}),
             "task": self.task,
             "goal": self.goal,
             "todos": list(self.todos),
@@ -181,6 +201,8 @@ class WorkingState:
             failures=[str(f) for f in (data.get("failures") or [])],
             acceptance=str(data.get("acceptance") or ""),
             narrative=str(data.get("narrative") or ""),
+            context_fork=dict(data.get("context_fork") or {}),
+            source_task=str(data.get("source_task") or ""),
         )
 
 

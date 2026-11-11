@@ -1,0 +1,20 @@
+{
+  "runtime_id": "omp",
+  "kind": "acp",
+  "command": ["omp", "acp"],
+  "version": "unknown",
+  "capabilities": ["prompt", "cancel"],
+  "description": "oh-my-pi (omp) via its native stdio ACP subcommand, a runtime separate from pi (pi-acp). Provider access stays in your omp login; Garuda never reads it.",
+  "warnings": [
+    "Vendor capability mediation is negotiated at handshake; strict garuda-only policies may be refused — review before mutating runs.",
+    "No-prompt conformance only (omp 18.16.0): initialize, session/new, idle cancel and process cleanup were exercised; prompted turns, permission requests, mode and option selection, session/load, usage and error normalization were not. See docs/development/omp-acp-conformance.md."
+  ],
+  "version_args": ["omp", "--version"],
+  "version_pattern": "^omp/(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?)",
+  "auth_probe": null,
+  "setup": "1. Install the omp (oh-my-pi) CLI and log in with `omp login`. 2. Verify: omp --version (conformance was checked on omp/18.16.0; other versions are unverified). Garuda never reads ~/.omp or omp's credential vault, and never calls `omp token` or `omp auth`.",
+  "login": {
+    "flow": "user-cli",
+    "instructions": "Run `omp login` for your model provider, then select this runtime."
+  }
+}

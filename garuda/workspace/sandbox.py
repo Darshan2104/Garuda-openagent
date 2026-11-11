@@ -21,6 +21,7 @@ network (denied by default) or via env (scrubbed). See ``build_seatbelt_profile`
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from garuda.types import ExecResult
@@ -133,6 +134,35 @@ class SandboxEnvironment:
             return to_shell_string(argv), clean_env
         # No backend and require_sandbox=False: run unconfined but still scrub env.
         return command, clean_env
+
+    def open_code_cell(self):
+        from garuda.workspace.cells import CellError
+
+        if self._backend != "bwrap":
+            raise CellError(
+                "Code cells unsupported: full read confinement requires Linux/bwrap or Docker; "
+                "Seatbelt and unsandboxed execution are unsupported"
+            )
+        return self._open_code_cell()
+
+    @asynccontextmanager
+    async def _open_code_cell(self):
+        import shutil
+        import sys
+
+        from garuda.workspace.cells import WORKER, CellError, cell_process, minimal_cell_env
+        from garuda.workspace.sandbox_policy import build_bwrap_cell_command
+
+        python = str(Path(sys.executable).resolve())
+        if not any(Path(python).is_relative_to(path) for path in ("/usr", "/bin", "/lib", "/lib64")):
+            raise CellError("Code cells unsupported: Garuda's Python is outside the cell runtime mounts")
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise CellError("Code cells unsupported: bubblewrap is unavailable")
+        async with cell_process(
+            build_bwrap_cell_command(bwrap, python, WORKER), env=minimal_cell_env(),
+        ) as process:
+            yield process
 
     async def execute(
         self,
