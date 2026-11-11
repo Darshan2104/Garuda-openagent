@@ -33,6 +33,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
 
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
+| Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
 
 ## Where commands run
 
@@ -82,6 +83,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | MCP resources and prompts | Opt-in bounded lists and text retrieval through admitted sessions; untrusted data, read-only effects and explicit unsupported capabilities | Global `context_access`, `mcp__<server>__context` | [Level 3](../use-cases/customize.md#read-mcp-resources-and-prompts) |
 | Required MCP servers | A required server must be ready by the startup barrier or the run refuses; per-server state, reason and bounded stdio reconnects are inspectable | `"required": true` in `mcp.json`, `garuda mcp list` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| Semantic edit preview/apply | Version/digest-bound rename and edit-only code actions, per-path permissions, explicit apply/rollback results | `lsp` rename/code_action → `lsp_apply` preview token | [Level 3](../use-cases/customize.md#preview-and-apply-a-semantic-refactor) |
 | Language server navigation | Definition, references, hover, symbols and version-bound diagnostics from a server you configure globally | `garuda lsp list`, `language_servers:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#navigate-code-with-a-language-server) |
 | Hooks | Your script guards every direct or discovered target call | `hooks:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#block-or-log-tool-calls-with-a-hook) |
 | Python tools | Your own tools, opt-in | `garuda run --load-project-tools -t "…"` | [Level 3](../use-cases/customize.md#add-your-own-python-tools) |

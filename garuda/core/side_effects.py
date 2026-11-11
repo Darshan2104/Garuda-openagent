@@ -338,6 +338,11 @@ class SideEffectLedger:
     def _observe(self, call: ToolCall, result: ToolResult) -> None:
         name = call.name
         args = call.arguments or {}
+        if name == "lsp_apply":
+            for file in result.metadata.get("files", []):
+                if file.get("status") in {"applied", "rollback_failed"}:
+                    self.files_written.add(file["path"])
+            return
         if name in _WRITE_TOOLS:
             if not result.is_error:
                 self.files_written.add(str(args.get("path") or args.get("file_path") or ""))

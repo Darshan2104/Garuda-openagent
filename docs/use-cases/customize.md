@@ -654,6 +654,53 @@ garuda run -t "Find every caller of load_profile, following re-exports"
 - The tool is labelled read-only because Garuda only sends read requests, but
   the server itself is not confined and may write caches or index files.
 
+## Preview and apply a semantic refactor
+
+With the global language-server configuration above, ask the native agent:
+
+```bash
+garuda run -t "Preview renaming helper to renamed across this workspace, inspect every replacement, then apply the preview and run the relevant tests"
+```
+
+The agent first calls the read-only `lsp` tool, for example:
+
+```json
+{"action":"rename","path":"main.py","line":1,"column":14,"new_name":"renamed"}
+```
+
+The result includes `preview_token` and every file's `document_version`,
+`sha256` and `edits` (each `range` is `[start_line, start_column, end_line,
+end_column]`, 1-based character columns, with an exclusive end). No file is
+written by preview. To list code actions at a position, use `action: code_action`
+with the same path/line/column; add the exact `title` from that list to preview
+one. Optional `end_line` and `end_column` select a range.
+
+After inspecting the preview, the agent calls `lsp_apply`. It is offered only to a
+profile whose tools may write files (such as `build`); a `tools: {preset: read-only}`
+or `preset: none` profile keeps `lsp` but not `lsp_apply` unless it adds a writer,
+for example `tools: {preset: read-only, add: [edit]}`:
+
+```json
+{"preview_token":"<token returned by lsp in this run>"}
+```
+
+Every target passes the ordinary write permission screen, including any approval
+rules. Any changed file refuses the whole edit; request a fresh preview after
+reviewing the change. Successful apply reports `applied` for each file. Failed
+writes trigger restoration of all attempted files, reported as `restored` or
+`rollback_failed`; untouched files report `not_written`. Inspect any restoration
+failure before continuing. A write attempt consumes the token.
+
+This supports existing local workspace files only. File create/rename/delete
+operations, symlink aliases, overlapping edits, code actions containing commands,
+and unresolved actions are refused. Previews are bounded (32 files, 256 edits,
+4 MiB of source/result text each, 12,000 output bytes or the smaller live
+inline allowance), and only the four most
+recent are retained in the run. Larger refactors need smaller previews. The
+Environment provides compensating rollback, not a cross-file transaction;
+external concurrent writers can still race an apply. Diagnostics are advisory,
+so run the relevant authorized checks after applying.
+
 ## Block or log tool calls with a hook
 
 <p class="gd-facts">Configured in: <code>~/.agent/settings.yaml</code> · Runs: your shell command before or after a tool</p>
