@@ -6,6 +6,7 @@ has one owner here, including runtime/role selection and native/ACP routing.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -249,7 +250,7 @@ async def run_task(args) -> int:
     agent = prepared.agent
     tools = prepared.tools
     mcp_manager = prepared.mcp_manager
-    if not args.json:
+    if not args.json and not getattr(args, "quiet", False):
         print(
             f"[garuda] reasoning={safe_model_identity(model)} "
             f"({prepared.provenance['reasoning'].provenance.value})",
@@ -264,34 +265,45 @@ async def run_task(args) -> int:
 
     guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
 
-    result = await run_agent_task(
-        task=task,
-        model=model,
-        agent=agent,
-        tools=tools,
-        config=config,
-        permissions=permissions,
-        workspace=args.workspace,
-        events=events,
-        emit_json=args.json,
-        workspace_kind=args.workspace_kind,
-        docker_image=args.docker_image,
-        docker_host=args.docker_host,
-        mcp_manager=mcp_manager,
-        agents_dir=agents_dir,
-        resume=args.resume,
-        resume_all_projects=getattr(args, "all_projects", False),
-        session_name=getattr(args, "name", None),
-        isolation=getattr(args, "isolation", "shared"),
-        context_attached=getattr(args, "_attached", None),
-        session_record=_session_record(args),
-        runtime_catalog=runtime_catalog,
-        runtime_ref=args.runtime,
-        initial_selection=args._initial_selection,
-        store=fallback_store,
-        collection_model=prepared.collection,
-        collection_policy=prepared.collection_policy,
-    )
+    from garuda.interfaces.cli import stream_run_output
+
+    try:
+        terminal = sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        terminal = False
+    stream = (terminal and not args.json and not getattr(args, "quiet", False)
+              and not getattr(args, "no_stream", False) and guard is None)
+    output = stream_run_output(events) if stream else contextlib.nullcontext(None)
+    with output as renderer:
+        result = await run_agent_task(
+            task=task,
+            model=model,
+            agent=agent,
+            tools=tools,
+            config=config,
+            permissions=permissions,
+            workspace=args.workspace,
+            events=events,
+            emit_json=args.json,
+            workspace_kind=args.workspace_kind,
+            docker_image=args.docker_image,
+            docker_host=args.docker_host,
+            mcp_manager=mcp_manager,
+            agents_dir=agents_dir,
+            resume=args.resume,
+            resume_all_projects=getattr(args, "all_projects", False),
+            session_name=getattr(args, "name", None),
+            isolation=getattr(args, "isolation", "shared"),
+            context_attached=getattr(args, "_attached", None),
+            session_record=_session_record(args),
+            runtime_catalog=runtime_catalog,
+            runtime_ref=args.runtime,
+            initial_selection=args._initial_selection,
+            store=fallback_store,
+            collection_model=prepared.collection,
+            collection_policy=prepared.collection_policy,
+            **({"model_delta_consumer": renderer.on_model_delta} if renderer is not None else {}),
+        )
 
     args._completed_session_id = events.session_id
     if args.trajectory:
@@ -300,8 +312,10 @@ async def run_task(args) -> int:
         return 3  # outputs withheld; the changes stay for you to inspect
     _accept_session(args, events.session_id)
     if not args.json:
-        print(result.final_message)
-        if getattr(args, "isolation", "shared") != "shared" or args.resume:
-            _print_worktree_note(fallback_store, events.session_id)
-        _print_consult_line(fallback_store, events.session_id)
+        if renderer is None or result.final_message.strip() not in renderer.rendered_assistant_text:
+            print(result.final_message)
+        if not getattr(args, "quiet", False):
+            if getattr(args, "isolation", "shared") != "shared" or args.resume:
+                _print_worktree_note(fallback_store, events.session_id)
+            _print_consult_line(fallback_store, events.session_id)
     return 0 if result.success else 1

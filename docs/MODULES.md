@@ -350,7 +350,18 @@ and `ContextOverflowError` and cancellation propagate without fallback. It
 forwards `LiveDelta` text/reasoning (and `discard` before a fallback) to an
 optional consumer, detaching a consumer that raises. `complete_streaming()` and
 the loop's opt-in `model_delta_consumer` path both use it; without a consumer
-the loop calls `complete()` as before. `StreamDelta`
+the loop calls `complete()` as before. `interfaces/role_execution.py` attaches
+that consumer for native TTY `run` output through `interfaces/runner.py`;
+`interfaces/cli.py::stream_run_output` subscribes the existing event renderer
+only to the root run's events (not inherited child or auxiliary accounting
+records). `tui.py::ChatRenderer` keeps only a bounded preview tail, refreshed at
+most ten times per second: the last terminal-height-minus-one wrapped lines with
+Rich, or a single plain line. Dumb/unset terminals suppress previews and their
+erase codes. Discard, response assembly, failure and cancellation clear previews.
+The completed response renders in full; a final message identical to any already
+rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
+output withholding retain the ordinary model path. Chat, web, SDK and ACP do
+not attach the native consumer. `StreamDelta`
 has optional provider terminal fields. `litellm_model.py` emits them even when a
 terminal chunk has no content, retains the latest non-null values across trailing
 usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is

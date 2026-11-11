@@ -10,6 +10,7 @@ from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
 from garuda.core.run_state import reserved_output_tokens
 from garuda.core.sessions import SessionStore
+from garuda.model.streaming import DeltaConsumer
 from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.runtime.native import NativeGarudaRuntime
 from garuda.types import AgentConfig, AgentResult, Message, Role
@@ -189,6 +190,7 @@ async def run_agent_task(
     initial_selection=None,
     collection_model=None,
     collection_policy=None,
+    model_delta_consumer: DeltaConsumer | None = None,
 ) -> AgentResult:
     # Selection happens before sessions, leases, environments, hooks, tools, or
     # prompts. A disabled runtime must therefore be unable to cause even a
@@ -482,6 +484,7 @@ async def run_agent_task(
                 workspace_delta_loader=workspace_delta_loader,
                 collection_model=collection_model,
                 collection_policy=collection_policy,
+                **({"model_delta_consumer": model_delta_consumer} if model_delta_consumer is not None else {}),
                 **({"buffer": resumed_buffer} if resumed_buffer is not None and config.buffer_tool_output else {}),
             )
 

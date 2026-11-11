@@ -2797,3 +2797,33 @@ revalidates every source before writing, and verifies writes and restoration of
 all attempted files after failure. Cancellation retains ownership through
 settlement and restoration. Restoration failure stays explicit/unknown; this is
 not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-11 — Native run terminal attaches the shared live consumer (#389)
+
+Native `garuda run` supplies #432's `model_delta_consumer` through the shared
+runner for TTY stdout unless `--no-stream`, `--quiet` or `--json` is selected.
+No-edits output withholding also keeps the ordinary path. Other runner callers
+retain their defaults; no environment execution or interpreter requirement is
+added. The existing CLI event renderer observes only the root run, excluding
+inherited child events and auxiliary accounting records.
+
+Assistant text has a transient preview (Rich when available, otherwise a bounded
+single line). Discard erases it before fallback; assembled responses replace it
+once, including complete-only models. Failure and cancellation close it. Reasoning
+and tool argument fragments never enter this text display. Completed tools still
+render from the ordinary events; identical final text is not printed twice.
+Assembly, fallback, permissions, dispatch and usage remain owned by the existing
+loop. Chat, web dashboard, SDK and ACP surfaces still do not attach this native
+consumer; external harness streaming remains its own runtime path.
+
+## 2026-11-11 — Bound terminal previews and deduplicate exhausted output (#389)
+
+The terminal renderer keeps only a bounded tail for its transient preview and
+refreshes at most ten times per second. Rich wraps that tail to the last
+terminal-height-minus-one lines; plain output keeps one line. Dumb, unknown or
+unset `TERM` suppresses preview output and its erase codes. The authoritative
+response event still renders the full assembled answer, without truncation.
+Final output is compared with every assistant response already rendered in the
+root run, so budget exhaustion cannot repeat an earlier candidate after a later
+forced response. Model assembly, execution and Environment requirements stay
+with their existing owners.
