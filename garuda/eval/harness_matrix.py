@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from garuda.eval.evidence import EvaluationEvidence
+
 
 @dataclass(frozen=True)
 class HarnessTrial:
@@ -39,6 +41,7 @@ class HarnessTrial:
     handoff: str = "none"
     error: str = ""
     timestamp: float = field(default_factory=time.time)
+    evaluation: EvaluationEvidence | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.task_id, str) or not self.task_id:
@@ -78,6 +81,10 @@ class HarnessTrial:
             raise ValueError("error must be a string")
         if not isinstance(self.timestamp, (int, float)) or isinstance(self.timestamp, bool):
             raise ValueError("timestamp must be a number")
+        if self.evaluation is not None and not isinstance(self.evaluation, EvaluationEvidence):
+            raise ValueError("evaluation must be validated evidence or null")
+        if self.evaluation is not None and self.completed != self.evaluation.model_completed:
+            raise ValueError("completed must agree with evaluation.model_completed")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +101,7 @@ class HarnessTrial:
             "handoff": self.handoff,
             "error": self.error,
             "timestamp": self.timestamp,
+            **({"evaluation": self.evaluation.to_dict()} if self.evaluation is not None else {}),
         }
 
     @classmethod
@@ -158,6 +166,8 @@ class HarnessTrial:
             handoff=data.get("handoff", "none"),
             error=error,
             timestamp=timestamp,
+            evaluation=(EvaluationEvidence.from_dict(data["evaluation"])
+                        if "evaluation" in data else None),
         )
 
 
@@ -201,12 +211,30 @@ def write_matrix(path: str, trials: list[HarnessTrial]) -> list[MatrixCell]:
                 "trials": [trial.to_dict() for trial in trials],
                 "cells": [cell.to_dict() for cell in cells],
                 "markdown": render_table(cells),
+                **({"evaluation": evaluation_summary(trials)} if any(t.evaluation for t in trials) else {}),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
     return cells
+
+
+def evaluation_summary(trials: list[HarnessTrial]) -> dict:
+    evidence = [trial.evaluation for trial in trials if trial.evaluation is not None]
+    return {
+        "claim": "contract observations only; no model uplift established",
+        "trials": len(evidence),
+        "model_completion": {"completed": sum(e.model_completed is True for e in evidence),
+                             "not_completed": sum(e.model_completed is False for e in evidence),
+                             "unknown": sum(e.model_completed is None for e in evidence)},
+        "coverage": {status: sum(e.coverage == status for e in evidence)
+                     for status in ("pass", "fail", "expected-fail", "unknown")},
+        "authorized_acceptance": {status: sum(e.authorized_acceptance == status for e in evidence)
+                                  for status in ("passed", "failed", "unavailable", "invalidated")},
+        "unattributed_trials": len(trials) - len(evidence),
+        "unknown_costs": sum(t.cost_usd is None for t in trials),
+    }
 
 
 @dataclass
@@ -318,7 +346,9 @@ def trials_from_ablation(
         if result.task_id not in prompts:
             raise ValueError(f"ablation result references unknown task {result.task_id!r}")
         prompt = prompts[result.task_id]
-        if result.graded_pass is not None:
+        if result.evaluation is not None:
+            completed = result.evaluation.model_completed
+        elif result.graded_pass is not None:
             completed: bool | None = result.graded_pass
         elif result.error or not result.agent_success:
             completed = False
@@ -335,6 +365,7 @@ def trials_from_ablation(
                 completed=completed,
                 latency_ms=result.duration_ms,
                 error=result.error or "",
+                **({"evaluation": result.evaluation} if result.evaluation is not None else {}),
             )
         )
     return trials

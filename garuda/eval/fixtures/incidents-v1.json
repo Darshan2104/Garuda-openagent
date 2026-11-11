@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "ignored_config",
+      "mechanism": "strict-config-schema",
+      "owner": "config/garuda_yaml.py",
+      "prompt": "Load garuda.yaml before starting this synthetic task.",
+      "files": {
+        "garuda.yaml": "version: 1\nroles: {coder: {harness: native, efort: high}}\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "denied_reviewer_command",
+      "mechanism": "permission-dispatch",
+      "owner": "core/tool_runner.py",
+      "prompt": "Review this fixture under the declared command denial. Report the limitation.",
+      "files": {
+        "source.txt": "synthetic review input\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "attempt",
+              "name": "bash",
+              "arguments": {
+                "command": "printf unexpected > reviewer-marker.txt"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ],
+      "permissions": {
+        "mode": "smart",
+        "tool_rules": {
+          "bash": "deny"
+        }
+      }
+    },
+    {
+      "id": "no_edits_startup",
+      "mechanism": "no-edits-manifest",
+      "owner": "workspace/no_edits.py",
+      "prompt": "Inspect the fixture without edits. Synthetic adapter startup writes metadata.",
+      "files": {
+        "source.txt": "unchanged source\n"
+      },
+      "startup": {
+        "adapter-state.txt": "synthetic startup metadata\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ],
+      "permissions": {
+        "mode": "readonly"
+      }
+    },
+    {
+      "id": "partial_output",
+      "mechanism": "partial-tool-arguments",
+      "owner": "core/loop.py",
+      "prompt": "Create answer.txt with exactly complete-answer. Partial arguments must not be executed.",
+      "files": {},
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "attempt",
+              "name": "write_file",
+              "arguments": {
+                "path": "answer.txt",
+                "content": "complete-"
+              }
+            }
+          ],
+          "raw": {
+            "finish_reason": "length"
+          }
+        },
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ],
+      "expected_failure": "not yet guarded: well-formed prefix arguments on a length-truncated response execute"
+    },
+    {
+      "id": "stale_edits",
+      "mechanism": "edit-text-precondition",
+      "owner": "tools/edit.py",
+      "prompt": "Apply the edit based on an obsolete source version. Preserve the collaborator change.",
+      "files": {
+        "source.txt": "collaborator-current-value\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "attempt",
+              "name": "edit",
+              "arguments": {
+                "path": "source.txt",
+                "old_string": "obsolete-original-value",
+                "new_string": "replacement"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unmatched_intent",
+      "mechanism": "flow-intent-quarantine",
+      "owner": "flows/engine.py",
+      "prompt": "Recover an interrupted flow with a launched step and no terminal receipt. Never replay it.",
+      "files": {
+        "source.txt": "retained partial work\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "attempt",
+              "name": "write_file",
+              "arguments": {
+                "path": "replayed.txt",
+                "content": "unsafe replay"
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "quota_race",
+      "mechanism": "quota-dispatch-claim",
+      "owner": "flows/quota_recovery.py",
+      "prompt": "Two quota schedulers observed the same waiting continuation. Dispatch at most once.",
+      "files": {
+        "source.txt": "synthetic waiting continuation\n"
+      },
+      "responses": [
+        {
+          "tool_calls": [
+            {
+              "id": "done",
+              "name": "task_complete",
+              "arguments": {
+                "summary": "Completed the synthetic incident reproduction and recorded its outcome."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
