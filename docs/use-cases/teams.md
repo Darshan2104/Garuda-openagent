@@ -566,13 +566,23 @@ garuda sessions discard-worker SESSION CANDIDATE_ID
 ```
 
 `ownership.editing_workers` lists this parent's worker IDs, repository paths,
-state, cleanup evidence and repository retention, with the inspected storage root. The dashboard session's
-Ownership section shows the same inventory. Inspection reads at most 128 storage
-entries and 64 KiB per receipt, takes no locks, runs no Git and changes nothing.
-Unreadable/unattributed entries or a bounded scan report incomplete coverage and
-unknown omitted counts, never an empty inventory. Retained audit directories also
-count toward the scan bound; an overfull store blocks admission and cleanup
-until it can be inspected completely.
+state, cleanup evidence and repository retention, with the inspected storage
+root. The dashboard session's Ownership section shows the same inventory.
+Inspection returns at most 128 receipts belonging to this session and reads at
+most 64 KiB per receipt, takes no locks, runs no Git and changes nothing. Valid
+receipts of other sessions do not consume this session's bound. Discovery visits
+the shared store to attribute receipts, so its total work scales with that store.
+Unreadable non-empty entries or a bounded session inventory report incomplete
+coverage and unknown omitted counts, never an empty inventory.
+
+Receipt-less empty directories and unpublished admission metadata are reported
+in `orphans` instead of making coverage unavailable; the next cleanup removes
+them. Non-empty directories with unknown data remain retained. The worker store
+and its entries are created owner-only (`0700`) regardless of umask. Readers
+require privacy at that root and its entries, so a group-writable ancestor such
+as your home does not refuse it. Symlinked or foreign-owned ancestors still
+refuse inspection; errors name the refused ancestor. A non-private worker root
+or receipt directory is also named in the error.
 
 `cleanup-workers` attempts conservative cleanup after parent ownership has been
 released and returns the inventory; retained entries are not cleanup successes.
@@ -580,7 +590,17 @@ Automatic cleanup also runs inside the admitted local service under its own
 parent lease. It requires durable child settlement, readable released worker
 lease/capacity records, matching repository identity and no unintegrated or
 additional data. HEAD/index changes, extra refs/reflogs and untracked or ignored files
-prevent removal. Receipts and candidate patches remain as audit evidence.
+prevent removal. Proved removal renames the repository aside before deleting it,
+so a failure resumes without re-proving content. Receipts and candidate patches
+for retained workers remain as audit evidence; fully retired receipt directories
+are compacted by a later cleanup run (never the run that retired them), keeping
+retired receipts from permanently filling the inventory limit. For example:
+
+```bash
+garuda sessions cleanup-workers SESSION  # retire eligible settled repositories
+garuda sessions cleanup-workers SESSION  # prune receipts retired by the earlier run
+garuda sessions show SESSION --json      # inspect retained workers and removable orphans
+```
 
 `discard-worker` explicitly discards the repository's changes for the exact
 candidate ID. It requires released parent ownership and re-proves all worker

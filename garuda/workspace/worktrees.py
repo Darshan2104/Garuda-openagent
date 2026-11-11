@@ -131,8 +131,14 @@ def _create_worktree(repo: Path, session_id: str) -> WorkspacePlan:
     branch = f"garuda/{session_id}"
     if not snap.allocate_branch(repo, session_id, source_head):
         raise WorktreeError("worktree.branch_taken", f"branch {branch} already exists")
-    target = worktrees_root() / _repo_key(repo) / session_id
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from garuda.runtime.strict_store import ensure_private_dir
+
+    root = worktrees_root()
+    # Create the store and its ancestors owner-only even under umask 002; the
+    # ownership readers treat this store (not the user's home) as the boundary.
+    ensure_private_dir(root)
+    target = root / _repo_key(repo) / session_id
+    ensure_private_dir(target.parent)
     added = git(repo, "worktree", "add", "--quiet", str(target), branch, check=False)
     if added.returncode != 0:
         git(repo, "update-ref", "-d", f"refs/heads/{branch}", source_head, check=False)

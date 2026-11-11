@@ -1,7 +1,8 @@
 """Bounded local editing-worker inventory and conservative repository retirement (#384).
 
-Receipts remain as audit records. Retiring a repository never releases leases or
-capacity: missing descendant-settlement evidence requires supervised recovery.
+Retained receipts remain as audit records; later cleanup compacts fully retired
+ones. Retiring a repository never releases leases or capacity: missing
+descendant-settlement evidence requires supervised recovery.
 """
 
 from __future__ import annotations
@@ -11,17 +12,23 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import uuid
+from itertools import islice
 from pathlib import Path
 
 from garuda.runtime.capacity import CapacityError
-from garuda.runtime.private_records import open_directory, read_record
+from garuda.runtime.private_records import open_directory, open_private_directory, read_record
 from garuda.runtime.strict_store import StorageError, exclusive_lock, write_locked_document
 from garuda.workspace import snapshot_proto as snap
 from garuda.workspace.lease import LeaseError, LeaseStore
 from garuda.workspace.worktrees import WorktreeError, worktrees_root
 
 MAX_WORKERS = 128
+STAGING_PREFIX = ".admit-"
+_WORKSPACE = "workspace"
+_RETIRING = "workspace.retiring"
+_ADMISSION_FILE = re.compile(r"(?:\.lock|receipt\.json|\.receipt\.json\.[0-9]+\.[0-9a-f]{32}\.tmp)")
 _TERMINAL = {"failed", "refused", "integrated", "uncertain"}
 
 
@@ -43,7 +50,7 @@ class EditingWorkerRepositories:
         self.root = Path(os.path.abspath(root if root is not None else editing_workers_root()))
 
     def _read(self, directory: Path) -> dict:
-        fd = open_directory(directory)
+        fd = open_private_directory(directory)
         try:
             receipt = read_record(fd, "receipt.json")
         finally:
@@ -61,64 +68,84 @@ class EditingWorkerRepositories:
                 or receipt.get("workspace") != str(directory / "workspace")):
             raise WorktreeError("worker.uncertain", "worker receipt binding is incomplete")
         if receipt.get("repository_state") == "removed":
-            try:
-                os.lstat(directory / "workspace")
-            except FileNotFoundError:
-                pass
-            else:
+            for name in (_WORKSPACE, _RETIRING):
+                try:
+                    os.lstat(directory / name)
+                except FileNotFoundError:
+                    continue
                 raise WorktreeError("worker.uncertain", "retired repository unexpectedly exists")
         return receipt
 
     def inventory(self, session_id: str) -> dict:
-        """Bound total directory entries and receipt bytes; unknown never means empty.
+        """Bound this session's entries and receipt bytes; unknown never means empty.
 
         No Git calls, liveness probes, locks, directory creation or repair occur.
-        Unattributed entries make coverage unavailable for every session.
+        Valid receipts of other sessions do not consume this session's bound.
+        An unattributable non-empty entry or an unreadable private directory
+        still makes coverage unavailable.
+        Receipt-less empty/staging directories are reported as removable orphans.
         """
         entries = []
+        orphans = []
         identities = set()
-        view = {"root": str(self.root), "coverage": "complete", "entries": entries, "omitted": 0}
+        view = {"root": str(self.root), "coverage": "complete", "entries": entries,
+                "orphans": orphans, "omitted": 0}
         try:
-            root_fd = open_directory(self.root)
+            root_fd = open_private_directory(self.root)
         except FileNotFoundError:
-            # Only a missing root with a readable, trusted parent proves absence.
             parent = self.root.parent
             while True:
                 try:
-                    parent_fd = open_directory(parent)
+                    parent_fd = open_directory(parent, private_ancestors=False)
                     os.close(parent_fd)
-                    break
+                    return view
                 except FileNotFoundError:
                     parent = parent.parent
-                except (OSError, StorageError):
+                except (OSError, StorageError) as exc:
                     return {**view, "coverage": "unavailable", "omitted": None,
-                            "reason": "worker storage cannot be inspected"}
-            return view
-        except (OSError, StorageError):
+                            "reason": f"worker storage cannot be inspected: {exc}"}
+        except (OSError, StorageError) as exc:
             return {**view, "coverage": "unavailable", "omitted": None,
-                    "reason": "worker storage cannot be inspected"}
+                    "reason": f"worker storage cannot be inspected: {exc}"}
         try:
             with os.scandir(root_fd) as directories:
-                for index, entry in enumerate(directories):
-                    if index >= MAX_WORKERS:
-                        view.update(coverage="bounded", omitted=None)
-                        break
+                for entry in directories:
                     if entry.name == ".lock":
                         continue
                     try:
-                        if not entry.name.startswith("worker-") or not entry.is_dir(follow_symlinks=False):
+                        if not entry.is_dir(follow_symlinks=False):
                             raise WorktreeError("worker.uncertain", "unrecognized worker entry")
-                        receipt = self._read(self.root / entry.name)
-                    except (OSError, StorageError, WorktreeError):
+                        if not entry.name.startswith("worker-"):
+                            state = self._orphan_state(self.root / entry.name, entry.name)
+                            if state is None:
+                                raise WorktreeError("worker.uncertain", "unrecognized worker entry")
+                            orphans.append({"directory": entry.name, "state": state})
+                            continue
+                        try:
+                            receipt = self._read(self.root / entry.name)
+                        except FileNotFoundError:
+                            # A concurrent cleanup pruned this entry while scanning.
+                            continue
+                        except (OSError, StorageError, WorktreeError):
+                            state = self._orphan_state(self.root / entry.name, entry.name)
+                            if state is None:
+                                raise
+                            orphans.append({"directory": entry.name, "state": state})
+                            continue
+                    except (OSError, StorageError, WorktreeError) as exc:
                         view.update(coverage="unavailable", omitted=None,
-                                    reason="worker ownership cannot be attributed")
+                                    reason=f"worker ownership cannot be attributed: {exc}")
+                        break
+                    if receipt["parent_session_id"] != session_id:
                         continue
                     if receipt["candidate_id"] in identities:
                         view.update(coverage="unavailable", omitted=None,
                                     reason="duplicate worker identity")
+                        break
+                    if len(entries) >= MAX_WORKERS:
+                        view.update(coverage="bounded", omitted=None)
+                        break
                     identities.add(receipt["candidate_id"])
-                    if receipt["parent_session_id"] != session_id:
-                        continue
                     entries.append({
                         "candidate_id": receipt["candidate_id"], "directory": entry.name,
                         "workspace": receipt["workspace"], "state": receipt["state"],
@@ -126,11 +153,50 @@ class EditingWorkerRepositories:
                         "repository_state": receipt.get("repository_state", "retained"),
                         "ownership": "recorded" if receipt.get("parent_ownership") else "unknown",
                     })
-        except OSError:
-            view.update(coverage="unavailable", omitted=None, reason="worker scan failed")
+        except OSError as exc:
+            view.update(coverage="unavailable", omitted=None,
+                        reason=f"worker scan failed: {exc}")
         finally:
             os.close(root_fd)
         return view
+
+    def _orphan_state(self, directory: Path, name: str) -> str | None:
+        """Recognize empty leftovers or unpublished admission metadata only."""
+        if not name.startswith(("worker-", STAGING_PREFIX)):
+            return None
+        try:
+            fd = open_directory(directory, private_ancestors=False)
+            try:
+                if os.fstat(fd).st_uid != os.getuid():
+                    return None
+                with os.scandir(fd) as contents:
+                    files = list(islice(contents, 4))
+                if not files:
+                    return "staging" if name.startswith(STAGING_PREFIX) else "empty"
+                if (not name.startswith(STAGING_PREFIX) or len(files) > 3
+                        or stat.S_IMODE(os.fstat(fd).st_mode) != 0o700
+                        or any(not _ADMISSION_FILE.fullmatch(file.name)
+                               or not file.is_file(follow_symlinks=False)
+                               or file.stat(follow_symlinks=False).st_uid != os.getuid()
+                               or stat.S_IMODE(file.stat(follow_symlinks=False).st_mode) != 0o600
+                               for file in files)):
+                    return None
+                candidate = name.removeprefix(STAGING_PREFIX)[:36]
+                if str(uuid.UUID(candidate)) != candidate or not name.startswith(f"{STAGING_PREFIX}{candidate}-"):
+                    return None
+                receipt = read_record(fd, "receipt.json")
+                if receipt is None:
+                    return "staging"
+                if receipt.get("state") != "admitted":
+                    return None
+                if (receipt.get("candidate_id") != candidate
+                        or receipt.get("workspace") != str(self.root / f"worker-{candidate}" / _WORKSPACE)):
+                    return None
+                return "staging"
+            finally:
+                os.close(fd)
+        except (OSError, StorageError, ValueError):
+            return None
 
     def _settled(self, receipt: dict, *, parent_guard=None):
         from garuda.runtime.capacity import CapacityError, CapacityStore
@@ -150,7 +216,7 @@ class EditingWorkerRepositories:
                 or workspace.is_relative_to(Path(parent)) or Path(parent).is_relative_to(workspace)):
             raise WorktreeError("worker.uncertain", "parent workspace binding is invalid")
         leases = parent_guard.leases if parent_guard is not None else LeaseStore()
-        lease_fd = open_directory(Path(os.path.abspath(leases.root)))
+        lease_fd = open_private_directory(Path(os.path.abspath(leases.root)))
         os.close(lease_fd)
         if receipt.get("lease_root") != str(leases.root.resolve()):
             raise WorktreeError("worker.uncertain", "worker lease storage binding changed")
@@ -172,7 +238,7 @@ class EditingWorkerRepositories:
             raise WorktreeError("worker.ownership_retained", "worker workspace ownership is retained")
         try:
             capacity = CapacityStore()
-            capacity_fd = open_directory(Path(os.path.abspath(capacity.root)))
+            capacity_fd = open_private_directory(Path(os.path.abspath(capacity.root)))
             os.close(capacity_fd)
             if (receipt.get("capacity_root") != str(capacity.root.resolve())
                     or not capacity.released("native", receipt["candidate_id"])):
@@ -217,7 +283,7 @@ class EditingWorkerRepositories:
                             raise WorktreeError("worker.unintegrated_changes", "worker retains additional reflog data")
 
         try:
-            fd = open_directory(workspace / ".git" / "logs")
+            fd = open_directory(workspace / ".git" / "logs", private_ancestors=False)
         except FileNotFoundError:
             return
         try:
@@ -259,48 +325,105 @@ class EditingWorkerRepositories:
             raise WorktreeError("worker.unintegrated_changes", "worker content differs from its retained tree")
 
     def retire(self, session_id: str, directory_name: str, *, discard=False, parent_guard=None) -> dict:
-        """Re-prove ownership before removal. Discard waives only the content check."""
+        """Re-prove ownership before removal. Discard waives only the content check.
+
+        Git, hashing and settlement reads run before the global lease/capacity
+        locks. Those locks cover only the cheap recheck, the intent receipt and
+        the atomic rename that unpublishes the repository. Deletion runs after
+        they are dropped, so another session is never blocked on recursion.
+        """
         if Path(directory_name).name != directory_name or not directory_name.startswith("worker-"):
             raise WorktreeError("worker.uncertain", "worker directory is invalid")
         if self.inventory(session_id)["coverage"] != "complete":
             raise WorktreeError("worker.uncertain", "worker inventory is incomplete")
         directory = self.root / directory_name
-        if self._read(directory)["parent_session_id"] != session_id:
+        initial = self._read(directory)
+        if initial["parent_session_id"] != session_id:
             raise WorktreeError("worker.foreign_parent", "worker belongs to another session")
-        validation_fd = open_directory(directory)
+        validation_fd = open_private_directory(directory)
         try:
             with exclusive_lock(directory) as directory_fd:
                 before, after = os.fstat(validation_fd), os.fstat(directory_fd)
                 if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
                     raise WorktreeError("worker.uncertain", "worker directory changed")
                 receipt = self._read(directory)
-                if receipt["parent_session_id"] != session_id:
-                    raise WorktreeError("worker.foreign_parent", "worker belongs to another session")
+                if receipt != initial:
+                    raise WorktreeError("worker.uncertain", "worker receipt changed during retirement")
                 if receipt.get("repository_state") == "removed":
                     return receipt
                 leases, capacity, released = self._settled(receipt, parent_guard=parent_guard)
                 if not discard and receipt["state"] not in _TERMINAL:
                     raise WorktreeError("worker.candidate_retained", "worker candidate is still available")
-                with leases.guard_released(released), capacity.guard_released("native", receipt["candidate_id"]):
-                    return self._remove_repository(directory_fd, directory, receipt, discard=discard)
+                source = self._prove_repository(directory, receipt, discard=discard)
+                with leases.guard_released(released), capacity.guard_released(
+                    "native", receipt["candidate_id"],
+                ):
+                    if parent_guard is not None:
+                        binding = receipt["parent_ownership"]
+                        issued = leases.snapshot_issued(
+                            parent_guard.workspace, parent_guard.session_id,
+                            epoch=binding["lease"]["epoch"],
+                        )
+                        holders = [holder.to_dict() for holder in leases.holders_of(parent_guard.workspace)]
+                        if (issued != binding or not any(
+                            all(holder.get(key) == value for key, value in binding["lease"].items())
+                            for holder in holders
+                        )):
+                            raise WorktreeError("worker.foreign_parent", "parent ownership changed")
+                    if self._read(directory) != receipt:
+                        raise WorktreeError("worker.uncertain", "worker receipt changed during proof")
+                    for name in (_WORKSPACE, _RETIRING):
+                        if name != source and os.path.lexists(directory / name):
+                            raise WorktreeError("worker.uncertain", "repository appeared during proof")
+                    if source is not None:
+                        if repository_identity(directory / source) != receipt.get("repository_identity"):
+                            raise WorktreeError("worker.uncertain", "repository changed before removal")
+                    receipt.update(repository_state="removing", discarded=bool(discard))
+                    write_locked_document(directory_fd, directory / "receipt.json", receipt)
+                    if source == _WORKSPACE:
+                        os.rename(_WORKSPACE, _RETIRING, src_dir_fd=directory_fd,
+                                  dst_dir_fd=directory_fd)
+                        os.fsync(directory_fd)
+                # Keep only the per-worker lock through deletion and completion.
+                # Other sessions can acquire lease and capacity locks throughout.
+                if source is not None:
+                    if repository_identity(directory / _RETIRING) != receipt.get("repository_identity"):
+                        raise WorktreeError("worker.uncertain", "retired repository staging changed")
+                    shutil.rmtree(_RETIRING, dir_fd=directory_fd)
+                receipt.update(repository_state="removed", retired_ns=time.time_ns())
+                write_locked_document(directory_fd, directory / "receipt.json", receipt)
+                return receipt
         finally:
             os.close(validation_fd)
 
-    def _remove_repository(self, directory_fd, directory, receipt, *, discard):
-        workspace = directory / "workspace"
+    def _prove_repository(self, directory: Path, receipt: dict, *, discard: bool) -> str | None:
+        """Check identity, links and content without any global lock."""
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise WorktreeError("worker.uncertain", "safe directory removal is unavailable")
+        workspace = directory / _WORKSPACE
         removing = receipt.get("repository_state") == "removing"
+        try:
+            staged_identity = repository_identity(directory / _RETIRING)
+        except FileNotFoundError:
+            staged_identity = None
+        if staged_identity is not None:
+            if (not removing or staged_identity != receipt.get("repository_identity")
+                    or os.path.lexists(workspace)):
+                raise WorktreeError("worker.uncertain", "retired repository staging changed")
+            # The receipt's intent precedes the rename, after the content proof.
+            return _RETIRING
         try:
             identity = repository_identity(workspace)
         except FileNotFoundError:
             if not removing:
-                raise WorktreeError("worker.uncertain", "repository is missing without retirement intent") from None
-            receipt.update(repository_state="removed")
-            write_locked_document(directory_fd, directory / "receipt.json", receipt)
-            return receipt
+                raise WorktreeError(
+                    "worker.uncertain", "repository is missing without retirement intent",
+                ) from None
+            return None
         if identity != receipt.get("repository_identity"):
             raise WorktreeError("worker.uncertain", "repository identity changed or is unknown")
         if not (discard and removing):
-            git_fd = open_directory(workspace / ".git")
+            git_fd = open_directory(workspace / ".git", private_ancestors=False)
             os.close(git_fd)
             if (snap.git(workspace, "rev-parse", "--absolute-git-dir").stdout.decode().strip()
                     != str(workspace / ".git")
@@ -309,19 +432,80 @@ class EditingWorkerRepositories:
                 raise WorktreeError("worker.uncertain", "repository is linked or redirected")
         if not discard:
             self._unchanged(receipt)
-        if not shutil.rmtree.avoids_symlink_attacks:
-            raise WorktreeError("worker.uncertain", "safe directory removal is unavailable")
-        receipt.update(repository_state="removing", discarded=bool(discard))
-        write_locked_document(directory_fd, directory / "receipt.json", receipt)
-        if repository_identity(workspace) != receipt["repository_identity"]:
-            raise WorktreeError("worker.uncertain", "repository changed before removal")
-        shutil.rmtree("workspace", dir_fd=directory_fd)
-        receipt.update(repository_state="removed")
-        write_locked_document(directory_fd, directory / "receipt.json", receipt)
-        return receipt
+        return _WORKSPACE
+
+    def _prune_orphans(self) -> None:
+        """Remove only empty directories or recognized admission metadata."""
+        try:
+            with exclusive_lock(self.root) as root_fd:
+                with os.scandir(root_fd) as directories:
+                    for entry in directories:
+                        if self._orphan_state(self.root / entry.name, entry.name) is None:
+                            continue
+                        try:
+                            if entry.name.startswith(STAGING_PREFIX):
+                                fd = open_directory(self.root / entry.name, private_ancestors=False)
+                                try:
+                                    with os.scandir(fd) as contents:
+                                        files = list(islice(contents, 4))
+                                    if len(files) > 3 or any(not _ADMISSION_FILE.fullmatch(file.name) for file in files):
+                                        continue
+                                    for file in files:
+                                        try:
+                                            os.unlink(file.name, dir_fd=fd)
+                                        except FileNotFoundError:
+                                            pass
+                                finally:
+                                    os.close(fd)
+                            os.rmdir(entry.name, dir_fd=root_fd)
+                        except OSError:
+                            continue
+        except (OSError, StorageError):
+            return
+
+    def _prune_retired(self, run_ns: int, *, keep_candidate: str | None = None) -> None:
+        """Drop only known audit files from a previously retired directory."""
+        try:
+            with exclusive_lock(self.root) as root_fd:
+                with os.scandir(root_fd) as directories:
+                    for entry in directories:
+                        if (not entry.name.startswith("worker-")
+                                or not entry.is_dir(follow_symlinks=False)):
+                            continue
+                        directory = self.root / entry.name
+                        try:
+                            receipt = self._read(directory)
+                            if (receipt.get("repository_state") != "removed"
+                                    or receipt.get("candidate_id") == keep_candidate):
+                                continue
+                            retired = receipt.get("retired_ns")
+                            if retired is not None and (type(retired) is not int or retired >= run_ns):
+                                continue
+                            with exclusive_lock(directory) as directory_fd:
+                                if self._read(directory) != receipt:
+                                    continue
+                                with os.scandir(directory_fd) as contents:
+                                    files = list(islice(contents, 4))
+                                if any(file.name not in {".lock", "receipt.json", "candidate.patch"}
+                                       or not file.is_file(follow_symlinks=False)
+                                       or file.stat(follow_symlinks=False).st_uid != os.getuid()
+                                       for file in files):
+                                    continue
+                                for file in files:
+                                    if file.name != "receipt.json":
+                                        os.unlink(file.name, dir_fd=directory_fd)
+                                os.unlink("receipt.json", dir_fd=directory_fd)
+                                os.rmdir(entry.name, dir_fd=root_fd)
+                        except (OSError, StorageError, WorktreeError):
+                            continue
+        except (OSError, StorageError):
+            return
 
     def recover(self, session_id: str, *, parent_guard=None) -> dict:
         """Best-effort automatic cleanup; every uncertainty stays retained."""
+        run_ns = time.time_ns()
+        self._prune_orphans()
+        self._prune_retired(run_ns)
         view = self.inventory(session_id)
         if view["coverage"] != "complete":
             return view
@@ -335,6 +519,8 @@ class EditingWorkerRepositories:
         return self.inventory(session_id)
 
     def discard(self, session_id: str, candidate_id: str) -> dict:
+        self._prune_orphans()
+        self._prune_retired(time.time_ns(), keep_candidate=candidate_id)
         view = self.inventory(session_id)
         if view["coverage"] != "complete":
             raise WorktreeError("worker.uncertain", "worker inventory is incomplete")

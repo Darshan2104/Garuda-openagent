@@ -3,7 +3,10 @@
 import asyncio
 import json
 import os
+import shutil
+import stat
 import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ from garuda.runtime.capacity import CapacityStore
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace import snapshot_proto as snap
+from garuda.workspace.editing_workers import EditingWorkerRepositories
 from garuda.workspace.lease import LeaseError, LeaseStore
 from garuda.workspace.local import LocalEnvironment
 
@@ -196,7 +200,11 @@ async def test_siblings_share_budget_and_stale_sibling_cannot_overwrite_winner(e
     runner.budget.max_launches = 2
     refused = await runner.run("editor", "three", editing_worker=True)
     assert refused.metadata["refused"] == "agent.delegation_exhausted"
-    assert len(list(workers.root.glob("worker-*"))) == 2
+    # The later integration attempt pruned the first worker's retired receipt;
+    # only the retained sibling remains.
+    assert [path.name for path in workers.root.glob("worker-*")] == [
+        Path(second["workspace"]).parent.name,
+    ]
 
 
 async def test_cancellation_retains_worker_lease_capacity_and_uncertain_receipt(editing):
@@ -517,13 +525,15 @@ async def test_discard_never_waives_ownership_or_repository_identity(editing, am
             capacity.release(reservation)
 
 
-async def test_worker_inventory_is_bounded_and_unknown_receipts_block_admission(editing):
+async def test_worker_inventory_reports_unknown_receipts_and_blocks_admission(editing):
     from garuda.workspace.editing_workers import MAX_WORKERS
 
     runner, workers, repo = editing
     receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
     for index in range(MAX_WORKERS + 1):
-        (workers.root / f"worker-unknown-{index}").mkdir()
+        unknown = workers.root / f"worker-unknown-{index}"
+        unknown.mkdir()
+        (unknown / "unattributed").write_text("not a receipt\n")
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
               for p in workers.root.rglob("*") if p.is_file()}
     view = workers.repositories.inventory(runner.events.session_id)
@@ -535,6 +545,338 @@ async def test_worker_inventory_is_bounded_and_unknown_receipts_block_admission(
     refused = await runner.run("editor", "must not relaunch", editing_worker=True)
     assert refused.metadata["refused"] == "worker.uncertain"
     assert Path(receipt["workspace"]).is_dir()
+
+
+async def test_failed_source_validation_leaves_no_worker_entry_and_other_sessions_admit(editing):
+    runner, workers, repo = editing
+    (repo / ".git").rename(repo / "git-backup")
+    try:
+        failed = await runner.run("editor", "must not create a worker", editing_worker=True)
+        assert list(workers.root.glob("worker-*")) == []
+        assert not failed.success and failed.metadata["refused"] == "snapshot.not_git"
+        assert workers.repositories.inventory("another-session")["coverage"] == "complete"
+    finally:
+        (repo / "git-backup").rename(repo / ".git")
+    receipt = _receipt(await runner.run("editor", "admit after a refusal", editing_worker=True))
+    assert Path(receipt["workspace"]).parent.is_dir()
+
+
+async def test_failed_admission_receipt_never_publishes_a_worker(editing, monkeypatch):
+    from garuda.runtime.strict_store import StorageUnavailable
+
+    runner, workers, repo = editing
+
+    def failed_write(*args, **kwargs):
+        raise StorageUnavailable("receipt write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("garuda.core.editing_worker.write_locked_document", failed_write)
+        with pytest.raises(StorageUnavailable, match="receipt write failed"):
+            await runner.run("editor", "must not publish a worker", editing_worker=True)
+    assert list(workers.root.glob("worker-*")) == []
+    assert workers.repositories.inventory("another-session")["coverage"] == "complete"
+    _receipt(await runner.run("editor", "admit after a write failure", editing_worker=True))
+
+
+async def test_receiptless_empty_and_staging_workers_are_reported_and_cleanable(editing):
+    runner, workers, repo = editing
+    workers.root.mkdir(mode=0o700, parents=True)
+    empty = workers.root / "worker-empty"
+    staging = workers.root / ".admit-abandoned"
+    empty.mkdir()
+    staging.mkdir()
+    candidate = str(uuid.uuid4())
+    admitted = workers.root / f".admit-{candidate}-unpublished"
+    admitted.mkdir(mode=0o700)
+    from garuda.runtime.strict_store import write_document
+
+    write_document(admitted / "receipt.json", {
+        "version": 1, "candidate_id": candidate, "state": "admitted",
+        "workspace": str(workers.root / f"worker-{candidate}" / "workspace"),
+    })
+    interrupted = workers.root / f".admit-{uuid.uuid4()}-interrupted"
+    interrupted.mkdir(mode=0o700)
+    for name in (".lock", f".receipt.json.{os.getpid()}.{uuid.uuid4().hex}.tmp"):
+        path = interrupted / name
+        path.write_text('{"version":')
+        os.chmod(path, 0o600)
+    view = workers.repositories.inventory(runner.events.session_id)
+    assert view["coverage"] == "complete"
+    assert {orphan["directory"] for orphan in view["orphans"]} == {
+        empty.name, staging.name, admitted.name, interrupted.name,
+    }
+    assert {orphan["state"] for orphan in view["orphans"]} == {"empty", "staging"}
+
+    _receipt(await runner.run("editor", "admit beside removable leftovers", editing_worker=True))
+    assert not any(path.exists() for path in (empty, staging, admitted, interrupted))
+    assert workers.repositories.inventory(runner.events.session_id)["coverage"] == "complete"
+
+
+@pytest.mark.parametrize("name", ["worker-empty", ".admit-abandoned"])
+async def test_cleanup_preserves_unattributed_nonempty_directories(editing, name):
+    runner, workers, repo = editing
+    orphan = workers.root / name
+    orphan.mkdir(mode=0o700, parents=True)
+    data = orphan / "precious.txt"
+    data.write_text("keep unowned data\n")
+    view = workers.repositories.recover(runner.events.session_id)
+    assert view["coverage"] == "unavailable" and view["omitted"] is None
+    assert data.read_text() == "keep unowned data\n"
+
+
+async def test_retired_receipts_are_pruned_by_a_later_cleanup_run(editing, monkeypatch):
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    directory = Path(receipt["workspace"]).parent
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    integrated = await _integrate(runner, workers, receipt)
+    assert integrated["repository_state"] == "removed" and directory.is_dir()
+
+    from garuda.runtime.strict_store import write_document
+    from garuda.workspace.editing_workers import MAX_WORKERS
+
+    document = json.loads((directory / "receipt.json").read_text())
+    for index in range(MAX_WORKERS + 1):
+        retired = workers.root / f"worker-retired-{index}"
+        write_document(retired / "receipt.json", {
+            **document, "candidate_id": str(uuid.uuid4()),
+            "workspace": str(retired / "workspace"),
+        })
+    workers.repositories.recover(runner.events.session_id)
+    assert list(workers.root.glob("worker-*")) == []
+    assert workers.repositories.inventory(runner.events.session_id)["coverage"] == "complete"
+    assert (repo / "main.txt").read_text() == "worker\n"
+
+
+async def test_unrelated_session_receipts_do_not_bound_this_session(editing):
+    from garuda.workspace.editing_workers import MAX_WORKERS
+
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    document = json.loads((Path(receipt["workspace"]).parent / "receipt.json").read_text())
+    for index in range(MAX_WORKERS * 32 + 1):
+        directory = workers.root / f"worker-other-{index}"
+        directory.mkdir(mode=0o700)
+        other = {
+            **document, "candidate_id": str(uuid.uuid4()), "parent_session_id": "other-session",
+            "workspace": str(directory / "workspace"),
+        }
+        record = directory / "receipt.json"
+        record.write_text(json.dumps(other))
+        os.chmod(record, 0o600)
+
+    view = workers.repositories.inventory(runner.events.session_id)
+    assert view["coverage"] == "complete"
+    assert [entry["candidate_id"] for entry in view["entries"]] == [receipt["candidate_id"]]
+
+    from garuda.runtime.strict_store import write_document
+
+    for index in range(MAX_WORKERS):
+        directory = workers.root / f"worker-other-{index}"
+        other = json.loads((directory / "receipt.json").read_text())
+        other["parent_session_id"] = runner.events.session_id
+        write_document(directory / "receipt.json", other)
+    bounded = workers.repositories.inventory(runner.events.session_id)
+    assert bounded["coverage"] == "bounded" and bounded["omitted"] is None
+    assert len(bounded["entries"]) == MAX_WORKERS
+    refused = await runner.run("editor", "must not exceed this session's bound", editing_worker=True)
+    assert refused.metadata["refused"] == "worker.uncertain"
+
+
+async def test_worker_store_is_private_under_umask_002(editing, tmp_path, monkeypatch):
+    runner, workers, repo = editing
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(tmp_path / "fresh-home" / ".agent" / "settings.yaml"))
+    workers.root = tmp_path / "fresh-home" / ".agent" / "worktrees" / "editing-workers"
+    workers.repositories = EditingWorkerRepositories(workers.root)
+    previous = os.umask(0o002)
+    try:
+        receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(workers.root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(workers.root.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(Path(receipt["workspace"]).parent.stat().st_mode) == 0o700
+    # Only the worker root and its entries are the privacy boundary; a
+    # group-readable ancestor such as the user's home must not refuse the store.
+    os.chmod(workers.root.parent, 0o775)
+    assert workers.repositories.inventory(runner.events.session_id)["coverage"] == "complete"
+
+
+def test_untrusted_ancestor_error_names_the_refused_path(tmp_path):
+    from garuda.runtime.private_records import open_directory
+    from garuda.runtime.strict_store import StorageUnavailable
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    inner = shared / "inner"
+    inner.mkdir(mode=0o700)
+    with pytest.raises(StorageUnavailable, match=str(shared)):
+        open_directory(inner)
+
+
+async def test_retirement_proof_and_removal_run_outside_global_locks(editing, monkeypatch):
+    from contextlib import contextmanager
+
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    held = set()
+    lease_guard, capacity_guard = LeaseStore.guard_released, CapacityStore.guard_released
+    git, capture, remove = snap.git, snap.capture, shutil.rmtree
+    observed = set()
+
+    @contextmanager
+    def tracked_lease(self, workspaces):
+        held.add("lease")
+        try:
+            with lease_guard(self, workspaces):
+                yield
+        finally:
+            held.discard("lease")
+
+    @contextmanager
+    def tracked_capacity(self, key, holder):
+        held.add("capacity")
+        try:
+            with capacity_guard(self, key, holder):
+                yield
+        finally:
+            held.discard("capacity")
+
+    def tracked_git(*args, **kwargs):
+        assert not held, "Git proof ran while global locks were held"
+        observed.add("git")
+        return git(*args, **kwargs)
+
+    def tracked_capture(*args, **kwargs):
+        assert not held, "content proof ran while global locks were held"
+        observed.add("hash")
+        return capture(*args, **kwargs)
+
+    def tracked_remove(*args, **kwargs):
+        assert not held, "repository removal ran while global locks were held"
+        observed.add("removal")
+        return remove(*args, **kwargs)
+
+    tracked_remove.avoids_symlink_attacks = remove.avoids_symlink_attacks
+    monkeypatch.setattr(LeaseStore, "guard_released", tracked_lease)
+    monkeypatch.setattr(CapacityStore, "guard_released", tracked_capacity)
+    monkeypatch.setattr(snap, "git", tracked_git)
+    monkeypatch.setattr(snap, "capture", tracked_capture)
+    monkeypatch.setattr(shutil, "rmtree", tracked_remove)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    result = await _integrate(runner, workers, receipt)
+    assert result["repository_state"] == "removed"
+    assert observed == {"git", "hash", "removal"}
+
+
+@pytest.mark.parametrize("changed", ["receipt", "parent-lease"])
+async def test_retirement_rechecks_receipt_after_content_proof(editing, monkeypatch, changed):
+    from garuda.runtime.strict_store import write_document
+
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    directory = Path(receipt["workspace"]).parent
+    capture = snap.capture
+
+    def changed_receipt(source, **kwargs):
+        result = capture(source, **kwargs)
+        if kwargs.get("object_repo") is not None:
+            if changed == "receipt":
+                document = json.loads((directory / "receipt.json").read_text())
+                document["child_settled"] = False
+                write_document(directory / "receipt.json", document)
+            else:
+                write_document(workers.parent_guard.leases._path_for(str(repo)), {"version": 2, "holders": []})
+        return result
+
+    monkeypatch.setattr(snap, "capture", changed_receipt)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    assert (await _integrate(runner, workers, receipt))["state"] == "integrated"
+    assert Path(receipt["workspace"]).is_dir()
+    durable = json.loads((directory / "receipt.json").read_text())
+    if changed == "receipt":
+        assert durable["child_settled"] is False
+    assert durable.get("repository_state", "retained") == "retained"
+
+
+async def test_admission_and_retirement_run_store_work_off_the_event_loop(editing, monkeypatch):
+    runner, workers, repo = editing
+    main_thread = threading.get_ident()
+    recovered, retired = [], []
+    recover, retire = EditingWorkerRepositories.recover, EditingWorkerRepositories.retire
+
+    def observed_recover(self, *args, **kwargs):
+        recovered.append(threading.get_ident())
+        return recover(self, *args, **kwargs)
+
+    def observed_retire(self, *args, **kwargs):
+        retired.append(threading.get_ident())
+        return retire(self, *args, **kwargs)
+
+    monkeypatch.setattr(EditingWorkerRepositories, "recover", observed_recover)
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    assert recovered and all(thread != main_thread for thread in recovered)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    monkeypatch.setattr(EditingWorkerRepositories, "retire", observed_retire)
+    assert (await _integrate(runner, workers, receipt))["state"] == "integrated"
+    assert retired and all(thread != main_thread for thread in retired)
+
+
+@pytest.mark.parametrize("operation", ["recover", "retire", "failed-removal"])
+async def test_cancellation_settles_repository_threads_before_returning(editing, monkeypatch, operation):
+    runner, workers, repo = editing
+    receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    entered, finish = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    method = getattr(EditingWorkerRepositories, "retire" if operation == "failed-removal" else operation)
+
+    def blocked(self, *args, **kwargs):
+        if operation == "retire" and (repo / "main.txt").read_text() != "worker\n":
+            return method(self, *args, **kwargs)
+        loop.call_soon_threadsafe(entered.set)
+        assert finish.wait(10)
+        return method(self, *args, **kwargs)
+
+    if operation == "failed-removal":
+        remove = shutil.rmtree
+
+        def interrupted(path, *args, **kwargs):
+            if path != "workspace.retiring":
+                return remove(path, *args, **kwargs)
+            loop.call_soon_threadsafe(entered.set)
+            assert finish.wait(10)
+            raise OSError("interrupted removal")
+
+        interrupted.avoids_symlink_attacks = remove.avoids_symlink_attacks
+        monkeypatch.setattr(shutil, "rmtree", interrupted)
+    else:
+        monkeypatch.setattr(EditingWorkerRepositories, operation, blocked)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    task = asyncio.create_task(_integrate(runner, workers, receipt))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), "cancellation returned while the repository thread was running"
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    directory = Path(receipt["workspace"]).parent
+    durable = json.loads((directory / "receipt.json").read_text())
+    if operation == "failed-removal":
+        assert durable["repository_state"] == "removing"
+        assert (directory / "workspace.retiring").is_dir()
+    elif operation == "retire":
+        assert durable["repository_state"] == "removed"
+        assert not Path(receipt["workspace"]).exists()
+        assert (repo / "main.txt").read_text() == "worker\n"
+    else:
+        assert durable["state"] == "ready"
+        assert (repo / "main.txt").read_text() == "original\n"
 
 
 async def test_session_view_reports_uncertain_workers_without_repair(editing, monkeypatch):
@@ -589,14 +931,15 @@ async def test_discard_recovers_interrupted_repository_removal(editing, monkeypa
     runner, workers, repo = editing
     receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
     workspace = Path(receipt["workspace"])
+    retiring = workspace.parent / "workspace.retiring"
     await workers.parent_guard.release()
     remove = shutil.rmtree
 
     @wraps(remove)
     def interrupt(path, *args, **kwargs):
-        if path == "workspace":
+        if path == "workspace.retiring":
             if stage == "partial":
-                remove(workspace / ".git")
+                remove(retiring / ".git")
             else:
                 remove(path, *args, **kwargs)
             raise OSError("interrupted retirement")
@@ -604,7 +947,7 @@ async def test_discard_recovers_interrupted_repository_removal(editing, monkeypa
 
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "rmtree", interrupt)
-        with pytest.raises(LeaseError, match="interrupted retirement"):
+        with pytest.raises(OSError, match="interrupted retirement"):
             workers.repositories.discard(runner.events.session_id, receipt["candidate_id"])
     intent = json.loads((workspace.parent / "receipt.json").read_text())
     assert intent["repository_state"] == "removing"
@@ -644,14 +987,14 @@ async def test_cleanup_command_recovers_failed_integrated_retirement(editing, mo
 
     @wraps(remove)
     def fail_removal(path, *args, **kwargs):
-        if path == "workspace":
+        if path == "workspace.retiring":
             raise OSError("temporary removal failure")
         return remove(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "rmtree", fail_removal)
         assert (await _integrate(runner, workers, receipt))["state"] == "integrated"
-    assert workspace.is_dir()
+    assert (workspace.parent / "workspace.retiring").is_dir()
     await workers.parent_guard.release()
     SessionStore().begin(runner.events.session_id, task="edit", model="fixture", agent="build", workspace=str(repo))
     args = build_parser().parse_args([

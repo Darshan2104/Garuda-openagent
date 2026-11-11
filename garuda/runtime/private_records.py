@@ -37,20 +37,36 @@ def private_file(fd: int) -> None:
         raise StorageUnavailable("record is not an owner-only regular file")
 
 
-def open_directory(path: Path) -> int:
-    """Open every ancestor without following links or trusting writable parents."""
+def open_directory(path: Path, *, private_ancestors: bool = True) -> int:
+    """Traverse without links; by default also refuse writable ancestors."""
     if not path.is_absolute() or ".." in path.parts:
         raise StorageUnavailable("private directory must have an absolute contained path")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for part in path.parts[1:]:
+        for index, part in enumerate(path.parts[1:], start=1):
             next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | FLAGS, dir_fd=fd)
             os.close(fd)
             fd = next_fd
             info = os.fstat(fd)
             shared_tmp = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
-            if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and not shared_tmp):
-                raise StorageUnavailable("private directory has an untrusted ancestor")
+            if (info.st_uid not in (0, os.getuid())
+                    or (private_ancestors and info.st_mode & 0o022 and not shared_tmp)):
+                refused = Path(*path.parts[: index + 1])
+                raise StorageUnavailable(f"private directory has an untrusted ancestor: {refused}")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_private_directory(path: Path) -> int:
+    """Require a private leaf, retaining no-follow traversal of every ancestor."""
+    fd = open_directory(path, private_ancestors=False)
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise StorageUnavailable(f"{path} is not an owner-only directory")
         return fd
     except BaseException:
         os.close(fd)
