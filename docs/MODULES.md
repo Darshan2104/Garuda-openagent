@@ -49,6 +49,7 @@ a behaviour.
 | `buffer.py` | Session buffers holding large tool output and compacted history. Payload/descriptor publication, backups, rollback and resume copies use held no-follow directory descriptors and checked bindings; byte writes handle short progress and refuse stalled writes. The storage transaction stays in this owner. Descriptor reads revalidate regular-file size and digest; confirmed pruning survives resume and exact sibling reconciliation before verification limits. Unexplained missing payloads retain uncertainty when unverified. Legacy `.txt` captures retain observed bytes and unknown capture provenance. |
 | `session_artifact_resume.py` | Native resume's authorized artifact inheritance: carries the facade's retained source-directory binding through discovery and buffer-owner copies, rebinds selected-source capture facts and canonical typed child storage, and asks SessionStore to publish bounded metadata-only inheritance. It preserves producer lineage and failure/pruning facts without changing the original session or weakening digest checks. |
 | `artifact_read_model.py` | Versioned, bounded read-only artifact descriptor and selected-session projection. Adapts summary, transcript, buffer and flow owners without write, repair, execution or authority; carries producer/storage identity, media type, recorded/observed digest and size, redaction, completeness, source/view omissions, availability/integrity and retention policy. |
+| `ownership_read_model.py` | Versioned read-only ownership projection for one session (#376): recorded owner liveness, retained workspace leases, queue entry/claim and quarantine, capacity slots, recorded runtime children, waiting reasons (queue, quarantine, approval, quota) and reconciliation status/blockers/retained ownership. Takes no lock, writes and signals nothing, probes no process beyond the row's own owner check; names only the existing `garuda runtime recover` path and never performs it. Unreadable records stay `unavailable` and make reconciliation `unknown`. |
 | `child_result.py` | Versioned native child-result envelopes, accepted schema provenance, bounded inline delivery, parent-buffer publication and size/digest-checked reference resolution. The runner snapshots validated envelopes before hooks, retaining semantic facts independently of summary rendering. Referenced values carry the common artifact descriptor while pre-descriptor version-1 references remain readable. Failed publications share a stable unavailable capture adapter across live delivery, inspection and inheritance, without inventing a payload reference. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. Captures a child-scoped workspace baseline and attaches authoritative changed-path evidence or an explicit unsupported/error attribution state. |
@@ -423,6 +424,19 @@ reports observed installation separately, and includes a failure `reason`
 without calling providers. The recovery CLI reports bounded, redacted subprocess
 stderr so an OS crontab refusal remains actionable. Redaction runs before and
 after control-character normalization to cover original and reassembled token shapes.
+The opt-in `launchd` backend writes a root-derived `com.garuda.quota-recovery.*`
+label and exact `0600` plist under `~/Library/LaunchAgents`, with no-follow
+checks that preserve existing shared directory permissions. It uses the same
+wrapper, verifies its content digest, reads back exact plist bytes and the
+GUI-domain loaded job's identity/state before enabling. Re-enable unloads and
+reloads the matching job under disabled settings. Disable verifies unload before
+deleting only the matching private plist. All launchctl calls go through the
+injectable subprocess boundary, with bounded timeouts; there is no plutil or
+workspace interpreter dependency. The saved backend selects status/disable;
+cron remains the default for enable. Status never launches the wrapper and
+reports an unavailable launchctl read with a null job count. Launchctl's
+unversioned diagnostic text has no stable API guarantee, so unfamiliar formats
+refuse installation verification.
 `flows/quota_recovery.default_root()`
 uses `GARUDA_RECOVERY_ROOT` for consistent custom-store enrollment; a CLI
 `--root` remains a one-command control override.
