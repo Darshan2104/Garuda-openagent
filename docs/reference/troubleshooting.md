@@ -303,7 +303,7 @@ Click a problem to see the fix.
 
     Check the role's `harness`: it must be a runtime ID from
     `garuda runtime list` (`native`, `claude`, `codex`, `cursor`, `opencode`,
-    `pi`, `goose`). `doctor` only checks the harnesses it recognises, so a
+    `pi`, `goose`, `omp`). `doctor` only checks the harnesses it recognises, so a
     misspelled one is skipped rather than reported.
 
 ??? question "A flow stops with `flow.output_missing`"

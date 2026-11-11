@@ -108,6 +108,7 @@ KNOWN_EVENT_TYPES = frozenset(
         "side_effects",
         "contract",
         "turn_metrics",
+        "reminder",
     }
 )
 
@@ -587,6 +588,11 @@ class Run:
                 "gate_stack": self.gate_stack,
             }
         )
+        from garuda.plugins.reminders import inspect_reminders
+
+        reminders = inspect_reminders(self.events)
+        if reminders:
+            payload["reminders"] = reminders
         for turn, turn_payload in zip(self.turns, payload["turns"], strict=True):
             turn_payload.update(
                 {

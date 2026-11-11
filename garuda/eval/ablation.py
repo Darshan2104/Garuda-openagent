@@ -16,17 +16,30 @@ Run the built-in suite:
 
 import argparse
 import asyncio
+import os
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 from garuda.core.events import EventStore
 from garuda.core.modes import apply_mode_preset
 from garuda.core.permissions import PermissionEngine
-from garuda.core.rigorous import create_agent
+from garuda.eval.evidence import EvaluationEvidence
+from garuda.eval.minimal import (
+    MinimalConfig,
+    authority_identity,
+    digest,
+    environment_identity,
+    runtime_identity,
+    source_identity,
+    tool_identity,
+)
+from garuda.model.protocol import Model, ModelResponse
+from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
 from garuda.types import AgentConfig
 
@@ -37,6 +50,8 @@ class AblationTask:
     prompt: str
     setup: Callable[[Path], None] | None = None
     check: Callable[[Path], bool] | None = None
+    check_id: str | None = None
+    fixture_id: str | None = None
 
 
 @dataclass
@@ -51,6 +66,7 @@ class VariantResult:
     total_tokens: int
     duration_ms: int
     error: str | None = None
+    evaluation: EvaluationEvidence | None = None
 
 
 # Each variant is a set of AgentConfig overrides applied on top of the base.
@@ -91,8 +107,18 @@ def _base_config(**overrides) -> AgentConfig:
 
 
 async def run_variant(
-    task: AblationTask, variant: str, overrides: dict, model_name: str, base_dir: Path
+    task: AblationTask, variant: str, overrides: dict, model_name: str, base_dir: Path,
+    *, minimal: MinimalConfig | None = None, mechanism: str | None = None,
+    enabled: bool | None = None, model: Model | None = None, model_identity: str | None = None,
 ) -> VariantResult:
+    if minimal is not None and overrides:
+        raise ValueError("minimal trials accept only the selected mechanism")
+    if minimal is not None and not isinstance(model, ScriptModel):
+        raise ValueError("minimal-v1 trials currently require an offline ScriptModel")
+    if minimal is not None:
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    from garuda.core.rigorous import create_agent
+
     workspace = base_dir / f"{task.id}__{variant}"
     workspace.mkdir(parents=True, exist_ok=True)
     if task.setup:
@@ -116,7 +142,9 @@ async def run_variant(
                 error=f"setup failed: {type(exc).__name__}: {exc}",
             )
 
-    config = _base_config(**overrides)
+    config = (minimal.config(mechanism=mechanism, enabled=enabled) if minimal is not None
+              else _base_config(**overrides))
+    config_identity = digest({"version": minimal.version, "settings": asdict(config)}) if minimal is not None else None
     from garuda.model.config import ModelBindings, ModelSpec
     from garuda.model.factory import ModelFactory
     from garuda.workspace.local import LocalEnvironment
@@ -124,10 +152,15 @@ async def run_variant(
     env = LocalEnvironment(workspace_root=workspace)
     # Built fresh per variant through the shared factory: eval trials never
     # share a client, and an explicit eval model keeps its explicit provenance.
-    model = ModelFactory().build(ModelBindings(reasoning=ModelSpec(model=model_name))).reasoning
+    if model is None:
+        model = ModelFactory().build(ModelBindings(reasoning=ModelSpec(model=model_name))).reasoning
     agent = create_agent("build", mode=config.mode)
     events = EventStore()
-    permissions = PermissionEngine(mode="yolo")
+    permissions = (PermissionEngine(mode=config.permission_mode, workspace_root=workspace)
+                   if minimal is not None else PermissionEngine(mode="yolo"))
+    tools = default_tools()
+    if minimal is not None:
+        tools = [tool for tool in tools if tool.name in config.allowed_tools]
 
     start = time.monotonic()
     error = None
@@ -136,7 +169,7 @@ async def run_variant(
             task=task.prompt,
             model=model,
             env=env,
-            tools=default_tools(),
+            tools=tools,
             config=config,
             events=events,
             permissions=permissions,
@@ -158,6 +191,23 @@ async def run_variant(
         except Exception:  # noqa: BLE001
             graded = False
 
+    evaluation = None
+    if minimal is not None:
+        prompt_ids = [e["payload"]["digest"] for e in events.get_all()
+                      if e["type"] == "system_prompt"]
+        evaluation = EvaluationEvidence(
+            task=(digest({"id": task.id, "prompt": task.prompt, "fixture": task.fixture_id})
+                  if task.setup is None or task.fixture_id is not None else None), model=model_identity,
+            runtime=runtime_identity(),
+            prompt=digest(prompt_ids) if prompt_ids else None,
+            tools=tool_identity(tools),
+            environment=environment_identity(), checks=task.check_id, config=config_identity,
+            authority=authority_identity(permissions), mechanism=mechanism or "minimal-v1",
+            model_completed=agent_success if error is None else None,
+            authorized_acceptance="unavailable", coverage="unknown" if graded is None else (
+                "pass" if graded else "fail"), cost_reason="not measured by ablation",
+            variant=variant, minimal_config=minimal.identity,
+        )
     return VariantResult(
         variant=variant,
         task_id=task.id,
@@ -169,7 +219,37 @@ async def run_variant(
         total_tokens=usage.get("total_tokens", 0),
         duration_ms=duration_ms,
         error=error,
+        evaluation=evaluation,
     )
+
+
+async def run_minimal_pair(
+    task: AblationTask, mechanism: str, responses: list[ModelResponse], base_dir: Path,
+) -> list[VariantResult]:
+    """Replay one offline script with exactly one selected config difference.
+
+    This is mechanism evidence only; a paired run cannot establish model uplift.
+    No provider client or credentials are loaded.
+    """
+    minimal = MinimalConfig.load()
+    minimal.config(mechanism=mechanism, enabled=False)
+    identity = digest({"implementation": source_identity("model/script_model.py"),
+                       "responses": [asdict(response) for response in responses]})
+    results = []
+    for variant, enabled in (("baseline", False), ("candidate", True)):
+        result = await run_variant(
+            task, variant, {}, "script/incident-v1", base_dir, minimal=minimal,
+            mechanism=mechanism, enabled=enabled,
+            model=ScriptModel(deepcopy(responses), model_name="script/incident-v1"), model_identity=identity)
+        if result.evaluation is None:
+            result.evaluation = EvaluationEvidence(
+                task=None, model=identity, runtime=runtime_identity(), prompt=None, tools=None,
+                environment=environment_identity(), checks=task.check_id, config=None, authority=None,
+                mechanism=mechanism, model_completed=None, authorized_acceptance="unavailable",
+                coverage="unknown", cost_reason="trial refused before inference", variant=variant,
+                minimal_config=minimal.identity)
+        results.append(result)
+    return results
 
 
 async def run_ablation(

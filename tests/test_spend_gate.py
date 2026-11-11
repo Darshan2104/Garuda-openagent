@@ -215,6 +215,48 @@ async def test_unknown_prior_spend_cannot_satisfy_a_dollar_only_cap(repo, tmp_pa
     assert not resumed.success and "prior spend is unknown" in resumed.final_message
     assert store.load_meta("capped")["spend_inherited"]["source"] == "unavailable"
 
+async def _fork_task(store, workspace, sid, usage, *, fork, **limits):
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.tools import tools_for_names
+
+    return await run_agent_task(
+        task=f"create {sid}", model=_priced_script(f"{sid}.txt", usage), agent=DefaultAgent(),
+        tools=tools_for_names(["bash", "task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo",
+                           max_tokens=50, **limits),
+        permissions=PermissionEngine(mode="yolo"), workspace=str(workspace),
+        events=EventStore(session_id=sid), store=store, fork=fork, fork_at=1,
+    )
+
+
+async def test_a_context_fork_is_a_new_spend_tree_not_a_resume(repo, tmp_path, monkeypatch):
+    # #415 x #407: a fork reuses resume's context path but is a new run tree,
+    # so it neither inherits the source's settled spend nor treats a source
+    # without a snapshot as unknown prior spend.
+    from garuda.core.sessions import SessionStore
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    store = SessionStore(tmp_path / "sessions")
+    usage = {"total_tokens": 100, "cost_usd": 0.01}
+    assert (await _run_task(store, repo, "capped", usage, max_run_tokens=1_000_000)).success
+    assert (await _run_task(store, repo, "uncapped", usage)).success  # no gate recorded
+
+    assert (await _fork_task(store, repo, "fork-capped", usage, fork="capped",
+                             max_run_tokens=1_000_000)).success
+    forked = store.load_meta("fork-capped")
+    assert forked["forked_from"] == "capped"
+    assert "spend_inherited" not in forked and "resumed_from" not in forked
+    assert forked["spend_gate"]["settled_tokens"] == 200
+    assert forked["spend_gate"]["settled_cost_usd"] == 0.02
+
+    forked_unknown = await _fork_task(store, repo, "fork-uncapped", usage, fork="uncapped",
+                                      max_run_cost_usd=5.0)
+    assert forked_unknown.success, forked_unknown.final_message
+    meta = store.load_meta("fork-uncapped")
+    assert "spend_inherited" not in meta
+    assert meta["spend_gate"]["settled_tokens"] == 200
+
+
 class _OverflowOnce(ScriptModel):
     """The provider rejects the first prompt as too long, billing nothing."""
 

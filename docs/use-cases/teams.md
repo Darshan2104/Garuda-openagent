@@ -81,7 +81,7 @@ A `garuda.yaml` you might end up with:
     ```
 
 - `harness` is a runtime ID from `garuda runtime list` (`native`, `claude`,
-  `codex`, `cursor`, `opencode`, `pi`, `goose`).
+  `codex`, `cursor`, `opencode`, `pi`, `goose`, `omp`).
 - `model_id` is used exactly as written, never matched loosely. For an
   external harness, Garuda selects that model in the harness before the first
   prompt, and refuses if the harness doesn't offer it.
@@ -481,6 +481,97 @@ From then on, every run ends with the check:
     Without an image, Docker, or a passing proof, the role refuses with
     `workspace.readonly_unenforced`; it never falls back to running on the
     host.
+
+## Isolate a native editing worker
+
+This opt-in Python API runs one editing worker at a time in a detached Git
+snapshot repository. Ordinary subagents keep their existing behavior. The
+parent must hold a mutating workspace lease, and the child profile must declare
+an [output schema](customize.md#delegate-a-typed-result). For example, save
+`editor.yaml` and `edit-result.json` in your agents directory:
+
+```yaml
+version: 1
+extends: garuda/build
+output:
+  schema: edit-result.json
+limits:
+  max_turns: 10
+```
+
+```json
+{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}
+```
+
+Pass an already configured model and a trusted check image with your project's
+dependencies to this function:
+
+```python
+from garuda.core.editing_worker import LocalEditingWorkers
+from garuda.core.events import EventStore
+from garuda.core.permissions import PermissionEngine
+from garuda.core.subagent import DelegationBudget, SubagentRunner
+from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+from garuda.tools import default_tools
+from garuda.workspace.local import LocalEnvironment
+
+
+async def edit_with_worker(model, workspace, agents_dir, check_image):
+    env = LocalEnvironment(workspace)
+    events = EventStore()
+    permissions = PermissionEngine(workspace_root=env.workspace_root)
+    guard = WorkspaceLeaseGuard(env.workspace_root, events.session_id,
+                                capacity_key="native")
+    guard.acquire()
+    guard.start_heartbeat()
+    workers = LocalEditingWorkers(guard, checks=["pytest -q"], image=check_image)
+    runner = SubagentRunner(
+        model, env, events, workspace_root=env.workspace_root,
+        agents_dir=agents_dir, parent_permissions=permissions,
+        parent_tools=default_tools(), budget=DelegationBudget(max_launches=2),
+        editing_workers=workers,
+    )
+    try:
+        result = await guard.race(runner.run(
+            "editor", "Fix the failing test and return a summary.", editing_worker=True,
+        ))
+        candidate = result.metadata.get("editing_worker", {})
+        if candidate.get("state") != "ready":
+            return result
+        # Inspect the typed result and retained patch before explicitly integrating.
+        return await guard.race(workers.integrate(
+            candidate["candidate_id"], candidate["provenance_digest"], env=env,
+            session_id=events.session_id, permissions=permissions,
+        ))
+    finally:
+        await guard.release()
+```
+
+For a native model-driven parent, pass the same service through
+`AgentConfig(editing_workers=workers)`. `invoke_subagent` then accepts
+`editing_worker: true`; its handoff supplies `candidate_id` and
+`provenance_digest` for the separate `integrate_editing_worker` tool. Ordinary
+calls omit the flag. Children cannot receive this integration tool.
+
+Checks run in Docker against the exact candidate mounted read-only without
+network or host home. Missing checks, Docker or a passing check refuse
+integration. The captured parent files, staged index and HEAD must still match admission;
+even nonconflicting parent edits make a sibling candidate stale. Integration
+applies the patch without merging, staging, or moving refs. Existing parent dirt
+is part of the child's base.
+
+Workers require local environments in this slice; Docker, remote, sandbox and
+tmux editing-worker requests refuse while their ordinary subagents keep working.
+Local permission screening and workspace separation are guardrails, not
+confinement. Children use the same model, shared delegation bounds and a
+narrowed built-in toolkit. A finite native capacity must have room for the
+parent and child; an otherwise unlimited pool gives editing workers a ceiling
+of one. Repositories and receipts remain under the global worktrees directory.
+Active-child cancellation, observed background launches and uncertain child cleanup
+retain worker ownership and block editing-worker retries. Cancelled integration
+settles its checker and retains an uncertain candidate. There is no automatic cleanup,
+recovery or restart integration; inspect the retained receipt and prove cleanup
+before any manual removal. No parallel latency or cost improvement is claimed.
 
 ## Move runtime limits into garuda.yaml
 
