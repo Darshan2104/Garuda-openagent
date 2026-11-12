@@ -1039,7 +1039,14 @@ class CollectionCoordinator:
         return scoped, CollectionPermissionCeiling(self.parent_permissions, child_permissions)
 
     def _config(self, request: CollectionRequest, profile: object) -> AgentConfig:
+        from garuda.model import accounting
+
         config = profile.to_agent_config()
+        # This child binds its own event store, but must retain the active
+        # parent's admission/settlement owner, including on a fallback attempt.
+        # Collection-specific limits remain an additional, narrower budget.
+        if accounting.current_gate() is not None:
+            config.spend_gate = accounting.current_gate()
         config.mode = "readonly"
         config.permission_mode = "readonly"
         config.max_turns = min(

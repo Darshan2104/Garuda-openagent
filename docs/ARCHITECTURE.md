@@ -205,6 +205,9 @@ fastest way to learn the system.
    separate model context, read-only toolkit, sibling trace, and
    `submit_collection` terminal strategy; that terminal can never complete the
    parent run.
+   Each collection attempt, including a reasoning-model fallback, inherits the
+   active root spend gate before binding its child event store. Collection job
+   limits remain additional limits; they cannot reset the tree's remaining spend.
    Ordinary native `invoke_subagent` calls preserve an accepted schema result
    through `core/child_result.py`. The tool keeps its human summary and adds a
    versioned `child_result` metadata envelope; deterministic JSON in the tool

@@ -6,6 +6,7 @@ from garuda.agents.setup import prepare_agent_run
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
+from garuda.core.spend import SpendGate
 from garuda.model.config import CollectionPolicy
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
@@ -22,6 +23,45 @@ class RecordingModel(ScriptModel):
     async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
         self.schemas.append(list(tools or []))
         return await super().complete(messages, tools, temperature, max_tokens)
+
+
+@pytest.mark.parametrize("remaining", [0, 100_000])
+async def test_collection_calls_consume_the_parent_tree_budget(tmp_path, remaining):
+    gate = SpendGate(max_tokens=200_000)
+    gate.settled_tokens = 200_000 - remaining - 20_000
+    parent = RecordingModel([
+        ModelResponse(content=None, usage={"total_tokens": 20_000}, tool_calls=[
+            ToolCall("delegate", "delegate_collection", {
+                "objective": "inspect", "questions": ["what is here?"], "handoff": "none",
+            }),
+        ]),
+        ModelResponse(content="finished", tool_calls=[], usage={"total_tokens": 10}),
+    ])
+    collector = RecordingModel([ModelResponse(
+        content=None, usage={"total_tokens": 37}, tool_calls=[
+            ToolCall("report", "submit_collection", {
+                "summary": "No supported facts were required.", "findings": [],
+                "evidence": [], "unknowns": ["No evidence available."], "buffer_ids": [],
+            }),
+        ],
+    )])
+    result = await DefaultAgent().run(
+        task="inspect", model=parent, collection_model=collector,
+        collection_policy=CollectionPolicy(enabled=True), env=LocalEnvironment(tmp_path),
+        tools=default_tools(), config=AgentConfig(
+            max_turns=2, max_tokens=50, spend_gate=gate,
+            enable_verifier=False, bootstrap_environment=False,
+        ),
+    )
+    if remaining:
+        assert result.success
+        assert gate.settled_tokens == 100_047
+        assert len(collector.schemas) == 1
+    else:
+        assert not result.success
+        assert collector.schemas == []  # refused before provider dispatch
+        assert gate.settled_tokens == 200_000
+    assert gate.reserved_tokens == 0
 
 
 @pytest.mark.asyncio

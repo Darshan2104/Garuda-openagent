@@ -1,5 +1,13 @@
 # Durable decisions
 
+## 2026-11-12 — Collection attempts inherit root spend admission (#363)
+
+Collection workers inherit the active native run's spend gate when their child
+config is assembled. The child binds its own event store with the same gate;
+worker calls, auxiliaries and reasoning fallbacks therefore reserve and settle
+against the parent remainder. The collection ledger remains an additional
+job-level limit. Standalone collection without an active gate stays compatible.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for
