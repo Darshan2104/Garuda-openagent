@@ -1,5 +1,13 @@
 # Durable decisions
 
+## 2026-11-12 — Interrupted editing workers close environment services (#384)
+
+The editing service closes its child environment on every exit from the child
+run, retaining original interruption identity if cleanup fails. Close tasks are
+shielded and settled through repeated cancellation. Closing environment-owned
+services does not establish descendant settlement: uncertain repositories,
+leases and capacity remain quarantined under the existing recovery owner.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

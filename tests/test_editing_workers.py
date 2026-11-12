@@ -316,6 +316,59 @@ async def test_child_model_crash_cannot_publish(editing):
     assert Path(result.metadata["editing_worker"]["workspace"]).is_dir()
 
 
+@pytest.mark.parametrize("ending", ["cancel", "exception"])
+async def test_interrupted_worker_closes_its_environment_services(editing, monkeypatch, ending):
+    runner, workers, repo = editing
+    environments = []
+    initialize = LocalEnvironment.__init__
+
+    def capture(environment, *args, **kwargs):
+        initialize(environment, *args, **kwargs)
+        environments.append(environment)
+
+    monkeypatch.setattr(LocalEnvironment, "__init__", capture)
+    entered = asyncio.Event()
+    process = None
+
+    class WorkerInterrupted(BaseException):
+        pass
+
+    class Interrupted(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            nonlocal process
+            # Allocate a real optional service through the environment's public
+            # API. Its owning child must close it on every exit path.
+            environment, = environments
+            await environment.persistent_execute("true")
+            process = environment._shell._proc
+            entered.set()
+            if ending == "exception":
+                raise WorkerInterrupted()
+            await asyncio.Event().wait()
+
+    runner.model = Interrupted([])
+    task = asyncio.create_task(runner.run("editor", "interrupted", editing_worker=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        if ending == "cancel":
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if ending == "cancel" else WorkerInterrupted):
+            await task
+        assert process.returncode is not None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        for environment in environments:
+            await environment.aclose()
+    receipt_file, = workers.root.glob("worker-*/receipt.json")
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["state"] == "uncertain"
+    assert CapacityStore().holders("native") == [receipt["candidate_id"]]
+    assert LeaseStore().holders_of(receipt["workspace"])
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
 async def test_native_tools_deliver_typed_candidate_and_integrate_through_shared_setup(editing, monkeypatch):
     runner, workers, repo = editing
     monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
