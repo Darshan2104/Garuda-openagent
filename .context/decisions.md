@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-11-12 — Context fork preview shares execution validation (#370)
+
+`sessions fork-preview` resolves and binds the source through the bounded
+no-follow reader, calls the existing fork preparation owner, and rechecks source
+digests before returning metadata. It creates no session or admission and does
+not return transcript text. Preview records admission as not checked; a later
+execution must independently pass workspace/capacity admission and source
+revalidation. Filesystem/process restoration remains outside context rewind.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

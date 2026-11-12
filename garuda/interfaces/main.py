@@ -548,6 +548,12 @@ def build_parser():
     sessions_show.add_argument("session", help="Session id, unique prefix, or name")
     sessions_show.add_argument("--json", action="store_true")
     sessions_show.add_argument("--workspace", default=".")
+    fork_preview = sessions_sub.add_parser(
+        "fork-preview", help="Validate a context fork without launching work or restoring files")
+    fork_preview.add_argument("session", help="Session id, unique prefix, or name")
+    fork_preview.add_argument("--at", type=int, required=True, help="Inclusive zero-based checkpoint message index")
+    fork_preview.add_argument("--workspace", default=".")
+    fork_preview.add_argument("--json", action="store_true")
     workers_cleanup = sessions_sub.add_parser(
         "cleanup-workers", help="Retire proven settled editing-worker repositories without losing changes")
     workers_cleanup.add_argument("session", help="Parent session id, unique prefix, or name")
@@ -980,6 +986,30 @@ def run_init(args) -> int:
 
 def run_sessions(args) -> int:
     from garuda.core.sessions import SessionStore
+
+    if getattr(args, "sessions_command", None) == "fork-preview":
+        import json
+        import os
+        import sys
+
+        from garuda.core.session_fork import preview_context_fork
+
+        try:
+            preview = preview_context_fork(
+                SessionStore(), args.session, args.at, workspace=os.path.realpath(args.workspace),
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(preview, indent=2))
+        else:
+            print(f"Context fork: {preview['forked_from']} through message {preview['fork_at']} "
+                  f"(requested {preview['fork_requested_at']})")
+            print("Context rewind only; files and processes are unchanged. Inherited evidence is stale.")
+            print(f"Admission: {preview['admission']}")
+            print(f"Source SHA-256: {preview['source_digest']}")
+        return 0
 
     if getattr(args, "sessions_command", None) in {"cleanup-workers", "discard-worker"}:
         return run_sessions_workers(args)

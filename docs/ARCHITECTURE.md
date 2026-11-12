@@ -794,6 +794,11 @@ fastest way to learn the system.
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.
 
+`garuda sessions fork-preview` uses the context-fork preparation owner and
+bounded selected-source reader to validate a checkpoint and recheck its digests
+without launching execution. Its metadata explicitly leaves admission unchecked;
+the eventual fork must pass ordinary workspace/capacity admission independently.
+
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,
 approval records, review and acceptance summaries through

@@ -887,6 +887,53 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
     assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
 
 
+@pytest.mark.parametrize("case", ["complete", "partial-batch", "live", "outside"])
+async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
+    tmp_path, fork_source, monkeypatch, capsys, case,
+):
+    from garuda.interfaces import main, runner
+    from garuda.workspace.lease import LeaseStore
+
+    store, source_id, _ = fork_source
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    if case == "live":
+        store.update_meta(source_id, {"status": "running"})
+    point = {"complete": 5, "partial-batch": 4, "live": 5, "outside": 100}[case]
+    before = {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("fork preview attempted execution")
+
+    monkeypatch.setattr(runner, "resolve_environment", forbidden)
+    monkeypatch.setattr(runner, "run_agent_task", forbidden)
+    leases = LeaseStore()
+    leases.acquire(tmp_path, "another-editor")
+    try:
+        args = main.build_parser().parse_args([
+            "sessions", "fork-preview", source_id[:8], "--at", str(point),
+            "--workspace", str(tmp_path), "--json",
+        ])
+        code = main.run_sessions(args)
+        output = capsys.readouterr()
+        if case in {"live", "outside"}:
+            assert code == 2 and output.err
+        else:
+            assert code == 0
+            preview = json.loads(output.out)
+            assert preview["forked_from"] == source_id
+            assert preview["fork_requested_at"] == point
+            assert preview["fork_at"] == (2 if case == "partial-batch" else point)
+            assert preview["inherited_evidence"] == {"candidate": "stale", "verification": "stale"}
+            assert preview["filesystem_restored"] is False
+            assert preview["processes_restored"] is False
+            assert "Observed original hypothesis" not in output.out
+            assert preview["admission"] == "not checked; execution requires ordinary workspace and capacity admission"
+        assert [h.session_id for h in leases.holders_of(tmp_path)] == ["another-editor"]
+        assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
+    finally:
+        leases.release(tmp_path, "another-editor")
+
+
 async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):
     from garuda.core.events import EventType
     from garuda.core.session_fork import CONTEXT_REWIND_NOTICE

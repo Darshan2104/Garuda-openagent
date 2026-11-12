@@ -286,9 +286,17 @@ session's brief when you only need findings. Use an explicit fork to continue
 from an earlier point in a saved native conversation:
 
 ```bash
+garuda sessions fork-preview SOURCE_SESSION --at 5 --json
 garuda run --fork SOURCE_SESSION --fork-at 5 -t "Try the other approach"
 garuda sessions show latest --json
 ```
+
+Preview validates the same terminal native source and complete tool-batch prefix
+as execution. It reports the requested/effective indices, source digests,
+historical receipt references and stale evidence without revealing transcript
+text. It reads only: no model, environment, session, lease or capacity reservation
+is created, and files/processes are unchanged. Admission is explicitly **not
+checked**; a later run must pass ordinary admission and revalidate its source.
 
 `--fork-at` is an inclusive, zero-based index in the source session's
 `messages.json` checkpoint, including system and tool messages. Index 5 retains
