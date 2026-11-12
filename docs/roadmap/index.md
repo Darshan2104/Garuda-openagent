@@ -1,5 +1,9 @@
 # Roadmaps
 
+[Remaining feature-quality campaign work](feature-quality-status.md) records the
+12 November review of the four open implementation issues and their follow-up
+PRs, with merged mechanisms, residual scope and validation owners kept explicit.
+
 Garuda Starters ([epic #302](https://github.com/Darshan2104/Garuda-openagent/issues/302)):
 the P0/P1a CLI and P2 read-only dashboard share existing runtime owners. P1b
 trusted Linux flow checks and P3 Linux browser flow starts use the reviewed

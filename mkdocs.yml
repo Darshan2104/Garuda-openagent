@@ -134,6 +134,7 @@ nav:
       - Open backlog: BACKLOG.md
       - Roadmaps:
           - roadmap/index.md
+          - Feature quality status: roadmap/feature-quality-status.md
           - ACP orchestration: roadmap/2026-08-acp-orchestration.md
           - Issue catalog: roadmap/issue-catalog.md
           - Issue enrichment and publishing: roadmap/2026-08-31-issue-enrichment-and-docs-publishing-design.md
