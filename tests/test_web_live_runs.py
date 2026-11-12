@@ -771,6 +771,69 @@ async def test_the_first_message_names_the_session_in_the_run_list(chatting, sto
 # --- B.4: a dashboard chat holds the workspace lease for its whole life ------
 
 
+@pytest.mark.parametrize("ending", ["success", "fallback", "cancel"])
+async def test_dashboard_previews_native_stream_without_persisting_fragments(live, ctx, monkeypatch, ending):
+    from garuda.agents.loader import load_profile
+    from garuda.core.loop import DefaultAgent
+    from garuda.interfaces.session import AgentSession
+    from garuda.model.protocol import ModelResponse, StreamDelta
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import default_tools
+    from garuda.types import AgentConfig
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Streaming(ScriptModel):
+        async def stream(self, *args, **kwargs):
+            yield StreamDelta(reasoning_delta="private reasoning")
+            yield StreamDelta(content_delta="x" * 20_000)
+            entered.set()
+            await release.wait()
+            if ending == "fallback":
+                raise ConnectionError("disconnected")
+            yield StreamDelta(done=True, finish_reason="stop", usage={"total_tokens": 5})
+
+    model = Streaming([ModelResponse(content="fallback answer", tool_calls=[])])
+    session = AgentSession(
+        profile=load_profile("build"), config=AgentConfig(
+            enable_verifier=False, bootstrap_environment=False, max_turns=1,
+        ), model=model, permissions=PermissionEngine(), tools=default_tools(), agent=DefaultAgent(),
+    )
+
+    async def create(**kwargs):
+        return session
+
+    monkeypatch.setattr(AgentSession, "create", create)
+    opened = payload_of(await call(ctx, "/api/chat", method="POST", body={}))
+    path = f"/api/chat/{opened['chat_id']}"
+    submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "answer"}))
+    job = live.jobs.get(submitted["job_id"])
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        info = payload_of(await call(ctx, path))
+        assert info["preview"]["text"] == "x" * 4_000
+        assert "private reasoning" not in json.dumps(info)
+        tail = payload_of(await call(ctx, f"/api/runs/{opened['session_id']}/tail"))
+        assert info["preview"]["after"] == tail["events"][-1]["timestamp"]
+        assert not any(e["type"] == "model_response" for e in tail["events"])
+        if ending == "cancel":
+            await call(ctx, path + "/stop", method="POST", body={})
+            with pytest.raises(asyncio.CancelledError):
+                await job._task
+        else:
+            release.set()
+            await job._task
+        await asyncio.sleep(0)  # run the job's busy-clear callback
+        assert payload_of(await call(ctx, path))["preview"] is None
+        responses = [e["payload"] for e in session.events.get_all() if e["type"] == "model_response"]
+        assert len(responses) == (0 if ending == "cancel" else 1)
+        if ending != "cancel":
+            assert responses[0]["content"] == ("fallback answer" if ending == "fallback" else "x" * 20_000)
+    finally:
+        release.set()
+        await live.close_chat(opened["chat_id"])
+
+
 async def test_a_chat_holds_the_workspace_and_a_second_editor_gets_409(chatting, monkeypatch):
     from garuda.workspace.lease import LeaseStore
 

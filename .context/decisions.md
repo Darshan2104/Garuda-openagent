@@ -1,5 +1,13 @@
 # Durable decisions
 
+## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
+
+Dashboard chat attaches the shared loop consumer. Live state holds only a bounded
+assistant text tail, anchored to the last persisted event. New events, discard,
+or turn settlement invalidate it; the browser checks that anchor after tailing
+to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
+tool fragments are excluded. No transient deltas enter the append-only event log.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

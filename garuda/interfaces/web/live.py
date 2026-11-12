@@ -59,6 +59,7 @@ DEFAULT_MAX_PERMISSION = "smart"
 LOOP_CALL_TIMEOUT = 30.0
 
 MAX_TASK_CHARS = 20_000
+MAX_PREVIEW_CHARS = 4_000
 
 
 class WorkspaceBusy(Exception):
@@ -370,6 +371,7 @@ class LiveRuns:
                 workspace_delta_loader=chat.workspace_delta_loader,
                 collection_model=getattr(chat.session, "collection", None),
                 collection_policy=getattr(chat.session, "collection_policy", None),
+                model_delta_consumer=chat.on_model_delta,
             )),
             task=prompt,
             events=chat.session.events,
@@ -593,6 +595,27 @@ class LiveChat:
     lease: Any = None
     #: The shared session lifecycle that opened this chat (B.6).
     live: Any = None
+    _preview_text: str = ""
+    _preview_cursor: int = -1
+
+    def on_model_delta(self, delta) -> None:
+        """Bounded transient text; reasoning and partial calls never enter the log."""
+        cursor = self.session.events.count()
+        if cursor != self._preview_cursor or delta.kind == "discard":
+            self._preview_text = ""
+        self._preview_cursor = cursor
+        if delta.kind == "text":
+            self._preview_text = (self._preview_text + delta.text[-MAX_PREVIEW_CHARS:])[-MAX_PREVIEW_CHARS:]
+
+    def preview(self) -> dict | None:
+        events = self.session.events
+        # Any newly recorded event invalidates the previous call's preview.
+        # The anchor also lets a polling browser reject a stale snapshot if the
+        # persisted tail advanced between its two HTTP requests.
+        if not self.busy or not self._preview_text or self._preview_cursor != events.count():
+            return None
+        previous = events.get_since(self._preview_cursor - 1)
+        return {"text": self._preview_text, "after": previous[-1]["timestamp"] if previous else None}
 
     def guarded(self, work):
         """Run a turn under the chat's lease: a lost lease stops the turn."""
@@ -617,6 +640,7 @@ class LiveChat:
             "permission_mode": self.permission_mode,
             "workspace": str(self.workspace),
             "busy": self.busy,
+            "preview": self.preview(),
             "turns": self.turn_index,
             "task": self.session_task,
             "sources": len(self.sources),
