@@ -185,6 +185,8 @@ fastest way to learn the system.
    chat state. The browser matches that preview's event anchor to the persisted
    tail to suppress stale previews after completion or fallback. Reasoning and
    partial tool calls stay outside this preview; no delta events are persisted.
+   Turn admission, stop requests and the owning job's settlement clear the
+   preview permanently, including before a new turn waits in the job queue.
    Terminal chat and ACP do not attach it; external harness streaming is separate.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.

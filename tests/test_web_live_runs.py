@@ -771,9 +771,10 @@ async def test_the_first_message_names_the_session_in_the_run_list(chatting, sto
 # --- B.4: a dashboard chat holds the workspace lease for its whole life ------
 
 
-@pytest.mark.parametrize("ending", ["success", "fallback", "cancel"])
+@pytest.mark.parametrize("ending", ["success", "fallback", "cancel", "cancel-then-queue"])
 async def test_dashboard_previews_native_stream_without_persisting_fragments(live, ctx, monkeypatch, ending):
     from garuda.agents.loader import load_profile
+    from garuda.core.events import EventStore
     from garuda.core.loop import DefaultAgent
     from garuda.interfaces.session import AgentSession
     from garuda.model.protocol import ModelResponse, StreamDelta
@@ -782,6 +783,9 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
     from garuda.types import AgentConfig
 
     entered, release = asyncio.Event(), asyncio.Event()
+    cancelled = ending.startswith("cancel")
+    if ending == "cancel-then-queue":
+        live.jobs = JobManager(max_jobs=1)
 
     class Streaming(ScriptModel):
         async def stream(self, *args, **kwargs):
@@ -808,6 +812,8 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
     path = f"/api/chat/{opened['chat_id']}"
     submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "answer"}))
     job = live.jobs.get(submitted["job_id"])
+    blocker = queued = None
+    hold, holding = asyncio.Event(), asyncio.Event()
     try:
         await asyncio.wait_for(entered.wait(), 5)
         info = payload_of(await call(ctx, path))
@@ -816,7 +822,7 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
         tail = payload_of(await call(ctx, f"/api/runs/{opened['session_id']}/tail"))
         assert info["preview"]["after"] == tail["events"][-1]["timestamp"]
         assert not any(e["type"] == "model_response" for e in tail["events"])
-        if ending == "cancel":
+        if cancelled:
             await call(ctx, path + "/stop", method="POST", body={})
             with pytest.raises(asyncio.CancelledError):
                 await job._task
@@ -826,10 +832,27 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
         await asyncio.sleep(0)  # run the job's busy-clear callback
         assert payload_of(await call(ctx, path))["preview"] is None
         responses = [e["payload"] for e in session.events.get_all() if e["type"] == "model_response"]
-        assert len(responses) == (0 if ending == "cancel" else 1)
-        if ending != "cancel":
+        assert len(responses) == (0 if cancelled else 1)
+        if not cancelled:
             assert responses[0]["content"] == ("fallback answer" if ending == "fallback" else "x" * 20_000)
+        if ending == "cancel-then-queue":
+            async def occupy(job):
+                holding.set()
+                await hold.wait()
+
+            blocker = live.jobs.submit(occupy, task="occupy capacity", events=EventStore())
+            await holding.wait()
+            submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "next"}))
+            queued = live.jobs.get(submitted["job_id"])
+            assert queued.state == JobState.QUEUED
+            assert payload_of(await call(ctx, path))["preview"] is None
     finally:
+        if queued is not None:
+            live.jobs.cancel(queued.id)
+            await asyncio.gather(queued._task, return_exceptions=True)
+        hold.set()
+        if blocker is not None:
+            await blocker._task
         release.set()
         await live.close_chat(opened["chat_id"])
 

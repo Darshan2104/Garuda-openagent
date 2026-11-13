@@ -8,6 +8,10 @@ or turn settlement invalidate it; the browser checks that anchor after tailing
 to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
 tool fragments are excluded. No transient deltas enter the append-only event log.
 
+Turn admission, stop requests and owner-bound job settlement clear the retained
+preview text and cursor. `busy` alone never revives an earlier cancelled preview
+while a subsequent turn waits for job capacity.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

@@ -347,6 +347,7 @@ class LiveRuns:
 
         # Set before the await point, in the same tick as the submit: a gap here is the
         # window in which a second request passes the check.
+        chat.reset_preview()
         chat.busy = True
         chat.turn_index += 1
         if chat.turn_index == 1:
@@ -378,7 +379,7 @@ class LiveRuns:
         )
         chat.job_id = job.id
         if job._task is not None:
-            job._task.add_done_callback(lambda _: setattr(chat, "busy", False))
+            job._task.add_done_callback(lambda _: chat.finish_turn(job.id))
         return {
             "chat_id": chat_id,
             "job_id": job.id,
@@ -403,6 +404,8 @@ class LiveRuns:
         if not chat.busy or chat.job_id is None:
             return {**chat.as_dict(), "stopped": False, "reason": "nothing in flight"}
         cancelling = self.jobs.cancel(chat.job_id)
+        if cancelling:
+            chat.reset_preview()
         # `busy` is cleared by the job's done-callback, not here: clearing it now would let a
         # new turn start while the cancelled one is still unwinding its tool calls.
         return {**chat.as_dict(), "stopped": bool(cancelling)}
@@ -597,6 +600,15 @@ class LiveChat:
     live: Any = None
     _preview_text: str = ""
     _preview_cursor: int = -1
+
+    def reset_preview(self) -> None:
+        self._preview_text = ""
+        self._preview_cursor = -1
+
+    def finish_turn(self, job_id: str) -> None:
+        if self.job_id == job_id:
+            self.reset_preview()
+            self.busy = False
 
     def on_model_delta(self, delta) -> None:
         """Bounded transient text; reasoning and partial calls never enter the log."""
