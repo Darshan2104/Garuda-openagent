@@ -992,13 +992,14 @@ def run_sessions(args) -> int:
         import os
         import sys
 
+        from garuda.core.project_identity import ProjectIdentityError
         from garuda.core.session_fork import preview_context_fork
 
         try:
             preview = preview_context_fork(
                 SessionStore(), args.session, args.at, workspace=os.path.realpath(args.workspace),
             )
-        except (OSError, ValueError) as exc:
+        except (ProjectIdentityError, OSError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
         if args.json:

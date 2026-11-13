@@ -887,10 +887,16 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
     assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
 
 
-@pytest.mark.parametrize("case", ["complete", "partial-batch", "live", "outside"])
+@pytest.mark.parametrize("case", [
+    "complete", "partial-batch", "live", "outside", "name", "latest", "full-id-no-key", "missing-lock",
+    "legacy-no-key", "missing-key", "invalid-key", "handoff", "segments", "messages",
+    "tool-call", "tool-call-id", "verification", "self-check", "foreign-project",
+])
 async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     tmp_path, fork_source, monkeypatch, capsys, case,
 ):
+    import shutil
+
     from garuda.interfaces import main, runner
     from garuda.workspace.lease import LeaseStore
 
@@ -898,7 +904,47 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
     if case == "live":
         store.update_meta(source_id, {"status": "running"})
-    point = {"complete": 5, "partial-batch": 4, "live": 5, "outside": 100}[case]
+    reference = source_id[:8]
+    if case in {"legacy-no-key", "missing-key", "full-id-no-key"}:
+        if case == "legacy-no-key":
+            metadata_path = store.session_dir(source_id) / "meta.json"
+            metadata = json.loads(metadata_path.read_text())
+            for field in ("project_id", "project_path", "project_fs_id"):
+                metadata.pop(field, None)
+            metadata_path.write_text(json.dumps(metadata))
+            shutil.rmtree(store.root / ".identity")
+        else:
+            (store.root / ".identity/key").unlink()
+        if case == "full-id-no-key":
+            reference = source_id
+    elif case == "invalid-key":
+        (store.root / ".identity/key").write_text("invalid")
+    elif case == "missing-lock":
+        (store.root / ".identity/.lock").unlink()
+    elif case == "name":
+        reference = store.load_meta(source_id)["name"]
+    elif case == "latest":
+        reference = "latest"
+    elif case == "handoff":
+        store.update_meta(source_id, {"handoff": "invalid"})
+    elif case == "segments":
+        store.update_meta(source_id, {"runtime_segments": [1]})
+    elif case in {"messages", "tool-call", "tool-call-id"}:
+        values = json.loads((store.session_dir(source_id) / "messages.json").read_text())
+        if case == "messages":
+            values = [None]
+        elif case == "tool-call":
+            values[3]["tool_calls"] = [None]
+        else:
+            values[3]["tool_calls"][0]["id"] = []
+        (store.session_dir(source_id) / "messages.json").write_text(json.dumps(values))
+    elif case in {"verification", "self-check"}:
+        state = store.load_meta(source_id)["state"]
+        state["verification" if case == "verification" else "self_check"] = "invalid"
+        store.update_meta(source_id, {"state": state})
+    elif case == "foreign-project":
+        store.update_meta(source_id, {"project_id": "p1_" + "0" * 32})
+    point = {"partial-batch": 4, "outside": 100}.get(case, 5)
     before = {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
 
     def forbidden(*args, **kwargs):
@@ -910,13 +956,15 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     leases.acquire(tmp_path, "another-editor")
     try:
         args = main.build_parser().parse_args([
-            "sessions", "fork-preview", source_id[:8], "--at", str(point),
+            "sessions", "fork-preview", reference, "--at", str(point),
             "--workspace", str(tmp_path), "--json",
         ])
         code = main.run_sessions(args)
         output = capsys.readouterr()
-        if case in {"live", "outside"}:
+        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock"}:
             assert code == 2 and output.err
+            if case in {"legacy-no-key", "missing-key", "invalid-key"}:
+                assert "key" in output.err
         else:
             assert code == 0
             preview = json.loads(output.out)

@@ -628,10 +628,16 @@ class SessionStore:
             and project_root(recorded) == project_path
         )
 
-    def _latest_in_project(self, workspace: str | Path) -> str:
-        from garuda.core.project_identity import project_identity
+    def _resolution_identity(self, workspace: str | Path, *, read_only: bool = False):
+        """Resolve project membership; inspection neither allocates nor probes Git."""
+        from garuda.core.project_identity import ProjectIdentity, existing_project_id, project_identity
 
-        identity = project_identity(self.root, workspace)
+        if read_only:
+            return ProjectIdentity(existing_project_id(self.root, workspace), project_root(workspace), "")
+        return project_identity(self.root, workspace)
+
+    def _latest_in_project(self, workspace: str | Path, *, read_only: bool = False) -> str:
+        identity = self._resolution_identity(workspace, read_only=read_only)
         everything = self.list_sessions(limit=None)
         for meta in everything:
             if self._in_project(meta, identity.project_id, identity.path):
@@ -666,6 +672,7 @@ class SessionStore:
         *,
         workspace: str | Path | None = None,
         all_projects: bool = False,
+        read_only: bool = False,
     ) -> str:
         """Resolve a full id, a session name, a unique prefix or 'latest'.
 
@@ -675,6 +682,8 @@ class SessionStore:
         ``all_projects`` searches every project; a full id always resolves.
         Sessions that recorded no absolute workspace and no project id are
         never a project's ``latest``.
+        ``read_only`` uses only the existing project key and never allocates or
+        repairs it; full IDs retain their explicit cross-project meaning.
 
         Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
         from remote clients via the server's ``resume`` param.
@@ -685,16 +694,16 @@ class SessionStore:
                 if not sessions:
                     raise FileNotFoundError("No saved sessions to resume.")
                 return sessions[0]["session_id"]
-            return self._latest_in_project(workspace)
+            return self._latest_in_project(workspace, read_only=read_only)
         validate_session_ref(session_ref)
         if self.session_dir(session_ref).is_dir():
             return session_ref
         scoped = workspace is not None and not all_projects
         identity = None
         if scoped:
-            from garuda.core.project_identity import project_identity, session_for_name
+            from garuda.core.project_identity import session_for_name
 
-            identity = project_identity(self.root, workspace)
+            identity = self._resolution_identity(workspace, read_only=read_only)
             named = session_for_name(self.root, identity.project_id, session_ref)
             if named and self.session_dir(named).is_dir():
                 return named

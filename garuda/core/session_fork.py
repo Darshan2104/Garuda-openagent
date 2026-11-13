@@ -45,7 +45,7 @@ def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str)
 
     validate_fork_request(fork=reference, fork_at=fork_at)
     reader = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
-    session_id = reader.resolve_for_resume(reference, workspace=workspace)
+    session_id = reader.resolve_for_inspection(reference, workspace=workspace)
     with reader.selected_session(session_id) as binding:
         plan = prepare_context_fork(reader, session_id, fork_at)
         plan.check_source(reader, binding)
@@ -113,6 +113,33 @@ class ContextFork:
             raise ValueError("context fork source changed during preparation")
 
 
+def _messages(data):
+    values = parse_json_value(data)
+    if not isinstance(values, list):
+        raise RecordError("saved messages must be a JSON list")
+    messages = []
+    for value in values:
+        if (not isinstance(value, dict) or not isinstance(value.get("role"), str)
+                or not isinstance(value.get("content", ""), str)
+                or not isinstance(value.get("metadata", {}), dict)):
+            raise RecordError("saved message has an invalid shape")
+        for field in ("name", "tool_call_id"):
+            if value.get(field) is not None and not isinstance(value[field], str):
+                raise RecordError(f"saved message {field} must be a string")
+        calls = value.get("tool_calls")
+        if calls is not None:
+            if not isinstance(calls, list) or any(
+                not isinstance(call, dict) or not isinstance(call.get("id"), str)
+                or not isinstance(call.get("name"), str) for call in calls
+            ):
+                raise RecordError("saved tool calls have an invalid shape")
+        try:
+            messages.append(message_from_dict(value))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RecordError("saved message has an invalid role or tool call") from exc
+    return messages
+
+
 def prepare_context_fork(reader, session_id: str, fork_at: int) -> ContextFork:
     snapshot = _snapshot(reader, session_id)
     meta = parse_json(snapshot["meta.json"])
@@ -122,18 +149,30 @@ def prepare_context_fork(reader, session_id: str, fork_at: int) -> ContextFork:
         raise ValueError("fork source identity conflicts with its selected directory")
     from garuda.runtime.session_state import from_legacy, validate
 
+    if meta.get("status") not in ("success", "failed", "cancelled"):
+        raise RecordError("context fork requires a terminal native source")
+    handoff = meta.get("handoff")
+    if handoff is not None and not isinstance(handoff, dict):
+        raise RecordError("saved handoff must be a mapping")
+    segments = meta.get("runtime_segments")
+    if segments is not None and (not isinstance(segments, list)
+                                 or any(not isinstance(segment, dict) for segment in segments)):
+        raise RecordError("saved runtime segments must be a list of mappings")
+    if "state" in meta:
+        state = meta["state"]
+        if not isinstance(state, dict) or any(
+            state.get(field) is not None and not isinstance(state[field], dict)
+            for field in ("verification", "self_check")
+        ):
+            raise RecordError("saved session state has an invalid shape")
     source_state = validate(meta["state"]) if "state" in meta else from_legacy(meta)
-    segments = meta.get("runtime_segments") or []
     if (source_state["process"] != "exited" or source_state["work"] not in {"done", "stopped"}
-            or meta.get("kind") == "flow" or meta.get("status") not in {"success", "failed", "cancelled"}
-            or meta.get("quarantine") or (meta.get("handoff") or {}).get("state", "none") != "none"
+            or meta.get("kind") == "flow"
+            or meta.get("quarantine") or (handoff or {}).get("state", "none") != "none"
             or (segments and (segments[-1].get("kind") != "native"
                               or segments[-1].get("runtime_id") != "native"))):
         raise ValueError("context fork requires a terminal native source without pending ownership or quarantine")
-    values = parse_json_value(snapshot["messages.json"])
-    if not isinstance(values, list):
-        raise ValueError("saved messages must be a JSON list")
-    messages, effective_at = _complete_prefix([message_from_dict(value) for value in values], fork_at)
+    messages, effective_at = _complete_prefix(_messages(snapshot["messages.json"]), fork_at)
     state = parse_json(snapshot["state.json"]) if snapshot["state.json"] is not None else {}
     source_files = _digests(snapshot)
     digest = hashlib.sha256(json.dumps(source_files, sort_keys=True).encode()).hexdigest()

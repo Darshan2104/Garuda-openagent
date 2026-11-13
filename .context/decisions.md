@@ -9,6 +9,12 @@ not return transcript text. Preview records admission as not checked; a later
 execution must independently pass workspace/capacity admission and source
 revalidation. Filesystem/process restoration remains outside context rewind.
 
+The preview uses the shared project/name selection owner in non-allocating mode:
+names, prefixes and latest require an existing key; full IDs retain explicit
+selection without one. Missing/malformed identity never creates a key or lock.
+Fork preparation validates nested source shapes and the CLI reports typed
+identity/record refusal without a traceback. Native launch allocation is unchanged.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

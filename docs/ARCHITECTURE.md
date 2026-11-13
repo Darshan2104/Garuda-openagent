@@ -798,6 +798,11 @@ fastest way to learn the system.
 bounded selected-source reader to validate a checkpoint and recheck its digests
 without launching execution. Its metadata explicitly leaves admission unchecked;
 the eventual fork must pass ordinary workspace/capacity admission independently.
+Preview selection uses the shared project/name resolver in read-only mode,
+loading only an existing identity key and retaining the selected directory
+binding. Native launch keeps its allocation policy. The fork preparation owner
+validates nested source shapes before deserialization; the CLI renders identity
+and record failures as exit-2 refusals.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

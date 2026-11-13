@@ -298,6 +298,12 @@ text. It reads only: no model, environment, session, lease or capacity reservati
 is created, and files/processes are unchanged. Admission is explicitly **not
 checked**; a later run must pass ordinary admission and revalidate its source.
 
+Names, prefixes and `latest` require the store's existing project identity key.
+Preview refuses a missing or malformed key without creating locks or repairing
+identity. A full session ID can still select its explicit source without that
+key. Invalid saved handoffs, runtime segments or message shapes produce a clean
+refusal (exit 2) rather than a traceback.
+
 `--fork-at` is an inclusive, zero-based index in the source session's
 `messages.json` checkpoint, including system and tool messages. Index 5 retains
 messages 0 through 5. It addresses the saved checkpoint, which may already be
