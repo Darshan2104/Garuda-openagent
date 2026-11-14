@@ -136,7 +136,7 @@ every project. A full ID always resolves.
     |---|---|
     | `--max-turns N` | Agent turn limit |
     | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish |
-    | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
+    | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, collection worker, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
     | `--max-run-cost-usd X` | Stop admitting calls once reported spend reaches X (finite, > 0); unreported cost stops admission unless `--max-run-tokens` is set. Refused on an ACP runtime |
     | `--json` | Print JSONL events instead of the human-readable result; disables native live text |
     | `--no-stream` | Disable native TTY assistant text streaming; pipes automatically use ordinary output |

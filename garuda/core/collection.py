@@ -22,6 +22,7 @@ from garuda.context.manager import FORK_BRIEF, FORK_NONE, ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.evidence import is_side_effect_free
 from garuda.core.permissions import PermissionDecision, PermissionEngine
+from garuda.core.spend import SpendLimitExceeded
 from garuda.core.subagent import persist_child_events
 from garuda.core.termination import TerminalDecision
 from garuda.model.config import CollectionPolicy as ModelCollectionPolicy
@@ -1039,7 +1040,14 @@ class CollectionCoordinator:
         return scoped, CollectionPermissionCeiling(self.parent_permissions, child_permissions)
 
     def _config(self, request: CollectionRequest, profile: object) -> AgentConfig:
+        from garuda.model import accounting
+
         config = profile.to_agent_config()
+        # This child binds its own event store, but must retain the active
+        # parent's admission/settlement owner, including on a fallback attempt.
+        # Collection-specific limits remain an additional, narrower budget.
+        if accounting.current_gate() is not None:
+            config.spend_gate = accounting.current_gate()
         config.mode = "readonly"
         config.permission_mode = "readonly"
         config.max_turns = min(
@@ -1068,7 +1076,7 @@ class CollectionCoordinator:
         role: str,
         revision: str,
         initial_buffer_ids: set[str],
-    ) -> tuple[CollectionAttempt, CollectionReport | None, str | None]:
+    ) -> tuple[CollectionAttempt, CollectionReport | None, str | SpendLimitExceeded | None]:
         from garuda.core.loop import DefaultAgent
 
         attempt_id = str(uuid.uuid4())
@@ -1163,8 +1171,14 @@ class CollectionCoordinator:
             cost_known=cost is not None or not usage,
             model_binding_role=role,
         )
-        error = None
-        if not result.success or gate.report is None:
+        error: str | SpendLimitExceeded | None = None
+        if "spend_limit" in result.metadata:
+            cause = result.metadata["spend_limit"]
+            error = SpendLimitExceeded(
+                f"collection worker stopped by spend_limit ({cause}): {result.final_message}",
+                cause,
+            )
+        elif not result.success or gate.report is None:
             error = "worker did not submit an accepted structured report"
             if result.final_message:
                 error += f": {result.final_message}"
@@ -1272,7 +1286,7 @@ class CollectionCoordinator:
                 _merge_usage(combined_usage, attempt.usage)
                 if error is None and report is not None:
                     return report, attempt
-                if fallback_model is None:
+                if fallback_model is None or isinstance(error, SpendLimitExceeded):
                     raise ValueError(error or "collection worker failed")
                 await self.ledger.note_fallback()
                 self.events.append(

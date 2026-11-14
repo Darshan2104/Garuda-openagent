@@ -415,6 +415,12 @@ collection:
 
 Budgets and evidence rules: [Configuration → bounded collection model](../guides/configuration.md#bounded-collection-model).
 
+When `--max-run-tokens` or `--max-run-cost-usd` is selected, collection calls and
+their reasoning-model fallbacks also consume that root budget. Collection's own
+job limits still apply. An exhausted root refuses the next worker model call
+before dispatch. Dollar limits stop subsequent calls based on reported spend;
+they are not prepaid maxima.
+
 ## Use Garuda from an ACP editor
 
 <p class="gd-facts">Garuda acts as the agent side of an ACP session over stdio</p>
