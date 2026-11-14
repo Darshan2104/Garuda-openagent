@@ -326,10 +326,16 @@ class LocalEditingWorkers:
             except BaseException as interrupted:
                 # Closing optional environment services belongs to this owner
                 # even when the child never returned a result. Retain the
-                # original cancellation/exception and quarantine below.
+                # cancellation/exception and quarantine below; cancellation
+                # during close takes precedence over an earlier exception.
                 try:
                     await _close_child_environment(child_env)
                 except BaseException as cleanup:
+                    if isinstance(cleanup, asyncio.CancelledError):
+                        if not isinstance(interrupted, asyncio.CancelledError):
+                            raise cleanup from interrupted
+                    else:
+                        worker.receipt["environment_close"] = "failed"
                     raise interrupted from cleanup
                 raise
             else:

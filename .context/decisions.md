@@ -3,8 +3,11 @@
 ## 2026-11-12 — Interrupted editing workers close environment services (#384)
 
 The editing service closes its child environment on every exit from the child
-run, retaining original interruption identity if cleanup fails. Close tasks are
-shielded and settled through repeated cancellation. Closing environment-owned
+run, retaining original interruption identity if cleanup fails unless cancellation
+arrives during close, in which case cancellation takes precedence. Close tasks
+are shielded and settled through repeated cancellation. Interrupted close failures
+record a fixed `environment_close: failed` receipt/event marker without exception
+details, including when the interrupt becomes a refusal. Closing environment-owned
 services does not establish descendant settlement: uncertain repositories,
 leases and capacity remain quarantined under the existing recovery owner.
 

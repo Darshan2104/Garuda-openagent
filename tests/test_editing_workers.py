@@ -369,6 +369,116 @@ async def test_interrupted_worker_closes_its_environment_services(editing, monke
     assert (repo / "main.txt").read_text() == "original\n"
 
 
+@pytest.fixture
+def interrupted_worker(editing, monkeypatch, request):
+    runner, workers, repo = editing
+    entered = asyncio.Event()
+
+    class WorkerInterrupted(BaseException):
+        pass
+
+    interrupted = (WorkerInterrupted() if getattr(request, "param", "lease") == "exception"
+                   else LeaseError("lease heartbeat lost"))
+
+    async def heartbeat():
+        await entered.wait()
+        raise interrupted
+
+    def start_heartbeat(guard):
+        guard._heartbeat = asyncio.create_task(heartbeat())
+
+    class WaitingModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            entered.set()
+            if isinstance(interrupted, WorkerInterrupted):
+                raise interrupted
+            await asyncio.Event().wait()
+
+    if isinstance(interrupted, LeaseError):
+        monkeypatch.setattr(WorkspaceLeaseGuard, "start_heartbeat", start_heartbeat)
+    runner.model = WaitingModel([])
+    return interrupted
+
+
+@pytest.mark.parametrize("interrupted_worker", ["lease", "exception"], indirect=True)
+@pytest.mark.parametrize("cancellation", ["task", "timeout"])
+async def test_cancellation_during_interrupted_worker_close_wins(
+    editing, interrupted_worker, monkeypatch, cancellation,
+):
+    runner, workers, repo = editing
+    entered, finish = asyncio.Event(), asyncio.Event()
+    close = LocalEnvironment.aclose
+    deadline = asyncio.timeout(None)
+
+    async def slow_close(environment):
+        entered.set()
+        await finish.wait()
+        await close(environment)
+
+    async def run():
+        async with deadline:
+            return await runner.run("editor", "interrupted close", editing_worker=True)
+
+    monkeypatch.setattr(LocalEnvironment, "aclose", slow_close)
+    task = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        if cancellation == "task":
+            task.cancel()
+        else:
+            deadline.reschedule(asyncio.get_running_loop().time())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert task.cancelling() == 1
+        assert not task.done(), "cancellation returned before environment close settled"
+        if cancellation == "task":
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError if cancellation == "task" else TimeoutError) as raised:
+            await task
+        if cancellation == "task":
+            assert task.cancelled()
+            assert raised.value.__cause__ is interrupted_worker
+        else:
+            assert deadline.expired()
+            assert raised.value.__cause__.__cause__ is interrupted_worker
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    receipt_file, = workers.root.glob("worker-*/receipt.json")
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["state"] == "uncertain" and receipt["cleanup"] == "unknown"
+    assert CapacityStore().holders("native") == [receipt["candidate_id"]]
+    assert LeaseStore().holders_of(receipt["workspace"])
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
+async def test_refused_worker_records_environment_close_failure(editing, interrupted_worker, monkeypatch):
+    runner, workers, repo = editing
+
+    async def failed_close(environment):
+        raise OSError("sensitive close detail " * 1000)
+
+    monkeypatch.setattr(LocalEnvironment, "aclose", failed_close)
+    result = await runner.run("editor", "failed close", editing_worker=True)
+    assert result.metadata["refused"] == "worker.admission_failed"
+    receipt_file, = workers.root.glob("worker-*/receipt.json")
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["environment_close"] == "failed"
+    assert receipt["state"] == "uncertain" and receipt["cleanup"] == "unknown"
+    assert "sensitive close detail" not in receipt_file.read_text()
+    events = [event["payload"] for event in runner.events.get_all() if event["type"] == "editing_worker"]
+    assert events[-1]["environment_close"] == "failed"
+    assert "sensitive close detail" not in json.dumps(events)
+    assert CapacityStore().holders("native") == [receipt["candidate_id"]]
+    assert LeaseStore().holders_of(receipt["workspace"])
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
 async def test_native_tools_deliver_typed_candidate_and_integrate_through_shared_setup(editing, monkeypatch):
     runner, workers, repo = editing
     monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
