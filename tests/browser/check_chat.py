@@ -91,6 +91,8 @@ with sync_playwright() as p:
     if not card:
         problems.append("no approval card appeared for a smart-mode ask")
     else:
+        if page.query_selector(".chat-preview"):
+            problems.append("the transient stream preview stayed while approval was pending")
         text = card.inner_text()
         print("  card text:", text.replace("\n", " | ")[:200])
         # The recovered structure, not the raw screened string.

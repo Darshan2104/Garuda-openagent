@@ -771,7 +771,7 @@ async def test_the_first_message_names_the_session_in_the_run_list(chatting, sto
 # --- B.4: a dashboard chat holds the workspace lease for its whole life ------
 
 
-@pytest.mark.parametrize("ending", ["success", "fallback", "cancel", "cancel-then-queue"])
+@pytest.mark.parametrize("ending", ["success", "tool", "fallback", "cancel", "cancel-then-queue"])
 async def test_dashboard_previews_native_stream_without_persisting_fragments(live, ctx, monkeypatch, ending):
     from garuda.agents.loader import load_profile
     from garuda.core.events import EventStore
@@ -779,10 +779,11 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
     from garuda.interfaces.session import AgentSession
     from garuda.model.protocol import ModelResponse, StreamDelta
     from garuda.model.script_model import ScriptModel
-    from garuda.tools import default_tools
+    from garuda.tools import ReadFileTool, default_tools
     from garuda.types import AgentConfig
 
     entered, release = asyncio.Event(), asyncio.Event()
+    blocked, unblock = asyncio.Event(), asyncio.Event()
     cancelled = ending.startswith("cancel")
     if ending == "cancel-then-queue":
         live.jobs = JobManager(max_jobs=1)
@@ -795,20 +796,42 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
             await release.wait()
             if ending == "fallback":
                 raise ConnectionError("disconnected")
-            yield StreamDelta(done=True, finish_reason="stop", usage={"total_tokens": 5})
+            if ending == "tool":
+                yield StreamDelta(tool_call_delta={
+                    "index": 0, "id": "read", "name": "read_file",
+                    "arguments": json.dumps({"path": "preview.txt"}),
+                })
+            yield StreamDelta(done=True, finish_reason="tool_calls" if ending == "tool" else "stop",
+                              usage={"total_tokens": 5})
 
+        async def complete(self, *args, **kwargs):
+            blocked.set()
+            await unblock.wait()
+            return await super().complete(*args, **kwargs)
+
+    class BlockingRead(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            blocked.set()
+            await unblock.wait()
+            return await super().execute(arguments, env, ctx)
+
+    tools = [BlockingRead() if tool.name == "read_file" else tool for tool in default_tools()]
+    (live.workspaces[0] / "preview.txt").write_text("Local fixture content.\n")
     model = Streaming([ModelResponse(content="fallback answer", tool_calls=[])])
     session = AgentSession(
         profile=load_profile("build"), config=AgentConfig(
             enable_verifier=False, bootstrap_environment=False, max_turns=1,
-        ), model=model, permissions=PermissionEngine(), tools=default_tools(), agent=DefaultAgent(),
+            force_final_submission=ending != "tool",
+        ), model=model, permissions=PermissionEngine(), tools=tools, agent=DefaultAgent(),
     )
 
     async def create(**kwargs):
         return session
 
     monkeypatch.setattr(AgentSession, "create", create)
-    opened = payload_of(await call(ctx, "/api/chat", method="POST", body={}))
+    response = await call(ctx, "/api/chat", method="POST", body={})
+    assert response.status == 201, payload_of(response)
+    opened = payload_of(response)
     path = f"/api/chat/{opened['chat_id']}"
     submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "answer"}))
     job = live.jobs.get(submitted["job_id"])
@@ -828,6 +851,23 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
                 await job._task
         else:
             release.set()
+            if ending in ("tool", "fallback"):
+                await asyncio.wait_for(blocked.wait(), 5)
+                info = payload_of(await call(ctx, path))
+                assert info["busy"] is True
+                assert not job._task.done()
+                responses = [e["payload"] for e in session.events.get_all()
+                             if e["type"] == "model_response"]
+                if ending == "tool":
+                    assert len(responses) == 1
+                    assert responses[0]["content"] == "x" * 20_000
+                    assert responses[0]["tool_calls"] == [{
+                        "id": "read", "name": "read_file", "arguments": {"path": "preview.txt"},
+                    }]
+                else:
+                    assert responses == []  # fallback has not returned a replacement yet
+                assert info["preview"] is None
+                unblock.set()
             await job._task
         await asyncio.sleep(0)  # run the job's busy-clear callback
         assert payload_of(await call(ctx, path))["preview"] is None
@@ -854,6 +894,7 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
         if blocker is not None:
             await blocker._task
         release.set()
+        unblock.set()
         await live.close_chat(opened["chat_id"])
 
 
