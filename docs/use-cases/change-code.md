@@ -452,8 +452,23 @@ Previews refresh at most ten times per second. Dumb terminals (or an unset
 `TERM`) show completed responses without previews or preview erase codes. The full
 assembled response is always printed, and final output that repeats any already
 rendered response is suppressed, including when the run exhausts its turn budget.
-This native consumer is still not attached to
-chat, the web dashboard, SDK entry points or ACP surfaces.
+Terminal interactive chat and ACP do not attach this native consumer.
+Dashboard chat and opt-in SDK callbacks use the same loop consumer.
+
+### Watch assistant text in dashboard chat
+
+```bash
+garuda web --allow-workspace .
+```
+
+Open **Chat** and submit a task. The **writing…** row shows the most recent
+4,000 characters while the native model generates. It disappears when a complete
+response arrives or the turn stops. Each turn starts with an empty preview,
+including while queued behind other work. On a stream fallback, discarded text is
+replaced by the completed answer. Reasoning and tool arguments are excluded from
+the preview. Only completed responses enter the saved event log; previews are
+transient and refresh with the dashboard poll. Non-streaming models keep their
+ordinary response behavior.
 
 ### Show model output live from your own driver
 

@@ -448,8 +448,9 @@ Rich, or a single plain line. Dumb/unset terminals suppress previews and their
 erase codes. Discard, response assembly, failure and cancellation clear previews.
 The completed response renders in full; a final message identical to any already
 rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
-output withholding retain the ordinary model path. Chat, web, SDK and ACP do
-not attach the native consumer. `StreamDelta`
+output withholding retain the ordinary model path. Terminal interactive chat and
+ACP do not attach the native consumer; dashboard chat and the SDK's `on_delta`
+do. `StreamDelta`
 has optional provider terminal fields. `litellm_model.py` emits them even when a
 terminal chunk has no content, retains the latest non-null values across trailing
 usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is

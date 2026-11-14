@@ -59,6 +59,7 @@ DEFAULT_MAX_PERMISSION = "smart"
 LOOP_CALL_TIMEOUT = 30.0
 
 MAX_TASK_CHARS = 20_000
+MAX_PREVIEW_CHARS = 4_000
 
 
 class WorkspaceBusy(Exception):
@@ -346,6 +347,7 @@ class LiveRuns:
 
         # Set before the await point, in the same tick as the submit: a gap here is the
         # window in which a second request passes the check.
+        chat.reset_preview()
         chat.busy = True
         chat.turn_index += 1
         if chat.turn_index == 1:
@@ -370,13 +372,14 @@ class LiveRuns:
                 workspace_delta_loader=chat.workspace_delta_loader,
                 collection_model=getattr(chat.session, "collection", None),
                 collection_policy=getattr(chat.session, "collection_policy", None),
+                model_delta_consumer=chat.on_model_delta,
             )),
             task=prompt,
             events=chat.session.events,
         )
         chat.job_id = job.id
         if job._task is not None:
-            job._task.add_done_callback(lambda _: setattr(chat, "busy", False))
+            job._task.add_done_callback(lambda _: chat.finish_turn(job.id))
         return {
             "chat_id": chat_id,
             "job_id": job.id,
@@ -401,6 +404,8 @@ class LiveRuns:
         if not chat.busy or chat.job_id is None:
             return {**chat.as_dict(), "stopped": False, "reason": "nothing in flight"}
         cancelling = self.jobs.cancel(chat.job_id)
+        if cancelling:
+            chat.reset_preview()
         # `busy` is cleared by the job's done-callback, not here: clearing it now would let a
         # new turn start while the cancelled one is still unwinding its tool calls.
         return {**chat.as_dict(), "stopped": bool(cancelling)}
@@ -593,6 +598,36 @@ class LiveChat:
     lease: Any = None
     #: The shared session lifecycle that opened this chat (B.6).
     live: Any = None
+    _preview_text: str = ""
+    _preview_cursor: int = -1
+
+    def reset_preview(self) -> None:
+        self._preview_text = ""
+        self._preview_cursor = -1
+
+    def finish_turn(self, job_id: str) -> None:
+        if self.job_id == job_id:
+            self.reset_preview()
+            self.busy = False
+
+    def on_model_delta(self, delta) -> None:
+        """Bounded transient text; reasoning and partial calls never enter the log."""
+        cursor = self.session.events.count()
+        if cursor != self._preview_cursor or delta.kind == "discard":
+            self._preview_text = ""
+        self._preview_cursor = cursor
+        if delta.kind == "text":
+            self._preview_text = (self._preview_text + delta.text[-MAX_PREVIEW_CHARS:])[-MAX_PREVIEW_CHARS:]
+
+    def preview(self) -> dict | None:
+        events = self.session.events
+        # Any newly recorded event invalidates the previous call's preview.
+        # The anchor also lets a polling browser reject a stale snapshot if the
+        # persisted tail advanced between its two HTTP requests.
+        if not self.busy or not self._preview_text or self._preview_cursor != events.count():
+            return None
+        previous = events.get_since(self._preview_cursor - 1)
+        return {"text": self._preview_text, "after": previous[-1]["timestamp"] if previous else None}
 
     def guarded(self, work):
         """Run a turn under the chat's lease: a lost lease stops the turn."""
@@ -617,6 +652,7 @@ class LiveChat:
             "permission_mode": self.permission_mode,
             "workspace": str(self.workspace),
             "busy": self.busy,
+            "preview": self.preview(),
             "turns": self.turn_index,
             "task": self.session_task,
             "sources": len(self.sources),

@@ -180,8 +180,14 @@ fastest way to learn the system.
    output is deduplicated against all rendered responses of the run.
    Tool arguments and reasoning are never
    displayed as live text. The SDK exposes the same consumer as `on_delta` on
-   `SoftwareAgent.run` and `Conversation.run`. Chat, web and ACP surfaces do not
-   attach it; external harness streaming is a separate runtime path.
+   `SoftwareAgent.run` and `Conversation.run`. Dashboard chat attaches the same
+   consumer and exposes only a transient 4,000-character text tail in its live
+   chat state. The browser matches that preview's event anchor to the persisted
+   tail to suppress stale previews after completion or fallback. Reasoning and
+   partial tool calls stay outside this preview; no delta events are persisted.
+   Turn admission, stop requests and the owning job's settlement clear the
+   preview permanently, including before a new turn waits in the job queue.
+   Terminal chat and ACP do not attach it; external harness streaming is separate.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state

@@ -771,6 +771,133 @@ async def test_the_first_message_names_the_session_in_the_run_list(chatting, sto
 # --- B.4: a dashboard chat holds the workspace lease for its whole life ------
 
 
+@pytest.mark.parametrize("ending", ["success", "tool", "fallback", "cancel", "cancel-then-queue"])
+async def test_dashboard_previews_native_stream_without_persisting_fragments(live, ctx, monkeypatch, ending):
+    from garuda.agents.loader import load_profile
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.interfaces.session import AgentSession
+    from garuda.model.protocol import ModelResponse, StreamDelta
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import ReadFileTool, default_tools
+    from garuda.types import AgentConfig
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    blocked, unblock = asyncio.Event(), asyncio.Event()
+    cancelled = ending.startswith("cancel")
+    if ending == "cancel-then-queue":
+        live.jobs = JobManager(max_jobs=1)
+
+    class Streaming(ScriptModel):
+        async def stream(self, *args, **kwargs):
+            yield StreamDelta(reasoning_delta="private reasoning")
+            yield StreamDelta(content_delta="x" * 20_000)
+            entered.set()
+            await release.wait()
+            if ending == "fallback":
+                raise ConnectionError("disconnected")
+            if ending == "tool":
+                yield StreamDelta(tool_call_delta={
+                    "index": 0, "id": "read", "name": "read_file",
+                    "arguments": json.dumps({"path": "preview.txt"}),
+                })
+            yield StreamDelta(done=True, finish_reason="tool_calls" if ending == "tool" else "stop",
+                              usage={"total_tokens": 5})
+
+        async def complete(self, *args, **kwargs):
+            blocked.set()
+            await unblock.wait()
+            return await super().complete(*args, **kwargs)
+
+    class BlockingRead(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            blocked.set()
+            await unblock.wait()
+            return await super().execute(arguments, env, ctx)
+
+    tools = [BlockingRead() if tool.name == "read_file" else tool for tool in default_tools()]
+    (live.workspaces[0] / "preview.txt").write_text("Local fixture content.\n")
+    model = Streaming([ModelResponse(content="fallback answer", tool_calls=[])])
+    session = AgentSession(
+        profile=load_profile("build"), config=AgentConfig(
+            enable_verifier=False, bootstrap_environment=False, max_turns=1,
+            force_final_submission=ending != "tool",
+        ), model=model, permissions=PermissionEngine(), tools=tools, agent=DefaultAgent(),
+    )
+
+    async def create(**kwargs):
+        return session
+
+    monkeypatch.setattr(AgentSession, "create", create)
+    response = await call(ctx, "/api/chat", method="POST", body={})
+    assert response.status == 201, payload_of(response)
+    opened = payload_of(response)
+    path = f"/api/chat/{opened['chat_id']}"
+    submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "answer"}))
+    job = live.jobs.get(submitted["job_id"])
+    blocker = queued = None
+    hold, holding = asyncio.Event(), asyncio.Event()
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        info = payload_of(await call(ctx, path))
+        assert info["preview"]["text"] == "x" * 4_000
+        assert "private reasoning" not in json.dumps(info)
+        tail = payload_of(await call(ctx, f"/api/runs/{opened['session_id']}/tail"))
+        assert info["preview"]["after"] == tail["events"][-1]["timestamp"]
+        assert not any(e["type"] == "model_response" for e in tail["events"])
+        if cancelled:
+            await call(ctx, path + "/stop", method="POST", body={})
+            with pytest.raises(asyncio.CancelledError):
+                await job._task
+        else:
+            release.set()
+            if ending in ("tool", "fallback"):
+                await asyncio.wait_for(blocked.wait(), 5)
+                info = payload_of(await call(ctx, path))
+                assert info["busy"] is True
+                assert not job._task.done()
+                responses = [e["payload"] for e in session.events.get_all()
+                             if e["type"] == "model_response"]
+                if ending == "tool":
+                    assert len(responses) == 1
+                    assert responses[0]["content"] == "x" * 20_000
+                    assert responses[0]["tool_calls"] == [{
+                        "id": "read", "name": "read_file", "arguments": {"path": "preview.txt"},
+                    }]
+                else:
+                    assert responses == []  # fallback has not returned a replacement yet
+                assert info["preview"] is None
+                unblock.set()
+            await job._task
+        await asyncio.sleep(0)  # run the job's busy-clear callback
+        assert payload_of(await call(ctx, path))["preview"] is None
+        responses = [e["payload"] for e in session.events.get_all() if e["type"] == "model_response"]
+        assert len(responses) == (0 if cancelled else 1)
+        if not cancelled:
+            assert responses[0]["content"] == ("fallback answer" if ending == "fallback" else "x" * 20_000)
+        if ending == "cancel-then-queue":
+            async def occupy(job):
+                holding.set()
+                await hold.wait()
+
+            blocker = live.jobs.submit(occupy, task="occupy capacity", events=EventStore())
+            await holding.wait()
+            submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "next"}))
+            queued = live.jobs.get(submitted["job_id"])
+            assert queued.state == JobState.QUEUED
+            assert payload_of(await call(ctx, path))["preview"] is None
+    finally:
+        if queued is not None:
+            live.jobs.cancel(queued.id)
+            await asyncio.gather(queued._task, return_exceptions=True)
+        hold.set()
+        if blocker is not None:
+            await blocker._task
+        release.set()
+        unblock.set()
+        await live.close_chat(opened["chat_id"])
+
+
 async def test_a_chat_holds_the_workspace_and_a_second_editor_gets_409(chatting, monkeypatch):
     from garuda.workspace.lease import LeaseStore
 
