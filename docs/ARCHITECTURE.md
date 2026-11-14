@@ -208,6 +208,8 @@ fastest way to learn the system.
    Each collection attempt, including a reasoning-model fallback, inherits the
    active root spend gate before binding its child event store. Collection job
    limits remain additional limits; they cannot reset the tree's remaining spend.
+   A worker's `spend_limit` result fails the job with its spend cause, without
+   starting a reasoning-model fallback.
    Ordinary native `invoke_subagent` calls preserve an accepted schema result
    through `core/child_result.py`. The tool keeps its human summary and adds a
    versioned `child_result` metadata envelope; deterministic JSON in the tool

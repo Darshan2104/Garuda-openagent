@@ -305,8 +305,9 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
   and keeps turns in reserve to finish cleanly.
 - `--max-turns` caps the number of agent turns.
 - `--max-run-tokens` caps tokens across the whole native run tree: the main
-  calls, summaries, the verifier, rigorous mode's plan and critic, and every
-  native subagent and native consult (including advisors) share one budget.
+  calls, summaries, the verifier, collection workers, rigorous mode's plan and
+  critic, and every native subagent and native consult (including advisors)
+  share one budget.
   Each call reserves its estimate first, so parallel
   calls cannot spend the same remainder; a call whose provider reports no token
   usage is charged that estimate. When the budget is gone the run stops with
