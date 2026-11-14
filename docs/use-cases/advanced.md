@@ -289,20 +289,28 @@ from an earlier point in a saved native conversation:
 garuda sessions fork-preview SOURCE_SESSION --at 5 --json
 garuda run --fork SOURCE_SESSION --fork-at 5 -t "Try the other approach"
 garuda sessions show latest --json
+# Select the newest source across projects for both preview and execution:
+garuda sessions fork-preview latest --at 5 --all-projects --json
+garuda run --fork latest --fork-at 5 --all-projects -t "Try the other approach"
 ```
 
 Preview validates the same terminal native source and complete tool-batch prefix
 as execution. It reports the requested/effective indices, source digests,
 historical receipt references and stale evidence without revealing transcript
 text. It reads only: no model, environment, session, lease or capacity reservation
-is created, and files/processes are unchanged. Admission is explicitly **not
-checked**; a later run must pass ordinary admission and revalidate its source.
+is created, and files/processes are unchanged. Admission and artifact inheritance
+are explicitly **not checked**. Preview does not build resumed context or inherit
+artifacts; those steps can still refuse a source after ordinary admission, even
+when preview succeeds. A later run must also revalidate its source.
 
-Names, prefixes and `latest` require the store's existing project identity key.
+Project-scoped names, prefixes and `latest` require the store's existing project identity key.
 Preview refuses a missing or malformed key without creating locks or repairing
 identity. A full session ID can still select its explicit source without that
-key. Invalid saved handoffs, runtime segments or message shapes produce a clean
-refusal (exit 2) rather than a traceback.
+key. `--all-projects` uses the same selection as `run --fork`: `latest` selects
+the newest session anywhere and prefixes search across projects. Name markers
+must be regular files of at most 256 bytes; symlinks and special files refuse
+for both preview and resume. Invalid saved handoffs, runtime segments or message
+shapes produce a clean refusal (exit 2) rather than a traceback.
 
 Preview shares an 8 MiB source-read allowance across metadata selection, checkpoint
 preparation and the final source recheck, including oversize detection. Exhaustion

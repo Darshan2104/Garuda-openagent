@@ -802,13 +802,16 @@ refuses without validating a partial source. The plan retains the bounded-read
 policy for its recheck, while native execution keeps full-checkpoint reads.
 The shared list owner refuses non-string timestamps before sorting `latest`;
 absent legacy timestamps retain empty-string ordering.
-Its metadata explicitly leaves admission unchecked;
-the eventual fork must pass ordinary workspace/capacity admission independently.
+Its metadata explicitly leaves admission and artifact inheritance unchecked.
+Preview does not build resumed context or inherit artifacts; either step can
+still refuse after ordinary workspace/capacity admission, even if preview succeeds.
 Preview selection uses the shared project/name resolver in read-only mode,
 loading only an existing identity key and retaining the selected directory
-binding. Native launch keeps its allocation policy. The fork preparation owner
-validates nested source shapes before deserialization; the CLI renders identity
-and record failures as exit-2 refusals.
+binding. Opt-in `--all-projects` forwards the run's cross-project selection policy.
+Preview and resume read name markers through the shared no-follow regular-file
+reader with a 256-byte limit. Native launch keeps its allocation policy. The fork
+preparation owner validates nested source shapes before deserialization; the CLI
+renders identity and record failures as exit-2 refusals.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

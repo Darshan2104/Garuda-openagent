@@ -903,7 +903,7 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
     "tool-call", "tool-call-id", "verification", "self-check", "foreign-project",
     "latest-list-time", "latest-null-time", "latest-object-time", "latest-number-time", "latest-missing-time",
     "oversize-messages", "oversize-events", "aggregate-budget", "budget-control",
-    "missing-state", "missing-events", "missing-state-events",
+    "missing-state", "missing-events", "missing-state-events", "artifact-inheritance",
 ])
 async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     tmp_path, fork_source, monkeypatch, capsys, case,
@@ -911,6 +911,7 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     import os
     import shutil
 
+    from garuda.core import session_artifact_resume
     from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
     from garuda.interfaces import main, runner
     from garuda.workspace.lease import LeaseStore
@@ -970,6 +971,10 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         store.update_meta(source_id, {"state": state})
     elif case == "foreign-project":
         store.update_meta(source_id, {"project_id": "p1_" + "0" * 32})
+    elif case == "artifact-inheritance":
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        (store.session_dir(source_id) / "buffers").symlink_to(artifacts, target_is_directory=True)
     elif case in {"oversize-messages", "oversize-events", "aggregate-budget", "budget-control"}:
         if case != "oversize-events":
             values = json.loads((store.session_dir(source_id) / "messages.json").read_text())
@@ -1008,6 +1013,8 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
 
     monkeypatch.setattr(runner, "resolve_environment", forbidden)
     monkeypatch.setattr(runner, "run_agent_task", forbidden)
+    monkeypatch.setattr(runner, "build_resumed_context", forbidden)
+    monkeypatch.setattr(session_artifact_resume, "inherit_session_artifacts", forbidden)
     leases = LeaseStore()
     leases.acquire(tmp_path, "another-editor")
     try:
@@ -1019,7 +1026,7 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         output = capsys.readouterr()
         if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock",
                         "latest-missing-time", "budget-control", "missing-state", "missing-events",
-                        "missing-state-events"}:
+                        "missing-state-events", "artifact-inheritance"}:
             assert code == 2 and output.err
             if case in {"legacy-no-key", "missing-key", "invalid-key"}:
                 assert "key" in output.err
@@ -1038,11 +1045,51 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
             assert preview["processes_restored"] is False
             assert "Observed original hypothesis" not in output.out
             assert preview["admission"] == "not checked; execution requires ordinary workspace and capacity admission"
+            assert preview["artifact_inheritance"] == (
+                "not checked; execution builds resumed context and inherits artifacts after admission"
+            )
         assert [h.session_id for h in leases.holders_of(tmp_path)] == ["another-editor"]
         assert source_bytes <= MAX_ARTIFACT_SOURCE_BYTES
         assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
     finally:
         leases.release(tmp_path, "another-editor")
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+async def test_context_fork_preview_all_projects_matches_run_selection(
+    tmp_path, fork_source, monkeypatch, capsys, json_output,
+):
+    from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+    from garuda.core.session_records import BoundedSessionRecords
+    from garuda.interfaces import main
+
+    store, source_id, messages = fork_source
+    other_workspace = tmp_path / "other-project"
+    other_workspace.mkdir()
+    other_events = EventStore()
+    assert (await _run("other", "Completed the other project.", other_workspace, other_events, store=store)).success
+    other_id = other_events.session_id
+    store.checkpoint_messages(other_id, messages)
+    metadata_path = store.session_dir(source_id) / "meta.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["updated_at"] = "2000-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata))
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    for all_projects, expected in [(False, source_id), (True, other_id)]:
+        reader = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
+        assert reader.resolve_for_resume("latest", workspace=tmp_path, all_projects=all_projects) == expected
+        args = main.build_parser().parse_args([
+            "sessions", "fork-preview", "latest", "--at", "2", "--workspace", str(tmp_path),
+            *(["--all-projects"] if all_projects else []), *(["--json"] if json_output else []),
+        ])
+        assert main.run_sessions(args) == 0
+        output = capsys.readouterr()
+        if json_output:
+            assert json.loads(output.out)["forked_from"] == expected
+        else:
+            assert f"Context fork: {expected} through message 2" in output.out
+            if all_projects:
+                assert "Artifact inheritance: not checked" in output.out
 
 
 async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):

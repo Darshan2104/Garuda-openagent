@@ -553,6 +553,8 @@ def build_parser():
     fork_preview.add_argument("session", help="Session id, unique prefix, or name")
     fork_preview.add_argument("--at", type=int, required=True, help="Inclusive zero-based checkpoint message index")
     fork_preview.add_argument("--workspace", default=".")
+    fork_preview.add_argument("--all-projects", action="store_true",
+                              help="Select across projects; with latest, select the newest session anywhere")
     fork_preview.add_argument("--json", action="store_true")
     workers_cleanup = sessions_sub.add_parser(
         "cleanup-workers", help="Retire proven settled editing-worker repositories without losing changes")
@@ -998,6 +1000,7 @@ def run_sessions(args) -> int:
         try:
             preview = preview_context_fork(
                 SessionStore(), args.session, args.at, workspace=os.path.realpath(args.workspace),
+                all_projects=args.all_projects,
             )
         except (ProjectIdentityError, OSError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -1009,6 +1012,7 @@ def run_sessions(args) -> int:
                   f"(requested {preview['fork_requested_at']})")
             print("Context rewind only; files and processes are unchanged. Inherited evidence is stale.")
             print(f"Admission: {preview['admission']}")
+            print(f"Artifact inheritance: {preview['artifact_inheritance']}")
             print(f"Source SHA-256: {preview['source_digest']}")
         return 0
 

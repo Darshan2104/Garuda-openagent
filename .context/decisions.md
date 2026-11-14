@@ -5,9 +5,11 @@
 `sessions fork-preview` resolves and binds the source through the bounded
 no-follow reader, calls the existing fork preparation owner, and rechecks source
 digests before returning metadata. It creates no session or admission and does
-not return transcript text. Preview records admission as not checked; a later
-execution must independently pass workspace/capacity admission and source
-revalidation. Filesystem/process restoration remains outside context rewind.
+not return transcript text. Preview records admission and artifact inheritance
+as not checked; it does not build resumed context or inherit artifacts. A later
+execution can still refuse those steps after workspace/capacity admission and
+must independently revalidate its source. Filesystem/process restoration remains
+outside context rewind.
 
 The preview uses the shared project/name selection owner in non-allocating mode:
 names, prefixes and latest require an existing key; full IDs retain explicit
@@ -3063,6 +3065,8 @@ and historical event/state/receipt references survive compaction and resume in
 the working-state card. Fork lineage inspection reads persisted metadata only.
 Terminal native sources without pending ownership or quarantine are supported;
 ACP state, live-source forks and combined workspace isolation are refused.
+Read-only preview does not build resumed context or inherit artifacts; it labels
+artifact inheritance unchecked because execution can still refuse after admission.
 
 ## 2026-11-06 — Sequential isolated native editing workers (#384)
 
@@ -3315,3 +3319,17 @@ that consumer for the call and surface as `live_consumer_error` rather than
 failing the run. ACP runtimes refuse `on_delta` before launch; no harness
 streaming or fallback is implied. The default `None` keeps every existing path
 unchanged.
+
+## 2026-11-11 — Bound fork name lookup and disclose preview limits (#370)
+
+For #370/#415 context forks, preview and resume share no-follow name-marker
+reads that accept only regular files of at most 256 bytes. Symlinks, special
+files and oversized markers cannot authorize a named source. Preview adds an
+opt-in `--all-projects` flag through the existing selection owner, matching
+`run --fork` while preserving project-scoped defaults and non-allocating reads.
+
+Preview reports artifact inheritance as not checked alongside admission. It
+neither builds resumed context nor inherits artifacts; either operation may
+still refuse after ordinary admission even when checkpoint preview succeeds.
+The runner remains the execution owner; no environment or interpreter
+requirement is added.

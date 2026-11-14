@@ -126,6 +126,45 @@ def test_prefixes_and_latest_stay_in_the_project(tmp_path):
     assert store.resolve("abc222") == "abc222"  # a full id always resolves
 
 
+@pytest.mark.parametrize("mode", ["resume", "inspection"])
+@pytest.mark.parametrize("marker_kind", ["symlink", "oversize", "fifo"])
+def test_unsafe_name_markers_are_refused_without_blocking(tmp_path, mode, marker_kind):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    meta = _begin(store, "source-session", workspace, name="review")
+    marker = store.root / ".names" / meta["project_id"] / "review/session"
+    marker.unlink()
+    if marker_kind == "symlink":
+        target = tmp_path / "target"
+        target.write_text("source-session")
+        marker.symlink_to(target)
+    elif marker_kind == "oversize":
+        marker.write_text("source-session" + " " * 256)
+    else:
+        os.mkfifo(marker)
+    code = textwrap.dedent(
+        """
+        import sys
+        from garuda.core.session_records import BoundedSessionRecords
+        reader = BoundedSessionRecords(sys.argv[1], byte_budget=8 * 1024 * 1024)
+        resolve = reader.resolve_for_resume if sys.argv[3] == "resume" else reader.resolve_for_inspection
+        try:
+            resolve("review", workspace=sys.argv[2])
+        except FileNotFoundError:
+            print("refused")
+        else:
+            print("resolved")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(store.root), str(workspace), mode],
+        capture_output=True, text=True, timeout=10, env=dict(os.environ, PYTHONPATH=str(ROOT)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "refused"
+
+
 def test_a_second_begin_keeps_the_identity(tmp_path):
     repo = _git_repo(tmp_path / "repo")
     store = SessionStore(tmp_path / "sessions")

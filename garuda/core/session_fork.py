@@ -38,14 +38,14 @@ def validate_fork_request(*, fork, fork_at, resume=None, context=None, isolation
         raise ValueError("context fork cannot combine with resume, a supplied context, or workspace isolation")
 
 
-def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str) -> dict:
+def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str, all_projects: bool = False) -> dict:
     """Validate the same saved prefix as execution without admitting any work."""
     from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
     from garuda.core.session_records import BoundedSessionRecords
 
     validate_fork_request(fork=reference, fork_at=fork_at)
     reader = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
-    session_id = reader.resolve_for_inspection(reference, workspace=workspace)
+    session_id = reader.resolve_for_inspection(reference, workspace=workspace, all_projects=all_projects)
     with reader.selected_session(session_id) as binding:
         plan = prepare_context_fork(reader, session_id, fork_at, bounded_reads=True)
         plan.check_source(reader, binding)
@@ -53,6 +53,7 @@ def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str)
             **plan.record,
             "retained_messages": len(plan.messages),
             "admission": "not checked; execution requires ordinary workspace and capacity admission",
+            "artifact_inheritance": "not checked; execution builds resumed context and inherits artifacts after admission",
         }
 
 

@@ -394,9 +394,10 @@ class BoundedSessionRecords(ReadOnlySessions):
         return self._resolve_workspace_ref(reference, workspace=workspace, all_projects=all_projects,
                                            read_only=False)
 
-    def resolve_for_inspection(self, reference, *, workspace):
+    def resolve_for_inspection(self, reference, *, workspace, all_projects=False):
         """Project-scoped launch-equivalent selection without identity allocation."""
-        return self._resolve_workspace_ref(reference, workspace=workspace, read_only=True)
+        return self._resolve_workspace_ref(reference, workspace=workspace, all_projects=all_projects,
+                                           read_only=True)
 
     def _resolve_workspace_ref(self, reference, *, workspace, all_projects=False, read_only):
         root_fd = self._open_bound_root()

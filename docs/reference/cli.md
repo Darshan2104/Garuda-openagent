@@ -17,7 +17,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda starter result SESSION [--workspace DIR] [--json] [--limit N] [--offset N]` | Read selected session evidence, coverage, and an explicit next action |
 | Sessions | `garuda sessions [--json]` | List recent sessions with state and queue position; `--json` is the same model the dashboard serves |
 | | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
-| | `garuda sessions fork-preview S --at N [--json]` | Read-only validation of a context fork; effective checkpoint index, provenance and stale evidence, with admission not checked |
+| | `garuda sessions fork-preview S --at N [--all-projects] [--json]` | Read-only validation of a context fork; effective checkpoint index, provenance and stale evidence, with admission and artifact inheritance not checked |
 | | `garuda sessions cancel S` | Stop a background session, or revoke a pending quota continuation through the shared session Stop path |
 | | `garuda sessions merge S --check CMD [--into BRANCH] [--image IMAGE] [--timeout SEC]` | Check a worktree session merged into a branch (in Docker, no network; default image `python:3.12-slim`, 600 s per check) and publish `refs/garuda/integration/<S>`; never changes your checkout |
 | | `garuda sessions cleanup-workers S` | Attempt cleanup of proved settled editing-worker repositories; retained or unknown ownership and unintegrated data remain |
@@ -75,6 +75,11 @@ Session arguments (`--resume`, `--fork`, `--session`) accept a full ID, a unique
 from `garuda sessions`, a session name, or `latest`. Names, prefixes and
 `latest` are looked up in the current project; add `--all-projects` to search
 every project. A full ID always resolves.
+
+`sessions fork-preview` accepts `--all-projects` with the same selection semantics
+as `run --fork`: `latest` selects the newest session anywhere and prefixes search
+across projects. Preview does not build resumed context or inherit artifacts;
+successful preview can still be refused by those steps after admission.
 
 ## Common `run` flags
 
