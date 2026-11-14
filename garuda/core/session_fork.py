@@ -47,7 +47,7 @@ def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str)
     reader = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
     session_id = reader.resolve_for_inspection(reference, workspace=workspace)
     with reader.selected_session(session_id) as binding:
-        plan = prepare_context_fork(reader, session_id, fork_at)
+        plan = prepare_context_fork(reader, session_id, fork_at, bounded_reads=True)
         plan.check_source(reader, binding)
         return {
             **plan.record,
@@ -56,14 +56,16 @@ def preview_context_fork(store, reference: str, fork_at: int, *, workspace: str)
         }
 
 
-def _snapshot(reader, session_id):
+def _snapshot(reader, session_id, *, bounded_reads=False):
     snapshot = {}
     for name in ("meta.json", "messages.json", "state.json", "events.jsonl"):
         try:
-            snapshot[name] = read_bytes(
-                reader, Path(session_id) / name,
-                limit=None if name in {"messages.json", "events.jsonl"} else MAX_RECORD_BYTES,
-            )
+            relative = Path(session_id) / name
+            limit = None if name in {"messages.json", "events.jsonl"} else MAX_RECORD_BYTES
+            if bounded_reads:
+                snapshot[name] = reader.read(relative, limit=reader.remaining if limit is None else limit)
+            else:
+                snapshot[name] = read_bytes(reader, relative, limit=limit)
         except RecordError as exc:
             if (name in {"state.json", "events.jsonl"}
                     and not isinstance(exc, UnsafeRecordError)
@@ -106,10 +108,12 @@ class ContextFork:
     messages: list[Message]
     initial_state: dict
     record: dict
+    bounded_reads: bool = False
 
     def check_source(self, reader, source_binding):
         source_binding.check()
-        if _digests(_snapshot(reader, self.record["forked_from"])) != self.record["source_files"]:
+        snapshot = _snapshot(reader, self.record["forked_from"], bounded_reads=self.bounded_reads)
+        if _digests(snapshot) != self.record["source_files"]:
             raise ValueError("context fork source changed during preparation")
 
 
@@ -140,8 +144,8 @@ def _messages(data):
     return messages
 
 
-def prepare_context_fork(reader, session_id: str, fork_at: int) -> ContextFork:
-    snapshot = _snapshot(reader, session_id)
+def prepare_context_fork(reader, session_id: str, fork_at: int, *, bounded_reads: bool = False) -> ContextFork:
+    snapshot = _snapshot(reader, session_id, bounded_reads=bounded_reads)
     meta = parse_json(snapshot["meta.json"])
     if meta != reader.load_meta(session_id):
         raise ValueError("fork source metadata changed after selection")
@@ -214,4 +218,4 @@ def prepare_context_fork(reader, session_id: str, fork_at: int) -> ContextFork:
     # Carry constraints, never the source's candidate/check/todo claims as live state.
     initial_state = {"goal": state.get("goal", ""), "acceptance": state.get("acceptance", ""),
                      "context_fork": record, "source_task": meta.get("task", "")}
-    return ContextFork(messages, initial_state, record)
+    return ContextFork(messages, initial_state, record, bounded_reads=bounded_reads)

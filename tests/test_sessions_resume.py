@@ -685,9 +685,12 @@ async def fork_source(tmp_path, monkeypatch):
     return store, source_id, messages
 
 
-@pytest.mark.parametrize("requested,effective", [(0, -1), (0, 0), (2, 2), (3, 2), (4, 2), (5, 5), (7, 6)])
+@pytest.mark.parametrize("requested,effective,large_events", [
+    (0, -1, False), (0, 0, False), (2, 2, False), (3, 2, False),
+    (4, 2, False), (5, 5, False), (7, 6, False), (5, 5, True),
+])
 async def test_context_fork_retains_complete_prefix_without_restoring_source(
-    tmp_path, fork_source, requested, effective,
+    tmp_path, fork_source, requested, effective, large_events,
 ):
     import hashlib
     import os
@@ -697,6 +700,13 @@ async def test_context_fork_retains_complete_prefix_without_restoring_source(
     from garuda.workspace.lease import LeaseStore
 
     store, source_id, original = fork_source
+    if large_events:
+        from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+
+        with store.events_path(source_id).open("a") as trail:
+            trail.write(json.dumps({"type": "tool_result", "payload": {
+                "content": "x" * MAX_ARTIFACT_SOURCE_BYTES,
+            }}) + "\n")
     if effective == -1:
         original = original[3:]
         store.checkpoint_messages(source_id, original)
@@ -891,12 +901,17 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
     "complete", "partial-batch", "live", "outside", "name", "latest", "full-id-no-key", "missing-lock",
     "legacy-no-key", "missing-key", "invalid-key", "handoff", "segments", "messages",
     "tool-call", "tool-call-id", "verification", "self-check", "foreign-project",
+    "latest-list-time", "latest-null-time", "latest-object-time", "latest-number-time", "latest-missing-time",
+    "oversize-messages", "oversize-events", "aggregate-budget", "budget-control",
+    "missing-state", "missing-events", "missing-state-events",
 ])
 async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
     tmp_path, fork_source, monkeypatch, capsys, case,
 ):
+    import os
     import shutil
 
+    from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
     from garuda.interfaces import main, runner
     from garuda.workspace.lease import LeaseStore
 
@@ -923,8 +938,19 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         (store.root / ".identity/.lock").unlink()
     elif case == "name":
         reference = store.load_meta(source_id)["name"]
-    elif case == "latest":
+    elif case == "latest" or case.startswith("latest-"):
         reference = "latest"
+        if case != "latest":
+            sibling = store.session_dir("other-session")
+            sibling.mkdir()
+            metadata = {**store.load_meta(source_id), "session_id": "other-session"}
+            values = {"latest-list-time": [], "latest-null-time": None,
+                      "latest-object-time": {}, "latest-number-time": 17}
+            if case == "latest-missing-time":
+                metadata.pop("updated_at")
+            else:
+                metadata["updated_at"] = values[case]
+            (sibling / "meta.json").write_text(json.dumps(metadata))
     elif case == "handoff":
         store.update_meta(source_id, {"handoff": "invalid"})
     elif case == "segments":
@@ -944,8 +970,38 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         store.update_meta(source_id, {"state": state})
     elif case == "foreign-project":
         store.update_meta(source_id, {"project_id": "p1_" + "0" * 32})
+    elif case in {"oversize-messages", "oversize-events", "aggregate-budget", "budget-control"}:
+        if case != "oversize-events":
+            values = json.loads((store.session_dir(source_id) / "messages.json").read_text())
+            size = {"oversize-messages": MAX_ARTIFACT_SOURCE_BYTES,
+                    "aggregate-budget": 3 * 1024 * 1024, "budget-control": 1024 * 1024}[case]
+            values[6]["content"] = "x" * size
+            (store.session_dir(source_id) / "messages.json").write_text(json.dumps(values))
+        if case != "oversize-messages":
+            size = MAX_ARTIFACT_SOURCE_BYTES if case == "oversize-events" else 1024 * 1024
+            with store.events_path(source_id).open("a") as trail:
+                trail.write(json.dumps({"type": "tool_result", "payload": {"content": "x" * size}}) + "\n")
+    elif case.startswith("missing-state") or case == "missing-events":
+        if "state" in case:
+            (store.session_dir(source_id) / "state.json").unlink()
+        if "events" in case:
+            store.events_path(source_id).unlink()
     point = {"partial-batch": 4, "outside": 100}.get(case, 5)
     before = {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    sources = {(p.stat().st_dev, p.stat().st_ino) for p in store.root.glob("*/*")
+               if p.name in {"meta.json", "messages.json", "state.json", "events.jsonl"}}
+    source_bytes = 0
+    read = os.read
+
+    def observed_read(fd, count):
+        nonlocal source_bytes
+        data = read(fd, count)
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) in sources:
+            source_bytes += len(data)
+        return data
+
+    monkeypatch.setattr(os, "read", observed_read)
 
     def forbidden(*args, **kwargs):
         pytest.fail("fork preview attempted execution")
@@ -961,10 +1017,16 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         ])
         code = main.run_sessions(args)
         output = capsys.readouterr()
-        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock"}:
+        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock",
+                        "latest-missing-time", "budget-control", "missing-state", "missing-events",
+                        "missing-state-events"}:
             assert code == 2 and output.err
             if case in {"legacy-no-key", "missing-key", "invalid-key"}:
                 assert "key" in output.err
+            if case.startswith("latest-"):
+                assert "updated_at" in output.err
+            if case in {"oversize-messages", "oversize-events", "aggregate-budget"}:
+                assert "budget" in output.err
         else:
             assert code == 0
             preview = json.loads(output.out)
@@ -977,6 +1039,7 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
             assert "Observed original hypothesis" not in output.out
             assert preview["admission"] == "not checked; execution requires ordinary workspace and capacity admission"
         assert [h.session_id for h in leases.holders_of(tmp_path)] == ["another-editor"]
+        assert source_bytes <= MAX_ARTIFACT_SOURCE_BYTES
         assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
     finally:
         leases.release(tmp_path, "another-editor")

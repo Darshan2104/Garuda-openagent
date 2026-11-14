@@ -314,8 +314,15 @@ class BoundedSessionRecords(ReadOnlySessions):
             raise ReadBudgetExceeded("aggregate source read budget exhausted")
         reserved = allowance + 65536
         self.remaining -= reserved
-        with self.selected_session(_parts(relative)[0]):
-            data = read_bytes(self, relative, limit=allowance)
+        try:
+            with self.selected_session(_parts(relative)[0]):
+                data = read_bytes(self, relative, limit=allowance)
+        except RecordError as exc:
+            if not isinstance(exc, UnsafeRecordError) and isinstance(exc.__cause__, FileNotFoundError):
+                # No source bytes were read. Optional absent legacy records
+                # must not consume the allowance reserved for a real read.
+                self.remaining += reserved
+            raise
         self.remaining += reserved - len(data)
         return data
 

@@ -15,6 +15,13 @@ selection without one. Missing/malformed identity never creates a key or lock.
 Fork preparation validates nested source shapes and the CLI reports typed
 identity/record refusal without a traceback. Native launch allocation is unchanged.
 
+Preview snapshot reads, including final digest revalidation, spend the same 8 MiB
+allowance as metadata selection. The fork plan retains this read policy for its
+recheck; authorized native execution retains complete-source reads. A missing
+optional legacy file spends no source bytes. The shared session-list owner
+refuses non-string saved timestamps before sorting, preserving missing legacy
+timestamps as empty strings instead of inventing an order for malformed evidence.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for

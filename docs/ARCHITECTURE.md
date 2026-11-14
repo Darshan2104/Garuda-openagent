@@ -796,7 +796,13 @@ fastest way to learn the system.
 
 `garuda sessions fork-preview` uses the context-fork preparation owner and
 bounded selected-source reader to validate a checkpoint and recheck its digests
-without launching execution. Its metadata explicitly leaves admission unchecked;
+without launching execution. Metadata selection, snapshot preparation and final
+revalidation share one 8 MiB read allowance; oversize or aggregate exhaustion
+refuses without validating a partial source. The plan retains the bounded-read
+policy for its recheck, while native execution keeps full-checkpoint reads.
+The shared list owner refuses non-string timestamps before sorting `latest`;
+absent legacy timestamps retain empty-string ordering.
+Its metadata explicitly leaves admission unchecked;
 the eventual fork must pass ordinary workspace/capacity admission independently.
 Preview selection uses the shared project/name resolver in read-only mode,
 loading only an existing identity key and retaining the selected directory

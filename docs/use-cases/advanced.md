@@ -304,6 +304,13 @@ identity. A full session ID can still select its explicit source without that
 key. Invalid saved handoffs, runtime segments or message shapes produce a clean
 refusal (exit 2) rather than a traceback.
 
+Preview shares an 8 MiB source-read allowance across metadata selection, checkpoint
+preparation and the final source recheck, including oversize detection. Exhaustion
+refuses with exit 2; it never validates a partial source. `latest` also refuses
+non-string saved timestamps rather than guessing an order. Missing legacy
+timestamps retain their existing empty-string ordering. Native fork execution
+keeps its full-checkpoint read policy and can accept sources too large to preview.
+
 `--fork-at` is an inclusive, zero-based index in the source session's
 `messages.json` checkpoint, including system and tool messages. Index 5 retains
 messages 0 through 5. It addresses the saved checkpoint, which may already be

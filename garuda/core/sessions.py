@@ -660,9 +660,14 @@ class SessionStore:
             meta_path = directory / "meta.json"
             if meta_path.is_file():
                 try:
-                    metas.append(self.load_meta(directory.name))
+                    meta = self.load_meta(directory.name)
                 except (OSError, ValueError, StorageError):
                     continue
+                if not isinstance(meta, dict):
+                    raise ValueError(f"Session {directory.name} metadata must be a mapping")
+                if not isinstance(meta.get("updated_at", ""), str):
+                    raise ValueError(f"Session {directory.name} updated_at must be a string")
+                metas.append(meta)
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return metas if limit is None else metas[:limit]
 
