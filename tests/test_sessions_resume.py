@@ -685,9 +685,12 @@ async def fork_source(tmp_path, monkeypatch):
     return store, source_id, messages
 
 
-@pytest.mark.parametrize("requested,effective", [(0, -1), (0, 0), (2, 2), (3, 2), (4, 2), (5, 5), (7, 6)])
+@pytest.mark.parametrize("requested,effective,large_events", [
+    (0, -1, False), (0, 0, False), (2, 2, False), (3, 2, False),
+    (4, 2, False), (5, 5, False), (7, 6, False), (5, 5, True),
+])
 async def test_context_fork_retains_complete_prefix_without_restoring_source(
-    tmp_path, fork_source, requested, effective,
+    tmp_path, fork_source, requested, effective, large_events,
 ):
     import hashlib
     import os
@@ -697,6 +700,13 @@ async def test_context_fork_retains_complete_prefix_without_restoring_source(
     from garuda.workspace.lease import LeaseStore
 
     store, source_id, original = fork_source
+    if large_events:
+        from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+
+        with store.events_path(source_id).open("a") as trail:
+            trail.write(json.dumps({"type": "tool_result", "payload": {
+                "content": "x" * MAX_ARTIFACT_SOURCE_BYTES,
+            }}) + "\n")
     if effective == -1:
         original = original[3:]
         store.checkpoint_messages(source_id, original)
@@ -885,6 +895,201 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
     assert lineage["inherited_evidence"]["verification"] == "stale"
     assert row["verification"]["status"] != "passed"
     assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("case", [
+    "complete", "partial-batch", "live", "outside", "name", "latest", "full-id-no-key", "missing-lock",
+    "legacy-no-key", "missing-key", "invalid-key", "handoff", "segments", "messages",
+    "tool-call", "tool-call-id", "verification", "self-check", "foreign-project",
+    "latest-list-time", "latest-null-time", "latest-object-time", "latest-number-time", "latest-missing-time",
+    "oversize-messages", "oversize-events", "aggregate-budget", "budget-control",
+    "missing-state", "missing-events", "missing-state-events", "artifact-inheritance",
+])
+async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
+    tmp_path, fork_source, monkeypatch, capsys, case,
+):
+    import os
+    import shutil
+
+    from garuda.core import session_artifact_resume
+    from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+    from garuda.interfaces import main, runner
+    from garuda.workspace.lease import LeaseStore
+
+    store, source_id, _ = fork_source
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    if case == "live":
+        store.update_meta(source_id, {"status": "running"})
+    reference = source_id[:8]
+    if case in {"legacy-no-key", "missing-key", "full-id-no-key"}:
+        if case == "legacy-no-key":
+            metadata_path = store.session_dir(source_id) / "meta.json"
+            metadata = json.loads(metadata_path.read_text())
+            for field in ("project_id", "project_path", "project_fs_id"):
+                metadata.pop(field, None)
+            metadata_path.write_text(json.dumps(metadata))
+            shutil.rmtree(store.root / ".identity")
+        else:
+            (store.root / ".identity/key").unlink()
+        if case == "full-id-no-key":
+            reference = source_id
+    elif case == "invalid-key":
+        (store.root / ".identity/key").write_text("invalid")
+    elif case == "missing-lock":
+        (store.root / ".identity/.lock").unlink()
+    elif case == "name":
+        reference = store.load_meta(source_id)["name"]
+    elif case == "latest" or case.startswith("latest-"):
+        reference = "latest"
+        if case != "latest":
+            sibling = store.session_dir("other-session")
+            sibling.mkdir()
+            metadata = {**store.load_meta(source_id), "session_id": "other-session"}
+            values = {"latest-list-time": [], "latest-null-time": None,
+                      "latest-object-time": {}, "latest-number-time": 17}
+            if case == "latest-missing-time":
+                metadata.pop("updated_at")
+            else:
+                metadata["updated_at"] = values[case]
+            (sibling / "meta.json").write_text(json.dumps(metadata))
+    elif case == "handoff":
+        store.update_meta(source_id, {"handoff": "invalid"})
+    elif case == "segments":
+        store.update_meta(source_id, {"runtime_segments": [1]})
+    elif case in {"messages", "tool-call", "tool-call-id"}:
+        values = json.loads((store.session_dir(source_id) / "messages.json").read_text())
+        if case == "messages":
+            values = [None]
+        elif case == "tool-call":
+            values[3]["tool_calls"] = [None]
+        else:
+            values[3]["tool_calls"][0]["id"] = []
+        (store.session_dir(source_id) / "messages.json").write_text(json.dumps(values))
+    elif case in {"verification", "self-check"}:
+        state = store.load_meta(source_id)["state"]
+        state["verification" if case == "verification" else "self_check"] = "invalid"
+        store.update_meta(source_id, {"state": state})
+    elif case == "foreign-project":
+        store.update_meta(source_id, {"project_id": "p1_" + "0" * 32})
+    elif case == "artifact-inheritance":
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        (store.session_dir(source_id) / "buffers").symlink_to(artifacts, target_is_directory=True)
+    elif case in {"oversize-messages", "oversize-events", "aggregate-budget", "budget-control"}:
+        if case != "oversize-events":
+            values = json.loads((store.session_dir(source_id) / "messages.json").read_text())
+            size = {"oversize-messages": MAX_ARTIFACT_SOURCE_BYTES,
+                    "aggregate-budget": 3 * 1024 * 1024, "budget-control": 1024 * 1024}[case]
+            values[6]["content"] = "x" * size
+            (store.session_dir(source_id) / "messages.json").write_text(json.dumps(values))
+        if case != "oversize-messages":
+            size = MAX_ARTIFACT_SOURCE_BYTES if case == "oversize-events" else 1024 * 1024
+            with store.events_path(source_id).open("a") as trail:
+                trail.write(json.dumps({"type": "tool_result", "payload": {"content": "x" * size}}) + "\n")
+    elif case.startswith("missing-state") or case == "missing-events":
+        if "state" in case:
+            (store.session_dir(source_id) / "state.json").unlink()
+        if "events" in case:
+            store.events_path(source_id).unlink()
+    point = {"partial-batch": 4, "outside": 100}.get(case, 5)
+    before = {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    sources = {(p.stat().st_dev, p.stat().st_ino) for p in store.root.glob("*/*")
+               if p.name in {"meta.json", "messages.json", "state.json", "events.jsonl"}}
+    source_bytes = 0
+    read = os.read
+
+    def observed_read(fd, count):
+        nonlocal source_bytes
+        data = read(fd, count)
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) in sources:
+            source_bytes += len(data)
+        return data
+
+    monkeypatch.setattr(os, "read", observed_read)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("fork preview attempted execution")
+
+    monkeypatch.setattr(runner, "resolve_environment", forbidden)
+    monkeypatch.setattr(runner, "run_agent_task", forbidden)
+    monkeypatch.setattr(runner, "build_resumed_context", forbidden)
+    monkeypatch.setattr(session_artifact_resume, "inherit_session_artifacts", forbidden)
+    leases = LeaseStore()
+    leases.acquire(tmp_path, "another-editor")
+    try:
+        args = main.build_parser().parse_args([
+            "sessions", "fork-preview", reference, "--at", str(point),
+            "--workspace", str(tmp_path), "--json",
+        ])
+        code = main.run_sessions(args)
+        output = capsys.readouterr()
+        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock",
+                        "latest-missing-time", "budget-control", "missing-state", "missing-events",
+                        "missing-state-events", "artifact-inheritance"}:
+            assert code == 2 and output.err
+            if case in {"legacy-no-key", "missing-key", "invalid-key"}:
+                assert "key" in output.err
+            if case.startswith("latest-"):
+                assert "updated_at" in output.err
+            if case in {"oversize-messages", "oversize-events", "aggregate-budget"}:
+                assert "budget" in output.err
+        else:
+            assert code == 0
+            preview = json.loads(output.out)
+            assert preview["forked_from"] == source_id
+            assert preview["fork_requested_at"] == point
+            assert preview["fork_at"] == (2 if case == "partial-batch" else point)
+            assert preview["inherited_evidence"] == {"candidate": "stale", "verification": "stale"}
+            assert preview["filesystem_restored"] is False
+            assert preview["processes_restored"] is False
+            assert "Observed original hypothesis" not in output.out
+            assert preview["admission"] == "not checked; execution requires ordinary workspace and capacity admission"
+            assert preview["artifact_inheritance"] == (
+                "not checked; execution builds resumed context and inherits artifacts after admission"
+            )
+        assert [h.session_id for h in leases.holders_of(tmp_path)] == ["another-editor"]
+        assert source_bytes <= MAX_ARTIFACT_SOURCE_BYTES
+        assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
+    finally:
+        leases.release(tmp_path, "another-editor")
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+async def test_context_fork_preview_all_projects_matches_run_selection(
+    tmp_path, fork_source, monkeypatch, capsys, json_output,
+):
+    from garuda.core.artifact_read_model import MAX_ARTIFACT_SOURCE_BYTES
+    from garuda.core.session_records import BoundedSessionRecords
+    from garuda.interfaces import main
+
+    store, source_id, messages = fork_source
+    other_workspace = tmp_path / "other-project"
+    other_workspace.mkdir()
+    other_events = EventStore()
+    assert (await _run("other", "Completed the other project.", other_workspace, other_events, store=store)).success
+    other_id = other_events.session_id
+    store.checkpoint_messages(other_id, messages)
+    metadata_path = store.session_dir(source_id) / "meta.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["updated_at"] = "2000-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata))
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    for all_projects, expected in [(False, source_id), (True, other_id)]:
+        reader = BoundedSessionRecords(store.root, byte_budget=MAX_ARTIFACT_SOURCE_BYTES)
+        assert reader.resolve_for_resume("latest", workspace=tmp_path, all_projects=all_projects) == expected
+        args = main.build_parser().parse_args([
+            "sessions", "fork-preview", "latest", "--at", "2", "--workspace", str(tmp_path),
+            *(["--all-projects"] if all_projects else []), *(["--json"] if json_output else []),
+        ])
+        assert main.run_sessions(args) == 0
+        output = capsys.readouterr()
+        if json_output:
+            assert json.loads(output.out)["forked_from"] == expected
+        else:
+            assert f"Context fork: {expected} through message 2" in output.out
+            if all_projects:
+                assert "Artifact inheritance: not checked" in output.out
 
 
 async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):

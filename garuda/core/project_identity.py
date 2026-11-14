@@ -270,8 +270,11 @@ def allocate_name(
 
 
 def session_for_name(store_root: Path, project_id: str, name: str) -> str | None:
-    marker = _names_dir(store_root, project_id) / name / "session"
+    from garuda.core.session_records import read_bytes
+    from garuda.core.sessions import SessionStore
+
+    marker = Path(".names") / project_id / name / "session"
     try:
-        return marker.read_text(encoding="utf-8").strip() or None
+        return read_bytes(SessionStore(store_root), marker, limit=256).decode("utf-8").strip() or None
     except (OSError, ValueError):
         return None

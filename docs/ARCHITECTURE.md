@@ -794,6 +794,25 @@ fastest way to learn the system.
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.
 
+`garuda sessions fork-preview` uses the context-fork preparation owner and
+bounded selected-source reader to validate a checkpoint and recheck its digests
+without launching execution. Metadata selection, snapshot preparation and final
+revalidation share one 8 MiB read allowance; oversize or aggregate exhaustion
+refuses without validating a partial source. The plan retains the bounded-read
+policy for its recheck, while native execution keeps full-checkpoint reads.
+The shared list owner refuses non-string timestamps before sorting `latest`;
+absent legacy timestamps retain empty-string ordering.
+Its metadata explicitly leaves admission and artifact inheritance unchecked.
+Preview does not build resumed context or inherit artifacts; either step can
+still refuse after ordinary workspace/capacity admission, even if preview succeeds.
+Preview selection uses the shared project/name resolver in read-only mode,
+loading only an existing identity key and retaining the selected directory
+binding. Opt-in `--all-projects` forwards the run's cross-project selection policy.
+Preview and resume read name markers through the shared no-follow regular-file
+reader with a 256-byte limit. Native launch keeps its allocation policy. The fork
+preparation owner validates nested source shapes before deserialization; the CLI
+renders identity and record failures as exit-2 refusals.
+
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,
 approval records, review and acceptance summaries through

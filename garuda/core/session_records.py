@@ -314,8 +314,15 @@ class BoundedSessionRecords(ReadOnlySessions):
             raise ReadBudgetExceeded("aggregate source read budget exhausted")
         reserved = allowance + 65536
         self.remaining -= reserved
-        with self.selected_session(_parts(relative)[0]):
-            data = read_bytes(self, relative, limit=allowance)
+        try:
+            with self.selected_session(_parts(relative)[0]):
+                data = read_bytes(self, relative, limit=allowance)
+        except RecordError as exc:
+            if not isinstance(exc, UnsafeRecordError) and isinstance(exc.__cause__, FileNotFoundError):
+                # No source bytes were read. Optional absent legacy records
+                # must not consume the allowance reserved for a real read.
+                self.remaining += reserved
+            raise
         self.remaining += reserved - len(data)
         return data
 
@@ -384,9 +391,19 @@ class BoundedSessionRecords(ReadOnlySessions):
         launch operation. Existing SessionStore project identity/name semantics
         remain the owner; every selected metadata read retains directory identity.
         """
+        return self._resolve_workspace_ref(reference, workspace=workspace, all_projects=all_projects,
+                                           read_only=False)
+
+    def resolve_for_inspection(self, reference, *, workspace, all_projects=False):
+        """Project-scoped launch-equivalent selection without identity allocation."""
+        return self._resolve_workspace_ref(reference, workspace=workspace, all_projects=all_projects,
+                                           read_only=True)
+
+    def _resolve_workspace_ref(self, reference, *, workspace, all_projects=False, read_only):
         root_fd = self._open_bound_root()
         try:
-            session_id = super().resolve(reference, workspace=workspace, all_projects=all_projects)
+            session_id = super().resolve(reference, workspace=workspace, all_projects=all_projects,
+                                         read_only=read_only)
             if self.remaining <= 65536:
                 raise ReadBudgetExceeded("resume selection metadata budget exhausted")
             with self.selected_session(session_id):
@@ -396,9 +413,7 @@ class BoundedSessionRecords(ReadOnlySessions):
                 # Full ids retain their explicit cross-project meaning. Names,
                 # prefixes and latest must still belong to the selected project.
                 if workspace is not None and not all_projects and reference != session_id:
-                    from garuda.core.project_identity import project_identity
-
-                    identity = project_identity(self.root, workspace)
+                    identity = self._resolution_identity(workspace, read_only=read_only)
                     if not self._in_project(meta, identity.project_id, identity.path):
                         raise RecordError("selected session does not belong to the authorized project")
             return session_id
