@@ -57,6 +57,18 @@ def _digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+async def _close_child_environment(environment):
+    closing = asyncio.create_task(environment.aclose())
+    try:
+        await asyncio.shield(closing)
+    except asyncio.CancelledError as cancelled:
+        try:
+            await settle_task(closing)
+        except Exception as exc:
+            raise cancelled from exc
+        raise
+
+
 class _RelocatedPermissions:
     """Screen both actual paths and their corresponding parent workspace paths."""
 
@@ -309,8 +321,25 @@ class LocalEditingWorkers:
                          base_commit=worker.base.commit,
                          source_head=worker.base.source_head, base_tree=worker.base.tree,
                          base_manifest_digest=worker.base.manifest_digest)
-            result = await guard.race(child._run_child(profile_name, task, fork_parent_context="none"))
-            await child_env.aclose()
+            try:
+                result = await guard.race(child._run_child(profile_name, task, fork_parent_context="none"))
+            except BaseException as interrupted:
+                # Closing optional environment services belongs to this owner
+                # even when the child never returned a result. Retain the
+                # cancellation/exception and quarantine below; cancellation
+                # during close takes precedence over an earlier exception.
+                try:
+                    await _close_child_environment(child_env)
+                except BaseException as cleanup:
+                    if isinstance(cleanup, asyncio.CancelledError):
+                        if not isinstance(interrupted, asyncio.CancelledError):
+                            raise cleanup from interrupted
+                    else:
+                        worker.receipt["environment_close"] = "failed"
+                    raise interrupted from cleanup
+                raise
+            else:
+                await _close_child_environment(child_env)
             effects = result.metadata.get("side_effects")
             if (not isinstance(effects, dict)
                     or not isinstance(effects.get("processes_started"), list)
