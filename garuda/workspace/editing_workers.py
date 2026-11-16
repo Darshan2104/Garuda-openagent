@@ -484,6 +484,7 @@ class EditingWorkerRepositories:
                         try:
                             receipt = self._read(directory)
                             if (receipt.get("repository_state") != "removed"
+                                    or receipt.get("state") == "uncertain"
                                     or receipt.get("candidate_id") == keep_candidate):
                                 continue
                             retired = receipt.get("retired_ns")

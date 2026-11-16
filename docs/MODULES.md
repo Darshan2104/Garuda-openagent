@@ -54,7 +54,7 @@ a behaviour.
 | `child_result.py` | Versioned native child-result envelopes, accepted schema provenance, bounded inline delivery, parent-buffer publication and size/digest-checked reference resolution. The runner snapshots validated envelopes before hooks, retaining semantic facts independently of summary rendering. Referenced values carry the common artifact descriptor while pre-descriptor version-1 references remain readable. Failed publications share a stable unavailable capture adapter across live delivery, inspection and inheritance, without inventing a payload reference. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. Captures a child-scoped workspace baseline and attaches authoritative changed-path evidence or an explicit unsupported/error attribution state. |
-| `editing_worker.py` | Opt-in `EditingWorkerService` and sequential `LocalEditingWorkers`: detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Explicit integration uses the existing worktree checker and refuses changed candidates or stale destinations. Cancellation retains uncertain ownership. Settled integrated or unchanged terminal repositories retire through `workspace/editing_workers.py`; retained receipts and patches remain, a later cleanup prunes fully retired receipts, and recovery never replays candidates. |
+| `editing_worker.py` | Opt-in `EditingWorkerService` and sequential `LocalEditingWorkers`: detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Explicit integration uses the existing worktree checker and refuses changed candidates or stale destinations. Capacity-full admissions settle only with store-read proof that ownership was never acquired. Cancellation retains uncertain ownership. Settled integrated or unchanged terminal repositories retire through `workspace/editing_workers.py`; retained receipts and patches remain, a later cleanup prunes fully retired receipts, and recovery never replays candidates. |
 | `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports settled capture/process groups so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |
 
 ## `tools/` — what the agent can do
@@ -195,6 +195,8 @@ waives only content retention and requires released parent ownership. Receipts
 and candidate patches for retained workers survive removal; a later cleanup run
 prunes fully retired receipt directories. Worker recovery and retirement run
 off the event loop and settle their threads before propagating cancellation.
+Quarantine clears completed-removal markers while preserving removal intent;
+pruning skips uncertain receipts even when they still claim removal.
 Storage creates missing ancestors as `0700` regardless of umask. Readers require
 privacy at the worker root and receipt directories, retaining no-follow ancestor
 traversal and naming refused paths. Missing or ambiguous records, legacy

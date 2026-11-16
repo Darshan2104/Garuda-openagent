@@ -7,6 +7,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,7 +21,7 @@ from garuda.core.permissions import (
     permission_workspace,
 )
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
-from garuda.runtime.capacity import CapacityError, CapacityStore, configured_ceiling
+from garuda.runtime.capacity import CapacityError, CapacityStore, CapacityUnavailable, configured_ceiling
 from garuda.runtime.strict_store import (
     StorageError,
     ensure_private_dir,
@@ -225,6 +226,11 @@ class LocalEditingWorkers:
     async def _quarantine(self, worker):
         # Mark ownership before any cancellable cleanup or evidence publication.
         await worker.guard.stop_heartbeat()
+        # A failed settled-receipt publication may have changed only memory.
+        # Preserve removal intent for interrupted retirement, never completion.
+        if worker.receipt.get("repository_state") == "removed":
+            worker.receipt["repository_state"] = "retained"
+        worker.receipt.pop("retired_ns", None)
         self._record(worker, "uncertain", cleanup="unknown")
 
     async def run(self, runner, profile_name, task, *, fork_parent_context=None):
@@ -304,7 +310,21 @@ class LocalEditingWorkers:
                 pending.directory = directory
             worker = pending
             self._workers[worker_id] = worker
-            guard.acquire()
+            try:
+                guard.acquire()
+            except CapacityUnavailable as exc:
+                # Capacity precedes the lease, heartbeat and repository. Settle
+                # only with readable store evidence that ownership never began.
+                if (CapacityStore().slots_for_holder(worker_id)
+                        or guard.leases.holders_of(workspace)
+                        or os.path.lexists(workspace)):
+                    raise
+                self._record(worker, "refused", cleanup="settled", child_settled=True,
+                             ownership="never_acquired", admission_refused="worker.capacity_unavailable",
+                             repository_state="removed", retired_ns=time.time_ns())
+                result = _refused("worker.capacity_unavailable", str(exc))
+                result.metadata["editing_worker"] = dict(worker.receipt)
+                return result
             guard.start_heartbeat()
             worker.base = snap.detached_repository(source, workspace)
             snap.git(workspace, "update-ref", "--no-deref", "HEAD", worker.base.commit)

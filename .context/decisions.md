@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-16 — Capacity-refused editing admissions settle without quarantine (#384)
+
+`LocalEditingWorkers` settles `CapacityUnavailable` as
+`worker.capacity_unavailable` only after real capacity and lease store reads
+prove no slot for the worker and no holder of its workspace, and `lexists`
+confirms the workspace is absent. Acquisition precedes heartbeat, repository
+creation and child execution, so this receipt records `ownership: never_acquired`,
+settled cleanup and child settlement without stopping a heartbeat.
+
+Unreadable proof, retained ownership, storage errors, lease conflicts and
+rollback failures retain the existing quarantine path. The refusal marks
+`repository_state: removed` with `retired_ns`; a later cleanup run prunes its
+receipt directory before bounded inventory, while the `editing_worker` event
+retains the audit record. Quarantine never carries removed state and pruning
+skips uncertain receipts. Concurrent fan-out and non-local backends remain
+deferred; this does not change capacity ceilings or descendant-cleanup proofs.
+
 ## 2026-11-16 — Fork-inherited history is not completion evidence (#370)
 
 Retained fork messages carry stale provenance naming their immediate source, preserved through checkpoints and resume.
