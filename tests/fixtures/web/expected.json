@@ -1,0 +1,30 @@
+{
+  "article": {
+    "text": "Overview with inline words & entities.\n\nInstall it\n\nRun the command.\n\n例: café\n\nUnicode stays readable.",
+    "sections": [
+      {"title": null, "heading_level": null, "text": "Overview with inline words & entities.\n\n"},
+      {"title": "Install it", "heading_level": 1, "text": "Install it\n\nRun the command.\n\n"},
+      {"title": "例: café", "heading_level": 2, "text": "例: café\n\nUnicode stays readable."}
+    ]
+  },
+  "code": {
+    "text": "Example\n\ndef greet():\n    return \"hello\"\n\n    # retained indentation\n\nResult\n\nhello world",
+    "sections": [
+      {"title": "Example", "heading_level": 1, "text": "Example\n\ndef greet():\n    return \"hello\"\n\n    # retained indentation\n\n"},
+      {"title": "Result", "heading_level": 2, "text": "Result\n\nhello world"}
+    ]
+  },
+  "table": {
+    "text": "Metrics\n\nName\n\nValue\n\nLatency\n\n42 ms\n\nFirst item\n\nSecond & last",
+    "sections": [
+      {"title": "Metrics", "heading_level": 2, "text": "Metrics\n\nName\n\nValue\n\nLatency\n\n42 ms\n\nFirst item\n\nSecond & last"}
+    ]
+  },
+  "malformed": {
+    "text": "Lead in\n\nOpen heading\n\nStill readable\n\n  unfinished code\n    keeps spaces",
+    "sections": [
+      {"title": null, "heading_level": null, "text": "Lead in\n\n"},
+      {"title": "Open heading", "heading_level": 3, "text": "Open heading\n\nStill readable\n\n  unfinished code\n    keeps spaces"}
+    ]
+  }
+}

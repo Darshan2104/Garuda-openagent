@@ -94,6 +94,11 @@ FIELDS: dict[str, Field] = {
     "tools.options": _f("map", "tool_options"),
     "tools.subagents": _f("strs", "subagents", nullable=True),
     "tools.subagent_only": _f("bool", "subagent"),
+    # advisor (#385): a granted consult target at selected checkpoints
+    "advisor.role": _f("str", "advisor", nullable=True),
+    "advisor.max_notes": _f("int", "advisor_max_notes"),
+    "advisor.checkpoints": _f("strs", "advisor_checkpoints",
+                              choices=("repeated-failure", "plan-ready", "candidate-ready")),
     # permissions
     "permissions.mode": _f("choice", "permission_mode", choices=PERMISSIONS),
     "permissions.rules.tools": _f("rules", "tool_rules", nullable=True),
@@ -194,6 +199,8 @@ def _check_value(path: str, field: Field, value: Any, source: str) -> None:
     if kind == "strs" and (not isinstance(value, list)
                           or not all(isinstance(v, str) and v for v in value)):
         bad("must be a list of strings")
+    if kind == "strs" and field.choices and any(v not in field.choices for v in value):
+        bad(f"must contain only {', '.join(field.choices)}")
     if kind == "map" and not isinstance(value, dict):
         bad("must be a mapping")
     if kind == "rules":

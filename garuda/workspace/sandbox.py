@@ -21,6 +21,7 @@ network (denied by default) or via env (scrubbed). See ``build_seatbelt_profile`
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from garuda.types import ExecResult
@@ -37,6 +38,7 @@ from garuda.workspace.sandbox_policy import (
     detect_sandbox_backend,
     to_shell_string,
 )
+from garuda.workspace.text_reads import TextPage
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +135,35 @@ class SandboxEnvironment:
         # No backend and require_sandbox=False: run unconfined but still scrub env.
         return command, clean_env
 
+    def open_code_cell(self):
+        from garuda.workspace.cells import CellError
+
+        if self._backend != "bwrap":
+            raise CellError(
+                "Code cells unsupported: full read confinement requires Linux/bwrap or Docker; "
+                "Seatbelt and unsandboxed execution are unsupported"
+            )
+        return self._open_code_cell()
+
+    @asynccontextmanager
+    async def _open_code_cell(self):
+        import shutil
+        import sys
+
+        from garuda.workspace.cells import WORKER, CellError, cell_process, minimal_cell_env
+        from garuda.workspace.sandbox_policy import build_bwrap_cell_command
+
+        python = str(Path(sys.executable).resolve())
+        if not any(Path(python).is_relative_to(path) for path in ("/usr", "/bin", "/lib", "/lib64")):
+            raise CellError("Code cells unsupported: Garuda's Python is outside the cell runtime mounts")
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise CellError("Code cells unsupported: bubblewrap is unavailable")
+        async with cell_process(
+            build_bwrap_cell_command(bwrap, python, WORKER), env=minimal_cell_env(),
+        ) as process:
+            yield process
+
     async def execute(
         self,
         command: str,
@@ -171,9 +202,17 @@ class SandboxEnvironment:
         self._confine_real_path(path)
         return await self._inner.read_file(path)
 
-    async def read_bytes(self, path: str) -> bytes:
+    async def read_text_page(self, path: str, *, offset: int = 1,
+                             limit: int = 2000, tail: bool = False,
+                             digest: bool = False) -> TextPage:
         self._confine_real_path(path)
-        return await self._inner.read_bytes(path)
+        return await self._inner.read_text_page(path, offset=offset, limit=limit, tail=tail,
+                                                 digest=digest)
+
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
+        self._confine_real_path(path)
+        options = {} if max_bytes is None else {"max_bytes": max_bytes}
+        return await self._inner.read_bytes(path, **options)
 
     async def write_file(self, path: str, content: str) -> None:
         self._confine_real_path(path)

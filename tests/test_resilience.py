@@ -125,3 +125,170 @@ def _fake_response(text):
     msg = SimpleNamespace(content=text, tool_calls=[], reasoning_content=None, thinking_blocks=None)
     choice = SimpleNamespace(message=msg, finish_reason="stop")
     return SimpleNamespace(choices=[choice], usage=None)
+
+
+def _reported_error(status, usage=None):
+    import httpx
+
+    exc = _StatusExc(status)
+    exc.response = httpx.Response(status, json={"usage": usage} if usage is not None else {})
+    return exc
+
+
+def _priced_response(prompt=20, completion=4, cost=0.3):
+    return litellm.ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        usage={"prompt_tokens": prompt, "completion_tokens": completion,
+               "total_tokens": prompt + completion, "cost": cost},
+    )
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    async def no_sleep(_):
+        pass
+
+    monkeypatch.setattr(lm.asyncio, "sleep", no_sleep)
+
+
+@pytest.mark.parametrize("reported", [True, False], ids=["reported", "unknown"])
+async def test_retry_usage_belongs_to_the_logical_response(monkeypatch, no_backoff, reported):
+    failed_usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.1} if reported else None
+    replies = iter([_reported_error(529, failed_usage), _priced_response()])
+
+    async def complete(**kwargs):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    response = await LitellmModel("openai/gpt-4o-mini", max_retries=2).complete([])
+    assert response.usage == {
+        "prompt_tokens": 30 if reported else 20,
+        "completion_tokens": 6 if reported else 4,
+        "total_tokens": 36 if reported else 24,
+        "cost_usd": pytest.approx(0.4 if reported else 0.3),
+    }
+    assert [a["outcome"] for a in response.attempt_usage] == ["failed", "success"]
+    assert response.attempt_usage[0]["usage"] == (
+        {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12, "cost_usd": 0.1}
+        if reported else {}
+    )
+
+
+@pytest.mark.parametrize("terminal", ["exhausted", "nonretryable", "overflow"])
+async def test_terminal_error_carries_all_attempt_usage(monkeypatch, no_backoff, terminal):
+    from garuda.model.protocol import ContextOverflowError
+
+    final = (_reported_error(529 if terminal == "exhausted" else 400,
+                             {"completion_tokens": 3}) if terminal != "overflow" else
+             litellm.ContextWindowExceededError("large", model="m", llm_provider="p"))
+    replies = iter([_reported_error(529, {"prompt_tokens": 10, "cost": 0.1}), final])
+
+    async def complete(**kwargs):
+        raise next(replies)
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    expected_type = ContextOverflowError if terminal == "overflow" else _StatusExc
+    with pytest.raises(expected_type) as raised:
+        await LitellmModel("openai/gpt-4o-mini", max_retries=2).complete([])
+    assert raised.value.usage == {
+        "prompt_tokens": 10, "cost_usd": 0.1,
+        **({"completion_tokens": 3} if terminal != "overflow" else {}),
+    }
+    assert len(raised.value.attempt_usage) == 2
+    assert all(a["outcome"] == "failed" for a in raised.value.attempt_usage)
+    if terminal != "overflow":
+        assert raised.value is final
+
+
+@pytest.mark.parametrize("fallback", ["success", "failure", "direct"])
+async def test_stream_snapshots_and_failed_establishment_count_once(monkeypatch, no_backoff, fallback):
+    calls = []
+
+    async def chunks():
+        for completion, cost in [(1, 0.1), (3, 0.2), (3, 0.2)]:
+            yield litellm.ModelResponse(
+                stream=True, choices=[],
+                usage={"prompt_tokens": 10, "completion_tokens": completion,
+                       "total_tokens": 10 + completion, "cost": cost},
+            )
+        raise _reported_error(400, {"prompt_tokens": 10, "completion_tokens": 3,
+                                    "total_tokens": 13, "cost": 0.2})
+
+    async def complete(**kwargs):
+        calls.append(bool(kwargs.get("stream")))
+        if len(calls) == 1:
+            raise _reported_error(529, {"prompt_tokens": 5, "completion_tokens": 1, "cost": 0.05})
+        if kwargs.get("stream"):
+            return chunks()
+        if fallback == "failure":
+            raise _reported_error(400)  # fallback consumption is unknown
+        return _priced_response()
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    model = LitellmModel("openai/gpt-4o-mini", max_retries=2)
+    if fallback == "success":
+        value = await model.complete_streaming([])
+        assert value.content == "done"
+        assert value.usage == {"prompt_tokens": 35, "completion_tokens": 8, "total_tokens": 43,
+                               "cost_usd": pytest.approx(0.55)}
+        assert [a["outcome"] for a in value.attempt_usage] == ["failed", "failed", "success"]
+    else:
+        with pytest.raises(_StatusExc) as raised:
+            if fallback == "direct":
+                _ = [delta async for delta in model.stream([])]
+            else:
+                await model.complete_streaming([])
+        value = raised.value
+        assert value.usage == {"prompt_tokens": 15, "completion_tokens": 4, "total_tokens": 19,
+                               "cost_usd": pytest.approx(0.25)}
+        assert all(a["outcome"] == "failed" for a in value.attempt_usage)
+        assert len(value.attempt_usage) == (2 if fallback == "direct" else 3)
+    assert calls == ([True, True] if fallback == "direct" else [True, True, False])
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ({"usage": {"completion_tokens": 2}}, {"completion_tokens": 2}),
+    ({"usage": litellm.Usage(completion_tokens=2)}, {"completion_tokens": 2}),
+    ({"usage": {"prompt_tokens": None}}, {}),
+    ({"usage": {"prompt_tokens_details": {"cached_tokens": 0}, "cache_creation_input_tokens": 0}},
+     {"cache_read_tokens": 0, "cache_creation_tokens": 0}),
+    ({"usage": {"prompt_tokens": 0, "completion_tokens": 0}},
+     {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+    ({"_hidden_params": {"response_cost": 0.25}}, {"cost_usd": 0.25}),
+    ({"usage": {"cost": True, "prompt_tokens": -1, "completion_tokens": True}}, {}),
+    ({"usage": {"cost": float("inf")}}, {}),
+])
+def test_usage_extraction_keeps_missing_fields_unknown(raw, expected):
+    assert lm._extract_usage(raw) == expected
+
+
+async def test_response_parse_failure_retains_provider_usage(monkeypatch):
+    from types import SimpleNamespace
+
+    async def complete(**kwargs):
+        return SimpleNamespace(choices=[], usage=litellm.Usage(
+            prompt_tokens=10, completion_tokens=2, total_tokens=12, cost=0.1))
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    with pytest.raises(IndexError) as raised:
+        await LitellmModel("openai/gpt-4o-mini").complete([])
+    assert raised.value.usage == {
+        "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12, "cost_usd": 0.1,
+    }
+    assert raised.value.attempt_usage == [{"usage": raised.value.usage, "outcome": "failed"}]
+
+
+async def test_reused_transport_error_does_not_reconsume_its_accounting(monkeypatch, no_backoff):
+    error = _reported_error(529, {"prompt_tokens": 10, "cost": 0.1})
+
+    async def complete(**kwargs):
+        raise error
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    with pytest.raises(_StatusExc) as raised:
+        await LitellmModel("openai/gpt-4o-mini", max_retries=3).complete([])
+    assert raised.value.usage == {"prompt_tokens": 30, "cost_usd": pytest.approx(0.3)}
+    assert len(raised.value.attempt_usage) == 3

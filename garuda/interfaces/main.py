@@ -233,6 +233,25 @@ def build_parser():
         ),
     )
     run_parser.add_argument(
+        "--max-run-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Token budget shared by the whole native run tree: main calls, summaries, "
+            "verifier/critic and subagents. Calls reserve their estimate before sending."
+        ),
+    )
+    run_parser.add_argument(
+        "--max-run-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Stop admitting model calls once provider-reported spend reaches this. "
+            "Not a prepaid maximum; unreported cost stops admission unless "
+            "--max-run-tokens is also set."
+        ),
+    )
+    run_parser.add_argument(
         "--reasoning-effort",
         choices=["minimal", "low", "medium", "high"],
         help="Enable extended thinking at this effort (cross-provider)",
@@ -266,6 +285,8 @@ def build_parser():
     run_parser.add_argument("--no-verifier", action="store_true")
     run_parser.add_argument("--no-three-step-summary", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print JSONL events to stdout")
+    run_parser.add_argument("--no-stream", action="store_true", help="Disable live assistant text in a terminal")
+    run_parser.add_argument("--quiet", action="store_true", help="Suppress native model notices and live output")
     run_parser.add_argument("--trajectory", help="Save event trajectory to JSONL file")
     run_parser.add_argument(
         "--resume",
@@ -273,10 +294,13 @@ def build_parser():
         help="Resume a saved session (full id, unique prefix, or 'latest' for this "
         "project's newest)",
     )
+    run_parser.add_argument("--fork", metavar="SESSION", help="Fork a saved native session's context into a new session")
+    run_parser.add_argument("--fork-at", type=int, metavar="MESSAGE_INDEX",
+                            help="With --fork, retain through this zero-based saved message index (inclusive); context rewind only")
     run_parser.add_argument(
         "--all-projects",
         action="store_true",
-        help="With --resume latest, resume the newest session from any project",
+        help="With --resume latest or --fork latest, select the newest session from any project",
     )
     run_parser.add_argument(
         "--name",
@@ -524,6 +548,23 @@ def build_parser():
     sessions_show.add_argument("session", help="Session id, unique prefix, or name")
     sessions_show.add_argument("--json", action="store_true")
     sessions_show.add_argument("--workspace", default=".")
+    fork_preview = sessions_sub.add_parser(
+        "fork-preview", help="Validate a context fork without launching work or restoring files")
+    fork_preview.add_argument("session", help="Session id, unique prefix, or name")
+    fork_preview.add_argument("--at", type=int, required=True, help="Inclusive zero-based checkpoint message index")
+    fork_preview.add_argument("--workspace", default=".")
+    fork_preview.add_argument("--all-projects", action="store_true",
+                              help="Select across projects; with latest, select the newest session anywhere")
+    fork_preview.add_argument("--json", action="store_true")
+    workers_cleanup = sessions_sub.add_parser(
+        "cleanup-workers", help="Retire proven settled editing-worker repositories without losing changes")
+    workers_cleanup.add_argument("session", help="Parent session id, unique prefix, or name")
+    workers_cleanup.add_argument("--workspace", default=".")
+    workers_discard = sessions_sub.add_parser(
+        "discard-worker", help="Explicitly discard one proven-orphan editing-worker repository")
+    workers_discard.add_argument("session", help="Parent session id, unique prefix, or name")
+    workers_discard.add_argument("candidate", help="Exact editing-worker candidate id")
+    workers_discard.add_argument("--workspace", default=".")
     sessions_cancel = sessions_sub.add_parser(
         "cancel", help="Stop a background session: remove it from the queue, or stop its worker"
     )
@@ -575,6 +616,8 @@ def build_parser():
     agent_show.add_argument("--workspace", default=".")
     agent_show.add_argument("--json", action="store_true")
     agent_show.add_argument("--raw", action="store_true", help="Show text unredacted (local only)")
+    agent_show.add_argument("--instruction-sources", action="store_true",
+                            help="Inspect instruction discovery and loading without importing configuration")
     agent_prompt = agent_sub.add_parser(
         "prompt", help="The static system prompt, section by section, with sizes and a digest")
     agent_prompt.add_argument("name")
@@ -609,6 +652,13 @@ def build_parser():
     memory_review = memory_sub.add_parser(
         "review", help="Accept, edit or reject each pending proposal (needs a terminal)")
     memory_review.add_argument("--workspace", default=".")
+    memory_search = memory_sub.add_parser("search", help="Search accepted notes in this project")
+    memory_search.add_argument("query")
+    memory_search.add_argument("--workspace", default=".")
+    memory_search.add_argument("--max-chars", type=int, default=2000,
+                               help="Output character budget, 256–4000 (default 2000)")
+    memory_search.add_argument("--limit", type=int, default=5,
+                               help="Maximum notes, 1–10 (default 5)")
 
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")
@@ -641,6 +691,10 @@ def build_parser():
     ):
         command_parser = recovery_sub.add_parser(command, help=help_text)
         command_parser.add_argument("--root", help="Private recovery store (operator override)")
+        if command == "enable":
+            command_parser.add_argument(
+                "--backend", choices=("cron", "launchd"), default="cron",
+                help="Scheduler backend (launchd is opt-in and requires macOS)")
         if command == "cancel":
             command_parser.add_argument("flow_session")
 
@@ -660,6 +714,8 @@ def build_parser():
     decision.add_argument("--allow", action="store_true")
     decision.add_argument("--deny", action="store_true")
     approvals_answer.add_argument("--workspace", default=".")
+    approvals_answer.add_argument(
+        "--digest", help="Refuse unless the pending request has this digest (from `approvals list`)")
 
     mcp_parser = subparsers.add_parser("mcp", help="Inspect MCP server configuration")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
@@ -691,6 +747,14 @@ def build_parser():
         action="store_true",
         help="Trust the listed servers without asking (you have reviewed them)",
     )
+
+    lsp_parser = subparsers.add_parser(
+        "lsp", help="Inspect trusted language-server configuration (starts nothing)")
+    lsp_sub = lsp_parser.add_subparsers(dest="lsp_command")
+    lsp_list = lsp_sub.add_parser(
+        "list", help="Show configured language servers, where each command resolves, "
+        "and ignored project entries")
+    lsp_list.add_argument("--workspace", default=".")
 
     recipe_parser = subparsers.add_parser("recipe", help="Run YAML workflow recipes")
     recipe_sub = recipe_parser.add_subparsers(dest="recipe_command")
@@ -925,6 +989,38 @@ def run_init(args) -> int:
 def run_sessions(args) -> int:
     from garuda.core.sessions import SessionStore
 
+    if getattr(args, "sessions_command", None) == "fork-preview":
+        import json
+        import os
+        import sys
+
+        from garuda.core.project_identity import ProjectIdentityError
+        from garuda.core.session_fork import preview_context_fork
+
+        try:
+            preview = preview_context_fork(
+                SessionStore(), args.session, args.at, workspace=os.path.realpath(args.workspace),
+                all_projects=args.all_projects,
+            )
+        except (ProjectIdentityError, OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(preview, indent=2))
+        else:
+            print(f"Context fork: {preview['forked_from']} through message {preview['fork_at']} "
+                  f"(requested {preview['fork_requested_at']})")
+            if preview["fork_adjustment"]:
+                print(f"Adjustment: {preview['fork_adjustment']}")
+            print(f"Retained messages: {preview['retained_messages']}")
+            print("Context rewind only; files and processes are unchanged. Inherited evidence is stale.")
+            print(f"Admission: {preview['admission']}")
+            print(f"Artifact inheritance: {preview['artifact_inheritance']}")
+            print(f"Source SHA-256: {preview['source_digest']}")
+        return 0
+
+    if getattr(args, "sessions_command", None) in {"cleanup-workers", "discard-worker"}:
+        return run_sessions_workers(args)
     if getattr(args, "sessions_command", None) == "cancel":
         return run_sessions_cancel(args)
     if getattr(args, "sessions_command", None) in ("merge", "remove-worktree"):
@@ -1261,8 +1357,9 @@ def run_agent(args) -> int:
                     print(f"{r['qualified']:<28} {r['source']:<9}{ext} {r['description']}{shadow}")
             return 0
         if command == "show":
-            data = inspect.show(args.name, args.workspace, raw=args.raw)
-            if args.json:
+            data = inspect.show(args.name, args.workspace, raw=args.raw,
+                                instruction_sources=args.instruction_sources)
+            if args.json or args.instruction_sources:
                 print(json.dumps(data, indent=2, default=str))
             else:
                 print(f"{data['name']}  ({data['source']}: {data['path']})")
@@ -1422,7 +1519,8 @@ def run_approvals(args) -> int:
     directory = store.session_dir(session_id) / "approvals"
     if args.approvals_command == "answer":
         try:
-            write_answer(directory, session_id, args.approval_id, allow=args.allow)
+            write_answer(directory, session_id, args.approval_id, allow=args.allow,
+                         expect_digest=getattr(args, "digest", None))
         except FileExistsError:
             print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
             return 2
@@ -1437,7 +1535,8 @@ def run_approvals(args) -> int:
         print("No parked approvals.")
         return 0
     for request in pending:
-        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}")
+        print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
+              f"  digest={request.get('digest')}")
     return 0
 
 
@@ -1476,6 +1575,34 @@ def run_sessions_cancel(args) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     return 0
+
+
+def run_sessions_workers(args) -> int:
+    """Explicit local repository recovery; inspection never invokes this path."""
+    import json
+    import os
+    import sys
+
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.capacity import CapacityError
+    from garuda.runtime.strict_store import StorageError
+    from garuda.workspace.editing_workers import EditingWorkerRepositories
+    from garuda.workspace.lease import LeaseError
+    from garuda.workspace.snapshot_proto import SnapshotRefused
+    from garuda.workspace.worktrees import WorktreeError
+
+    try:
+        session_id = SessionStore().resolve(args.session, workspace=os.path.realpath(args.workspace))
+        repositories = EditingWorkerRepositories()
+        if args.sessions_command == "discard-worker":
+            result = repositories.discard(session_id, args.candidate)
+        else:
+            result = repositories.recover(session_id)
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError, StorageError, CapacityError, LeaseError, SnapshotRefused, WorktreeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 def run_sessions_merge(args) -> int:
@@ -1554,6 +1681,15 @@ def run_dual_model_report(args) -> int:
     return 0
 
 
+def _print_mcp_states(states: list[dict]) -> None:
+    """One line per server: lifecycle state, required/optional, and why it failed."""
+    print("Server status:")
+    for state in states:
+        need = "required" if state["required"] else "optional"
+        reason = f": {state['reason']}" if state["reason"] else ""
+        print(f"  - {state['name']} [{need}] {state['state']}{reason} ({state['tools']} tool(s))")
+
+
 async def run_mcp_list(args) -> int:
     """Show which MCP config file(s) resolve and the tools each server exposes."""
     from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
@@ -1581,7 +1717,8 @@ async def run_mcp_list(args) -> int:
     print(f"\n{len(servers) + len(untrusted)} server(s) configured:")
     for server in servers:
         target = server.url or f"{server.command} {' '.join(server.args)}".strip()
-        print(f"  - {server.name} [{server.transport}] {target}")
+        required = "  (required)" if server.required else ""
+        print(f"  - {server.name} [{server.transport}] {target}{required}")
     for server in untrusted:
         target = server.url or f"{server.command} {' '.join(server.args)}".strip()
         print(
@@ -1592,19 +1729,48 @@ async def run_mcp_list(args) -> int:
     if args.no_connect:
         return 0
 
+    from garuda.mcp.client import McpStartupError
+
     print("\nConnecting to enumerate tools...")
-    tools, manager = await build_toolkit(
-        [], paths, workspace=args.workspace, mcp_user_paths=user_paths
-    )
     try:
+        tools, manager = await build_toolkit(
+            [], paths, workspace=args.workspace, mcp_user_paths=user_paths
+        )
+    except McpStartupError as exc:
+        _print_mcp_states(exc.states)
+        print(f"\nError: {exc}")
+        return 1
+    try:
+        _print_mcp_states(manager.server_states() if manager is not None else [])
+        print("Tools:")
         mcp_tools = [t for t in tools if t.name.startswith("mcp__")]
         if not mcp_tools:
-            print("  (no tools registered — servers may have failed to start; check logs)")
+            print("  (no tools registered — see the server status above)")
         for tool in mcp_tools:
             print(f"  {tool.name}")
     finally:
         if manager is not None:
             await manager.close()
+    return 0
+
+
+def run_lsp_list(args) -> int:
+    """Show the language servers a run here may use. Reads configuration only."""
+    from garuda.lsp.config import load_language_servers, locate_executable
+
+    settings = load_language_servers(args.workspace)
+    if settings.servers:
+        print(f"Language servers (from {settings.source}):")
+        for server in settings.servers:
+            found = locate_executable(server)
+            extensions = ", ".join("." + e for e in server.extensions)
+            print(f"  - {server.name} [{extensions}] {server.command_line}")
+            print(f"    executable: {found or 'NOT FOUND (the lsp tool will report it as failed)'}")
+        print("Each starts on its first lsp request in a local workspace and stops with the run.")
+    else:
+        print(f"No language servers configured in {settings.source}; runs offer no lsp tool.")
+    for problem in settings.problems:
+        print(f"  ! {problem}")
     return 0
 
 
@@ -2135,6 +2301,14 @@ async def run_task_guarded(args) -> int:
 
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    except (ValueError, OSError) as exc:
+        # After the typed refusals above: GarudaConfigError is a ValueError too.
+        if getattr(args, "fork", None) is None and getattr(args, "fork_at", None) is None:
+            raise
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 def main() -> None:
@@ -2211,6 +2385,11 @@ def main() -> None:
         if args.mcp_command == "trust":
             raise SystemExit(run_mcp_trust(args))
         parser.parse_args(["mcp", "--help"])
+        raise SystemExit(1)
+    if args.command == "lsp":
+        if args.lsp_command == "list":
+            raise SystemExit(run_lsp_list(args))
+        parser.parse_args(["lsp", "--help"])
         raise SystemExit(1)
     if args.command == "recipe" and args.recipe_command == "run":
         raise SystemExit(asyncio.run(run_recipe_command(args)))

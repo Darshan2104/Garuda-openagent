@@ -28,6 +28,7 @@ from garuda.runtime.native import NativeGarudaRuntime
 from garuda.tools import tools_for_names
 from garuda.types import AgentConfig, ToolCall
 from garuda.workspace.local import LocalEnvironment
+from tests.approval_helpers import decision_records
 from tests.test_runtime_conformance import run_conformance_suite
 
 
@@ -59,6 +60,7 @@ def _parts(tmp_path, summary: str, store=None):
 
 def _native(tmp_path, summary: str, store=None, **kwargs) -> NativeGarudaRuntime:
     model, agent, tools, config, permissions, store = _parts(tmp_path, summary, store)
+    permissions = kwargs.pop("permissions", permissions)
 
     async def _driver(*, task: str, turn: int, trail: EventStore):
         env = LocalEnvironment(workspace_root=tmp_path)
@@ -135,18 +137,23 @@ async def test_facade_records_unified_sessions(tmp_path):
     assert unified.active.native_session_id == events.session_id
 
 
-async def test_resume_reattaches_with_replayable_history(tmp_path):
-    first = _native(tmp_path, "First run.")
+@pytest.mark.parametrize("permission_free", [False, True])
+async def test_resume_reattaches_with_replayable_history(tmp_path, permission_free):
+    options = {"permissions": None} if permission_free else {}
+    first = _native(tmp_path, "First run.", **options)
     await first.start(task="resume task", session_id="r1")
     await first.prompt("resume task")
     await first.close()
 
     store = SessionStore(tmp_path / "sessions")
-    second = _native(tmp_path, "Second run.", store=store)
+    second = _native(tmp_path, "Second run.", store=store, **options)
     info = await second.resume(native_session_id="r1")
     assert info.native_session_id == "r1"
     events, _ = await second.poll_events(0)
     assert events, "resumed runtime replays its trail"
+    if permission_free:
+        with pytest.raises(RuntimeProtocolError):
+            await second.permission_response(approval_id="unknown", allow=True)
     await second.close()
     assert second.state is LifecycleState.CLOSED
 
@@ -163,8 +170,12 @@ async def test_cancel_permission_and_driver_edges(tmp_path):
     await runtime.start(task="approval task", session_id="e2")
     answered: list[bool] = []
     runtime.park_approval("apr-1", answered.append)
-    await runtime.permission_response(approval_id="apr-1", allow=True)
-    assert answered == [True]
+    with pytest.raises(RuntimeProtocolError, match="cannot be bound"):
+        await runtime.permission_response(approval_id="apr-1", allow=True)
+    assert answered == [False]
+    records = decision_records(runtime._store, "e2")
+    assert len(records) == 1 and records[0]["outcome"] == "deny"
+    assert records[0]["answered_approval_id"] == "apr-1"
     with pytest.raises(RuntimeProtocolError):
         await runtime.permission_response(approval_id="apr-1", allow=True)
 

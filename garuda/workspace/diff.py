@@ -45,7 +45,8 @@ class BaselineError(DiffError):
     """The session cannot make the immutable workspace-evidence claim."""
 
 
-def _git(path: str | Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _git(path: str | Path, *args: str, timeout: float = 30.0,
+         output=None) -> subprocess.CompletedProcess[str]:
     if not args or args[0] not in _READONLY_VERBS:
         raise DiffError(f"refusing non-read-only git invocation: {args!r}")
     # A stable locale keeps the "not a git repository" check meaningful, and
@@ -55,7 +56,8 @@ def _git(path: str | Path, *args: str, timeout: float = 30.0) -> subprocess.Comp
     try:
         return subprocess.run(
             ["git", "-C", str(path), *args],
-            capture_output=True,
+            stdout=subprocess.PIPE if output is None else output,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="surrogateescape",

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from garuda.types import ExecResult
+from garuda.workspace.paths import check_read_size
 
 
 class HarborEnvironmentAdapter:
@@ -63,12 +64,21 @@ class HarborEnvironmentAdapter:
             raise FileNotFoundError(result.stderr or f"Cannot read {resolved}")
         return result.stdout
 
-    async def read_bytes(self, path: str) -> bytes:
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
         resolved = self._resolve_path(path)
-        result = await self.execute(f"base64 < {shlex.quote(resolved)}")
+        if max_bytes is None:
+            result = await self.execute(f"base64 < {shlex.quote(resolved)}")
+        else:
+            if type(max_bytes) is not int or max_bytes < 0:
+                raise ValueError("max_bytes must be a nonnegative integer")
+            # POSIX sh; the explicit test stands in for pipefail on a missing file.
+            quoted = shlex.quote(resolved)
+            result = await self.execute(
+                f"[ -f {quoted} ] && [ -r {quoted} ] || exit 1; "
+                f"head -c {max_bytes + 1} < {quoted} | base64")
         if result.exit_code != 0:
             raise FileNotFoundError(result.stderr or f"Cannot read {resolved}")
-        return base64.b64decode(result.stdout)
+        return check_read_size(base64.b64decode(result.stdout), max_bytes)
 
     async def write_file(self, path: str, content: str) -> None:
         resolved = self._resolve_path(path)

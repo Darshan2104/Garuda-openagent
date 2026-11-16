@@ -56,6 +56,18 @@ class InvokeSubagentTool:
         }
         return tool
 
+    @classmethod
+    def with_editing_workers(cls, original):
+        import copy
+
+        tool = copy.copy(original)
+        tool.parameters = copy.deepcopy(original.parameters)
+        tool.parameters["properties"]["editing_worker"] = {
+            "type": "boolean", "default": False,
+            "description": "Edit in an isolated repository; integration is a separate checked step.",
+        }
+        return tool
+
     async def execute(
         self,
         arguments: dict,
@@ -68,6 +80,8 @@ class InvokeSubagentTool:
                 content="Subagent runner not configured",
                 is_error=True,
             )
+        if "editing_worker" in arguments and type(arguments["editing_worker"]) is not bool:
+            return ToolResult("", "editing_worker must be a boolean", is_error=True)
         from garuda.core.subagent import format_subagent_summary
 
         profile = arguments["profile"]
@@ -80,8 +94,19 @@ class InvokeSubagentTool:
             handoff = "full"
         elif handoff is None:
             handoff = "brief"
-        result = await ctx.subagent_runner.run(profile, task, fork_parent_context=handoff)
+        options = {"fork_parent_context": handoff}
+        if arguments.get("editing_worker") is True:
+            options["editing_worker"] = True
+        result = await ctx.subagent_runner.run(profile, task, **options)
         summary = format_subagent_summary(profile, result)
+        if "editing_worker" in result.metadata:
+            from garuda.core.child_result import canonical_json
+
+            receipt = result.metadata["editing_worker"]
+            delivery = {key: receipt[key] for key in (
+                "candidate_id", "state", "workspace", "patch", "provenance_digest", "base_commit",
+            ) if key in receipt}
+            summary = "Editing worker candidate:\n" + canonical_json(delivery) + "\n" + summary
         from garuda.core.child_result import (
             build_child_result_envelope,
             render_child_result_handoff,
@@ -108,3 +133,30 @@ class InvokeSubagentTool:
             is_error=not result.success,
             metadata=metadata,
         )
+
+
+class IntegrateEditingWorkerTool:
+    name = "integrate_editing_worker"
+    effect = ToolEffect.MUTATING
+    description = "Explicitly check and apply an editing worker candidate to this parent workspace."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "candidate_id": {"type": "string"},
+            "provenance_digest": {"type": "string"},
+        },
+        "required": ["candidate_id", "provenance_digest"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, service):
+        self.service = service
+
+    async def execute(self, arguments, env, ctx):
+        from garuda.core.child_result import canonical_json
+
+        outcome = await self.service.integrate(
+            arguments["candidate_id"], arguments["provenance_digest"],
+            env=env, session_id=ctx.session_id, permissions=ctx.permissions,
+        )
+        return ToolResult("", canonical_json(outcome), is_error=outcome["state"] != "integrated")

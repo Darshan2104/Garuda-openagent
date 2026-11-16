@@ -159,9 +159,9 @@ class LiveSession:
         survivors: list[str] = []
         try:
             if self.env is not None:
-                from garuda.tools.background import reap_session_verified
+                from garuda.agents.setup import reap_owned_processes
 
-                survivors = await reap_session_verified(self.session_id, self.env)
+                survivors = await reap_owned_processes(self.session_id, self.env)
                 if hasattr(self.env, "aclose"):
                     try:
                         await self.env.aclose()

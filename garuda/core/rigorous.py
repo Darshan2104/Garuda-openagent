@@ -9,6 +9,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.modes import apply_mode_preset, describe_config, is_rigorous
 from garuda.core.permissions import PermissionEngine
+from garuda.core.spend import SpendLimitExceeded, gate_for
 from garuda.core.termination import TerminalStrategy
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model import accounting
@@ -97,6 +98,7 @@ class RigorousAgent:
         collection_model=None,
         collection_policy=None,
         allowed_tool_effects=None,
+        model_delta_consumer=None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
         events = events or EventStore()
@@ -123,104 +125,143 @@ class RigorousAgent:
                 },
             )
 
-        plan_profile = load_profile("plan")
-        plan_config = plan_profile.to_agent_config()
-        plan_config.max_turns = min(max(config.max_turns // 4, 5), 30)
-        plan_config.enable_verifier = False
-        plan_tools = tools_for_names(plan_profile.tools)
-        plan_permissions = PermissionEngine(mode=plan_profile.permission_mode, tool_rules=plan_profile.tool_rules)
+        # One run-tree gate for every phase: created here, before the plan, so the
+        # plan run, each build round (prepare_run reuses it) and the critic calls
+        # all admit against the same budget. The critic is an auxiliary call, so
+        # it is bound here for admission and for its model_response record.
+        gate = gate_for(config)
+        accounting_token = accounting.bind(events, gate)
+        try:
+            plan_profile = load_profile("plan")
+            plan_config = plan_profile.to_agent_config()
+            plan_config.max_turns = min(max(config.max_turns // 4, 5), 30)
+            plan_config.enable_verifier = False
+            plan_config.max_run_tokens = config.max_run_tokens
+            plan_config.max_run_cost_usd = config.max_run_cost_usd
+            plan_config.spend_gate = gate
+            plan_tools = tools_for_names(plan_profile.tools)
+            plan_permissions = PermissionEngine(mode=plan_profile.permission_mode, tool_rules=plan_profile.tool_rules)
 
-        plan_agent = DefaultAgent(profile_name="plan")
-        plan_result = await plan_agent.run(
-            task=f"Create a detailed step-by-step plan for this task:\n{task}",
-            model=model,
-            env=env,
-            tools=plan_tools,
-            config=plan_config,
-            events=events,
-            permissions=plan_permissions,
-            hooks=hooks,
-            emit_session_events=False,  # rigorous emits its own single session span
-        )
-        events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
-
-        if not plan_result.success:
-            if emit_session_events:
-                events.append(
-                    EventType.SESSION_END, {"success": False, "reason": "plan_failed"}
-                )
-            return plan_result
-
-        exec_task = f"{task}\n\n## Approved plan\n{plan_result.final_message}"
-        current_task = exec_task
-        exec_result: AgentResult | None = None
-        approved = False
-        feedback = ""
-
-        for attempt in range(MAX_REPAIR_ROUNDS + 1):
-            build_agent = DefaultAgent(profile_name=self._profile_name)
-            # run() only seeds the task when it creates the context itself, so with a
-            # threaded-in context (resume / multi-turn chat / SDK) every round must
-            # append its effective task explicitly. Round 0 carries the approved plan
-            # and later rounds carry the critic feedback — skipping either leaves the
-            # executor working from history alone, blind to the plan it just paid for.
-            if context is not None:
-                context.append(Message(role=Role.USER, content=current_task))
-            exec_result = await build_agent.run(
-                task=current_task,
+            plan_agent = DefaultAgent(profile_name="plan")
+            plan_result = await plan_agent.run(
+                task=f"Create a detailed step-by-step plan for this task:\n{task}",
                 model=model,
                 env=env,
-                tools=tools,
-                config=config,
+                tools=plan_tools,
+                config=plan_config,
                 events=events,
-                permissions=permissions,
+                permissions=plan_permissions,
                 hooks=hooks,
-                subagent_runner=subagent_runner,
-                agents_dir=agents_dir,
-                context=context,
-                checkpoint=checkpoint,
-                # The executor is the phase that does the work, so it is the one that
-                # gets the session buffer (archived tool output stays retrievable
-                # across repair rounds) and the working-state checkpoint.
-                buffer=buffer,
-                state_checkpoint=state_checkpoint,
                 emit_session_events=False,  # rigorous emits its own single session span
-                pack_manager=pack_manager,
-                pack_source_runtime=pack_source_runtime,
-                pack_git_evidence=pack_git_evidence,
-                initial_state=initial_state,
-                workspace_delta_loader=workspace_delta_loader,
-                terminal_strategy=terminal_strategy,
-                collection_model=collection_model,
-                collection_policy=collection_policy,
-                allowed_tool_effects=allowed_tool_effects,
+                model_delta_consumer=model_delta_consumer,
             )
+            events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
 
-            approved, feedback = await self._critic_review(
-                task, plan_result.final_message, exec_result, model, env
-            )
-            events.append(
-                EventType.VERIFICATION,
-                {"approved": approved, "feedback": feedback, "phase": "critic", "attempt": attempt},
-            )
-            if approved:
-                break
-            current_task = f"{exec_task}\n\n## Critic feedback on previous attempt\n{feedback}"
+            if not plan_result.success:
+                if plan_result.metadata.get("spend_limit"):
+                    self._end_on_spend(events, emit_session_events, plan_result)
+                elif emit_session_events:
+                    events.append(
+                        EventType.SESSION_END, {"success": False, "reason": "plan_failed"}
+                    )
+                return plan_result
 
-        if not approved:
+            exec_task = f"{task}\n\n## Approved plan\n{plan_result.final_message}"
+            current_task = exec_task
+            exec_result: AgentResult | None = None
+            approved = False
+            feedback = ""
+
+            for attempt in range(MAX_REPAIR_ROUNDS + 1):
+                build_agent = DefaultAgent(profile_name=self._profile_name)
+                # run() only seeds the task when it creates the context itself, so with a
+                # threaded-in context (resume / multi-turn chat / SDK) every round must
+                # append its effective task explicitly. Round 0 carries the approved plan
+                # and later rounds carry the critic feedback — skipping either leaves the
+                # executor working from history alone, blind to the plan it just paid for.
+                if context is not None:
+                    context.append(Message(role=Role.USER, content=current_task))
+                exec_result = await build_agent.run(
+                    task=current_task,
+                    model=model,
+                    env=env,
+                    tools=tools,
+                    config=config,
+                    events=events,
+                    permissions=permissions,
+                    hooks=hooks,
+                    subagent_runner=subagent_runner,
+                    agents_dir=agents_dir,
+                    context=context,
+                    checkpoint=checkpoint,
+                    # The executor is the phase that does the work, so it is the one that
+                    # gets the session buffer (archived tool output stays retrievable
+                    # across repair rounds) and the working-state checkpoint.
+                    buffer=buffer,
+                    state_checkpoint=state_checkpoint,
+                    emit_session_events=False,  # rigorous emits its own single session span
+                    pack_manager=pack_manager,
+                    pack_source_runtime=pack_source_runtime,
+                    pack_git_evidence=pack_git_evidence,
+                    initial_state=initial_state,
+                    workspace_delta_loader=workspace_delta_loader,
+                    terminal_strategy=terminal_strategy,
+                    collection_model=collection_model,
+                    collection_policy=collection_policy,
+                    allowed_tool_effects=allowed_tool_effects,
+                    model_delta_consumer=model_delta_consumer,
+                )
+
+                if exec_result.metadata.get("spend_limit"):
+                    # The budget is gone: a critic call would only be refused, and
+                    # its rejection would hide why the run stopped.
+                    self._end_on_spend(events, emit_session_events, exec_result)
+                    return exec_result
+                try:
+                    approved, feedback = await self._critic_review(
+                        task, plan_result.final_message, exec_result, model, env
+                    )
+                except SpendLimitExceeded as exc:
+                    what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
+                    exec_result.success = False
+                    exec_result.final_message = f"Run-tree spend budget {what}: {exc}"
+                    exec_result.metadata["spend_limit"] = exc.cause
+                    self._end_on_spend(events, emit_session_events, exec_result)
+                    return exec_result
+                events.append(
+                    EventType.VERIFICATION,
+                    {"approved": approved, "feedback": feedback, "phase": "critic", "attempt": attempt},
+                )
+                if approved:
+                    break
+                current_task = f"{exec_task}\n\n## Critic feedback on previous attempt\n{feedback}"
+
+            if not approved:
+                if emit_session_events:
+                    events.append(
+                        EventType.SESSION_END, {"success": False, "reason": "critic_rejected"}
+                    )
+                exec_result.success = False
+                exec_result.final_message = f"Critic rejected completion: {feedback}"
+                return exec_result
+
             if emit_session_events:
                 events.append(
-                    EventType.SESSION_END, {"success": False, "reason": "critic_rejected"}
+                    EventType.SESSION_END, {"success": exec_result.success, "mode": "rigorous"}
                 )
-            exec_result.success = False
-            exec_result.final_message = f"Critic rejected completion: {feedback}"
             return exec_result
+        finally:
+            accounting.reset(accounting_token)
 
+    @staticmethod
+    def _end_on_spend(events: EventStore, emit_session_events: bool, result: AgentResult) -> None:
+        """The run tree's spend gate refused a phase's call: the run ends there."""
         if emit_session_events:
             events.append(
-                EventType.SESSION_END, {"success": exec_result.success, "mode": "rigorous"}
+                EventType.SESSION_END,
+                {"success": False, "reason": "spend_limit",
+                 "spend_cause": result.metadata["spend_limit"], "error": result.final_message},
             )
-        return exec_result
 
     async def _critic_review(
         self,
@@ -253,6 +294,9 @@ class RigorousAgent:
                     Message(role=Role.USER, content="\n\n".join(user_parts)),
                 ]
             )
+        except SpendLimitExceeded:
+            # Not an unreachable critic: the run's budget refused the call.
+            raise
         except Exception as exc:
             # A critic that can't be reached must not crash the whole rigorous run
             # (discarding a completed execution). Fail closed: treat as not-approved.

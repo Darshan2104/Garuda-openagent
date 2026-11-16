@@ -100,8 +100,39 @@ def _target(target: str, workspace) -> resolve.ResolvedAgent:
     return resolve.resolve_agent(target, _dirs(workspace))
 
 
-def show(name: str, workspace, *, raw: bool = False) -> dict:
-    return show_agent(_target(name, workspace), workspace, raw=raw)
+def show(name: str, workspace, *, raw: bool = False, instruction_sources: bool = False) -> dict:
+    agent = _target(name, workspace)
+    if instruction_sources:
+        return _instruction_report(agent, workspace, raw=raw)
+    return show_agent(agent, workspace, raw=raw)
+
+
+def _instruction_report(agent: resolve.ResolvedAgent, workspace, *, raw: bool) -> dict:
+    from garuda.agents.instruction_sources import inventory
+    from garuda.model.config import ConfigError
+
+    try:
+        diagnostics: list[dict] = []
+        prompt_info = prompt_agent(agent, workspace, diagnostics=diagnostics)
+        prompt_info = {**prompt_info, "sections": [
+            {key: value for key, value in section.items() if key != "text"}
+            for section in prompt_info["sections"]], "diagnostics": diagnostics}
+    except (ConfigError, OSError, ValueError, RuntimeError) as exc:
+        prompt_info = {"digest": None, "sections": None,
+                       "error_code": getattr(exc, "code", "agent.invalid_value")}
+    fields = [{"field": path, "source": _label(agent, agent.provenance.get(path)),
+               "path": str(agent.provenance[path].path) if path in agent.provenance else None,
+               "owner": (f"AgentProfile.{field.profile}" if field.profile else None)
+               if field.supported else field.owner,
+               "status": "supported" if field.supported else "unsupported; activation refused"}
+              for path, field in spec.FIELDS.items() if path in agent.leaves]
+    fields.append({"field": "instructions", "source": _label(agent, agent.provenance.get("instructions")),
+                   "path": str(agent.provenance["instructions"].path)
+                   if "instructions" in agent.provenance else None,
+                   "owner": "garuda.agents.resolve", "status": "supported"})
+    return _redact({"name": agent.name, "prompt": prompt_info,
+                    "instruction_sources": inventory(agent, workspace, prompt_info["sections"]),
+                    "ignored_fields": agent.ignored_fields, "field_owners": fields}, raw)
 
 
 def show_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False) -> dict:
@@ -152,11 +183,12 @@ def prompt(name: str, workspace, *, raw: bool = False) -> dict:
     return prompt_agent(_target(name, workspace), workspace, raw=raw)
 
 
-def prompt_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False) -> dict:
+def prompt_agent(agent: resolve.ResolvedAgent, workspace, *, raw: bool = False,
+                 diagnostics: list | None = None) -> dict:
     from garuda.agents.loader import system_prompt_sections
 
     profile = resolve.activate(agent)
-    sections = system_prompt_sections(profile, str(workspace))
+    sections = system_prompt_sections(profile, str(workspace), diagnostics=diagnostics)
     full = "".join(text for _n, _s, text in sections)
     return {
         "name": profile.name, "kind": "static",

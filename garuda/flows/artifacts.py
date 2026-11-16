@@ -88,9 +88,9 @@ def instructions(outputs: list[str]) -> str:
     lines += [f'<garuda-artifact type="{t}">\n...your {t}...\n</garuda-artifact>' for t in outputs]
     lines.append("Only these blocks are passed on; any text outside them is not.")
     if "review" in outputs:
-        from garuda.flows.review import FORMAT
+        from garuda.flows.review import FORMAT, STRUCTURED_FORMAT
 
-        lines.append(FORMAT)
+        lines += [FORMAT, STRUCTURED_FORMAT]
     return "\n".join(lines)
 
 

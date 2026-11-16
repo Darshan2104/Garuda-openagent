@@ -192,22 +192,32 @@ class HealthMonitoredEnvironment:
     async def read_file(self, path: str) -> str:
         return await self._read("read_file", path)
 
-    async def read_bytes(self, path: str) -> bytes:
-        return await self._read("read_bytes", path)
+    async def read_bytes(self, path: str, *, max_bytes: int | None = None) -> bytes:
+        options = {} if max_bytes is None else {"max_bytes": max_bytes}
+        return await self._read("read_bytes", path, **options)
 
-    async def _read(self, operation: str, path: str):
+    async def read_text_page(self, path: str, **kwargs: Any) -> Any:
+        # Explicit so bounded reads get the same latch and classification as
+        # read_file instead of slipping through __getattr__.
+        if not hasattr(self._env, "read_text_page"):
+            raise NotImplementedError("Bounded text reads are not supported by this backend")
+        return await self._read("read_text_page", path, **kwargs)
+
+    async def _read(self, operation: str, path: str, **kwargs: Any):
         self._check_latched()
         try:
-            return await getattr(self._env, operation)(path)
+            return await getattr(self._env, operation)(path, **kwargs)
         except EnvironmentUnavailableError:
             raise
         except Exception as exc:
             reason = classify_exception(exc)
             if reason:
                 self._die(reason, str(exc))
-            # A missing file is an ordinary outcome, not a transport failure, so
-            # it must not feed the consecutive-failure backstop.
-            if not isinstance(exc, (FileNotFoundError, IsADirectoryError, PermissionError)):
+            # A missing file or an unsupported/invalid bounded read is an
+            # ordinary outcome, not a transport failure, so it must not feed
+            # the consecutive-failure backstop.
+            if not isinstance(exc, (FileNotFoundError, IsADirectoryError, PermissionError,
+                                    NotImplementedError, ValueError)):
                 self._note_exception(exc)
             raise
 

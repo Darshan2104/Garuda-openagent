@@ -3,6 +3,7 @@ import email.utils
 import inspect
 import json
 import logging
+import math
 import random
 import time
 import uuid
@@ -17,6 +18,7 @@ from garuda.model.protocol import (
     StreamDelta,
     estimate_tools_tokens,
 )
+from garuda.model.usage import attach_usage, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,8 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520
 
 # Upper bound on any single backoff/Retry-After sleep.
 _MAX_RETRY_SLEEP = 60.0
+# Response statuses that end a stream; ``in_progress``/``queued`` do not.
+_TERMINAL_STATUSES = frozenset({"completed", "incomplete", "failed", "cancelled"})
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -263,6 +267,10 @@ def _merge_slot(slot: dict, frag: dict) -> None:
         slot["arguments"] += frag["arguments"]
 
 
+def _field(value, name, default=None):
+    return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
 def _provider_cost(response, raw_usage) -> float | None:
     """The cost the provider billed for this call, when it says so.
 
@@ -271,34 +279,51 @@ def _provider_cost(response, raw_usage) -> float | None:
     reports `usage.cost`; others expose it through litellm's hidden params.
     """
     for candidate in (
-        getattr(raw_usage, "cost", None),
-        (getattr(response, "_hidden_params", None) or {}).get("response_cost"),
+        _field(raw_usage, "cost"),
+        _field(raw_usage, "cost_usd"),
+        _field(_field(response, "_hidden_params") or {}, "response_cost"),
     ):
-        if isinstance(candidate, (int, float)) and candidate >= 0:
+        if (isinstance(candidate, (int, float)) and not isinstance(candidate, bool)
+                and math.isfinite(candidate) and candidate >= 0):
             return float(candidate)
     return None
 
 
-def _extract_usage(response) -> dict[str, float]:
-    usage: dict[str, float] = {}
-    if not getattr(response, "usage", None):
-        return usage
-    raw = response.usage
-    usage["prompt_tokens"] = raw.prompt_tokens or 0
-    usage["completion_tokens"] = raw.completion_tokens or 0
-    usage["total_tokens"] = getattr(raw, "total_tokens", None) or (
-        usage["prompt_tokens"] + usage["completion_tokens"]
-    )
-    details = getattr(raw, "prompt_tokens_details", None)
-    cached = getattr(details, "cached_tokens", None) if details else None
-    if cached:
-        usage["cache_read_tokens"] = cached
-    cache_creation = getattr(raw, "cache_creation_input_tokens", None)
-    if cache_creation:
-        usage["cache_creation_tokens"] = cache_creation
+def _extract_usage(response) -> dict[str, int | float]:
+    usage: dict[str, int | float] = {}
+    raw = _field(response, "usage")
+    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = _field(raw, name)
+        # LiteLLM fills omitted token fields with zero before Garuda sees them.
+        # Without wire provenance those zeros are ambiguous; explicit dict zeros
+        # remain known, while normalized zeros stay unknown.
+        if isinstance(raw, litellm.Usage) and value == 0:
+            continue
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            usage[name] = value
+    if not usage.get("total_tokens") and {"prompt_tokens", "completion_tokens"} <= usage.keys():
+        usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+    for name, value in (
+        ("cache_read_tokens", _field(_field(raw, "prompt_tokens_details"), "cached_tokens")),
+        ("cache_creation_tokens", _field(raw, "cache_creation_input_tokens")),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            usage[name] = value
     cost = _provider_cost(response, raw)
     if cost is not None:
         usage["cost_usd"] = cost
+    return usage
+
+
+def _error_usage(exc: Exception) -> dict:
+    response = getattr(exc, "response", None)
+    usage = _extract_usage(response)
+    if callable(getattr(response, "json", None)):
+        try:
+            usage.update(_extract_usage(response.json()))
+        except (ValueError, TypeError, RuntimeError):
+            pass
+    usage.update(_extract_usage(exc))
     return usage
 
 
@@ -494,13 +519,19 @@ class LitellmModel:
     ) -> ModelResponse:
         kwargs = self._build_kwargs(messages, tools, temperature, max_tokens)
 
-        response = await self._complete_with_retries(kwargs)
-        choice = response.choices[0]
-        message = choice.message
-        content = message.content
-        tool_calls = _parse_tool_calls(message.tool_calls or [])
-        reasoning_content = getattr(message, "reasoning_content", None)
-        thinking_blocks = _normalize_thinking_blocks(getattr(message, "thinking_blocks", None))
+        attempts: list[dict] = []
+        response = await self._complete_with_retries(kwargs, attempts)
+        try:
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content
+            tool_calls = _parse_tool_calls(message.tool_calls or [])
+            reasoning_content = getattr(message, "reasoning_content", None)
+            thinking_blocks = _normalize_thinking_blocks(getattr(message, "thinking_blocks", None))
+        except Exception as exc:
+            attempts[-1]["outcome"] = "failed"
+            attach_usage(exc, attempts)
+            raise
 
         return ModelResponse(
             content=content,
@@ -510,22 +541,29 @@ class LitellmModel:
                 "finish_reason": getattr(choice, "finish_reason", None),
                 "status": getattr(response, "status", None),
             },
-            usage=_extract_usage(response),
+            usage=sum_usage(attempts),
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks,
+            attempt_usage=attempts,
         )
 
-    async def _complete_with_retries(self, kwargs: dict):
+    async def _complete_with_retries(self, kwargs: dict, attempts: list[dict] | None = None):
+        if attempts is None:
+            attempts = []
         try:
-            return await self._attempt_with_retries(kwargs)
+            return await self._attempt_with_retries(kwargs, attempts)
         except litellm.ContextWindowExceededError as exc:
             # Re-raised as a provider-agnostic type so the loop can recognise the
             # one model failure it can act on — shrink the prompt and try again —
             # without importing litellm. Translated here rather than in `complete`
             # so the streaming path gets it too.
-            raise ContextOverflowError(str(exc)) from exc
+            error = ContextOverflowError(str(exc))
+            attach_usage(error, attempts)
+            raise error from exc
 
-    async def _attempt_with_retries(self, kwargs: dict):
+    async def _attempt_with_retries(self, kwargs: dict, attempt_usage: list[dict] | None = None):
+        if attempt_usage is None:
+            attempt_usage = []
         # At least one attempt even if max_retries is 0 (otherwise the loop body
         # never runs and we would `raise None`).
         attempts = max(1, self._max_retries)
@@ -538,10 +576,15 @@ class LitellmModel:
                 # Acquire the slot per attempt so a request sleeping on backoff
                 # releases its slot instead of starving the rest of the fleet.
                 async with governor.slot(provider):
-                    return await litellm.acompletion(**kwargs)
+                    response = await litellm.acompletion(**kwargs)
+                if not kwargs.get("stream"):
+                    attempt_usage.append(usage_attempt(_extract_usage(response), "success"))
+                return response
             except Exception as exc:
+                attempt_usage.append(usage_attempt(_error_usage(exc), "failed"))
                 # Non-transient errors (400/401/404, context-window, etc.) fail fast.
                 if not _is_retryable(exc):
+                    attach_usage(exc, list(attempt_usage))
                     raise
                 last_exc = exc
                 if attempt == attempts:
@@ -565,6 +608,7 @@ class LitellmModel:
                 )
                 await asyncio.sleep(wait)
                 delay = min(delay * 2, _MAX_RETRY_SLEEP)
+        attach_usage(last_exc, list(attempt_usage))
         raise last_exc  # type: ignore[misc]
 
     async def stream(
@@ -586,14 +630,35 @@ class LitellmModel:
         # Ask the provider to emit a final usage chunk so streamed runs still get
         # token/cost accounting (otherwise usage is lost for TUI sessions).
         kwargs["stream_options"] = {"include_usage": True}
-        response_stream = await self._complete_with_retries(kwargs)
-        async for chunk in response_stream:
-            for delta in _stream_deltas_from_chunk(chunk):
-                yield delta
-            usage = _extract_usage(chunk)
-            if usage:
-                yield StreamDelta(usage=usage)
-        yield StreamDelta(done=True)
+        attempts: list[dict] = []
+        response_stream = await self._complete_with_retries(kwargs, attempts)
+        usage: dict = {}
+        terminal = False
+        try:
+            async for chunk in response_stream:
+                # Usage chunks are cumulative snapshots of this attempt, not deltas.
+                reported = _extract_usage(chunk)
+                usage.update(reported)
+                current = attempts + [usage_attempt(usage, "success")]
+                if reported:
+                    yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
+                for delta in _stream_deltas_from_chunk(chunk):
+                    terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
+                    yield delta
+        except Exception as exc:
+            usage.update(_error_usage(exc))
+            attach_usage(exc, attempts + [usage_attempt(usage, "failed")])
+            raise
+        # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
+        # provider closed without a finish reason; only one the provider sent counts.
+        if hasattr(response_stream, "received_finish_reason"):
+            terminal = terminal and bool(response_stream.received_finish_reason
+                                         or getattr(response_stream, "intermittent_finish_reason", None))
+        current = attempts + [usage_attempt(usage, "success")]
+        # Without a terminal chunk the stream ends without ``done``: a connection
+        # closed cleanly mid-answer is incomplete, not an answer.
+        yield StreamDelta(done=terminal, usage=sum_usage(current) if not usage and attempts else None,
+                          attempt_usage=current)
 
     async def complete_streaming(
         self,
@@ -605,68 +670,22 @@ class LitellmModel:
     ) -> ModelResponse:
         """Consume ``stream`` into a full ModelResponse.
 
-        Accumulates content and tool-call fragments while invoking the optional
-        ``on_delta(text)`` callback (sync or async) for each text chunk, so a
-        caller can render tokens live and still receive the assembled response.
+        Invokes the optional ``on_delta(text)`` callback (sync or async) for each
+        text chunk, so a caller can render tokens live and still receive the
+        assembled response. Accumulation and the one non-streaming fallback are
+        ``garuda.model.streaming``'s, shared with the agent loop.
         """
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        thinking_blocks: list[dict] | None = None
-        tool_frags: dict = {}
-        usage: dict[str, int] = {}
-        finish_reason: str | None = None
-        status: str | None = None
-        try:
-            async for delta in self.stream(messages, tools, temperature, max_tokens):
-                if delta.content_delta:
-                    content_parts.append(delta.content_delta)
-                    if on_delta is not None:
-                        result = on_delta(delta.content_delta)
-                        if inspect.isawaitable(result):
-                            await result
-                if delta.reasoning_delta:
-                    reasoning_parts.append(delta.reasoning_delta)
-                if delta.thinking_blocks:
-                    # Streamed thinking blocks arrive assembled per chunk; keep the
-                    # latest complete set (loop uses complete(), so this is best-effort).
-                    thinking_blocks = delta.thinking_blocks
-                if delta.tool_call_delta:
-                    _merge_tool_fragment(tool_frags, delta.tool_call_delta)
-                if delta.usage:
-                    usage = delta.usage
-                observed_finish_reason = getattr(delta, "finish_reason", None)
-                if observed_finish_reason is not None:
-                    finish_reason = observed_finish_reason
-                observed_status = getattr(delta, "status", None)
-                if observed_status is not None:
-                    status = observed_status
-        except Exception:
-            # A stream that dies mid-response cannot be safely resumed; fall back to
-            # a fresh non-streaming completion rather than returning a partial answer.
-            logger.warning("Streaming failed mid-response; retrying without streaming", exc_info=True)
-            return await self.complete(messages, tools, temperature, max_tokens)
+        # Imported here: garuda.model.streaming builds on this module's parsers.
+        from garuda.model.streaming import stream_complete
 
-        content = "".join(content_parts) or None
-        raw_calls = [
-            {
-                "id": slot["id"] or str(uuid.uuid4()),
-                "function": {"name": slot["name"] or "", "arguments": slot["arguments"] or "{}"},
-            }
-            for slot in _ordered_slots(tool_frags)
-        ]
-        return ModelResponse(
-            content=content,
-            tool_calls=_parse_tool_calls(raw_calls),
-            raw={
-                "model": self._model_name,
-                "streamed": True,
-                "finish_reason": finish_reason,
-                "status": status,
-            },
-            usage=usage,
-            reasoning_content="".join(reasoning_parts) or None,
-            thinking_blocks=thinking_blocks,
-        )
+        async def text_only(delta):
+            if delta.kind == "text" and on_delta is not None:
+                result = on_delta(delta.text)
+                if inspect.isawaitable(result):
+                    await result
+
+        call = await stream_complete(self, messages, tools, temperature, max_tokens, consumer=text_only)
+        return call.response
 
     def count_tokens(self, messages: list[Message]) -> int:
         return self.count_request_tokens(messages, None)

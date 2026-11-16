@@ -81,6 +81,7 @@ the effective value of each.
 | | `tools.add`, `tools.remove` | Edit the list |
 | | `tools.options` | Per-tool settings ([below](#tools)) |
 | | `tools.subagents` | Agents `invoke_subagent` may start |
+| | `advisor.role`, `advisor.max_notes`, `advisor.checkpoints` | A granted consult target, per-run note cap (default 2), and selected checkpoints: `repeated-failure` (default), `plan-ready`, `candidate-ready`; an empty list disables checkpoints. Notes require evidence citations; advice never verifies work |
 | | `tools.mcp`, `tools.mcp_config` | Which MCP servers start, and from which config |
 | | `tools.tmux`, `tools.marker_polling` | Terminal tool behaviour |
 | Permissions | `permissions.mode` | `readonly`, `smart`, `auto` or `yolo` |
@@ -118,6 +119,9 @@ tools:
   `web_fetch` and `web_search` take `allowed_domains` (a host and its
   subdomains, redirects included). That is a guardrail on what the tool
   requests, not network confinement.
+- `edit` and `multi_edit` take `contract: legacy | versioned` (default
+  `legacy`). See [Refuse edits to files that changed since they were read](../use-cases/change-code.md#refuse-edits-to-files-that-changed-since-they-were-read).
+  Any other value refuses the definition.
 - **Delegation is bounded.** `tools.subagents` (default `explore`, `plan`,
   `reviewer`) is enforced when a child starts and can only narrow further down.
   A run's whole tree is limited to two levels deep, eight launches, one child

@@ -81,7 +81,7 @@ A `garuda.yaml` you might end up with:
     ```
 
 - `harness` is a runtime ID from `garuda runtime list` (`native`, `claude`,
-  `codex`, `cursor`, `opencode`, `pi`, `goose`).
+  `codex`, `cursor`, `opencode`, `pi`, `goose`, `omp`).
 - `model_id` is used exactly as written, never matched loosely. For an
   external harness, Garuda selects that model in the harness before the first
   prompt, and refuses if the harness doesn't offer it.
@@ -178,6 +178,54 @@ sequenceDiagram
   with the findings, for up to `max_rounds` more rounds. The flow ends
   `review_approved` or `review_changes_requested`. A review is not
   verification.
+- Before each review, the reviewer gets a **review packet**: the candidate it
+  is reviewing (the reviewed step's session and workspace version), the files
+  that step changed (or `unknown` if they weren't recorded), its own role and
+  permissions, and a digest. The flow records the digest with the round. If the
+  workspace changed after the reviewed step, or changes while the review runs,
+  the flow stops with `flow.review_stale_candidate` instead of trusting a
+  review of something else. A change list that session records cut short is
+  marked incomplete, or `complete: null` when its full size wasn't recorded.
+- The packet includes diff excerpts for up to 200 changed files: 4 KiB per
+  file and 32 KiB in total after UTF-8 JSON/HTML escaping of excerpt contents
+  (packet metadata is additional). For example, run
+  `garuda flow run pair -t "Fix the unbounded retry loop in retry.py"` with
+  your no-edits reviewer role. The reviewer can cite the `retry.py` hunk in
+  `diff.files` without running Git itself. Each entry names its path and exact
+  shown/omitted patch-byte counts; binary files are named with their patch
+  withheld. File omissions are counted too, or `null` if the manifest's total
+  is unknown. Missing baselines and failed reads remain unknown, rather than
+  empty diffs. The comparison uses the coder session's baseline commit, so it
+  includes committed work; preexisting text in files already dirty at session
+  start is labelled. Bounds limit the delivered excerpts; full Git output is
+  temporarily spooled on the host to count omissions. Check receipts are
+  excluded: acceptance checks run only after review settles. If the coder adds
+  an `.env` containing `API_KEY=example-placeholder`, the shared secret-pattern
+  redactor withholds that excerpt and marks its row `redacted: true`; its patch
+  bytes count as omitted. Pattern detection is best effort, so avoid placing
+  credentials in candidate files. Untracked symlink excerpts stay unknown and
+  never follow a link into an outside directory. Empty or diagnostic-bearing
+  Git failures also stay unknown.
+- That binding needs a workspace version that tells candidates apart, which
+  only a git work tree has. Otherwise the packet says the binding is not
+  enforced, and a review that must be independent stops with
+  `flow.review_candidate_unknown` before the reviewer runs; with
+  `independent: false` the review runs and is told the binding is unenforced.
+- If the reviewed step changed `garuda.yaml` or a `.agent/agents/` or
+  `.garuda/agents/` definition, the packet also shows what Garuda's own loader
+  made of it: loaded (with the keys that file supplied and any values withheld
+  because the project file is not trusted), refused with the loader's error,
+  `shadowed` by a same-name definition that takes precedence (named), or
+  `not-loaded` when Garuda never reads that path, such as a nested
+  `garuda.yaml`. A field the loader rejects
+  or ignores is visible to the reviewer instead of only the text the author
+  wrote. Loading only parses; nothing is run. When the change list is cut or
+  its size unknown, this block is marked incomplete or unknown too.
+- A reviewer may answer with the line format or a structured JSON review
+  (`"version": 2`) whose findings each give a severity, a workspace-relative
+  path and line range, the message, the evidence and how to verify a fix.
+  Structured findings are checked strictly; an invalid one stops the flow and
+  is never an approval. A finding's `confidence` is the reviewer's own claim.
 - Repeated `--check` commands run on Linux only after every required step and
   review settles. The parent flow keeps the workspace lease until candidate-bound
   receipts and the final verdict are published. `build-review` starters select
@@ -304,10 +352,79 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
   answer size. A consulted role can't consult in turn.
 - `garuda sessions show` lists each consult (who asked whom, the outcome,
   how long it took) but never the question or answer text.
+  For a capped run, inspect the asker's session for the shared spend snapshot;
+  each consult child's events and receipt retain its own usage, and its metadata
+  omits the shared `spend_gate` snapshot.
 - Native targets work everywhere. An external target runs only inside the
   Docker read-only confinement described [below](#keep-a-role-from-changing-anything).
+  With `--max-run-tokens` or `--max-run-cost-usd`, native consult calls share
+  the asker's run-tree cap. ACP targets refuse with `consult.spend_unsupported`
+  before dispatch because Garuda cannot meter their model calls. Without caps,
+  ACP consult usage stays separate and may be unknown.
   An external harness can't *ask* yet; see
   [External harnesses](../guides/external-harnesses.md#consult-transport).
+
+## Get an advisor's second opinion when a run keeps failing
+
+<p class="gd-facts">Opt-in · Uses a role you already let it consult · Advice only</p>
+
+**Use it when** you want a stronger or different model to look in once a run
+is stuck, or at its first plan or completion claim, without letting it act.
+
+```yaml
+# garuda.yaml: the coder may consult the planner
+roles:
+  coder:   {harness: native, model_id: MODEL_A, consult: [planner], agent: careful}
+  planner: {harness: native, model_id: MODEL_B}
+```
+
+```yaml
+# .agent/agents/careful.yaml
+version: 1
+extends: garuda/build
+advisor:
+  role: planner     # must be one of the coder's consult targets
+  max_notes: 2      # delivered notes per run (default 2)
+  checkpoints: [repeated-failure, plan-ready, candidate-ready]
+```
+
+```bash
+garuda run --role coder --max-run-tokens 400000 --max-run-cost-usd 2 -t "Fix the failing tests; ask the planner at the configured checkpoints"
+```
+
+The caps cover the coder and its native planner consults together. Tokens are
+reserved before each call; dollars stop further calls after reported spend
+reaches the cap, so an in-flight call can overshoot. Unknown cost stays unknown;
+an unpriced completed consult stops further admission under a dollar-only cap.
+
+**What happens**
+
+- With `checkpoints` omitted, only three consecutive failed tool steps trigger
+  advice, at the existing stuck-agent nudge. The example also selects the first
+  successful nonempty `todo` or `update_goal(plan=...)` and the first completion
+  claim. Plan-ready and candidate-ready each run at most once; `checkpoints: []`
+  disables all checkpoints. Unknown checkpoint names refuse the definition.
+- Each checkpoint uses the ordinary consult path: read-only, on a snapshot,
+  with its own receipt. Candidate advice arrives before the completion gate and
+  can give the run one more ordinary turn to weigh it, within existing turn and
+  deadline limits. The agent must submit again through the same gate.
+- Its answer arrives before the next turn, labelled as advice. It cannot grant
+  permissions, approve or verify work, or replace an independent review.
+- Notes must cite a path, quoted command or quoted error in the bounded brief,
+  or a workspace path whose existence the Environment can confirm. This cheap
+  citation check does not establish that the advice is correct. Uncited notes
+  are suppressed as `no evidence cited` and do not spend the note cap.
+- All selected checkpoints share the note cap; repeated advice is dropped.
+  An advisor that fails or is busy changes nothing about the run. Stop/cancel and deadline or
+  turn exhaustion suppress advice; late answers never resume a cancelled or
+  ended run. Provider quota failures do not create an advisor retry or restart.
+  Consult admission, limits and receipts stay in force alongside the shared
+  run-tree spend gate. A refused advisor model call records failed advice and
+  leaves the run's permissions and completion requirements unchanged.
+- If `advisor.role` isn't one of the role's consult targets, no advisor runs
+  and the session records why.
+- Each request, delivered note and suppression is an `advisor` event in the
+  session.
 
 ## Require checks for every run in this project
 
@@ -384,6 +501,158 @@ From then on, every run ends with the check:
     Without an image, Docker, or a passing proof, the role refuses with
     `workspace.readonly_unenforced`; it never falls back to running on the
     host.
+
+## Isolate a native editing worker
+
+This opt-in Python API runs one editing worker at a time in a detached Git
+snapshot repository. Ordinary subagents keep their existing behavior. The
+parent must hold a mutating workspace lease, and the child profile must declare
+an [output schema](customize.md#delegate-a-typed-result). For example, save
+`editor.yaml` and `edit-result.json` in your agents directory:
+
+```yaml
+version: 1
+extends: garuda/build
+output:
+  schema: edit-result.json
+limits:
+  max_turns: 10
+```
+
+```json
+{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}
+```
+
+Pass an already configured model and a trusted check image with your project's
+dependencies to this function:
+
+```python
+from garuda.core.editing_worker import LocalEditingWorkers
+from garuda.core.events import EventStore
+from garuda.core.permissions import PermissionEngine
+from garuda.core.subagent import DelegationBudget, SubagentRunner
+from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+from garuda.tools import default_tools
+from garuda.workspace.local import LocalEnvironment
+
+
+async def edit_with_worker(model, workspace, agents_dir, check_image):
+    env = LocalEnvironment(workspace)
+    events = EventStore()
+    permissions = PermissionEngine(workspace_root=env.workspace_root)
+    guard = WorkspaceLeaseGuard(env.workspace_root, events.session_id,
+                                capacity_key="native")
+    guard.acquire()
+    guard.start_heartbeat()
+    workers = LocalEditingWorkers(guard, checks=["pytest -q"], image=check_image)
+    runner = SubagentRunner(
+        model, env, events, workspace_root=env.workspace_root,
+        agents_dir=agents_dir, parent_permissions=permissions,
+        parent_tools=default_tools(), budget=DelegationBudget(max_launches=2),
+        editing_workers=workers,
+    )
+    try:
+        result = await guard.race(runner.run(
+            "editor", "Fix the failing test and return a summary.", editing_worker=True,
+        ))
+        candidate = result.metadata.get("editing_worker", {})
+        if candidate.get("state") != "ready":
+            return result
+        # Inspect the typed result and retained patch before explicitly integrating.
+        return await guard.race(workers.integrate(
+            candidate["candidate_id"], candidate["provenance_digest"], env=env,
+            session_id=events.session_id, permissions=permissions,
+        ))
+    finally:
+        await guard.release()
+```
+
+For a native model-driven parent, pass the same service through
+`AgentConfig(editing_workers=workers)`. `invoke_subagent` then accepts
+`editing_worker: true`; its handoff supplies `candidate_id` and
+`provenance_digest` for the separate `integrate_editing_worker` tool. Ordinary
+calls omit the flag. Children cannot receive this integration tool.
+
+Checks run in Docker against the exact candidate mounted read-only without
+network or host home. Missing checks, Docker or a passing check refuse
+integration. The captured parent files, staged index and HEAD must still match admission;
+even nonconflicting parent edits make a sibling candidate stale. Integration
+applies the patch without merging, staging, or moving refs. Existing parent dirt
+is part of the child's base.
+
+Workers require local environments in this slice; Docker, remote, sandbox and
+tmux editing-worker requests refuse while their ordinary subagents keep working.
+Local permission screening and workspace separation are guardrails, not
+confinement. Children use the same model, shared delegation bounds and a
+narrowed built-in toolkit. A finite native capacity must have room for the
+parent and child; an otherwise unlimited pool gives editing workers a ceiling
+of one. Repositories and receipts use the global worktrees directory.
+Active-child cancellation, observed background launches and uncertain child cleanup
+retain worker ownership and block editing-worker retries. Cancelled integration
+settles its checker and retains an uncertain candidate. Settled integrated workers
+and unchanged terminal workers retire automatically, including safe recovery on
+later editing-worker admission. There is no restart integration or replay.
+No parallel latency or cost improvement is claimed.
+
+### Inspect and resolve retained editing workers
+
+```bash
+garuda sessions show SESSION --json
+garuda sessions cleanup-workers SESSION
+garuda sessions discard-worker SESSION CANDIDATE_ID
+```
+
+`ownership.editing_workers` lists this parent's worker IDs, repository paths,
+state, cleanup evidence and repository retention, with the inspected storage
+root. The dashboard session's Ownership section shows the same inventory.
+Inspection returns at most 128 receipts belonging to this session and reads at
+most 64 KiB per receipt, takes no locks, runs no Git and changes nothing. Valid
+receipts of other sessions do not consume this session's bound. Discovery visits
+the shared store to attribute receipts, so its total work scales with that store.
+Unreadable non-empty entries or a bounded session inventory report incomplete
+coverage and unknown omitted counts, never an empty inventory.
+
+Receipt-less empty directories and unpublished admission metadata are reported
+in `orphans` instead of making coverage unavailable; the next cleanup removes
+them. Non-empty directories with unknown data remain retained. The worker store
+and its entries are created owner-only (`0700`) regardless of umask. Readers
+require privacy at that root and its entries, so a group-writable ancestor such
+as your home does not refuse it. Symlinked or foreign-owned ancestors still
+refuse inspection; errors name the refused ancestor. A non-private worker root
+or receipt directory is also named in the error.
+
+`cleanup-workers` attempts conservative cleanup after parent ownership has been
+released and returns the inventory; retained entries are not cleanup successes.
+Automatic cleanup also runs inside the admitted local service under its own
+parent lease. It requires durable child settlement, readable released worker
+lease/capacity records, matching repository identity and no unintegrated or
+additional data. HEAD/index changes, extra refs/reflogs and untracked or ignored files
+prevent removal. Proved removal renames the repository aside before deleting it,
+so a failure resumes without re-proving content. Receipts and candidate patches
+for retained workers remain as audit evidence; fully retired receipt directories
+are compacted by a later cleanup run (never the run that retired them), keeping
+retired receipts from permanently filling the inventory limit. For example:
+
+```bash
+garuda sessions cleanup-workers SESSION  # retire eligible settled repositories
+garuda sessions cleanup-workers SESSION  # prune receipts retired by the earlier run
+garuda sessions show SESSION --json      # inspect retained workers and removable orphans
+```
+
+`discard-worker` explicitly discards the repository's changes for the exact
+candidate ID. It requires released parent ownership and re-proves all worker
+ownership and settlement checks. It refuses foreign sessions, linked/replaced
+repositories and retained or unknown ownership; it never removes the user
+workspace. Discard is a content decision, not permission to override uncertain
+process cleanup. Dead owners and expired heartbeats do not prove descendants
+stopped. Crash/cancellation workers with unproved descendants and older receipts
+without complete ownership evidence remain retained for supervised recovery.
+The CLI and session view inspect the standard global worker root. Callers using
+an explicit programmatic `root` inspect and resolve that store with
+`workers.repositories.inventory(session_id)`, `recover(session_id)` and
+`discard(session_id, candidate_id)`; custom locations are not auto-discovered.
+Keep the global ownership-store locations stable. Non-local workspaces and
+concurrent editing workers remain unsupported.
 
 ## Move runtime limits into garuda.yaml
 

@@ -55,13 +55,21 @@ def _drain_events(
     return len(all_events)
 
 
-def _render_event(renderer: ChatRenderer, event: dict) -> None:
+def _render_event(renderer: ChatRenderer, event: dict, *, live: bool = False) -> None:
     etype = event.get("type")
     payload = event.get("payload") or {}
+    if live and payload.get("accounting") == "auxiliary":
+        return
     if etype == "model_response":
         content = payload.get("content")
-        if content:
+        if live:
+            # The loop may also emit a metadata-only truncation event.
+            if "content" in payload:
+                renderer.on_assistant_response(content)
+        elif content:
             renderer.on_assistant_delta(content)
+    elif live and etype == "model_call_failed":
+        renderer.discard_assistant()
     elif etype == "tool_call":
         name = payload.get("name", "")
         args = payload.get("arguments") or {}
@@ -76,6 +84,24 @@ def _render_event(renderer: ChatRenderer, event: dict) -> None:
         renderer.on_tool_result(
             name, payload.get("content", ""), bool(payload.get("is_error"))
         )
+
+
+@contextlib.contextmanager
+def stream_run_output(events):
+    """Attach the run's renderer without rendering inherited child/auxiliary events."""
+    renderer = ChatRenderer()
+    active = True
+
+    def render(event, source):
+        if active and source is events:
+            _render_event(renderer, event, live=True)
+
+    events.add_observer(render)
+    try:
+        yield renderer
+    finally:
+        active = False
+        renderer.discard_assistant()
 
 
 def confirm_cross_project(brief) -> bool:

@@ -54,16 +54,18 @@ def in_range(records, range_name: str, now: float) -> list[dict]:
 def _cost(records: list[dict]) -> dict:
     counted = [r for r in records if r["kind"] != "acp_usage_snapshot"]
     known = [r["cost_usd"] for r in counted if r.get("cost_usd") is not None]
+    unpriced = sum(r.get("cost_usd") is None or "cost_usd" in (r.get("usage_unknown") or [])
+                   for r in counted)
     if not counted:
         state = "none"
     elif not known:
         state = "unknown"
-    elif len(known) < len(counted):
+    elif unpriced:
         state = "partial"
     else:
         state = "known"
     return {"state": state, "known_usd": round(sum(known), 8) if known else None,
-            "unpriced_records": len(counted) - len(known)}
+            "unpriced_records": unpriced}
 
 
 def _measure(records: list[dict]) -> dict:
@@ -135,7 +137,8 @@ def stats(records, range_name: str, now: float, *, project_aliases=None) -> dict
         "excluded": {"snapshots": len(snapshots),
                      "reason": "snapshots are occupancy or running totals, never summed"},
         "coverage": {"native_calls_with_unknown_cost": sum(
-            r.get("calls", 1) for r in native if r.get("cost_usd") is None),
+            r.get("calls", 1) for r in native if r.get("cost_usd") is None
+            or "cost_usd" in (r.get("usage_unknown") or [])),
             "native_calls": total_calls},
         "work_type_share": {"unit": "native calls", "denominator": total_calls,
                             "excluded_acp_turns": sum(1 for r in rows if r["kind"] == "acp_usage_delta"),

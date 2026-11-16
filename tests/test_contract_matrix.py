@@ -26,7 +26,7 @@ def test_identities_are_pinned():
     assert set(ids) == (
         {f"fake-{name}" for name in ("success", "streaming", "approval", "cancellation")}
         | {f"acp-{name}" for name in ("success", "streaming", "approval", "slow", "diff")}
-        | {"claude", "codex", "cursor", "opencode", "pi", "goose", "native"}
+        | {"claude", "codex", "cursor", "opencode", "pi", "goose", "omp", "native"}
     )
     assert tuple(SCENARIOS) == (
         "lifecycle", "cancellation", "permission", "diff", "resume", "handoff", "recovery",
@@ -55,7 +55,7 @@ def test_expectations_derive_from_declarations():
             )
             assert (scenario in entry.scenarios()) == expected, (entry.id, scenario)
     vendors = {e.id: e for e in entries.values() if e.kind == "vendor"}
-    assert set(vendors) == {"claude", "codex", "cursor", "opencode", "pi", "goose"}
+    assert set(vendors) == {"claude", "codex", "cursor", "opencode", "pi", "goose", "omp"}
     for vendor in vendors.values():
         assert vendor.simulated is True
         # Manifest prompt/cancel caps: lifecycle + cancellation + wiring run.

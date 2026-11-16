@@ -338,3 +338,469 @@ async def test_required_review_stops_if_identity_evidence_is_lost_after_launch(r
     assert evidence['policy'] == 'required' and evidence['decision'] == 'unknown'
     assert evidence['reviewed']['configured'] is None
     assert evidence['reviewed']['launched'] == [{'runtime': 'native', 'model_id': 'c/1'}]
+
+
+# --- review packets and structured findings (#362) ----------------------------
+
+import json  # noqa: E402
+
+STRUCTURED = {"version": 2, "verdict": "changes", "findings": [{
+    "severity": "major", "path": "src/loop.py", "lines": [10, 14], "message": "never terminates",
+    "evidence": "the while condition never changes", "verification": "run tests/test_loop.py"}]}
+
+
+@pytest.mark.parametrize("finding, problem", [
+    ({"path": "/etc/passwd"}, "workspace-relative"),
+    ({"path": "../outside.py"}, "workspace-relative"),
+    ({"evidence": ""}, "evidence"),
+    ({"lines": [5, 2]}, "lines"),
+    ({"confidence": "certain"}, "confidence"),
+    ({"extra": "field"}, "only"),
+])
+def test_invalid_structured_findings_never_approve(finding, problem):
+    review = {**STRUCTURED, "verdict": "approve",
+              "findings": [{**STRUCTURED["findings"][0], **finding}]}
+    with pytest.raises(rv.ReviewInvalid, match=problem):
+        rv.parse(json.dumps(review))
+    with pytest.raises(rv.ReviewInvalid, match="version"):
+        rv.parse(json.dumps({**STRUCTURED, "version": 3}))
+
+
+async def test_a_structured_review_requests_changes_with_its_evidence(repo):
+    script = Script([json.dumps(STRUCTURED), APPROVE])
+    result = await _run(repo, script, _config(max_rounds=1)).run()
+    assert result.completed
+    assert rv.STRUCTURED_FORMAT in script.prompts[("review", 1)]
+    retry = script.prompts[("build", 2)]
+    assert "src/loop.py:10-14: never terminates" in retry and "run tests/test_loop.py" in retry
+    history = SessionStore().load_meta(result.flow_session)["review"]["history"]
+    assert history[0]["structured"][0]["evidence"] == "the while condition never changes"
+    assert "structured" not in history[1]  # the legacy line review stays legacy
+
+
+class PacketScript(Script):
+    """The coder records its step session's changed files, as a real step session does."""
+
+    async def __call__(self, launch):
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            store = SessionStore()
+            store.begin(result.session_id, task="t", model="m", agent="a", workspace="w")
+            store.update_meta(result.session_id, {"delta_changed": ["src/loop.py"]})
+        return result
+
+
+async def test_the_reviewer_receives_a_frozen_candidate_packet(repo):
+    script = PacketScript([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    meta = SessionStore().load_meta(result.flow_session)
+    digest = meta["review_packet"]["digest"]
+    assert f'<review-packet digest="{digest}">' in prompt and "src/loop.py" in prompt
+    assert meta["review"]["history"][0]["packet_digest"] == digest
+    build = next(r for r in result.receipts if r["step"] == "build")
+    assert meta["review_packet"]["candidate"]["workspace_version"] == build["workspace_version_after"]
+
+
+async def test_an_unrecorded_manifest_is_unknown_not_empty(repo):
+    script = Script([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert "&quot;status&quot;: &quot;unknown&quot;" in script.prompts[("review", 1)]
+    assert SessionStore().load_meta(result.flow_session)["review_packet"]["changed_total"] is None
+
+
+async def test_a_candidate_changed_before_review_is_refused(repo, monkeypatch):
+    original = FlowRunner._review_packet
+
+    async def external_writer(self, *args, **kwargs):
+        (repo / "a.txt").write_text("changed by someone else\n")  # after the coder, before review
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(FlowRunner, "_review_packet", external_writer)
+    script = Script([APPROVE])
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.stopped.code == "flow.review_stale_candidate"
+    assert ("review", 1) not in script.sequence  # no reviewer ran on a stale candidate
+
+
+class ConfigScript(Script):
+    """The coder changes configuration files, recorded as its step session's delta."""
+
+    def __init__(self, reviews, files):
+        super().__init__(reviews)
+        self.files = files
+
+    async def __call__(self, launch):
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            for path, text in self.files.items():
+                target = self.repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+            store = SessionStore()
+            store.begin(result.session_id, task="t", model="m", agent="a", workspace="w")
+            store.update_meta(result.session_id, {"delta_changed": list(self.files)})
+        return result
+
+
+async def test_the_packet_shows_what_the_loader_made_of_changed_config(repo):
+    script = ConfigScript([APPROVE], {
+        "garuda.yaml": "version: 1\nretry_budget: 5\n",  # a field Garuda does not read
+        ".garuda/agents/careful.yaml": "version: 1\nextends: garuda/build\ndescription: careful\n",
+        "README.md": "docs only\n",
+    })
+    script.repo = repo
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    from garuda.flows.review_evidence import config_evidence
+
+    evidence = config_evidence(str(repo), list(script.files))
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert set(by_path) == {"garuda.yaml", ".garuda/agents/careful.yaml"}  # README is not config
+    assert by_path["garuda.yaml"]["status"] == "refused"
+    assert "retry_budget" in by_path["garuda.yaml"]["error"]
+    assert by_path[".garuda/agents/careful.yaml"]["status"] == "loaded"
+    assert "description" in by_path[".garuda/agents/careful.yaml"]["declared"]
+    prompt = script.prompts[("review", 1)]
+    assert "retry_budget" in prompt and "refused" in prompt  # the reviewer is told
+
+
+def test_config_evidence_without_a_manifest_is_unknown(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    assert config_evidence(str(tmp_path), None)["status"] == "unknown"
+
+
+def _write(root, files):
+    for path, text in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+
+def test_a_nested_garuda_yaml_is_not_reported_as_the_loaded_project_config(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n", "sub/garuda.yaml": "version: 1\nretry_budget: 5\n"})
+    evidence = config_evidence(str(tmp_path), ["sub/garuda.yaml"])
+    (entry,) = evidence["files"]
+    assert entry["status"] == "not-loaded"
+    assert "project-root garuda.yaml" in entry["reason"]
+    assert "config_digest" not in entry  # the root file's outcome is not borrowed
+
+
+def test_a_shadowed_agent_definition_names_the_definition_that_wins(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {".agent/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: wins\n",
+                      ".garuda/agents/rev.yaml": "version: 1\nextends: garuda/build\ndescription: loses\n"})
+    evidence = config_evidence(str(tmp_path), [".garuda/agents/rev.yaml", ".agent/agents/rev.yaml"],
+                               changed_complete=True)
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert by_path[".garuda/agents/rev.yaml"]["status"] == "shadowed"
+    assert by_path[".garuda/agents/rev.yaml"]["loaded_from"] == ".agent/agents/rev.yaml"
+    assert "declared" not in by_path[".garuda/agents/rev.yaml"]
+    assert by_path[".agent/agents/rev.yaml"]["status"] == "loaded"
+    assert by_path[".agent/agents/rev.yaml"]["source"] == ".agent/agents/rev.yaml"
+    assert evidence["complete"] is True
+
+
+def test_agent_definitions_in_the_agent_home_are_evidenced(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {".agent/agents/careful/agent.md": "---\nversion: 1\nextends: garuda/build\n"
+                                                        "description: careful\n---\nBe careful.\n",
+                      ".agent/agents/careful/notes.md": "not a definition\n"})
+    evidence = config_evidence(str(tmp_path), [".agent/agents/careful/agent.md",
+                                               ".agent/agents/careful/notes.md"])
+    by_path = {f["path"]: f for f in evidence["files"]}
+    assert by_path[".agent/agents/careful/agent.md"]["status"] == "loaded"
+    assert by_path[".agent/agents/careful/agent.md"]["source"] == ".agent/agents/careful/agent.md"
+    assert "description" in by_path[".agent/agents/careful/agent.md"]["declared"]
+    assert by_path[".agent/agents/careful/notes.md"]["status"] == "not-loaded"
+
+
+class ManyFilesScript(Script):
+    """The coder changes more files than session meta keeps, recorded by the real finish."""
+
+    def __init__(self, reviews, count, *, record_total=True):
+        super().__init__(reviews)
+        self.count, self.record_total = count, record_total
+
+    async def __call__(self, launch):
+        from garuda.workspace import evidence
+
+        result = await super().__call__(launch)
+        if launch.step_id == "build":
+            from pathlib import Path
+
+            store, workspace = SessionStore(), Path(launch.workspace)
+            store.begin(result.session_id, task="t", model="m", agent="a",
+                        workspace=str(workspace))
+            evidence.begin_session_evidence(store, result.session_id, workspace, "local")
+            for n in range(self.count):
+                (workspace / f"f{n:03}.txt").write_text("x\n")
+            evidence.finish_session_evidence(store, result.session_id, workspace)
+            if not self.record_total:  # a session finished before totals were recorded
+                store.update_meta(result.session_id, {"delta_changed_total": None})
+        return result
+
+
+@pytest.mark.parametrize("record_total, total, complete", [(True, 451, False),
+                                                           (False, None, None)])
+async def test_a_cut_change_list_is_never_reported_complete(repo, record_total, total, complete):
+    script = ManyFilesScript([APPROVE], 451, record_total=record_total)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert f"&quot;complete&quot;: {json.dumps(complete)}" in prompt
+    assert f"&quot;total&quot;: {json.dumps(total)}" in prompt
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (total, complete)
+
+
+async def test_a_short_change_list_is_complete(repo):
+    script = ManyFilesScript([APPROVE], 3)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert "&quot;complete&quot;: true" in script.prompts[("review", 1)]
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert (packet["changed_total"], packet["changed_complete"]) == (3, True)
+
+
+@pytest.fixture
+def plain_dir(tmp_path):
+    path = tmp_path / "plain"  # not a git repository: no workspace version
+    path.mkdir()
+    (path / "a.txt").write_text("a\n")
+    return path
+
+
+async def test_an_unknown_candidate_refuses_an_independent_review(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0)).run()
+    assert result.stopped.code == "flow.review_candidate_unknown"
+    assert ("review", 1) not in script.sequence
+    packet = SessionStore().load_meta(result.flow_session)["review_packet"]
+    assert packet["binding"]["enforced"] is False
+
+
+async def test_an_unknown_candidate_is_not_called_frozen(plain_dir):
+    script = Script([APPROVE])
+    result = await _run(plain_dir, script, _config(max_rounds=0, independent=False)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    assert "not enforced" in prompt
+    assert "frozen" not in prompt and "will be refused" not in prompt
+
+
+@pytest.mark.parametrize("record_total, complete, reason", [
+    (True, False, "past the cut"), (False, None, "whether the change list is whole is unknown")])
+async def test_config_evidence_is_not_complete_when_the_change_list_is_not(
+        repo, record_total, complete, reason):
+    script = ManyFilesScript([APPROVE], 451, record_total=record_total)
+    result = await _run(repo, script, _config(max_rounds=0)).run()
+    assert result.completed
+    prompt = script.prompts[("review", 1)]
+    config_block = prompt[prompt.index("&quot;config&quot;"):prompt.index("&quot;checks&quot;")]
+    assert f"&quot;complete&quot;: {json.dumps(complete)}" in config_block
+    assert "&quot;total&quot;: null" in config_block  # what lies past the cut is not counted
+    assert reason in config_block
+
+
+@pytest.mark.parametrize("changed_complete, expected", [(True, True), (False, False), (None, None)])
+def test_config_evidence_follows_the_change_lists_completeness(tmp_path, changed_complete, expected):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n"})
+    evidence = config_evidence(str(tmp_path), ["garuda.yaml"], changed_complete=changed_complete)
+    assert evidence["files"][0]["path"] == "garuda.yaml"
+    assert evidence["complete"] is expected
+    if expected is not True:
+        assert evidence["total"] is None and evidence["seen"] == 1 and evidence["reason"]
+
+
+def test_config_evidence_with_no_completeness_stated_is_unknown(tmp_path):
+    from garuda.flows.review_evidence import config_evidence
+
+    _write(tmp_path, {"garuda.yaml": "version: 1\n"})
+    assert config_evidence(str(tmp_path), ["garuda.yaml"])["complete"] is None
+
+
+def test_config_evidence_keeps_its_own_bound_on_a_whole_change_list(tmp_path):
+    from garuda.flows.review_evidence import MAX_CONFIG_FILES, config_evidence
+
+    paths = [f".garuda/agents/a{n}.yaml" for n in range(MAX_CONFIG_FILES + 1)]
+    evidence = config_evidence(str(tmp_path), paths, changed_complete=True)
+    assert len(evidence["files"]) == MAX_CONFIG_FILES
+    assert evidence["total"] == MAX_CONFIG_FILES + 1 and evidence["complete"] is False
+
+
+REVIEW_SOURCE = ("def retry(limit):\n"
+                 "    attempt = 0\n"
+                 "    while attempt < limit:\n"
+                 "        pass  # </review-packet> is source data\n")
+
+
+def _record_packet_candidate(store, sid, repo):
+    from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
+
+    store.begin(sid, "implement bounded retries", "local-fixture", "coder", str(repo))
+    begin_session_evidence(store, sid, repo, "local")
+    (repo / "retry.py").write_text(REVIEW_SOURCE)
+    finish_session_evidence(store, sid, repo)
+
+
+def _packet_from_prompt(prompt):
+    from html import unescape
+
+    body = prompt.split('<review-packet digest="', 1)[1].split(">\n", 1)[1].split(
+        "\n</review-packet>", 1)[0]
+    return json.loads(unescape("\n".join(line.removeprefix("| ") for line in body.splitlines())))
+
+
+async def test_engine_packet_carries_real_diff_evidence_and_excludes_prior_check_receipts(repo):
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    store = SessionStore()
+    _record_packet_candidate(store, "candidate", repo)
+    # Prior-session receipts are input data here, never evidence for this review.
+    store.update_meta("candidate", {"acceptance_receipts": [{
+        "status": "passed", "command": "prior-check-must-not-be-in-the-packet"}]})
+    config = _config(max_rounds=0)
+    runner = _run(repo, Script([]), config)
+    store.begin(runner.flow_session, "task", "flow", "flow:pbr", str(repo))
+    step, terminal = config["flows"]["pbr"]["steps"][1:]
+    done = [{"step": "build", "session_id": "candidate", "attempt": 1,
+             "workspace_version_after": runner._version()}]
+    guard = NoEditsGuard(repo)
+    packet = await runner._review_packet(step, terminal, done, step["review"], None)
+    assert packet["diff"]["files"], "review packet has no changed-file diff excerpts"
+    (row,) = packet["diff"]["files"]
+    assert row["path"] == "retry.py" and "+    while attempt < limit:" in row["excerpt"]
+    assert packet["diff"]["complete"] is True and packet["diff"]["bytes_omitted"] == 0
+    assert packet["checks"]["status"] == "not_in_packet"
+    assert "after review settles" in packet["checks"]["note"]
+    rendered = rv.render_packet(packet)
+    assert "prior-check-must-not-be-in-the-packet" not in rendered
+    assert rendered.count("</review-packet>") == 1  # source cannot close the data envelope
+    assert _packet_from_prompt(rendered) == {k: v for k, v in packet.items() if k != "task"}
+    assert guard.check().unchanged
+    digest = packet["digest"]
+    (repo / "retry.py").write_text(REVIEW_SOURCE.replace("pass", "attempt += 1"))
+    from garuda.flows.engine import FlowStopped
+
+    with pytest.raises(FlowStopped, match="the workspace changed"):
+        await runner._review_packet(step, terminal, done, step["review"], None)
+    assert store.load_meta(runner.flow_session)["review_packet"]["digest"] == digest
+
+
+def test_packet_without_diff_evidence_reports_unknown_not_an_empty_diff():
+    packet = rv.build_packet(
+        task="review", step={"id": "build", "role": "coder"},
+        reviewer={"id": "review", "role": "reviewer"}, spec={}, candidate={},
+        changed=None, reviewer_plan=None, no_edits=True)
+    assert packet["diff"]["status"] == "unknown" and packet["diff"]["complete"] is None
+    assert packet["diff"]["bytes_total"] is None and packet["diff"]["bytes_omitted"] is None
+
+
+@pytest.mark.parametrize("content", ['"\'&<>\\' * 1200, "é🙂\u2028" * 1200],
+                         ids=["quotes", "unicode"])
+def test_review_packet_bounds_delivered_excerpt_bytes(repo, content):
+    from garuda.workspace.evidence import (
+        begin_session_evidence,
+        finish_session_evidence,
+        review_diff_evidence,
+    )
+
+    store = SessionStore()
+    store.begin("candidate", "review", "local-fixture", "coder", str(repo))
+    begin_session_evidence(store, "candidate", repo, "local")
+    paths = [f"f{n}.txt" for n in range(12)]
+    for path in paths:
+        (repo / path).write_text(content + "\n")
+    finish_session_evidence(store, "candidate", repo)
+    diff = review_diff_evidence(store, "candidate", repo, paths,
+                                changed_total=12, changed_complete=True)
+    packet = rv.build_packet(
+        task="review", step={"id": "build", "role": "coder"},
+        reviewer={"id": "review", "role": "reviewer"}, spec={}, candidate={},
+        changed=paths, reviewer_plan=None, no_edits=True, diff=diff)
+    rendered = rv.render_packet(packet)
+    prefix, suffix = '&quot;excerpt&quot;: &quot;', '&quot;,'
+    lines = [line.removeprefix("| ").lstrip() for line in rendered.split("\n")]
+    excerpts = [line.removeprefix(prefix).removesuffix(suffix)
+                for line in lines if line.startswith(prefix)]
+    assert len(excerpts) == 12
+    sizes = [len(text.encode("utf-8")) for text in excerpts]
+    assert all(size <= 4096 for size in sizes)
+    assert 0 < sum(sizes) <= 32 * 1024
+    assert sizes == [row["rendered_bytes_shown"] for row in diff["files"]]
+    assert diff["rendered_bytes_shown"] == sum(sizes)
+    assert diff["complete"] is False and diff["bytes_omitted"] > 0
+    assert _packet_from_prompt(rendered) == {k: v for k, v in packet.items() if k != "task"}
+
+
+@pytest.fixture
+def packet_only_reviewer(repo):
+    """A local reviewer with no tools: its only source evidence is the packet."""
+    class Reviewer:
+        edit = None
+        reviewed = False
+
+        async def __call__(self, launch):
+            sid = str(uuid.uuid4())
+            if launch.step_id == "plan":
+                return StepResult(sid, True, _block("plan", "bound the retry loop"))
+            if launch.step_id == "build":
+                _record_packet_candidate(launch.store, sid, repo)
+                return StepResult(sid, True, _block("patch", "candidate ready"))
+            packet = _packet_from_prompt(launch.prompt)
+            assert launch.no_edits and packet["reviewer"]["no_edits"]
+            assert packet["checks"]["status"] == "not_in_packet"
+            assert "after review settles" in packet["checks"]["note"]
+            assert "acceptance_receipts" not in packet
+            (row,) = packet["diff"]["files"]
+            assert row["path"] == "retry.py" and row["bytes_omitted"] == 0
+            assert "+    attempt = 0" in row["excerpt"]
+            assert "+    while attempt < limit:" in row["excerpt"]
+            assert "+        pass" in row["excerpt"]
+            self.reviewed = True
+            review = {"version": 2, "verdict": "changes", "findings": [{
+                "severity": "major", "path": row["path"], "lines": [2, 4],
+                "message": "positive limits never terminate: attempt is never incremented",
+                "evidence": "packet diff for retry.py: attempt = 0; while attempt < limit; pass",
+                "verification": "assert retry(1) terminates within a bounded timeout"}]}
+            if self.edit == "source":
+                (repo / "retry.py").write_text("def retry(limit):\n    return limit\n")
+            elif self.edit == "ignored":
+                (repo / "review.log").write_text("reviewer wrote despite no-edits\n")
+            elif self.edit == "metadata":
+                with (repo / ".git" / "config").open("a") as output:
+                    output.write("\n# reviewer changed config\n")
+            return StepResult(sid, True, _block("review", json.dumps(review)))
+
+    (repo / ".gitignore").write_text("review.log\n")
+    return Reviewer()
+
+
+@pytest.mark.parametrize("edit", [None, "source", "ignored", "metadata"])
+async def test_packet_only_review_under_the_no_edits_flow_guard(repo, packet_only_reviewer, edit):
+    reviewer = packet_only_reviewer
+    reviewer.edit = edit
+    result = await _run(repo, reviewer, _config(max_rounds=0)).run()
+    assert reviewer.reviewed
+    receipt = next(r for r in result.receipts if r["step"] == "review")
+    meta = SessionStore().load_meta(result.flow_session)
+    if edit is None:
+        assert result.stopped.code == "flow.review_changes_requested"
+        assert receipt["no_edits"]["result"] == "unchanged" and receipt["outputs"]
+        finding = meta["review"]["history"][0]["structured"][0]
+        assert finding["path"] == "retry.py" and "never incremented" in finding["message"]
+        assert meta["state"]["verification"]["status"] == "unavailable"
+    else:
+        assert result.stopped.code == "flow.no_edits_changed"
+        assert receipt["no_edits"]["result"] == "changed" and receipt["outputs"] == []
+        path = {"source": "retry.py", "ignored": "review.log", "metadata": ".git/config"}[edit]
+        assert path in receipt["no_edits"]["changed"]
+        assert not meta.get("review", {}).get("history")  # edited reviews never reach parsing

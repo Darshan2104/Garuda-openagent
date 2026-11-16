@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Investigation report",
+  "description": "The only thing an investigation scope hands back: what was examined, what was concluded and from which evidence, what was ruled out, and what was not covered. Confidence is the investigator's own assertion, not a calibrated probability.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "question",
+    "conclusions",
+    "sources",
+    "rejected",
+    "coverage"
+  ],
+  "properties": {
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "conclusions": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "evidence"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          },
+          "confidence": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "kind"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "kind": {
+            "enum": [
+              "file",
+              "command",
+              "document",
+              "other"
+            ]
+          },
+          "lines": {
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approach",
+          "reason"
+        ],
+        "properties": {
+          "approach": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "examined",
+        "not_examined",
+        "complete"
+      ],
+      "properties": {
+        "examined": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "not_examined": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@ has one owner here, including runtime/role selection and native/ACP routing.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from garuda.core.events import EventStore
 async def run_task(args) -> int:
     import sys
 
+    from garuda.core.session_fork import validate_fork_request
     from garuda.interfaces.main import (
         _accept_session,
         _apply_role,
@@ -33,12 +35,30 @@ async def run_task(args) -> int:
         run_agent_task,
     )
 
+    fork = getattr(args, "fork", None)
+    validate_fork_request(fork=fork, fork_at=getattr(args, "fork_at", None),
+                          resume=getattr(args, "resume", None), isolation=getattr(args, "isolation", "shared"))
+    if fork is not None:
+        if getattr(args, "as_runtime", None) or getattr(args, "runtime", None) not in (None, "native"):
+            raise ValueError("context fork requires the native runtime")
+        args.runtime = "native"
     task = args.task
     if args.file:
         task = Path(args.file).read_text(encoding="utf-8")
     if not task:
         print("Error: provide -t/--task or -f/--file", file=sys.stderr)
         return 1
+    # Run-tree spend caps (#405) are validated by the gate that will enforce them,
+    # before any runtime is selected: an invalid cap never reaches a run.
+    spend_caps = (getattr(args, "max_run_tokens", None), getattr(args, "max_run_cost_usd", None))
+    if spend_caps != (None, None):
+        from garuda.core.spend import SpendGate
+
+        try:
+            SpendGate(max_tokens=spend_caps[0], max_cost_usd=spend_caps[1])
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     # garuda.yaml is validated — a conflict or invalid file refuses — before
     # tags, runtimes, models or the workspace are touched (C.1).
     resolved_config = check_garuda_config(args)
@@ -142,6 +162,13 @@ async def run_task(args) -> int:
 
         selected = runtime_catalog.registry.get(args.runtime)
         if selected.kind is RuntimeKind.ACP:
+            if spend_caps != (None, None):
+                # The external agent makes its own model calls; Garuda cannot
+                # admit or settle them, so a cap here would be a silent no-op.
+                print(f"Error: --max-run-tokens/--max-run-cost-usd cannot be enforced on the "
+                      f"ACP runtime '{args.runtime}'; they bound the native run tree only "
+                      "(use --runtime native)", file=sys.stderr)
+                return 2
             try:
                 return await run_acp_command(args, task, runtime_catalog)
             except NativeStartupFallback as fallback:
@@ -197,6 +224,10 @@ async def run_task(args) -> int:
         config.max_turns = args.max_turns
     if getattr(args, "deadline_sec", None) is not None:
         config.deadline_sec = args.deadline_sec
+    if getattr(args, "max_run_tokens", None) is not None:
+        config.max_run_tokens = args.max_run_tokens
+    if getattr(args, "max_run_cost_usd", None) is not None:
+        config.max_run_cost_usd = args.max_run_cost_usd
     if args.no_verifier:
         config.enable_verifier = False
     if args.no_three_step_summary:
@@ -227,7 +258,7 @@ async def run_task(args) -> int:
     agent = prepared.agent
     tools = prepared.tools
     mcp_manager = prepared.mcp_manager
-    if not args.json:
+    if not args.json and not getattr(args, "quiet", False):
         print(
             f"[garuda] reasoning={safe_model_identity(model)} "
             f"({prepared.provenance['reasoning'].provenance.value})",
@@ -242,34 +273,47 @@ async def run_task(args) -> int:
 
     guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
 
-    result = await run_agent_task(
-        task=task,
-        model=model,
-        agent=agent,
-        tools=tools,
-        config=config,
-        permissions=permissions,
-        workspace=args.workspace,
-        events=events,
-        emit_json=args.json,
-        workspace_kind=args.workspace_kind,
-        docker_image=args.docker_image,
-        docker_host=args.docker_host,
-        mcp_manager=mcp_manager,
-        agents_dir=agents_dir,
-        resume=args.resume,
-        resume_all_projects=getattr(args, "all_projects", False),
-        session_name=getattr(args, "name", None),
-        isolation=getattr(args, "isolation", "shared"),
-        context_attached=getattr(args, "_attached", None),
-        session_record=_session_record(args),
-        runtime_catalog=runtime_catalog,
-        runtime_ref=args.runtime,
-        initial_selection=args._initial_selection,
-        store=fallback_store,
-        collection_model=prepared.collection,
-        collection_policy=prepared.collection_policy,
-    )
+    from garuda.interfaces.cli import stream_run_output
+
+    try:
+        terminal = sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        terminal = False
+    stream = (terminal and not args.json and not getattr(args, "quiet", False)
+              and not getattr(args, "no_stream", False) and guard is None)
+    output = stream_run_output(events) if stream else contextlib.nullcontext(None)
+    with output as renderer:
+        result = await run_agent_task(
+            task=task,
+            model=model,
+            agent=agent,
+            tools=tools,
+            config=config,
+            permissions=permissions,
+            workspace=args.workspace,
+            events=events,
+            emit_json=args.json,
+            workspace_kind=args.workspace_kind,
+            docker_image=args.docker_image,
+            docker_host=args.docker_host,
+            mcp_manager=mcp_manager,
+            agents_dir=agents_dir,
+            resume=args.resume,
+            resume_all_projects=getattr(args, "all_projects", False),
+            fork=fork,
+            fork_at=getattr(args, "fork_at", None),
+            session_name=getattr(args, "name", None),
+            isolation=getattr(args, "isolation", "shared"),
+            context_attached=getattr(args, "_attached", None),
+            session_record=_session_record(args),
+            runtime_catalog=runtime_catalog,
+            runtime_ref=args.runtime,
+            initial_selection=args._initial_selection,
+            store=fallback_store,
+            collection_model=prepared.collection,
+            collection_policy=prepared.collection_policy,
+            **({"model_delta_consumer": renderer.on_model_delta} if renderer is not None else {}),
+        )
 
     args._completed_session_id = events.session_id
     if args.trajectory:
@@ -278,8 +322,10 @@ async def run_task(args) -> int:
         return 3  # outputs withheld; the changes stay for you to inspect
     _accept_session(args, events.session_id)
     if not args.json:
-        print(result.final_message)
-        if getattr(args, "isolation", "shared") != "shared" or args.resume:
-            _print_worktree_note(fallback_store, events.session_id)
-        _print_consult_line(fallback_store, events.session_id)
+        if renderer is None or result.final_message.strip() not in renderer.rendered_assistant_text:
+            print(result.final_message)
+        if not getattr(args, "quiet", False):
+            if getattr(args, "isolation", "shared") != "shared" or args.resume:
+                _print_worktree_note(fallback_store, events.session_id)
+            _print_consult_line(fallback_store, events.session_id)
     return 0 if result.success else 1

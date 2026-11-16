@@ -27,3 +27,19 @@ def resolve_workspace_path(workspace_root: Path, path: str, confine: bool) -> Pa
             "Pass an explicit workspace or disable confinement."
         )
     return full
+
+
+def read_path_bytes(path: Path, max_bytes: int | None = None) -> bytes:
+    if max_bytes is None:
+        return path.read_bytes()
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("max_bytes must be a nonnegative integer")
+    with path.open("rb") as handle:
+        content = handle.read(max_bytes + 1)
+    return check_read_size(content, max_bytes)
+
+
+def check_read_size(content: bytes, max_bytes: int | None) -> bytes:
+    if max_bytes is not None and len(content) > max_bytes:
+        raise ValueError(f"File exceeds {max_bytes} byte limit")
+    return content

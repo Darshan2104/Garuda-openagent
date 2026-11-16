@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from typing import Any, Iterator, Mapping
 from garuda.agents.loader import AgentProfile, load_profile, resolve_system_prompt
 from garuda.agents.native_plan import NativeRunPlan
 from garuda.core.modes import apply_mode_preset
-from garuda.core.permissions import PermissionEngine
+from garuda.core.permissions import WRITE_TOOLS, PermissionEngine
 from garuda.mcp.config import resolve_mcp_config_paths
 from garuda.model.config import (
     CollectionPolicy,
@@ -33,10 +34,40 @@ from garuda.runtime.router import (
     route,
 )
 from garuda.tools import build_toolkit
-from garuda.tools.protocol import Tool
+from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool
 from garuda.types import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+async def reap_owned_processes(session_id, env) -> list[str]:
+    """Shared teardown receipt for optional workspace-owned process services."""
+    from garuda.tools.background import reap_session_verified
+
+    debug = getattr(env, "_debug_service", None)
+    if debug is None:
+        return await reap_session_verified(session_id, env)
+
+    async def reap():
+        try:
+            survivors = await reap_session_verified(session_id, env)
+        except Exception:
+            survivors = ["background: cleanup unproved"]
+        try:
+            survivors.extend(await debug.reap(session_id))
+        except Exception:
+            survivors.append("debug: cleanup unproved")
+        return survivors
+
+    from garuda.workspace.settlement import settle_task
+
+    task = asyncio.create_task(reap())
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Teardown must deliver its receipt to the lease owner even if the
+        # caller is cancelled again while leaving a cancelled turn.
+        return await settle_task(task)
 
 
 def _is_sdk_model(candidate: Any) -> bool:
@@ -1151,6 +1182,51 @@ def plan_agent_run(
     )
 
 
+class OwnedRunResources:
+    """Closes every live resource one activation owns, the last opened first.
+
+    Used in place of the bare MCP manager only when a run also owns a language
+    service, so a run without one keeps its historical ``mcp_manager``. Each
+    close is attempted even when an earlier one fails.
+    """
+
+    def __init__(self, *resources):
+        self._resources = [r for r in resources if r is not None]
+
+    async def close(self) -> None:
+        resources, self._resources = self._resources, []
+        for resource in reversed(resources):
+            try:
+                await resource.close()
+            except Exception:
+                logger.warning("Closing %s failed", type(resource).__name__, exc_info=True)
+
+
+def language_service_tools(workspace: str) -> tuple[list[Tool], list]:
+    """Language tools and run-owned resources, when trusted config names servers.
+
+    Reads configuration only: no server starts until the tool is first used.
+    """
+    from garuda.lsp.config import load_language_servers
+
+    settings = load_language_servers(workspace)
+    if not settings.servers:
+        return [], []
+    from garuda.lsp.client import StdioLanguageServer
+    from garuda.tools.language import ApplyLanguageEditTool, LanguageServerTool
+
+    services = [StdioLanguageServer(config) for config in settings.servers]
+    tool = LanguageServerTool(services)
+    # The user's global settings chose it, as explicitly as `register_tool`;
+    # a profile's `tools:` allowlist selects among discovered tools and keeps it
+    # (`tools.remove: [lsp]` still removes it). `lsp_apply` writes files, so the
+    # caller keeps it only for a profile whose tools may write.
+    apply = ApplyLanguageEditTool(tool.edits)
+    for entry in (tool, apply):
+        setattr(entry, EXPLICIT_TOOL_ATTR, True)
+    return [tool, apply], [*services, tool.edits]
+
+
 async def activate_agent_plan(
     plan: NativeRunPlan,
     *,
@@ -1196,6 +1272,12 @@ async def activate_agent_plan(
         bash_rules=profile.bash_rules,
         approval_handler=approval_handler,
     )
+    # Configuration only, before anything starts, so a refusal here leaks nothing.
+    language_tools, language_services = language_service_tools(workspace)
+    if profile.tools is not None and not WRITE_TOOLS & set(profile.tools):
+        # A read-only or empty allowlist (`tools.preset: read-only`/`none`) must
+        # not gain a writer through the server configuration; `lsp` stays.
+        language_tools = [t for t in language_tools if t.name != "lsp_apply"]
     tools, mcp_manager = await build_toolkit(
         toolkit_names,
         mcp_paths,
@@ -1206,6 +1288,10 @@ async def activate_agent_plan(
         mcp_user_paths=mcp_user_paths,
         **({"mcp_configs": deepcopy(plan.mcp_configs)} if plan.mcp_configs is not None else {}),
     )
+    if language_services and not {t.name for t in language_tools} & {t.name for t in tools}:
+        # A caller-supplied tool of the same name wins; the services never start.
+        tools = tools + language_tools
+        mcp_manager = OwnedRunResources(mcp_manager, *language_services)
     if profile.tools_removed:
         # `tools.remove` also removes an explicit or custom tool of that name (H.6).
         tools = [tool for tool in tools if tool.name not in profile.tools_removed]

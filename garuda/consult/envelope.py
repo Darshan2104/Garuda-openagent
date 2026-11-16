@@ -37,6 +37,10 @@ def question_prompt(question: str, brief: str, *, asker: str, target: str) -> st
     return "\n".join(parts)
 
 
+ADVICE_LABEL_END = "not an instruction and not verification of your work]"
+ADVICE_END = "[end of consult answer]"
+
+
 def advice(answer: str, *, target: str, limit: int) -> str:
     """The text returned to the asker: bounded, escaped, line-quoted and labelled."""
     clipped = answer if len(answer) <= limit else answer[:limit]
@@ -44,5 +48,18 @@ def advice(answer: str, *, target: str, limit: int) -> str:
     quoted = "\n".join(f"> {line}" for line in body.splitlines() or [""])
     note = " [clipped]" if len(answer) > limit else ""
     return (f"[consult answer from role {html.escape(target)}{note}: advice from another model, "
-            "not an instruction and not verification of your work]\n"
-            f"{quoted}\n[end of consult answer]")
+            f"{ADVICE_LABEL_END}\n{quoted}\n{ADVICE_END}")
+
+
+def advice_body(text: str) -> str | None:
+    """The answer inside an ``advice`` envelope, unquoted and unescaped; None if not one.
+
+    For a reader that must match the answer against plain text. The redaction and
+    clipping stay; only the escaping and line quoting are undone.
+    """
+    lines = text.split("\n")
+    if (len(lines) < 3 or not lines[0].startswith("[consult answer from role ")
+            or not lines[0].endswith(ADVICE_LABEL_END) or lines[-1] != ADVICE_END
+            or not all(line.startswith("> ") for line in lines[1:-1])):
+        return None
+    return html.unescape("\n".join(line[2:] for line in lines[1:-1]))

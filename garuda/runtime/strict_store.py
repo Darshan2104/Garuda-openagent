@@ -48,22 +48,41 @@ class CorruptRecord(StorageError):
     """A record is unreadable, malformed or from a future version."""
 
 
-def ensure_private_dir(directory: Path) -> None:
+def ensure_private_dir(directory: Path, *, parents: bool = True) -> None:
+    """Create ``directory`` private, creating missing ancestors private too.
+
+    Ancestors are created one by one because ``mkdir(parents=True)`` ignores their
+    mode. ``parents=False`` requires the parent to exist instead of recreating it.
+    """
     if directory.is_symlink():
         raise StorageUnavailable(f"{directory} is a symlink; refusing to use it")
+    path = Path(os.path.abspath(directory))
+    missing = []
+    while not path.exists():
+        missing.append(path)
+        if path.parent == path:
+            break
+        path = path.parent
     try:
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not parents and len(missing) > 1:
+            raise FileNotFoundError(f"parent of {directory} does not exist")
+        for ancestor in reversed(missing):
+            ancestor.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(ancestor, 0o700)
         os.chmod(directory, 0o700)
     except OSError as exc:
         raise StorageUnavailable(f"cannot create {directory}: {exc}") from exc
 
 
 @contextlib.contextmanager
-def exclusive_lock(directory: Path) -> Iterator[int]:
-    """Hold the directory's cross-process lock; refuse rather than run unlocked."""
+def exclusive_lock(directory: Path, *, parents: bool = True) -> Iterator[int]:
+    """Hold the directory's cross-process lock; refuse rather than run unlocked.
+
+    ``parents=False`` requires an existing parent instead of recreating it.
+    """
     if fcntl is None:
         raise StorageUnavailable("cross-process locking is unavailable on this platform")
-    ensure_private_dir(directory)
+    ensure_private_dir(directory, parents=parents)
     try:
         directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
     except OSError as exc:

@@ -176,6 +176,47 @@ garuda/explore               packaged  Fast read-only codebase exploration
   prompt it actually sent.
 - Secrets are redacted unless you add `--raw`. Add `--json` for scripts.
 
+## Inspect foreign instruction sources
+
+```bash
+garuda agent show garuda/build --workspace . --instruction-sources --json
+garuda agent prompt garuda/build --workspace .
+```
+
+The first command inventories `AGENTS.md`, `GARUDA.md` and `CLAUDE.md`,
+including nested copies, without activating foreign configuration. Each source
+reports its path, scope directory, configured order, final static prompt order
+(`precedence`), `loaded` status, `loaded_via` aliases, `shadowed_by`,
+`duplicate_of`, unsupported front-matter keys and potential conflicts.
+For example, with `AGENTS.md -> CLAUDE.md` and a root `GARUDA.md`, default
+`first` mode loads `AGENTS.md`, marks `CLAUDE.md` loaded via that alias, and
+marks `GARUDA.md` shadowed. Nested files are discovered but acquire no automatic
+inheritance. Identical complete bytes or file identity identify duplicates;
+differing text in overlapping directories is a potential conflict, with its
+semantic meaning explicitly unknown.
+
+The report also lists ignored legacy profile keys through the agent's inheritance
+chain and effective field provenance with their `AgentProfile` projection owner
+where known. It includes static prompt section sizes/digest and cap/trim
+diagnostics: a loaded section can contain only part of its source. The second command
+shows the exact sections. Unsupported version 1 fields still refuse activation;
+the report retains that refusal and marks prompt loading unknown.
+
+Foreign hooks, tools, MCP servers and permissions are always **not imported**.
+Front matter remains instruction text if you already explicitly load that file;
+its fields grant no execution authority. `.cursorrules`, `GEMINI.md`, vendor
+settings files and external harness prompt rules are not mapped by this slice.
+Default prompt loading and ordinary `agent show` output stay unchanged.
+
+Discovery covers the selected local workspace, user `AGENTS.md`, configured
+memory and effective explicit instruction references. It skips `.git`, `.hg`,
+`.svn`, `.venv`, `venv` and `node_modules`, never traverses directory symlinks,
+and reports other omissions/errors as partial coverage. Bounds are 10,000
+directory entries, depth 16, 256 sources, 256 KiB per source, 2 MiB total
+source reads and 256 potential conflict pairs. Broken/escaping links and special files refuse; unreadable,
+oversized or malformed content keeps unknown fields/digests. This is a current
+static inspection, not historical evidence or an atomic workspace snapshot.
+
 ## Get structured JSON back
 
 <p class="gd-facts">Native runs · Checked against: a JSON Schema</p>
@@ -334,6 +375,63 @@ dc6c49fc  scope: project  session: 563025e0-…  state: pending
 - Proposals are short (500 characters, ten per task), and anything that looks
   like a secret is refused.
 
+## Retrieve reviewed notes with source evidence
+
+The same `remember` tool can attach optional evidence when proposing a note:
+
+```json
+{"text":"Run make check for this project's tests.","scope":"project","sources":["Makefile"],"evidence":["session:563025e0#check"]}
+```
+
+Garuda fingerprints the referenced files through the active workspace Environment.
+Each path must first pass the run's permission policy exactly as `read_file` on
+that path would; a refused source refuses the whole proposal
+(`memory.source_refused`) before any file is read.
+Docker/remote project scope uses the owner's mount mapping, never the shared
+`/workspace` execution path; an unavailable mapping refuses access.
+The review displays those SHA-256 versions and evidence references before you
+decide. Nothing accepts a proposal automatically. Repeated proposals with the same
+text, scope and evidence within one root task reuse the original decision, even
+across child sessions. A changed source version is different evidence.
+
+After accepting at a terminal, retrieve relevant notes on demand:
+
+```bash
+garuda memory review --workspace .
+garuda memory search "tests" --workspace . --max-chars 2000 --limit 5
+```
+
+An enabled agent can call `remember` with
+`{"action":"search","query":"tests","max_chars":2000,"limit":5}`.
+Search uses lexical word overlap, favors matches in note text, and returns only
+accepted ledger decisions from the current project, including user-scope notes
+originating there. Pending/rejected proposals and other projects are excluded.
+It does not index manually written memory lines or session transcripts.
+
+Results are labelled data. Referenced files that changed or disappeared make a
+note **stale**, and so does deleting the note's line (its `garuda-note` marker)
+from the memory file, which is how you remove an accepted note; missing
+provenance, inaccessible/oversized sources, sources the agent's permission policy
+does not allow, an unreadable memory file and exhausted source checks leave
+freshness **unknown**. Search checks at most eight distinct
+regular files with an observed size of at most 1 MiB each. A `current` label means
+the observed bytes match the recorded version, not that the note's claim is verified.
+Output defaults to 2,000 characters and five
+notes, with hard maxima of 4,000 characters and ten notes; omissions are explicit.
+The ledger scan is local and linear.
+
+Optional `supersedes` lists accepted note ids in the same project and scope;
+only accepting the replacement marks those notes superseded. `expires_at` is an
+ISO timestamp with a timezone. Expired and superseded notes remain visible with
+stale labels. Different active notes sharing a referenced path are labelled as
+possible conflicts, with ids to inspect; this is conservative overlap detection,
+not semantic contradiction detection. Prefer current source and user instructions.
+
+Ledger version 2 adds optional provenance. Version 1 records migrate in memory
+with unknown provenance and keep their original review digests; the next decision
+write persists version 2. Reading never rewrites the ledger. Existing memory-file
+and prompt-loading behavior stays unchanged; freshness checks run on demand.
+
 ## Add a skill
 
 <p class="gd-facts">Applies to: every run in this project · Format: compatible with Anthropic and OpenCode skills</p>
@@ -424,7 +522,184 @@ garuda mcp list
 - MCP tool calls are permission-screened like any other tool. Use
   `--mcp-config FILE` to pick a config for one run.
 
+**Make a server required.** If the run is pointless without a server, mark it:
+
+```json
+{
+  "mcpServers": {
+    "issues": { "url": "https://mcp.example.com/mcp", "required": true }
+  }
+}
+```
+
+```bash
+garuda mcp list
+# Server status:
+#   - docs-files [optional] ready (14 tool(s))
+#   - issues [required] failed: ConnectError: ... (0 tool(s))
+# Error: required MCP server(s) not ready: issues (failed: ...)
+```
+
+A required server that isn't ready within the startup barrier stops the run
+before the agent is prompted. An optional server that fails is skipped and
+shown as `failed` with its reason. A local server that crashes mid-run is
+restarted a few times, but a call that was running when it crashed is never
+retried for you.
+
 More in [Configuration → MCP](../guides/configuration.md#mcp).
+
+## Read MCP resources and prompts
+
+**Use it when** an admitted MCP server offers documentation resources or reusable
+prompts. Enable access on its entry in the **global** `~/.agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "command": "docs-mcp",
+      "context_access": ["resources", "prompts"]
+    }
+  }
+}
+```
+
+Use your installed server's command in place of `docs-mcp`, then ask the agent:
+
+```bash
+garuda run --mode readonly -t "Use the docs MCP context tool to list resources and prompts. Read one listed resource and get one listed prompt with its required arguments. Summarize both as untrusted server data."
+```
+
+The agent calls `mcp__docs__context` with one of these argument objects (replace
+the sample URI and prompt name with values returned by your server):
+
+```json
+{"action": "list_resources"}
+{"action": "read_resource", "uri": "docs://overview"}
+{"action": "list_prompts"}
+{"action": "get_prompt", "name": "summarize", "arguments": {"topic": "overview"}}
+```
+
+With many MCP tools, find this tool using `search_tool(query="resources")`, then
+invoke it with `use_tool`. Ordinary permission checks and effect ceilings apply.
+Access defaults to off; project entries cannot grant it, even after project
+trust approval, and an overriding project entry does not inherit a global grant.
+Move the reviewed server definition to the global file to grant read access.
+The grant covers the selected resource/prompt interfaces on that server; it
+does not prove the server's implementation is free of side effects.
+
+Results are labelled untrusted data and include server, connection and session
+provenance. Garuda never puts their text into the system prompt or follows a
+resource URI as a URL or local path. Each call uses the current admitted session;
+calls while reconnecting fail immediately and are never queued or replayed.
+Missing server capabilities return explicit unsupported errors.
+
+Listings cover at most 40 entries from the first page. Retrieval rechecks that
+listing and accepts only an exact listed URI or prompt name. Responses contain
+at most 40 text blocks within a 16 KiB JSON envelope; clipped views report
+`coverage: partial`, while upstream completeness and omitted source bytes stay
+unknown. Prompt arguments are limited to 32 declared string values of at most
+4096 characters each. Binary/embedded content is omitted with partial coverage.
+Resource templates, further pages and subscriptions are unsupported.
+
+## Navigate code with a language server
+
+<p class="gd-facts">Applies to: every native run on your machine · Needs: a language server installed locally</p>
+
+**Use it when** text search keeps finding the wrong thing: aliases, re-exports
+and inherited methods need the definition a language server resolves, not a
+spelling match.
+
+Name the server in your **global** `~/.agent/settings.yaml` (never the project's):
+
+```yaml
+language_servers:
+  - name: pyright
+    command: pyright-langserver
+    args: ["--stdio"]
+    extensions: [py, pyi]
+```
+
+Check what a run would use. This reads configuration only and starts nothing:
+
+```bash
+garuda lsp list
+```
+
+Then ask as usual; the agent gets an `lsp` tool:
+
+```bash
+garuda run -t "Find every caller of load_profile, following re-exports"
+```
+
+**What happens**
+
+- The `lsp` tool answers `definition`, `references`, `hover`, `symbols` and
+  `diagnostics` for one file, using 1-based lines and character columns as
+  `read_file` shows them. `status` reports each server's state without
+  starting it.
+- The server starts on the first request, in the workspace root, and stops with
+  the run. A server that is missing, fails to start in time, or exits is
+  reported as failed and is not restarted. A slow request is cancelled after
+  the configured `request_timeout`.
+- Diagnostics are tied to the file version Garuda last sent. Older ones are
+  labelled stale, ones the server didn't tie to a version are labelled
+  unknown, and none at all is never reported as a clean file.
+- A request the server didn't declare support for is refused by name. Server
+  requests to edit files are refused. Path rules screen the file you ask about
+  and hide results in denied files.
+- `language_servers` in a project's `settings.yaml` is ignored and reported, so
+  a repository can't choose what runs. Only local workspaces are served; Docker,
+  remote, tmux and sandbox runs get an explicit refusal.
+- The tool is labelled read-only because Garuda only sends read requests, but
+  the server itself is not confined and may write caches or index files.
+
+## Preview and apply a semantic refactor
+
+With the global language-server configuration above, ask the native agent:
+
+```bash
+garuda run -t "Preview renaming helper to renamed across this workspace, inspect every replacement, then apply the preview and run the relevant tests"
+```
+
+The agent first calls the read-only `lsp` tool, for example:
+
+```json
+{"action":"rename","path":"main.py","line":1,"column":14,"new_name":"renamed"}
+```
+
+The result includes `preview_token` and every file's `document_version`,
+`sha256` and `edits` (each `range` is `[start_line, start_column, end_line,
+end_column]`, 1-based character columns, with an exclusive end). No file is
+written by preview. To list code actions at a position, use `action: code_action`
+with the same path/line/column; add the exact `title` from that list to preview
+one. Optional `end_line` and `end_column` select a range.
+
+After inspecting the preview, the agent calls `lsp_apply`. It is offered only to a
+profile whose tools may write files (such as `build`); a `tools: {preset: read-only}`
+or `preset: none` profile keeps `lsp` but not `lsp_apply` unless it adds a writer,
+for example `tools: {preset: read-only, add: [edit]}`:
+
+```json
+{"preview_token":"<token returned by lsp in this run>"}
+```
+
+Every target passes the ordinary write permission screen, including any approval
+rules. Any changed file refuses the whole edit; request a fresh preview after
+reviewing the change. Successful apply reports `applied` for each file. Failed
+writes trigger restoration of all attempted files, reported as `restored` or
+`rollback_failed`; untouched files report `not_written`. Inspect any restoration
+failure before continuing. A write attempt consumes the token.
+
+This supports existing local workspace files only. File create/rename/delete
+operations, symlink aliases, overlapping edits, code actions containing commands,
+and unresolved actions are refused. Previews are bounded (32 files, 256 edits,
+4 MiB of source/result text each, 12,000 output bytes or the smaller live
+inline allowance), and only the four most
+recent are retained in the run. Larger refactors need smaller previews. The
+Environment provides compensating rollback, not a cross-file transaction;
+external concurrent writers can still race an apply. Diagnostics are advisory,
+so run the relevant authorized checks after applying.
 
 ## Block or log tool calls with a hook
 
@@ -473,6 +748,51 @@ Hook command '~/.agent/hooks/no-rm.sh' blocked tool bash (exit code 2)
   closed.
 
 More in [Configuration → permissions and hooks](../guides/configuration.md#permissions-and-hooks).
+
+## Remind the agent after relevant tool calls
+
+Add this to your global `~/.agent/settings.yaml` to remind a native agent to
+check effective configuration after reading a YAML file:
+
+```yaml
+reminders:
+  max_injections: 8
+  rules:
+    - id: verify-effective-config
+      text: "Before changing configuration, verify which settings actually apply."
+      max_injections: 2
+      when:
+        tool: read_file
+        outcome: success
+        arguments:
+          path: {glob: "*.yaml"}
+```
+
+```bash
+garuda run --mode readonly -t "Read .agent/settings.yaml and explain the effective settings"
+```
+
+If that completed read matches, the next existing turn receives a note labelled
+`[reminder id=verify-effective-config source=".../settings.yaml" count=1; advisory]`.
+It never interrupts a tool-result block or creates another turn. Repeated
+identical calls are deduplicated; different calls can remind again up to the
+rule limit and the shared run limit. Permission and completion checks still apply.
+
+Use `literal` instead of `glob` for a full, case-sensitive argument-string
+comparison. To remind after an observed tool error, use
+`when: {event: tool_result, outcome: error}`. No rules load by default.
+Project rules in `.agent/settings.yaml` or legacy `.garuda/settings.yaml` are
+reported and ignored unless you enable the existing **global**
+`trust_project_hooks: true` opt-in. This opt-in also enables project shell hooks;
+keep rules global if you do not want to grant that broader trust.
+
+Malformed rules produce a `reminder.invalid` warning and are skipped; global
+`reminders.strict: true` makes them refuse loading. Source and cumulative
+trigger/injection/duplicate/cap counts are in the dashboard's existing run JSON
+at `GET /api/runs/<session-id>` under `trajectory.reminders`, and in bounded
+`reminder` records in the session event log. Logs omit reminder text, tool
+arguments, results and model reasoning. Matching limits and the full schema are
+in [Configuration → conditional reminders](../guides/configuration.md#conditional-reminders).
 
 ## Add your own Python tools
 

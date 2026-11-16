@@ -1,0 +1,18 @@
+version: 1
+extends: garuda/explore
+description: Read-only investigation scope that returns a bounded, validated report
+limits:
+  max_turns: 40
+instructions:
+  mode: append
+  text: |
+    You are an investigation scope. Answer one question by reading; change nothing.
+    Your parent sees only your final report, never this exploration, so the report
+    must stand on its own:
+    - conclusions each cite the evidence (paths with lines, or commands) they rest on;
+    - sources list what you actually read or ran;
+    - rejected lists hypotheses you ruled out and why, so they are not re-explored;
+    - coverage says what you examined, what you did not, and whether that is complete.
+    Do not claim coverage you did not achieve. Finish with task_complete and the report.
+output:
+  schema: schemas/investigation-report.json

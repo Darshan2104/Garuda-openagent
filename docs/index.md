@@ -138,7 +138,7 @@ Start with the runnable reconnect example and inspect readiness before launch.
 
 | Capability | Details |
 |---|---|
-| **Any model** | Any LiteLLM provider, with retries, streaming APIs, reasoning settings, prompt caching, and cost accounting; the native loop renders completed model turns rather than live tokens |
+| **Any model** | Any LiteLLM provider, with retries, streaming APIs, reasoning settings, prompt caching, and cost accounting; native terminal runs show live assistant text, with `--no-stream` to opt out |
 | **Real tools** | Shell, files, edits, search, PDFs and spreadsheets, web fetch, MCP servers, skills, subagents, hooks, and your own Python tools |
 | **Your own agents** | Version 1 agent definitions that extend packaged ones, inspected with `garuda agent show`, with structured JSON output and reviewed memory notes |
 | **Guardrails** | Permission rules, read-only and no-edits runs, approvals for risky actions (answerable from anywhere), and trust prompts for project-supplied code |
@@ -147,7 +147,7 @@ Start with the runnable reconnect example and inspect readiness before launch.
 | **Parallel work** | Background runs with a queue, per-runtime capacity, worktree sessions, and merges checked in Docker |
 | **Teams of roles** | Roles with an exact harness and model, fallbacks, plan → build → review flows, independent reviews, and consults |
 | **Observability** | A dashboard with sessions, approvals, usage and cost by model, provider limits, and setup diagnostics |
-| **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, and Goose through ACP, with handoff and recovery |
+| **External harnesses** | Claude Code, Codex, Cursor, OpenCode, Pi, Goose, and oh-my-pi through ACP, with handoff and recovery |
 | **Many interfaces** | CLI, interactive chat, web dashboard, YAML recipes, Python SDK, and a JSON-RPC service |
 
 ## Contributing

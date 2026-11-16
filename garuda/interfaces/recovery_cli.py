@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, project
+from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_root, project, tick_health
 from garuda.runtime import strict_store as ss
 
 
@@ -20,7 +20,7 @@ def run_recovery(args) -> int:
     try:
         command = args.recovery_command
         if command == "enable":
-            result = install(root)
+            result = install(root, backend=getattr(args, "backend", "cron"))
         elif command == "disable":
             result = disable(root)
         elif command == "tick":
@@ -33,7 +33,14 @@ def run_recovery(args) -> int:
                 args.flow_session, {"quota_recovery": project(row)})
             result = project(row)
         else:
-            result = {"schedule": schedule_status(root),
+            # Installation and runtime health are observed separately; status
+            # reads recorded tick health and never probes quota or runs a tick.
+            try:
+                health = tick_health(records.health())
+            except (OSError, ValueError, ss.StorageError) as exc:
+                # Unreadable health is unknown, never a reason to hide the rest.
+                health = {"state": "unknown", "reason": f"tick health is unreadable: {exc}"}
+            result = {"schedule": schedule_status(root), "tick_health": health,
                       "flows": [project(row) for row in records.records()]}
         print(json.dumps(result, indent=2))
         if command == "tick" and any(
@@ -55,7 +62,10 @@ def run_recovery(args) -> int:
         print(f"Error: recovery command failed (exit {exc.returncode})"
               + (f": {detail}" if detail else "."), file=sys.stderr)
         if args.recovery_command in {"enable", "disable"}:
-            print("Check user crontab permissions and run `garuda recovery status` "
+            launchd = (getattr(args, "backend", None) == "launchd"
+                       or Path(str(exc.cmd[0])).name == "launchctl")
+            scheduler = "launchctl/LaunchAgents" if launchd else "crontab"
+            print(f"Check user {scheduler} permissions and run `garuda recovery status` "
                   "to inspect persisted enablement and installation.", file=sys.stderr)
         return 2
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, ss.StorageError) as exc:

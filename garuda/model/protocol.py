@@ -40,13 +40,18 @@ class ModelResponse:
     content: str | None
     tool_calls: list[Any]
     raw: dict[str, Any] = field(default_factory=dict)
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int | float] = field(default_factory=dict)
     # Extended-thinking output. ``reasoning_content`` is the human-readable
     # reasoning text; ``thinking_blocks`` are the provider's structured blocks
     # (with signatures) that must be echoed back on the next request to preserve
     # interleaved thinking across tool-call turns (Anthropic).
     reasoning_content: str | None = None
     thinking_blocks: list[dict] | None = None
+    # One entry per provider attempt: {usage: reported fields, outcome: success|failed}.
+    # usage is their known subtotal; missing fields are unknown, including when
+    # another attempt reported that field. Raised transport errors carry the same
+    # usage/attempt_usage attributes. Legacy implementations may leave this empty.
+    attempt_usage: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -62,12 +67,13 @@ class StreamDelta:
 
     content_delta: str = ""
     tool_call_delta: dict | None = None
-    usage: dict[str, int] | None = None
+    usage: dict[str, int | float] | None = None
     reasoning_delta: str = ""
     thinking_blocks: list[dict] | None = None
     done: bool = False
     finish_reason: str | None = None
     status: str | None = None
+    attempt_usage: list[dict] | None = None
 
 
 @runtime_checkable

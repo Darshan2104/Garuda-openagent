@@ -4,8 +4,9 @@ The one decision path for native and ACP approvals. A `PermissionEngine`
 still draws the ceiling (allow/deny/ask per tool, path, and command); the
 broker owns what happens at ASK and at every ACP request: park the approval
 where UI, CLI, and SDK all read it, await an answer, and fail closed on
-timeout or requester disconnect. Every outcome — allow, deny, timeout,
-disconnect — is persisted, so an audit can replay each one.
+timeout or requester disconnect. Parked outcomes — allow, deny, timeout,
+disconnect — are persisted, so an audit can replay each one. Policy and
+unbound-answer observations use a separate bounded, best-effort trail.
 
 Strict ceilings never silently downgrade: `describe_gaps` reports the
 capabilities a strict policy needs but the adapter lacks; negotiation itself
@@ -16,10 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 from garuda.acp.authority import (
@@ -29,6 +30,7 @@ from garuda.acp.authority import (
     negotiate,
 )
 from garuda.acp.protocol import AcpError
+from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
 from garuda.core.permissions import PermissionDecision, PermissionEngine
 
 logger = logging.getLogger(__name__)
@@ -36,13 +38,6 @@ logger = logging.getLogger(__name__)
 
 class ApprovalAuditError(AcpError):
     """An allow/deny outcome could not be persisted. Fail-closed, always."""
-
-
-class ApprovalOutcome(str, Enum):
-    ALLOW = "allow"
-    DENY = "deny"
-    TIMEOUT = "timeout"
-    DISCONNECTED = "disconnected"
 
 
 @dataclass
@@ -53,6 +48,11 @@ class ApprovalRequest:
     runtime_id: str
     session_id: str
     requested_at: float = field(default_factory=time.time)
+    # Provenance bound at park time: what the answer must still match.
+    digest: str = ""
+    ceiling: str | None = None
+    ceiling_source: str | None = None
+    expires_at: float | None = None
 
 
 @dataclass
@@ -63,9 +63,17 @@ class ApprovalRecord:
     family: str
     runtime_id: str
     decided_at: float = field(default_factory=time.time)
+    via: str | None = None
+    reason: str | None = None
+    request: ApprovalRequest | None = None
+    answered_approval_id: str | None = None
+    policy_source: str | None = None
+    policy_mode: str | None = None
+    ceiling: str | None = None
+    ceiling_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "approval_id": self.approval_id,
             "outcome": self.outcome.value,
             "action": self.action,
@@ -73,6 +81,21 @@ class ApprovalRecord:
             "runtime_id": self.runtime_id,
             "decided_at": self.decided_at,
         }
+        if self.via is not None:
+            record["via"] = self.via
+            record["reason"] = self.reason
+        if self.request is not None:
+            record.update(request_digest=self.request.digest,
+                          ceiling=self.request.ceiling,
+                          ceiling_source=self.request.ceiling_source,
+                          requested_at=self.request.requested_at,
+                          expires_at=self.request.expires_at)
+        if self.answered_approval_id is not None:
+            record["answered_approval_id"] = self.answered_approval_id
+        if self.via == "policy":
+            record.update(policy_source=self.policy_source, policy_mode=self.policy_mode,
+                          ceiling=self.ceiling, ceiling_source=self.ceiling_source)
+        return record
 
 
 class Decision:
@@ -112,8 +135,14 @@ class ApprovalBroker:
         alive: Callable[[], bool] | None = None,
         answerer: Callable[[ApprovalRequest], Any] | None = None,
         channel=None,
+        ceiling_source: str | None = None,
+        session_id: str = "",
     ):
         self._engine = engine
+        self.session_id = session_id
+        # Where the effective ceiling came from (e.g. "--max-permission", "profile",
+        # "acp:not-screened"); recorded with every approval, never used to decide.
+        self._ceiling_source = ceiling_source
         self._store = store
         self._timeout_sec = timeout_sec
         self._alive = alive or (lambda: True)
@@ -123,7 +152,13 @@ class ApprovalBroker:
         self._answers: dict[str, asyncio.Future[bool]] = {}
         self._disconnected: set[str] = set()
         self._via: dict[str, tuple[str, str | None]] = {}
+        self._terminal: dict[str, Unanswered] = {}
+        self._cancelled_reason: str | None = None
         self._seq = 0
+
+    @property
+    def answerer(self):
+        return self._answerer
 
     def set_answerer(
         self, answerer: Callable[[ApprovalRequest], Any] | None
@@ -141,21 +176,79 @@ class ApprovalBroker:
         """Parked approvals, oldest first — the single surface UI cards read."""
         return sorted(self._parked.values(), key=lambda r: r.requested_at)
 
+    def cancel_session(self, reason: str = "cancelled") -> None:
+        """Disconnect pending asks and deny future asks for this session."""
+        self._cancelled_reason = reason or "cancelled"
+        for request in list(self._parked.values()):
+            self.disconnected(request.approval_id)
+
     def answer(self, approval_id: str, allow: bool, *, via: str = "answerer",
-               reason: str | None = None) -> None:
+               reason: str | None = None, digest: str | None = None) -> None:
         """Resolve a parked approval. Unknown ids fail closed, never silently.
 
         The first answer wins, whatever its channel; later ones find nothing
-        parked and raise ``KeyError``.
+        parked and raise ``KeyError``. A caller that names the request
+        ``digest`` it showed must match the parked request, or nothing is
+        resolved (``ValueError``): a stale or foreign answer settles nothing.
         """
-        request = self._parked.pop(approval_id, None)
+        request = self._parked.get(approval_id)
         if request is None:
             raise KeyError(f"no pending approval {approval_id!r}")
+        if digest is not None and digest != request.digest:
+            raise ValueError(f"answer does not match pending approval {approval_id!r}")
+        self._parked.pop(approval_id, None)
         self._disconnected.discard(approval_id)
         self._via[approval_id] = (via, reason)
         future = self._answers.pop(approval_id, None)
         if future is not None and not future.done():
             future.set_result(bool(allow))
+
+    async def answer_bound(self, approval_id: str, allow: bool, *, session_id: str,
+                           runtime_id: str = "native", digest: str | None = None,
+                           via: str = "permission_response") -> None:
+        """Bind an interface answer to this session's live request, or audit refusal.
+
+        An id-only transport uses the broker's immutable, session-scoped request
+        digest. Rejections get a fresh id so a replay cannot overwrite its outcome.
+        """
+        request = self._parked.get(approval_id) if isinstance(approval_id, str) else None
+        if (request is None or request.session_id != session_id
+                or request.runtime_id != runtime_id or not request.digest
+                or (digest is not None and digest != request.digest)):
+            reason = "Answer cannot be bound to a pending request in this session"
+            answered_id = approval_id[:256] if isinstance(approval_id, str) else "invalid id"
+            await self._observe(session_id, ApprovalRecord(
+                self._next_id(), ApprovalOutcome.DENY, "unbound approval answer", "approval",
+                runtime_id, via=via, reason=reason, answered_approval_id=answered_id))
+            raise ValueError(reason)
+        self.answer(approval_id, allow, via=via, digest=request.digest)
+
+    async def record_policy(self, tool_name: str, decision: PermissionDecision, reason: str | None,
+                            *, source: str | None, mode: str | None, engine) -> tuple[bool, str | None]:
+        """One bounded record per non-ASK decision, without argument disclosure."""
+        from garuda.acp.approval_channel import ceiling_fingerprint
+
+        allowed = decision is PermissionDecision.ALLOW
+        await self._observe(self.session_id, ApprovalRecord(
+            self._next_id(), ApprovalOutcome.ALLOW if allowed else ApprovalOutcome.DENY,
+            tool_name[:256], "tool", "native", via="policy", reason=None,
+            policy_source=source[:128] if source is not None else None,
+            policy_mode=mode[:32] if mode is not None else None,
+            ceiling=ceiling_fingerprint(engine),
+            ceiling_source=self._ceiling_source[:128] if self._ceiling_source is not None else None,
+        ))
+        return allowed, reason
+
+    async def _observe(self, session_id: str, record: ApprovalRecord) -> None:
+        if self._store is None or not session_id:
+            return
+        from garuda.acp.decision_audit import append_decision
+
+        try:
+            await asyncio.to_thread(append_decision,
+                                    self._store.session_dir(session_id) / "decision-audit", record.to_dict())
+        except Exception:
+            logger.warning("Decision observation could not be persisted", exc_info=True)
 
     def handler(
         self, *, session_id: str = "", runtime_id: str = "native"
@@ -185,8 +278,10 @@ class ApprovalBroker:
         return _handle
 
     def _next_id(self) -> str:
+        # The random suffix keeps ids unique across brokers in one session
+        # (resume, handoff, a new chat): records are keyed by id and merged.
         self._seq += 1
-        return f"apr-{self._seq}-{int(time.time() * 1000)}"
+        return f"apr-{self._seq}-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
     async def decide_tool(
         self,
@@ -260,9 +355,34 @@ class ApprovalBroker:
         (:class:`Decision`), because the runtime is told after this returns.
         """
         approval_id = approval_id or self._next_id()
-        outcome, via, reason = await self._await_outcome(
-            family, action, runtime_id, session_id, approval_id
-        )
+        request = self._request(family, action, runtime_id, session_id, approval_id)
+        if self._cancelled_reason is not None:
+            reason = f"Approval cancelled with the turn ({self._cancelled_reason}): {action}"
+            err = self._audit(session_id, approval_id, ApprovalOutcome.CANCELLED, action, family,
+                              runtime_id, via="cancel", reason=reason, request=request)
+            return False, reason if err is None else f"{reason}; {err}"
+        try:
+            outcome, via, reason = await self._await_outcome(request)
+        except asyncio.CancelledError:
+            # The run or the ACP turn was cancelled while the ask waited: record
+            # it, so the inbox and the audit do not show a forever-pending ask.
+            self._parked.pop(approval_id, None)
+            self._answers.pop(approval_id, None)
+            self._via.pop(approval_id, None)
+            self._terminal.pop(approval_id, None)
+            reason = f"Approval cancelled before an answer: {action}"
+            if self._channel is not None:
+                from garuda.acp.approval_channel import ChannelError
+
+                try:
+                    self._channel.decide(approval_id, ApprovalOutcome.CANCELLED.value,
+                                         "cancel", reason)
+                except ChannelError:
+                    logger.warning("Could not record cancelled approval %s", approval_id,
+                                   exc_info=True)
+            self._audit(session_id, approval_id, ApprovalOutcome.CANCELLED, action, family,
+                        runtime_id, via="cancel", reason=reason, request=request)
+            raise
         if self._channel is not None and via != "replay":
             from garuda.acp.approval_channel import ChannelError
 
@@ -272,7 +392,8 @@ class ApprovalBroker:
                         f"approval {approval_id} was already decided; not decided twice")
             except ChannelError as exc:
                 outcome, reason = ApprovalOutcome.DENY, f"approval record failed, denying: {exc}"
-        err = self._audit(session_id, approval_id, outcome, action, family, runtime_id)
+        err = self._audit(session_id, approval_id, outcome, action, family, runtime_id,
+                          via=via, reason=reason, request=request)
         if err is not None:
             return False, err if outcome is ApprovalOutcome.ALLOW else f"{reason}; {err}"
         if outcome is not ApprovalOutcome.ALLOW:
@@ -288,18 +409,33 @@ class ApprovalBroker:
                 return False, f"{exc}"
         return True, None
 
+    def _request(self, family: str, action: str, runtime_id: str, session_id: str,
+                 approval_id: str) -> ApprovalRequest:
+        """The parked request with the provenance every answer is checked against."""
+        from garuda.acp.approval_channel import ceiling_fingerprint, request_digest
+
+        request = ApprovalRequest(
+            approval_id=approval_id, action=action, family=family,
+            runtime_id=runtime_id, session_id=session_id or runtime_id,
+            ceiling=ceiling_fingerprint(self._engine), ceiling_source=self._ceiling_source,
+        )
+        request.expires_at = round(request.requested_at + self._timeout_sec, 3)
+        request.digest = request_digest({
+            "approval_id": approval_id, "session_id": request.session_id, "action": action,
+            "family": family, "runtime_id": runtime_id, "ceiling": request.ceiling,
+            "expires_at": request.expires_at,
+        })
+        return request
+
     async def _await_outcome(
-        self, family: str, action: str, runtime_id: str, session_id: str, approval_id: str
+        self, request: ApprovalRequest
     ) -> tuple[ApprovalOutcome, str, str | None]:
         """``(outcome, via, reason)`` for one parked approval; no audit here."""
+        approval_id, action = request.approval_id, request.action
         if approval_id in self._parked:
             raise KeyError(f"approval {approval_id!r} is already parked")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
-        request = ApprovalRequest(
-            approval_id=approval_id, action=action, family=family,
-            runtime_id=runtime_id, session_id=session_id or runtime_id,
-        )
         poll = None
         if self._channel is not None:
             poll = self._publish(request)
@@ -326,13 +462,29 @@ class ApprovalBroker:
                     f"Approval requester disconnected: {action}")
         self._parked.pop(approval_id, None)
         via, why = self._via.pop(approval_id, ("answerer", None))
+        unanswered = self._terminal.pop(approval_id, None)
         if approval_id in self._disconnected:
             self._disconnected.discard(approval_id)
             return (ApprovalOutcome.DISCONNECTED, "disconnect",
                     f"Approval requester disconnected: {action}")
+        if unanswered is not None:
+            # The responder's own timeout or lost person, kept distinct from a "no".
+            return unanswered.outcome, via, (
+                unanswered.reason or f"Approval {unanswered.outcome.value}: {action}")
         if allowed:
+            # Every channel, not only files: an allow is honoured only while the
+            # request it answers is still the one in force.
+            from garuda.acp.approval_channel import ceiling_fingerprint
+
+            if request.expires_at is not None and time.time() > request.expires_at:
+                return ApprovalOutcome.DENY, via, (
+                    f"Rejected {via} answer: it arrived after the request expired")
+            if ceiling_fingerprint(self._engine) != request.ceiling:
+                return ApprovalOutcome.DENY, via, (
+                    f"Rejected {via} answer: the permission ceiling changed while it was pending")
             return ApprovalOutcome.ALLOW, via, None
         return ApprovalOutcome.DENY, via, why or f"Denied: {action}"
+
 
     def _publish(self, request: ApprovalRequest):
         """Publish to the file channel; returns its poller, ``None`` without one,
@@ -344,12 +496,14 @@ class ApprovalBroker:
             return False
         try:
             published = channel.publish(
-                request, ceiling=ceiling_fingerprint(self._engine),
-                expires_at=request.requested_at + self._timeout_sec,
+                request, ceiling=request.ceiling, expires_at=request.expires_at,
             )
         except (ChannelError, FileExistsError):
             logger.warning("Approval %s has no file channel", request.approval_id, exc_info=True)
             return None
+        # One request, one digest: the published one (with its nonce) is what
+        # `approvals list` and the inbox show, what answers name, and what is audited.
+        request.digest = published.digest
 
         def poll() -> None:
             result = channel.poll(published, ceiling_now=ceiling_fingerprint(self._engine))
@@ -375,19 +529,22 @@ class ApprovalBroker:
         except Exception:
             logger.warning("Approval answerer failed for %s; denying", approval_id, exc_info=True)
             result = False
+        if isinstance(result, Unanswered) and approval_id in self._parked:
+            self._terminal[approval_id] = result
         try:
             self.answer(approval_id, bool(result))
         except KeyError:
-            pass
+            self._terminal.pop(approval_id, None)
 
     def _audit(
         self, session_id: str, approval_id: str, outcome: ApprovalOutcome,
-        action: str, family: str, runtime_id: str,
+        action: str, family: str, runtime_id: str, **provenance: Any,
     ) -> str | None:
         """Persist one outcome. Returns None, or the denial reason when the
         audit write failed — the caller must not allow what it cannot record."""
         try:
-            self._record(session_id, approval_id, outcome, action, family, runtime_id)
+            self._record(session_id, approval_id, outcome, action, family, runtime_id,
+                         **provenance)
             return None
         except ApprovalAuditError as exc:
             logger.warning("Approval audit failed for %s", approval_id, exc_info=True)
@@ -395,7 +552,7 @@ class ApprovalBroker:
 
     def _record(
         self, session_id: str, approval_id: str, outcome: ApprovalOutcome,
-        action: str, family: str, runtime_id: str,
+        action: str, family: str, runtime_id: str, **provenance: Any,
     ) -> None:
         """Persist one outcome. Fail-closed: a store failure raises
         `ApprovalAuditError`, and every caller turns that into a denial — an
@@ -404,7 +561,7 @@ class ApprovalBroker:
             return
         record = ApprovalRecord(
             approval_id=approval_id, outcome=outcome, action=action,
-            family=family, runtime_id=runtime_id,
+            family=family, runtime_id=runtime_id, **provenance,
         )
         try:
             self._store.update_meta(session_id, {f"approval:{approval_id}": record.to_dict()})

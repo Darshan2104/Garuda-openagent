@@ -240,6 +240,9 @@ Click a problem to see the fix.
       is still in progress; consults run one at a time per asker.
     - `consult.capacity_unavailable`: the target's harness is at its
       `max_parallel`; consults never wait for a slot.
+    - `consult.spend_unsupported`: a run-tree token or dollar cap is active,
+      but the target uses ACP, whose model calls Garuda cannot meter. Choose a
+      native consult target to keep the run-tree cap enforced.
     - `consult.snapshot_unsupported`, `consult.snapshot_unstable`: the workspace
       is not a git checkout Garuda can snapshot, or it changed (or background
       processes ran, or pausing the asker failed) while the snapshot was
@@ -300,7 +303,7 @@ Click a problem to see the fix.
 
     Check the role's `harness`: it must be a runtime ID from
     `garuda runtime list` (`native`, `claude`, `codex`, `cursor`, `opencode`,
-    `pi`, `goose`). `doctor` only checks the harnesses it recognises, so a
+    `pi`, `goose`, `omp`). `doctor` only checks the harnesses it recognises, so a
     misspelled one is skipped rather than reported.
 
 ??? question "A flow stops with `flow.output_missing`"
@@ -323,6 +326,13 @@ Click a problem to see the fix.
     reviews, one of that role's fallbacks, or a role it may consult. Give the
     reviewer a different model, or remove the reviewer from the reviewed role's
     `consult:` list.
+
+??? question "A flow stops with `flow.review_candidate_unknown`"
+
+    The reviewed step's workspace version can't tell candidates apart, usually
+    because the workspace isn't a git work tree, so Garuda can't prove the
+    reviewer saw what the step produced. Run the flow in a git repository, or
+    set `independent: false` on the review to accept an unenforced binding.
 
 ??? question "`garuda flow show` says no such file"
 

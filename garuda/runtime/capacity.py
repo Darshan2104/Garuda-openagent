@@ -33,6 +33,7 @@ import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -304,6 +305,48 @@ class CapacityStore:
         except StorageError as exc:
             raise CapacityError(f"capacity storage unavailable: {exc}") from exc
 
+    def released(self, key: str, holder: str) -> bool:
+        """Prove release from an existing readable record, never a missing store."""
+        document = self._load(key)
+        path = self._path(key)
+        if not path.is_file() or path.is_symlink():
+            raise CapacityError("capacity release record is missing or ambiguous")
+        return holder not in document["slots"]
+
+    @contextmanager
+    def guard_released(self, key: str, holder: str):
+        """Keep a retired holder unreserved through repository removal."""
+        try:
+            with exclusive_lock(self.root):
+                if not self.released(key, holder) or self.slots_for_holder(holder):
+                    raise CapacityError("capacity ownership changed before retirement")
+                yield
+        except StorageError as exc:
+            raise CapacityError(str(exc)) from exc
+
     def holders(self, key: str) -> list[str]:
         """Inspect current holders. Never mutates."""
         return sorted(self._load(key)["slots"])
+
+    def slots_for_holder(self, holder: str) -> list[dict]:
+        """Every recorded slot of ``holder`` across runtime keys, for inspection.
+
+        Never locks, creates or upgrades anything. A record whose key does not
+        match its file, or that fails the ordinary read validation, raises
+        (fail closed) rather than being skipped.
+        """
+        if not self.root.is_dir():
+            return []
+        out = []
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                document = read_document(path, versions=(1, 2))
+            except StorageError as exc:
+                raise CapacityError(str(exc)) from exc
+            key = (document or {}).get("key")
+            if not isinstance(key, str) or self._path(key).name != path.name:
+                raise CapacityError(f"capacity record {path.name} does not match its key; refusing")
+            slot = self._load(key)["slots"].get(holder)
+            if slot is not None:
+                out.append({"key": key, **slot})
+        return out

@@ -389,3 +389,162 @@ def test_starter_result_does_not_verify_from_missing_or_disagreeing_inline_recei
         assert row['state']['outcome'] == 'completed'
         assert row['verification']['status'] == 'unknown' and not row['coverage']['complete']
         assert row['next_action']['id'] == 'inspect-records'
+
+
+# --- ownership, progress and reconciliation in one read-only projection (#376) -----------------
+
+
+def _ownership(store, sid, queue):
+    return read_model.session(store, sid, queue=queue)["ownership"]
+
+
+def test_inspection_reports_ownership_without_writing_signalling_or_recovering(
+    world, tmp_path, monkeypatch,
+):
+    import os
+
+    from garuda.runtime import recovery
+    from garuda.workspace.lease import LeaseStore
+
+    store, queue, ids = world
+    LeaseStore().acquire(tmp_path, ids["crashed"])
+    roots = [store.root, queue.root, queue.capacity.root, LeaseStore().root]
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+              for root in roots for p in root.rglob("*") if p.is_file()}
+    signals = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(recovery, "recover", lambda *a, **k: pytest.fail("inspection recovered"))
+
+    for sid in ids.values():
+        _ownership(store, sid, queue)
+    after = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+             for root in roots for p in root.rglob("*") if p.is_file()}
+    assert after == before
+    assert set(signals) <= {0}  # liveness checks only; nothing is ever delivered
+
+
+def test_a_dead_owner_is_eligible_only_through_the_existing_recover_path(world, tmp_path):
+    from garuda.workspace.lease import LeaseStore
+
+    store, queue, ids = world
+    sid = ids["crashed"]
+    view = _ownership(store, sid, queue)
+    assert view["owner"]["liveness"] == "dead"
+    assert view["reconciliation"]["status"] == "eligible"
+    assert view["reconciliation"]["path"]["command"] == f"garuda runtime recover --session {sid}"
+    assert view["reconciliation"]["performs_repair"] is False
+
+    leases = LeaseStore()
+    leases.acquire(tmp_path, sid)
+    view = _ownership(store, sid, queue)
+    assert [h["mode"] for h in view["workspace_leases"]["holders"]] == ["mutating"]
+    assert view["reconciliation"]["status"] == "blocked"
+    assert view["reconciliation"]["blockers"] == ["workspace_lease_retained"]
+    assert view["reconciliation"]["path"] is None
+    leases.release(tmp_path, sid)
+    assert _ownership(store, sid, queue)["reconciliation"]["status"] == "eligible"
+
+
+@pytest.mark.parametrize("owner, field", [
+    ("lease", "workspace_leases"), ("capacity", "capacity"), ("misnamed-capacity", "capacity"),
+])
+def test_unreadable_ownership_records_make_reconciliation_unknown(world, owner, field):
+    import json
+    import os
+
+    from garuda.workspace.lease import LeaseStore
+
+    store, queue, ids = world
+    root = LeaseStore().root if owner == "lease" else queue.capacity.root
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "corrupt.json"
+    path.write_text(json.dumps({"version": 2, "key": "native", "slots": {}})
+                    if owner == "misnamed-capacity" else "{nope")
+    os.chmod(path, 0o600)
+    view = _ownership(store, ids["crashed"], queue)
+    assert view[field]["coverage"] == "unavailable"
+    assert view["reconciliation"]["status"] == "unknown"
+    assert view["reconciliation"]["path"] is None
+    assert f"{field}_unreadable" in view["reconciliation"]["blockers"]
+
+
+def test_waiting_reasons_keep_unknown_owners_unknown(world):
+    store, queue, ids = world
+    waiting = _ownership(store, ids["waiting"], queue)
+    assert waiting["progress"]["waiting"] == [{"reason": "approval", "count": 1}]
+    assert waiting["owner"]["liveness"] == "unknown"
+    assert waiting["reconciliation"]["status"] == "unknown"
+    assert waiting["reconciliation"]["blockers"] == ["owner_liveness_unknown"]
+    queued = _ownership(store, ids["queued"], queue)
+    assert queued["progress"]["waiting"] == [{"reason": "queue", "position": 1}]
+    assert queued["queue"]["entry"]["state"] == "queued"
+    assert queued["progress"]["budget"] == "unknown"
+    done = _ownership(store, ids["done"], queue)
+    assert done["reconciliation"]["status"] == "not_needed"
+    assert done["progress"]["waiting"] == []
+
+
+@pytest.mark.parametrize("quota_state, status, blockers", [
+    ("waiting-for-quota", "owner_scheduled", []),
+    ("uncertain", "blocked", ["quota_recovery_uncertain"]),
+])
+def test_quota_recovery_owns_its_continuation_and_uncertain_work_is_not_revivable(
+    world, quota_state, status, blockers,
+):
+    store, queue, ids = world
+    sid = ids["crashed"]
+    store.update_meta(sid, {"quota_recovery": {"state": quota_state, "next_check": 123.0}})
+    view = _ownership(store, sid, queue)
+    assert view["owner"]["liveness"] == "dead"
+    assert view["reconciliation"]["status"] == status
+    assert view["reconciliation"]["blockers"] == blockers
+    assert view["reconciliation"]["path"] == {"command": "garuda recovery status"}
+    reasons = [w["reason"] for w in view["progress"]["waiting"]]
+    assert reasons == (["quota"] if quota_state == "waiting-for-quota" else [])
+
+
+def test_a_quarantined_claim_with_late_progress_stays_blocked(world, tmp_path, monkeypatch):
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.runtime.queue import QueueError
+    from tests.test_queue_crash_recovery import interrupt_publication
+
+    store, _queue, ids = world
+    sid = ids["crashed"]
+    capacity = CapacityStore(tmp_path / "q-capacity")
+    queue = QueueStore(tmp_path / "q", capacity=capacity, ceiling=lambda _: 1)
+    queue.enqueue("u:native", sid, user="u", harness="native", session_id=sid,
+                  config_digest="config-a")
+    with monkeypatch.context() as patch:
+        interrupt_publication(patch, queue, claimed=True, message="claim interrupted")
+        with pytest.raises(QueueError):
+            queue.try_claim("u:native", sid)
+    # Progress recorded after the owner died is not evidence the owner is alive.
+    store.update_meta(sid, {"task": "late progress"})
+    fresh = QueueStore(queue.root, capacity=CapacityStore(capacity.root))
+    view = _ownership(store, sid, fresh)
+    assert view["owner"]["liveness"] == "dead"
+    assert view["queue"]["entry"]["quarantined"] is True
+    assert view["progress"]["operation"] == "claim"
+    assert view["progress"]["waiting"] == [{"reason": "quarantine", "operation": "claim"}]
+    assert [(s["key"], s["kind"]) for s in view["capacity"]["slots"]] == [("native", "queue")]
+    assert view["reconciliation"]["status"] == "blocked"
+    assert view["reconciliation"]["blockers"] == ["queue_claim_quarantined"]
+    assert view["reconciliation"]["retained"] == ["queue_claim", "capacity_slot"]
+    assert view["reconciliation"]["path"] is None
+    assert _ownership(store, sid, QueueStore(queue.root, capacity=CapacityStore(capacity.root))) == view
+
+
+def test_recorded_children_are_reported_as_recorded_not_probed(world):
+    store, queue, ids = world
+    sid = ids["crashed"]
+    children = [{"session_id": sid, "runtime_id": "native", "pid": 2_000_000_001 + i,
+                 "state": "live"} for i in range(40)]
+    store.update_meta(sid, {"runtime_children": children, "resumed_from": ids["done"]})
+    lineage = _ownership(store, sid, queue)["lineage"]
+    assert lineage["resumed_from"] == ids["done"]
+    assert lineage["children"]["coverage"] == "complete"
+    assert lineage["children"]["omitted"] == 8
+    assert {(c["state"], c["process"]) for c in lineage["children"]["entries"]} == {("live", "unknown")}
+    store.update_meta(sid, {"runtime_children": "broken"})
+    assert _ownership(store, sid, queue)["lineage"]["children"]["coverage"] == "unavailable"

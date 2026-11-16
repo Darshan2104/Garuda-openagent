@@ -99,7 +99,11 @@ _TOKENS = {"input_tokens": _count, "output_tokens": _count, "total_tokens": _cou
 SCHEMA: dict[str, dict[str, Any]] = {
     NATIVE: {**_COMMON, **_TOKENS, "call_id": _opt_token, "calls": _count, "duration_ms": _number,
              "outcome": _opt_token, "retry": _count, "fallback_reason": _opt_token,
-             "accounting": _opt_token},
+             "accounting": _opt_token,
+             "usage_unknown": lambda v: isinstance(v, list) and len(v) <= 6 and all(
+                 isinstance(n, str) and n in ("prompt_tokens", "completion_tokens", "total_tokens",
+                                             "cost_usd", "cache_read_tokens", "cache_creation_tokens")
+                 for n in v) and len(set(v)) == len(v)},
     SNAPSHOT: {**_COMMON, **_TOKENS, "segment": _opt_token, "source": _opt_token,
                "context_used": _count, "context_size": _count, "cumulative": _flag,
                "delta_unavailable": _opt_token, "report_id": _opt_token, "seq": _count},
@@ -328,9 +332,14 @@ def totals(records: list[dict]) -> dict:
         out["native_calls" if kind == NATIVE else "acp_delta_records"] += 1
         for field in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
             out[field] += record.get(field) or 0
-        if record.get("cost_usd") is None:
+        unknown = record.get("usage_unknown") or []
+        if record.get("cost_usd") is None or "cost_usd" in unknown:
             out["cost_unknown_records"] += 1
-        else:
+        if record.get("cost_usd") is not None:
             out["cost_usd"] = round(out["cost_usd"] + record["cost_usd"], 8)
+        if unknown:
+            counts = out.setdefault("usage_unknown_records", {})
+            for name in unknown:
+                counts[name] = counts.get(name, 0) + 1
     out["coverage"] = "snapshots_excluded" if out["snapshots_excluded"] else "complete"
     return out

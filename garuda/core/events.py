@@ -19,6 +19,9 @@ SUBAGENT_LOG_DIR = "subagents"
 class EventType(str, Enum):
     USER_MESSAGE = "user_message"
     MODEL_RESPONSE = "model_response"
+    # A model call that raised: its known usage and unknown coverage only. Kept
+    # apart from MODEL_RESPONSE, whose readers treat each one as a real response.
+    MODEL_CALL_FAILED = "model_call_failed"
     # The digest of the system message actually sent, recorded whenever it
     # changes (H.2): runtime blocks make it differ from the static prompt.
     SYSTEM_PROMPT = "system_prompt"
@@ -37,7 +40,10 @@ class EventType(str, Enum):
     CONTRACT = "contract"
     TURN_METRICS = "turn_metrics"
     COLLECTION = "collection"
+    EDITING_WORKER = "editing_worker"
     MODEL_FALLBACK = "model_fallback"
+    ADVISOR = "advisor"
+    REMINDER = "reminder"
 
 
 class EventStore:
@@ -55,6 +61,8 @@ class EventStore:
         self._persist_path: Path | None = None
         # Set by the native runtime before its driver; copied at run preparation.
         self.runtime_tenure: dict | None = None
+        # Native phases sharing this store also share their reminder budgets.
+        self.reminder_run: Any = None
         # Optional subscriber invoked after each append. Lets a live tracer (or
         # any observer) react to events without the agent loop knowing. It is
         # always wrapped in try/except and can never break appends.
@@ -85,7 +93,7 @@ class EventStore:
         return self._persist_path
 
     def append(self, event_type: EventType, payload: dict[str, Any]) -> None:
-        if event_type is EventType.MODEL_RESPONSE:
+        if event_type in (EventType.MODEL_RESPONSE, EventType.MODEL_CALL_FAILED):
             payload = dict(payload)
             if self.model_binding_role is not None:
                 payload.setdefault("model_binding_role", self.model_binding_role)

@@ -378,10 +378,24 @@ async def _check_permission(entry: AdapterEntry, scratch: Path) -> None:
     if entry.kind == "native":
         runtime = entry.make(scratch)
         await runtime.start(task="t", session_id="perm-1")
-        answered: list[bool] = []
-        runtime.park_approval("apr-1", answered.append)
-        await runtime.permission_response(approval_id="apr-1", allow=True)
-        assert answered == [True]
+        broker = runtime._permissions.approval_broker
+        broker.set_answerer(None)
+        pending = asyncio.create_task(broker.handler(session_id="perm-1")("matrix approval"))
+        try:
+            for _ in range(200):
+                events, _ = await runtime.poll_events(0)
+                asks = [e for e in events if e.kind.value == "approval_request"]
+                if asks:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("native runtime did not publish its pending request")
+            await runtime.permission_response(approval_id=asks[0].payload["approval_id"], allow=True)
+            assert await pending
+        finally:
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
         await runtime.close()
         return
     if entry.kind == "fake":
@@ -631,7 +645,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the runtime contract matrix.")
     parser.add_argument("--out", default="contract-reports")
     parser.add_argument("--work-root", default=None)
+    parser.add_argument("--incidents", action="store_true", help="Run the offline synthetic incident corpus")
     args = parser.parse_args(argv)
+    if args.incidents:
+        from garuda.eval.incidents import run_incidents
+
+        trials = asyncio.run(run_incidents(args.out, work_root=args.work_root))
+        for trial in trials:
+            print(f"{trial.evaluation.coverage.upper()} {trial.task_id}")
+        print("Offline contract evidence only; no model uplift claim.")
+        return int(any(t.evaluation.coverage in {"fail", "unknown"} for t in trials))
     reports = asyncio.run(run_matrix(args.out, work_root=args.work_root))
     failed = [(r.adapter_id, c.scenario) for r in reports for c in r.results if c.status == FAIL]
     unsupported = [r.adapter_id for r in reports if not r.supported]

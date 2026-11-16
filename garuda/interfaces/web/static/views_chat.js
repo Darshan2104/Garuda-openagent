@@ -62,7 +62,7 @@ function chatSpec() {
 function openChat(chatId, known) {
   STATE.chat = {
     id: chatId, rows: [], offset: 0, info: known || null,
-    approvals: [], sources: [], pending: []
+    approvals: [], sources: [], pending: [], lastEvent: null
   };
   render(chatShellHtml(chatId));
   wireChat();
@@ -347,6 +347,7 @@ function pollChat() {
 function ingestChatEvent(event) {
   var payload = event.payload || {};
   var chat = STATE.chat;
+  chat.lastEvent = event.timestamp;
   if (event.type === "model_response") {
     if (payload.reasoning) appendChatRow("thinking", payload.reasoning);
     if (payload.content) appendChatRow("agent", payload.content);
@@ -379,7 +380,9 @@ function renderChatLog() {
   // scrollHeight has already changed, so every comparison says "not at the bottom" and the
   // view stops following a running turn.
   var atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-  if (!STATE.chat.rows.length) {
+  var preview = STATE.chat.info && STATE.chat.info.preview;
+  if (preview && preview.after !== STATE.chat.lastEvent) preview = null;
+  if (!STATE.chat.rows.length && !preview) {
     // An empty <div> collapses to a hairline, which reads as a broken pane rather than as an
     // empty one. Say what it is instead.
     node.innerHTML =
@@ -394,7 +397,9 @@ function renderChatLog() {
       "<pre" + (row.error ? ' class="out-err"' : "") + ">" +
       esc(fmt.truncate(row.text, 4000)) + "</pre></div>"
     );
-  }).join("");
+  }).join("") + (preview
+    ? '<div class="chat-row chat-agent chat-preview"><span class="chat-who">writing…</span><pre>' +
+      esc(preview.text) + '</pre></div>' : "");
   if (atBottom) node.scrollTop = node.scrollHeight;
 }
 
@@ -417,8 +422,9 @@ function renderApprovals() {
       "</div>" + body +
       '<div class="composer-row">' +
       '<button type="button" class="btn btn-primary" data-approve="' + esc(ask.ask_id) +
-      '">Approve</button>' +
-      '<button type="button" class="btn" data-deny="' + esc(ask.ask_id) + '">Deny</button>' +
+      '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) + '">Approve</button>' +
+      '<button type="button" class="btn" data-deny="' + esc(ask.ask_id) +
+      '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) + '">Deny</button>' +
       '<span class="stat-sub">Closing this tab denies it within a few seconds — the agent ' +
       "carries on as if you had said no.</span></div></div>"
     );
@@ -430,20 +436,22 @@ function wireApprovalButtons(node) {
   var approve = node.querySelectorAll("[data-approve]");
   for (var i = 0; i < approve.length; i++) {
     approve[i].addEventListener("click", function () {
-      answerApproval(this.getAttribute("data-approve"), true);
+      answerApproval(this.getAttribute("data-approve"), true, this);
     });
   }
   var deny = node.querySelectorAll("[data-deny]");
   for (var j = 0; j < deny.length; j++) {
     deny[j].addEventListener("click", function () {
-      answerApproval(this.getAttribute("data-deny"), false);
+      answerApproval(this.getAttribute("data-deny"), false, this);
     });
   }
 }
 
-function answerApproval(askId, approved) {
+function answerApproval(askId, approved, button) {
+  // The owner and digest name the exact ask this card showed; a stale card is refused.
   api("/api/approvals/" + encodeURIComponent(askId), {
-    method: "POST", body: { approved: approved }
+    method: "POST", body: { approved: approved, owner: button.getAttribute("data-owner"),
+      digest: button.getAttribute("data-digest") }
   })
     .then(function () { return pollChat(); })
     .catch(function (err) {

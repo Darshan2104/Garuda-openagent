@@ -95,12 +95,22 @@ class RunState:
     # facts, so the model is not asked to remember what the harness already knows.
     state: WorkingState = field(default_factory=WorkingState)
 
+    # Opt-in receiver of live text/reasoning deltas (``garuda.model.streaming``).
+    # None keeps every model call on ``complete()``.
+    delta_consumer: object | None = None
+
     usage_totals: dict[str, int] = field(default_factory=dict)
     final_message: str = ""
     # The last substantive thing the model said. After a forced final turn this
     # usually holds the best answer the run produced, so an exhausted run reports
     # it rather than a bare "max turns exceeded" that discards real work.
     last_assistant_text: str = ""
+    # The run's advisor (#385), recent tool failures it is briefed with, and
+    # whether a checkpoint fired during the current tool step.
+    advisor: object = None
+    advisor_failures: list = field(default_factory=list)
+    advisor_pending: bool = False
+    advisor_plan: str = ""
 
     def accumulate_usage(self, usage: dict[str, int]) -> None:
         self.metrics.note_usage(usage)
@@ -182,6 +192,8 @@ class RunState:
         established are on the result so a caller can see them without replaying
         the event log.
         """
+        if self.emit_session_events and self.steering.reminders is not None:
+            self.steering.reminders.finish()
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
@@ -238,6 +250,8 @@ class RunState:
     def bare_result(self, success: bool, final_message: str, turns: int) -> AgentResult:
         """Result without run-behaviour metadata, for failures that happened before
         the run produced any: a model error or a dead workspace."""
+        if self.emit_session_events and self.steering.reminders is not None:
+            self.steering.reminders.finish()
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
@@ -462,7 +476,7 @@ class RunState:
             self.tool_map,
             self.events.session_id,
             contract=self.completion_contract,
-            state=self.refresh_state() if self.config.enable_working_state_card else None,
+            state=self.refresh_state() if self.config.enable_working_state_card or self.state.context_fork else None,
         )
 
 
@@ -758,6 +772,10 @@ async def prepare_run(
     # command can block for minutes.
     started_at = time.monotonic()
     deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
+    # One spend gate per run tree: created at the root, inherited by children.
+    from garuda.core.spend import gate_for
+
+    gate_for(config)
 
     # Session-wide record of what has already been asked and whether a writer is
     # loose. The collection coordinator samples the same object before/after a
@@ -799,6 +817,12 @@ async def prepare_run(
 
         limited = InvokeSubagentTool.limited_to(config.subagents)
         tools = [limited if t.name == "invoke_subagent" else t for t in tools]
+    if config.editing_workers is not None and any(t.name == "invoke_subagent" for t in tools):
+        from garuda.tools.subagent import IntegrateEditingWorkerTool, InvokeSubagentTool
+
+        tools = [InvokeSubagentTool.with_editing_workers(t) if t.name == "invoke_subagent" else t
+                 for t in tools]
+        tools = [*tools, IntegrateEditingWorkerTool(config.editing_workers)]
     notes_ledger = None
     if config.memory_notes == "propose":
         # Reviewed notes (H.9): one ledger for the whole task tree, so the limit on
@@ -808,8 +832,7 @@ async def prepare_run(
             from garuda.context.notes import NotesLedger
             from garuda.tools.remember import RememberTool
 
-            notes_ledger = config.notes_ledger or NotesLedger.create(
-                getattr(env, "workspace_root", None) or ".", events.session_id)
+            notes_ledger = config.notes_ledger or NotesLedger.for_environment(env, events.session_id)
             if not any(t.name == "remember" for t in tools):
                 tools = [*tools, RememberTool()]
         except Exception:
@@ -874,6 +897,9 @@ async def prepare_run(
             notes=notes_ledger,
             depth=config.delegation_depth + 1,
             budget=config.delegation_budget,
+            spend_gate=config.spend_gate,
+            editing_workers=config.editing_workers,
+            editing_max_tokens=config.max_tokens,
             deadline_monotonic=deadline_at,
             workspace_kind=config.workspace_kind,
             workspace_evidence_root=(
@@ -944,7 +970,10 @@ async def prepare_run(
             )
         )
 
+    from garuda.core.advisor import build_advisor
+
     run_state = RunState(
+        advisor=build_advisor(config, consult_context, events),
         agent_segment={"id": str(uuid4()), "name": config.agent_name or profile_name,
                        "digest": config.agent_digest, "runtime": "native",
                        "kind": "native_execution",
@@ -968,7 +997,7 @@ async def prepare_run(
             ledger=ledger,
             metrics=metrics,
             max_parallel_reads=config.max_parallel_reads,
-            state=state if config.enable_working_state_card else None,
+            state=state if config.enable_working_state_card or state.context_fork else None,
         ),
         terminal=terminal_strategy,
         steering=Steering(
@@ -980,7 +1009,7 @@ async def prepare_run(
         ledger=ledger,
         emit_session_events=emit_session_events,
         checkpoint=checkpoint,
-        state_checkpoint=state_checkpoint if config.enable_working_state_card else None,
+        state_checkpoint=state_checkpoint if config.enable_working_state_card or state.context_fork else None,
         pack_manager=pack_manager,
         pack_source_runtime=pack_source_runtime or "native",
         pack_git_evidence=pack_git_evidence or "",
@@ -988,11 +1017,17 @@ async def prepare_run(
         tools_schema=tools_schema,
         state=state,
     )
-    if config.enable_working_state_card:
+    if config.enable_working_state_card or state.context_fork:
         # A callable, not the object: the card needs the contract and the tool map,
         # which only exist once the run is assembled — and passing a callable keeps
         # garuda/context from having to import garuda/core to read them.
         context.set_state_provider(run_state.render_state_card)
+    if hooks.reminders.rules:
+        from garuda.plugins.reminders import bind_reminders
+
+        reminders = bind_reminders(hooks.reminders, events)
+        run_state.runner.reminders = reminders
+        run_state.steering.reminders = reminders
     if built_runner:
         # A child never outruns the turns its parent has left.
         subagent_runner.turns_left = lambda: max(1, config.max_turns - run_state.turn)

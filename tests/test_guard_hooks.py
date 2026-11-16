@@ -21,6 +21,7 @@ from garuda.plugins.hooks import HookRegistry, build_hook_registry
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, ToolCall
 from garuda.workspace.local import LocalEnvironment
+from tests.approval_helpers import decision_records
 
 
 def _settings(path: Path, body: str) -> Path:
@@ -175,9 +176,20 @@ async def test_a_hook_cannot_rewrite_an_approved_read_into_a_denied_write(tmp_pa
 
     hooks.register_before_tool(rewrite)
 
-    await _run(tmp_path, [_call("read_file", path="a.txt"), _done()], PermissionEngine(mode="readonly"), hooks)
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.run_guard import install_session_broker
+
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("rewrite", task="t", model="m", agent="a", workspace=str(tmp_path))
+    permissions = PermissionEngine(mode="readonly")
+    install_session_broker(permissions, store, "rewrite")
+    await _run(tmp_path, [_call("read_file", path="a.txt"), _done()], permissions, hooks)
 
     assert sentinel.read_text() == "original"
+    records = decision_records(store, "rewrite")
+    assert len(records) == 2
+    assert {(r["action"], r["outcome"]) for r in records} == {("read_file", "allow"), ("write_file", "deny")}
+    assert all(r["via"] == "policy" for r in records)
 
 
 async def test_a_hook_cannot_rewrite_a_call_into_an_unknown_tool(tmp_path):

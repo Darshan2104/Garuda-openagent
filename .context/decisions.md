@@ -1,5 +1,73 @@
 # Durable decisions
 
+## 2026-11-12 — Collection attempts inherit root spend admission (#363)
+
+Collection workers inherit the active native run's spend gate when their child
+config is assembled. The child binds its own event store with the same gate;
+worker calls, auxiliaries and reasoning fallbacks therefore reserve and settle
+against the parent remainder. The collection ledger remains an additional
+job-level limit. Standalone collection without an active gate stays compatible.
+This supersedes the #405 entry's collection-worker exclusion. A worker result
+carrying `spend_limit`, or any new shared-gate refusal during the attempt, fails
+the job with its spend cause and does not trigger a reasoning-model fallback or
+record a `MODEL_FALLBACK` event. The coordinator compares the gate's public
+refusal count around each attempt and reads its last refusal cause, so auxiliary
+callers that catch admission exceptions cannot hide budget exhaustion. Because
+the gate is shared, concurrent refusals conservatively stop the job too; a
+refusal predating the attempt alone does not suppress ordinary failure fallback.
+
+## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
+
+Dashboard chat attaches the shared loop consumer. Live state holds only a bounded
+assistant text tail, anchored to the last persisted event. New events, discard,
+or turn settlement invalidate it; the browser checks that anchor after tailing
+to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
+tool fragments are excluded. No transient deltas enter the append-only event log.
+
+Turn admission, accepted chat stop or job-cancel requests, and owner-bound job
+settlement clear the retained preview text and cursor. Both cancellation routes
+clear matching chat state on the event loop before returning, while `busy` stays
+set until settlement. Cancelling a job leaves other chats' previews alone. `busy`
+alone never revives an earlier cancelled preview while a subsequent turn waits
+for job capacity.
+
+## 2026-11-12 — Context fork preview shares execution validation (#370)
+
+`sessions fork-preview` resolves and binds the source through the bounded
+no-follow reader, calls the existing fork preparation owner, and rechecks source
+digests before returning metadata. It creates no session or admission and does
+not return transcript text. Preview records admission and artifact inheritance
+as not checked; it does not build resumed context or inherit artifacts. A later
+execution can still refuse those steps after workspace/capacity admission and
+must independently revalidate its source. Filesystem/process restoration remains
+outside context rewind.
+
+The preview uses the shared project/name selection owner in non-allocating mode:
+names, prefixes and latest require an existing key; full IDs retain explicit
+selection without one. Missing/malformed identity never creates a key or lock.
+Fork preparation validates nested source shapes and the CLI reports typed
+identity/record refusal without a traceback. Native launch allocation is unchanged.
+
+Preview snapshot reads, including final digest revalidation, spend the same 8 MiB
+allowance as metadata selection. The fork plan retains this read policy for its
+recheck; authorized native execution retains complete-source reads. A missing
+optional legacy file spends no source bytes. The shared session-list owner
+refuses non-string saved timestamps before sorting, preserving missing legacy
+timestamps as empty strings instead of inventing an order for malformed evidence.
+
+## 2026-11-12 — Interrupted editing workers close environment services (#384)
+
+The editing service closes its child environment on every exit from the child
+run, retaining original interruption identity if cleanup fails unless cancellation
+arrives during close, in which case cancellation takes precedence. Close tasks
+are shielded and settled through repeated cancellation. All close failures
+record a fixed `environment_close: failed` receipt/event marker without exception
+details, including after normal returns, during cancellation, and when the
+interrupt becomes a refusal. Cancellation retains any close-failure cause.
+Closing environment-owned
+services does not establish descendant settlement: uncertain repositories,
+leases and capacity remain quarantined under the existing recovery owner.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for
@@ -2361,3 +2429,959 @@ Docker child requires the environment's proved host bind root; absent host
 identity remains unavailable and never falls back to container `/workspace`.
 Existing delegated permissions, admitted tools, launch/depth/turn/deadline
 budgets, handoff modes, textual summaries and sibling traces remain authoritative.
+
+## 2026-11-06 — Web results carry the delivered source's provenance (#377)
+
+`web_fetch` keeps its connection path unchanged: the pre-flight SSRF check, a
+re-vetted redirect on every hop and a connect pinned to the vetted address.
+Provenance is read from the response that path delivered, so the final URL is
+the last vetted hop rather than the request. Results start with a short source
+block and return the same facts in `ToolResult.metadata["web_source"]`: requested
+and final URL (userinfo removed, 2048 characters at most), status, declared
+content type, charset and where it came from, lossy decoding, retrieval time,
+`Last-Modified` (unparseable, absent, or overflowing during UTC conversion stays
+unknown, never the retrieval time),
+received body bytes and SHA-256, and completeness. Page-controlled text (the
+title) comes after the observed fields and the block ends by marking the page as
+data. The text that follows is unchanged from earlier releases except for
+extraction fixes (inline word breaks, `<pre>` indentation, `<meta>` and BOM
+charsets) and new markers for a body clipped by the raw read limit or shorter
+than its `Content-Length`.
+
+Decoded lone surrogates are replaced before extraction and UTF-8 byte accounting,
+with `lossy` set. HTML charset sniffing accepts only a `charset` attribute or the
+content charset of a `http-equiv="content-type"` declaration; meta-declared
+UTF-16/32 means UTF-8. Descriptions containing `charset=` are not declarations.
+
+Completeness is `partial` for any of those cuts or a `max_bytes` clip. The
+omitted size is exact only when the whole body arrived; past a clipped body it is
+unknown. The result also supplies `artifact_source` (identity = final URL) so the
+artifact read model stores the same completeness. `_blocking_fetch` keeps its
+`(error, text)` contract for dashboard grounding.
+
+`web_search` uses exactly one provider per call — SerpAPI when its key is set,
+otherwise DuckDuckGo — and records provider, retrieval time and result count. A
+provider failure is an unavailable result; there is no silent fallback or
+blending. Snippets remain provider text, not page content.
+
+## 2026-11-10 — Reuse rendered web evidence within a session (#439)
+
+Extend #377's `web_source` record and source header in their existing owner.
+Heading-delimited sections use zero-based, half-open character ranges into the
+rendered body, excluding headers and truncation markers. Titles and the section
+inventory are bounded (300 characters and 128 sections); clipped titles and
+omitted sections are explicit. Each delivery records per-section returned and
+omitted characters. A source body cut short leaves its final boundary and
+omission size unknown. The validating redirect handler records every vetted
+hop's URL/status, with a hard five-redirect limit; domain and SSRF checks and
+pinned connects remain authoritative.
+
+Rendered-body retention is opt-in (`retain: true`). `tools/web_store.py` owns
+session-keyed process-local snapshots addressed by the digest of the extraction
+and its provenance. The store caps snapshot, session, and global bytes/entries,
+including serialized provenance, with LRU eviction and bounded tombstones.
+`web_fetch` accepts exactly one URL or reference; references support section
+selection and character offsets, plus `sections_from` (default zero) to list
+up to 16 section titles/ranges with a visible next cursor. Inventory discovery
+uses tool content because arbitrary `web_source` metadata does not reach the
+model or CLI run output. Inventory windows do not change body selection.
+References recalculate delivery completeness and never refetch on a miss.
+Current domain restrictions still apply to every recorded
+URL; clipped URLs or unknown redirect evidence refuse restricted admission.
+Snapshots do not survive process exit. This needs no workspace command or
+interpreter and keeps Docker/remote execution ownership unchanged.
+
+Dashboard grounding calls the existing `_fetch_page` owner, saves the shared
+header, and adds `web_source` to its existing `Source` record. `_blocking_fetch`
+keeps its `(error, bare_text)` contract. A committed four-page HTML corpus with
+independent expected text/section ranges measures extraction fidelity offline;
+the HTTP transport tests exercise urllib validation with in-memory sockets.
+
+
+## 2026-11-06 — Reviewed notes retain provenance and retrieve on demand (#371)
+
+- Ledger v2 adds optional evidence references, workspace-relative source SHA-256
+  versions and confirmation time, supersedes and expiry. The existing opaque
+  project identity binds both scopes; user-scope retrieval stays within its
+  originating project. Lost project keys refuse replacement when note ledgers
+  exist, even without persisted sessions.
+- `core/project_identity.py::environment_project_path` binds Docker/remote
+  notes to the owner's mount mapping instead of the shared `/workspace` path.
+  `RemoteEnvironment` carries that optional mapping like `DockerEnvironment`;
+  an absent mapping refuses notes access. The run-side ledger uses this shared
+  resolver; source bytes continue to come from the active Environment.
+- Explicit v1-to-v2 read-time migration preserves legacy proposal digests and
+  unknown provenance. Reads do not rewrite records; subsequent journal/decision
+  writes publish v2. New provenance participates in the reviewed digest.
+  Root-task duplicates retain their original proposal/decision, ignoring only
+  observation time when the evidence versions are unchanged.
+- `memory search` and `remember(action=search)` share bounded lexical retrieval
+  of accepted ledger decisions. Output is labelled data (2,000 characters/five
+  notes by default; hard maxima 4,000/ten), with explicit omission. Source checks
+  use the active Environment, at most eight distinct regular files of 1 MiB
+  each, using existing shell utilities and byte reads, never a workspace Python
+  dependency or host-side substitute for Docker/remote files. Size is observed
+  before the existing byte read; a size change during the read stays unknown.
+- Model-named source paths pass the run's permission screen as a `read_file`
+  call on the same path before any is observed. Proposing refuses the whole
+  proposal (`memory.source_refused`) on a refused source and runs nothing for
+  any source; search never prompts, and a non-allowed path stays unknown without
+  being observed. Without the run's permission engine, sources are refused.
+  `garuda memory search` is the user's own terminal command and is not screened.
+- Editing the memory file is the removal path, so search also requires the
+  note's `garuda-note` marker in the owner's memory file: an absent marker or
+  file is stale (removed), an unreadable or linked file unknown.
+- Source changes/deletion, expiry and accepted supersession are stale; absent,
+  refused or exhausted evidence stays unknown. Shared source paths with distinct
+  active note text are possible conflicts, not inferred semantic contradictions.
+  Current source and user instructions remain authoritative. Ledger scanning is
+  linear; manual memory lines and raw transcripts are not indexed. Existing
+  prompt loading and terminal-only human acceptance remain unchanged.
+
+## 2026-11-06 — Foreign instruction discovery grants no authority (#374)
+
+The existing `agent show` API/CLI exposes an opt-in instruction-source report.
+This slice maps only repository-proven text sources: `AGENTS.md`, `GARUDA.md`
+and `CLAUDE.md`, plus explicitly configured memory/instruction paths. Final
+native static prompt sections determine load status and order, preserving all
+default loading, inheritance bounds, prompt caps and activation refusals.
+The resolver retains structural ignored legacy keys and effective instruction
+references without values or a second source read. Inspection reports bounded
+discovery, contained file aliases, duplicate bytes/identity and overlapping
+different text; semantic conflicts and external harness loading remain unknown.
+Foreign executable configuration is always not imported. No subprocess,
+workspace interpreter, vendor settings/credentials, trust grant or runtime
+activation is introduced; directory symlinks are not traversed and unsafe or
+incomplete sources remain refused/unknown.
+
+## 2026-11-06 — MCP servers declare readiness and reconnect only proved losses (#372)
+
+An MCP entry may set `required: true`; the default stays optional. Every server
+starts concurrently in its own owner task behind one startup barrier
+(`MCP_STARTUP_DEADLINE`). A server not ready by the deadline is stopped, never
+left to register tools late. A required server that is not ready closes all
+servers and raises `McpStartupError`, a `ConfigError`, from the shared
+`build_toolkit` path before any prompt work; an untrusted project server marked
+required refuses like one a profile names. A non-boolean `required` counts as
+required so a typo cannot drop a critical server silently.
+
+Per-server state (starting, ready, failed, reconnecting, closed) with a
+redacted reason, counts and timestamps is a pure read of manager memory, shown
+by `garuda mcp list` and recorded in session meta as `mcp_servers`; it never
+probes a server.
+
+Only a stdio read stream ending by itself is a proved connection loss. The
+owner relaunches the configuration admitted at startup at most
+`MCP_RECONNECT_ATTEMPTS` times per run with capped backoff (a relaunch that
+connects and exits again spends the same budget, so a crash-looping server
+ends failed), and only while its source entry still has the same `spec_digest`
+and, for a project server, the trust grant still holds. Remote transports are not reconnected. A call in flight on a
+lost connection fails with the transport's error and is never replayed; calls
+while the server is not ready fail without being queued. Admitted tool objects
+keep their effect and trust; schemas refresh in place, tools the server drops
+refuse, and newly listed tools wait for a new run.
+
+## 2026-11-06 — MCP context reads share admitted sessions and global effect authority (#373)
+
+Resource and prompt access defaults to off. A server entry in the user-owned
+global MCP config may opt into `context_access: [resources, prompts]`, together
+or individually. Project entries cannot self-grant or inherit this read-effect
+authority on a name collision, even after launch trust approval. The generated
+context tool is an identity-trusted read-only `McpRemoteTool`, so existing
+toolkit assembly, permissions, collection selectors and lazy dispatch apply.
+No extra server, workspace command or interpreter is launched for discovery.
+
+Lists and retrieval run only through an already-ready owner's current session.
+Capabilities are refreshed on reconnect; absent interfaces explicitly refuse.
+Retrieval accepts exact identifiers from the first bounded listing page; Garuda
+never dereferences resource URLs or filesystem paths. Changed connections
+discard late results; disconnected calls fail immediately without replay.
+The global interface grant covers the selected server's current catalog, not a
+per-resource immutable content grant or a proof of server behavior.
+
+Only bounded text and whitelisted metadata are returned, labelled untrusted data
+with server, connection, calling session and trust scope. The view is capped at
+40 entries/blocks and 16 KiB, with partial coverage for omissions. Shared
+artifact capture receives source facts; upstream completeness and omitted
+source bytes remain unknown. Resources/prompts are never auto-injected into
+the system prompt. Pagination, templates, subscriptions and binary/embedded
+content delivery remain unsupported; the SDK still decodes transport responses
+before Garuda projects them, so this view bound is not a transport memory limit.
+
+refuse, and newly listed tools wait for a new run. A server the startup barrier
+stops is stopped before its verdict is published, so a handshake that finishes
+in the same instant can never mark it ready.
+
+
+## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
+
+- Model responses and original raised exception types carry `attempt_usage` and
+  known `usage` subtotals. Stream snapshots update one attempt; fallback is a
+  separate attempt in the same logical call. Retry policy remains unchanged.
+- Missing telemetry stays unknown. LiteLLM's normalized zero token defaults are
+  ambiguous and withheld; explicit raw dictionary zeros remain known. Reported
+  cost survives absent token usage, with no inferred provider prices.
+- The timed loop boundary and auxiliary accounting emit one event per logical
+  call: `model_response` on success, and `model_call_failed` with
+  `outcome: failed` and per-field unknown coverage on failure, so transcript,
+  trajectory, export and runtime readers never see a failed call as a reply. Existing event identities make ledger replay idempotent.
+  Known subtotals and unknown coverage coexist in aggregates and usage views;
+  ordinary legacy model responses need no new fields. Context gauges use the
+  final request's usage rather than repeated-prompt spend totals.
+
+## 2026-11-06 — Opt-in live model output through the native loop (#389)
+
+- Live output is a view of a model call, not a different call. With a
+  `model_delta_consumer` on `DefaultAgent.run`, `_timed_complete` streams through
+  `model/streaming.py`, which assembles the same `ModelResponse` as `complete()`;
+  tool calls are parsed and dispatched only after the terminal chunk. Without a
+  consumer the loop is unchanged. Interfaces do not attach one yet.
+- A stream that fails or ends without its terminal chunk is replaced by exactly
+  one `complete()`; fragments are never dispatched or replayed, and both attempts'
+  usage is counted once. The consumer receives `discard`; the fallback answer is
+  rendered from the `model_response` event, not re-sent as deltas.
+  `ContextOverflowError` goes to the existing shrink path without fallback, and
+  cancellation propagates with no fallback, dispatch or replay.
+- `model_response` records `live_coverage` (`streamed`, `fallback`,
+  `not_streamed`), a bounded `stream_error`, and `live_consumer_error` when a
+  consumer raised and was detached, separately from `outcome`.
+
+## 2026-11-07 — The advisor is a consult, its advice is steering data (#385)
+
+An agent's optional `advisor.role` is asked only when it is one of the run's
+granted consult targets, so admission, snapshot isolation, its read-only
+profile, deadlines and receipts stay with the consult service. The first
+checkpoint is the steering's existing repeated-failure streak; the answer is
+queued between turns as labelled advice that cannot grant permissions,
+verify work or replace review. Notes are capped per run and deduplicated, and
+a failed or busy advisor changes nothing. Plan-ready and candidate-ready
+checkpoints, and spend shared with the run-tree gate, are follow-ups.
+
+
+## 2026-11-10 — Advisor checkpoints preserve completion and lifecycle ownership (#385)
+
+- Definitions may select `repeated-failure`, `plan-ready` and `candidate-ready`;
+  omission retains repeated-failure only. Unknown selections refuse at load.
+- Planning uses successful nonempty todo/goal-plan signals, once per run.
+  Candidate-ready uses the first terminal submission (or ungated tool-free
+  completion), before verification. A delivered note defers that submission
+  once for one ordinary budgeted turn; completion and independent final review
+  retain their existing authority.
+- Literal evidence citations are checked against the bounded brief or bounded
+  shell existence checks through the existing Environment. No workspace
+  interpreter is added. Uncited notes spend no delivery allowance; this check
+  establishes citation presence, never correctness or verification. The check
+  and deduplication read the answer extracted from the consult envelope (line
+  quoting and HTML escaping undone); the model still receives the labelled
+  envelope.
+- The existing consult service owns admission, snapshots, deadlines and receipts;
+  the existing steering queue owns advice. Consults remain awaited, close with
+  their run, and recheck cancellation/deadline/turn limits before delivery. A late
+  answer cannot queue a note or restart a cancelled run, even if a dependency
+  returns after cancellation cleanup.
+- Run-tree spend charging for advisor calls remains out of scope pending the
+  shared spend-gate work; ordinary consult accounting remains in force.
+
+## 2026-11-06 — Every approval answer is bound and rechecked at the broker (#375)
+
+The session broker binds each parked request to a digest (id, session,
+action, family, runtime, ceiling fingerprint, expiry, and the file channel's
+nonce once published, so the listed digest is the audited one) and the ceiling source,
+and records them with the outcome. An allow from any channel — terminal,
+dashboard chat, headless answerer or file — is honoured only if the request
+has not expired and the ceiling fingerprint is unchanged; an answer naming a
+digest must match it. Responders report non-answers as a falsy `Unanswered`
+(timeout/disconnected), never as a truthy enum, so any caller unaware of it
+still denies. An owned role's control socket carries the non-answer to the
+worker's broker as a "no" plus its outcome, and a worker that cannot parse
+the reply denies. Cancellation is recorded as `cancelled`. Dashboard chat answers
+must echo the ask's owner and digest. ACP requests record
+`acp-request:not-screened`: Garuda's ceiling does not confine vendor tools,
+and the record does not pretend it does. Direct `session/approve` on Garuda's
+own ACP server still answers by id without the broker (tracked as residual).
+
+## 2026-11-06 — Reviews bind to a frozen candidate packet (#362)
+
+Each review round freezes a packet from the reviewed step's own receipt and
+session records: candidate workspace version, recorded changed files (or
+`unknown`, never empty), reviewer role, plan and no-edits posture, and a
+digest recorded with the round. A workspace that differs from the candidate
+before or after the review stops the flow with `flow.review_stale_candidate`.
+Session meta records `delta_changed_total` beside the cut `delta_changed`
+list, and a cut list is never reported complete (`null` when no total was
+recorded). A candidate version that is unknown or cannot tell workspaces apart
+(outside a git work tree) leaves the binding unenforced; the packet and prompt
+say so, and a review that must be independent stops with
+`flow.review_candidate_unknown`.
+Reviewers may return a strict version 2 structured review; invalid structured
+findings stop the flow and never approve, and the legacy line format is parsed
+exactly as before. Effective-config and check-receipt evidence are #421.
+
+## 2026-11-07 — Review packets show the real loader's view of changed config (#421)
+
+For each changed `garuda.yaml` or `.agent/agents/` / `.garuda/agents/`
+definition, the review packet records what the ordinary loader makes of the
+candidate: loaded with an effective-config digest, project-supplied keys and
+values withheld because the project file is untrusted, or the loader's
+refusal. An outcome is attributed only to the file the loader actually read:
+a nested `garuda.yaml` is `not-loaded`, and a definition outranked by a
+same-name one (`.agent/agents` before `.garuda/agents`) is `shadowed` with
+the winning path. This is parsing and resolution only; nothing runs. It makes a field the loader rejects or ignores
+visible to the reviewer instead of only the author's text.
+The block reads the same change list as the packet, so it is `complete`
+only when that list is whole: a cut list makes it incomplete and a list of
+unknown size makes it unknown (`complete: null`), with a reason and no total.
+
+## 2026-11-06 — One spend gate per native run tree (#363, #405)
+
+`--max-run-tokens` and `--max-run-cost-usd` create one `SpendGate` at the root,
+carried by reference to native subagents like `DelegationBudget`. The main loop
+and `model/accounting.complete` (summarizer, buffer_query, contract, verifier,
+critic) admit before sending and settle afterwards, failed or not. Tokens are
+reserved under a lock, so concurrent calls cannot reuse one remainder. Dollars
+are a post-response stop, not a prepaid maximum. Unknown cost is never zero:
+under a dollar-only cap the first completed unpriced call stops further
+admission with a reason saying the cap cannot be enforced for that model
+(pricing is only learned from a response, so this cannot be refused earlier).
+A call that raised before reporting usage (a context-overflow rejection) is
+not an unpriced call: it releases its reservation and is counted apart as
+failed without usage, so overflow recovery still runs under a dollar cap.
+A completed call that reports no token count at all is charged its reservation
+estimate (`estimated_token_calls`), so a missing usage report cannot disable the
+token cap. Rigorous mode creates the gate before its plan phase: plan, every
+build round and the critic all admit against it, and a refusal in any phase ends
+the run with `spend_limit`. The root runner records the final gate snapshot as
+session meta `spend_gate`. A cap that cannot bound spend (tokens below 1, a
+cost that is not a finite amount above 0) is refused before any runtime is
+selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
+does not see that agent's model calls. Defaults stay unlimited. Collection
+workers now share this gate as described in the 2026-11-12 collection decision;
+their own ledger remains an additional limit. The original consult-child
+exclusion is superseded by the #385 decisions below; failed-attempt usage is #406.
+
+## 2026-11-06 — Resumed runs continue the source tree's spend (#407)
+
+A resumed run is the same work continued, so caps given to it cover what the
+source already spent. The root runner records the gate snapshot (children
+included) as session meta `spend_gate`; a resumed run with caps inherits it and
+records `spend_inherited`. A source without a snapshot has unknown prior spend:
+it counts as an unknown-cost call, so a dollar-only cap refuses admission, and
+prior tokens are reported as not inherited. Fresh runs start at zero. Turn and
+deadline budgets are unchanged on resume.
+
+## 2026-11-06 — Search bounds production in the environment shell (#367)
+
+grep and glob keep running rg/grep/find through `Environment.execute`; no
+interpreter is required in the workspace. The command is wrapped so `head`
+stops the producer after one page plus a look-ahead line or 512 KiB, and the
+producer's exit status is emitted as a final marker line: its absence proves
+the result is partial, so totals are exact only when the producer finished.
+Output is sorted by path: rg sorts itself, and the grep fallback greps a
+`find | LC_ALL=C sort -z` file list through `xargs`, streaming so `head` still
+stops it early (listing or grep errors still fail the search). Cursors bind the
+search options, workspace root and a digest of the claimed earlier results; any
+change is refused as stale. Glob still sorts the full
+listing, so only its capture (not traversal) is bounded.
+
+## 2026-11-06 — Opt-in host Python outlines are partial source evidence (#366)
+
+`read_file` accepts `outline=true` for Python AST metadata, leaving ordinary raw
+and offset/limit reads unchanged. The tool reads through `Environment.read_file`
+and parses the returned text on the host; it adds no workspace interpreter or
+execution requirement. Outline and explicit paging refuse when combined.
+
+Outlines contain qualified definitions, normalized signatures, decorators,
+scoped imports and original inclusive ranges in raw `read_file` line numbering.
+Each hidden body is named with its range (nested ranges may overlap), and all
+original source text is explicitly omitted. The content identity is SHA-256 of the returned text encoded as UTF-8,
+not an assertion about pre-decoding file bytes. Unsupported languages, invalid
+host-parser syntax and parsing/output bounds yield no outline and explain the
+raw-read fallback.
+
+A bounded cache holds only rendered metadata/fallbacks by digest and settings.
+Outline calls bypass the path-based action memo so each request reads current
+workspace text under current policy. Results carry partial artifact source
+evidence and an unknown omitted byte count, preserved by the ordinary runner.
+No hidden body receives full-read evidence. Edit and multi-edit still compare
+against current workspace content; neither currently has a prior-read gate.
+The digest identifies an observation and does not lock later reads or edits.
+
+## 2026-11-06 — Edits can require the version they read (#368)
+
+`read_file` reports a version token bound to the session, the normalized path
+and the full content; `edit`/`multi_edit` accept `expected_version` and refuse
+a mismatch before matching. The contract is selected per tool through the
+existing validated `tools.options` (`legacy` default: tokens optional;
+`versioned`: required), so an unknown value refuses the definition and the
+selection is visible in agent inspection. The token is a precondition checked
+on the content the edit transforms, not a compare-and-write: no backend offers
+an atomic write here, and none is claimed. The version an edit reports comes
+from reading the file back (reads may translate newlines); if that read fails or
+shows other content, the version is unknown rather than guessed. String matching and its formatting
+recovery are unchanged; no alternate anchored edit format is introduced.
+
+With bounded reads (#365) a local `read_file` serves a page and never holds the
+whole text, so the token cannot be computed from the shown lines. The page
+reader hashes the whole file's `read_file` text (strict UTF-8, universal
+newlines) in the same pass and the token is derived from that digest, so it
+equals the token an edit computes from its own full read. Under `versioned` an
+ordinary page streams to EOF for the digest (bounded memory, whole-file I/O); an
+explicit tail/bounded read keeps its I/O bound and, unless it covered the whole
+file, reports the version as unknown. An unknown version is never a page-only
+token: edits refuse it and ask for a full read. An empty file is whole content
+too, so its read reports a version like any other.
+
+## 2026-11-06 — Post-edit diagnostics disclose checker state and attribution (#369)
+
+Native write/edit/multi-edit tools retain quiet clean text and return bounded
+advisory checker state in `ToolResult.metadata["diagnostics"]`. Availability,
+execution, SHA-256 file content version, status and timing are separate facts.
+Missing executables are unavailable; checker failures/timeouts and observed
+content changes are errors. Environment reads bind the checked version without
+introducing a workspace interpreter dependency. External checkers still execute
+through Environment; JSON/YAML keep their existing in-process parser paths.
+
+Edit/multi-edit may compare their known pre-edit content through the same fixed
+checkers on violations, bounded to 64 KiB. A complete successful baseline supports
+introduced findings; preexisting matches require unchanged diagnostic identity,
+location and source prefix. Ambiguous, missing, failed or incomplete comparisons
+remain unknown. Writes have no baseline, and Node stdin is not substituted for
+its package/module-aware file check. No baseline content or unbounded checker
+output is persisted here. These observations remain separate from acceptance
+receipts and cannot grant verification or authorize project-supplied commands.
+
+## 2026-11-06 — Bounded host Python codemod previews (#383)
+
+`python_codemod` is opt-in and supports only declarative `rename_import` data.
+Host AST/tokenize parsing proposes exact token replacements; workspace source is
+never executed and containers need no Python interpreter for this feature.
+Ambiguous bindings and parse uncertainty block the plan; strings and attributes
+are explicitly skipped. Preview state is immutable, bounded and session-context /
+Environment-instance bound, with versioned single-use tokens and byte digests.
+Existing edit tools and default tool selection retain their behavior.
+
+Environment binary reads accept an optional byte limit without changing existing
+calls. Apply requires the ordinary permission engine for every selected path,
+revalidates every source before writing, and verifies writes and restoration of
+all attempted files after failure. Cancellation retains ownership through
+settlement and restoration. Restoration failure stays explicit/unknown; this is
+not isolation from concurrent writers or a crash-safe cross-file transaction.
+
+## 2026-11-11 — Complete native approval binding and policy decision audits (#375)
+
+Reuse the #403/#426 session `ApprovalBroker` for native `permission_response`
+and Garuda's inbound ACP approval paths. Native pending events expose the same
+request digest, ceiling/source and expiry as the broker; id-only answers bind to
+the live session/runtime request, while an optional digest must match. Unknown,
+foreign, replayed and callback-only answers fail closed and record a bounded
+refusal under a fresh id, preserving the original decision. A server-side
+`session/approve` also releases the editor request waiting on the same approval.
+Delegated fingerprints include both parent and child policies so either change
+invalidates a pending allow. Cancellation disconnects native pending requests.
+
+Non-ASK tool authorization emits one bounded record through the same broker,
+with `via: policy`, deciding rule category/index or mode, effective ceiling and
+source. The enforcer captures provenance during its existing decision, without
+re-evaluating rules or changing precedence. Unknown provenance remains null.
+Delegated engines inherit the parent's audit owner while recording their own
+effective ceiling; collection workers audit each existing parent/child check.
+Policy records retain only a bounded tool name, never arguments or content, and
+do not create inbox files. ASK lifecycle records and existing record keys retain
+their format; fields are additive. Audit failure denies as in existing broker
+channels. Execution remains with the existing tools and Environment backends.
+
+## 2026-11-11 — Bound decision observations and settle ACP permission waits (#375)
+
+Policy outcomes and refused unbound/replayed answers append to a separate
+`decision-audit/` JSONL trail under the session’s existing host storage, with
+a strict cross-process lock and at most two 1 MiB segments. Writes run off the
+event loop; failures log a warning without changing a policy decision or
+a refusal. Rotation discards old observations, so this is recent evidence,
+not complete approval history. Parked approval metadata, file decisions and
+their fail-closed persistence contract remain unchanged. This supersedes the
+preceding per-policy/per-refusal metadata storage and audit-failure behavior.
+
+Native bridges without a permission engine remain valid for handoff; other
+bridges install the broker before session creation. The inbound ACP server
+continues polling during editor requests. Native `approval_settled` lifecycle
+events and turn termination retire outstanding waits, client errors deny, and
+late/unmatched response ids are ignored. Refused late answers cannot abort the
+prompt or widen authority. Existing tool/Environment execution owners and
+workspace interpreter requirements are unchanged.
+
+## 2026-11-11 — Native consults share the asker's run-tree spend gate (#385)
+
+The consult service takes the active gate from model accounting context and
+passes that same object on the child request into the native child config.
+The child's existing loop and auxiliary accounting own admission and settlement;
+its events, receipts, limits, read-only snapshot and cleanup remain unchanged.
+Replay returns the existing receipt without charging again. Failed and cancelled
+calls release reservations and charge whatever usage they actually report;
+missing usage/cost retains the gate's existing estimate/unknown semantics.
+
+A refused call fails the consult cleanly. The advisor records failed advice and
+cannot change permissions, verification, final review or run liveness. Defaults
+remain uncapped. With either run-tree cap active, an ACP consult target refuses
+before capacity acquisition, snapshot or dispatch (`consult.spend_unsupported`):
+Garuda cannot meter its model calls. Uncapped ACP consults retain their existing
+confinement requirement and separate, potentially unknown usage; no zero-spend
+claim is made. Dollar caps remain post-settlement stops and can overshoot on an
+in-flight call. No workspace interpreter or new execution path is introduced.
+
+## 2026-11-11 — Consult child metadata keeps spend ownership with the asker (#385)
+
+The native runner skips the `spend_gate` metadata snapshot for sessions launched
+with `origin: consult`. That gate covers the asker's entire run tree, so storing
+it on a child would misattribute spend and let a child resume inherit unrelated
+usage. The asker retains its existing snapshot and resume behavior; child events
+and receipts still record their own usage while calls settle against the shared
+gate. Capped ACP consult refusals are documented with the native-target remedy.
+
+## 2026-11-11 — Native run terminal attaches the shared live consumer (#389)
+
+Native `garuda run` supplies #432's `model_delta_consumer` through the shared
+runner for TTY stdout unless `--no-stream`, `--quiet` or `--json` is selected.
+No-edits output withholding also keeps the ordinary path. Other runner callers
+retain their defaults; no environment execution or interpreter requirement is
+added. The existing CLI event renderer observes only the root run, excluding
+inherited child events and auxiliary accounting records.
+
+Assistant text has a transient preview (Rich when available, otherwise a bounded
+single line). Discard erases it before fallback; assembled responses replace it
+once, including complete-only models. Failure and cancellation close it. Reasoning
+and tool argument fragments never enter this text display. Completed tools still
+render from the ordinary events; identical final text is not printed twice.
+Assembly, fallback, permissions, dispatch and usage remain owned by the existing
+loop. Chat, web dashboard, SDK and ACP surfaces still do not attach this native
+consumer; external harness streaming remains its own runtime path.
+
+## 2026-11-11 — Bound terminal previews and deduplicate exhausted output (#389)
+
+The terminal renderer keeps only a bounded tail for its transient preview and
+refreshes at most ten times per second. Rich wraps that tail to the last
+terminal-height-minus-one lines; plain output keeps one line. Dumb, unknown or
+unset `TERM` suppresses preview output and its erase codes. The authoritative
+response event still renders the full assembled answer, without truncation.
+Final output is compared with every assistant response already rendered in the
+root run, so budget exhaustion cannot repeat an earlier candidate after a later
+forced response. Model assembly, execution and Environment requirements stay
+with their existing owners.
+
+## 2026-11-11 — Review packets use bounded session-owned diff excerpts (#362)
+
+Review packets extend the existing candidate binding and digest with patches
+from the candidate session's recorded baseline/delta, through the workspace
+`diff.py` / `evidence.py` owners. Host-backed Docker keeps using host Git;
+remote, missing and failed observations remain unknown. No interpreter is
+required inside a workspace. External diff and textconv drivers are disabled.
+
+The view names at most 200 files and shows at most 4 KiB of UTF-8 patch text
+per file and 32 KiB overall. Git-classified binary patches are withheld.
+Exact generated-patch byte omissions are separate from source sizes; aggregate
+bytes remain unknown when the manifest is cut or a file read fails. Full Git
+output is temporarily spooled outside the workspace for counting, so these
+bounds do not cap disk usage or Git computation. The comparison is baseline
+commit to candidate, including committed work; preexisting text cannot be
+subtracted from fingerprints and is explicitly labelled. Rename evidence
+covers source and destination.
+
+The packet continues to exclude check receipts and states that acceptance
+checks run after review settles. A dedicated local packet-only reviewer fixture
+uses actual session/Git evidence under the existing flow no-edits guard, with
+source, ignored-file and Git-metadata edits withholding the review output.
+
+## 2026-11-11 — Review excerpts fail closed and bound rendered delivery (#362)
+
+Untracked symlinks never reach Git's no-index comparison; their excerpts stay
+unknown, with unknown source-byte totals. Git diagnostics or a change exit code
+without patch output likewise cannot become a complete empty diff. Existing
+host-backed evidence ownership and remote-unknown behavior are unchanged.
+
+The 4 KiB per-file and 32 KiB total excerpt budgets include the UTF-8 JSON/HTML
+escaping delivered to reviewers; packet metadata is additional. Rendered-byte
+counts remain separate from generated-patch bytes, preserving exact known
+omissions. Accounting includes ASCII expansion of non-ASCII characters,
+preserving the existing packet renderer's output format.
+
+Captured text passes through the existing context secret-pattern redactor. A
+match withholds the whole excerpt and flags its row as redacted, so source-byte
+omissions remain exact and review coverage is incomplete. Detection is best
+effort over captured text, not a guarantee against arbitrary secret formats.
+
+## 2026-11-06 — Recovery tick health is evidence, not dispatch authority (#378)
+
+Each quota-recovery tick records a bounded `tick-health.json` in the private
+recovery root under the root's exclusive lock: its attempt (id, time, owner)
+before any work, then its own classified result and redacted reason. Only the
+tick whose own claim the flow service advanced to running is credited with a
+dispatch; a tick that loses the claim reports the other owner. `recovery status`
+reads this file next to observed cron installation and never probes quota or
+runs the wrapper; an attempt without its own result is `running` or `uncertain`.
+Health never authorizes dispatch: account, version, workspace, receipt and
+exclusive-claim gates stay authoritative. A health-write failure on the error
+path never masks the tick's own exception, and an unreadable health file never
+stops a tick or hides status: the tick reports `health_error`, status reports
+`unknown`, and the corrupt file is left for the operator rather than replaced.
+A flow already blocked or uncertain keeps every later tick at `attention`.
+
+## 2026-11-06 — Opt-in verified macOS recovery scheduling (#379)
+
+- Cron remains the default. `recovery enable --backend launchd` selects a
+  per-user GUI-domain LaunchAgent whose label is derived from the absolute
+  recovery root. Status and disable use the saved backend; switching requires
+  disabled settings and verified prior removal.
+- The `0600` plist under `~/Library/LaunchAgents` invokes the existing private
+  wrapper with the installed interpreter and Codex binding. Exact plist bytes,
+  private wrapper content and loaded-job identity/state must read back before
+  publishing enabled. Non-macOS, OS errors and unknown diagnostics fail closed.
+  The non-macOS refusal saves no launchd backend; a launchd backend already
+  saved off macOS counts as nothing loaded, so disable resets it to cron and
+  the schedule is never left unchangeable.
+- Disable publishes disabled before unloading only the exact matching label,
+  verifies absence and removes only its matching plist. Status never runs a
+  tick or probes quota; unobserved job counts stay unknown. Tick health from
+  #378 remains independent execution evidence. No sleep/login/reboot catch-up
+  guarantee is inferred without live platform observations.
+
+## 2026-11-06 — Ownership and reconciliation are a read-only projection (#376)
+
+`garuda sessions show --json` and `/api/sessions/<id>` carry an additive,
+versioned `ownership` field built by `core/ownership_read_model.py`. It joins
+the existing durable owners — recorded owner liveness, retained workspace
+leases, queue entry/claim and quarantine, capacity slots for the session across
+runtime keys, recorded runtime children, pending approvals and quota recovery —
+without a lock, write, signal, recovery call or process probe beyond the
+liveness check the session row already makes. Session list rows are unchanged.
+
+Reconciliation is reported, never performed. Unreadable lease, queue or capacity
+records make it `unknown`; retained leases, quarantined/retained queue claims and
+quota `blocked`/`uncertain` make it `blocked`; quota waiting/dispatch is owned by
+the quota scheduler. Only a confirmed-dead owner with none of those blockers is
+`eligible`, and it names the existing `garuda runtime recover` path, which
+re-proves leases, owners, trail and child identities itself. Retained capacity
+slots are listed because no path releases them automatically. Recorded children
+keep their recorded state with an unknown process. No new control, release,
+takeover or replay path was added; budget stays `unknown`.
+
+## 2026-11-06 — Ship oh-my-pi as a separate, no-prompt-proved ACP runtime (#380)
+
+`omp` (oh-my-pi) is a shipped ACP manifest of its own (`omp acp`), distinct from
+`pi`, whose `pi-acp` manifest is unchanged. It is an `AgentRuntime` only, never
+an inference `Model`. The evidence is a no-prompt spike against omp 18.16.0:
+ACP v1 `initialize`, `session/new` (offering `mode` default/plan and `thinking`
+off/auto; no `model` option without credentials), idle `session/cancel`, and
+clean single-process exit on stdin close or group SIGTERM, also through
+Garuda's own `AcpRuntime`. The spike ran under a temporary HOME with network
+and credential stores denied; `session/new` attempted omp's own model
+discovery, so a real launch is not network-free.
+
+Claims stay limited to that subset: the manifest declares the generic
+`prompt`/`cancel` contract with a warning naming what was not exercised
+(prompted turns, permission requests, mode/option selection, `session/load`,
+usage and error normalization). omp is absent from `PROVEN_OPTIONS`,
+`MODE_AUTHORITY` and `PROVEN_LOAD`, so role options are refused and resume uses
+a brief. Like the other vendors, the version is probed and reported but not
+gated at launch; only 18.16.0 is stated as checked. Authentication stays in
+omp's own login: no auth probe, and Garuda never runs `omp token`/`omp auth` or
+reads `~/.omp`. CI uses a replay of the redacted capture
+(`tests/fixtures/omp/`); the live handshake is opt-in
+(`GARUDA_LIVE_HARNESS=omp`). Report: `docs/development/omp-acp-conformance.md`.
+
+## 2026-11-06 — Investigation scopes are typed read-only subagents (#370)
+
+The first slice of #370 adds no new execution path. `garuda/investigate`
+extends `explore` (read-only permissions and tools) and declares an output
+schema, so the existing typed child-result handoff (#357) is the report
+boundary: the parent receives only a validated report of question,
+evidence-backed conclusions, sources, rejected approaches and coverage, and
+the exploration stays in the child's session. Confidence is an uncalibrated
+assertion. Context forks and named rewinds are #415.
+
+## 2026-11-06 — Context forks preserve history without restoring execution (#415)
+
+An explicit native fork creates a new session through ordinary workspace and
+capacity admission. Its inclusive saved-message index backs up before an
+incomplete tool batch; source-file digests bind provenance. It reuses resume
+context construction and artifact inheritance, but never source recovery,
+process ownership, old worktree selection or baseline inheritance. Source events
+remain append-only and untouched. Only context is rewound: filesystem and
+processes are not restored. Source candidate/check claims are stale; constraints
+and historical event/state/receipt references survive compaction and resume in
+the working-state card. Fork lineage inspection reads persisted metadata only.
+Terminal native sources without pending ownership or quarantine are supported;
+ACP state, live-source forks and combined workspace isolation are refused.
+Read-only preview does not build resumed context or inherit artifacts; it labels
+artifact inheritance unchecked because execution can still refuse after admission.
+
+## 2026-11-06 — Sequential isolated native editing workers (#384)
+
+Editing workers are an explicit programmatic service opt-in on native subagents.
+The first slice uses the existing detached snapshot repository owner for local
+environments, with independent child sessions, mutating leases and native
+capacity reservations under the parent's shared DelegationBudget. Ordinary
+subagents and read-only flow parallel groups retain their current behavior.
+Schema-bound children inherit the model and narrowed budgets/tools; parent-bound
+services and nested delegation are excluded.
+
+The parent integrates only through an explicit candidate/digest request. A
+retained binary patch binds base snapshot, source HEAD, staged index, candidate
+tree and typed-output provenance. The existing confined worktree checker checks
+the candidate, then application revalidates the destination and refuses drift or
+conflicts without merging or staging. Dirty parent content is included in the
+base. Receipts and events retain outcomes. Active-child cancellation and unproved
+child cleanup retain workspace/lease/capacity and block further editing launches;
+cancelled integration settles checks and retains an uncertain candidate. Durable
+receipts preserve the refusal when the parent constructs a fresh service;
+automatic cleanup, recovery and concurrent editing are deferred. Unsupported
+editing backends refuse without changing ordinary backend execution. Local
+workspace separation and permission screening remain guardrails, not confinement.
+
+## 2026-11-06 — Frozen offline incident evaluation (#364)
+
+Evaluation's minimal-v1 configuration pins every AgentConfig field and is
+identified by version and canonical SHA-256. Schema drift refuses rather than
+silently inheriting new product defaults. Controlled scripted ablations change
+one supported boolean mechanism, retaining the same policy, tools, task and
+script. Ordinary evaluation defaults and output remain unchanged.
+
+The opt-in contract-matrix incident corpus uses synthetic local repositories,
+ScriptModel and existing loop/Environment/config/permission/no-edits/edit/flow
+recovery/quota claim owners. It introduces no workspace interpreter requirement
+or parallel runtime. Partial tool arguments on length-truncated native responses
+remain explicitly expected-fail; existing text-match refusal is not a claim of
+snapshot edit protection. Synthetic startup and claim contention do not establish
+vendor startup or provider quota integration behavior.
+
+Matrix provenance is additive and versioned. Unknown identities and cost stay
+null; model completion, authorized acceptance and contract coverage are separate.
+Fixture assertions never mint authorized acceptance, and single trials never
+establish uplift. No transcripts, credentials or provider experiments are part
+of the corpus. Validation and limitations are documented in docs/evaluation/index.md.
+
+## 2026-11-06 — Language servers are a trusted, run-owned, read-labelled service (#381)
+
+Semantic navigation sits behind one optional `LanguageService` protocol
+(`garuda/lsp/`) and one agent tool, `lsp`, added by shared setup. Only the
+user's global settings may name a server command; a project's
+`language_servers:` is reported as `agent.untrusted_project_language_server`
+and ignored, never merged, so a repository can neither add a server nor change
+a configured command. Relative command paths are refused because they would
+resolve against an unspecified directory. The server inherits a short
+environment allowlist plus configured `env`, not the harness environment.
+
+Configuration reads and status inspection never launch a server. The first
+request starts it in the local workspace root; Docker, remote, tmux and
+OS-sandbox workspaces are refused because a host process would bypass their
+boundary. Startup and requests are time-bounded; timeouts and caller
+cancellation send `$/cancelRequest`. A missing executable, startup failure,
+crash, oversized message or protocol error moves the server to `failed`, and
+it is not restarted within the run. Teardown sends `shutdown`/`exit` and kills
+the process group.
+
+Positions are converted between Garuda's 1-based character columns and LSP's
+0-based UTF-16 offsets using LSP line separators; URIs are percent-escaped
+both ways and non-`file` URIs are shown, not guessed. Diagnostics are bound
+to the version Garuda sent: only an exact version match is current; older
+versions are stale, unversioned publications are of unknown currency, and the
+absence of a publication is not evidence of a clean file. Unsupported
+requests are refused by capability name; `workspace/applyEdit` is refused.
+Path rules screen the requested file and withhold denied result locations.
+
+The tool declares `READ_ONLY` because Garuda sends only read-labelled
+requests. That is a classification of Garuda's requests, not proof that the
+server writes no caches or stays inside the workspace; it is a trusted local
+process, not a confined one. Runs without configuration are unchanged: no
+tool, no process and the same `mcp_manager`.
+
+## 2026-11-06 — WorkspaceEdits require run-bound previews and per-file write authority (#382)
+
+The existing optional local language service now offers rename and edit-only
+code-action previews through read-only `lsp`; separate mutating `lsp_apply`
+consumes a run/session/workspace-bound token. Previews retain exact original
+text, full-content SHA-256 digests and the client versions used for the request.
+Unknown targets are synced through Environment reads and the edit is requested
+again; the discovery edit is discarded. Server versions must match that snapshot.
+No unknown version is represented as zero. Bounds refuse an entire oversized
+preview rather than silently omitting files or replacements.
+
+Apply screens every retained path with the ordinary permission engine, checks
+all digests before any writes and uses only Environment writes/read-back. A
+failed or cancelled write triggers verified restoration of every attempted file,
+including the failing file because its write may have been partial. Per-file
+results distinguish applied, restored, untouched and failed restoration; failed
+restoration remains observable in the side-effect ledger. Cancellation settles
+writes/rollback and retains their result as its cause. Tokens are consumed on a
+write attempt, never persisted and cleared at run teardown.
+
+Resource operations, symlink aliases, overlapping/ambiguous ranges, code-action
+commands, unresolved actions and confirmation annotations are refused. Server
+`workspace/applyEdit` remains refused. This is compensating rollback without a
+filesystem transaction or compare-and-swap protection against external writers.
+A configured server does not widen a profile: `lsp_apply` joins only a toolset
+that is unrestricted or already names a file-writing tool, so read-only and
+`none` presets keep no writer while read-only `lsp` stays available.
+The local-only service boundary and unconfigured-run defaults remain unchanged;
+no new interpreter runs inside Docker/remote workspaces. LSP diagnostics do not
+replace candidate-bound verification.
+
+## 2026-11-06 — Optional local launch-only Python debugging (#388)
+
+Python DAP tools require explicit selection; default toolkits and presets stay
+unchanged. Launch is mutating and screened through the derived Python command
+and existing bash/path policy; execution control and `debug_variables` rendering
+are mutating. Basic `debug_inspect` cannot dispatch variables. Inspection returns
+bounded, versioned observations bound to an agent session, debug session and
+stop generation. Handles expire on resume and are never arbitrary DAP ids.
+Attach, evaluate, explicit getters, arbitrary object expansion, setVariable,
+memory and raw requests are unsupported. Debugpy summaries can invoke Python
+repr; inspection is not confinement or independent acceptance evidence.
+
+Only LocalEnvironment launches the optional adapter through the harness Python.
+Tools unwrap the run's HealthMonitoredEnvironment before enforcing that exact
+backend requirement. Adapter reply and stop waits have independent 15-second
+bounds; their timeout errors retain sessions, report running/unknown state and
+include the debug session id when launch has completed but its first stop is
+late. Only cancellation, expiry of the tool's run deadline and shared teardown
+reap all debug sessions owned by that agent session.
+Docker, remote, sandbox and tmux refuse without new interpreter requirements.
+An identity-bound supervisor anchors one POSIX session because debugpy places
+its debuggee in another process group. Cancellation and shared teardown kill
+and verify session membership; unknown closure remains cleanup unproved and
+quarantines ownership. Descendants that leave the POSIX session are outside
+this cleanup guardrail. Debugpy remains an optional, separately installed
+dependency; real adapter tests skip when it or required OS facilities are absent.
+
+## 2026-11-06 — Admit code cells only through confinement owners (#387)
+
+The optional mutating `code_cell` tool uses scratch-only workers. Linux/bwrap
+and Docker owners provide process/namespace lifetime; Seatbelt, unconfined
+fallbacks and unknown Environment capabilities refuse. Docker cells use a separate
+preinstalled Python image, no workspace mounts, no network, and explicit resource
+limits; neither ordinary workspace commands nor workspace images gain an interpreter
+requirement. Remote Docker uses the same cell owner on its selected daemon.
+
+The stdio bridge carries JSON tool requests only, through the active ordinary
+ToolRunner's dispatch, permissions, hooks, effects, memo and event/capture owners.
+Every cell and nested receipt has cell id/index provenance. Nested results are
+recorded without becoming orphan tool messages in the model context. Broad/default
+tool selections do not opt in. Input, output, time and call counts are bounded;
+the cell time budget excludes nested calls, which keep their own tool timeout and
+approval, and the run deadline still caps it;
+namespace teardown cancels descendants, and interrupted effects never imply zero
+or authorize replay. No retained kernels or dependency installation are introduced.
+
+## 2026-11-06 — Trusted declarative reminders use native steering (#386)
+
+Reminder rules live in global settings or project settings enabled through the
+existing global `trust_project_hooks: true` mechanism. That is the existing broad
+project-hook opt-in, not a new content-bound file grant; a project cannot opt
+itself in or set the shared run cap. The `garuda.yaml` content-trust mechanism
+remains separate. Invalid rules warn and are omitted, or refuse loading when the
+user selects strict mode. Defaults contain no rules.
+
+The shared after-tool hook point observes completed resolved calls/results;
+there is no workspace execution, stream matcher, user regex or callable. Matching
+has explicit rule, tree, string and pattern limits. Per-run state queues advisory
+notes through steering, deduplicates pending and delivered identical triggers,
+and bounds injections per rule and across the run. Compaction cannot reset these
+budgets, reminders add no turns, and permission/tool/completion owners retain
+all authority. Native phases sharing a session span share their budget; a fresh
+native run, including resume, starts a fresh budget.
+
+Bounded audit records contain source, rule/run identity and counters, never
+reminder text, tool payloads or reasoning. Diagnostic volume is capped; final
+snapshots preserve cumulative counts and disclose omissions through existing
+trajectory inspection. External harnesses retain their own loop and do not
+receive native reminders.
+
+## 2026-11-11 — Retire editing-worker repositories only after proved settlement (#384)
+
+- Extend the existing local editing-worker service with bounded receipt inventory,
+  automatic retirement of settled integrated or unchanged terminal repositories,
+  and explicit orphan discard. Keep receipts and candidate patches as audit evidence.
+- Record parent lease binding, worker repository identity and ownership-store roots.
+  A durable child-settlement receipt and readable released lease/capacity records
+  are prerequisites. Expired leases, dead owners, absent records and explicit
+  discard never substitute for descendant settlement. Older incomplete receipts
+  remain unknown; recovery neither releases retained ownership nor replays work.
+- Session ownership projections expose retained and uncertain repositories without
+  locks, Git execution or repair. Operator discard also requires released parent
+  ownership. Content checks include actual bounded snapshot hashes, index/HEAD,
+  extra refs and untracked/ignored data; deletion is descriptor-relative and
+  symlink resistant. Concurrent workers and non-local workspaces remain unsupported.
+
+## 2026-11-11 — Publish admissions atomically and bound inventory per session (#384)
+
+- Admission validates the source before any worker directory exists, stages the
+  receipt under a non-`worker-` name and publishes by atomic rename, so a
+  `worker-*` entry always carries its receipt. A failed admission therefore
+  cannot publish a receipt-less worker. Receipt-less empty directories and
+  unpublished admission metadata are reported and removed as orphans; unknown
+  non-empty data remains retained.
+- Inventory's per-session bound counts only entries that can belong to the
+  inspected session; valid receipts of other sessions do not turn its
+  reconciliation unknown. Attribution scans the shared store, so total discovery
+  work scales with that store. A later cleanup run prunes fully retired receipt
+  directories (never the run that retired them), preventing permanent inventory
+  exhaustion by retired audit records.
+- The worker store and its entries are created owner-only regardless of umask.
+  Only that root and its entries are the privacy boundary; the reader does not
+  require a private user home. Ancestor traversal still refuses symlinks and
+  foreign owners, and refused paths are named in errors.
+- Repository content proof runs before the global lease/capacity locks. Those
+  locks cover only the released recheck, intent receipt and atomic rename of the
+  repository aside; deletion runs after they are dropped. Admission recovery
+  and retirement run off the event loop; cancellation settles that work before
+  returning ownership to the caller.
+
+## 2026-11-11 — Settle cancelled and refused approval requests promptly (#375)
+
+Native cancellation disconnects requests already parked and marks the session
+broker cancelled before the turn continues. Later ASK decisions return false
+and record `cancelled` without publishing another request. Answers delivered
+while cancellation is pending bind to the session's live request as a deny,
+even with a stale digest; ordinary answers retain their binding checks.
+
+The inbound ACP server retries any refused editor answer as an id-only denial
+for the request it sent. The broker records both the refusal observation and
+the settled denial. Foreign, unknown or already settled requests still refuse.
+
+Decision observations create only `decision-audit/` beneath an existing session
+directory. The shared lock keeps parent creation enabled by default for other
+storage owners; this writer disables it so late observations cannot recreate a
+deleted session. Failed observations are dropped with the existing warning.
+Execution remains with the existing tool and Environment owners; workspace
+interpreter requirements and ordinary permission outcomes are unchanged.
+
+## 2026-11-11 — SDK runs can receive native live deltas (#389)
+
+`SoftwareAgent.run` and `Conversation.run` accept the same opt-in
+`model_delta_consumer` the native loop already gives the CLI/web paths, exposed
+as `on_delta`. It only observes `LiveDelta` text/reasoning fragments (plus the
+fallback `discard` signal); tool calls, usage, terminal reasons and the returned
+result still come from the assembled model response. Consumer failures detach
+that consumer for the call and surface as `live_consumer_error` rather than
+failing the run. ACP runtimes refuse `on_delta` before launch; no harness
+streaming or fallback is implied. The default `None` keeps every existing path
+unchanged.
+
+## 2026-11-11 — Bound fork name lookup and disclose preview limits (#370)
+
+For #370/#415 context forks, preview and resume share no-follow name-marker
+reads that accept only regular files of at most 256 bytes. Symlinks, special
+files and oversized markers raise a clean `ValueError` refusal, including when
+the name also matches an ID prefix; a missing marker still allows prefix fallback.
+Session tags translate that refusal into their existing typed error. Preview adds an
+opt-in `--all-projects` flag through the existing selection owner, matching
+`run --fork` while preserving project-scoped defaults and non-allocating reads.
+
+Preview reports artifact inheritance as not checked alongside admission. It
+neither builds resumed context nor inherits artifacts; either operation may
+still refuse after ordinary admission even when checkpoint preview succeeds.
+The runner remains the execution owner; no environment or interpreter
+requirement is added.
+
+Text and JSON preview both disclose checkpoint adjustment reasons and retained
+message counts. The no-write contract includes empty directories. Metadata read
+across the store during `latest` or prefix selection shares the preview budget,
+so store size can prevent preview of an otherwise small selected checkpoint.

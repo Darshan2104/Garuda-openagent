@@ -8,6 +8,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
+| Bounded file pages and tails | Inspect UTF-8 ranges with bounded allocation and an end-seeking tail on local/sandbox backends | `read_file` tool: `offset`, `limit`, `tail`, `bounded` | [Bounded inspection](../use-cases/automate.md#read-a-bounded-file-page-or-tail) |
 | Packaged starters | Five goal-oriented journeys using existing roles and flows | `garuda starter list` | [Workflows](../use-cases/workflows.md) |
 | Harness modes | Run an external role in one of its harness's own permission modes, with defaults from the role's permissions | `garuda run --role coder --harness-mode workspace-write -t "…"` | [Configuration](../guides/configuration.md#a-roles-harness-mode) |
 | Codex and Claude worked example | Every packaged workflow plus custom cross-vendor flows on subscription logins | `garuda flow run cross-vendor-build -t "…"` | [Worked example](../use-cases/codex-and-claude.md) |
@@ -15,13 +16,25 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Headless run | One task, an answer, a saved session | `garuda run -t "…"` | [Level 2](../use-cases/change-code.md#fix-a-bug-with-a-git-safety-net) |
 | Interactive chat | Turn-by-turn work with `y/N` approvals | `garuda chat` | [Level 2](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
 | Read-only mode | Inspection only, blocked writes | `garuda run --mode readonly -t "…"` | [Level 1](../use-cases/explore.md#ask-questions-about-a-codebase) |
+| Investigation scopes | A read-only subagent that hands back only a validated report of evidence, conclusions, rejected approaches and coverage | `invoke_subagent` with `profile: investigate` | [Level 1](../use-cases/explore.md#investigate-without-filling-the-main-conversation) |
 | No-edits guard | A run that is checked to have changed nothing | `garuda run --no-edits -t "…"` | [Level 1](../use-cases/explore.md#make-sure-a-run-changes-nothing) |
 | Acceptance checks | "Done" means your command passed | `garuda run --check "pytest -q" -t "…"` | [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check) |
+| Versioned edits | Edits refused when the file changed since it was read, opt-in per agent | `tools.options: {edit: {contract: versioned}}` | [Level 2](../use-cases/change-code.md#refuse-edits-to-files-that-changed-since-they-were-read) |
+| Post-edit diagnostics | Quiet advisory syntax/lint checks with bounded availability, source digests, timing and conservative attribution | `ToolResult.metadata["diagnostics"]` | [Level 2](../use-cases/change-code.md#inspect-post-edit-diagnostics) |
 | Evidence modes | The agent proves its own work before stopping | `garuda run --mode rigorous -t "…"` | [Level 2](../use-cases/change-code.md#make-garuda-prove-the-fix) |
 | Budgets | Wall-clock and turn limits | `garuda run --deadline-sec 900 --max-turns 30 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
+| Run-tree spend budget | One token/dollar budget shared by main calls, auxiliaries, collection workers, native subagents and native consults (including advisors), with reservations and unknown cost never counted as free; capped runs refuse unmeterable ACP consults; the asker retains the shared spend snapshot for resume | `garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "…"` | [Level 2](../use-cases/change-code.md#cap-time-turns-and-cost) |
 | Any model | A LiteLLM `provider/model`, reasoning effort | `garuda run --model provider/model -t "…"` | [Level 2](../use-cases/change-code.md#use-a-different-model-for-one-run) |
+| Live model output | Native TTY runs show a bounded, throttled tail preview, then the full response; dumb/unset terminals suppress previews. Discard replaces interrupted output; tools wait for complete responses. Driver callbacks remain opt-in | `garuda run -t "…"` / `--no-stream` / `--quiet` | [Level 2](../use-cases/change-code.md#watch-assistant-text-live-in-the-terminal) |
 | Model terminal metadata | Provider finish reason and status through ordinary and streaming helper responses | `response.raw["finish_reason"]` | [Level 2](../use-cases/change-code.md#inspect-why-a-model-response-ended) |
+| Bounded search | grep stops once a page is captured, reports totals as exact or "at least", pages with a stale-checked cursor, windows long lines and can cap matches per file | `garuda run --mode readonly -t "Find every TODO"` | [Level 1](../use-cases/explore.md#search-large-trees-without-flooding-the-context) |
+| Python codemod preview/apply | Bounded declarative import renames with diffs, source digests, per-path permissions and verified restoration on write failure | Opt in to `python_codemod` | [Level 2](../use-cases/change-code.md#preview-a-python-import-migration) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
+| Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
+
+| Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
+| Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
+| Confined Python cells | Opt-in aggregation with screened nested tools, bounded lifetime and cell provenance | Agent `tools.add: [code_cell]` | [Confined code cells](../use-cases/advanced.md#aggregate-tool-results-in-a-confined-python-cell) |
 
 ## Where commands run
 
@@ -39,14 +52,16 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
 | Session record | Every run saved with its events and state | `garuda sessions show latest` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
+| Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
 | Resume | Continue a conversation | `garuda run --resume latest -t "…"` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Names and briefs | Hand one run's outcome to another | `garuda run -t "… @fix-tests …"` | [Level 2](../use-cases/change-code.md#name-a-session-and-build-on-it) |
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
 | Cancel | Remove from the queue, stop a worker, or revoke a pending quota continuation | `garuda sessions cancel NAME` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
 | Capacity | At most N runs per runtime; the rest queue | `capacity:` in `~/.agent/settings.yaml` | [Level 4](../use-cases/parallel.md#limit-how-many-runs-happen-at-once) |
-| Approvals from elsewhere | Answer a waiting prompt from another terminal | `garuda approvals answer latest ID --allow` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
+| Approvals from elsewhere | Answer a waiting prompt from another terminal, bound to the request you listed; native runtime and Garuda ACP server answers share the broker; every answer is rechecked against the ceiling and expiry, and ordinary tool ALLOW/DENY decisions and refused answers use a rotating 2 MiB observation trail; editor waits settle on timeout/cancel or another channel’s answer, a refused editor binding denies its request, and a cancelled turn denies the asks it still makes; the trail never recreates a deleted session | `garuda approvals answer latest ID --allow --digest D` | [Level 4](../use-cases/parallel.md#answer-an-approval-from-another-terminal-or-the-browser) |
 | Trajectories | Export a run's events | `garuda run --trajectory run.jsonl -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 | Failure evidence | Inspect original and later failures with explicit coverage; preview/capture/export selected sanitized diagnostics | `garuda runtime support --session latest --select causes,identities --preview` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
+| Ownership and reconciliation | One read-only view of who owns a session (owner liveness, leases, queue claim, capacity slots, children), what it waits on, and whether the existing recover path is eligible, blocked or unknown | `garuda sessions show latest --json` | [Level 4](../use-cases/parallel.md#see-who-owns-a-session-and-whether-it-can-be-recovered) |
 | Artifact completeness | See complete, partial, failed or unavailable retained output, provenance and retention; malformed flow receipts retain valid sibling evidence with explicit coverage | `garuda sessions show latest --json` | [Use Garuda in scripts](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 
 ## Agents and project knowledge
@@ -56,15 +71,23 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Project instructions | `AGENTS.md` in every run | `AGENTS.md` at the project root | [Level 3](../use-cases/customize.md#give-garuda-project-instructions) |
 | Agent definitions | Your own agents that extend packaged ones | `garuda agent new NAME --from garuda/build` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Agent inspection | Every effective setting and the exact prompt | `garuda agent show NAME`, `garuda agent prompt NAME` | [Level 3](../use-cases/customize.md#see-exactly-what-an-agent-will-do) |
+| Instruction source inspection | Native loading, nested sources, aliases, duplicates, shadowing, ignored fields and potential text conflicts; foreign execution settings are not imported | `garuda agent show NAME --instruction-sources --json` | [Level 3](../use-cases/customize.md#inspect-foreign-instruction-sources) |
 | Agent check | Catch mistakes before a run | `garuda agent check NAME` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Profile migration | Move an old profile to version 1 | `garuda agent migrate PATH` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Structured output | A JSON result checked against a schema | `output.schema` in an agent | [Level 3](../use-cases/customize.md#get-structured-json-back) |
 | Typed child results | Accepted schema output survives ordinary subagent handoff, inline or by verified buffer reference; post-tool hooks cannot replace its validated facts | `invoke_subagent` with a schema-bound child | [Level 3](../use-cases/customize.md#delegate-a-typed-result) |
+| Isolated editing workers | Opt-in sequential local native children edit detached repositories; checked integration refuses stale bases; session-scoped inventory, removable empty leftovers, private storage under any umask and pruned retired receipts preserve uncertainty during automatic cleanup and explicit discard | Programmatic `LocalEditingWorkers`, `editing_worker: true`, `integrate_editing_worker`, `sessions cleanup-workers`, `sessions discard-worker` | [Level 5](../use-cases/teams.md#isolate-a-native-editing-worker) |
 | Memory notes | The agent proposes; you accept | `garuda memory review` | [Level 3](../use-cases/customize.md#let-the-agent-propose-notes-to-remember) |
+| Reviewed note retrieval | Project-scoped, bounded search with evidence and freshness labels | `garuda memory search` | [Retrieve notes](../use-cases/customize.md#retrieve-reviewed-notes-with-source-evidence) |
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
 | Tool options | Bash timeouts, web domain allowlists, subagent limits | `tools.options` in an agent | [Agents guide](../guides/agents.md#tools) |
 | MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| MCP resources and prompts | Opt-in bounded lists and text retrieval through admitted sessions; untrusted data, read-only effects and explicit unsupported capabilities | Global `context_access`, `mcp__<server>__context` | [Level 3](../use-cases/customize.md#read-mcp-resources-and-prompts) |
+| Required MCP servers | A required server must be ready by the startup barrier or the run refuses; per-server state, reason and bounded stdio reconnects are inspectable | `"required": true` in `mcp.json`, `garuda mcp list` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| Semantic edit preview/apply | Version/digest-bound rename and edit-only code actions, per-path permissions, explicit apply/rollback results | `lsp` rename/code_action → `lsp_apply` preview token | [Level 3](../use-cases/customize.md#preview-and-apply-a-semantic-refactor) |
+| Language server navigation | Definition, references, hover, symbols and version-bound diagnostics from a server you configure globally | `garuda lsp list`, `language_servers:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#navigate-code-with-a-language-server) |
 | Hooks | Your script guards every direct or discovered target call | `hooks:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#block-or-log-tool-calls-with-a-hook) |
+| Conditional reminders | Trusted declarative rules queue bounded advisory notes after tool results, with inspectable source and counts | `reminders:` in `~/.agent/settings.yaml` | [Level 3](../use-cases/customize.md#remind-the-agent-after-relevant-tool-calls) |
 | Python tools | Your own tools, opt-in | `garuda run --load-project-tools -t "…"` | [Level 3](../use-cases/customize.md#add-your-own-python-tools) |
 
 ## Roles, flows and teams
@@ -76,11 +99,15 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Flows | Plan → build → review in one command | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
+| Review packets | Frozen candidate, loader evidence and per-file diffs bounded after escaping; binary and secret-matching excerpts withheld, untracked symlinks and failed reads unknown, explicit omissions, checks kept separate | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Checked flows | Candidate-bound Linux checks before the flow releases its workspace | `garuda flow run plan-build-review -t "…" --check "pytest -q"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Custom flows | Your own steps and reviews | `garuda config show --flow NAME` | [Level 5](../use-cases/teams.md#write-your-own-flow) |
 | Flow recovery | Continue after the last finished step | `garuda flow resume FLOW_ID` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Automatic Codex quota recovery | Hourly, evidence-gated continuation of eligible sequential CLI flows without replaying completed work | `garuda recovery enable` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
 | Recovery schedule diagnostics | Verify the selected root's cron entry and private wrapper, with a reason for missing or mismatched installation | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
+| macOS recovery LaunchAgent | Opt into an owner-only plist and verified launchctl installation using the same guarded tick; cron stays the default | `garuda recovery enable --backend launchd` | [Level 6](../use-cases/automate.md#macos-launchagent-backend) |
+| Recovery tick health | See whether recovery ticks actually ran, separately from cron installation: last attempt, outcome (zero-pending, quota-waiting, probe-unavailable, dispatched, attention, failed) and last dispatch | `garuda recovery status` | [Level 6](../use-cases/automate.md#continue-quota-stopped-codex-flows) |
+| Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
 | Read-only external roles | A harness in a proven read-only container | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |
@@ -91,6 +118,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
 | Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
+| Failed-call usage | Known retry and partial-stream usage survives once, with unknown coverage | Inspect `response.attempt_usage` or error attributes | [Level 2](../use-cases/change-code.md#inspect-retry-and-failed-call-usage) |
 | Usage ledger | Calls, tokens and known cost by model and role | `garuda web --read-only` → Usage | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | Provider limits | Login and quota readings with their source | `garuda web --read-only` → Providers | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | JSON everywhere | Machine-readable sessions, doctor, agents | `garuda sessions show latest --json` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
@@ -102,6 +130,8 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Recipes | Parameterised multi-step YAML | `garuda recipe run file.yaml` | [Level 6](../use-cases/automate.md#run-a-multi-step-recipe) |
 | CI and scripts | Exit status and JSON events | `garuda run --json -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 | Python SDK | `SoftwareAgent`, conversations, your own tools | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
+| Live model deltas | Native SDK runs forward text/reasoning fragments while the model generates | `await agent.run("…", on_delta=show)` | [Level 6](../use-cases/automate.md#stream-live-model-deltas) |
+| Dashboard live model output | Bounded transient assistant text while native chat generates, replaced by completed responses | `garuda web --allow-workspace .` | [Level 2](../use-cases/change-code.md#watch-assistant-text-in-dashboard-chat) |
 | `AgentSpec` | Load and narrow an agent from Python | `AgentSpec.load(NAME).narrow(...)` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
 | HTTP service | JSON-RPC jobs with an agent allowlist and operator-owned launch settings when restricted | `garuda serve --allow-agent reviewer` | [Level 6](../use-cases/automate.md#call-garuda-over-http) |
 
@@ -111,12 +141,14 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Runtime catalog | Which harnesses are installed and ready | `garuda runtime list` | [Level 7](../use-cases/advanced.md#see-which-external-harnesses-are-ready) |
 | ACP runs | Claude Code, Codex and others on your login | `garuda run --runtime claude -t "…"` | [Level 7](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
+| oh-my-pi runtime | omp's native `omp acp` as its own runtime, separate from `pi`; no-prompt conformance only (omp 18.16.0) | `garuda runtime inspect omp` | [Level 7](../use-cases/advanced.md#install-a-harness), [conformance report](../development/omp-acp-conformance.md) |
 | Standalone ACP acceptance | Explicit post-run checks verify selected criteria separately from harness completion | `garuda run --runtime codex -t "…" --check "pytest -q"` | [Harness acceptance checks](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
 | Handoff | Move a native session to a harness | `garuda runtime handoff --session latest --to codex` | [Level 7](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
 | Recover and reclaim | Repair ownership after an interruption | `garuda runtime recover --session latest` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Continue elsewhere | Resume on another runtime from a brief | `garuda run --resume latest --as claude -t "…"` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Routing | Rules choose the starting runtime | `routing:` in `~/.agent/settings.yaml` | [Level 7](../use-cases/advanced.md#route-tasks-to-runtimes-automatically) |
 | Quota fallback | Skip a harness whose plan limit is reached | a role `fallback` | [Level 7](../use-cases/advanced.md#skip-a-harness-whose-subscription-limit-is-used-up) |
-| Collection model | A cheaper model for read-only investigation | `collection:` in settings | [Level 7](../use-cases/advanced.md#add-a-cheaper-model-for-investigation) |
+| Collection model | A cheaper model for read-only investigation, subject to collection and root spend limits | `collection:` in settings | [Level 7](../use-cases/advanced.md#add-a-cheaper-model-for-investigation) |
 | ACP server | Use Garuda from an ACP editor | `python -m garuda.acp.server` | [Level 7](../use-cases/advanced.md#use-garuda-from-an-acp-editor) |
 | Evaluation | Benchmark modes and paired reports | `garuda eval dual-model report …` | [Evaluation](../evaluation/index.md) |
+| Offline incident regressions | Synthetic fixtures, frozen minimal config and explicit guard gaps | `python -m garuda.eval.contract_matrix --incidents --out incident-reports` | [Level 7](../use-cases/advanced.md#run-offline-incident-regressions) |

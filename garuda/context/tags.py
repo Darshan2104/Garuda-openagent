@@ -85,7 +85,10 @@ def _by_name(store, project_id, name):
         validate_name(name)
     except ProjectIdentityError:
         return None
-    sid = session_for_name(store.root, project_id, name)
+    try:
+        sid = session_for_name(store.root, project_id, name)
+    except ValueError as exc:
+        raise TagError("session.tag_unsafe", str(exc)) from exc
     return sid if sid and store.session_dir(sid).is_dir() else None
 
 

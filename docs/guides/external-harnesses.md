@@ -3,7 +3,7 @@
 Garuda can launch subscription-backed coding harnesses through the Agent Client
 Protocol (ACP) while keeping its native model-and-tool loop as the default. The
 shipped trusted catalog includes `claude`, `codex`, `cursor`, `opencode`, `pi`,
-and `goose`.
+`goose`, and `omp` (oh-my-pi).
 
 !!! abstract "At a glance"
     - You install and log in to each vendor CLI yourself. Garuda launches it but
@@ -264,6 +264,20 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
 
     - Launch command: `goose acp`, a Goose CLI subcommand.
     - Install and authenticate Goose, then verify `goose --version`.
+
+=== "oh-my-pi (omp)"
+
+    - Launch command: `omp acp`, omp's native stdio ACP subcommand. This is a
+      separate runtime from `pi`, which launches `pi-acp`.
+    - Install omp, run `omp login`, then verify `omp --version`. Only
+      `omp/18.16.0` was checked.
+    - Authentication stays in omp's own store. Garuda never reads `~/.omp` and
+      never runs `omp token` or `omp auth`.
+    - Only a no-prompt check was run: launch, handshake, `session/new`, idle
+      cancel and shutdown. Prompted turns, permission requests, harness modes
+      and `session/load` are unverified, and `session/new` runs omp's own model
+      discovery over the network. See the
+      [conformance report](../development/omp-acp-conformance.md).
 
 The exact package metadata and retrieval date behind these Node requirements
 are recorded in [Install a harness](../use-cases/advanced.md#install-a-harness).

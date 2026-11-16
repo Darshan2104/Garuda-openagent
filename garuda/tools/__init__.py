@@ -15,8 +15,10 @@ from garuda.tools.buffer_tools import (
     BufferQueryTool,
     BufferSliceTool,
 )
+from garuda.tools.code_cell import CodeCellTool
 from garuda.tools.collection import DelegateCollectionTool, SubmitCollectionTool
 from garuda.tools.contract import ContractTool
+from garuda.tools.debug import DebugControlTool, DebugInspectTool, DebugLaunchTool, DebugVariablesTool
 from garuda.tools.documents import ReadPdfTool, ReadSpreadsheetTool
 from garuda.tools.edit import EditTool
 from garuda.tools.files import ReadFileTool, WriteFileTool
@@ -24,6 +26,7 @@ from garuda.tools.goal import UpdateGoalTool
 from garuda.tools.image_read import ImageReadTool
 from garuda.tools.multi_edit import MultiEditTool
 from garuda.tools.protocol import EXPLICIT_TOOL_ATTR, Tool, ToolEffect, tool_effect
+from garuda.tools.python_codemod import PythonCodemodTool
 from garuda.tools.registry import (
     ToolRegistry,
     builtin_registry,
@@ -73,6 +76,7 @@ __all__ = [
     "LsTool",
     "McpClientManager",
     "MultiEditTool",
+    "PythonCodemodTool",
     "ReadFileTool",
     "ReadPdfTool",
     "ReadSpreadsheetTool",
@@ -102,6 +106,11 @@ __all__ = [
 def _bootstrap_registry() -> None:
     for tool in [
         BashTool(),
+        DebugLaunchTool(),
+        DebugInspectTool(),
+        DebugVariablesTool(),
+        DebugControlTool(),
+        CodeCellTool(),
         BashBackgroundTool(),
         TaskOutputTool(),
         KillTaskTool(),
@@ -109,6 +118,7 @@ def _bootstrap_registry() -> None:
         WriteFileTool(),
         EditTool(),
         MultiEditTool(),
+        PythonCodemodTool(),
         GrepTool(),
         GlobTool(),
         LsTool(),
@@ -274,7 +284,7 @@ async def build_toolkit(
         if mcp_configs is not None:
             if paths:
                 raise ValueError("choose resolved MCP configurations or paths")
-            manager = McpClientManager()
+            manager = McpClientManager(workspace=workspace)
             await manager.start(list(mcp_configs))
         else:
             manager = await McpClientManager.from_paths(

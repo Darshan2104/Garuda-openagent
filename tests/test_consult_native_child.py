@@ -1,18 +1,28 @@
 """The real native consult child: scoped read-only tools in a snapshot (#170, G.2)."""
 
+import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 import garuda.model.factory as factory
 from garuda.consult.service import ConsultRequest, ConsultService
+from garuda.consult.state import ConsultState
+from garuda.core.events import EventStore
+from garuda.core.loop import DefaultAgent
+from garuda.core.spend import SpendGate, SpendLimitExceeded
+from garuda.model import accounting
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.observability.ledger import Ledger
-from garuda.types import ToolCall
+from garuda.tools.task_complete import TaskCompleteTool
+from garuda.types import AgentConfig, ToolCall
+from garuda.workspace.local import LocalEnvironment
 from tests.test_consult import (
     make_resolved,
+    request,
     world,  # noqa: F401  (the shared consult fixture)
 )
 
@@ -40,6 +50,18 @@ def script(monkeypatch):
         return seen
 
     return install
+
+
+@pytest.fixture
+def accounting_process(monkeypatch):
+    """Script only this pytest process's start identity; leases and capacity stay real."""
+    from garuda.runtime import recovery
+
+    identify = recovery._process_identity
+    pid = os.getpid()
+    monkeypatch.setattr(recovery, "_process_identity",
+                        lambda candidate: "scripted-accounting-process" if candidate == pid
+                        else identify(candidate))
 
 
 async def test_a_denied_shell_an_escaping_path_and_a_custom_tool_cannot_execute(consult_world, script,
@@ -195,3 +217,148 @@ async def test_receipt_counts_observed_denials_not_error_words(consult_world, sc
                 and e["payload"].get("tool_call_id") == "missing"]
     if ordinary:
         assert ordinary[0]["is_error"] is True and not ordinary[0].get("permission_denied")
+
+
+async def test_consult_settles_the_askers_gate_once_and_restores_parent_accounting(consult_world,
+                                                                               script,
+                                                                               accounting_process):
+    response = call("task_complete", "done", summary="Inspect notes.txt before editing.")
+    response.usage = {"total_tokens": 200, "cost_usd": 0.02}
+    script([response])
+    gate = SpendGate(max_tokens=50_000, max_cost_usd=1)
+    parent = EventStore(consult_world.asker)
+    token = accounting.bind(parent, gate)
+    try:
+        engine = ConsultService(consult_world.store, make_resolved())
+        req = request(consult_world, request_id="metered")
+        result = await engine.consult(req)
+        assert result.outcome == "answered", result.tool_text()
+        child = consult_world.store.load_meta(result.receipt["child_session"])
+        assert child["origin"] == "consult"
+        assert "spend_gate" not in child
+        assert gate.settled_tokens == 200 and gate.settled_cost_usd == 0.02
+        assert gate.calls == 1 and gate.reserved_tokens == 0
+        replay = await engine.consult(req)
+        assert replay.replay and replay.receipt == result.receipt
+        assert gate.calls == 1 and gate.settled_tokens == 200
+        await accounting.complete(ScriptModel([response]), [], purpose="parent-auxiliary")
+        assert gate.settled_tokens == 400 and gate.settled_cost_usd == 0.04
+        assert [e["payload"]["call_purpose"] for e in parent.get_all()
+                if e["type"] == "model_response"] == ["parent-auxiliary"]
+    finally:
+        accounting.reset(token)
+    child_events = consult_world.store.events_path(result.receipt["child_session"]).read_text()
+    assert len([e for e in map(json.loads, child_events.splitlines())
+                if e["type"] == "model_response"]) == 1
+
+
+@pytest.mark.parametrize("caps, usage, cause", [
+    ({"max_tokens": 50_000}, {"total_tokens": 49_999, "cost_usd": 0.02}, "tokens"),
+    ({"max_cost_usd": 0.01}, {"total_tokens": 200, "cost_usd": 0.02}, "dollars"),
+    ({"max_cost_usd": 1}, {"total_tokens": 200}, "cost_unknown"),
+    ({"max_cost_usd": 1}, {}, "cost_unknown"),
+])
+async def test_consult_refuses_its_next_call_when_the_shared_gate_cannot_admit(
+        consult_world, script, accounting_process, caps, usage, cause):
+    first = call("read_file", "read", path="notes.txt")
+    first.usage = usage
+    script([first, call("task_complete", "done", summary="Inspect notes.txt before editing.")])
+    gate = SpendGate(**caps)
+    token = accounting.bind(EventStore(consult_world.asker), gate)
+    try:
+        result = await ConsultService(consult_world.store, make_resolved()).consult(
+            request(consult_world))
+        assert result.outcome == "refused" and result.code == "consult.failed"
+        assert result.receipt["outcome"] == "failed" and result.receipt["usage_refs"]
+        assert gate.calls == 1 and gate.refused == 1 and gate.reserved_tokens == 0
+        if usage:
+            assert gate.settled_tokens == usage["total_tokens"]
+        else:
+            assert gate.settled_tokens > 0 and gate.estimated_token_calls == 1
+        assert gate.settled_cost_usd == usage.get("cost_usd", 0)
+        assert gate.cost_unknown_calls == (cause == "cost_unknown")
+        with pytest.raises(SpendLimitExceeded) as refused:
+            await accounting.complete(ScriptModel([]), [], purpose="parent-auxiliary")
+        assert refused.value.cause == cause
+    finally:
+        accounting.reset(token)
+    events = [json.loads(line) for line in consult_world.store.events_path(
+        result.receipt["child_session"]).read_text().splitlines()]
+    assert len([e for e in events if e["type"] == "model_response"]) == 1
+    assert any(e["type"] == "budget" and e["payload"].get("refused") == "main" for e in events)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_failed_or_cancelled_consult_settles_reported_usage(consult_world, script,
+                                                               accounting_process, monkeypatch,
+                                                               cancel):
+    started = asyncio.Event()
+    script([])
+
+    async def fail(model, *args, **kwargs):
+        started.set()
+        try:
+            if cancel:
+                await asyncio.Future()
+            raise RuntimeError("scripted provider failure")
+        except BaseException as exc:
+            exc.usage = {"total_tokens": 150, "cost_usd": 0.03}
+            raise
+
+    monkeypatch.setattr(ScriptModel, "complete", fail)
+    gate = SpendGate(max_tokens=50_000)
+    token = accounting.bind(EventStore(consult_world.asker), gate)
+    try:
+        task = asyncio.create_task(ConsultService(consult_world.store, make_resolved()).consult(
+            request(consult_world, request_id="failed")))
+        if cancel:
+            await asyncio.wait_for(started.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await task
+            assert result.outcome == "refused" and result.receipt["outcome"] == "failed"
+        assert gate.settled_tokens == 150 and gate.settled_cost_usd == 0.03
+        assert gate.calls == 1 and gate.reserved_tokens == 0
+        state = ConsultState(consult_world.store, consult_world.asker).snapshot()
+        assert state["requests"]["failed"]["result"]["receipt"]["outcome"] == "failed"
+    finally:
+        accounting.reset(token)
+
+
+@pytest.mark.parametrize("advisor", [False, True])
+async def test_native_loop_consult_tool_and_advisor_use_the_run_gate(consult_world, script,
+                                                                  accounting_process, advisor):
+    done = call("task_complete", "done", summary="Inspect notes.txt before editing.")
+    done.usage = {"total_tokens": 100, "cost_usd": 1 if advisor else 0.1}
+    question = call("consult", "ask", target="reviewer", question="Inspect notes.txt?")
+    question.usage = {"total_tokens": 100, "cost_usd": 0.1}
+    answer = call("task_complete", "answer", summary="Inspect notes.txt before editing.")
+    answer.usage = {"total_tokens": 200, "cost_usd": 0.95}
+    script([answer])
+    model = ScriptModel([done] if advisor else [question, done])
+    config = AgentConfig(
+        max_turns=3, enable_verifier=False, max_run_cost_usd=1,
+        consult_service=ConsultService(consult_world.store, make_resolved()),
+        consult_targets=["reviewer"], advisor="reviewer" if advisor else None,
+        advisor_checkpoints=["candidate-ready"])
+    events = EventStore(consult_world.asker)
+    result = await DefaultAgent().run(
+        task="Inspect notes.txt", model=model, env=LocalEnvironment(consult_world.ws),
+        tools=[TaskCompleteTool()], events=events, config=config)
+    gate = config.spend_gate
+    state = ConsultState(consult_world.store, consult_world.asker).snapshot()
+    (record,) = state["requests"].values()
+    if advisor:
+        assert result.success and result.turns == 1
+        assert gate.calls == 1 and gate.refused == 1 and gate.settled_cost_usd == 1
+        assert record["result"]["receipt"]["outcome"] == "failed"
+        assert [e["payload"]["outcome"] for e in events.get_all()
+                if e["type"] == "advisor"] == ["requested", "failed"]
+    else:
+        assert not result.success and result.metadata["spend_limit"] == "dollars"
+        assert gate.calls == 2 and gate.refused == 1
+        assert gate.settled_tokens == 300 and gate.settled_cost_usd == 1.05
+        assert record["result"]["outcome"] == "answered"
+    assert gate.reserved_tokens == 0

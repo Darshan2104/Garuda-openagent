@@ -25,13 +25,21 @@ from garuda.runtime.session_state import effective_state, is_crashed, summary_la
 UNKNOWN = "unknown"
 
 
+def _queue_entries(queue) -> list[dict] | None:
+    """The queue's entries, or ``None`` when it cannot be read."""
+    try:
+        return queue.entries()
+    except Exception:
+        return None
+
+
 def _queue_index(queue) -> dict[str, dict]:
     """``{session_id: {state, position, scope}}``; ``{"": {...unknown}}`` marks an unreadable queue."""
-    if queue is None:
-        return {}
-    try:
-        entries = queue.entries()
-    except Exception:
+    return {} if queue is None else _index_entries(_queue_entries(queue))
+
+
+def _index_entries(entries: list[dict] | None) -> dict[str, dict]:
+    if entries is None:
         return {"": {"state": UNKNOWN}}
     return {e["id"]: {"state": e["state"], "position": e["position"], "scope": e["scope"],
                       "harness": e.get("harness"), "quarantined": e.get("quarantined", False)}
@@ -212,9 +220,25 @@ def sessions(store, *, limit: int | None = 20, queue=None) -> list[dict]:
 
 def session(store, session_id: str, *, queue=None) -> dict:
     meta = store.load_meta(session_id)
-    row = session_row(store, meta, queue_index=_queue_index(queue))
+    # One queue read feeds both the row and the ownership projection.
+    entries = _queue_entries(queue) if queue is not None else None
+    row = session_row(store, meta, queue_index={} if queue is None else _index_entries(entries))
+    if meta.get("forked_from") is not None:
+        row["context_fork"] = {key: meta.get(key) for key in (
+            "forked_from", "fork_at", "fork_requested_at", "fork_adjustment", "source_digest",
+            "source_files", "rewind", "filesystem_restored", "processes_restored", "inherited_evidence", "references",
+            "receipt_references", "receipt_reference_coverage",
+        )}
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
+    from garuda.core.ownership_read_model import project as project_ownership
+
+    # Joins leases, queue, capacity, children and quota without probing beyond the row's
+    # own owner liveness; reconciliation is reported, never performed (#376).
+    row["ownership"] = project_ownership(
+        row, meta, approvals_pending=row["approvals_pending"], queue=queue,
+        queue_entries=entries,
+    )
     row["flow"] = flow(store, session_id, meta)
     from garuda.consult import view
     from garuda.core import conversation

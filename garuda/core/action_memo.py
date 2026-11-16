@@ -182,6 +182,9 @@ class ActionMemo:
         """Return cached content with its bounded capture evidence, if eligible."""
         if call.name not in CACHEABLE_TOOLS:
             return None
+        if call.name == "read_file" and (call.arguments or {}).get("outline", False) is not False:
+            # Re-read through Environment before consulting the digest-only AST cache.
+            return None
         if call.name == "buffer_slice" and any(
             key in (call.arguments or {})
             for key in ("child_result_reference", "start_char", "end_char")
@@ -216,6 +219,8 @@ class ActionMemo:
         from garuda.core.artifact_read_model import validate_descriptor
 
         capture = validate_descriptor((metadata or {}).get("artifact_capture"))
+        if call.name == "read_file" and (call.arguments or {}).get("outline", False) is not False:
+            return
         if call.name in WORKSPACE_READ_TOOLS:
             # Not stored at all while a background task runs: storing it now and
             # declining to serve it is the same thing until the task ends, at

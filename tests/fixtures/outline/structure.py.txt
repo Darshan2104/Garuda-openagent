@@ -1,0 +1,64 @@
+"""Module documentation with a fake declaration:
+def not_a_definition(): ...
+"""
+from .helpers import (
+    thing as alias,
+)
+import os as operating
+
+SENTINEL = "MODULE_VALUE_HIDDEN"
+
+@decorate(
+    flag="λ",
+)
+class Service(Base):
+    """Class documentation.
+    Multiline bodies must stay hidden.
+    """
+    label = "CLASS_VALUE_HIDDEN"
+
+    @classmethod
+    async def run(
+        cls,
+        value: tuple[int, str] = (
+            1, "a:b"
+        ),
+        /,
+        *,
+        text: str = """first
+second""",
+        **kwargs: object,
+    ) -> str:
+        """BODY_DOCSTRING_HIDDEN
+        def also_not_a_definition(): ...
+        """
+        from .internal import worker
+        if value:
+            @wrap
+            def helper(item: str) -> str:
+                return f"FUNCTION_BODY_HIDDEN {item}"
+            return helper(text)
+        return worker(text)
+
+    def compact(self): return "INLINE_BODY_HIDDEN"
+
+def outer():
+    @decorate()
+    class Inner:
+        pass
+    return Inner
+
+if TYPE_CHECKING:
+    from typing import Any
+
+raise RuntimeError("Workspace source must never execute during an outline read")
+
+@(
+    wrap
+)
+def parenthesized():
+    @(
+        decorate()
+    )
+    def child(): pass
+    return child

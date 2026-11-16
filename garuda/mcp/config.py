@@ -50,6 +50,11 @@ class McpServerConfig:
     # (which needs a user trust grant before it may start or connect).
     source_path: str | None = None
     project_scoped: bool = False
+    # A required server must be ready by the startup barrier or the run refuses;
+    # an optional one (the default) may fail and the run continues without it.
+    required: bool = False
+    # Read-side access is opt-in authority from the same global file as effects.
+    context_access: tuple[str, ...] = ()
 
 
 # Transport aliases seen across Cursor / Claude Desktop / VS Code / editor configs.
@@ -170,6 +175,23 @@ def _string_map(entry: dict, key: str, name: str) -> dict[str, str]:
     return {str(k): _interpolate(str(v)) for k, v in value.items()}
 
 
+def _required_flag(entry: dict, name: str) -> bool:
+    """The entry's ``required`` flag, read so a typo cannot drop a critical server.
+
+    Anything other than a boolean is treated as required: the run then refuses
+    loudly if the server is not ready, instead of silently going without it.
+    """
+    value = entry.get("required", False)
+    if isinstance(value, bool):
+        return value
+    logger.warning(
+        "MCP server %r: required should be true or false; treating %r as required",
+        name,
+        value,
+    )
+    return True
+
+
 def _trusted_tool_effects(
     entry: dict, server_name: str, *, trusted_source: bool
 ) -> dict[str, ToolEffect]:
@@ -245,6 +267,8 @@ def _dict_to_server_configs(
                     headers=headers,
                     trusted_tool_effects=trusted_tool_effects,
                     spec_digest=spec_digest,
+                    required=_required_flag(entry, str(name)),
+                    context_access=_context_access(entry, str(name), trusted_source=trusted_source),
                 )
             )
         except Exception as exc:
@@ -256,6 +280,19 @@ def _dict_to_server_configs(
                 exc,
             )
     return configs
+
+
+def _context_access(entry: dict, name: str, *, trusted_source: bool) -> tuple[str, ...]:
+    raw = entry.get("context_access", [])
+    if not raw:
+        return ()
+    if not trusted_source:
+        logger.warning("Ignoring context_access for MCP server %r: authority is global-only", name)
+        return ()
+    if not isinstance(raw, list) or any(value not in ("resources", "prompts") for value in raw):
+        logger.warning("Ignoring invalid context_access for MCP server %r; expected resources and/or prompts", name)
+        return ()
+    return tuple(dict.fromkeys(raw))
 
 
 def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
