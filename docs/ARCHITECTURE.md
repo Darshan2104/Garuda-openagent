@@ -178,6 +178,13 @@ fastest way to learn the system.
    to a terminal tail and refreshed at most ten times per second; dumb/unset
    terminals suppress previews. Completed responses render in full, and final
    output is deduplicated against all rendered responses of the run.
+   Native `garuda chat` attaches the same consumer on a TTY unless `--json` or
+   `--no-stream` is selected, using its existing renderer and event drain. Its
+   thinking status spinner yields to the preview and resumes when it is cleared
+   or replaced, covering tool execution and waits for the next model call. The
+   thinking context stops the status on exit, and every turn exit clears
+   that preview after draining events, including failure and cancellation.
+   Chat retains its existing final done panel.
    Tool arguments and reasoning are never
    displayed as live text. The SDK exposes the same consumer as `on_delta` on
    `SoftwareAgent.run` and `Conversation.run`. Dashboard chat attaches the same
@@ -189,7 +196,7 @@ fastest way to learn the system.
    job's settlement clear the preview, including before a new turn waits in the
    job queue. Both cancellation routes clear matching chats on the event loop
    before returning; the chat stays busy until its job settles.
-   Terminal chat and ACP do not attach it; external harness streaming is separate.
+   ACP does not attach it; external harness streaming is separate.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state

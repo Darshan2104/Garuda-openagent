@@ -1,8 +1,8 @@
 """Terminal rendering shared by native runs and interactive chat.
 
 TTY runs attach the loop's delta consumer for a transient assistant preview;
-completed response events replace it with the authoritative text. Chat still
-drains completed-turn events without attaching a token consumer.
+completed response events replace it with the authoritative text. Interactive
+chat drains those events and yields its thinking spinner to the preview.
 
 The renderer degrades gracefully: if ``rich`` is not installed it falls back to
 plain ``print`` output with an identical method surface. It is intentionally
@@ -75,6 +75,7 @@ class ChatRenderer:
         self._assistant_text = ""
         self._assistant_live = None
         self._assistant_refreshed: float | None = None
+        self._status = None
         self.rendered_assistant_text: set[str] = set()
         if self._rich:
             try:
@@ -111,10 +112,19 @@ class ChatRenderer:
         self._out("Enter a task (empty line to quit).\n")
 
     # -- thinking spinner --------------------------------------------------
+    @contextlib.contextmanager
     def thinking(self, label: str = "Thinking…"):
         if self._rich and self._console is not None:
-            return self._console.status(f"[bold cyan]{label}", spinner="dots")
-        return self._plain_status(label)
+            status = self._console.status(f"[bold cyan]{label}", spinner="dots")
+            self._status = status
+            try:
+                with status:
+                    yield
+            finally:
+                self._status = None
+        else:
+            with self._plain_status(label):
+                yield
 
     @contextlib.contextmanager
     def _plain_status(self, label: str):
@@ -128,6 +138,8 @@ class ChatRenderer:
         elif delta.kind == "text" and delta.text:
             if os.environ.get("TERM", "").lower() in {"", "dumb", "unknown"}:
                 return
+            if self._status is not None:
+                self._status.stop()
             console = self._console
             rich_preview = (self._rich and console is not None
                             and console.is_terminal and not console.is_dumb_terminal)
@@ -175,6 +187,8 @@ class ChatRenderer:
                 live.stop()
         elif text:
             self._out("\r\033[2K", end="")
+        if self._status is not None:
+            self._status.start()
 
     def on_assistant_response(self, text: str | None) -> None:
         self.discard_assistant()

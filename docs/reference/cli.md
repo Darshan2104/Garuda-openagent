@@ -171,7 +171,9 @@ isolation boundary.
 === "chat"
 
     `garuda chat` takes the model, workspace, agent, MCP, `--mode`, and
-    `--permission-mode` flags of `run`, plus `--json`. It has no `-t`: type
+    `--permission-mode` flags of `run`, plus `--json` and `--no-stream`.
+    Native assistant text streams on a TTY; `--no-stream` disables the live
+    preview, and `--json` keeps stdout as JSONL. It has no `-t`: type
     tasks at the `task>` prompt, and finish with an empty line or ++ctrl+d++.
     `--with`, `--with-id` and `--allow-cross-project-context` attach briefs to
     the first turn; `@name` in any message attaches that session's brief to

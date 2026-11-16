@@ -448,9 +448,17 @@ Rich, or a single plain line. Dumb/unset terminals suppress previews and their
 erase codes. Discard, response assembly, failure and cancellation clear previews.
 The completed response renders in full; a final message identical to any already
 rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
-output withholding retain the ordinary model path. Terminal interactive chat and
-ACP do not attach the native consumer; dashboard chat and the SDK's `on_delta`
-do. Dashboard `live.py` clears matching chat previews on accepted
+output withholding retain the ordinary model path for `run`.
+`interfaces/cli.py::chat_loop` attaches the shared consumer on a TTY unless
+`--json` or `--no-stream` is selected, draining events through the existing
+renderer. `tui.py::ChatRenderer` stops the active thinking status before starting
+the preview and restarts it after discard or response assembly, supporting Rich
+versions that cannot nest Live displays. The thinking context stops the status
+on exit. Like `run`, streaming chat skips auxiliary-accounting `model_response`
+content (`accounting == "auxiliary"`); `--no-stream` chat still prints it. Chat drains
+events before clearing previews on every turn exit, including errors and
+cancellation, and retains its final done panel. ACP does not attach the native
+consumer; dashboard chat and the SDK's `on_delta` do. Dashboard `live.py` clears matching chat previews on accepted
 `POST /api/chat/<id>/stop` and `POST /api/jobs/<id>/cancel` requests on the event
 loop, before job cleanup settles; other chats retain their previews. Turn
 admission and owning-job settlement also reset retained text and cursor.
