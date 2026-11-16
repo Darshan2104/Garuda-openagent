@@ -364,6 +364,8 @@ def _rebuild_with_summary(
     keep_recent_turns: int,
     inherited: list[Message] | None = None,
 ) -> list[Message]:
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
     system = messages[0] if messages and messages[0].role == Role.SYSTEM else None
     task = next((m for m in messages if m.role == Role.USER), None)
     recent = recent_messages(messages, keep_recent_turns, exclude={id(system), id(task)})
@@ -378,7 +380,9 @@ def _rebuild_with_summary(
     # where it is most visible. Writing it here too produced two copies whenever a
     # prune-then-summarize sequence left the earlier pin inside the recent window.
     rebuilt.extend(inherited or [])
-    if summary:
+    # An empty model response still gets the historical current-summary header.
+    # Omit it only when there were no current inputs to summarize.
+    if summary or any(INHERITED_CONTEXT_KEY not in m.metadata for m in messages):
         rebuilt.append(
             Message(role=Role.USER, content=f"Conversation summary (context compacted):\n{summary}")
         )

@@ -336,8 +336,10 @@ The new session records `forked_from`, source-file SHA-256 digests and
 not restored. Your current workspace is used with ordinary lease and capacity
 admission and a fresh baseline. Earlier check results and candidate claims are
 stale; the fork must verify its current work. Compaction keeps inherited
-history in a separate marked summary that the completion judge excludes. Archive
-pointers warn when the captured history includes inherited messages; retrieving
+history in a separate marked summary that the completion judge excludes. Forking
+again names the immediate source session and keeps earlier sources and the
+summary's compaction marker, so the judge reports the full inherited lineage.
+Archive pointers warn when the captured history includes inherited messages; retrieving
 that text is a fresh observation of historical content. Constraints survive in the
 working state; source events, state and receipt locations remain historical references.
 The completion judge excludes fork-inherited messages from its evidence, including historical tool results, even after resuming the fork.

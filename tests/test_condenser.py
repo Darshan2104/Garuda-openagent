@@ -187,6 +187,9 @@ async def test_no_condense_below_threshold():
 @pytest.mark.parametrize("tag,sources", [
     ({"source_session_id": "source", "evidence": "stale"}, ["source"]),
     ({"source_session_ids": ["z-source", "a-source"], "evidence": "stale"}, ["a-source", "z-source"]),
+    ({"source_session_id": "b-source", "source_session_ids": ["z-source", "a-source"]},
+     ["a-source", "b-source", "z-source"]),
+    ({"source_session_id": "source", "source_session_ids": None}, ["source", "unknown"]),
     (None, ["unknown"]),
 ])
 async def test_compaction_splits_inherited_inputs_and_carries_summary_without_calls(strategy, tag, sources):

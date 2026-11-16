@@ -719,9 +719,9 @@ async def test_context_fork_history_is_not_completion_evidence(tmp_path, fork_so
     assert "exit 0" not in conversation
     assert f"[user] {task}" in conversation
     inherited = prompt.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
-    assert f"6 messages were inherited by context fork from session {source_id};" in inherited
+    sources = ", ".join(sorted([source_id, "earlier-source"]))
+    assert f"6 messages were inherited by context fork from session {sources};" in inherited
     assert "they are historical and are not evidence for the current workspace." in inherited
-    assert "earlier-source" not in inherited
 
 
 @pytest.mark.parametrize("requested,effective,large_events", [
@@ -805,9 +805,11 @@ async def test_context_fork_retains_complete_prefix_without_restoring_source(
         return payload
 
     assert [without_inherited(m) for m in retained] == [without_inherited(m) for m in original[1:effective + 1]]
-    assert all(m.metadata.get("context_fork_inherited") == {
-        "source_session_id": source_id, "evidence": "stale",
-    } for m in retained)
+    for message in retained:
+        expected_tag = {"source_session_id": source_id, "evidence": "stale"}
+        if message.content == "Observed original hypothesis.":
+            expected_tag["source_session_ids"] = sorted([source_id, "earlier-source"])
+        assert message.metadata.get("context_fork_inherited") == expected_tag
     for options in ({}, {"include_thinking": True}, {"include_reasoning": True}, {"include_images": True}):
         provider_messages = [_message_to_litellm(m, **options) for m in model.prompt]
         assert "context_fork_inherited" not in json.dumps(provider_messages)
@@ -1235,11 +1237,14 @@ def _long_fork_history(store, source_id, messages):
     return history
 
 
-async def test_context_fork_compaction_summary_is_not_completion_evidence(tmp_path, fork_source):
+@pytest.mark.parametrize("continuation", ["resume", "fork"])
+async def test_context_fork_compaction_summary_is_not_completion_evidence(tmp_path, fork_source, continuation):
     from garuda.core.events import EventType
     from garuda.core.session_fork import INHERITED_CONTEXT_KEY
 
     store, source_id, messages = fork_source
+    # Start with A's original history, then compact in B and continue in C.
+    messages[2].metadata.pop(INHERITED_CONTEXT_KEY)
     history = _long_fork_history(store, source_id, messages)
     events = EventStore()
     calls = []
@@ -1294,14 +1299,26 @@ async def test_context_fork_compaction_summary_is_not_completion_evidence(tmp_pa
     assert task in current.content
     assert "Exploration" not in current.content and "Observation" not in current.content
     resumed_events = EventStore()
-    resumed = await run_agent_task(
+    continued = await run_agent_task(
         task="Continue the fork", model=model(), agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
         config=config, permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=resumed_events,
-        store=store, resume=events.session_id,
+        store=store, **({"resume": events.session_id} if continuation == "resume" else {
+            "fork": events.session_id, "fork_at": len(persisted) - 1,
+        }),
     )
-    assert resumed.success
+    assert continued.success
     saved = next(m for m in store.load_messages(resumed_events.session_id) if m.content == inherited[0].content)
-    assert saved.metadata == inherited[0].metadata
+    if continuation == "resume":
+        assert saved.metadata == inherited[0].metadata
+    else:
+        assert saved.metadata[INHERITED_CONTEXT_KEY] == {
+            "source_session_id": events.session_id,
+            "source_session_ids": sorted([source_id, events.session_id]),
+            "evidence": "stale", "derived_from": "compaction_summary",
+        }
+        notice = calls[-1][-1].content.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert source_id in notice and events.session_id in notice
+        assert "1 compaction summaries of inherited history" in notice
 
 
 async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):

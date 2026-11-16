@@ -34,10 +34,11 @@ def inherited_sources(messages: list[Message]) -> set[str]:
         if "source_session_ids" in tag:
             values = tag["source_session_ids"]
             if not isinstance(values, (list, tuple, set)) or not values:
-                sources.add("unknown")
-                continue
+                values = ["unknown"]
         else:
-            values = [tag.get("source_session_id")]
+            values = []
+        if "source_session_id" in tag or "source_session_ids" not in tag:
+            values = [*values, tag.get("source_session_id")]
         sources.update(value if isinstance(value, str) and value.strip() else "unknown" for value in values)
     return sources
 
@@ -212,7 +213,13 @@ def prepare_context_fork(reader, session_id: str, fork_at: int, *, bounded_reads
         raise ValueError("context fork requires a terminal native source without pending ownership or quarantine")
     messages, effective_at = _complete_prefix(_messages(snapshot["messages.json"]), fork_at)
     for message in messages:
-        message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": session_id, "evidence": "stale"}
+        tag = {"source_session_id": session_id, "evidence": "stale"}
+        if INHERITED_CONTEXT_KEY in message.metadata:
+            previous = message.metadata[INHERITED_CONTEXT_KEY]
+            tag["source_session_ids"] = sorted(inherited_sources([message]) | {session_id})
+            if isinstance(previous, dict) and "derived_from" in previous:
+                tag["derived_from"] = previous["derived_from"]
+        message.metadata[INHERITED_CONTEXT_KEY] = tag
     state = parse_json(snapshot["state.json"]) if snapshot["state.json"] is not None else {}
     source_files = _digests(snapshot)
     digest = hashlib.sha256(json.dumps(source_files, sort_keys=True).encode()).hexdigest()

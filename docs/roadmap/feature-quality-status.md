@@ -33,7 +33,9 @@ their complete acceptance criteria and exact merged revisions are verified.
   files nor processes. The completion judge enforces exclusion of fork-inherited
   history: historical checks never verify the new candidate. Compaction summaries
   of inherited history stay marked and excluded; current summaries and running
-  notes use only current inputs. Agent-initiated `buffer_grep`/`buffer_slice` reads
+  notes use only current inputs. Repeated forks retain earlier source IDs and
+  compaction markers while naming the immediate source. Agent-initiated
+  `buffer_grep`/`buffer_slice` reads
   of archived inherited text remain fresh observations of historical text; the
   archive pointer warns about inherited counts and source sessions.
 - **Workers:** concurrent editing fan-out and non-local worker backends remain

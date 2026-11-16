@@ -7,7 +7,10 @@ unmarked and rely on the state-card notice. Summarizing and microcompact
 condensers split inherited history from current inputs. Derived inherited
 summaries carry stale source provenance and `derived_from: compaction_summary`;
 multiple sources are sorted, and invalid markers retain unknown provenance.
-The completion judge excludes these summaries and reports their count.
+The completion judge excludes these summaries and reports their count. A later
+fork names its immediate source, accumulates earlier singular and plural source
+IDs in sorted `source_session_ids`, and preserves `derived_from`; source notices
+include every recorded source.
 
 Keeping separate summaries preserves useful history without laundering it into
 current evidence or unnecessarily marking current work stale. Microcompact's
@@ -15,7 +18,9 @@ running notes are separate for inherited and current segments. The inherited
 summary call covers only messages the rebuild drops, excluding system, task
 and recent-window messages. When those inputs are only previous inherited
 summaries, carry the original objects forward without model calls. Histories
-without inherited inputs retain their existing summary behavior.
+without inherited inputs retain their existing summary behavior, including the
+current-summary header and attached archive pointer after an empty model response.
+An empty current summary is omitted only when there are no current inputs.
 
 Archive pointers attach to a newly created untagged USER summary, falling back
 to insertion after the task, and report inherited counts and source sessions.
