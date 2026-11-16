@@ -105,6 +105,7 @@ class SpendGate:
     calls: int = 0
     refused: int = 0
     warned: bool = False
+    _last_refusal_cause: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # A cap that compares false against everything (NaN) or can never be
@@ -119,6 +120,15 @@ class SpendGate:
     def limited(self) -> bool:
         return self.max_tokens is not None or self.max_cost_usd is not None
 
+    @property
+    def last_refusal_cause(self) -> str | None:
+        """Most recent admission refusal's cause, or ``None`` before any refusal.
+
+        Phase coordinators pair this with ``refused`` to retain the spend cause
+        when a worker's auxiliary caller catches the admission exception.
+        """
+        return self._last_refusal_cause
+
     async def admit(self, purpose: str, *, estimate_tokens: int) -> SpendReservation:
         """Reserve ``estimate_tokens`` for one call, or raise :class:`SpendLimitExceeded`."""
         estimate = max(0, int(estimate_tokens))
@@ -127,6 +137,7 @@ class SpendGate:
             if refusal is not None:
                 self.refused += 1
                 cause, reason = refusal
+                self._last_refusal_cause = cause
                 raise SpendLimitExceeded(f"{purpose} call refused: {reason}", cause)
             self.reserved_tokens += estimate
             self.calls += 1

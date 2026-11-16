@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-11-12 — Collection attempts inherit root spend admission (#363)
+
+Collection workers inherit the active native run's spend gate when their child
+config is assembled. The child binds its own event store with the same gate;
+worker calls, auxiliaries and reasoning fallbacks therefore reserve and settle
+against the parent remainder. The collection ledger remains an additional
+job-level limit. Standalone collection without an active gate stays compatible.
+This supersedes the #405 entry's collection-worker exclusion. A worker result
+carrying `spend_limit`, or any new shared-gate refusal during the attempt, fails
+the job with its spend cause and does not trigger a reasoning-model fallback or
+record a `MODEL_FALLBACK` event. The coordinator compares the gate's public
+refusal count around each attempt and reads its last refusal cause, so auxiliary
+callers that catch admission exceptions cannot hide budget exhaustion. Because
+the gate is shared, concurrent refusals conservatively stop the job too; a
+refusal predating the attempt alone does not suppress ordinary failure fallback.
+
 ## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
 
 Dashboard chat attaches the shared loop consumer. Live state holds only a bounded
@@ -2738,9 +2754,10 @@ the run with `spend_limit`. The root runner records the final gate snapshot as
 session meta `spend_gate`. A cap that cannot bound spend (tokens below 1, a
 cost that is not a finite amount above 0) is refused before any runtime is
 selected, and either flag on an ACP runtime is refused (exit 2) because Garuda
-does not see that agent's model calls. Defaults stay unlimited. Not yet
-covered: collection workers keep their own ledger, consult children are
-separate roots, and failed-attempt usage is #406.
+does not see that agent's model calls. Defaults stay unlimited. Collection
+workers now share this gate as described in the 2026-11-12 collection decision;
+their own ledger remains an additional limit. The original consult-child
+exclusion is superseded by the #385 decisions below; failed-attempt usage is #406.
 
 ## 2026-11-06 — Resumed runs continue the source tree's spend (#407)
 
