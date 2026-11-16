@@ -76,7 +76,7 @@ def test_incident_cli_persists_coverage_and_unknowns(tmp_path):
 
 async def test_minimal_pair_changes_only_selected_mechanism(tmp_path):
     minimal = MinimalConfig.load()
-    assert minimal.identity == "db3bb529d73a2dc744a6dbc00143b67741c6fe2bbda3b2eaacd0b0f7f352d01c"
+    assert minimal.identity == "c363fadc669cec6a325cb2c5c158f8dc54f1203d3400687926f1b07eebaaaf71"
     baseline = asdict(minimal.config(mechanism="require_discriminating_evidence", enabled=False))
     candidate = asdict(minimal.config(mechanism="require_discriminating_evidence", enabled=True))
     assert {k for k in baseline if baseline[k] != candidate[k]} == {"require_discriminating_evidence"}

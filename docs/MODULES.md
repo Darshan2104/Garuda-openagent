@@ -435,6 +435,27 @@ makes the validated report — question, evidence-backed conclusions, sources,
 rejected approaches and coverage — the only thing its parent receives through the
 ordinary typed child-result handoff.
 
+## SDK child delta forwarding
+
+`types.py::AgentConfig.stream_subagent_deltas` defaults to false. The SDK's
+`subagent_deltas=True` requires `on_delta`; both SDK entry points assign the flag
+on every run, including reused conversation configs. `core/run_state.py` passes
+the consumer into its constructed runner's `parent_delta_consumer` only when
+enabled, leaving caller-supplied runners untouched. `core/subagent.py::_labelled`
+wraps child observations with `LiveDelta.source`, `agent` and `depth`, preserving
+an existing source so nested calls retain their innermost label. Child config
+copies enable forwarding to their own runners.
+
+`LiveDelta` defaults (`source=None`, `agent=None`, `depth=0`) identify the run's
+own model call. Child sources are session ids; editing-worker sources equal
+candidate ids because `core/editing_worker.py` copies the runner with that child
+session id. Concurrent sources interleave by scheduling, with order retained
+within each source; SDK callers group by source and scope labelled discard to
+that source. The existing model forwarder detaches raising consumers per call
+and records the error in that child's log. `tui.py` and dashboard `web/live.py`
+ignore labelled deltas before touching previews or the thinking spinner.
+Consult and collection children remain outside this path.
+
 ## `model/` — provider access
 
 `protocol.py` is the `Model` interface. `litellm_model.py` is the real

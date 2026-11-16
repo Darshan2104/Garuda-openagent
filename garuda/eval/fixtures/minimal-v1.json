@@ -44,6 +44,7 @@
     "max_run_cost_usd": null,
     "spend_gate": null,
     "editing_workers": null,
+    "stream_subagent_deltas": false,
     "buffer_tool_output": false,
     "buffer_threshold_bytes": 30720,
     "reserved_output_tokens": 16000,

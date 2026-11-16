@@ -287,3 +287,19 @@ def test_renderer_rich_smoke():
     renderer.on_tool_result("bash", "hi", is_error=False)
     renderer.on_todo([{"content": "task", "status": "pending"}])
     renderer.on_done("done")
+
+
+@pytest.mark.parametrize("kind", ["text", "discard"])
+def test_renderer_ignores_labelled_deltas_without_stopping_spinner(monkeypatch, capsys, kind):
+    from garuda.model.streaming import LiveDelta
+
+    monkeypatch.setenv("TERM", "xterm")
+    renderer = ChatRenderer(use_rich=False)
+    status_calls = []
+    renderer._status = SimpleNamespace(
+        stop=lambda: status_calls.append("stop"), start=lambda: status_calls.append("start"),
+    )
+    renderer.on_model_delta(LiveDelta(kind, "child working", source="child", agent="harbor", depth=1))
+    assert capsys.readouterr().out == ""
+    assert renderer._assistant_text == ""
+    assert status_calls == []

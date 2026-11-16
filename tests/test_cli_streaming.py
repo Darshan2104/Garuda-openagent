@@ -541,3 +541,25 @@ async def test_renderer_closes_preview_on_response_failure_or_cancellation(tmp_p
     closed = terminal.getvalue()
     events.append(EventType.TOOL_RESULT, {"name": "late", "content": "after close"})
     assert terminal.getvalue() == closed
+
+
+async def test_tty_run_delegation_previews_only_the_parent(command):
+    run, _ = command
+    status, model, output = await run([
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            "delegate", "invoke_subagent", {"profile": "harbor", "task": "investigate", "handoff": "none"},
+        )]),
+        ModelResponse(content="CHILD-PRIVATE-PREVIEW", tool_calls=[ToolCall(
+            "done", "task_complete", {"summary": "Finished the delegated investigation."},
+        )]),
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            "contract-probe", "task_complete", {"summary": "Finished the delegated investigation."},
+        )]),
+        ScriptedStream([StreamDelta(content_delta="Parent answer."),
+                        StreamDelta(done=True, finish_reason="stop")]),
+    ])
+    assert status == 0
+    assert model.previews
+    assert any("Parent" in preview for _, preview in model.previews)
+    assert all("CHILD-PRIVATE-PREVIEW" not in preview for _, preview in model.previews)
+    assert "CHILD-PRIVATE-PREVIEW" not in output

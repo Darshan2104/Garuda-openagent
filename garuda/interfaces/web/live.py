@@ -616,6 +616,8 @@ class LiveChat:
 
     def on_model_delta(self, delta) -> None:
         """Bounded transient text; reasoning and partial calls never enter the log."""
+        if getattr(delta, "source", None) is not None:
+            return
         cursor = self.session.events.count()
         if cursor != self._preview_cursor or delta.kind == "discard":
             self._preview_text = ""
