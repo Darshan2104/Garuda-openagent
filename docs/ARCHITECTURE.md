@@ -149,6 +149,13 @@ fastest way to learn the system.
    after any streamed chunk or delta is an unknown outcome, not a definite rejection.
    Interruptions charge the estimate as interrupted calls, and other exceptions charge it as
    unknown-outcome calls, both with unknown cost.
+   Calls with reported usage or a successful completion sum tokens per attempt.
+   Each attempt without usage, except a definite failed rejection, adds the
+   largest positive reported prompt size in the call, or the reservation estimate if unavailable,
+   with unknown cost. This lower bound excludes unreported generated output;
+   `unreported_failed_attempts` survives checkpoints and resume. Unknown cost
+   and estimated-token calls count once per call, without duplicating the
+   whole-call failure estimate.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops
    based on reported spend. Legacy missing snapshots retain unknown prior spend.
    An opt-in `core/advisor.py` reuses consult admission and between-turn steering.
@@ -894,11 +901,25 @@ allocation policy. The fork
 preparation owner validates nested source shapes before deserialization; the CLI
 renders identity and record failures as exit-2 refusals.
 Retained messages carry `context_fork_inherited` metadata naming the immediate
-source session and stale evidence. The marker survives checkpoints and resume,
+source session and keeping earlier sources in sorted `source_session_ids` when
+forking again, along with any `derived_from` marker and stale evidence.
+The marker survives checkpoints and resume,
 stays out of provider payloads, and excludes those messages from the completion
 judge's evidence with a count and source-session notice. Source bytes and digests
-are unchanged. Compaction summaries do not inherit the marker; the state-card
-staleness notice remains their guard.
+are unchanged. Compaction splits inherited and current inputs into separate
+summaries: inherited summaries retain stale source provenance and
+`derived_from: compaction_summary`, while current summaries use only untagged
+inputs. The judge excludes derived summaries and reports their count. Only
+inherited messages dropped by the rebuild are summarized; system, task and
+recent-window messages retain their original markers. When only previous
+inherited summaries remain, they carry forward unchanged without a model call.
+Microcompact maintains separate running notes for each provenance segment.
+Current inputs retain a summary header even when the model returns empty text;
+an empty current summary is omitted only when there are no current inputs.
+Archive pointers attach to a new untagged summary, or are inserted after the
+task, and warn how many archived messages were inherited and from which sessions.
+Agent-initiated `buffer_grep`/`buffer_slice` reads of archived inherited text
+remain fresh observations of historical text; the pointer warns about this limit.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

@@ -151,6 +151,142 @@ def no_backoff(monkeypatch):
     monkeypatch.setattr(lm.asyncio, "sleep", no_sleep)
 
 
+@pytest.mark.parametrize("first,reported,success_prompt,expected_tokens,missing", [
+    pytest.param(litellm.InternalServerError, None, True, 44, 1, id="500"),
+    pytest.param(litellm.Timeout, None, True, 44, 1, id="timeout"),
+    pytest.param(litellm.APIConnectionError, None, True, 44, 1, id="connection"),
+    pytest.param(litellm.RateLimitError, None, True, 24, 0, id="rejected-429"),
+    pytest.param(None, {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.1},
+                 True, 36, 0, id="reported"),
+    pytest.param(None, {"prompt_tokens": 10, "cost": 0.1},
+                 True, 34, 0, id="partial-token-fields"),
+    pytest.param(litellm.InternalServerError, None, False, 54, 1, id="reservation-fallback"),
+])
+async def test_completed_retry_spend(
+    monkeypatch, no_backoff, first, reported, success_prompt, expected_tokens, missing,
+):
+    from garuda.core.events import EventStore
+    from garuda.core.spend import SpendGate, SpendLimitExceeded
+    from garuda.model import accounting
+
+    error = first("failed", llm_provider="p", model="m") if first else _reported_error(529, reported)
+    success = _priced_response()
+    if not success_prompt:
+        success.usage = {"completion_tokens": 4, "cost": 0.3}
+    replies = iter([error, success])
+
+    async def complete(**kwargs):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    gate = SpendGate(max_cost_usd=1.0)
+    token = accounting.bind(EventStore(), gate)
+    try:
+        await accounting.complete(LitellmModel("openai/gpt-4o-mini", max_retries=2), [],
+                                  purpose="summary", max_tokens=50)
+    finally:
+        accounting.reset(token)
+    assert gate.settled_tokens == expected_tokens
+    assert gate.settled_cost_usd == pytest.approx(0.4 if reported else 0.3)
+    assert gate.cost_unknown_calls == missing
+    assert gate.snapshot().get("unreported_failed_attempts", 0) == missing
+    assert gate.estimated_token_calls == missing
+    assert gate.unpriced_model is None
+    if missing:
+        with pytest.raises(SpendLimitExceeded) as refused:
+            await gate.admit("summary", estimate_tokens=50)
+        assert refused.value.cause == "cost_unknown"
+        assert "1 attempt(s) without reported usage" in str(refused.value)
+        assert "--max-run-tokens" in str(refused.value)
+    else:
+        await gate.admit("summary", estimate_tokens=50)
+
+
+async def test_unreported_retry_with_reported_terminal_failure(monkeypatch, no_backoff):
+    from garuda.core.events import EventStore
+    from garuda.core.spend import SpendGate, SpendLimitExceeded
+    from garuda.model import accounting
+
+    errors = iter([_reported_error(500), _reported_error(
+        529, {"prompt_tokens": 20, "completion_tokens": 4, "cost": 0.3})])
+
+    async def complete(**kwargs):
+        raise next(errors)
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    gate = SpendGate(max_cost_usd=1.0)
+    token = accounting.bind(EventStore(), gate)
+    try:
+        with pytest.raises(_StatusExc):
+            await accounting.complete(LitellmModel("openai/gpt-4o-mini", max_retries=2), [],
+                                      purpose="summary", max_tokens=50)
+    finally:
+        accounting.reset(token)
+    assert gate.settled_tokens == 44
+    assert gate.settled_cost_usd == 0.3
+    assert gate.cost_unknown_calls == gate.estimated_token_calls == 1
+    assert gate.snapshot()["unreported_failed_attempts"] == 1
+    assert gate.unknown_outcome_calls == 0
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("summary", estimate_tokens=50)
+    assert refused.value.cause == "cost_unknown"
+
+
+@pytest.mark.parametrize("prompt", [20, None], ids=["reported-prompt", "reservation-fallback"])
+@pytest.mark.parametrize("entry", ["complete_streaming", "loop"])
+async def test_stream_setup_retry_spend(monkeypatch, no_backoff, tmp_path, prompt, entry):
+    from garuda.core.events import EventStore
+    from garuda.core.loop import DefaultAgent
+    from garuda.core.spend import SpendGate
+    from garuda.model import accounting
+    from garuda.tools import default_tools
+    from garuda.types import AgentConfig
+    from garuda.workspace.local import LocalEnvironment
+
+    async def chunks():
+        yield litellm.ModelResponse(
+            stream=True, choices=[{"delta": {"content": "done"}, "finish_reason": "stop"}],
+            usage={"completion_tokens": 4, "cost": 0.3,
+                   **({"prompt_tokens": prompt, "total_tokens": prompt + 4} if prompt else {})},
+        )
+
+    calls = 0
+
+    async def complete(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert kwargs["stream"]
+        if calls == 1:
+            raise _reported_error(500)
+        return chunks()
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    model = LitellmModel("openai/gpt-4o-mini", max_retries=2)
+    snapshots = []
+    gate = SpendGate(max_tokens=10_000, checkpoint=snapshots.append)
+    if entry == "complete_streaming":
+        reservation = await gate.admit("main", estimate_tokens=50)
+        response = await model.complete_streaming([], max_tokens=50)
+        await accounting.settle(gate, reservation, response=response, model=model)
+    else:
+        await DefaultAgent().run(
+            task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+            tools=default_tools(), config=AgentConfig(max_turns=1, enable_verifier=False,
+                force_final_submission=False, max_tokens=50, spend_gate=gate),
+            events=EventStore(), model_delta_consumer=lambda d: None,
+        )
+    estimate = snapshots[0]["reserved_tokens"]
+    assert calls == 2
+    assert gate.settled_tokens == (44 if prompt else 4 + estimate)
+    assert gate.settled_cost_usd == 0.3
+    assert gate.cost_unknown_calls == gate.estimated_token_calls == 1
+    assert gate.snapshot()["unreported_failed_attempts"] == 1
+    assert gate.unpriced_model is None
+
+
 @pytest.mark.parametrize("reported", [True, False], ids=["reported", "unknown"])
 async def test_retry_usage_belongs_to_the_logical_response(monkeypatch, no_backoff, reported):
     failed_usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.1} if reported else None

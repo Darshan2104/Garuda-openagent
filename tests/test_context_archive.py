@@ -12,6 +12,7 @@ from garuda.context.condenser import (
 )
 from garuda.context.manager import ContextManager, render_archive_transcript
 from garuda.core.buffer import ToolOutputBuffer
+from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.types import Message, Role, ToolCall
 
@@ -149,21 +150,37 @@ def test_prune_without_buffer_keeps_legacy_stub_and_capture_facts(tmp_path, capt
         assert retained["omitted_view_bytes"] == (625 if pointer else 608)
 
 
-async def test_rebuild_archives_dropped_messages(tmp_path):
+@pytest.mark.parametrize("summary_text", ["Compact notes", ""])
+async def test_rebuild_archives_dropped_messages(tmp_path, summary_text):
     buffer = ToolOutputBuffer(session_id="s", root=tmp_path)
-    cm = _cm(MicrocompactCondenser(), buffer=buffer)
+    cm = ContextManager(
+        model=ScriptModel(responses=[ModelResponse(content=summary_text, tool_calls=[])]),
+        max_context_tokens=1000, proactive_threshold=100,
+        enable_three_step_summary=True, keep_recent_turns=2,
+        condenser=MicrocompactCondenser(), buffer=buffer,
+    )
     # Outputs below prune_min_chars: nothing to prune, so the condenser goes
     # straight to summarize-and-rebuild once free tokens run out.
-    _seed(cm, _history(6, tool_output="NEEDLE_ALPHA"))
+    history = _history(6, tool_output="NEEDLE_ALPHA")
+    _seed(cm, history)
     before = len(cm.get_messages())
     cm.note_usage({"prompt_tokens": 950})
     assert await cm.maybe_summarize()
     messages = cm.get_messages()
     assert len(messages) < before
 
-    summary = next(m for m in messages if "Conversation summary" in (m.content or ""))
-    assert "[context-archive]" in summary.content
-    buffer_id = _BUFFER_POINTER_RE.search(summary.content).group(1)
+    assert messages[:2] == history[:2]
+    summary = messages[2]
+    buffer_id = buffer.list_buffers()[0].buffer_id
+    assert summary.role == Role.USER
+    assert summary.content == (
+        f"Conversation summary (context compacted):\n{summary_text}\n\n"
+        "[context-archive] 8 earlier messages were compacted out of "
+        f"context. Their unknown captured transcript is archived in buffer:{buffer_id} — recover "
+        f'details with buffer_grep(buffer_id="{buffer_id}", pattern="...") or '
+        f'buffer_slice(buffer_id="{buffer_id}", start_line=N, end_line=M).'
+    )
+    assert messages[3:] == history[-4:]
     archived = buffer.read(buffer_id)
     # Dropped tool output and assistant tool calls are fully recoverable.
     assert "NEEDLE_ALPHA #0" in archived
@@ -346,3 +363,37 @@ async def test_archives_retain_argument_rendering_loss_with_complete_tool_observ
         assert capture["omitted_source_bytes"] > 0
     assert "full captured transcript" not in pointer.content
     assert "KNOWN_OBSERVATION" in buffer.read(capture["owner"]["reference"])
+
+
+@pytest.mark.parametrize("capture_fails", [False, True])
+@pytest.mark.parametrize("current_inputs", [False, True])
+async def test_archive_pointer_warns_about_inherited_history_on_current_message(tmp_path, capture_fails, current_inputs):
+    from garuda.context.condenser import SummarizingCondenser
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
+    buffer = ToolOutputBuffer(session_id="s", root=tmp_path / "buffers")
+    if capture_fails:
+        (tmp_path / "buffers").write_text("not a directory")
+    history = _history(6, tool_output="INHERITED observation")
+    for message in history[2:]:
+        message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": "source", "evidence": "stale"}
+    if not current_inputs:
+        for message in history[:2]:
+            message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": "source", "evidence": "stale"}
+    cm = _cm(SummarizingCondenser(), buffer=buffer)
+    _seed(cm, history)
+    cm.note_usage({"prompt_tokens": 950})
+    assert await cm.maybe_summarize()
+    messages = cm.get_messages()
+    pointer = next(m for m in messages if "[context-archive]" in m.content)
+    assert "8 of these were inherited by context fork from session source (historical; not current evidence)." in pointer.content
+    assert INHERITED_CONTEXT_KEY not in pointer.metadata
+    if current_inputs:
+        assert "Conversation summary" in pointer.content
+    else:
+        assert messages.index(pointer) == 2
+    assert not any("[context-archive]" in m.content for m in messages if INHERITED_CONTEXT_KEY in m.metadata)
+    if capture_fails:
+        assert "capture failed" in pointer.content
+    else:
+        assert "INHERITED observation" in buffer.read(_BUFFER_POINTER_RE.search(pointer.content).group(1))

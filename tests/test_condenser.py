@@ -181,3 +181,79 @@ async def test_no_condense_below_threshold():
     cm.seed(_history(1)[:2])
     cm.note_usage({"prompt_tokens": 10})
     assert not await cm.maybe_summarize()
+
+
+@pytest.mark.parametrize("strategy", [MicrocompactCondenser, SummarizingCondenser])
+@pytest.mark.parametrize("tag,sources", [
+    ({"source_session_id": "source", "evidence": "stale"}, ["source"]),
+    ({"source_session_ids": ["z-source", "a-source"], "evidence": "stale"}, ["a-source", "z-source"]),
+    ({"source_session_id": "b-source", "source_session_ids": ["z-source", "a-source"]},
+     ["a-source", "b-source", "z-source"]),
+    ({"source_session_id": "source", "source_session_ids": None}, ["source", "unknown"]),
+    (None, ["unknown"]),
+])
+async def test_compaction_splits_inherited_inputs_and_carries_summary_without_calls(strategy, tag, sources):
+    from garuda.context.condenser import CondenserContext
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+    from garuda.model.protocol import ModelResponse
+
+    calls = []
+
+    class Observe(ScriptModel):
+        async def complete(self, messages, **kwargs):
+            calls.append("\n".join(m.content for m in messages))
+            return await super().complete(messages, **kwargs)
+
+    incremental = strategy is MicrocompactCondenser
+    responses_per_segment = 1 if incremental else 3
+    model = Observe([ModelResponse(content=text, tool_calls=[]) for text in
+                     ["INHERITED finding"] * responses_per_segment
+                     + ["CURRENT finding"] * responses_per_segment
+                     + ["CURRENT updated"] * responses_per_segment])
+    condenser = strategy()
+    retained = Message(role=Role.ASSISTANT, content="INHERITED recent", metadata={INHERITED_CONTEXT_KEY: tag})
+    cx = CondenserContext(
+        messages=[
+            Message(role=Role.SYSTEM, content="sys"),
+            Message(role=Role.USER, content="CURRENT task"),
+            Message(role=Role.ASSISTANT, content="INHERITED raw", metadata={INHERITED_CONTEXT_KEY: tag}),
+            Message(role=Role.ASSISTANT, content="CURRENT observation"),
+            retained,
+        ],
+        model=model, task="CURRENT task", used_tokens=990, max_context_tokens=1000,
+        proactive_threshold=100, keep_recent_turns=1, enable_three_step_summary=True,
+        working_state="CURRENT ledger",
+    )
+    rebuilt = await condenser.condense(cx)
+    # Model requests, including Q&A or running notes, must never cross provenance.
+    assert len(calls) == 2 * responses_per_segment
+    assert all("INHERITED raw" in call and "CURRENT" not in call and "INHERITED recent" not in call
+               for call in calls[:responses_per_segment])
+    assert all("CURRENT observation" in call and "INHERITED" not in call
+               for call in calls[responses_per_segment:])
+    inherited = [m for m in rebuilt if isinstance(m.metadata.get(INHERITED_CONTEXT_KEY), dict)
+                 and m.metadata[INHERITED_CONTEXT_KEY].get("derived_from") == "compaction_summary"]
+    assert len(inherited) == 1
+    summary = inherited[0]
+    expected = {"source_session_id": sources[0], "evidence": "stale", "derived_from": "compaction_summary"}
+    if len(sources) > 1:
+        expected["source_session_ids"] = sources
+    assert summary.metadata[INHERITED_CONTEXT_KEY] == expected
+    assert summary.content.startswith("Inherited context summary (context fork from session ")
+    assert "INHERITED finding" in summary.content
+    assert retained in rebuilt
+    if incremental:
+        assert "INHERITED" not in condenser._state
+        assert "INHERITED finding" in condenser._inherited_state
+
+    # Remove the raw inherited recent window by moving it to a current-only
+    # recent window before this second compaction; only the old summary is dropped.
+    cx.messages = [m for m in rebuilt if m is not retained] + [Message(role=Role.ASSISTANT, content="CURRENT later")]
+    second = await condenser.condense(cx)
+    assert any(m is summary for m in second)
+    assert len(calls) == 3 * responses_per_segment
+    assert all("INHERITED" not in call for call in calls[2 * responses_per_segment:])
+    if incremental:
+        assert "INHERITED" not in condenser._state
+        condenser.reset()
+        assert condenser._state == condenser._inherited_state == ""
