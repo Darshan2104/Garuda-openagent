@@ -1459,3 +1459,317 @@ async def test_retired_worker_path_read_error_stays_unknown(editing, monkeypatch
     monkeypatch.setattr(os, "lstat", unavailable)
     view = workers.repositories.inventory(runner.events.session_id)
     assert view["coverage"] == "unavailable" and view["omitted"] is None
+
+
+
+class WorkerCrash(BaseException):
+    """A fatal child failure that escapes the loop's ordinary model retries."""
+
+
+class TaskScriptModel(ScriptModel):
+    """Choose a script from the actual child task, with bounded rendezvous."""
+
+    def __init__(self, *, barrier=None, waits=None, scripts=None):
+        super().__init__([])
+        self.scripts = scripts or {
+            name: [_call("write_file", path=f"{name[0]}.txt", content=f"{name}\n"), _done()]
+            for name in ("alpha", "beta")
+        }
+        self.barrier = barrier
+        self.waits = waits or {}
+        self.calls = []
+        self.reached = {(name, index): asyncio.Event()
+                        for name, script in self.scripts.items() for index in range(len(script))}
+
+    async def complete(self, messages, **kwargs):
+        name = next(name for name in self.scripts
+                    if any(m.role == Role.USER and name in m.content for m in messages))
+        index = self.calls.count(name)
+        self.calls.append(name)
+        if index >= len(self.scripts[name]):
+            return ModelResponse(content="Done.", tool_calls=[])
+        if index == 0 and self.barrier is not None:
+            await asyncio.wait_for(self.barrier.wait(), 10)
+        self.reached[name, index].set()
+        if (name, index) in self.waits:
+            await asyncio.wait_for(self.waits[name, index].wait(), 10)
+        response = self.scripts[name][index]
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+def _concurrent_workers(editing, model):
+    runner, previous, repo = editing
+    workers = LocalEditingWorkers(
+        previous.parent_guard, checks=list(previous.checks), image=previous.image,
+        root=previous.root, max_concurrent=2,
+    )
+    runner.editing_workers, runner.model = workers, model
+    return runner, workers, repo
+
+
+async def test_concurrent_workers_run_together_and_integrate_serially(editing, monkeypatch):
+    from garuda.core.spend import SpendGate
+
+    start, finish_beta, alpha_ready = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    model = TaskScriptModel(barrier=asyncio.Barrier(2), waits={
+        ("alpha", 0): start, ("beta", 0): start, ("beta", 1): finish_beta,
+    })
+    runner, workers, repo = _concurrent_workers(editing, model)
+    runner.spend_gate = SpendGate(max_tokens=1_000_000)
+    ready = []
+
+    def observe(event, store):
+        receipt = event["payload"]
+        if (event["type"] == "editing_worker" and receipt.get("state") == "ready"
+                and receipt.get("child_settled")):
+            ready.append(receipt)
+            alpha_ready.set()
+
+    runner.events.add_observer(observe)
+    batch = asyncio.create_task(runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")]))
+    try:
+        for name in ("alpha", "beta"):
+            await asyncio.wait_for(model.reached[name, 0].wait(), 10)
+        receipts = [json.loads(path.read_text()) for path in workers.root.glob("worker-*/receipt.json")]
+        assert len(receipts) == 2 and all(r["state"] == "running" for r in receipts)
+        ids = {r["candidate_id"] for r in receipts}
+        assert set(CapacityStore().holders("native")) == ids
+        for receipt in receipts:
+            holders = LeaseStore().holders_of(receipt["workspace"])
+            assert [holder.session_id for holder in holders] == [receipt["candidate_id"]]
+        directories = set(workers.root.glob("worker-*"))
+        third = await workers.run(runner, "editor", "third")
+        assert third.metadata["refused"] == "worker.busy"
+        assert set(workers.root.glob("worker-*")) == directories
+        start.set()
+        await asyncio.wait_for(alpha_ready.wait(), 10)
+        await asyncio.wait_for(model.reached["beta", 1].wait(), 10)
+        assert (await _integrate(runner, workers, ready[0]))["code"] == "worker.busy"
+        assert not (repo / "a.txt").exists() and not (repo / "b.txt").exists()
+    finally:
+        start.set()
+        finish_beta.set()
+        results = await batch
+    alpha, beta = map(_receipt, results)
+    assert (Path(alpha["workspace"]) / "a.txt").read_text() == "alpha\n"
+    assert (Path(beta["workspace"]) / "b.txt").read_text() == "beta\n"
+    # Only Docker dispatch is replaced; candidate construction and application
+    # still cross the real repository, permission and ownership boundaries.
+    checking, finish_check = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def check(*args):
+        loop.call_soon_threadsafe(checking.set)
+        assert finish_check.wait(10)
+        return {"passed": True}
+
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", check)
+    integrating = asyncio.create_task(_integrate(runner, workers, alpha))
+    try:
+        await asyncio.wait_for(checking.wait(), 10)
+        assert (await _integrate(runner, workers, beta))["code"] == "worker.busy"
+        directories = set(workers.root.glob("worker-*"))
+        refused = await workers.run(runner, "editor", "third")
+        assert refused.metadata["refused"] == "worker.busy"
+        assert set(workers.root.glob("worker-*")) == directories
+    finally:
+        finish_check.set()
+        integrated = await integrating
+    assert integrated["state"] == "integrated"
+    assert (await _integrate(runner, workers, beta))["code"] == "integration.stale_base"
+    assert (repo / "a.txt").read_text() == "alpha\n" and not (repo / "b.txt").exists()
+    assert runner.budget.launches == 2
+    assert runner.spend_gate.reserved_tokens == 0
+
+
+async def test_cancelling_a_batch_quarantines_every_live_sibling(editing):
+    blocked = asyncio.Event()
+    model = TaskScriptModel(barrier=asyncio.Barrier(2), waits={
+        ("alpha", 0): blocked, ("beta", 0): blocked,
+    })
+    runner, workers, repo = _concurrent_workers(editing, model)
+    batch = asyncio.create_task(runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")]))
+    try:
+        for name in ("alpha", "beta"):
+            await asyncio.wait_for(model.reached[name, 0].wait(), 10)
+    finally:
+        batch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await batch
+    receipts = [json.loads(path.read_text()) for path in workers.root.glob("worker-*/receipt.json")]
+    assert len(receipts) == 2
+    assert all(r["state"] == "uncertain" and r["cleanup"] == "unknown" for r in receipts)
+    assert set(CapacityStore().holders("native")) == {r["candidate_id"] for r in receipts}
+    for receipt in receipts:
+        assert [h.session_id for h in LeaseStore().holders_of(receipt["workspace"])] == [receipt["candidate_id"]]
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert not (repo / "a.txt").exists() and not (repo / "b.txt").exists()
+    assert not runner.busy
+    refused = await runner.run("editor", "retry", editing_worker=True)
+    assert refused.metadata["refused"] == "worker.uncertain"
+
+
+async def test_crashed_sibling_blocks_integration_of_ready_sibling(editing):
+    crash = asyncio.Event()
+    model = TaskScriptModel(barrier=asyncio.Barrier(2), waits={("alpha", 0): crash}, scripts={
+        "alpha": [WorkerCrash("alpha crashed")],
+        "beta": [_call("write_file", path="b.txt", content="beta\n"), _done()],
+    })
+    runner, workers, repo = _concurrent_workers(editing, model)
+    alpha = asyncio.create_task(workers.run(runner, "editor", "alpha"))
+    beta = asyncio.create_task(workers.run(runner, "editor", "beta"))
+    try:
+        ready = _receipt(await beta)
+    finally:
+        crash.set()
+        with pytest.raises(WorkerCrash, match="alpha crashed"):
+            await alpha
+    assert (await _integrate(runner, workers, ready))["code"] == "worker.uncertain"
+    refused = await workers.run(runner, "editor", "retry")
+    assert refused.metadata["refused"] == "worker.uncertain"
+    assert (repo / "main.txt").read_text() == "original\n" and not (repo / "b.txt").exists()
+
+
+async def test_live_sibling_of_another_service_instance_blocks_admission(editing):
+    release = asyncio.Event()
+    model = TaskScriptModel(waits={("alpha", 0): release})
+    runner, workers, repo = _concurrent_workers(editing, model)
+    other = LocalEditingWorkers(workers.parent_guard, checks=list(workers.checks),
+                                image=workers.image, root=workers.root, max_concurrent=2)
+    live = asyncio.create_task(workers.run(runner, "editor", "alpha"))
+    try:
+        await asyncio.wait_for(model.reached["alpha", 0].wait(), 10)
+        refused = await other.run(runner, "editor", "beta")
+        assert refused.metadata["refused"] == "worker.uncertain"
+        assert len(list(workers.root.glob("worker-*"))) == 1
+    finally:
+        release.set()
+        _receipt(await live)
+
+
+async def test_batch_respects_capacity_and_launch_budget(editing, monkeypatch):
+    release, refused = asyncio.Event(), asyncio.Event()
+    model = TaskScriptModel(waits={("alpha", 0): release, ("beta", 0): release})
+    runner, workers, repo = _concurrent_workers(editing, model)
+    capacity = CapacityStore()
+    reservation = capacity.reserve("native", "other-worker", 2)
+
+    def observe(event, store):
+        if event["type"] == "editing_worker" and event["payload"].get("state") == "refused":
+            refused.set()
+
+    runner.events.add_observer(observe)
+    batch = asyncio.create_task(runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")]))
+    try:
+        await asyncio.wait_for(refused.wait(), 10)
+    finally:
+        release.set()
+        results = await batch
+        capacity.release(reservation)
+    assert sorted(r.metadata["editing_worker"]["state"] for r in results) == ["ready", "refused"]
+    assert [r.metadata["refused"] for r in results if not r.success] == ["worker.capacity_unavailable"]
+    ready = _receipt(next(r for r in results if r.success))
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    assert (await _integrate(runner, workers, ready))["state"] == "integrated"
+    assert len(set(model.calls)) == 1
+    calls_before_refusal = list(model.calls)
+
+    # Use a fresh store location so whole-batch refusal proves no admission at all.
+    empty = LocalEditingWorkers(workers.parent_guard, checks=list(workers.checks), image=workers.image,
+                                root=workers.root.parent / "unlaunched", max_concurrent=2)
+    runner.editing_workers = empty
+    runner.budget = DelegationBudget(max_launches=1)
+    results = await runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")])
+    assert [r.metadata["refused"] for r in results] == ["agent.delegation_exhausted"] * 2
+    assert runner.budget.launches == 0 and model.calls == calls_before_refusal
+    assert not list(empty.root.glob("worker-*"))
+
+
+@pytest.mark.parametrize("value", [0, True, 9, 1.5, "2"])
+def test_worker_concurrency_requires_a_bounded_integer(editing, value):
+    _, workers, _ = editing
+    with pytest.raises(ValueError, match="max_concurrent"):
+        LocalEditingWorkers(workers.parent_guard, checks=list(workers.checks),
+                            image=workers.image, max_concurrent=value)
+
+
+async def test_batch_child_exception_cancels_and_quarantines_siblings(editing):
+    crash, blocked = asyncio.Event(), asyncio.Event()
+    model = TaskScriptModel(barrier=asyncio.Barrier(2), waits={
+        ("alpha", 0): crash, ("beta", 0): blocked,
+    }, scripts={"alpha": [WorkerCrash("alpha crashed")], "beta": [_done()]})
+    runner, workers, repo = _concurrent_workers(editing, model)
+    batch = asyncio.create_task(runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")]))
+    try:
+        for name in ("alpha", "beta"):
+            await asyncio.wait_for(model.reached[name, 0].wait(), 10)
+    finally:
+        crash.set()
+        with pytest.raises(BaseExceptionGroup) as failed:
+            await batch
+    assert len(failed.value.exceptions) == 1
+    assert isinstance(failed.value.exceptions[0], WorkerCrash)
+    receipts = [json.loads(path.read_text()) for path in workers.root.glob("worker-*/receipt.json")]
+    assert len(receipts) == 2 and all(r["state"] == "uncertain" for r in receipts)
+    assert set(CapacityStore().holders("native")) == {r["candidate_id"] for r in receipts}
+    assert all(LeaseStore().holders_of(r["workspace"]) for r in receipts)
+    assert not runner.busy and (repo / "main.txt").read_text() == "original\n"
+
+
+@pytest.mark.parametrize("reason,code", [
+    ("disabled", "worker.disabled"), ("busy", "agent.delegation_busy"),
+    ("oversized", "worker.batch_invalid"), ("allowlist", "agent.subagent_not_allowed"),
+    ("depth", "agent.delegation_too_deep"), ("launches", "agent.delegation_exhausted"),
+    ("deadline", "agent.delegation_deadline"), ("empty", None),
+])
+async def test_batch_preflight_launches_nothing_on_any_refusal(editing, reason, code):
+    model = TaskScriptModel()
+    runner, workers, _ = _concurrent_workers(editing, model)
+    requests = [("editor", "alpha"), ("editor", "beta")]
+    if reason == "disabled":
+        runner.editing_workers = None
+    elif reason == "busy":
+        runner.busy = True
+    elif reason == "oversized":
+        requests.append(("editor", "third"))
+    elif reason == "allowlist":
+        runner.allowed = ["editor"]
+        requests[1] = ("foreign", "beta")
+    elif reason == "depth":
+        runner.depth = runner.budget.max_depth + 1
+    elif reason == "launches":
+        runner.budget.max_launches = 1
+    elif reason == "deadline":
+        runner.deadline_monotonic = 0
+    else:
+        requests = []
+    results = await runner.run_editing_workers(requests)
+    assert [r.metadata["refused"] for r in results] == [code] * len(requests)
+    assert runner.budget.launches == 0 and not model.calls
+    assert not list(workers.root.glob("worker-*"))
+
+
+@pytest.mark.parametrize("native_ceiling", [1, 3])
+async def test_batch_counts_parent_slot_against_configured_native_ceiling(editing, native_ceiling):
+    runner, previous, repo = editing
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(f"capacity:\n  native: {native_ceiling}\n")
+    await previous.parent_guard.release()
+    parent = WorkspaceLeaseGuard(str(repo), runner.events.session_id, capacity_key="native")
+    parent.acquire()
+    workers = LocalEditingWorkers(parent, checks=list(previous.checks), image=previous.image,
+                                 root=previous.root, max_concurrent=2)
+    runner.editing_workers = workers
+    model = runner.model = TaskScriptModel(barrier=asyncio.Barrier(2))
+    try:
+        results = await runner.run_editing_workers([("editor", "alpha"), ("editor", "beta")])
+        assert CapacityStore().holders("native") == [runner.events.session_id]
+        if native_ceiling == 1:
+            assert [r.metadata["refused"] for r in results] == ["worker.capacity_unavailable"] * 2
+            assert not model.calls
+        else:
+            assert all(_receipt(r)["state"] == "ready" for r in results)
+        assert (repo / "main.txt").read_text() == "original\n"
+    finally:
+        await parent.release()

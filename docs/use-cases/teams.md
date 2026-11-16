@@ -504,9 +504,9 @@ From then on, every run ends with the check:
 
 ## Isolate a native editing worker
 
-This opt-in Python API runs one editing worker at a time in a detached Git
-snapshot repository. Ordinary subagents keep their existing behavior. The
-parent must hold a mutating workspace lease, and the child profile must declare
+This opt-in Python API defaults to one editing worker at a time, with bounded
+concurrency available below. Each child edits a detached Git snapshot repository.
+Ordinary subagents keep their existing behavior. The parent must hold a mutating workspace lease, and the child profile must declare
 an [output schema](customize.md#delegate-a-typed-result). For example, save
 `editor.yaml` and `edit-result.json` in your agents directory:
 
@@ -585,14 +585,66 @@ tmux editing-worker requests refuse while their ordinary subagents keep working.
 Local permission screening and workspace separation are guardrails, not
 confinement. Children use the same model, shared delegation bounds and a
 narrowed built-in toolkit. A finite native capacity must have room for the
-parent and child; an otherwise unlimited pool gives editing workers a ceiling
-of one. Repositories and receipts use the global worktrees directory.
+parent and children. Workers reserve against the configured native ceiling,
+or the service's `max_concurrent` when no native ceiling is configured. A parent
+native slot counts against that ceiling, so two workers plus a reserved parent
+need at least three slots. Repositories and receipts use the global worktrees
+directory.
 Active-child cancellation, observed background launches and uncertain child cleanup
 retain worker ownership and block editing-worker retries. Cancelled integration
 settles its checker and retains an uncertain candidate. Settled integrated workers
 and unchanged terminal workers retire automatically, including safe recovery on
 later editing-worker admission. There is no restart integration or replay.
 No parallel latency or cost improvement is claimed.
+
+### Run bounded concurrent editing workers
+
+Using the held parent guard and configured runner from the example above:
+
+```python
+async def edit_in_parallel(runner, guard, check_image):
+    workers = LocalEditingWorkers(
+        guard, checks=["pytest -q"], image=check_image, max_concurrent=2,
+    )
+    runner.editing_workers = workers
+    results = await guard.race(runner.run_editing_workers([
+        ("editor", "Implement alpha and return a summary."),
+        ("editor", "Implement beta and return a summary."),
+    ]))
+    # Results follow request order. Review each result and patch before selecting.
+    chosen = results[0].metadata.get("editing_worker", {})
+    if chosen.get("state") != "ready":
+        return results, None
+    integration = await guard.race(workers.integrate(
+        chosen["candidate_id"], chosen["provenance_digest"], env=runner.env,
+        session_id=runner.events.session_id, permissions=runner.parent_permissions,
+    ))
+    return results, integration
+```
+
+`max_concurrent` accepts integers from 1 through 8 (booleans refuse). Empty or
+oversized batches launch nothing. A disabled service, busy runner, disallowed
+profiles, depth, launch budget and deadline checks refuse the whole batch before launch.
+The runner charges one shared delegation launch per request, then uses a
+`TaskGroup`; child exceptions propagate as `BaseExceptionGroup` and cancel
+siblings. Cancellation and crashes quarantine each live child independently.
+
+Each worker has its own capacity holder, lease identity and heartbeat. Capacity
+contention settles as `worker.capacity_unavailable` when no ownership began;
+other children can still finish. The root spend gate and delegation budget are
+shared unchanged. Children use the parent's approval handler and relocated
+permissions. Screening workspace state is a task-local context variable;
+approval prompts are not serialized and may overlap.
+
+Integration refuses `worker.busy` while any run or another integration is live.
+After all children settle, integrate candidates one at a time. A changed parent
+makes siblings stale (`integration.stale_base`), even for disjoint edits; there
+is no automatic rebase or conflict resolution. Only the same service instance's
+currently live `admitted`/`running` siblings are exempt from admission uncertainty
+checks. Uncertain siblings, other service instances' live workers and exited
+runs whose receipts still say running block later admission and integration.
+Model-driven fan-out, non-local backends and approval prompt serialization remain
+open; the model-facing tool and CLI keep their existing dispatch behavior.
 
 ### Inspect and resolve retained editing workers
 
@@ -651,8 +703,8 @@ The CLI and session view inspect the standard global worker root. Callers using
 an explicit programmatic `root` inspect and resolve that store with
 `workers.repositories.inventory(session_id)`, `recover(session_id)` and
 `discard(session_id, candidate_id)`; custom locations are not auto-discovered.
-Keep the global ownership-store locations stable. Non-local workspaces and
-concurrent editing workers remain unsupported.
+Keep the global ownership-store locations stable. Non-local editing workspaces
+and model-driven concurrent editing fan-out remain unsupported.
 
 ## Move runtime limits into garuda.yaml
 

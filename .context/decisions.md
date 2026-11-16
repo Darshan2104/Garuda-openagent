@@ -1,5 +1,31 @@
 # Durable decisions
 
+## 2026-11-16 — Bounded concurrent editing workers with exclusive integration (#384)
+
+`LocalEditingWorkers` accepts integer `max_concurrent` from 1 through 8, defaulting
+to one. Run slots are reserved without an intervening await after authorization.
+After recovery settles, only this instance's currently live candidate IDs with
+`admitted`/`running` receipts are exempt from uncertainty checks. Uncertain
+siblings, foreign service instances and exited runs with stale running receipts
+remain blocking. Integration stays exclusive with runs and other integrations;
+the existing stale-base check prevents a sibling from overwriting an integrated
+candidate, with no rebase or automatic conflict resolution.
+
+`SubagentRunner.run_editing_workers` preflights the whole batch, charges the shared
+launch budget once per request and runs a TaskGroup with ordered results.
+Exceptions propagate as BaseExceptionGroup and cancel siblings; cancellation or
+crash quarantines each live child independently, retaining uncertain ownership.
+Each worker retains its own capacity holder, lease identity and heartbeat. The
+native ceiling is the configured value or the service limit, with the parent's
+native slot counted. Capacity-full admission keeps the existing settled refusal.
+The root SpendGate and DelegationBudget are shared unchanged.
+
+Children inherit the parent's approval handler and relocated permissions;
+screening workspace state is a context variable. Prompts are not serialized.
+Model-driven fan-out and non-local backends remain open. This supersedes earlier
+#384 concurrency deferrals without changing ordinary subagent/tool dispatch,
+workspace guardrail claims or restart integration policy.
+
 ## 2026-11-16 — Cancelled and unknown-outcome calls are charged their estimate (#363)
 
 This supersedes the 2026-11-06 spend policy's transport-error wording and

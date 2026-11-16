@@ -11,7 +11,7 @@ retains its initial scope and sequencing.
 | --- | --- | --- |
 | [#363: shared spend](https://github.com/Darshan2104/Garuda-openagent/issues/363) | [#408](https://github.com/Darshan2104/Garuda-openagent/pull/408) added native tree admission; later changes added failed-call usage, resume inheritance and consult sharing | [#453](https://github.com/Darshan2104/Garuda-openagent/pull/453) makes collection attempts inherit the active root gate, preventing dispatch after root exhaustion and charging worker usage to the same total |
 | [#370: investigation context](https://github.com/Darshan2104/Garuda-openagent/issues/370) | [#417](https://github.com/Darshan2104/Garuda-openagent/pull/417) added typed read-only investigation reports; [#435](https://github.com/Darshan2104/Garuda-openagent/pull/435) added context-only forks with fresh identity/admission and stale inherited evidence | [#451](https://github.com/Darshan2104/Garuda-openagent/pull/451) adds read-only fork preview through the execution preparation owner, explicitly leaving admission unchecked |
-| [#384: editing workers](https://github.com/Darshan2104/Garuda-openagent/issues/384) | [#434](https://github.com/Darshan2104/Garuda-openagent/pull/434) added sequential local workers with independent repositories/ownership and checked integration; [#447](https://github.com/Darshan2104/Garuda-openagent/pull/447) added conservative inventory/retirement/recovery | [#450](https://github.com/Darshan2104/Garuda-openagent/pull/450) closes child environment services after interruption while retaining uncertain ownership |
+| [#384: editing workers](https://github.com/Darshan2104/Garuda-openagent/issues/384) | [#434](https://github.com/Darshan2104/Garuda-openagent/pull/434) added sequential local workers with independent repositories/ownership and checked integration; [#447](https://github.com/Darshan2104/Garuda-openagent/pull/447) added conservative inventory/retirement/recovery | Bounded local programmatic fan-out now uses `LocalEditingWorkers` (limits 1–8) and `run_editing_workers`, with exclusive serialized integration. Model-driven fan-out and non-local backends remain open; approval prompts are not serialized |
 | [#389: live native output](https://github.com/Darshan2104/Garuda-openagent/issues/389) | [#432](https://github.com/Darshan2104/Garuda-openagent/pull/432) added shared loop accumulation; [#444](https://github.com/Darshan2104/Garuda-openagent/pull/444) wired terminal runs; [#448](https://github.com/Darshan2104/Garuda-openagent/pull/448) wired SDK callbacks | [#452](https://github.com/Darshan2104/Garuda-openagent/pull/452) wires dashboard chat previews without persisting deltas or duplicating completed output |
 
 ## Remaining acceptance work
@@ -33,9 +33,11 @@ their complete acceptance criteria and exact merged revisions are verified.
   files nor processes. The completion judge enforces exclusion of fork-inherited
   history: historical checks never verify the new candidate. Compaction summaries
   remain unmarked and rely on the state-card staleness notice.
-- **Workers:** concurrent editing fan-out and non-local worker backends remain
-  unsupported. Capacity contention no longer quarantines a parent when store
-  reads and workspace absence prove ownership was never acquired. Closing known
+- **Workers:** bounded programmatic editing fan-out is supported with exclusive
+  serialized integration; siblings remain stale after an integrated change.
+  Model-driven fan-out and non-local worker backends remain open, and approval
+  prompts are not serialized. Capacity contention no longer quarantines a parent
+  when store reads and workspace absence prove ownership was never acquired. Closing known
   environment services does not prove all descendant cleanup. Keep uncertain
   repositories, leases and capacity quarantined. Live Docker integration checks
   require separate evidence.

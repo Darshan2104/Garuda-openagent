@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from copy import deepcopy
@@ -247,6 +248,46 @@ class SubagentRunner:
             finally:
                 self.busy = False
         return await self._run_child(profile_name, task, fork_parent_context=fork_parent_context)
+
+    async def run_editing_workers(self, requests: list[tuple[str, str]]) -> list[AgentResult]:
+        """Admit a bounded batch atomically, then run isolated editing children.
+
+        Results follow request order. A child exception cancels its siblings and
+        propagates through TaskGroup after every child settles its ownership.
+        """
+        import time
+
+        n = len(requests)
+        if self.editing_workers is None:
+            return [_refused("worker.disabled", "editing workers were not enabled by the caller")] * n
+        if self.busy:
+            return [_refused("agent.delegation_busy", "a subagent is already running")] * n
+        if not requests or n > self.editing_workers.max_concurrent:
+            return [_refused("worker.batch_invalid", "batch must fit the editing worker limit")] * n
+        for profile_name, _ in requests:
+            if self.allowed is not None and profile_name not in self.allowed:
+                return [_refused("agent.subagent_not_allowed",
+                                 f"{profile_name!r} is not one of {', '.join(self.allowed) or 'none'}")] * n
+        budget = self.budget if self.budget is not None else DelegationBudget()
+        self.budget = budget
+        if self.depth > budget.max_depth:
+            return [_refused("agent.delegation_too_deep",
+                             f"subagents may nest {budget.max_depth} deep")] * n
+        if budget.launches + n > budget.max_launches:
+            return [_refused("agent.delegation_exhausted",
+                             f"this run cannot exceed {budget.max_launches} subagents")] * n
+        if self.deadline_monotonic is not None and self.deadline_monotonic <= time.monotonic():
+            return [_refused("agent.delegation_deadline", "the run's deadline has passed")] * n
+        budget.launches += n
+        self.busy = True
+        try:
+            async with asyncio.TaskGroup() as group:
+                children = [group.create_task(self.editing_workers.run(
+                    self, profile, task, fork_parent_context="none",
+                )) for profile, task in requests]
+            return [child.result() for child in children]
+        finally:
+            self.busy = False
 
     async def _run_child(self, profile_name, task, *, fork_parent_context=None) -> AgentResult:
         import time
