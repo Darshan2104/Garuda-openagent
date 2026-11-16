@@ -20,8 +20,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
-from garuda.model.protocol import ContextOverflowError
-from garuda.model.usage import usage_metadata
+from garuda.model.usage import is_definite_rejection, usage_metadata
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
 _gate: ContextVar[Any] = ContextVar("garuda_accounting_spend_gate", default=None)
@@ -121,19 +120,21 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     crossing of the warning threshold is recorded.
 
     A raised call charges whatever usage the exception carries. Without usage,
-    only a definite rejection releases the reservation without a charge;
+    only definite rejection of every failed attempt releases the reservation without a charge;
     interruptions and unknown outcomes charge the estimate with unknown cost.
     """
     from garuda.core.spend import usage_tokens
 
     source = error if error is not None else response
     interrupted = error is not None and not isinstance(error, Exception)
-    status_code = getattr(error, "status_code", None)
-    rejected = isinstance(error, ContextOverflowError) or (
-        isinstance(status_code, int) and not isinstance(status_code, bool)
-        and 400 <= status_code <= 499 and status_code != 408)
     usage = getattr(source, "usage", None)
     attempts = getattr(source, "attempt_usage", None) or []
+    # The final error cannot rule out spend on an earlier failed attempt.
+    # Legacy attempts without rejection evidence remain unknown outcomes.
+    rejected = is_definite_rejection(error) and all(
+        isinstance(attempt, dict) and (
+            attempt.get("outcome") != "failed" or attempt.get("rejected") is True)
+        for attempt in attempts[:-1])
     # An attempt that used tokens without a price leaves the call's cost unknown,
     # whatever the other attempts reported.
     cost_partial = any(

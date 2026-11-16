@@ -281,6 +281,24 @@ async def test_unknown_outcome_failure_stops_dollar_only_admission():
     assert "1 unknown-outcome call(s)" in str(refused.value)
 
 
+@pytest.mark.parametrize("marker", [None, False, 1], ids=["missing", "false", "not-boolean"])
+async def test_earlier_failed_attempt_requires_explicit_rejection(marker):
+    from garuda.model.usage import attach_usage
+
+    error = Exception("rate limited")
+    error.status_code = 429
+    earlier = {"usage": {}, "outcome": "failed"}
+    if marker is not None:
+        earlier["rejected"] = marker
+    attach_usage(error, [earlier, {"usage": {}, "outcome": "failed"}])
+    gate = SpendGate(max_cost_usd=1.0)
+    reservation = await gate.admit("main", estimate_tokens=100)
+    await accounting.settle(gate, reservation, error=error)
+    assert gate.settled_tokens == 100
+    assert gate.unknown_outcome_calls == gate.estimated_token_calls == gate.cost_unknown_calls == 1
+    assert gate.failed_without_usage == gate.reserved_tokens == gate.reserved_calls == 0
+
+
 async def test_unknown_outcome_provenance_survives_resume():
     snapshots = []
     gate = SpendGate(max_tokens=1000, checkpoint=snapshots.append)

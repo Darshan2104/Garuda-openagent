@@ -18,7 +18,7 @@ from garuda.model.protocol import (
     StreamDelta,
     estimate_tools_tokens,
 )
-from garuda.model.usage import attach_usage, sum_usage, usage_attempt
+from garuda.model.usage import attach_usage, is_definite_rejection, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -581,7 +581,8 @@ class LitellmModel:
                     attempt_usage.append(usage_attempt(_extract_usage(response), "success"))
                 return response
             except Exception as exc:
-                attempt_usage.append(usage_attempt(_error_usage(exc), "failed"))
+                attempt_usage.append({**usage_attempt(_error_usage(exc), "failed"),
+                                      "rejected": is_definite_rejection(exc)})
                 # Non-transient errors (400/401/404, context-window, etc.) fail fast.
                 if not _is_retryable(exc):
                     attach_usage(exc, list(attempt_usage))
@@ -647,7 +648,8 @@ class LitellmModel:
                     yield delta
         except Exception as exc:
             usage.update(_error_usage(exc))
-            attach_usage(exc, attempts + [usage_attempt(usage, "failed")])
+            attach_usage(exc, attempts + [{**usage_attempt(usage, "failed"),
+                                          "rejected": is_definite_rejection(exc)}])
             raise
         # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
         # provider closed without a finish reason; only one the provider sent counts.
