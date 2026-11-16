@@ -337,6 +337,7 @@ not restored. Your current workspace is used with ordinary lease and capacity
 admission and a fresh baseline. Earlier check results and candidate claims are
 stale; the fork must verify its current work. Constraints survive in the working
 state; source events, state and receipt locations remain historical references.
+The completion judge excludes fork-inherited messages from its evidence, including historical tool results, even after resuming the fork.
 Missing artifacts retain unavailable/unknown status instead of becoming evidence.
 `garuda sessions show` reads lineage without starting work.
 

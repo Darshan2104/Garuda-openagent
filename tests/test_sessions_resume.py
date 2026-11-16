@@ -658,7 +658,10 @@ async def fork_source(tmp_path, monkeypatch):
     messages = [
         Message(role=Role.SYSTEM, content="old system"),
         Message(role=Role.USER, content="Keep the public API compatible."),
-        Message(role=Role.ASSISTANT, content="Observed original hypothesis."),
+        Message(role=Role.ASSISTANT, content="Observed original hypothesis.", metadata={
+            "context_fork_inherited": {"source_session_id": "earlier-source", "evidence": "stale"},
+            "retained_note": "keep this metadata",
+        }),
         Message(role=Role.ASSISTANT, content="", tool_calls=[
             ToolCall(id="read-a", name="read_file", arguments={"path": "a.py"}),
             ToolCall(id="check-b", name="bash", arguments={"command": "test -f b.py"}),
@@ -683,6 +686,42 @@ async def fork_source(tmp_path, monkeypatch):
     (receipt_dir / "old.json").write_text('{"receipt":"historical"}')
     store.update_meta(source_id, {"acceptance": {"receipt": "receipts/old.json"}})
     return store, source_id, messages
+
+
+async def test_context_fork_history_is_not_completion_evidence(tmp_path, fork_source):
+    store, source_id, _ = fork_source
+    calls = []
+
+    class Observe(ScriptModel):
+        async def complete(self, messages, **kwargs):
+            calls.append(list(messages))
+            return await super().complete(messages, **kwargs)
+
+    model = Observe([
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            id="done", name="task_complete", arguments={"summary": "Completed the new investigation."},
+        )]),
+        ModelResponse(content='{"verdict":"APPROVED","reason":"ok"}', tool_calls=[]),
+    ])
+    task = "Check the new candidate in the current workspace."
+    result = await run_agent_task(
+        task=task, model=model, agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
+        config=AgentConfig(enable_verifier=True, enable_llm_verifier=True,
+                           enable_acceptance_contract=False, permission_mode="yolo"),
+        permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=EventStore(),
+        store=store, fork=source_id, fork_at=5,
+    )
+    assert result.success
+    assert len(calls) == 2
+    prompt = calls[1][-1].content
+    conversation = prompt.split("## Recent conversation (most recent last)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert "a = 1" not in conversation
+    assert "exit 0" not in conversation
+    assert f"[user] {task}" in conversation
+    inherited = prompt.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert f"6 messages were inherited by context fork from session {source_id};" in inherited
+    assert "they are historical and are not evidence for the current workspace." in inherited
+    assert "earlier-source" not in inherited
 
 
 @pytest.mark.parametrize("requested,effective,large_events", [
@@ -751,9 +790,29 @@ async def test_context_fork_retains_complete_prefix_without_restoring_source(
     expected_digest = hashlib.sha256(json.dumps(meta["source_files"], sort_keys=True).encode()).hexdigest()
     assert meta["source_digest"] == expected_digest
     from garuda.core.sessions import message_to_dict
+    from garuda.model.litellm_model import _message_to_litellm
 
-    assert [message_to_dict(m) for m in model.prompt[1:effective + 1]] == [
-        message_to_dict(m) for m in original[1:effective + 1]
+    retained = model.prompt[1:effective + 1]
+
+    def without_inherited(message):
+        payload = message_to_dict(message)
+        metadata = {key: value for key, value in payload.get("metadata", {}).items()
+                    if key != "context_fork_inherited"}
+        if metadata:
+            payload["metadata"] = metadata
+        else:
+            payload.pop("metadata", None)
+        return payload
+
+    assert [without_inherited(m) for m in retained] == [without_inherited(m) for m in original[1:effective + 1]]
+    assert all(m.metadata.get("context_fork_inherited") == {
+        "source_session_id": source_id, "evidence": "stale",
+    } for m in retained)
+    for options in ({}, {"include_thinking": True}, {"include_reasoning": True}, {"include_images": True}):
+        provider_messages = [_message_to_litellm(m, **options) for m in model.prompt]
+        assert "context_fork_inherited" not in json.dumps(provider_messages)
+    assert [message_to_dict(m) for m in store.load_messages(events.session_id)[1:effective + 1]] == [
+        message_to_dict(m) for m in retained
     ]
     if effective < 6:
         assert all(m.content != "Discarded later hypothesis." for m in model.prompt)
@@ -1206,12 +1265,19 @@ async def test_context_fork_preserves_constraints_and_staleness_through_compacti
     retained = store.load_state(events.session_id)
     assert retained["context_fork"]["forked_from"] == source_id
     assert retained["checks"] == []
+    resumed_events = EventStore()
     resumed = await run_agent_task(
         task="Continue the fork", model=model(), agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
-        config=config, permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=EventStore(),
+        config=config, permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=resumed_events,
         store=store, resume=events.session_id,
     )
     assert resumed.success
+    inherited = [message for message in store.load_messages(resumed_events.session_id)
+                 if message.content in {m.content for m in history[1:]}]
+    assert inherited
+    assert all(message.metadata.get("context_fork_inherited") == {
+        "source_session_id": source_id, "evidence": "stale",
+    } for message in inherited)
 
 
 async def test_context_fork_cancellation_releases_admission_and_keeps_provenance(tmp_path, fork_source):
