@@ -16,6 +16,9 @@ from garuda.interfaces.web.routes import DashboardContext, sse_frames
 from garuda.runtime import session_state
 from garuda.runtime.queue import QueueStore, scope_for
 from garuda.types import AgentResult
+from tests.test_resume_baseline import repo as _repo
+
+repo = _repo
 
 TOKEN = "t" * 24
 
@@ -548,3 +551,242 @@ def test_recorded_children_are_reported_as_recorded_not_probed(world):
     assert {(c["state"], c["process"]) for c in lineage["children"]["entries"]} == {("live", "unknown")}
     store.update_meta(sid, {"runtime_children": "broken"})
     assert _ownership(store, sid, queue)["lineage"]["children"]["coverage"] == "unavailable"
+
+
+@pytest.mark.parametrize("usage", [
+    {"total_tokens": 100, "cost_usd": 0.01},
+    {"total_tokens": 100},
+], ids=["priced", "unpriced"])
+async def test_session_spend_projects_a_real_run(repo, tmp_path, usage):
+    from tests.test_spend_gate import _run_task
+
+    store = SessionStore(tmp_path / "sessions")
+    assert (await _run_task(store, repo, "spend", usage, max_run_tokens=1_000_000,
+                            max_run_cost_usd=2)).success
+    before = (store.session_dir("spend") / "meta.json").read_bytes()
+    spend = read_model.session(store, "spend")["spend"]
+    assert spend["state"] == "recorded" and spend["scope"] == "native_run_tree"
+    assert spend["max_tokens"] == 1_000_000 and spend["max_cost_usd"] == 2
+    assert spend["settled_tokens"] == 200 and spend["reserved_tokens"] == 0
+    assert spend["inherited"] is None
+    assert all(spend[k] == 0 for k in ("interrupted_calls", "unknown_outcome_calls", "refused",
+                                       "unreported_failed_attempts", "estimated_token_calls"))
+    if "cost_usd" in usage:
+        assert spend["cost_usd"] == 0.02 and spend["settled_cost_usd"] == 0.02
+        assert spend["cost_status"] == "reported" and spend["cost_unknown_calls"] == 0
+    else:
+        assert spend["cost_usd"] == "unknown" and spend["cost_status"] == "unknown"
+        assert spend["cost_unknown_calls"] == 2
+    assert (store.session_dir("spend") / "meta.json").read_bytes() == before
+
+
+async def test_resumed_session_spend_keeps_unknown_prior_spend(repo, tmp_path):
+    from tests.test_spend_gate import _run_task
+
+    store = SessionStore(tmp_path / "sessions")
+    usage = {"total_tokens": 100, "cost_usd": 0.01}
+    assert (await _run_task(store, repo, "legacy", usage)).success
+    assert (await _run_task(store, repo, "resumed", usage, resume="legacy",
+                            max_run_tokens=1_000_000)).success
+    spend = read_model.session(store, "resumed")["spend"]
+    assert spend["prior_spend_unknown"] is True
+    assert spend["cost_usd"] == "unknown" and spend["settled_cost_usd"] == 0.02
+    assert spend["cost_unknown_calls"] == 1
+    assert spend["inherited"] == {"source": "unavailable", "inherited_tokens": None,
+                                   "inherited_cost_usd": None}
+
+
+def test_legacy_session_has_no_spend_snapshot(world):
+    store, _, ids = world
+    assert read_model.session(store, ids["done"])["spend"] is None
+
+
+@pytest.mark.parametrize("older", [False, True], ids=["pre-457", "earliest"])
+@pytest.mark.parametrize("evidence, status", [
+    ({}, "reported"),
+    ({"cost_unknown_calls": 1}, "unknown"),
+    ({"prior_spend_unknown": True}, "unknown"),
+    ({"interrupted_calls": 1}, "unknown"),
+])
+def test_legacy_spend_counters_default_to_zero(world, older, evidence, status):
+    store, _, ids = world
+    snapshot = {"max_tokens": 1000, "max_cost_usd": None,
+                "settled_tokens": 80, "settled_cost_usd": 0.03, "cost_unknown_calls": 0,
+                "prior_spend_unknown": False}
+    if not older:
+        snapshot.update(reserved_tokens=0, interrupted_calls=0, estimated_token_calls=0, refused=0)
+    snapshot.update(evidence)
+    store.update_meta(ids["done"], {"spend_gate": snapshot})
+    before = (store.session_dir(ids["done"]) / "meta.json").read_bytes()
+
+    spend = read_model.session(store, ids["done"])["spend"]
+    assert spend["state"] == "recorded"
+    assert spend["settled_tokens"] == 80 and spend["settled_cost_usd"] == 0.03
+    assert all(spend[k] == 0 for k in ("reserved_calls", "unknown_outcome_calls",
+                                      "unreported_failed_attempts", "reserved_tokens",
+                                      "estimated_token_calls", "refused"))
+    assert spend["interrupted_calls"] == evidence.get("interrupted_calls", 0)
+    assert spend["cost_status"] == status
+    assert spend["cost_usd"] == (0.03 if status == "reported" else "unknown")
+    assert (store.session_dir(ids["done"]) / "meta.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("missing", ["settled_tokens", "settled_cost_usd", "cost_unknown_calls"])
+def test_spend_missing_required_field_is_unreadable(world, missing):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    snapshot = SpendGate(max_tokens=1000).snapshot()
+    del snapshot[missing]
+    store.update_meta(ids["done"], {"spend_gate": snapshot})
+    assert read_model.session(store, ids["done"])["spend"] == {"state": "unreadable"}
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, {"settled_tokens": True},
+    {"settled_cost_usd": float("nan")}, {"settled_cost_usd": float("inf")},
+    {"reserved_tokens": -1}, {"reserved_calls": -1}, {"reserved_calls": True},
+    {"reserved_calls": "1"},
+    {"max_tokens": "1000"}, {"max_cost_usd": False},
+    {"cost_unknown_calls": 1.5}, {"prior_spend_unknown": "false"},
+    {"unreported_failed_attempts": None}])
+def test_malformed_session_spend_is_explicitly_unreadable(world, bad):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    snapshot = SpendGate(max_tokens=1000).snapshot()
+    if isinstance(bad, dict) and bad:
+        snapshot.update(bad)
+    else:
+        snapshot = bad
+    store.update_meta(ids["done"], {"spend_gate": snapshot})
+    assert read_model.session(store, ids["done"])["spend"] == {"state": "unreadable"}
+
+
+@pytest.mark.parametrize("inherited", [[], {"source": []}, {"source": "spend_gate"},
+    {"source": "unavailable", "inherited_tokens": 0},
+    {"source": "unavailable", "inherited_cost_unknown_calls": "unknown"}])
+def test_malformed_spend_inheritance_is_unreadable(world, inherited):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    store.update_meta(ids["done"], {"spend_gate": SpendGate(max_tokens=1000).snapshot(),
+                                   "spend_inherited": inherited})
+    assert read_model.session(store, ids["done"])["spend"] == {"state": "unreadable"}
+
+
+async def test_admission_checkpoint_spend_stays_unknown_after_crash(world):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    sid = ids["crashed"]
+    gate = SpendGate(max_tokens=10000, checkpoint=lambda snapshot: store.update_meta(
+        sid, {"spend_gate": snapshot}))
+    reservation = await gate.admit("controller", estimate_tokens=100)
+    await gate.settle(reservation, {"total_tokens": 80, "cost_usd": 0.5})
+    await gate.admit("controller", estimate_tokens=5000)
+    before = (store.session_dir(sid) / "meta.json").read_bytes()
+
+    row = read_model.session(store, sid)
+    assert row["crashed"] is True
+    spend = row["spend"]
+    assert spend["reserved_calls"] == 1 and spend["reserved_tokens"] == 5000
+    assert spend["cost_unknown_calls"] == 0 and spend["prior_spend_unknown"] is False
+    assert spend["cost_status"] == "unknown" and spend["cost_usd"] == "unknown"
+    assert spend["settled_cost_usd"] == 0.5
+    assert (store.session_dir(sid) / "meta.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("snapshot_updates, inherited", [
+    ({"interrupted_calls": 1}, None),
+    ({"unknown_outcome_calls": 1}, None),
+    ({"unreported_failed_attempts": 1}, None),
+    ({}, {"source": "unavailable", "inherited_tokens": None, "inherited_cost_usd": None}),
+    ({}, {"source": "spend_gate", "inherited_tokens": 100, "inherited_cost_usd": 0.2,
+          "inherited_cost_unknown_calls": 1}),
+], ids=["interrupted", "unknown-outcome", "unreported-attempt", "unavailable", "inherited-unknown"])
+def test_contradictory_spend_counters_keep_cost_unknown(world, snapshot_updates, inherited):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    snapshot = SpendGate(max_tokens=10000, settled_cost_usd=0.5).snapshot()
+    snapshot.update(snapshot_updates)
+    meta = {"spend_gate": snapshot}
+    if inherited is not None:
+        meta["spend_inherited"] = inherited
+    store.update_meta(ids["done"], meta)
+
+    spend = read_model.session(store, ids["done"])["spend"]
+    assert spend["cost_unknown_calls"] == 0 and spend["prior_spend_unknown"] is False
+    assert spend["cost_status"] == "unknown" and spend["cost_usd"] == "unknown"
+    assert spend["settled_cost_usd"] == 0.5
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "text"])
+def test_sessions_show_spend(world, capsys, tmp_path, as_json):
+    from garuda.core.spend import SpendGate
+    from garuda.interfaces.main import build_parser, run_sessions
+
+    store, _, ids = world
+    gate = SpendGate(max_tokens=1000, max_cost_usd=2)
+    inherited = gate.inherit(None)
+    store.update_meta(ids["done"], {"spend_gate": gate.snapshot(), "spend_inherited": inherited})
+    argv = ["sessions", "show", ids["done"], "--workspace", str(tmp_path)]
+    if as_json:
+        argv.append("--json")
+    assert run_sessions(build_parser().parse_args(argv)) == 0
+    out = capsys.readouterr().out
+    if as_json:
+        spend = json.loads(out)["spend"]
+        assert spend["scope"] == "native_run_tree" and spend["max_tokens"] == 1000
+        assert spend["cost_usd"] == "unknown" and spend["inherited"]["source"] == "unavailable"
+    else:
+        assert "Spend: native_run_tree" in out
+        assert "tokens=1000, USD=2" in out and "settled tokens: 0" in out
+        assert "cost: unknown; known settled USD (lower bound): 0" in out
+        assert "inherited: unavailable; tokens: unknown" in out
+
+
+@pytest.mark.parametrize("kind", ["priced", "unpriced", "inherited_unknown", "checkpoint"])
+async def test_recorded_spend_projection(world, kind):
+    from garuda.core.spend import SpendGate
+
+    store, _, ids = world
+    sid = ids["done"]
+    gate = SpendGate(max_tokens=1000, max_cost_usd=2)
+    inherited = None
+    if kind == "inherited_unknown":
+        inherited = gate.inherit(None)
+    reservation = await gate.admit("controller", estimate_tokens=100)
+    await gate.settle(reservation, {"total_tokens": 80, "cost_usd": 0.03})
+    if kind == "unpriced":
+        reservation = await gate.admit("controller", estimate_tokens=100)
+        await gate.settle(reservation, {"total_tokens": 20})
+    if kind == "checkpoint":
+        await gate.admit("controller", estimate_tokens=60)
+        continued = SpendGate(max_tokens=1000)
+        inherited = continued.inherit(gate.snapshot())
+        gate = continued
+    meta = {"spend_gate": gate.snapshot()}
+    if inherited is not None:
+        meta["spend_inherited"] = inherited
+    store.update_meta(sid, meta)
+    before = (store.session_dir(sid) / "meta.json").read_bytes()
+    spend = read_model.session(store, sid)["spend"]
+    assert (store.session_dir(sid) / "meta.json").read_bytes() == before
+    assert spend["scope"] == "native_run_tree" and spend["max_tokens"] == 1000
+    assert spend["reserved_tokens"] == 0 and spend["reserved_calls"] == 0
+    assert spend["settled_tokens"] == {"priced": 80, "unpriced": 100,
+                                        "inherited_unknown": 80, "checkpoint": 140}[kind]
+    assert spend["settled_cost_usd"] == 0.03
+    assert spend["cost_usd"] == (0.03 if kind == "priced" else "unknown")
+    assert spend["cost_unknown_calls"] == (0 if kind == "priced" else 1)
+    assert spend["prior_spend_unknown"] is (kind == "inherited_unknown")
+    if kind == "checkpoint":
+        assert spend["inherited"]["source"] == "spend_checkpoint"
+        assert spend["inherited"]["inherited_tokens"] == 140
+        assert spend["interrupted_calls"] == 1 and spend["estimated_token_calls"] == 1
+    elif kind == "inherited_unknown":
+        assert spend["inherited"]["source"] == "unavailable"
+        assert spend["inherited"]["inherited_tokens"] is None
+    else:
+        assert spend["inherited"] is None

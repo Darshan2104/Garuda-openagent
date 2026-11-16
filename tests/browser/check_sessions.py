@@ -51,6 +51,31 @@ with sync_playwright() as p:
           and "verification: passed" not in table)
     check("the waiting session shows its approval", "2 waiting" in table)
     page.screenshot(path=str(SHOTS / "sessions-list.png"))
+    check("spend limits and scope are visible in the list",
+          "token cap: 400000" in table and "scope: native_run_tree" in table)
+    done = "00000000-0000-0000-0000-000000000001"
+    page.goto(f"{BASE}#/sessions/{done}", wait_until="load")
+    page.wait_for_selector("#session-spend")
+    spend = page.locator("#session-spend").inner_text()
+    check("spend detail preserves unknown cost and inheritance",
+          "cost: unknown" in spend and "known settled USD (lower bound)" in spend
+          and "inherited source: unavailable" in spend and "inherited tokens: unknown" in spend)
+    # Hostile wire values must stay text even if a future API admits new fields.
+    def hostile_spend(route):
+        response = route.fetch()
+        payload = response.json()
+        payload["spend"]["scope"] = '<img src=x onerror="window.__pwned=1">'
+        payload["spend"]["inherited"]["source"] = '<svg onload="window.__pwned=1">'
+        route.fulfill(response=response, json=payload)
+
+    page.route(f"**/api/sessions/{done}", hostile_spend)
+    page.reload(wait_until="load")
+    page.wait_for_selector("#session-spend")
+    check("spend chips render hostile values as escaped text",
+          '<img src=x' in page.locator("#session-spend").inner_text()
+          and page.locator("#session-spend img, #session-spend svg").count() == 0
+          and page.evaluate("window.__pwned === undefined"))
+    page.unroute(f"**/api/sessions/{done}", hostile_spend)
 
     page.goto(f"{BASE}#/sessions/{FLOW}", wait_until="load")
     page.wait_for_selector("#flow-detail")
@@ -123,6 +148,10 @@ with sync_playwright() as p:
     # --- usage statistics (F.3) ---------------------------------------------------------------
     page.goto(f"{BASE}#/usage?range=24h", wait_until="load")
     page.wait_for_selector("#share-table")
+    page.wait_for_selector("#usage-spend")
+    check("usage shows recorded limits and scope apart from window totals",
+          "token cap: 400000" in page.locator("#usage-spend").inner_text()
+          and "scope: native_run_tree" in page.locator("#usage-spend").inner_text())
     check("native calls counted once", page.locator("#tile-native").inner_text() == "4",
           page.locator("#tile-native").inner_text())
     share = page.locator("#share-table").inner_text()

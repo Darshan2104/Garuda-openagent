@@ -43,6 +43,11 @@ def seed(root: Path, workspace: str) -> dict:
     for name, sid in IDS.items():
         store.begin(sid, task=f"task {name}", model="m/x", agent="build", workspace=workspace,
                     name=f"{name}-session")
+    from garuda.core.spend import SpendGate
+
+    gate = SpendGate(max_tokens=400000, max_cost_usd=2)
+    inherited = gate.inherit(None)
+    store.update_meta(IDS["done"], {"spend_gate": gate.snapshot(), "spend_inherited": inherited})
     EventStore(session_id=IDS["failed"], persist_path=store.events_path(IDS["failed"])).append(
         EventType.SESSION_END,
         {"success": False, "reason": "model_error",

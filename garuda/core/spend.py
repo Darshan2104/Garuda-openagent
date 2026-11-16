@@ -55,6 +55,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Older checkpoints must contain the core totals; later counters may be absent.
+SPEND_REQUIRED_FIELDS = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
+SPEND_OPTIONAL_COUNTERS = ("reserved_tokens", "reserved_calls", "interrupted_calls",
+                           "unknown_outcome_calls", "estimated_token_calls", "unreported_failed_attempts")
+
 
 class SpendLimitExceeded(RuntimeError):
     """The run tree's spend gate refused a model call.
@@ -311,13 +316,11 @@ class SpendGate:
         Outstanding checkpoint reservations are interrupted calls: charge their
         estimates as tokens and retain unknown cost, never a priced zero.
         """
-        fields = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
-        counters = ("reserved_tokens", "reserved_calls", "interrupted_calls", "unknown_outcome_calls",
-                    "estimated_token_calls", "unreported_failed_attempts")
         if not isinstance(snapshot, dict) or not all(
                 isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
-                and snapshot[k] >= 0 for k in fields) or not all(
-                    type(snapshot.get(k, 0)) is int and snapshot.get(k, 0) >= 0 for k in counters):
+                and snapshot[k] >= 0 for k in SPEND_REQUIRED_FIELDS) or not all(
+                    type(snapshot.get(k, 0)) is int and snapshot.get(k, 0) >= 0
+                    for k in SPEND_OPTIONAL_COUNTERS):
             self.cost_unknown_calls += 1
             self.prior_spend_unknown = True
             return {"source": "unavailable", "inherited_tokens": None, "inherited_cost_usd": None,
