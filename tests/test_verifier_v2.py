@@ -2,7 +2,9 @@
 
 import pytest
 
+from garuda.core.session_fork import INHERITED_CONTEXT_KEY
 from garuda.core.verifier import (
+    EVIDENCE_MESSAGE_WINDOW,
     CompletionVerifier,
     gather_git_evidence,
     render_messages_compact,
@@ -72,6 +74,48 @@ async def test_llm_verdict_approves(tmp_path):
     assert "tool calls: bash" in prompt
     assert "Verification commands actually executed" in prompt
     assert "test -d ." in prompt
+
+
+async def test_llm_verdict_excludes_all_fork_history_before_recent_window(tmp_path):
+    inherited_count = EVIDENCE_MESSAGE_WINDOW + 3
+    inherited = [
+        Message(
+            role=Role.USER,
+            content=f"HISTORICAL_FORK_CONTENT_{index}",
+            metadata={INHERITED_CONTEXT_KEY: {"source_session_id": "source-session", "evidence": "stale"}},
+        )
+        for index in range(inherited_count)
+    ]
+    messages = inherited + [
+        Message(
+            role=Role.ASSISTANT,
+            content="Checking the current workspace.",
+            tool_calls=[ToolCall(id="new-check", name="bash", arguments={"command": "pytest"})],
+        ),
+        Message(
+            role=Role.TOOL,
+            content="CURRENT_WORKSPACE_CHECK_PASSED",
+            name="bash",
+            tool_call_id="new-check",
+        ),
+    ]
+    model = RecordingScriptModel([ModelResponse(content="APPROVED", tool_calls=[])])
+    await CompletionVerifier()._llm_verdict(
+        task="Check the current workspace.",
+        summary=GOOD_SUMMARY,
+        env=LocalEnvironment(workspace_root=tmp_path),
+        model=model,
+        messages=messages,
+        checklist={},
+    )
+
+    prompt = model.calls[0][-1].content
+    conversation = prompt.split("## Recent conversation (most recent last)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert "[tool] CURRENT_WORKSPACE_CHECK_PASSED" in conversation
+    assert all(message.content not in conversation for message in inherited)
+    notice = prompt.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert f"{inherited_count} messages were inherited by context fork from session source-session;" in notice
+    assert "they are historical and are not evidence for the current workspace." in notice
 
 
 async def test_llm_verdict_rejects_with_feedback(tmp_path):
