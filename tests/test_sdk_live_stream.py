@@ -155,3 +155,49 @@ async def test_a_raising_consumer_does_not_change_the_result(tmp_path):
         event["payload"] for event in events.get_all() if event["type"] == "model_response"
     ]
     assert response["live_consumer_error"] == "RuntimeError"
+
+
+def _delegated_script(child):
+    return [ModelResponse(content=None, tool_calls=[ToolCall(
+        "delegate", "invoke_subagent", {"profile": "harbor", "task": "investigate", "handoff": "none"},
+    )]), child, _completion("Finished the delegated investigation."),
+        _streamed_completion("Parent answer.")]
+
+
+@pytest.mark.parametrize("kind", ["agent", "conversation"])
+async def test_sdk_subagent_deltas_opt_in_and_reset_each_run(tmp_path, monkeypatch, kind):
+    import os
+
+    from garuda.runtime import recovery
+
+    identify = recovery._process_identity
+    monkeypatch.setattr(recovery, "_process_identity",
+                        lambda pid: "sdk-streaming-test" if pid == os.getpid() else identify(pid))
+    # One conversation reuses its config across these turns: the default must reset it.
+    model = ScriptModel(
+        _delegated_script(_streamed_completion("Child answer."))
+        + _delegated_script(_completion("Child answer."))
+    )
+    sdk = (SoftwareAgent if kind == "agent" else Conversation)(workspace=str(tmp_path), model=model)
+    try:
+        seen = []
+        result = await sdk.run("delegate", on_delta=seen.append, subagent_deltas=True)
+        child = [d for d in seen if d.source is not None]
+        assert result.success and _text_of(child) == "Child answer."
+        assert len({d.source for d in child}) == 1
+        assert {(d.agent, d.depth) for d in child} == {("harbor", 1)}
+        assert _text_of(d for d in seen if d.source is None) == result.final_message == "Parent answer."
+
+        seen = []
+        result = await sdk.run("delegate again", on_delta=seen.append)
+        assert result.success and _text_of(seen) == "Parent answer."
+        assert all(d.source is None for d in seen)
+    finally:
+        if kind == "conversation":
+            await sdk.close()
+
+
+@pytest.mark.parametrize("kind", [SoftwareAgent, Conversation])
+async def test_sdk_subagent_deltas_require_consumer(tmp_path, kind):
+    with pytest.raises(ValueError, match="subagent_deltas requires on_delta"):
+        await kind(workspace=str(tmp_path)).run("must not run", subagent_deltas=True)

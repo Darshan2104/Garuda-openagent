@@ -17,8 +17,8 @@ from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.core.subagent import DelegationBudget, SubagentRunner
 from garuda.interfaces.run_guard import WorkspaceLeaseGuard
-from garuda.model.protocol import ModelResponse
-from garuda.model.script_model import ScriptModel
+from garuda.model.protocol import ModelResponse, StreamDelta
+from garuda.model.script_model import ScriptedStream, ScriptModel
 from garuda.runtime.capacity import CapacityStore
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Role, ToolCall
@@ -1498,6 +1498,12 @@ class TaskScriptModel(ScriptModel):
             raise response
         return response
 
+    async def stream(self, messages, **kwargs):
+        response = await self.complete(messages, **kwargs)
+        async for delta in ScriptModel([response]).stream(messages, **kwargs):
+            yield delta
+            await asyncio.sleep(0)
+
 
 def _concurrent_workers(editing, model):
     runner, previous, repo = editing
@@ -1867,3 +1873,43 @@ async def test_batch_counts_parent_slot_against_configured_native_ceiling(editin
         assert (repo / "main.txt").read_text() == "original\n"
     finally:
         await parent.release()
+
+
+async def test_concurrent_worker_deltas_use_candidate_ids(editing):
+    answers = {name: f"{name} worker answer" for name in ("alpha", "beta")}
+    scripts = {
+        name: [
+            _call("write_file", path=f"{name[0]}.txt", content=f"{name}\n"),
+            ScriptedStream([
+                StreamDelta(content_delta=name + " "),
+                StreamDelta(content_delta="worker answer"),
+                StreamDelta(tool_call_delta={
+                    "index": 0, "id": "done", "name": "task_complete",
+                    "arguments": json.dumps(_done().tool_calls[0].arguments),
+                }),
+                StreamDelta(done=True, finish_reason="tool_calls"),
+            ]),
+        ] for name in answers
+    }
+    runner, _, _ = _concurrent_workers(
+        editing, TaskScriptModel(barrier=asyncio.Barrier(2), scripts=scripts),
+    )
+    seen = []
+    both_streaming = asyncio.Barrier(2)
+
+    async def consume(delta):
+        seen.append(delta)
+        if delta.kind == "text" and delta.text in {"alpha ", "beta "}:
+            await asyncio.wait_for(both_streaming.wait(), 10)
+
+    runner.parent_delta_consumer = consume
+    results = await runner.run_editing_workers([("editor", name) for name in answers])
+    ids = {result.metadata["editing_worker"]["candidate_id"] for result in results}
+    assert {d.source for d in seen} == ids
+    for result, answer in zip(results, answers.values(), strict=True):
+        source = result.metadata["editing_worker"]["candidate_id"]
+        assert result.success
+        assert source == result.metadata["subagent_session_id"]
+        fragments = [d for d in seen if d.source == source]
+        assert "".join(d.text for d in fragments if d.kind == "text") == answer
+        assert {(d.agent, d.depth) for d in fragments} == {("editor", 1)}

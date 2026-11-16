@@ -55,9 +55,12 @@ their complete acceptance criteria and exact merged revisions are verified.
   environment services does not prove all descendant cleanup. Keep uncertain
   repositories, leases and capacity quarantined. Live Docker integration checks
   require separate evidence.
-- **Streaming:** Dashboard, SDK and terminal callbacks do not cover auxiliary
-  (intentionally) or child calls; interrupted streams keep reported partial usage
-  as a lower bound. No latency or quality improvement is inferred from tool overlap or fixture speed.
+- **Streaming:** native terminal runs and interactive chat show parent previews.
+  Child deltas are SDK-only opt-in (`subagent_deltas=True`), labelled by source,
+  agent and depth; terminal and dashboard ignore them. Auxiliary (intentionally),
+  consult and collection calls remain outside this forwarding path. Interrupted
+  streams keep reported partial usage as a lower bound. No latency or quality
+  improvement is inferred from tool overlap or fixture speed.
 
 ## Validation owners
 

@@ -19,6 +19,29 @@ The published numbers are deterministic contract evidence with scripted delays,
 not latency or quality claims. Model-driven fan-out and non-local backends remain
 open. See `docs/evaluation/index.md` for results and measurement boundaries.
 
+## 2026-11-16 — SDK-only opt-in labelled child live deltas (#389)
+
+`subagent_deltas=True` requires an SDK `on_delta` consumer. The default remains
+parent only: existing callers joining text deltas must not mix child output into
+the parent answer. `AgentConfig.stream_subagent_deltas` enables forwarding on
+constructed runners via `parent_delta_consumer`; supplied runners keep their
+policy. Child config copies enable nested forwarding. Labels carry child session
+id (editing-worker candidate id), resolved profile and depth. Existing labels
+survive nesting; labelled discard applies only to that source. Concurrent workers
+interleave by scheduling with per-source order preserved.
+
+Three hazards require explicit opt-in and defensive UI filtering: SDK text
+joiners would otherwise mix answers; dashboard child events live in sibling
+stores, leaving the parent event cursor unchanged and allowing previews to merge;
+terminal previews would survive between child calls and collide with child
+approval prompts. Both UI consumers ignore labelled deltas before mutating state
+or stopping a spinner. Consumers observe only; child context, messages and
+separate event logs remain owned by the child. Raising consumers detach per call
+through the existing forwarder and record errors in the child log.
+
+Follow-ups: terminal child status line, dashboard child previews, and explicit
+consult/collection child support. Default-on child streaming is outside this slice.
+
 ## 2026-11-16 — Interrupted streams retain reported usage as a lower bound (#389)
 
 Streaming cancellation carries accumulated usage and copied attempt provenance

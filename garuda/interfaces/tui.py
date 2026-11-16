@@ -133,6 +133,8 @@ class ChatRenderer:
 
     # -- assistant text ----------------------------------------------------
     def on_model_delta(self, delta) -> None:
+        if getattr(delta, "source", None) is not None:
+            return
         if delta.kind == "discard":
             self.discard_assistant()
         elif delta.kind == "text" and delta.text:

@@ -1,8 +1,9 @@
 import asyncio
+import inspect
 import logging
 import re
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,18 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from garuda.core.editing_worker import EditingWorkerService
+
+def _labelled(consumer, *, source, agent, depth):
+    """Label this child's deltas while preserving any descendant's identity."""
+    async def consume(delta):
+        if delta.source is None:
+            delta = replace(delta, source=source, agent=agent, depth=depth)
+        result = consumer(delta)
+        if inspect.isawaitable(result):
+            await result
+
+    return consume
+
 
 def persist_child_events(parent: EventStore, child: EventStore) -> None:
     """Give a subagent's event store a log file next to its parent's.
@@ -153,6 +166,7 @@ class SubagentRunner:
     editing_workers: "EditingWorkerService | None" = None
     child_session_id: str | None = None
     editing_max_tokens: int | None = None
+    parent_delta_consumer: Any = None
 
     def _parent_snapshot(self) -> list[Message] | None:
         """Live view of the parent conversation at invoke time, not construction time."""
@@ -305,6 +319,8 @@ class SubagentRunner:
         profile = resolve_profile(profile_name, self.workspace_root or ".", self.agents_dir)
         config = profile.to_agent_config()
         config.agent_name = profile.name
+        if self.parent_delta_consumer is not None:
+            config.stream_subagent_deltas = True
         config.agent_digest = profile.spec_digest
         if self.workspace_kind is not None:
             config.workspace_kind = self.workspace_kind
@@ -399,6 +415,11 @@ class SubagentRunner:
                 hooks=self.hooks,
                 context=context,
                 buffer=shared_buffer,
+                model_delta_consumer=(
+                    _labelled(self.parent_delta_consumer, source=sub_events.session_id,
+                              agent=profile.name, depth=self.depth)
+                    if self.parent_delta_consumer is not None else None
+                ),
             )
         finally:
             self.busy = False

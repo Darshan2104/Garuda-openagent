@@ -664,6 +664,7 @@ async def prepare_run(
     collection_model=None,
     collection_policy=None,
     allowed_tool_effects: frozenset[ToolEffect] | None = None,
+    model_delta_consumer=None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -900,6 +901,7 @@ async def prepare_run(
             spend_gate=config.spend_gate,
             editing_workers=config.editing_workers,
             editing_max_tokens=config.max_tokens,
+            parent_delta_consumer=(model_delta_consumer if config.stream_subagent_deltas else None),
             deadline_monotonic=deadline_at,
             workspace_kind=config.workspace_kind,
             workspace_evidence_root=(
