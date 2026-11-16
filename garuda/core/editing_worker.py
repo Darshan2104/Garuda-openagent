@@ -1,4 +1,4 @@
-"""Sequential native editing workers with detached repositories and checked integration."""
+"""Bounded native editing workers with detached repositories and checked integration."""
 
 from __future__ import annotations
 
@@ -49,6 +49,8 @@ from garuda.workspace.worktrees import (
 
 
 class EditingWorkerService(Protocol):
+    max_concurrent: int
+
     async def run(self, runner, profile_name, task, *, fork_parent_context=None) -> AgentResult: ...
 
     async def integrate(self, candidate_id, provenance_digest, *, env, session_id, permissions) -> dict: ...
@@ -143,22 +145,29 @@ class _Worker:
 class LocalEditingWorkers:
     """Trusted programmatic opt-in, bound to one held mutating parent lease.
 
-    Settled repositories retire only after ownership and
-    content checks; uncertain descendants retain their lease and capacity. No
-    parallel dispatch or implicit integration authority is supplied here.
+    At most max_concurrent runs edit independent snapshots; integration stays
+    exclusive. Only this instance's live admitted/running siblings are exempt
+    from uncertainty checks. Settled repositories retire after ownership and
+    content checks; uncertain descendants retain their lease and capacity.
     """
 
     def __init__(self, parent_guard: WorkspaceLeaseGuard, *, checks: list[str],
-                 image: str, root: str | Path | None = None, timeout: float = 600):
+                 image: str, root: str | Path | None = None, timeout: float = 600,
+                 max_concurrent: int = 1):
+        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or not 1 <= max_concurrent <= 8:
+            raise ValueError("max_concurrent must be an integer between 1 and 8")
+        self.max_concurrent = max_concurrent
         self.parent_guard = parent_guard
         self.checks = tuple(checks)
         self.image, self.timeout = image, timeout
         self.root = Path(root) if root is not None else editing_workers_root()
         self.repositories = EditingWorkerRepositories(self.root)
         self._workers: dict[str, _Worker] = {}
-        self._busy = False
+        self._admissions = 0
+        self._live: set[str] = set()
+        self._integrating = False
 
-    async def _authorize(self, env, session_id):
+    async def _authorize(self, env, session_id, *, exempt=frozenset()):
         backend = env
         if type(env) is HealthMonitoredEnvironment:
             if not env.is_alive:
@@ -184,9 +193,13 @@ class LocalEditingWorkers:
             raise
         if inventory["coverage"] != "complete":
             raise WorktreeError("worker.uncertain", "retained worker ownership cannot be read completely")
+        # run supplies the live set by reference: snapshot only after recovery
+        # settles, so exited runs never retain an exemption across the await.
+        exempt = frozenset(exempt)
         if any(entry["repository_state"] != "removed" and entry["state"] not in {
             "ready", "failed", "integrated", "refused",
-        } for entry in inventory["entries"]):
+        } and not (entry["candidate_id"] in exempt and entry["state"] in {"admitted", "running"})
+               for entry in inventory["entries"]):
             raise WorktreeError("worker.uncertain", "retained worker cleanup is unproved")
         if not self.checks or not self.image:
             raise WorktreeError("integration.no_trusted_check", "configure trusted integration checks")
@@ -261,18 +274,21 @@ class LocalEditingWorkers:
         )
 
         worker = None
-        owns_busy = False
+        owns_slot = False
+        worker_id = None
         try:
-            await self._authorize(runner.env, runner.events.session_id)
-            if self._busy:
-                raise WorktreeError("worker.busy", "an editing operation is already running")
+            if self._integrating:
+                raise WorktreeError("worker.busy", "integration is already running")
+            await self._authorize(runner.env, runner.events.session_id, exempt=self._live)
+            if self._integrating or self._admissions >= self.max_concurrent:
+                raise WorktreeError("worker.busy", "editing worker slots are occupied")
+            self._admissions += 1
+            owns_slot = True
             if runner.parent_permissions is None or runner.parent_tools is None:
                 raise WorktreeError("worker.no_parent_authority", "parent tools and permissions are required")
             profile = resolve_profile(profile_name, runner.workspace_root or ".", runner.agents_dir)
             if profile.to_agent_config().output_schema is None:
                 raise WorktreeError("worker.typed_output_required", "editing profiles must declare an output schema")
-            self._busy = True
-            owns_busy = True
             source = Path(runner.env.workspace_root).resolve()
             root = self.root.resolve()
             if root.is_relative_to(source):
@@ -284,10 +300,11 @@ class LocalEditingWorkers:
             head_ref = snap.git(source, "symbolic-ref", "-q", "HEAD", check=False).stdout
             ensure_private_dir(root)
             worker_id = str(uuid.uuid4())
+            self._live.add(worker_id)
             directory = root / f"worker-{worker_id}"
             workspace = directory / "workspace"
             guard = WorkspaceLeaseGuard(str(workspace), worker_id, capacity_key="native",
-                                        capacity_ceiling=configured_ceiling("native") or 1)
+                                        capacity_ceiling=configured_ceiling("native") or self.max_concurrent)
             # Stage under a non-worker- name, write the admission receipt, then
             # publish atomically so a worker-* entry always carries its receipt.
             with exclusive_lock(root) as root_fd:
@@ -424,21 +441,24 @@ class LocalEditingWorkers:
                 await self._quarantine(worker)
             raise
         finally:
-            if owns_busy:
-                self._busy = False
+            if owns_slot:
+                self._admissions -= 1
+            self._live.discard(worker_id)
 
     async def integrate(self, candidate_id, provenance_digest, *, env, session_id, permissions):
         worker = self._workers.get(candidate_id)
-        owns_busy = False
+        owns_integration = False
         try:
+            if self._integrating or self._admissions > 0:
+                raise WorktreeError("worker.busy", "an editing operation is already running")
             await self._authorize(env, session_id)
-            if self._busy:
+            if self._integrating or self._admissions > 0:
                 raise WorktreeError("worker.busy", "an editing operation is already running")
             if (worker is None or worker.receipt["state"] != "ready"
                     or provenance_digest != worker.receipt.get("provenance_digest")):
                 raise WorktreeError("integration.invalid_candidate", "candidate is foreign, unavailable or changed")
-            self._busy = True
-            owns_busy = True
+            self._integrating = True
+            owns_integration = True
             patch = (worker.directory / "candidate.patch").read_bytes()
             if (patch != worker.patch or snap.capture(worker.workspace).tree != worker.tree):
                 raise WorktreeError("integration.candidate_changed", "candidate patch or workspace changed")
@@ -485,21 +505,21 @@ class LocalEditingWorkers:
             await self._retire(worker)
             return dict(worker.receipt)
         except asyncio.CancelledError as cancelled:
-            if owns_busy and worker is not None:
+            if owns_integration and worker is not None:
                 try:
                     self._record(worker, "uncertain", cleanup="unknown")
                 except Exception as exc:
                     raise cancelled from exc
             raise
         except (WorktreeError, snap.SnapshotRefused, LeaseError, OSError, StorageError) as exc:
-            uncertain = (owns_busy and worker is not None
+            uncertain = (owns_integration and worker is not None
                          and worker.receipt["state"] in {"integrating", "integrated"}
                          and not isinstance(exc, WorktreeError))
             outcome = {"state": "uncertain" if uncertain else "refused", "candidate_id": candidate_id,
                        "code": getattr(exc, "code", "integration.failed"), "message": str(exc)}
-            if owns_busy and worker is not None:
+            if owns_integration and worker is not None:
                 self._record(worker, outcome["state"], integration=outcome)
             return outcome
         finally:
-            if owns_busy:
-                self._busy = False
+            if owns_integration:
+                self._integrating = False

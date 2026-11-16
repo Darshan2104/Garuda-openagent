@@ -274,13 +274,36 @@ fastest way to learn the system.
    `editing_workers`) with a `LocalEditingWorkers` service bound to its held
    mutating parent lease. Only then does `invoke_subagent` offer
    `editing_worker: true` and shared run assembly add
-   `integrate_editing_worker`. Each sequential editing child gets a detached
-   snapshot repository, a unique session, mutating workspace lease and native
-   capacity reservation under the same `DelegationBudget`. With unlimited
-   configured native capacity this service still reserves against a ceiling
-   of one. Children require schema-bound output, inherit the model and narrowed
-   turn/output/deadline allowances, and receive only admitted stateless built-in
+   `integrate_editing_worker`. `LocalEditingWorkers(max_concurrent=1)` defaults
+   to sequential execution and accepts integer limits from 1 through 8.
+   With the default limit, a second run or integration during a live run returns
+   `worker.busy`, replacing the previous `worker.uncertain` after receipt publication.
+   Each editing child gets a detached snapshot repository, a unique session,
+   mutating workspace lease and native
+   capacity reservation with its own holder, lease identity and heartbeat under
+   the same `DelegationBudget`. Admission reserves against the configured native
+   ceiling, or `max_concurrent` when none is configured; a parent native slot
+   counts against that ceiling. Capacity-full still settles as
+   `worker.capacity_unavailable`. Children require schema-bound output, inherit
+   the model and narrowed turn/output/deadline allowances, and receive only admitted stateless built-in
    tools; nested delegation, MCP, tmux and parent-bound services are excluded.
+   After recovery settles, admission exempts only this service instance's live
+   candidate IDs whose receipts remain `admitted` or `running`. Uncertain
+   siblings, other instances' live workers and exited runs with stale running
+   receipts still block admission and integration. Integration is exclusive and
+   serialized: no integration overlaps a live run or another integration.
+   `SubagentRunner.run_editing_workers(requests)` is a programmatic batch API.
+   Before any launch it refuses the whole batch for missing service, busy runner,
+   empty/oversized batch, disallowed profiles, depth, launch budget or deadline.
+   It charges all launches together, uses `asyncio.TaskGroup`, and returns results
+   in request order. Child exceptions propagate as `BaseExceptionGroup` after
+   siblings are cancelled and each settles through its quarantine path; caller
+   cancellation likewise quarantines each live child independently. Ordinary
+   `run()` and model-driven `invoke_subagent` remain sequential.
+   Every child inherits the parent's approval handler through relocated permission
+   checks; screening workspace state is task-local through a context variable.
+   Approval prompts are not serialized. The shared root `SpendGate` and
+   `DelegationBudget` remain unchanged.
    Integration binds a retained binary patch, base snapshot/HEAD/index and
    typed-output provenance by SHA-256. The existing confined integration checker
    checks the exact candidate tree before destination revalidation and checked
@@ -323,7 +346,7 @@ fastest way to learn the system.
    Operator orphan discard requires positive lease/capacity release evidence
    and waives only the content check. Unknown descendants, absent records and
    incomplete legacy receipts remain retained. This supports local native
-   execution only, with no restart integration or concurrency claim;
+   execution only, with no restart integration or parallel latency claim;
    ordinary subagents and read-only parallel flows keep their existing paths.
    Native sequential and parallel flow activation consumes the role’s admitted
    immutable AgentSpec through the shared role source selector, retaining source
