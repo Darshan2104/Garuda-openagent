@@ -71,12 +71,14 @@ parked approval is visible from every page. The count is a read-only poll of
 |---|---|
 | `1`–`9` | Switch to the nth tab |
 | `/` | Focus the page's search field |
-| `r` | Reload the current view (not Chat) |
+| `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
 | `?` | Show or hide the shortcut list |
 | `Esc` | Close the list or leave a field |
 
 Keys do nothing while you are typing in a field or holding Cmd, Ctrl or Alt.
+Reload stays disabled after an edited field loses focus, until its inputs are
+successfully submitted or you navigate away.
 
 ## Starters
 
@@ -348,7 +350,9 @@ Dashboard chat stays native; the board adds:
 - recovery: classify a session, or run recovery.
 
 The session fields suggest recent session ids and the target field suggests
-runtime ids; clicking a runtime fills the target and keeps what you typed.
+runtime ids; clicking a runtime fills the target and updates an earlier automatic
+selection. Editing the target keeps your value when you click another runtime;
+the other session fields also keep what you typed.
 Prepare and recovery controls are disabled in `--read-only`. See
 [External harnesses](external-harnesses.md) for ownership, verification and
 handoff failure semantics.

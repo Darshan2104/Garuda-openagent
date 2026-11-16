@@ -41,7 +41,12 @@ var RT_INPUTS = ["rt-handoff-session", "rt-handoff-target", "rt-diff-session", "
 function renderRuntimes(runtimes, detail, detailId) {
   // Selecting a runtime re-renders the board; what was typed into the ops cards survives it.
   var typed = {};
-  RT_INPUTS.forEach(function (id) { var node = el(id); if (node) typed[id] = node.value; });
+  RT_INPUTS.forEach(function (id) {
+    var node = el(id);
+    if (node) typed[id] = {
+      value: node.value, autofill: node.getAttribute("data-autofill"), dirty: node.getAttribute("data-dirty")
+    };
+  });
   var rows = runtimes.map(function (rt) {
     return "<tr" + (detailId === rt.runtime_id ? ' class="selected"' : "") + ">" +
       '<td><a href="#" data-rt="' + esc(rt.runtime_id) + '">' + esc(rt.runtime_id) + "</a></td>" +
@@ -62,8 +67,19 @@ function renderRuntimes(runtimes, detail, detailId) {
     detailHtml +
     renderRtOps() + rtDatalistsHtml(runtimes, STATE.rtSessions || [])
   );
-  RT_INPUTS.forEach(function (id) { if (typed[id]) el(id).value = typed[id]; });
-  if (detailId && !el("rt-handoff-target").value) el("rt-handoff-target").value = detailId;
+  RT_INPUTS.forEach(function (id) {
+    if (!typed[id]) return;
+    var node = el(id), saved = typed[id];
+    node.value = saved.value;
+    if (saved.autofill !== null) node.setAttribute("data-autofill", saved.autofill);
+    if (saved.dirty !== null) node.setAttribute("data-dirty", saved.dirty);
+  });
+  var target = el("rt-handoff-target");
+  if (detailId && ((!target.value && !target.hasAttribute("data-dirty")) || target.getAttribute("data-autofill") === target.value)) {
+    target.value = detailId;
+    target.setAttribute("data-autofill", detailId);
+  }
+  target.addEventListener("input", function () { target.removeAttribute("data-autofill"); });
   var links = document.querySelectorAll("#rt-table a[data-rt]");
   for (var i = 0; i < links.length; i++) {
     links[i].addEventListener("click", function (ev) {
@@ -159,8 +175,10 @@ function wireRtOps() {
         "Session and target are both required.</div></div>");
       return;
     }
+    var submitted = submittedViewInputs(el("rt-handoff-target").closest(".card"));
     api("/api/runs/" + encodeURIComponent(sid) + "/handoff?to=" + encodeURIComponent(target))
       .then(function (preview) {
+        submitted();
         rtResult("rt-handoff-result",
           '<div class="meta">source <strong>' + esc(preview.source_runtime) + "</strong> → target <strong>" +
           esc(preview.target_runtime) + "</strong></div>" +
@@ -177,9 +195,11 @@ function wireRtOps() {
         "Session and target are both required.</div></div>");
       return;
     }
+    var submitted = submittedViewInputs(el("rt-handoff-target").closest(".card"));
     api("/api/runs/" + encodeURIComponent(sid) + "/handoff",
         { method: "POST", body: { target: target } })
       .then(function (prepared) {
+        submitted();
         rtResult("rt-handoff-result",
           '<div class="meta">handoff state: <strong>' + esc(prepared.handoff_state) + "</strong></div>" +
           '<div class="meta">' + esc(prepared.handoff_file || "") + "</div>");
@@ -193,8 +213,10 @@ function wireRtOps() {
         "Session is required.</div></div>");
       return;
     }
+    var submitted = submittedViewInputs(el("rt-diff-session").closest(".card"));
     api("/api/runs/" + encodeURIComponent(sid) + "/diff")
       .then(function (timeline) {
+        submitted();
         if (!timeline.baseline_recorded) {
           rtResult("rt-diff-result", '<div class="meta">No baseline recorded for this session.</div>');
           return;
@@ -218,12 +240,14 @@ function wireRtOps() {
         "Session is required.</div></div>");
       return;
     }
+    var submitted = submittedViewInputs(el("rt-recover-session").closest(".card"));
     api("/api/runs/" + encodeURIComponent(sid) + "/recover", { method: method })
       .then(function (report) {
         if (report.error) {
           rtResult("rt-recover-result", rtError({ message: report.error }));
           return;
         }
+        submitted();
         var notes = (report.notes || []).map(function (n) {
           return "<div>" + esc(n) + "</div>";
         }).join("");

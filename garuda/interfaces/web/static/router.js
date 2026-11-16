@@ -114,6 +114,29 @@ function isTypingTarget(node) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
 }
 
+// Mark the fields themselves so replacing a view clears its edits. Views that preserve
+// values across a render must preserve these markers too (as the runtime board does).
+var VIEW_INPUT_REVISION = 0;
+
+function markViewInputDirty(event) {
+  if (event.target.matches("input, textarea, select")) {
+    event.target.setAttribute("data-dirty", String(++VIEW_INPUT_REVISION));
+  }
+}
+
+function submittedViewInputs(root) {
+  var revisions = Array.from(root.querySelectorAll("[data-dirty]")).map(function (node) {
+    return node.getAttribute("data-dirty");
+  });
+  // Call only after success: a failed request or edits made while it was in flight
+  // must keep blocking reload. Unique revisions also survive a value-preserving render.
+  return function () {
+    view().querySelectorAll("[data-dirty]").forEach(function (node) {
+      if (revisions.indexOf(node.getAttribute("data-dirty")) !== -1) node.removeAttribute("data-dirty");
+    });
+  };
+}
+
 function toggleKeysHelp(show) {
   var help = el("keys-help");
   if (!help) return;
@@ -139,8 +162,10 @@ function onShortcut(event) {
     return;
   }
   if (event.key === "r") {
-    // Chat is excluded: re-mounting it would end the composer state mid-thought.
-    if ((location.hash || "").indexOf("#/chat") !== 0) { navigate(); refreshInboxBadge(); }
+    // Re-mounting would discard unsubmitted edits, including after a field loses focus.
+    if ((location.hash || "").indexOf("#/chat") !== 0 && !view().querySelector("[data-dirty]")) {
+      navigate(); refreshInboxBadge();
+    }
     return;
   }
   if (event.key === "t") { toggleTheme(); return; }
@@ -151,6 +176,8 @@ function onShortcut(event) {
 }
 
 document.addEventListener("keydown", onShortcut);
+view().addEventListener("input", markViewInputDirty);
+view().addEventListener("change", markViewInputDirty);
 el("keys-toggle").addEventListener("click", function () { toggleKeysHelp(); });
 el("keys-help").addEventListener("click", function (event) {
   if (event.target === el("keys-help")) toggleKeysHelp(false);
