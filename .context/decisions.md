@@ -15,7 +15,9 @@ For #462, reported tokens are summed per attempt and missing-attempt estimates
 are included before applying the reservation floor. This avoids double counting
 the reservation or per-call unknown-cost and estimated-token counters, while
 never reducing the existing per-attempt charge. Event and ledger usage remain
-the reported values, separate from the gate's conservative estimate.
+the reported values, separate from the gate's conservative estimate; interrupted
+usage is recorded as a lower bound with unknown cost/completion fields in ledgers
+and metrics.
 
 Calls without reported stream usage or attempt provenance keep propagating
 without a model-call event; the gate still charges their reservation estimate.

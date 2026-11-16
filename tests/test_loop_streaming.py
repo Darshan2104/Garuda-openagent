@@ -16,6 +16,7 @@ import pytest
 
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
+from garuda.core.metrics import aggregate_model_metrics
 from garuda.model.protocol import ContextOverflowError, ModelResponse, StreamDelta
 from garuda.model.script_model import ScriptedStream, ScriptModel
 from garuda.model.streaming import LiveDelta, stream_complete
@@ -341,6 +342,16 @@ async def test_cancelled_stream_keeps_reported_partial_usage(tmp_path: Path, wit
     assert gate.interrupted_calls == gate.cost_unknown_calls == 1
     assert gate.settled_tokens >= estimate > 41
     assert gate.reserved_tokens == gate.reserved_calls == 0
+    metrics = aggregate_model_metrics(events.get_all())
+    for dimension in ("by_model_binding_role", "by_call_purpose"):
+        [record] = metrics[dimension].values()
+        assert record["calls"] == 1
+        assert record["cost_unknown_calls"] == 1
+        assert record["cost_usd"] == partial["cost_usd"]
+        assert record["completion_tokens"] == 1
+        assert record["total_tokens"] == 41
+        assert record["usage_unknown_calls"] == {
+            "completion_tokens": 1, "total_tokens": 1, "cost_usd": 1}
 
 
 async def test_cancelled_fallback_keeps_failed_stream_usage(tmp_path: Path):
