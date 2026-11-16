@@ -13,7 +13,8 @@ Unreadable proof, retained ownership, storage errors, lease conflicts and
 rollback failures retain the existing quarantine path. The refusal marks
 `repository_state: removed` with `retired_ns`; a later cleanup run prunes its
 receipt directory before bounded inventory, while the `editing_worker` event
-retains the audit record. Concurrent fan-out and non-local backends remain
+retains the audit record. Quarantine never carries removed state and pruning
+skips uncertain receipts. Concurrent fan-out and non-local backends remain
 deferred; this does not change capacity ceilings or descendant-cleanup proofs.
 
 ## 2026-11-16 — Spend checkpoints survive a crash (#363)

@@ -657,6 +657,96 @@ async def test_capacity_refused_admission_settles_and_later_admission_proceeds(e
     assert any(event["type"] == "editing_worker" and event["payload"] == receipt for event in events)
 
 
+async def test_capacity_refusal_receipt_write_failure_retains_quarantine(editing, monkeypatch):
+    from garuda.runtime.strict_store import StorageUnavailable
+
+    runner, workers, repo = editing
+    capacity = CapacityStore()
+    reservation = capacity.reserve("native", "other-worker", 1)
+    replace = os.replace
+    failed = False
+
+    def blocked_receipt(source, destination, **kwargs):
+        nonlocal failed
+        if destination == "receipt.json" and not failed:
+            directory_fd = kwargs["dst_dir_fd"]
+            fd = os.open(source, os.O_RDONLY, dir_fd=directory_fd)
+            with os.fdopen(fd) as handle:
+                document = json.load(handle)
+            if document["state"] == "refused":
+                failed = True
+                # A directory at the receipt path makes the real atomic
+                # replacement fail. Restore writability for quarantine's write.
+                os.unlink(destination, dir_fd=directory_fd)
+                os.mkdir(destination, mode=0o700, dir_fd=directory_fd)
+                try:
+                    return replace(source, destination, **kwargs)
+                finally:
+                    os.rmdir(destination, dir_fd=directory_fd)
+                    os.unlink(source, dir_fd=directory_fd)
+        return replace(source, destination, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", blocked_receipt)
+            with pytest.raises(StorageUnavailable, match="cannot publish.*receipt.json"):
+                await runner.run("editor", "must not execute", editing_worker=True)
+    finally:
+        capacity.release(reservation)
+
+    assert failed
+    receipt_file, = workers.root.glob("worker-*/receipt.json")
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["state"] == "uncertain" and receipt["cleanup"] == "unknown"
+    assert receipt.get("repository_state", "retained") == "retained"
+    assert "retired_ns" not in receipt
+    workers.repositories.recover(runner.events.session_id, parent_guard=workers.parent_guard)
+    assert json.loads(receipt_file.read_text()) == receipt
+    retry = await runner.run("editor", "still must not execute", editing_worker=True)
+    assert not retry.success and retry.metadata["refused"] == "worker.uncertain"
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert len(runner.model._responses) == 2
+
+
+async def test_capacity_refusal_with_existing_workspace_quarantines_admission(editing, monkeypatch):
+    runner, workers, repo = editing
+    capacity = CapacityStore()
+    reservation = capacity.reserve("native", "other-worker", 1)
+    rename = os.rename
+    created = []
+
+    def existing_workspace(source, destination, *args, **kwargs):
+        result = rename(source, destination, *args, **kwargs)
+        destination = Path(destination)
+        if destination.parent == workers.root and destination.name.startswith("worker-"):
+            workspace = destination / "workspace"
+            workspace.mkdir()
+            (workspace / "retained.txt").write_text("pre-existing data\n")
+            created.append(workspace)
+        return result
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "rename", existing_workspace)
+            refused = await runner.run("editor", "must not execute", editing_worker=True)
+    finally:
+        capacity.release(reservation)
+
+    assert not refused.success and refused.metadata["refused"] == "worker.admission_failed"
+    workspace, = created
+    receipt_file = workspace.parent / "receipt.json"
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["state"] == "uncertain" and receipt["cleanup"] == "unknown"
+    assert receipt.get("repository_state", "retained") == "retained"
+    workers.repositories.recover(runner.events.session_id, parent_guard=workers.parent_guard)
+    assert json.loads(receipt_file.read_text()) == receipt
+    retry = await runner.run("editor", "still must not execute", editing_worker=True)
+    assert not retry.success and retry.metadata["refused"] == "worker.uncertain"
+    assert (workspace / "retained.txt").read_text() == "pre-existing data\n"
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert len(runner.model._responses) == 2
+
+
 async def test_malformed_capacity_store_quarantines_admission_and_blocks_retry(editing):
     runner, workers, repo = editing
     capacity = CapacityStore()
@@ -938,6 +1028,12 @@ async def test_retired_receipts_are_pruned_by_a_later_cleanup_run(editing, monke
     from garuda.workspace.editing_workers import MAX_WORKERS
 
     document = json.loads((directory / "receipt.json").read_text())
+    uncertain = workers.root / "worker-uncertain"
+    uncertain_receipt = {
+        **document, "candidate_id": str(uuid.uuid4()), "state": "uncertain", "cleanup": "unknown",
+        "workspace": str(uncertain / "workspace"),
+    }
+    write_document(uncertain / "receipt.json", uncertain_receipt)
     for index in range(MAX_WORKERS + 1):
         retired = workers.root / f"worker-retired-{index}"
         write_document(retired / "receipt.json", {
@@ -945,7 +1041,8 @@ async def test_retired_receipts_are_pruned_by_a_later_cleanup_run(editing, monke
             "workspace": str(retired / "workspace"),
         })
     workers.repositories.recover(runner.events.session_id)
-    assert list(workers.root.glob("worker-*")) == []
+    assert list(workers.root.glob("worker-*")) == [uncertain]
+    assert json.loads((uncertain / "receipt.json").read_text()) == uncertain_receipt
     assert workers.repositories.inventory(runner.events.session_id)["coverage"] == "complete"
     assert (repo / "main.txt").read_text() == "worker\n"
 

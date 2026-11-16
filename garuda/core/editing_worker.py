@@ -226,6 +226,11 @@ class LocalEditingWorkers:
     async def _quarantine(self, worker):
         # Mark ownership before any cancellable cleanup or evidence publication.
         await worker.guard.stop_heartbeat()
+        # A failed settled-receipt publication may have changed only memory.
+        # Preserve removal intent for interrupted retirement, never completion.
+        if worker.receipt.get("repository_state") == "removed":
+            worker.receipt["repository_state"] = "retained"
+        worker.receipt.pop("retired_ns", None)
         self._record(worker, "uncertain", cleanup="unknown")
 
     async def run(self, runner, profile_name, task, *, fork_parent_context=None):

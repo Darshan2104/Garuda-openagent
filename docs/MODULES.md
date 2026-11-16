@@ -195,6 +195,8 @@ waives only content retention and requires released parent ownership. Receipts
 and candidate patches for retained workers survive removal; a later cleanup run
 prunes fully retired receipt directories. Worker recovery and retirement run
 off the event loop and settle their threads before propagating cancellation.
+Quarantine clears completed-removal markers while preserving removal intent;
+pruning skips uncertain receipts even when they still claim removal.
 Storage creates missing ancestors as `0700` regardless of umask. Readers require
 privacy at the worker root and receipt directories, retaining no-follow ancestor
 traversal and naming refused paths. Missing or ambiguous records, legacy

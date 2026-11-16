@@ -277,7 +277,9 @@ fastest way to learn the system.
    Capacity-full admission is a settled refusal only when real capacity and
    lease store reads and workspace absence prove ownership was never acquired.
    Its receipt records the repository as removed for pruning on a later cleanup
-   run; ambiguous acquisition still quarantines ownership.
+   run; ambiguous acquisition still quarantines ownership. Quarantine clears
+   completed-removal markers, and pruning skips uncertain receipts even if an
+   older receipt still claims removal.
    Active-child cancellation and uncertain child cleanup retain the repository,
    lease and capacity and block further editing dispatch. The editing service
    closes its child environment's optional services on interrupted exits as well
