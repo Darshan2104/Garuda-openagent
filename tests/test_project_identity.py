@@ -126,35 +126,43 @@ def test_prefixes_and_latest_stay_in_the_project(tmp_path):
     assert store.resolve("abc222") == "abc222"  # a full id always resolves
 
 
-@pytest.mark.parametrize("mode", ["resume", "inspection"])
-@pytest.mark.parametrize("marker_kind", ["symlink", "oversize", "fifo"])
-def test_unsafe_name_markers_are_refused_without_blocking(tmp_path, mode, marker_kind):
+@pytest.mark.parametrize("mode", ["resolve", "resume", "inspection"])
+@pytest.mark.parametrize("marker_kind", ["regular", "missing", "symlink", "dangling", "oversize", "fifo", "directory"])
+def test_name_markers_refuse_unsafe_paths_but_allow_missing_prefix_lookup(tmp_path, mode, marker_kind):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     store = SessionStore(tmp_path / "sessions")
-    meta = _begin(store, "source-session", workspace, name="review")
+    # An unsafe name must not silently select this otherwise matching prefix.
+    meta = _begin(store, "review-source", workspace, name="review")
     marker = store.root / ".names" / meta["project_id"] / "review/session"
     marker.unlink()
-    if marker_kind == "symlink":
+    if marker_kind == "regular":
+        marker.write_text("review-source")
+    elif marker_kind in {"symlink", "dangling"}:
         target = tmp_path / "target"
-        target.write_text("source-session")
+        if marker_kind == "symlink":
+            target.write_text("review-source")
         marker.symlink_to(target)
     elif marker_kind == "oversize":
-        marker.write_text("source-session" + " " * 256)
-    else:
+        marker.write_text("review-source" + " " * 256)
+    elif marker_kind == "fifo":
         os.mkfifo(marker)
+    elif marker_kind == "directory":
+        marker.mkdir()
     code = textwrap.dedent(
         """
         import sys
         from garuda.core.session_records import BoundedSessionRecords
+        from garuda.core.sessions import SessionStore
         reader = BoundedSessionRecords(sys.argv[1], byte_budget=8 * 1024 * 1024)
-        resolve = reader.resolve_for_resume if sys.argv[3] == "resume" else reader.resolve_for_inspection
+        resolve = {"resume": reader.resolve_for_resume, "inspection": reader.resolve_for_inspection,
+                   "resolve": SessionStore(sys.argv[1]).resolve}[sys.argv[3]]
         try:
-            resolve("review", workspace=sys.argv[2])
-        except FileNotFoundError:
-            print("refused")
+            selected = resolve("review", workspace=sys.argv[2])
+        except ValueError as exc:
+            print("refused:", exc)
         else:
-            print("resolved")
+            print("resolved:", selected)
         """
     )
     result = subprocess.run(
@@ -162,7 +170,10 @@ def test_unsafe_name_markers_are_refused_without_blocking(tmp_path, mode, marker
         capture_output=True, text=True, timeout=10, env=dict(os.environ, PYTHONPATH=str(ROOT)),
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "refused"
+    if marker_kind in {"regular", "missing"}:
+        assert result.stdout.strip() == "resolved: review-source"
+    else:
+        assert "refused: Unsafe session name marker" in result.stdout
 
 
 def test_a_second_begin_keeps_the_identity(tmp_path):

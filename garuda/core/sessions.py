@@ -691,7 +691,8 @@ class SessionStore:
         repairs it; full IDs retain their explicit cross-project meaning.
 
         Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
-        from remote clients via the server's ``resume`` param.
+        from remote clients via the server's ``resume`` param — or an unsafe
+        name marker. Missing markers still permit fallback to ID prefixes.
         """
         if session_ref == "latest":
             if workspace is None or all_projects:

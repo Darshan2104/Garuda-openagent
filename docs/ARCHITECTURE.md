@@ -809,7 +809,10 @@ Preview selection uses the shared project/name resolver in read-only mode,
 loading only an existing identity key and retaining the selected directory
 binding. Opt-in `--all-projects` forwards the run's cross-project selection policy.
 Preview and resume read name markers through the shared no-follow regular-file
-reader with a 256-byte limit. Native launch keeps its allocation policy. The fork
+reader with a 256-byte limit. Unsafe markers refuse before ID-prefix fallback;
+missing markers still permit that fallback. Text and JSON expose any checkpoint
+adjustment reason and the retained message count. Native launch keeps its
+allocation policy. The fork
 preparation owner validates nested source shapes before deserialization; the CLI
 renders identity and record failures as exit-2 refusals.
 

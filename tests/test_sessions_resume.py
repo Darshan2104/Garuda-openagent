@@ -898,7 +898,7 @@ async def test_context_fork_public_entry_and_inspection(tmp_path, monkeypatch, c
 
 
 @pytest.mark.parametrize("case", [
-    "complete", "partial-batch", "live", "outside", "name", "latest", "full-id-no-key", "missing-lock",
+    "complete", "partial-batch", "live", "outside", "name", "latest", "full-id-no-key", "missing-lock", "missing-names",
     "legacy-no-key", "missing-key", "invalid-key", "handoff", "segments", "messages",
     "tool-call", "tool-call-id", "verification", "self-check", "foreign-project",
     "latest-list-time", "latest-null-time", "latest-object-time", "latest-number-time", "latest-missing-time",
@@ -937,6 +937,8 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         (store.root / ".identity/key").write_text("invalid")
     elif case == "missing-lock":
         (store.root / ".identity/.lock").unlink()
+    elif case == "missing-names":
+        shutil.rmtree(store.root / ".names")
     elif case == "name":
         reference = store.load_meta(source_id)["name"]
     elif case == "latest" or case.startswith("latest-"):
@@ -992,6 +994,7 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         if "events" in case:
             store.events_path(source_id).unlink()
     point = {"partial-batch": 4, "outside": 100}.get(case, 5)
+    before_paths = {p.relative_to(store.root) for p in store.root.rglob("*")}
     before = {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
     sources = {(p.stat().st_dev, p.stat().st_ino) for p in store.root.glob("*/*")
                if p.name in {"meta.json", "messages.json", "state.json", "events.jsonl"}}
@@ -1024,7 +1027,7 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
         ])
         code = main.run_sessions(args)
         output = capsys.readouterr()
-        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock",
+        if case not in {"complete", "partial-batch", "name", "latest", "full-id-no-key", "missing-lock", "missing-names",
                         "latest-missing-time", "budget-control", "missing-state", "missing-events",
                         "missing-state-events", "artifact-inheritance"}:
             assert code == 2 and output.err
@@ -1050,9 +1053,80 @@ async def test_context_fork_preview_is_read_only_and_uses_execution_validation(
             )
         assert [h.session_id for h in leases.holders_of(tmp_path)] == ["another-editor"]
         assert source_bytes <= MAX_ARTIFACT_SOURCE_BYTES
+        assert {p.relative_to(store.root) for p in store.root.rglob("*")} == before_paths
         assert {str(p.relative_to(store.root)): p.read_bytes() for p in store.root.rglob("*") if p.is_file()} == before
     finally:
         leases.release(tmp_path, "another-editor")
+
+
+@pytest.mark.parametrize("point,effective,retained", [(4, 2, 3), (5, 5, 6)])
+async def test_context_fork_preview_text_explains_retained_prefix(
+    tmp_path, fork_source, monkeypatch, capsys, point, effective, retained,
+):
+    from garuda.interfaces import main
+
+    store, source_id, _ = fork_source
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    args = main.build_parser().parse_args([
+        "sessions", "fork-preview", source_id, "--at", str(point), "--workspace", str(tmp_path),
+    ])
+    assert main.run_sessions(args) == 0
+    output = capsys.readouterr().out
+    assert f"through message {effective} (requested {point})" in output
+    if point != effective:
+        assert "Adjustment: incomplete tool-call batch" in output
+    assert f"Retained messages: {retained}" in output
+
+
+@pytest.mark.parametrize("entry", ["fork", "resume", "preview", "server", "tags"])
+async def test_unsafe_name_marker_is_a_clean_public_refusal(
+    tmp_path, fork_source, monkeypatch, capsys, entry,
+):
+    from garuda.interfaces import main
+    from garuda.interfaces.server import JsonRpcServer, ServerConfig
+
+    store, source_id, _ = fork_source
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    reference = source_id[:8]
+    meta = store.load_meta(source_id)
+    marker = store.root / ".names" / meta["project_id"] / reference / "session"
+    marker.parent.mkdir()
+    marker.symlink_to(store.root / ".names" / meta["project_id"] / meta["name"] / "session")
+    before = {p.relative_to(store.root) for p in store.root.rglob("*")}
+    profile = tmp_path / ".agent/agents/refusal-agent.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("name: refusal-agent\nmax_turns: 2\nenable_verifier: false\n"
+                       "permission_mode: smart\ntools: [task_complete]\ntool_rules: {task_complete: allow}\n")
+    model = _script_model("Completed the wrongly selected source.")
+    if entry == "preview":
+        args = main.build_parser().parse_args([
+            "sessions", "fork-preview", reference, "--at", "4", "--workspace", str(tmp_path),
+        ])
+        assert main.run_sessions(args) == 2
+    elif entry == "server":
+        from garuda.model import factory
+
+        monkeypatch.setitem(factory._registry, "litellm", lambda *a, **kw: model)
+        server = JsonRpcServer(ServerConfig(token=None))
+        response = await server.handle({"jsonrpc": "2.0", "id": 1, "method": "run", "params": {
+            "task": "continue", "workspace": str(tmp_path), "agent": "refusal-agent",
+            "model": "script/test", "resume": reference,
+        }})
+        assert "error" in response, response
+        assert "Unsafe session name marker" in response["error"]["message"]
+    else:
+        flags = {"fork": ["--fork", reference, "--fork-at", "4"],
+                 "resume": ["--resume", reference], "tags": ["--with", reference]}[entry]
+        args = main.build_parser().parse_args([
+            "run", "--workspace", str(tmp_path), "--agent", "refusal-agent", "-t", "continue", *flags,
+        ])
+        args.model = model
+        assert await main.run_task_guarded(args) == 2
+    if entry != "server":
+        output = capsys.readouterr()
+        assert "Unsafe session name marker" in output.err
+        assert "Traceback" not in output.err
+    assert {p.relative_to(store.root) for p in store.root.rglob("*")} == before
 
 
 @pytest.mark.parametrize("json_output", [False, True])

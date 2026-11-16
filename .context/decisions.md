@@ -3324,7 +3324,9 @@ unchanged.
 
 For #370/#415 context forks, preview and resume share no-follow name-marker
 reads that accept only regular files of at most 256 bytes. Symlinks, special
-files and oversized markers cannot authorize a named source. Preview adds an
+files and oversized markers raise a clean `ValueError` refusal, including when
+the name also matches an ID prefix; a missing marker still allows prefix fallback.
+Session tags translate that refusal into their existing typed error. Preview adds an
 opt-in `--all-projects` flag through the existing selection owner, matching
 `run --fork` while preserving project-scoped defaults and non-allocating reads.
 
@@ -3333,3 +3335,8 @@ neither builds resumed context nor inherits artifacts; either operation may
 still refuse after ordinary admission even when checkpoint preview succeeds.
 The runner remains the execution owner; no environment or interpreter
 requirement is added.
+
+Text and JSON preview both disclose checkpoint adjustment reasons and retained
+message counts. The no-write contract includes empty directories. Metadata read
+across the store during `latest` or prefix selection shares the preview budget,
+so store size can prevent preview of an otherwise small selected checkpoint.

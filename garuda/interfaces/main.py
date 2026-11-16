@@ -1010,6 +1010,9 @@ def run_sessions(args) -> int:
         else:
             print(f"Context fork: {preview['forked_from']} through message {preview['fork_at']} "
                   f"(requested {preview['fork_requested_at']})")
+            if preview["fork_adjustment"]:
+                print(f"Adjustment: {preview['fork_adjustment']}")
+            print(f"Retained messages: {preview['retained_messages']}")
             print("Context rewind only; files and processes are unchanged. Inherited evidence is stale.")
             print(f"Admission: {preview['admission']}")
             print(f"Artifact inheritance: {preview['artifact_inheritance']}")
