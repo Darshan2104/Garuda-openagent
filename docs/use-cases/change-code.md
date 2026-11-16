@@ -463,7 +463,10 @@ garuda web --allow-workspace .
 
 Open **Chat** and submit a task. The **writing…** row shows the most recent
 4,000 characters while the native model generates. It disappears when a complete
-response arrives or the turn stops. Each turn starts with an empty preview,
+response arrives. Stopping a turn through `POST /api/chat/<id>/stop` or cancelling
+its job through `POST /api/jobs/<id>/cancel` clears its preview before the request
+returns, even while cleanup continues. The chat stays busy until cleanup finishes;
+other chats keep their previews. Each turn starts with an empty preview,
 including while queued behind other work. On a stream fallback, discarded text is
 replaced by the completed answer. Reasoning and tool arguments are excluded from
 the preview. Only completed responses enter the saved event log; previews are

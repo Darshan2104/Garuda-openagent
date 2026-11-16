@@ -8,9 +8,12 @@ or turn settlement invalidate it; the browser checks that anchor after tailing
 to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
 tool fragments are excluded. No transient deltas enter the append-only event log.
 
-Turn admission, stop requests and owner-bound job settlement clear the retained
-preview text and cursor. `busy` alone never revives an earlier cancelled preview
-while a subsequent turn waits for job capacity.
+Turn admission, accepted chat stop or job-cancel requests, and owner-bound job
+settlement clear the retained preview text and cursor. Both cancellation routes
+clear matching chat state on the event loop before returning, while `busy` stays
+set until settlement. Cancelling a job leaves other chats' previews alone. `busy`
+alone never revives an earlier cancelled preview while a subsequent turn waits
+for job capacity.
 
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 

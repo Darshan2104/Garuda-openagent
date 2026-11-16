@@ -24,6 +24,7 @@ from garuda.interfaces.web.live import (
     DEFAULT_MAX_PERMISSION,
     PERMISSION_RANK,
     ChatSpec,
+    LiveChat,
     LiveRuns,
     SpecError,
 )
@@ -537,6 +538,85 @@ async def test_stopping_with_nothing_running_says_so(chatting):
     assert "nothing in flight" in payload["reason"]
 
 
+@pytest.mark.parametrize("route", ["stop", "job-cancel", "job-settlement"])
+async def test_chat_preview_cancellation_and_settlement(live, ctx, monkeypatch, route):
+    """Exercise cancellation independently of workspace/session startup.
+
+    Cleanup deliberately waits, so settlement cannot hide a missing request-time reset.
+    """
+    from garuda.model.streaming import LiveDelta
+
+    entered = {name: asyncio.Event() for name in ("target", "other")}
+    cleanup = asyncio.Event()
+    jobs = {}
+    for name in entered:
+        session = _FakeSession()
+
+        async def run(*, model_delta_consumer, _name=name, **kwargs):
+            model_delta_consumer(LiveDelta("text", _name + " is writing"))
+            entered[_name].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await cleanup.wait()
+
+        monkeypatch.setattr(session, "run", run)
+        live.store.begin(session_id=session.events.session_id, task=name,
+                         model="test", agent="build", workspace=str(live.workspaces[0]))
+        live.chats[name] = LiveChat(
+            chat_id=name, session=session, env=object(), env_handle=None,
+            workspace=live.workspaces[0], permission_mode="smart", model="test", agent="build",
+        )
+
+    try:
+        for name in entered:
+            response = await call(ctx, f"/api/chat/{name}/turn", method="POST", body={"task": name})
+            assert response.status == 202
+            jobs[name] = live.jobs.get(payload_of(response)["job_id"])
+            await asyncio.wait_for(entered[name].wait(), 5)
+            assert payload_of(await call(ctx, f"/api/chat/{name}"))["preview"]["text"] == (
+                name + " is writing"
+            )
+
+        if route == "job-settlement":
+            # Bypass request-time cleanup to exercise the settlement backstop.
+            assert live.jobs.cancel(jobs["target"].id) is True
+        else:
+            path = ("/api/chat/target/stop" if route == "stop"
+                    else f"/api/jobs/{jobs['target'].id}/cancel")
+            response = await call(ctx, path, method="POST")
+            assert response.status == 200
+            assert payload_of(response)["stopped" if route == "stop" else "cancelling"] is True
+        # Assert before awaiting the job: a cancellation request must retire the
+        # preview even while tool/model cleanup keeps the conversation busy.
+        info = payload_of(await call(ctx, "/api/chat/target"))
+        if route == "job-settlement":
+            assert info["preview"]["text"] == "target is writing"
+        else:
+            assert info["preview"] is None
+        assert info["busy"] is True
+        assert not jobs["target"]._task.done()
+        assert payload_of(await call(ctx, "/api/chat/other"))["preview"]["text"] == "other is writing"
+        assert (await call(ctx, "/api/chat/target/turn", method="POST", body={"task": "next"})).status == 409
+
+        cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await jobs["target"]._task
+        info = payload_of(await call(ctx, "/api/chat/target"))
+        assert info["busy"] is False
+        assert info["preview"] is None
+        # The retained-state contract matters independently of busy hiding it:
+        # settlement must release the partial text even without a stop request.
+        assert live.chats["target"]._preview_text == ""
+        assert live.chats["target"]._preview_cursor == -1
+    finally:
+        cleanup.set()
+        for job in jobs.values():
+            if not job._task.done():
+                live.jobs.cancel(job.id)
+        await asyncio.gather(*(job._task for job in jobs.values()), return_exceptions=True)
+
+
 async def test_stopping_an_unknown_chat_is_a_404(chatting):
     live, session, ctx = chatting
     assert (await call(ctx, "/api/chat/deadbeef/stop", method="POST")).status == 404
@@ -846,7 +926,11 @@ async def test_dashboard_previews_native_stream_without_persisting_fragments(liv
         assert info["preview"]["after"] == tail["events"][-1]["timestamp"]
         assert not any(e["type"] == "model_response" for e in tail["events"])
         if cancelled:
-            await call(ctx, path + "/stop", method="POST", body={})
+            stopped = await call(ctx, path + "/stop", method="POST", body={})
+            assert stopped.status == 200
+            assert payload_of(stopped)["stopped"] is True
+            assert payload_of(stopped)["preview"] is None
+            assert payload_of(await call(ctx, path))["preview"] is None
             with pytest.raises(asyncio.CancelledError):
                 await job._task
         else:

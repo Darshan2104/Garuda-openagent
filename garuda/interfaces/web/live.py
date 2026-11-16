@@ -226,6 +226,10 @@ class LiveRuns:
         if job is None:
             return None
         cancelling = self.jobs.cancel(job_id)
+        if cancelling:
+            for chat in self.chats.values():
+                if chat.job_id == job_id:
+                    chat.reset_preview()
         return {**self.job_payload(job), "cancelling": cancelling}
 
     # -- chat -----------------------------------------------------------------
