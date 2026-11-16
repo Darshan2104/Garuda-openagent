@@ -22,7 +22,7 @@ unchanged this turn.
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from garuda.context.summarizer import summarize_incremental, summarize_three_step
@@ -362,7 +362,10 @@ def _rebuild_with_summary(
     messages: list[Message],
     summary: str,
     keep_recent_turns: int,
+    inherited: list[Message] | None = None,
 ) -> list[Message]:
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
     system = messages[0] if messages and messages[0].role == Role.SYSTEM else None
     task = next((m for m in messages if m.role == Role.USER), None)
     recent = recent_messages(messages, keep_recent_turns, exclude={id(system), id(task)})
@@ -371,19 +374,57 @@ def _rebuild_with_summary(
         rebuilt.append(system)
     if task:
         rebuilt.append(task)
-    # The summary only. The working-state card is not embedded here even though the
+    # The working-state card is not embedded here even though the
     # summarizer was given it: whoever owns the card re-pins it after every
     # compaction (see run_state.reinject_pinned_state), at the end of the history
     # where it is most visible. Writing it here too produced two copies whenever a
     # prune-then-summarize sequence left the earlier pin inside the recent window.
-    rebuilt.append(
-        Message(role=Role.USER, content=f"Conversation summary (context compacted):\n{summary}")
-    )
+    rebuilt.extend(inherited or [])
+    # An empty model response still gets the historical current-summary header.
+    # Omit it only when there were no current inputs to summarize.
+    if summary or any(INHERITED_CONTEXT_KEY not in m.metadata for m in messages):
+        rebuilt.append(
+            Message(role=Role.USER, content=f"Conversation summary (context compacted):\n{summary}")
+        )
     rebuilt.extend(recent)
     return rebuilt
 
 
-async def build_summary(cx: CondenserContext) -> str:
+def _partition(
+    cx: CondenserContext, keep_recent_turns: int,
+) -> tuple[list[Message], list[Message], list[Message]]:
+    """Split dropped inherited history from current inputs and reusable summaries."""
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
+    system = cx.messages[0] if cx.messages and cx.messages[0].role == Role.SYSTEM else None
+    task = next((m for m in cx.messages if m.role == Role.USER), None)
+    kept = {id(system), id(task)}
+    kept.update(id(m) for m in recent_messages(cx.messages, keep_recent_turns, exclude=kept))
+    inherited = [m for m in cx.messages if id(m) not in kept and INHERITED_CONTEXT_KEY in m.metadata]
+    current = [m for m in cx.messages if INHERITED_CONTEXT_KEY not in m.metadata]
+    summaries = [m for m in inherited if isinstance(m.metadata[INHERITED_CONTEXT_KEY], dict)
+                 and m.metadata[INHERITED_CONTEXT_KEY].get("derived_from") == "compaction_summary"]
+    if len(summaries) == len(inherited):
+        return [], summaries, current
+    return inherited, [], current
+
+
+def _inherited_summary(inputs: list[Message], summary: str) -> Message:
+    from garuda.core.session_fork import inherited_sources, mark_inherited
+
+    sources = inherited_sources(inputs)
+    message = Message(
+        role=Role.USER,
+        content=(f"Inherited context summary (context fork from session {', '.join(sorted(sources))}; "
+                 f"historical, not evidence for the current workspace):\n{summary}"),
+    )
+    mark_inherited(message, sources, "compaction_summary")
+    return message
+
+
+async def _build_segment_summary(cx: CondenserContext) -> str:
+    if not cx.messages:
+        return ""
     if cx.enable_three_step_summary:
         try:
             return await summarize_three_step(cx.model, cx.messages, cx.task)
@@ -394,6 +435,16 @@ async def build_summary(cx: CondenserContext) -> str:
                 exc,
             )
     return compact_summary(cx.messages)
+
+
+async def build_summary(cx: CondenserContext) -> tuple[str, list[Message]]:
+    inputs, inherited, current = _partition(cx, cx.keep_recent_turns)
+    if inputs:
+        summary = await _build_segment_summary(replace(
+            cx, messages=inputs, task="Summarize historical inherited context.", working_state="",
+        ))
+        inherited = [_inherited_summary(inputs, summary)]
+    return await _build_segment_summary(replace(cx, messages=current)), inherited
 
 
 # --- strategies --------------------------------------------------------------
@@ -415,12 +466,13 @@ class MicrocompactCondenser:
         # Running structured state, maintained incrementally across compactions so
         # summary quality doesn't drift over long horizons (vs re-deriving prose).
         self._state = ""
+        self._inherited_state = ""
         self.last_outcome: CondenseOutcome | None = None
 
     def reset(self) -> None:
         """Forget this conversation, keep the tuning.
 
-        Both fields below describe one specific history. Carried into a context
+        These fields describe one specific history. Carried into a context
         that does not have that history — a subagent handed a state card rather
         than a transcript — ``_state`` becomes notes about work the child never
         did, which its own summarize would then fold its transcript into; and a
@@ -428,6 +480,7 @@ class MicrocompactCondenser:
         message count passes a number it had no part in reaching.
         """
         self._state = ""
+        self._inherited_state = ""
         self._last_summary_len = 0
 
     async def condense(self, cx: CondenserContext) -> list[Message] | None:
@@ -451,22 +504,38 @@ class MicrocompactCondenser:
             and cx.usage_fraction < _CRITICAL_FRACTION
         ):
             return None
-        summary = await self._summarize(cx)
-        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        summary, inherited = await self._summarize(cx)
+        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns, inherited)
         self._last_summary_len = len(rebuilt)
         self.last_outcome = CondenseOutcome("microcompact", "summarize")
         return rebuilt
 
-    async def _summarize(self, cx: CondenserContext) -> str:
-        """Incrementally fold the history into a persisted structured state (falls
-        back to the LLM-free compact summary on error or when LLM summary is off)."""
+    async def _summarize(self, cx: CondenserContext) -> tuple[str, list[Message]]:
+        """Fold each provenance segment into its own running notes."""
+        inputs, inherited, current = _partition(cx, cx.keep_recent_turns)
+        if inputs:
+            summary = await self._summarize_segment(replace(
+                cx, messages=inputs, task="Summarize historical inherited context.", working_state="",
+            ), inherited=True)
+            inherited = [_inherited_summary(inputs, summary)]
+        summary = await self._summarize_segment(replace(cx, messages=current))
+        return summary, inherited
+
+    async def _summarize_segment(self, cx: CondenserContext, *, inherited: bool = False) -> str:
+        if not cx.messages:
+            return ""
         if not cx.enable_three_step_summary:
             return compact_summary(cx.messages)
         try:
-            self._state = await summarize_incremental(
-                cx.model, self._state, cx.messages, cx.task, cx.working_state
+            state = await summarize_incremental(
+                cx.model, self._inherited_state if inherited else self._state,
+                cx.messages, cx.task, cx.working_state,
             )
-            return self._state
+            if inherited:
+                self._inherited_state = state
+            else:
+                self._state = state
+            return state
         except Exception as exc:
             logger.warning(
                 "Incremental summarize failed (%s: %s); using compact summary",
@@ -515,8 +584,8 @@ class SummarizingCondenser:
         self.last_outcome = None
         if cx.free_tokens >= cx.proactive_threshold:
             return None
-        summary = await build_summary(cx)
-        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns)
+        summary, inherited = await build_summary(cx)
+        rebuilt = _rebuild_with_summary(cx.messages, summary, cx.keep_recent_turns, inherited)
         self.last_outcome = CondenseOutcome("summarizing", "summarize")
         return rebuilt
 

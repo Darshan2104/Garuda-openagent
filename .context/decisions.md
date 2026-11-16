@@ -29,6 +29,35 @@ provenance, event and ledger payloads remain reported values; only spend-gate
 settlement changes. ACP spend and identifying pre-send refusals remain outside
 this slice.
 
+## 2026-11-16 — Compaction keeps fork-inherited provenance (#370)
+
+This supersedes #461's residual statement that compaction summaries remain
+unmarked and rely on the state-card notice. Summarizing and microcompact
+condensers split inherited history from current inputs. Derived inherited
+summaries carry stale source provenance and `derived_from: compaction_summary`;
+multiple sources are sorted, and invalid markers retain unknown provenance.
+The completion judge excludes these summaries and reports their count. A later
+fork names its immediate source, accumulates earlier singular and plural source
+IDs in sorted `source_session_ids`, and preserves `derived_from`; source notices
+include every recorded source.
+
+Keeping separate summaries preserves useful history without laundering it into
+current evidence or unnecessarily marking current work stale. Microcompact's
+running notes are separate for inherited and current segments. The inherited
+summary call covers only messages the rebuild drops, excluding system, task
+and recent-window messages. When those inputs are only previous inherited
+summaries, carry the original objects forward without model calls. Histories
+without inherited inputs retain their existing summary behavior, including the
+current-summary header and attached archive pointer after an empty model response.
+An empty current summary is omitted only when there are no current inputs.
+
+Archive pointers attach to a newly created untagged USER summary, falling back
+to insertion after the task, and report inherited counts and source sessions.
+Remaining residual: agent-initiated `buffer_grep`/`buffer_slice` reads of archived
+inherited text are fresh observations of historical text; the pointer warns,
+but those tool results are not tagged in this slice. Provider payloads, source
+bytes and digests are unchanged.
+
 ## 2026-11-16 — Cancelled and unknown-outcome calls are charged their estimate (#363)
 
 This supersedes the 2026-11-06 spend policy's transport-error wording and
