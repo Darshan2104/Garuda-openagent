@@ -145,7 +145,8 @@ fastest way to learn the system.
    unknown cost, retaining interrupted-call provenance through later resumes.
    Failed calls without usage release their reservation only for definite
    rejections (context overflow or integer HTTP 4xx except 408); a retried call
-   is a rejection only if every failed attempt was a definite rejection.
+   is a rejection only if every failed attempt was a definite rejection. A 4xx
+   after any streamed chunk or delta is an unknown outcome, not a definite rejection.
    Interruptions charge the estimate as interrupted calls, and other exceptions charge it as
    unknown-outcome calls, both with unknown cost.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops

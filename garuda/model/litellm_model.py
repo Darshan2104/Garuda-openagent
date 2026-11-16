@@ -635,8 +635,10 @@ class LitellmModel:
         response_stream = await self._complete_with_retries(kwargs, attempts)
         usage: dict = {}
         terminal = False
+        received_anything = False
         try:
             async for chunk in response_stream:
+                received_anything = True
                 # Usage chunks are cumulative snapshots of this attempt, not deltas.
                 reported = _extract_usage(chunk)
                 usage.update(reported)
@@ -649,7 +651,7 @@ class LitellmModel:
         except Exception as exc:
             usage.update(_error_usage(exc))
             attach_usage(exc, attempts + [{**usage_attempt(usage, "failed"),
-                                          "rejected": is_definite_rejection(exc)}])
+                                          "rejected": is_definite_rejection(exc) and not received_anything}])
             raise
         # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
         # provider closed without a finish reason; only one the provider sent counts.

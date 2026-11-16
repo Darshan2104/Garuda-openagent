@@ -11,7 +11,8 @@ For a failed call with no tokens or cost, definite rejections
 (`ContextOverflowError`, or integer non-boolean HTTP status 400–499 except 408)
 release the reservation and increment only `failed_without_usage`, preserving
 overflow recovery under a dollar-only cap. A retried call is a rejection only
-if every failed attempt was a definite rejection; an earlier failed attempt
+if every failed attempt was a definite rejection; a stream that delivered content
+before a 4xx is not a definite rejection; an earlier failed attempt
 without an explicit rejection marker remains an unknown outcome.
 Interruptions (a `BaseException` outside `Exception`, including cancellation
 and KeyboardInterrupt) charge the

@@ -119,8 +119,10 @@ class _Accumulator:
         self.finish_reason: str | None = None
         self.status: str | None = None
         self.done = False
+        self.received_anything = False
 
     def add(self, delta: StreamDelta) -> None:
+        self.received_anything = True
         if delta.content_delta:
             self.content.append(delta.content_delta)
         if delta.reasoning_delta:
@@ -171,7 +173,9 @@ class _Accumulator:
         ]
         failed = [dict(attempt) for attempt in failed]
         failed[-1]["outcome"] = "failed"
-        failed[-1]["rejected"] = is_definite_rejection(exc)
+        # The transport may have received a chunk that produced no delta here.
+        failed[-1]["rejected"] = (is_definite_rejection(exc) and not self.received_anything
+                                  and failed[-1].get("rejected") is not False)
         return failed
 
 

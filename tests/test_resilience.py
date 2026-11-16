@@ -312,6 +312,33 @@ async def test_stream_snapshots_and_failed_establishment_count_once(monkeypatch,
     assert calls == ([True, True] if fallback == "direct" else [True, True, False])
 
 
+@pytest.mark.parametrize("received_chunk", [False, True], ids=["before-chunk", "after-role-only-chunk"])
+async def test_stream_rejection_evidence_survives_untranslated_chunk(monkeypatch, received_chunk):
+    async def chunks():
+        if received_chunk:
+            # A provider chunk can arrive without producing a StreamDelta.
+            yield litellm.ModelResponse(
+                stream=True, choices=[{"delta": {"role": "assistant"}, "finish_reason": None}],
+            )
+        raise _StatusExc(400)
+
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(bool(kwargs.get("stream")))
+        if kwargs.get("stream"):
+            return chunks()
+        raise _StatusExc(400)
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    with pytest.raises(_StatusExc) as raised:
+        await LitellmModel("openai/gpt-4o-mini", max_retries=0).complete_streaming([])
+
+    assert calls == [True, False]
+    assert raised.value.usage == {}
+    assert [a.get("rejected") for a in raised.value.attempt_usage] == [not received_chunk, True]
+
+
 @pytest.mark.parametrize("raw, expected", [
     ({"usage": {"completion_tokens": 2}}, {"completion_tokens": 2}),
     ({"usage": litellm.Usage(completion_tokens=2)}, {"completion_tokens": 2}),
