@@ -1509,6 +1509,99 @@ def _concurrent_workers(editing, model):
     return runner, workers, repo
 
 
+@pytest.mark.parametrize("operation", ["run", "integrate"])
+async def test_default_worker_limit_refuses_live_overlap_as_busy(editing, operation):
+    runner, workers, repo = editing
+    release = asyncio.Event()
+    model = runner.model = TaskScriptModel(waits={("beta", 0): release})
+    ready = _receipt(await workers.run(runner, "editor", "alpha"))
+    live = asyncio.create_task(workers.run(runner, "editor", "beta"))
+    try:
+        await asyncio.wait_for(model.reached["beta", 0].wait(), 10)
+        receipts = [json.loads(path.read_text()) for path in workers.root.glob("worker-*/receipt.json")]
+        assert sorted(r["state"] for r in receipts) == ["ready", "running"]
+        directories = set(workers.root.glob("worker-*"))
+        calls = list(model.calls)
+        if operation == "run":
+            refused = await workers.run(runner, "editor", "another alpha")
+            assert refused.metadata["refused"] == "worker.busy"
+        else:
+            assert (await _integrate(runner, workers, ready))["code"] == "worker.busy"
+        assert set(workers.root.glob("worker-*")) == directories
+        assert model.calls == calls
+        assert (repo / "main.txt").read_text() == "original\n"
+        assert not (repo / "a.txt").exists() and not (repo / "b.txt").exists()
+    finally:
+        release.set()
+        _receipt(await live)
+
+
+async def test_admission_rechecks_live_siblings_after_recovery(editing, monkeypatch):
+    import fcntl
+
+    from garuda.runtime.strict_store import StorageUnavailable, exclusive_lock
+
+    model = TaskScriptModel(waits={("beta", 0): asyncio.Event()})
+    runner, workers, repo = _concurrent_workers(editing, model)
+    beta = asyncio.create_task(workers.run(runner, "editor", "beta"))
+    alpha = None
+    try:
+        await asyncio.wait_for(model.reached["beta", 0].wait(), 10)
+        receipt_path, = workers.root.glob("worker-*/receipt.json")
+        running = json.loads(receipt_path.read_text())
+        assert running["state"] == "running"
+        recovering = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        flock = fcntl.flock
+        # Recovery needs this real root lock before inspecting receipts. Observe
+        # its lock attempt without replacing recovery or manufacturing inventory.
+        with exclusive_lock(workers.root):
+            root_lock = (workers.root / ".lock").stat()
+
+            def observe_lock(fd, operation):
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) == (root_lock.st_dev, root_lock.st_ino):
+                    loop.call_soon_threadsafe(recovering.set)
+                return flock(fd, operation)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(fcntl, "flock", observe_lock)
+                alpha = asyncio.create_task(workers.run(runner, "editor", "alpha"))
+                await asyncio.wait_for(recovering.wait(), 10)
+                assert not alpha.done() and not beta.done()
+                # A directory at the receipt lock path makes quarantine's real
+                # write fail while leaving the published running receipt intact.
+                receipt_lock = receipt_path.parent / ".lock"
+                receipt_lock.unlink()
+                receipt_lock.mkdir(mode=0o700)
+                try:
+                    beta.cancel()
+                    with pytest.raises(asyncio.CancelledError) as cancelled:
+                        await beta
+                    assert isinstance(cancelled.value.__cause__, StorageUnavailable)
+                    assert json.loads(receipt_path.read_text()) == running
+                finally:
+                    receipt_lock.rmdir()
+                # Restore an ordinary lock so only the exited running receipt
+                # can explain admission refusal, not unreadable storage.
+                with exclusive_lock(receipt_path.parent):
+                    pass
+        refused = await asyncio.wait_for(alpha, 10)
+        assert not refused.success
+        assert refused.metadata["refused"] == "worker.uncertain"
+        assert model.calls == ["beta"]
+        assert json.loads(receipt_path.read_text()) == running
+        assert workers.repositories.inventory(runner.events.session_id)["coverage"] == "complete"
+        assert CapacityStore().holders("native") == [running["candidate_id"]]
+        assert [h.session_id for h in LeaseStore().holders_of(running["workspace"])] == [running["candidate_id"]]
+        assert (repo / "main.txt").read_text() == "original\n"
+    finally:
+        for task in (alpha, beta):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (alpha, beta) if task is not None), return_exceptions=True)
+
+
 async def test_concurrent_workers_run_together_and_integrate_serially(editing, monkeypatch):
     from garuda.core.spend import SpendGate
 
@@ -1747,6 +1840,7 @@ async def test_batch_preflight_launches_nothing_on_any_refusal(editing, reason, 
         requests = []
     results = await runner.run_editing_workers(requests)
     assert [r.metadata["refused"] for r in results] == [code] * len(requests)
+    assert len({id(result) for result in results}) == len(results)
     assert runner.budget.launches == 0 and not model.calls
     assert not list(workers.root.glob("worker-*"))
 

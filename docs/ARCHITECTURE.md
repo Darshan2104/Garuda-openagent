@@ -268,8 +268,10 @@ fastest way to learn the system.
    mutating parent lease. Only then does `invoke_subagent` offer
    `editing_worker: true` and shared run assembly add
    `integrate_editing_worker`. `LocalEditingWorkers(max_concurrent=1)` defaults
-   to sequential execution and accepts integer limits from 1 through 8. Each
-   editing child gets a detached snapshot repository, a unique session,
+   to sequential execution and accepts integer limits from 1 through 8.
+   With the default limit, a second run or integration during a live run returns
+   `worker.busy`, replacing the previous `worker.uncertain` after receipt publication.
+   Each editing child gets a detached snapshot repository, a unique session,
    mutating workspace lease and native
    capacity reservation with its own holder, lease identity and heartbeat under
    the same `DelegationBudget`. Admission reserves against the configured native

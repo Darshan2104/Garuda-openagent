@@ -259,25 +259,25 @@ class SubagentRunner:
 
         n = len(requests)
         if self.editing_workers is None:
-            return [_refused("worker.disabled", "editing workers were not enabled by the caller")] * n
+            return [_refused("worker.disabled", "editing workers were not enabled by the caller") for _ in requests]
         if self.busy:
-            return [_refused("agent.delegation_busy", "a subagent is already running")] * n
+            return [_refused("agent.delegation_busy", "a subagent is already running") for _ in requests]
         if not requests or n > self.editing_workers.max_concurrent:
-            return [_refused("worker.batch_invalid", "batch must fit the editing worker limit")] * n
+            return [_refused("worker.batch_invalid", "batch must fit the editing worker limit") for _ in requests]
         for profile_name, _ in requests:
             if self.allowed is not None and profile_name not in self.allowed:
                 return [_refused("agent.subagent_not_allowed",
-                                 f"{profile_name!r} is not one of {', '.join(self.allowed) or 'none'}")] * n
+                                 f"{profile_name!r} is not one of {', '.join(self.allowed) or 'none'}") for _ in requests]
         budget = self.budget if self.budget is not None else DelegationBudget()
         self.budget = budget
         if self.depth > budget.max_depth:
             return [_refused("agent.delegation_too_deep",
-                             f"subagents may nest {budget.max_depth} deep")] * n
+                             f"subagents may nest {budget.max_depth} deep") for _ in requests]
         if budget.launches + n > budget.max_launches:
             return [_refused("agent.delegation_exhausted",
-                             f"this run cannot exceed {budget.max_launches} subagents")] * n
+                             f"this run cannot exceed {budget.max_launches} subagents") for _ in requests]
         if self.deadline_monotonic is not None and self.deadline_monotonic <= time.monotonic():
-            return [_refused("agent.delegation_deadline", "the run's deadline has passed")] * n
+            return [_refused("agent.delegation_deadline", "the run's deadline has passed") for _ in requests]
         budget.launches += n
         self.busy = True
         try:
