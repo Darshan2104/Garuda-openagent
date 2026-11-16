@@ -6,8 +6,13 @@ The shared read model projects only the persisted native run-tree spend checkpoi
 and resume inheritance. CLI inspection and dashboard Sessions/Usage show selected
 caps, scope, settled/reserved tokens and uncertainty counters without rebuilding
 accounting or changing the existing usage/cost fields. Unknown cost remains
-`unknown`; known settled dollars are a labelled lower bound. Legacy sessions
+`unknown`; known settled dollars are a labelled lower bound, including when
+outstanding reservations or contradictory counters or inheritance indicate
+unknown cost. Legacy sessions
 have no spend block (`null`); malformed snapshots are explicitly `unreadable`.
+Older checkpoints retain the gate's compatibility rule: core spend totals are
+required, while absent later counters default to zero. Present counters must
+still be non-negative integers, excluding booleans.
 The usage page keeps recent session snapshots separate from rolling ledger totals:
 resumed trees overlap and cannot be summed. This projection neither admits calls
 nor changes the gate's reported-spend dollar-stop semantics.

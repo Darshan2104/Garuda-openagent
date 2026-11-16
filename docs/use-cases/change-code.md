@@ -365,12 +365,16 @@ Spend: native_run_tree; caps: tokens=400000, USD=2; settled tokens: 1200; reserv
 ```
 
 Dollar caps are stops based on reported spend; unknown cost is shown as unknown,
-never zero. Known settled dollars remain visible as a labelled lower bound.
+never zero. Known settled dollars remain visible as a labelled lower bound,
+including when outstanding reservations or contradictory uncertainty counters or
+inheritance indicate unknown cost.
 The dashboard Sessions and Usage views show these caps, settled/reserved tokens,
 unknown-cost counts, inheritance and the `native_run_tree` scope. Usage shows
 snapshots from up to 200 recent sessions separately from its rolling-window
 ledger totals: resumed trees overlap, so snapshot rows must not be summed.
 Legacy sessions say spend is not recorded; malformed snapshots say unreadable.
+Older snapshots with core spend totals remain readable; counters added later
+default to zero when absent, while invalid recorded counters remain unreadable.
 Snapshots are the last persisted checkpoint, not a live provider bill.
 
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.

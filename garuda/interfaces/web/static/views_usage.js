@@ -28,9 +28,7 @@ function measureRowHtml(label, m) {
 function usageView(range) {
   range = USAGE_RANGES.indexOf(range) >= 0 ? range : "7d";
   render('<div class="loading">Loading usage…</div>');
-  return Promise.all([api("/api/usage?range=" + range), api("/api/sessions?limit=200")]).then(function (payload) {
-    var s = payload[0];
-    var sessions = payload[1].sessions.filter(function (row) { return row.spend !== null; });
+  return api("/api/usage?range=" + range).then(function (s) {
     var share = s.work_type_share;
     var tableHead = "<thead><tr><th>Name</th><th>Native calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead>";
     function table(id, rows, nameOf) {
@@ -68,13 +66,20 @@ function usageView(range) {
       '<div class="card"><h2>By project</h2><p class="stat-sub">Projects are opaque ids.</p>' + table("project-table", s.by_project, function (r) { return r.project_id; }) + "</div>" +
       '<div class="card" id="usage-spend"><h2>Session spend limits</h2>' +
       '<p class="stat-sub">Recorded native run-tree snapshots from up to 200 recent sessions, independent of the UTC window. Resumed trees overlap; these rows are not additive. Dollar caps stop on reported spend.</p>' +
-      (sessions.length ? sessions.map(function (row) {
-        return '<div><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' + esc(row.name || row.session_id) +
-          '</a><div class="chips">' + spendHtml(row.spend) + "</div></div>";
-      }).join("") : '<p class="stat-sub">No recorded spend snapshots.</p>') + "</div>"
+      '<div id="usage-spend-snapshots"><p class="stat-sub">Loading spend snapshots…</p></div></div>'
     );
     el("export-csv").addEventListener("click", function () { downloadUsage(range, "csv"); });
     el("export-json").addEventListener("click", function () { downloadUsage(range, "json"); });
+    var snapshots = el("usage-spend-snapshots");
+    return api("/api/sessions?limit=200").then(function (payload) {
+      var sessions = payload.sessions.filter(function (row) { return row.spend !== null; });
+      snapshots.innerHTML = sessions.length ? sessions.map(function (row) {
+        return '<div><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' + esc(row.name || row.session_id) +
+          '</a><div class="chips">' + spendHtml(row.spend) + "</div></div>";
+      }).join("") : '<p class="stat-sub">No recorded spend snapshots.</p>';
+    }).catch(function (err) {
+      snapshots.innerHTML = '<p class="stat-sub">' + esc("spend snapshots unavailable") + ": " + esc(err.message) + "</p>";
+    });
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load usage</div><div class="notice-body">' + esc(err.message) + "</div></div>");

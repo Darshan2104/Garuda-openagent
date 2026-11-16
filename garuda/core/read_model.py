@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from garuda.core.spend import SPEND_OPTIONAL_COUNTERS, SPEND_REQUIRED_FIELDS
 from garuda.runtime.session_state import effective_state, is_crashed, summary_label
 
 UNKNOWN = "unknown"
@@ -167,16 +168,18 @@ def _spend(meta: dict) -> dict | None:
     """Project recorded native tree spend without reconstructing or repairing it.
 
     Missing evidence is distinct from a malformed snapshot. Known dollars remain
-    visible as a lower bound when any part of the settled cost is unknown.
+    visible as a lower bound when reservations or provenance leave cost unknown.
     """
     if "spend_gate" not in meta:
         return None
     snapshot = meta["spend_gate"]
     unreadable = {"state": "unreadable"}
-    if not isinstance(snapshot, dict):
+    if not isinstance(snapshot, dict) or any(k not in snapshot for k in SPEND_REQUIRED_FIELDS):
         return unreadable
-    counters = ("settled_tokens", "reserved_tokens", "cost_unknown_calls", "interrupted_calls",
-                "unknown_outcome_calls", "unreported_failed_attempts", "refused", "estimated_token_calls")
+    # Refusals are projected but not inherited; their diagnostic count is optional too.
+    optional = (*SPEND_OPTIONAL_COUNTERS, "refused")
+    snapshot = {**snapshot, **{k: snapshot.get(k, 0) for k in optional}}
+    counters = ("settled_tokens", "cost_unknown_calls", *optional)
     if any(type(snapshot.get(k)) is not int or snapshot[k] < 0 for k in counters):
         return unreadable
     if type(snapshot.get("prior_spend_unknown")) is not bool:
@@ -214,7 +217,10 @@ def _spend(meta: dict) -> dict | None:
             if key in raw and (type(raw[key]) is not int or raw[key] < 0):
                 return unreadable
         inherited = {k: raw[k] for k in keys if k in raw}
-    unknown = snapshot["cost_unknown_calls"] > 0 or snapshot["prior_spend_unknown"]
+    unknown = (snapshot["prior_spend_unknown"] or any(snapshot[k] > 0 for k in (
+        "reserved_calls", "cost_unknown_calls", "interrupted_calls", "unknown_outcome_calls",
+        "unreported_failed_attempts")) or (inherited is not None and (
+            inherited["source"] == "unavailable" or inherited.get("inherited_cost_unknown_calls", 0) > 0)))
     return {"state": "recorded", "scope": "native_run_tree",
             **{k: snapshot[k] for k in (*counters, "max_tokens", "max_cost_usd",
                                       "settled_cost_usd", "prior_spend_unknown")},
