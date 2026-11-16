@@ -228,6 +228,30 @@ class _HangingModel(ScriptModel):
         await asyncio.Future()
 
 
+@pytest.mark.parametrize("tokens,attempt_totals,expected,estimated", [
+    pytest.param(5, {}, 100, 1, id="partial-below-reservation"),
+    pytest.param(150, {}, 150, 0, id="reported-above-reservation"),
+    pytest.param(5, {"attempt_tokens": 5, "estimated_attempts": 1,
+                    "estimated_attempt_tokens": 40}, 100, 1, id="attempts-below-reservation"),
+    pytest.param(5, {"attempt_tokens": 90, "estimated_attempts": 1,
+                    "estimated_attempt_tokens": 40}, 130, 1, id="attempts-above-reservation"),
+])
+async def test_interrupted_partial_usage_is_a_lower_bound(tokens, attempt_totals, expected, estimated):
+    gate = SpendGate(max_cost_usd=1.0)
+    reservation = await gate.admit("main", estimate_tokens=100)
+    await gate.settle(reservation, {"total_tokens": tokens, "cost_usd": 0.01},
+                      failed=True, interrupted=True, **attempt_totals)
+    assert gate.settled_tokens == expected
+    assert gate.settled_cost_usd == 0.01
+    assert gate.interrupted_calls == gate.cost_unknown_calls == 1
+    assert gate.estimated_token_calls == estimated
+    assert gate.unreported_failed_attempts == attempt_totals.get("estimated_attempts", 0)
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("main", estimate_tokens=1)
+    assert refused.value.cause == "cost_unknown"
+
+
 async def test_auxiliary_cancellation_charges_the_reserved_estimate():
     gate = SpendGate(max_tokens=10_000)
     model = _HangingModel()

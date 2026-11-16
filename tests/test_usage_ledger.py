@@ -1,5 +1,6 @@
 """The idempotent usage ledger and native accounting (#168, plan task E.1)."""
 
+import asyncio
 import json
 import os
 import subprocess
@@ -411,3 +412,47 @@ async def test_retry_call_is_one_persisted_accounting_event(
     used = conversation.conversation(store, events.session_id, ledger=ledger)["models_used"]
     assert used["rows"][0]["cost_usd"] == pytest.approx(expected_cost)
     assert used["rows"][0]["cost_unknown"] == int(incomplete_cost)
+
+
+async def test_interrupted_stream_records_usage_as_a_lower_bound(tmp_path, ledger):
+    from garuda.core import conversation, usage_stats
+    from garuda.core.loop import DefaultAgent
+    from garuda.model.protocol import StreamDelta
+    from garuda.model.script_model import ScriptedStream
+    from garuda.types import AgentConfig
+    from garuda.workspace.local import LocalEnvironment
+
+    store = SessionStore(tmp_path / "sessions")
+    events = EventStore(call_purpose="controller")
+    store.begin(events.session_id, task="t", model="m", agent="a", workspace=str(tmp_path))
+    events.attach_persistence(store.events_path(events.session_id))
+    usage.attach(events, store, ledger=ledger)
+    partial = {"prompt_tokens": 40, "completion_tokens": 1, "total_tokens": 41,
+               "cost_usd": 0.002}
+    stream = ScriptedStream([StreamDelta(usage=partial), asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await DefaultAgent().run(
+            task="t", model=ScriptModel([stream]), env=LocalEnvironment(workspace_root=tmp_path),
+            tools=[], config=AgentConfig(enable_verifier=False), events=events,
+            model_delta_consumer=lambda delta: None,
+        )
+
+    [row] = ledger.records()
+    assert row["outcome"] == "interrupted"
+    assert row.get("usage_unknown") == ["completion_tokens", "cost_usd", "total_tokens"]
+    assert (row["input_tokens"], row["output_tokens"], row["total_tokens"], row["cost_usd"]) == (
+        40, 1, 41, 0.002)
+    assert usage.reconcile(store, events.session_id, ledger=ledger) == 0
+    records = list(ledger.records())
+    summary = totals(records)
+    assert summary["native_calls"] == summary["cost_unknown_records"] == 1
+    assert summary["cost_usd"] == 0.002
+    stats = usage_stats.stats(records, "24h", row["time"] + 1)
+    assert stats["measures"]["cost"] == {
+        "state": "partial", "known_usd": 0.002, "unpriced_records": 1}
+    assert stats["coverage"]["native_calls_with_unknown_cost"] == 1
+    used = conversation.conversation(store, events.session_id, ledger=ledger)["models_used"]
+    [model] = used["rows"]
+    assert model["calls"] == model["cost_unknown"] == 1
+    assert model["cost_usd"] == 0.002

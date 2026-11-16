@@ -466,6 +466,13 @@ it. Cancellation or a failed call closes the preview. Only assistant text is
 shown live; reasoning and tool argument fragments are not. Complete tool calls
 and results use the existing terminal renderer.
 
+Cancel a streaming turn with Ctrl-C: its preview closes and no partial response
+or tool call is dispatched. Any usage already reported stays in the ledger as
+`model_call_failed` with `outcome: interrupted`. With a spend gate enabled, those
+tokens are a lower bound charged at no less than the reservation estimate;
+reported dollars are retained and the final cost remains unknown. Cancellation
+never replays the turn, including when it interrupts an ordinary fallback call.
+
 `--no-stream` keeps ordinary completed output in either command. On `run`,
 `--quiet` also suppresses the native startup/model notices. JSON and redirected
 stdout automatically keep the

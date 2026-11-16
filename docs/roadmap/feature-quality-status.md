@@ -54,10 +54,10 @@ their complete acceptance criteria and exact merged revisions are verified.
   require separate evidence.
 - **Streaming:** native terminal runs and interactive chat show parent previews.
   Child deltas are SDK-only opt-in (`subagent_deltas=True`), labelled by source,
-  agent and depth; terminal and dashboard ignore them. Auxiliary, consult and
-  collection calls remain outside this forwarding path. Preserve known partial usage on
-  interruption and distinguish transport failure from completed turns. No
-  latency or quality improvement is inferred from tool overlap or fixture speed.
+  agent and depth; terminal and dashboard ignore them. Auxiliary (intentionally),
+  consult and collection calls remain outside this forwarding path. Interrupted
+  streams keep reported partial usage as a lower bound. No latency or quality
+  improvement is inferred from tool overlap or fixture speed.
 
 ## Validation owners
 
