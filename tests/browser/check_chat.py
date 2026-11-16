@@ -78,6 +78,12 @@ with sync_playwright() as p:
     # --- a turn that triggers an approval ------------------------------------
     page.fill("#chat-task", "clean up the build directory")
     page.click("#chat-send")
+    try:
+        page.wait_for_selector(".chat-preview", timeout=10_000)
+        if not page.inner_text(".chat-preview pre"):
+            problems.append("the in-flight native stream preview was empty")
+    except PlaywrightTimeoutError:
+        problems.append("native text did not appear before the streamed call finished")
     page.wait_for_timeout(3500)
 
     card = page.query_selector(".notice.approval")
@@ -85,6 +91,8 @@ with sync_playwright() as p:
     if not card:
         problems.append("no approval card appeared for a smart-mode ask")
     else:
+        if page.query_selector(".chat-preview"):
+            problems.append("the transient stream preview stayed while approval was pending")
         text = card.inner_text()
         print("  card text:", text.replace("\n", " | ")[:200])
         # The recovered structure, not the raw screened string.
@@ -109,6 +117,10 @@ with sync_playwright() as p:
         problems.append("the source stayed queued after a turn carried it")
     if page.query_selector(".notice.approval"):
         problems.append("the approval card stayed after being answered")
+    if page.query_selector(".chat-preview"):
+        problems.append("the transient stream preview stayed after completion")
+    if len(page.locator(".chat-agent pre").all_text_contents()) != 2:
+        problems.append("streaming duplicated or lost a completed assistant response")
     if "removed" not in log.lower() and "result" not in log.lower():
         problems.append("no tool result appeared after approving")
     page.screenshot(path=f"{SHOTS}/chat-approved.png", full_page=True)

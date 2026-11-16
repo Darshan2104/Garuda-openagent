@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
+
+Dashboard chat attaches the shared loop consumer. Live state holds only a bounded
+assistant text tail, anchored to the last persisted event. New events, discard,
+or turn settlement invalidate it; the browser checks that anchor after tailing
+to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
+tool fragments are excluded. No transient deltas enter the append-only event log.
+
+Turn admission, accepted chat stop or job-cancel requests, and owner-bound job
+settlement clear the retained preview text and cursor. Both cancellation routes
+clear matching chat state on the event loop before returning, while `busy` stays
+set until settlement. Cancelling a job leaves other chats' previews alone. `busy`
+alone never revives an earlier cancelled preview while a subsequent turn waits
+for job capacity.
+
 ## 2026-11-12 — Context fork preview shares execution validation (#370)
 
 `sessions fork-preview` resolves and binds the source through the bounded
