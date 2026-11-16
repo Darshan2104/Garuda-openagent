@@ -30,9 +30,11 @@ their complete acceptance criteria and exact merged revisions are verified.
   revalidate the source and current workspace. Context rewind restores neither
   files nor processes, and historical checks never verify the new candidate.
 - **Workers:** concurrent editing fan-out and non-local worker backends remain
-  unsupported. Closing known environment services does not prove all descendant
-  cleanup. Keep uncertain repositories, leases and capacity quarantined. Live
-  Docker integration checks require separate evidence.
+  unsupported. Capacity contention no longer quarantines a parent when store
+  reads and workspace absence prove ownership was never acquired. Closing known
+  environment services does not prove all descendant cleanup. Keep uncertain
+  repositories, leases and capacity quarantined. Live Docker integration checks
+  require separate evidence.
 - **Streaming:** dashboard and SDK callbacks do not cover terminal interactive
   chat, auxiliary calls or child calls. Preserve known partial usage on
   interruption and distinguish transport failure from completed turns. No

@@ -274,6 +274,10 @@ fastest way to learn the system.
    patch application. It never merges, stages or advances parent refs. Dirty
    parent content is captured and preserved; any base drift refuses. Receipts
    and `editing_worker` events record admission through integration or refusal.
+   Capacity-full admission is a settled refusal only when real capacity and
+   lease store reads and workspace absence prove ownership was never acquired.
+   Its receipt records the repository as removed for pruning on a later cleanup
+   run; ambiguous acquisition still quarantines ownership.
    Active-child cancellation and uncertain child cleanup retain the repository,
    lease and capacity and block further editing dispatch. The editing service
    closes its child environment's optional services on interrupted exits as well

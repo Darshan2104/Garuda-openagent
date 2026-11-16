@@ -598,11 +598,79 @@ async def test_admission_refuses_before_child_execution(editing, refusal):
         if reservation is not None:
             CapacityStore().release(reservation)
     expected = {
-        "capacity": "worker.admission_failed", "no-check": "integration.no_trusted_check",
+        "capacity": "worker.capacity_unavailable", "no-check": "integration.no_trusted_check",
         "no-schema": "worker.typed_output_required", "foreign-parent": "worker.foreign_parent",
         "unsupported": "worker.unsupported_environment", "depth": "agent.delegation_too_deep",
     }
     assert not result.success and result.metadata["refused"] == expected[refusal]
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert len(runner.model._responses) == 2
+
+
+async def test_capacity_refused_admission_settles_and_later_admission_proceeds(editing, monkeypatch):
+    runner, workers, repo = editing
+    capacity = CapacityStore()
+    reservation = capacity.reserve("native", "other-worker", 1)
+    head = snap.git(repo, "rev-parse", "HEAD").stdout
+    index = snap.git(repo, "ls-files", "-s", "-z").stdout
+    try:
+        refused = await runner.run("editor", "must not execute", editing_worker=True)
+        assert not refused.success
+        assert refused.metadata["refused"] == "worker.capacity_unavailable"
+        receipt = refused.metadata["editing_worker"]
+        assert receipt["state"] == "refused" and receipt["cleanup"] == "settled"
+        assert receipt["child_settled"] is True and receipt["ownership"] == "never_acquired"
+        assert receipt["admission_refused"] == "worker.capacity_unavailable"
+        assert receipt["repository_state"] == "removed" and receipt["retired_ns"] > 0
+        directory = Path(receipt["workspace"]).parent
+        assert directory.is_dir() and not os.path.lexists(receipt["workspace"])
+        inventory = EditingWorkerRepositories().inventory(runner.events.session_id)
+        assert inventory["coverage"] == "complete"
+        entry, = inventory["entries"]
+        assert entry["candidate_id"] == receipt["candidate_id"]
+        assert entry["repository_state"] == "removed"
+        assert not LeaseStore().holders_of(receipt["workspace"])
+        assert not capacity.slots_for_holder(receipt["candidate_id"])
+        assert capacity.holders("native") == ["other-worker"]
+        assert (repo / "main.txt").read_text() == "original\n"
+        assert snap.git(repo, "rev-parse", "HEAD").stdout == head
+        assert snap.git(repo, "ls-files", "-s", "-z").stdout == index
+        assert snap.git(repo, "status", "--porcelain").stdout == b""
+        assert len(runner.model._responses) == 2
+    finally:
+        capacity.release(reservation)
+
+    ready = _receipt(await runner.run("editor", "edit main.txt", editing_worker=True))
+    checked = []
+
+    def confined_checker(directory, command, image, timeout):
+        checked.append((Path(directory, "main.txt").read_text(), command, image))
+        return {"command": command, "exit_code": 0, "passed": True}
+
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", confined_checker)
+    assert (await _integrate(runner, workers, ready))["state"] == "integrated"
+    assert checked == [("worker\n", "test -s main.txt", "checker")]
+    assert (repo / "main.txt").read_text() == "worker\n"
+    workers.repositories.recover(runner.events.session_id)
+    assert not directory.exists()
+    events = [json.loads(line) for line in runner.events.persist_path.read_text().splitlines()]
+    assert any(event["type"] == "editing_worker" and event["payload"] == receipt for event in events)
+
+
+async def test_malformed_capacity_store_quarantines_admission_and_blocks_retry(editing):
+    runner, workers, repo = editing
+    capacity = CapacityStore()
+    reservation = capacity.reserve("native", "other-worker", 1)
+    capacity.release(reservation)
+    capacity._path("native").write_text('{"version":')
+
+    refused = await runner.run("editor", "must not execute", editing_worker=True)
+    assert not refused.success and refused.metadata["refused"] == "worker.admission_failed"
+    receipt_file, = workers.root.glob("worker-*/receipt.json")
+    receipt = json.loads(receipt_file.read_text())
+    assert receipt["state"] == "uncertain" and receipt["cleanup"] == "unknown"
+    retry = await runner.run("editor", "still must not execute", editing_worker=True)
+    assert not retry.success and retry.metadata["refused"] == "worker.uncertain"
     assert (repo / "main.txt").read_text() == "original\n"
     assert len(runner.model._responses) == 2
 
