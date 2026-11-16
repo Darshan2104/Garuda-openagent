@@ -70,6 +70,45 @@ async def test_spend_checkpoint_records_admission_and_settlement():
     assert snapshots[-1]["settled_tokens"] == 40
 
 
+@pytest.mark.parametrize("partial_cost", [False, True], ids=["missing-only", "also-partial-cost"])
+async def test_unreported_failed_attempts_survive_checkpoint_and_inherit(partial_cost):
+    # Multiple missing attempts count individually, but estimates and unknown cost
+    # count once per call, even when a reported attempt also has unknown cost.
+    snapshots = []
+    gate = SpendGate(max_cost_usd=1.0, checkpoint=snapshots.append)
+    attempts = [
+        {"outcome": "failed", "usage": {}, "rejected": False},
+        {"outcome": "failed", "usage": {"cost_usd": False}},
+        *([{"outcome": "failed", "usage": {"prompt_tokens": 30}}] if partial_cost else []),
+        {"outcome": "success", "usage": {"prompt_tokens": 20, "total_tokens": 24, "cost_usd": 0.3}},
+    ]
+    response = ModelResponse(content="ok", tool_calls=[], attempt_usage=attempts,
+                             usage={"prompt_tokens": 50 if partial_cost else 20,
+                                    "total_tokens": 24, "cost_usd": 0.3})
+    reservation = await gate.admit("main", estimate_tokens=100)
+    await accounting.settle(gate, reservation, response=response)
+    snapshot = snapshots[-1]
+    assert snapshot.get("unreported_failed_attempts", 0) == 2
+    assert snapshot["settled_tokens"] == (114 if partial_cost else 64)
+    assert snapshot["cost_unknown_calls"] == snapshot["estimated_token_calls"] == 1
+    assert snapshot["reserved_tokens"] == snapshot["reserved_calls"] == 0
+    resumed = SpendGate(max_cost_usd=1.0)
+    resumed.inherit(snapshot)
+    resumed.inherit(snapshot)  # accumulation, rather than replacement
+    assert resumed.snapshot()["unreported_failed_attempts"] == 4
+    assert resumed.settled_tokens == 2 * snapshot["settled_tokens"]
+    assert resumed.cost_unknown_calls == resumed.estimated_token_calls == 2
+    assert resumed.settled_cost_usd == 0.6
+    with pytest.raises(SpendLimitExceeded, match="4 failed attempt\\(s\\) in completed calls") as refused:
+        await resumed.admit("main", estimate_tokens=1)
+    assert refused.value.cause == "cost_unknown"
+    # Old checkpoints had no failed-attempt counter and remain valid.
+    legacy = SpendGate(max_cost_usd=1.0)
+    legacy.inherit({"settled_tokens": 24, "settled_cost_usd": 0.3, "cost_unknown_calls": 0})
+    assert legacy.snapshot()["unreported_failed_attempts"] == 0
+    await legacy.admit("main", estimate_tokens=1)
+
+
 @pytest.mark.parametrize("caps", [{"max_tokens": 1000}, {"max_cost_usd": 1.0}])
 async def test_spend_checkpoint_charges_interrupted_reservations(caps):
     gate = SpendGate(**caps)

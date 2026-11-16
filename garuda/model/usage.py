@@ -7,6 +7,33 @@ from garuda.model.protocol import ContextOverflowError
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
 
 
+def unreported_failures(attempts: list[dict]) -> int:
+    """Count failed attempts without rejection evidence or any reported usage."""
+    missing = 0
+    for attempt in attempts:
+        if (not isinstance(attempt, dict) or attempt.get("outcome") != "failed"
+                or attempt.get("rejected") is True):
+            continue
+        usage = attempt.get("usage")
+        if not isinstance(usage, dict) or not any(
+            isinstance(usage.get(key), (int, float)) and not isinstance(usage[key], bool)
+            for key in USAGE_FIELDS
+        ):
+            missing += 1
+    return missing
+
+
+def reported_prompt_tokens(attempts: list[dict]) -> int | None:
+    """Largest positive reported input size for this call's repeated request."""
+    values = [
+        usage["prompt_tokens"] for attempt in attempts if isinstance(attempt, dict)
+        and isinstance(usage := attempt.get("usage"), dict)
+        and isinstance(usage.get("prompt_tokens"), (int, float))
+        and not isinstance(usage["prompt_tokens"], bool) and usage["prompt_tokens"] > 0
+    ]
+    return int(max(values)) if values else None
+
+
 def is_definite_rejection(error: BaseException | None) -> bool:
     """Whether an error proves the provider rejected this attempt."""
     status_code = getattr(error, "status_code", None)

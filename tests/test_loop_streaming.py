@@ -184,6 +184,45 @@ async def test_failed_fallback_records_one_failed_call(tmp_path: Path):
     assert result.metadata["usage"] == failed["usage"]
 
 
+@pytest.mark.parametrize("status,partial,missing", [
+    pytest.param(None, True, 1, id="incomplete-stream"),
+    pytest.param(500, True, 1, id="500-after-content"),
+    pytest.param(500, False, 1, id="500-before-content"),
+    pytest.param(400, True, 1, id="400-after-content"),
+    pytest.param(400, False, 0, id="rejected-400-before-content"),
+])
+async def test_completed_stream_fallback_spend(tmp_path, status, partial, missing):
+    from garuda.core.spend import SpendLimitExceeded
+
+    deltas = [StreamDelta(content_delta="Partial")] if partial else []
+    if status is not None:
+        error = RuntimeError("stream failed")
+        error.status_code = status
+        deltas.append(error)
+    answer = ModelResponse(content="All done.", tool_calls=[],
+                           usage={"prompt_tokens": 20, "total_tokens": 24, "cost_usd": 0.3})
+    config = AgentConfig(max_turns=1, enable_verifier=False, force_final_submission=False,
+                         max_tokens=50, max_run_cost_usd=1.0)
+    result = await DefaultAgent().run(
+        task="t", model=ScriptModel([ScriptedStream(deltas), answer]),
+        env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(), config=config,
+        model_delta_consumer=lambda d: None,
+    )
+    assert result.final_message == "All done."
+    gate = config.spend_gate
+    assert gate.settled_tokens == 24 + 20 * missing
+    assert gate.settled_cost_usd == 0.3
+    assert gate.cost_unknown_calls == gate.estimated_token_calls == missing
+    assert gate.snapshot().get("unreported_failed_attempts", 0) == missing
+    assert gate.unpriced_model is None
+    if missing:
+        with pytest.raises(SpendLimitExceeded) as refused:
+            await gate.admit("main", estimate_tokens=50)
+        assert refused.value.cause == "cost_unknown"
+    else:
+        await gate.admit("main", estimate_tokens=50)
+
+
 @pytest.mark.parametrize("stream_status,fallback_status,delta,rejected", [
     pytest.param(400, 400, None, True, id="400-then-400-before-delta"),
     pytest.param(500, 429, None, False, id="500-then-429-before-delta"),
@@ -410,14 +449,15 @@ async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: P
                                "message": {"role": "assistant", "content": "All done."}}],
                   "usage": {"prompt_tokens": 30, "completion_tokens": 2, "total_tokens": 32}}
     seen: list[LiveDelta] = []
+    config = AgentConfig(max_turns=1, enable_verifier=False, force_final_submission=False,
+                         max_run_tokens=1_000_000)
     with _sse_endpoint(cut_short, completion) as server:
         model = LitellmModel("openai/fixture", api_key="local-fixture", max_retries=1,
                              api_base=f"http://127.0.0.1:{server.server_port}/v1")
         events = EventStore()
         result = await DefaultAgent().run(
             task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path),
-            tools=default_tools(), config=AgentConfig(max_turns=1, enable_verifier=False,
-                                                      force_final_submission=False),
+            tools=default_tools(), config=config,
             events=events, model_delta_consumer=seen.append,
         )
 
@@ -433,3 +473,15 @@ async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: P
     assert not (tmp_path / "a.txt").exists()
     assert [d.kind for d in seen] == ["text", "discard"]
     assert result.final_message == "All done."
+    # Every attempt is charged once: the cut-off stream either reported its own
+    # usage (newer LiteLLM estimates it) or is charged at the request's prompt size.
+    from garuda.core.spend import usage_tokens
+
+    attempts = response["attempt_usage"]
+    assert [a["outcome"] for a in attempts] == ["failed", "success"]
+    gate = config.spend_gate
+    unreported = gate.snapshot()["unreported_failed_attempts"]
+    reported = sum(usage_tokens(a["usage"]) for a in attempts)
+    assert unreported == (0 if usage_tokens(attempts[0]["usage"]) else 1)
+    assert gate.settled_tokens == reported + 30 * unreported
+    assert gate.settled_tokens > 32

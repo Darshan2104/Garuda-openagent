@@ -20,7 +20,12 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
-from garuda.model.usage import is_definite_rejection, usage_metadata
+from garuda.model.usage import (
+    is_definite_rejection,
+    reported_prompt_tokens,
+    unreported_failures,
+    usage_metadata,
+)
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
 _gate: ContextVar[Any] = ContextVar("garuda_accounting_spend_gate", default=None)
@@ -122,6 +127,9 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     A raised call charges whatever usage the exception carries. Without usage,
     only definite rejection of every failed attempt releases the reservation without a charge;
     interruptions and unknown outcomes charge the estimate with unknown cost.
+    Otherwise, tokens are summed per attempt. Unreported non-rejected failures
+    add the largest reported prompt size, or the reservation when unavailable,
+    with unknown cost. This lower bound excludes unreported generated output.
     """
     from garuda.core.spend import usage_tokens
 
@@ -129,6 +137,11 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     interrupted = error is not None and not isinstance(error, Exception)
     usage = getattr(source, "usage", None)
     attempts = getattr(source, "attempt_usage", None) or []
+    attempt_tokens = sum(
+        usage_tokens(attempt["usage"]) for attempt in attempts
+        if isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict))
+    missing = unreported_failures(attempts)
+    per_attempt = reported_prompt_tokens(attempts) or reservation.tokens
     # The final error cannot rule out spend on an earlier failed attempt.
     # Legacy attempts without rejection evidence remain unknown outcomes.
     rejected = is_definite_rejection(error) and all(
@@ -146,7 +159,9 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
                                 failed=error is not None,
                                 rejected=rejected, interrupted=interrupted,
                                 model=getattr(model, "model_name", None),
-                                cost_partial=cost_partial)
+                                cost_partial=cost_partial, attempt_tokens=attempt_tokens,
+                                estimated_attempts=missing,
+                                estimated_attempt_tokens=missing * per_attempt)
     events = _events.get()
     if warning is not None and events is not None:
         events.append(EventType.BUDGET, {"spend": warning})
