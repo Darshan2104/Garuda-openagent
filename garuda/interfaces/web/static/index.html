@@ -17,7 +17,7 @@
       <a href="#/starters" class="nav-link" data-nav="starters">Starters</a>
       <a href="#/runs" class="nav-link" data-nav="runs">Runs</a>
       <a href="#/sessions" class="nav-link" data-nav="sessions">Sessions</a>
-      <a href="#/inbox" class="nav-link" data-nav="inbox">Approvals</a>
+      <a href="#/inbox" class="nav-link" data-nav="inbox">Approvals<span class="nav-count" id="nav-inbox-count" hidden></span></a>
       <a href="#/usage" class="nav-link" data-nav="usage">Usage</a>
       <a href="#/setup" class="nav-link" data-nav="setup">Setup</a>
       <a href="#/providers" class="nav-link" data-nav="providers">Providers</a>
@@ -26,6 +26,7 @@
     </nav>
     <div class="topbar-right">
       <span class="meta" id="version-label"></span>
+      <button type="button" class="theme-toggle" id="keys-toggle" title="Keyboard shortcuts (?)">?</button>
       <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle theme">◑</button>
     </div>
   </header>
@@ -33,6 +34,20 @@
   <main id="view" class="view"></main>
 
   <div id="toast" class="toast" hidden></div>
+
+  <div id="keys-help" class="keys-help" hidden>
+    <div class="card" role="dialog" aria-label="Keyboard shortcuts">
+      <h2>Keyboard shortcuts</h2>
+      <table><tbody>
+        <tr><td><kbd>1</kbd> – <kbd>9</kbd></td><td>Switch to the nth tab</td></tr>
+        <tr><td><kbd>/</kbd></td><td>Focus this page's search</td></tr>
+        <tr><td><kbd>r</kbd></td><td>Reload this view</td></tr>
+        <tr><td><kbd>t</kbd></td><td>Toggle light / dark</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Show or hide this help</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close help, leave a search field</td></tr>
+      </tbody></table>
+    </div>
+  </div>
 
   <script src="/static/core.js"></script>
   <script src="/static/charts.js"></script>
