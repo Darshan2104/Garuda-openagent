@@ -184,6 +184,49 @@ async def test_failed_fallback_records_one_failed_call(tmp_path: Path):
     assert result.metadata["usage"] == failed["usage"]
 
 
+@pytest.mark.parametrize("stream_status,fallback_status,delta,rejected", [
+    pytest.param(400, 400, None, True, id="400-then-400-before-delta"),
+    pytest.param(500, 429, None, False, id="500-then-429-before-delta"),
+    pytest.param(400, 400, StreamDelta(content_delta="Partial"), False, id="400-after-text"),
+    pytest.param(400, 400, StreamDelta(reasoning_delta="Plan"), False, id="400-after-reasoning"),
+    pytest.param(400, 400, StreamDelta(tool_call_delta={"index": 0, "arguments": "{"}),
+                 False, id="400-after-tool-fragment"),
+    pytest.param(400, 400, StreamDelta(usage={"total_tokens": 0}), False, id="400-after-usage"),
+    pytest.param(400, 400, StreamDelta(), False, id="400-after-empty-delta"),
+])
+async def test_failed_stream_fallback_spend(tmp_path, stream_status, fallback_status, delta, rejected):
+    # Neither error supplies attempt_usage: the stream accumulator and fallback
+    # accounting must produce the provenance used by the run's spend gate.
+    stream_error = RuntimeError("stream failed")
+    stream_error.status_code = stream_status
+    fallback_error = RuntimeError("fallback failed")
+    fallback_error.status_code = fallback_status
+
+    class Unreachable(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            raise fallback_error
+
+    model = Unreachable([ScriptedStream(([delta] if delta is not None else []) + [stream_error])])
+    config = AgentConfig(max_turns=3, enable_verifier=False, max_tokens=50, max_run_tokens=10_000)
+    events = EventStore()
+    result = await DefaultAgent().run(
+        task="t", model=model, env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, events=events, model_delta_consumer=lambda d: None,
+    )
+
+    assert not result.success
+    [failed] = _of(events.get_all(), "model_call_failed")
+    assert failed["live_coverage"] == "fallback"
+    assert failed["usage"] == (delta.usage or {} if delta is not None else {})
+    gate = config.spend_gate
+    assert gate.failed_without_usage == int(rejected)
+    assert gate.unknown_outcome_calls == gate.estimated_token_calls == gate.cost_unknown_calls == int(not rejected)
+    assert (gate.settled_tokens == 0) if rejected else (gate.settled_tokens > 0)
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    # This emitted evidence must identify both attempts, even for legacy models.
+    assert [a.get("rejected") for a in failed["attempt_usage"]] == [rejected, True]
+
+
 async def test_cancellation_propagates_with_nothing_dispatched(tmp_path: Path):
     started = asyncio.Event()
 

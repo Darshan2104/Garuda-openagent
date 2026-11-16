@@ -203,6 +203,69 @@ async def test_terminal_error_carries_all_attempt_usage(monkeypatch, no_backoff,
         assert raised.value is final
 
 
+@pytest.mark.parametrize("first_error,final_status,reported,rejected", [
+    pytest.param(litellm.InternalServerError, 429, False, False, id="500-then-429"),
+    pytest.param(litellm.ServiceUnavailableError, 429, False, False, id="503-then-429"),
+    pytest.param(litellm.Timeout, 429, False, False, id="408-then-429"),
+    pytest.param(litellm.APIConnectionError, 429, False, False, id="connection-then-429"),
+    pytest.param(litellm.RateLimitError, 429, False, True, id="429-then-429"),
+    pytest.param(None, "overflow", False, True, id="overflow-alone"),
+    pytest.param(litellm.InternalServerError, "overflow", False, False, id="500-then-overflow"),
+    pytest.param(litellm.RateLimitError, "overflow", False, True, id="429-then-overflow"),
+    pytest.param(litellm.InternalServerError, 400, False, False, id="500-then-400"),
+    pytest.param(litellm.InternalServerError, 429, True, False, id="reported-usage"),
+])
+async def test_retry_failure_spend_settlement(
+    monkeypatch, no_backoff, first_error, final_status, reported, rejected,
+):
+    from garuda.core.events import EventStore
+    from garuda.core.spend import SpendGate, SpendLimitExceeded
+    from garuda.model import accounting
+    from garuda.model.protocol import ContextOverflowError
+
+    errors = []
+    if first_error is not None:
+        first = first_error("failed", llm_provider="p", model="m")
+        if reported:
+            first.usage = {"prompt_tokens": 12, "cost_usd": 0.1}
+        errors.append(first)
+    final = (litellm.ContextWindowExceededError("large", llm_provider="p", model="m")
+             if final_status == "overflow" else _reported_error(final_status))
+    errors.append(final)
+    replies = iter(errors)
+    calls = 0
+
+    async def complete(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise next(replies)
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    model = LitellmModel("openai/gpt-4o-mini", max_retries=2)
+    gate = SpendGate(max_cost_usd=1.0)
+    estimate = accounting.estimate_tokens([], 50)
+    token = accounting.bind(EventStore(session_id="retry-spend"), gate)
+    try:
+        expected = ContextOverflowError if final_status == "overflow" else type(final)
+        with pytest.raises(expected):
+            await accounting.complete(model, [], purpose="summary", max_tokens=50)
+    finally:
+        accounting.reset(token)
+    assert calls == len(errors)
+    assert gate.settled_tokens == (12 if reported else 0 if rejected else estimate)
+    assert gate.settled_cost_usd == (0.1 if reported else 0)
+    assert gate.failed_without_usage == int(rejected)
+    assert gate.unknown_outcome_calls == gate.estimated_token_calls == gate.cost_unknown_calls == int(
+        not rejected and not reported)
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    if not rejected and not reported:
+        with pytest.raises(SpendLimitExceeded) as refused:
+            await gate.admit("summary", estimate_tokens=50)
+        assert refused.value.cause == "cost_unknown"
+    else:
+        await gate.admit("summary", estimate_tokens=50)
+
+
 @pytest.mark.parametrize("fallback", ["success", "failure", "direct"])
 async def test_stream_snapshots_and_failed_establishment_count_once(monkeypatch, no_backoff, fallback):
     calls = []
@@ -247,6 +310,33 @@ async def test_stream_snapshots_and_failed_establishment_count_once(monkeypatch,
         assert all(a["outcome"] == "failed" for a in value.attempt_usage)
         assert len(value.attempt_usage) == (2 if fallback == "direct" else 3)
     assert calls == ([True, True] if fallback == "direct" else [True, True, False])
+
+
+@pytest.mark.parametrize("received_chunk", [False, True], ids=["before-chunk", "after-role-only-chunk"])
+async def test_stream_rejection_evidence_survives_untranslated_chunk(monkeypatch, received_chunk):
+    async def chunks():
+        if received_chunk:
+            # A provider chunk can arrive without producing a StreamDelta.
+            yield litellm.ModelResponse(
+                stream=True, choices=[{"delta": {"role": "assistant"}, "finish_reason": None}],
+            )
+        raise _StatusExc(400)
+
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(bool(kwargs.get("stream")))
+        if kwargs.get("stream"):
+            return chunks()
+        raise _StatusExc(400)
+
+    monkeypatch.setattr(lm.litellm, "acompletion", complete)
+    with pytest.raises(_StatusExc) as raised:
+        await LitellmModel("openai/gpt-4o-mini", max_retries=0).complete_streaming([])
+
+    assert calls == [True, False]
+    assert raised.value.usage == {}
+    assert [a.get("rejected") for a in raised.value.attempt_usage] == [not received_chunk, True]
 
 
 @pytest.mark.parametrize("raw, expected", [

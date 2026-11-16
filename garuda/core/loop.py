@@ -405,11 +405,10 @@ class DefaultAgent:
             # correct on the raising path too — which is the one that matters here.
             model_ms[0] = round(model_ms[0] + elapsed[0], 3)
             if reservation is not None:
-                # Settled failed or not. A raised call is charged the usage its
-                # exception carries (failed and retried attempts); one that carries
-                # none (a context-overflow rejection) releases its reservation and is
-                # counted as failed without usage, so the overflow retry below is
-                # still admitted under a dollar-only cap.
+                # Charge reported usage even on failure. Without usage, definite
+                # rejections release the reservation so overflow recovery can run
+                # under a dollar-only cap; interrupted and unknown-outcome calls
+                # charge their estimate with unknown cost.
                 await accounting.settle(gate, reservation, response=response, error=error,
                                         model=model)
 

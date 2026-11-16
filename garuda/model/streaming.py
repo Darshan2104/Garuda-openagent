@@ -21,7 +21,13 @@ from dataclasses import dataclass
 
 from garuda.model.litellm_model import _merge_tool_fragment, _ordered_slots, _parse_tool_calls
 from garuda.model.protocol import ContextOverflowError, ModelResponse, StreamDelta, supports_streaming
-from garuda.model.usage import attach_usage, attempts_for, sum_usage, usage_attempt
+from garuda.model.usage import (
+    attach_usage,
+    attempts_for,
+    is_definite_rejection,
+    sum_usage,
+    usage_attempt,
+)
 from garuda.types import Message
 
 logger = logging.getLogger(__name__)
@@ -113,8 +119,10 @@ class _Accumulator:
         self.finish_reason: str | None = None
         self.status: str | None = None
         self.done = False
+        self.received_anything = False
 
     def add(self, delta: StreamDelta) -> None:
+        self.received_anything = True
         if delta.content_delta:
             self.content.append(delta.content_delta)
         if delta.reasoning_delta:
@@ -165,6 +173,9 @@ class _Accumulator:
         ]
         failed = [dict(attempt) for attempt in failed]
         failed[-1]["outcome"] = "failed"
+        # The transport may have received a chunk that produced no delta here.
+        failed[-1]["rejected"] = (is_definite_rejection(exc) and not self.received_anything
+                                  and failed[-1].get("rejected") is not False)
         return failed
 
 

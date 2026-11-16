@@ -51,6 +51,8 @@ class ModelResponse:
     # usage is their known subtotal; missing fields are unknown, including when
     # another attempt reported that field. Raised transport errors carry the same
     # usage/attempt_usage attributes. Legacy implementations may leave this empty.
+    # Failed entries may include rejected: True for a definite rejection;
+    # a missing marker leaves that attempt's outcome unknown for spend accounting.
     attempt_usage: list[dict] = field(default_factory=list)
 
 

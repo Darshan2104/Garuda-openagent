@@ -143,6 +143,12 @@ fastest way to learn the system.
    settlement write failure warns and retains the previous reservation record.
    Resume charges crash-interrupted reservations at their token estimate with
    unknown cost, retaining interrupted-call provenance through later resumes.
+   Failed calls without usage release their reservation only for definite
+   rejections (context overflow or integer HTTP 4xx except 408); a retried call
+   is a rejection only if every failed attempt was a definite rejection. A 4xx
+   after any streamed chunk or delta is an unknown outcome, not a definite rejection.
+   Interruptions charge the estimate as interrupted calls, and other exceptions charge it as
+   unknown-outcome calls, both with unknown cost.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops
    based on reported spend. Legacy missing snapshots retain unknown prior spend.
    An opt-in `core/advisor.py` reuses consult admission and between-turn steering.

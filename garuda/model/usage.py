@@ -2,7 +2,17 @@
 
 from typing import Any
 
+from garuda.model.protocol import ContextOverflowError
+
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
+
+
+def is_definite_rejection(error: BaseException | None) -> bool:
+    """Whether an error proves the provider rejected this attempt."""
+    status_code = getattr(error, "status_code", None)
+    return isinstance(error, ContextOverflowError) or (
+        isinstance(status_code, int) and not isinstance(status_code, bool)
+        and 400 <= status_code <= 499 and status_code != 408)
 
 
 def usage_attempt(usage: dict, outcome: str) -> dict:
@@ -14,7 +24,10 @@ def attempts_for(value: Any, outcome: str) -> list[dict]:
     if attempts:
         return attempts
     usage = getattr(value, "usage", None)
-    return [usage_attempt(usage if isinstance(usage, dict) else {}, outcome)]
+    attempt = usage_attempt(usage if isinstance(usage, dict) else {}, outcome)
+    if outcome == "failed":
+        attempt["rejected"] = is_definite_rejection(value)
+    return [attempt]
 
 
 def sum_usage(attempts: list[dict]) -> dict:
