@@ -297,6 +297,96 @@ async def test_cancellation_propagates_with_nothing_dispatched(tmp_path: Path):
     assert len(model._responses) == 1  # no fallback call was made
 
 
+@pytest.mark.parametrize("with_attempts", [False, True], ids=["usage-only", "attempt-provenance"])
+async def test_cancelled_stream_keeps_reported_partial_usage(tmp_path: Path, with_attempts):
+    started = asyncio.Event()
+
+    async def stalled(delta):
+        if delta.kind == "text":
+            started.set()
+            await asyncio.Event().wait()
+
+    partial = {"prompt_tokens": 40, "completion_tokens": 1, "total_tokens": 41,
+               "cost_usd": 0.002}
+    attempts = [{"usage": partial, "outcome": "success"}] if with_attempts else None
+    stream = ScriptedStream([StreamDelta(usage=partial, attempt_usage=attempts),
+                             StreamDelta(content_delta="Par"),
+                             StreamDelta(done=True)])
+    config = AgentConfig(max_tokens=50, max_run_tokens=1_000_000, max_run_cost_usd=1.0)
+    events = EventStore()
+    task = asyncio.create_task(DefaultAgent().run(
+        task="t", model=ScriptModel([stream]), env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, events=events, model_delta_consumer=stalled,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        estimate = config.spend_gate.reserved_tokens
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    [failed] = _of(events.get_all(), "model_call_failed")
+    assert failed["outcome"] == "interrupted"
+    assert failed["usage"] == partial
+    assert failed["live_coverage"] == "streamed"
+    assert failed["attempt_usage"] == [
+        {"usage": partial, "outcome": "interrupted", "rejected": False}]
+    if with_attempts:
+        assert attempts == [{"usage": partial, "outcome": "success"}]
+    assert _of(events.get_all(), "model_response") == []
+    assert _of(events.get_all(), "tool_call") == []
+    gate = config.spend_gate
+    assert gate.settled_cost_usd == 0.002
+    assert gate.interrupted_calls == gate.cost_unknown_calls == 1
+    assert gate.settled_tokens >= estimate > 41
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+
+
+async def test_cancelled_fallback_keeps_failed_stream_usage(tmp_path: Path):
+    started = asyncio.Event()
+
+    class HangingFallback(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    partial = {"prompt_tokens": 40, "completion_tokens": 1, "total_tokens": 41,
+               "cost_usd": 0.002}
+    stream = ScriptedStream([StreamDelta(usage=partial), ConnectionResetError("dropped")])
+    config = AgentConfig(max_tokens=50, max_run_tokens=1_000_000, max_run_cost_usd=1.0)
+    events = EventStore()
+    task = asyncio.create_task(DefaultAgent().run(
+        task="t", model=HangingFallback([stream]), env=LocalEnvironment(workspace_root=tmp_path),
+        tools=default_tools(), config=config, events=events, model_delta_consumer=lambda d: None,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        estimate = config.spend_gate.reserved_tokens
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    [failed] = _of(events.get_all(), "model_call_failed")
+    assert failed["outcome"] == "interrupted"
+    assert failed["live_coverage"] == "fallback"
+    assert failed["stream_error"] == "ConnectionResetError: dropped"
+    assert [a["outcome"] for a in failed["attempt_usage"]] == ["failed", "interrupted"]
+    assert failed["attempt_usage"][-1] == {
+        "usage": {}, "outcome": "interrupted", "rejected": False}
+    assert failed["usage"] == partial
+    assert _of(events.get_all(), "model_response") == []
+    assert _of(events.get_all(), "tool_call") == []
+    gate = config.spend_gate
+    # #462's unreported fallback estimate is included before applying the floor.
+    assert gate.settled_tokens == max(41 + 40, estimate)
+    assert gate.settled_cost_usd == 0.002
+    assert gate.interrupted_calls == gate.cost_unknown_calls == gate.estimated_token_calls == 1
+    assert gate.unreported_failed_attempts == 1
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+
+
 async def test_disconnected_consumer_does_not_change_the_run(tmp_path: Path):
     calls = []
 

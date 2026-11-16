@@ -50,10 +50,9 @@ their complete acceptance criteria and exact merged revisions are verified.
   environment services does not prove all descendant cleanup. Keep uncertain
   repositories, leases and capacity quarantined. Live Docker integration checks
   require separate evidence.
-- **Streaming:** dashboard and SDK callbacks do not cover terminal interactive
-  chat, auxiliary calls or child calls. Preserve known partial usage on
-  interruption and distinguish transport failure from completed turns. No
-  latency or quality improvement is inferred from tool overlap or fixture speed.
+- **Streaming:** Dashboard, SDK and terminal callbacks do not cover auxiliary
+  (intentionally) or child calls; interrupted streams keep reported partial usage
+  as a lower bound. No latency or quality improvement is inferred from tool overlap or fixture speed.
 
 ## Validation owners
 

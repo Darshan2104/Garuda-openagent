@@ -30,6 +30,8 @@ An interrupted call or any other failure with no reported usage is charged its
 reservation estimate with unknown cost, retaining interrupted or unknown-outcome
 provenance. Calls that were never sent cannot reliably be distinguished, so this
 can overcharge. Usage the exception carries is charged like any other report.
+For interruptions, reported usage is a lower bound: charge at least the
+reservation estimate, retain known dollars and always count the cost as unknown.
 For calls with reported usage or a successful completion, tokens are summed per
 attempt. Each attempt without usage, except a definite failed rejection, adds the
 largest reported prompt size in that call, or its reservation estimate if unavailable,
@@ -236,6 +238,9 @@ class SpendGate:
         ``attempt_tokens`` preserves per-attempt token totals. Unreported non-rejected
         attempts add ``estimated_attempt_tokens`` and unknown cost once per call,
         except when the whole-call failure branch already charges its estimate.
+        For an interrupted call with usage, this per-attempt total is floored at
+        the reservation estimate rather than adding another estimate. Known dollars
+        are retained, but the call always has unknown cost and interrupted provenance.
         """
         tokens = usage_tokens(usage)
         cost = usage.get("cost_usd") if isinstance(usage, dict) else None
@@ -264,14 +269,21 @@ class SpendGate:
                     # tokens nobody reported, so its estimate stands in.
                     tokens = reservation.tokens
                     estimated = True
+                tokens += estimated_attempt_tokens
+                if failed and interrupted:
+                    # Partial usage cannot prove the final bill. Apply the floor
+                    # after per-attempt estimates so the reservation is not added twice.
+                    estimated = estimated or reservation.tokens > tokens
+                    tokens = max(tokens, reservation.tokens)
+                    self.interrupted_calls += 1
                 if estimated:
                     self.estimated_token_calls += 1
                 self.unreported_failed_attempts += estimated_attempts
-                self.settled_tokens += tokens + estimated_attempt_tokens
+                self.settled_tokens += tokens
                 if isinstance(cost, (int, float)):
                     self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
                 unpriced = not isinstance(cost, (int, float)) or cost_partial
-                if unpriced or estimated_attempts:
+                if unpriced or estimated_attempts or (failed and interrupted):
                     # Reported usage without a price: spend happened and its price
                     # is unknown — never zero.
                     self.cost_unknown_calls += 1
