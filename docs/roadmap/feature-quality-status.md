@@ -20,9 +20,10 @@ The four follow-ups are reviewable increments. Keep the parent issues open until
 their complete acceptance criteria and exact merged revisions are verified.
 
 - **Spend:** dollar limits remain stops based on reported spend, rather than
-  prepaid exact maxima. Preserve explicit unknown failed/cancelled usage and
-  crash/resume reservation provenance; a passing normal-resume case does not
-  establish crash accounting. External ACP model calls remain outside native
+  prepaid exact maxima. Crash/resume reservation provenance is covered by
+  admission/settlement checkpoints and interrupted-reservation estimate charges
+  with unknown cost. Cancelled-call token charging and failed calls without
+  reported usage remain open. External ACP model calls remain outside native
   spend enforcement.
 - **Investigation:** preserve read-only collection briefs where sufficient.
   Preview is inspection, not a reservation: execution must independently

@@ -334,6 +334,11 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   `spend_inherited`. If the source recorded no spend (it ran without these
   flags), prior spend is unknown: a dollar-only budget then refuses to admit
   calls, and a token budget starts from zero and says so.
+- Capped runs checkpoint each reservation before sending and each settlement.
+  After a crash, resume charges interrupted calls their reserved token estimate
+  and records their cost as unknown (`spend_inherited.source: spend_checkpoint`).
+  A dollar-only cap refuses further calls while that cost is unknown. If a
+  reservation cannot be checkpointed, the call is refused before sending.
 
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.

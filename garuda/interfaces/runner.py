@@ -465,6 +465,17 @@ async def run_agent_task(
                 store.checkpoint_messages(events.session_id, context.get_messages())
             source_scope.close()
 
+        if (session_record or {}).get("origin") != "consult":
+            from garuda.core.spend import gate_for
+
+            gate = gate_for(config)
+            if gate is not None and gate.checkpoint is None:
+                # Persist before any model call, using the same gate that resume
+                # inherited above and prepare_run will reuse. Children keep the
+                # asker's sink; a write failure must propagate, never be swallowed.
+                gate.checkpoint = lambda snap: store.update_meta(events.session_id, {"spend_gate": snap})
+                gate.checkpoint(gate.snapshot())
+
         if hooks is None:
             hooks = build_hook_registry(workspace)
 

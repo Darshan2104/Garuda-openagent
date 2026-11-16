@@ -9,7 +9,11 @@ model calls against the same remaining budget.
 **Tokens are reserved.** A call reserves its estimated tokens (prompt estimate
 plus the requested output ceiling) under a lock before it is sent, so concurrent
 calls cannot both spend the same remainder. Settlement releases the reservation
-and charges the provider-reported usage.
+and charges the provider-reported usage. The root checkpoints admission before
+sending and settlement afterwards. A failed admission checkpoint refuses the
+call; a failed settlement checkpoint leaves the recorded reservation intact.
+On crash recovery, outstanding reservations are charged at their token estimate
+with unknown cost, and interrupted-call provenance survives later resumes.
 
 **Dollars are a stop, not a prepaid maximum.** A call's price is only known after
 it returns, so the dollar cap refuses admission once settled spend has reached
@@ -34,9 +38,13 @@ its reservation estimate is charged instead and counted as ``estimated_token_cal
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class SpendLimitExceeded(RuntimeError):
@@ -44,7 +52,8 @@ class SpendLimitExceeded(RuntimeError):
 
     ``cause`` says which limit refused it: ``tokens``, ``dollars`` (reported spend
     reached the cap) or ``cost_unknown`` (the dollar cap cannot be enforced because
-    a completed call reported no cost).
+    a completed or interrupted call has unknown cost), or ``checkpoint`` (the
+    reservation could not be persisted before sending).
     """
 
     def __init__(self, message: str, cause: str):
@@ -93,8 +102,11 @@ class SpendGate:
     max_tokens: int | None = None
     max_cost_usd: float | None = None
     warn_fraction: float = 0.8
+    checkpoint: Callable[[dict], None] | None = field(default=None, repr=False, compare=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     reserved_tokens: int = 0
+    reserved_calls: int = 0
+    interrupted_calls: int = 0
     settled_tokens: int = 0
     settled_cost_usd: float = 0.0
     cost_unknown_calls: int = 0
@@ -140,7 +152,20 @@ class SpendGate:
                 self._last_refusal_cause = cause
                 raise SpendLimitExceeded(f"{purpose} call refused: {reason}", cause)
             self.reserved_tokens += estimate
+            self.reserved_calls += 1
             self.calls += 1
+            if self.checkpoint is not None:
+                try:
+                    self.checkpoint(self.snapshot())
+                except Exception as exc:
+                    self.reserved_tokens -= estimate
+                    self.reserved_calls -= 1
+                    self.calls -= 1
+                    self.refused += 1
+                    self._last_refusal_cause = "checkpoint"
+                    raise SpendLimitExceeded(
+                        f"{purpose} call refused: spend checkpoint could not be recorded",
+                        "checkpoint") from exc
             return SpendReservation(purpose, estimate)
 
     def _refusal(self, estimate: int) -> tuple[str, str] | None:
@@ -155,6 +180,11 @@ class SpendGate:
                 return "dollars", (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
                                    f"(${self.settled_cost_usd:.6f} settled)")
             if self.cost_unknown_calls and self.max_tokens is None:
+                if self.interrupted_calls and not self.unpriced_model:
+                    return "cost_unknown", (
+                        f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
+                        f"{self.interrupted_calls} interrupted call(s) have unknown cost; "
+                        "use --max-run-tokens to bound this run")
                 if self.prior_spend_unknown and not self.unpriced_model:
                     return "cost_unknown", (
                         f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
@@ -183,6 +213,7 @@ class SpendGate:
         cost = usage.get("cost_usd") if isinstance(usage, dict) else None
         async with self._lock:
             self.reserved_tokens = max(0, self.reserved_tokens - reservation.tokens)
+            self.reserved_calls = max(0, self.reserved_calls - 1)
             if failed and not tokens and not isinstance(cost, (int, float)):
                 # Raised before the provider reported anything (an overflow
                 # rejection, a transport error): counted apart, not as a priced
@@ -202,6 +233,12 @@ class SpendGate:
                     # is unknown — never zero.
                     self.cost_unknown_calls += 1
                     self.unpriced_model = self.unpriced_model or model
+            if self.checkpoint is not None:
+                try:
+                    self.checkpoint(self.snapshot())
+                except Exception:
+                    logger.warning("Spend settlement checkpoint failed; recorded reservation retained",
+                                   exc_info=True)
             if not self.warned and self._fraction() >= self.warn_fraction:
                 self.warned = True
                 return {**self.snapshot(), "warning": "run-tree spend passed "
@@ -215,11 +252,15 @@ class SpendGate:
         already spent. Without a recorded snapshot the prior spend is unknown:
         it counts as one unknown-cost call (so a dollar-only cap cannot be
         verified), and prior tokens are reported as not inherited.
+        Outstanding checkpoint reservations are interrupted calls: charge their
+        estimates as tokens and retain unknown cost, never a priced zero.
         """
         fields = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
+        counters = ("reserved_tokens", "reserved_calls", "interrupted_calls", "estimated_token_calls")
         if not isinstance(snapshot, dict) or not all(
                 isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
-                and snapshot[k] >= 0 for k in fields):
+                and snapshot[k] >= 0 for k in fields) or not all(
+                    type(snapshot.get(k, 0)) is int and snapshot.get(k, 0) >= 0 for k in counters):
             self.cost_unknown_calls += 1
             self.prior_spend_unknown = True
             return {"source": "unavailable", "inherited_tokens": None, "inherited_cost_usd": None,
@@ -229,9 +270,23 @@ class SpendGate:
         self.cost_unknown_calls += int(snapshot["cost_unknown_calls"])
         self.prior_spend_unknown = self.prior_spend_unknown or snapshot.get("prior_spend_unknown") is True
         self.unpriced_model = self.unpriced_model or snapshot.get("unpriced_model")
-        return {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
-                "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
-                "inherited_cost_unknown_calls": int(snapshot["cost_unknown_calls"])}
+        self.interrupted_calls += snapshot.get("interrupted_calls", 0)
+        self.estimated_token_calls += snapshot.get("estimated_token_calls", 0)
+        inherited = {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
+                     "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
+                     "inherited_cost_unknown_calls": int(snapshot["cost_unknown_calls"])}
+        interrupted = snapshot.get("reserved_calls", 0)
+        if interrupted:
+            reserved = snapshot.get("reserved_tokens", 0)
+            self.settled_tokens += reserved
+            self.estimated_token_calls += interrupted
+            self.cost_unknown_calls += interrupted
+            self.interrupted_calls += interrupted
+            inherited.update(source="spend_checkpoint",
+                             inherited_tokens=int(snapshot["settled_tokens"]) + reserved,
+                             inherited_cost_unknown_calls=int(snapshot["cost_unknown_calls"]) + interrupted,
+                             interrupted_calls=interrupted, interrupted_tokens_charged=reserved)
+        return inherited
 
     def _fraction(self) -> float:
         parts = []
@@ -247,6 +302,8 @@ class SpendGate:
             "max_cost_usd": self.max_cost_usd,
             "settled_tokens": self.settled_tokens,
             "reserved_tokens": self.reserved_tokens,
+            "reserved_calls": self.reserved_calls,
+            "interrupted_calls": self.interrupted_calls,
             "settled_cost_usd": round(self.settled_cost_usd, 8),
             "cost_unknown_calls": self.cost_unknown_calls,
             "prior_spend_unknown": self.prior_spend_unknown,
