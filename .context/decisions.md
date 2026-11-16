@@ -1,5 +1,29 @@
 # Durable decisions
 
+## 2026-11-16 — Interrupted streams retain reported usage as a lower bound (#389)
+
+Streaming cancellation carries accumulated usage and copied attempt provenance
+on the original `CancelledError`; the last attempt is interrupted, never rejected.
+Cancellation during fallback retains the failed stream's usage and appends an
+unreported interrupted attempt. Cancellation still never replays a turn or
+dispatches its fragments. The loop synchronously records `model_call_failed`
+with `outcome: interrupted` and live coverage before existing spend settlement.
+
+Interrupted usage is a lower bound: charge max(reported, estimate), retaining
+known dollars while always counting unknown cost and interrupted provenance.
+For #462, reported tokens are summed per attempt and missing-attempt estimates
+are included before applying the reservation floor. This avoids double counting
+the reservation or per-call unknown-cost and estimated-token counters, while
+never reducing the existing per-attempt charge. Event and ledger usage remain
+the reported values, separate from the gate's conservative estimate; interrupted
+usage is recorded as a lower bound with unknown cost/completion fields in ledgers
+and metrics.
+
+Calls without reported stream usage or attempt provenance keep propagating
+without a model-call event; the gate still charges their reservation estimate.
+Auxiliary-call streaming is intentionally excluded; child-call streaming is
+deferred until #464. Non-streaming cancellation behavior is unchanged.
+
 ## 2026-11-16 — Bounded concurrent editing workers with exclusive integration (#384)
 
 `LocalEditingWorkers` accepts integer `max_concurrent` from 1 through 8, defaulting

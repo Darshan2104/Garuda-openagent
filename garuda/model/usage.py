@@ -83,5 +83,8 @@ def usage_metadata(value: Any, *, failed: bool = False) -> dict:
         return {}
     attempts = attempts_for(value, "failed" if failed else "success")
     fields = set(USAGE_FIELDS).union(*(a["usage"] for a in attempts))
-    unknown = sorted(name for name in fields if any(name not in a["usage"] for a in attempts))
-    return {"attempt_usage": attempts, "usage_unknown": unknown}
+    unknown = {name for name in fields if any(name not in a["usage"] for a in attempts)}
+    if attempts[-1].get("outcome") == "interrupted":
+        # Early stream usage is only a lower bound, even when every field was reported.
+        unknown.update(("completion_tokens", "total_tokens", "cost_usd"))
+    return {"attempt_usage": attempts, "usage_unknown": sorted(unknown)}

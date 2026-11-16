@@ -10,9 +10,11 @@ A stream that fails before its terminal chunk falls back once to ``complete()``.
 The consumer is told that what it has already been shown is discarded; the
 fallback's answer is not re-sent as deltas, so a reader renders it from the
 ``model_response`` event, whose ``live_coverage`` says which of the two it saw.
-Cancellation is never caught: it propagates with nothing assembled or replayed.
+Cancellation propagates with nothing assembled or replayed; usage already
+reported travels with the ``CancelledError``.
 """
 
+import asyncio
 import inspect
 import logging
 import uuid
@@ -178,6 +180,15 @@ class _Accumulator:
                                   and failed[-1].get("rejected") is not False)
         return failed
 
+    def interrupted_attempts(self) -> list[dict]:
+        if not self.attempts and not self.usage:
+            return []
+        attempts = [dict(attempt) for attempt in self.attempts] or [
+            usage_attempt(self.usage, "interrupted")
+        ]
+        attempts[-1].update(outcome="interrupted", rejected=False)
+        return attempts
+
 
 def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:_ERROR_CHARS]
@@ -223,6 +234,13 @@ async def stream_complete(
                 await close()
         if not acc.done:
             raise IncompleteStreamError("stream ended without a terminal chunk")
+    except asyncio.CancelledError as exc:
+        attempts = acc.interrupted_attempts()
+        if attempts:
+            exc.attempt_usage = attempts
+            exc.usage = sum_usage(attempts)
+        exc.live = live_metadata(STREAMED, consumer_error=forward.error)
+        raise
     except ContextOverflowError as exc:
         # Not a transport failure: the loop shrinks the prompt and asks again,
         # and repeating the oversized request without streaming would not fit either.
@@ -240,6 +258,13 @@ async def stream_complete(
             await forward.send(LiveDelta("discard"))
         try:
             response = await model.complete(messages, **kwargs)
+        except asyncio.CancelledError as exc:
+            exc.attempt_usage = failed + [
+                {"usage": {}, "outcome": "interrupted", "rejected": False}
+            ]
+            exc.usage = sum_usage(exc.attempt_usage)
+            exc.live = live_metadata(FALLBACK, stream_error, forward.error)
+            raise
         except Exception as fallback_exc:
             attach_usage(fallback_exc, failed + attempts_for(fallback_exc, "failed"))
             fallback_exc.live = live_metadata(FALLBACK, stream_error, forward.error)

@@ -386,7 +386,8 @@ class DefaultAgent:
                 return response
         except BaseException as exc:
             error = exc
-            if isinstance(exc, Exception):
+            interrupted = isinstance(exc, asyncio.CancelledError)
+            if isinstance(exc, Exception) or (interrupted and getattr(exc, "attempt_usage", None)):
                 usage = getattr(exc, "usage", {})
                 usage = usage if isinstance(usage, dict) else {}
                 live = getattr(exc, "live", None)
@@ -395,7 +396,7 @@ class DefaultAgent:
                     "turn": state.metrics.current.turn if state.metrics.current else None,
                     "usage": usage,
                     "duration_ms": elapsed[0],
-                    "outcome": "failed",
+                    "outcome": "interrupted" if interrupted else "failed",
                     **usage_metadata(exc, failed=True),
                     **(live if isinstance(live, dict) and state.delta_consumer is not None else {}),
                 })
