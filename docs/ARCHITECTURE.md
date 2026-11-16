@@ -836,7 +836,9 @@ fastest way to learn the system.
 7. **Completion gate** — `task_complete` does not end a run by itself.
    `core/verifier.py` decides, consulting `core/evidence.py`,
    `core/contract.py`, and `core/side_effects.py` per the mode's gates. A
-   rejection returns to the loop with what was not shown.
+   rejection returns to the loop with what was not shown. The judge excludes
+   fork-inherited messages from conversation evidence; historical checks never
+   verify the new candidate. Commands run by the gate observe the current environment.
 8. **Record** — `core/events.py` appends an event log; `core/sessions.py`
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.
@@ -862,6 +864,12 @@ adjustment reason and the retained message count. Native launch keeps its
 allocation policy. The fork
 preparation owner validates nested source shapes before deserialization; the CLI
 renders identity and record failures as exit-2 refusals.
+Retained messages carry `context_fork_inherited` metadata naming the immediate
+source session and stale evidence. The marker survives checkpoints and resume,
+stays out of provider payloads, and excludes those messages from the completion
+judge's evidence with a count and source-session notice. Source bytes and digests
+are unchanged. Compaction summaries do not inherit the marker; the state-card
+staleness notice remains their guard.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

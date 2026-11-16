@@ -28,7 +28,9 @@ their complete acceptance criteria and exact merged revisions are verified.
 - **Investigation:** preserve read-only collection briefs where sufficient.
   Preview is inspection, not a reservation: execution must independently
   revalidate the source and current workspace. Context rewind restores neither
-  files nor processes, and historical checks never verify the new candidate.
+  files nor processes. The completion judge enforces exclusion of fork-inherited
+  history: historical checks never verify the new candidate. Compaction summaries
+  remain unmarked and rely on the state-card staleness notice.
 - **Workers:** concurrent editing fan-out and non-local worker backends remain
   unsupported. Capacity contention no longer quarantines a parent when store
   reads and workspace absence prove ownership was never acquired. Closing known

@@ -65,12 +65,36 @@ def main():
         expect(page.locator('[data-field="goal"]')).to_have_value("Add reconnect status using the current client")
         expect(page.locator('[data-field="sources"]')).to_have_value("")
 
+        # Each field kind independently blocks reload even after it loses focus.
+        for selector, value in [('[data-option="name"]', "draft-name"),
+                                ('[data-option="isolation"]', "worktree"),
+                                ('[data-option="bg"]', True)]:
+            page.goto(BASE + "#/starters/run-with-role")
+            field = page.locator(selector)
+            if value is True:
+                field.check()
+            elif "isolation" in selector:
+                field.select_option(value)
+            else:
+                field.fill(value)
+            page.locator("h1").click()
+            page.keyboard.press("r")
+            page.wait_for_load_state("networkidle")
+            if value is True:
+                expect(field).to_be_checked()
+            else:
+                expect(field).to_have_value(value)
+
         # All five metadata-driven forms retain Unicode, shell data and sources.
         goal = "Keep café ' ; $(touch unintended) <img src=x onerror=alert(1)>"
         for starter, field in [("plan-change", "goal"), ("plan-feedback", "feedback"),
                                ("build-review", "goal"), ("run-with-role", "goal"), ("ask-role", "question")]:
             page.goto(BASE + "#/starters/" + starter)
             page.locator(f'[data-field="{field}"]').fill(goal)
+            page.locator("h1").click()
+            page.keyboard.press("r")
+            page.wait_for_load_state("networkidle")
+            expect(page.locator(f'[data-field="{field}"]')).to_have_value(goal)
             page.locator('[data-field="sources"]').fill("notes.md")
             if starter != "ask-role":
                 page.locator('[data-field="constraints"]').fill("Preserve retry behavior")
@@ -92,6 +116,12 @@ def main():
             page.locator(f'[data-field="{field}"]').fill("Changed goal")
             expect(page.locator("#starter-copy")).to_have_count(0)
         page.screenshot(path=str(SHOTS / "starters-preview.png"), full_page=True)
+
+        # A fresh successful preview submits the edits, allowing reload again.
+        preview(page)
+        with page.expect_request(lambda r: "/api/scenarios/ask-role?" in r.url):
+            page.keyboard.press("r")  # Preview button, rather than a field, has focus
+        expect(page.locator('[data-field="question"]')).to_have_value("")
 
         # Browser-selected workspace is only a server-configured index.
         page.goto(BASE + "#/starters/plan-change")

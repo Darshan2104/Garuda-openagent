@@ -17,6 +17,12 @@ retains the audit record. Quarantine never carries removed state and pruning
 skips uncertain receipts. Concurrent fan-out and non-local backends remain
 deferred; this does not change capacity ceilings or descendant-cleanup proofs.
 
+## 2026-11-16 — Fork-inherited history is not completion evidence (#370)
+
+Retained fork messages carry stale provenance naming their immediate source, preserved through checkpoints and resume.
+The completion judge excludes marked messages and reports their count and sources; current-environment command evidence is unchanged.
+Source bytes/digests and provider payloads are unchanged. Compaction summaries remain unmarked; the state-card staleness notice remains their guard.
+
 ## 2026-11-16 — Spend checkpoints survive a crash (#363)
 
 The root runner initializes the shared gate's session checkpoint after resume

@@ -52,7 +52,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
 | Session record | Every run saved with its events and state | `garuda sessions show latest` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
-| Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
+| Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inherited history excluded from completion evidence, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
 | Resume | Continue a conversation | `garuda run --resume latest -t "…"` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Names and briefs | Hand one run's outcome to another | `garuda run -t "… @fix-tests …"` | [Level 2](../use-cases/change-code.md#name-a-session-and-build-on-it) |
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
@@ -117,7 +117,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Dashboard | Runs, sessions, approvals, setup, chat | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
+| Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
 | Failed-call usage | Known retry and partial-stream usage survives once, with unknown coverage | Inspect `response.attempt_usage` or error attributes | [Level 2](../use-cases/change-code.md#inspect-retry-and-failed-call-usage) |
 | Usage ledger | Calls, tokens and known cost by model and role | `garuda web --read-only` → Usage | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | Provider limits | Login and quota readings with their source | `garuda web --read-only` → Providers | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
