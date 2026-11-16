@@ -347,8 +347,8 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
 - A transient failure retried successfully still costs tokens. For example,
   an unreported 500 followed by a success reporting 20 prompt and 4 output
   tokens charges 44 tokens: 24 reported plus 20 for the failed request. Each
-  non-rejected failed attempt without usage adds the largest reported prompt
-  size in the call, or the reservation estimate when unavailable. Its cost
+  attempt without usage, except a definite failed rejection, adds the largest
+  reported prompt size in the call, or the reservation estimate when unavailable. Its cost
   remains unknown, so a dollar-only cap stops further calls; include
   `--max-run-tokens` to continue within a token budget. This is a lower bound:
   unreported output from a failed stream is not counted.

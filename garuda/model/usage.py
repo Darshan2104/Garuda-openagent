@@ -7,12 +7,12 @@ from garuda.model.protocol import ContextOverflowError
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
 
 
-def unreported_failures(attempts: list[dict]) -> int:
-    """Count failed attempts without rejection evidence or any reported usage."""
+def unreported_attempts(attempts: list[dict]) -> int:
+    """Count attempts without reported usage, excluding definite failed rejections."""
     missing = 0
     for attempt in attempts:
-        if (not isinstance(attempt, dict) or attempt.get("outcome") != "failed"
-                or attempt.get("rejected") is True):
+        if (not isinstance(attempt, dict) or (
+                attempt.get("outcome") == "failed" and attempt.get("rejected") is True)):
             continue
         usage = attempt.get("usage")
         if not isinstance(usage, dict) or not any(

@@ -31,9 +31,9 @@ reservation estimate with unknown cost, retaining interrupted or unknown-outcome
 provenance. Calls that were never sent cannot reliably be distinguished, so this
 can overcharge. Usage the exception carries is charged like any other report.
 For calls with reported usage or a successful completion, tokens are summed per
-attempt. Each non-rejected failed attempt without usage adds the largest reported
-prompt size in that call, or its reservation estimate if unavailable, with unknown
-cost. This is a lower bound: unreported output from failed streams is not counted.
+attempt. Each attempt without usage, except a definite failed rejection, adds the
+largest reported prompt size in that call, or its reservation estimate if unavailable,
+with unknown cost. This lower bound excludes unreported generated output.
 The whole-call failure estimate above is never charged these extras too.
 
 **A completed call with no token fields is charged its estimate.** A provider
@@ -122,6 +122,7 @@ class SpendGate:
     prior_spend_unknown: bool = False
     failed_without_usage: int = 0
     estimated_token_calls: int = 0
+    # Retain the checkpoint key; it also counts successful attempts without usage.
     unreported_failed_attempts: int = 0
     calls: int = 0
     refused: int = 0
@@ -193,12 +194,16 @@ class SpendGate:
             if self.cost_unknown_calls and self.max_tokens is None:
                 if (self.interrupted_calls or self.unknown_outcome_calls
                         or self.unreported_failed_attempts) and not self.unpriced_model:
+                    clauses = []
+                    if self.interrupted_calls:
+                        clauses.append(f"{self.interrupted_calls} interrupted call(s) have unknown cost")
+                    if self.unknown_outcome_calls:
+                        clauses.append(f"{self.unknown_outcome_calls} unknown-outcome call(s) have unknown cost")
+                    if self.unreported_failed_attempts:
+                        clauses.append(f"{self.unreported_failed_attempts} attempt(s) without reported usage")
                     return "cost_unknown", (
                         f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
-                        f"{self.interrupted_calls} interrupted call(s) and "
-                        f"{self.unknown_outcome_calls} unknown-outcome call(s) have unknown cost; "
-                        f"{self.unreported_failed_attempts} failed attempt(s) in completed calls "
-                        "reported no usage; "
+                        f"{'; '.join(clauses)}; "
                         "use --max-run-tokens to bound this run")
                 if self.prior_spend_unknown and not self.unpriced_model:
                     return "cost_unknown", (
@@ -228,7 +233,7 @@ class SpendGate:
         attempts (a retry, a stream fallback) used tokens that some attempt
         reported no price for: its known cost is charged and it still counts as
         unknown cost, so one priced attempt cannot make the whole call look priced.
-        ``attempt_tokens`` preserves per-attempt token totals. Unreported failed
+        ``attempt_tokens`` preserves per-attempt token totals. Unreported non-rejected
         attempts add ``estimated_attempt_tokens`` and unknown cost once per call,
         except when the whole-call failure branch already charges its estimate.
         """
@@ -254,7 +259,7 @@ class SpendGate:
                 estimated = bool(estimated_attempts)
                 if attempt_tokens:
                     tokens = attempt_tokens
-                elif not failed and not reports_tokens(usage):
+                elif not failed and not estimated_attempts and not reports_tokens(usage):
                     # Completed without any token count: the call consumed
                     # tokens nobody reported, so its estimate stands in.
                     tokens = reservation.tokens

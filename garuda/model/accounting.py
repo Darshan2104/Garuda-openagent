@@ -23,7 +23,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.model.usage import (
     is_definite_rejection,
     reported_prompt_tokens,
-    unreported_failures,
+    unreported_attempts,
     usage_metadata,
 )
 
@@ -127,7 +127,7 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     A raised call charges whatever usage the exception carries. Without usage,
     only definite rejection of every failed attempt releases the reservation without a charge;
     interruptions and unknown outcomes charge the estimate with unknown cost.
-    Otherwise, tokens are summed per attempt. Unreported non-rejected failures
+    Otherwise, tokens are summed per attempt. Unreported attempts except definite rejections
     add the largest reported prompt size, or the reservation when unavailable,
     with unknown cost. This lower bound excludes unreported generated output.
     """
@@ -140,7 +140,7 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     attempt_tokens = sum(
         usage_tokens(attempt["usage"]) for attempt in attempts
         if isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict))
-    missing = unreported_failures(attempts)
+    missing = unreported_attempts(attempts)
     per_attempt = reported_prompt_tokens(attempts) or reservation.tokens
     # The final error cannot rule out spend on an earlier failed attempt.
     # Legacy attempts without rejection evidence remain unknown outcomes.

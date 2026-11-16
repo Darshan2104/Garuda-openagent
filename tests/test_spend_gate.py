@@ -99,9 +99,11 @@ async def test_unreported_failed_attempts_survive_checkpoint_and_inherit(partial
     assert resumed.settled_tokens == 2 * snapshot["settled_tokens"]
     assert resumed.cost_unknown_calls == resumed.estimated_token_calls == 2
     assert resumed.settled_cost_usd == 0.6
-    with pytest.raises(SpendLimitExceeded, match="4 failed attempt\\(s\\) in completed calls") as refused:
+    with pytest.raises(SpendLimitExceeded, match="4 attempt\\(s\\) without reported usage") as refused:
         await resumed.admit("main", estimate_tokens=1)
     assert refused.value.cause == "cost_unknown"
+    assert "interrupted call(s)" not in str(refused.value)
+    assert "unknown-outcome call(s)" not in str(refused.value)
     # Old checkpoints had no failed-attempt counter and remain valid.
     legacy = SpendGate(max_cost_usd=1.0)
     legacy.inherit({"settled_tokens": 24, "settled_cost_usd": 0.3, "cost_unknown_calls": 0})
@@ -316,8 +318,9 @@ async def test_unknown_outcome_failure_stops_dollar_only_admission():
         await gate.admit("main", estimate_tokens=100)
     assert refused.value.cause == "cost_unknown"
     assert "--max-run-tokens" in str(refused.value)
-    assert "0 interrupted call(s)" in str(refused.value)
+    assert "interrupted call(s)" not in str(refused.value)
     assert "1 unknown-outcome call(s)" in str(refused.value)
+    assert "attempt(s) without reported usage" not in str(refused.value)
 
 
 @pytest.mark.parametrize("marker", [None, False, 1], ids=["missing", "false", "not-boolean"])
@@ -667,9 +670,34 @@ async def test_an_unpriced_model_under_a_dollar_cap_stops_with_the_exact_reason(
     assert end["payload"]["spend_cause"] == "cost_unknown"
 
 
-async def test_a_completed_call_with_no_reported_tokens_is_charged_its_estimate():
+@pytest.mark.parametrize("prompt", [100, None], ids=["reported-prompt", "reservation-fallback"])
+@pytest.mark.parametrize("success_usage", [{}, {"cost_usd": False}], ids=["empty", "boolean"])
+async def test_unreported_success_after_reported_failure_stops_dollar_only_admission(prompt, success_usage):
+    gate = SpendGate(max_cost_usd=1.0)
+    usage = {"total_tokens": 110, "cost_usd": 0.01}
+    if prompt is not None:
+        usage["prompt_tokens"] = prompt
+    response = ModelResponse(content="ok", tool_calls=[], usage=usage, attempt_usage=[
+        {"outcome": "failed", "usage": usage},
+        {"outcome": "success", "usage": success_usage},
+    ])
+    reservation = await gate.admit("main", estimate_tokens=900)
+    await accounting.settle(gate, reservation, response=response)
+    assert gate.settled_tokens == (210 if prompt is not None else 1010)
+    assert gate.settled_cost_usd == 0.01
+    assert gate.cost_unknown_calls == gate.estimated_token_calls == 1
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("main", estimate_tokens=1)
+    assert refused.value.cause == "cost_unknown"
+
+
+@pytest.mark.parametrize("attempts", [[], [{"outcome": "success", "usage": {}}]],
+                         ids=["no-attempts", "unreported-success"])
+async def test_a_completed_call_with_no_reported_tokens_is_charged_its_estimate(attempts):
     gate = SpendGate(max_tokens=1000)
-    await gate.settle(await gate.admit("main", estimate_tokens=900), {})
+    response = ModelResponse(content="ok", tool_calls=[], usage={}, attempt_usage=attempts)
+    await accounting.settle(gate, await gate.admit("main", estimate_tokens=900), response=response)
     # The token cap stays enforced: the unreported call cost its estimate.
     assert gate.settled_tokens == 900 and gate.snapshot()["estimated_token_calls"] == 1
     with pytest.raises(SpendLimitExceeded):

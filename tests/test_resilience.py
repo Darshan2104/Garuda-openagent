@@ -199,7 +199,7 @@ async def test_completed_retry_spend(
         with pytest.raises(SpendLimitExceeded) as refused:
             await gate.admit("summary", estimate_tokens=50)
         assert refused.value.cause == "cost_unknown"
-        assert "1 failed attempt(s) in completed calls reported no usage" in str(refused.value)
+        assert "1 attempt(s) without reported usage" in str(refused.value)
         assert "--max-run-tokens" in str(refused.value)
     else:
         await gate.admit("summary", estimate_tokens=50)

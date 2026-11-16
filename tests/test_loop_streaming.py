@@ -476,12 +476,13 @@ async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: P
     # Every attempt is charged once: the cut-off stream either reported its own
     # usage (newer LiteLLM estimates it) or is charged at the request's prompt size.
     from garuda.core.spend import usage_tokens
+    from garuda.model.usage import unreported_attempts
 
     attempts = response["attempt_usage"]
     assert [a["outcome"] for a in attempts] == ["failed", "success"]
     gate = config.spend_gate
     unreported = gate.snapshot()["unreported_failed_attempts"]
     reported = sum(usage_tokens(a["usage"]) for a in attempts)
-    assert unreported == (0 if usage_tokens(attempts[0]["usage"]) else 1)
+    assert unreported == unreported_attempts(attempts)
     assert gate.settled_tokens == reported + 30 * unreported
     assert gate.settled_tokens > 32

@@ -150,8 +150,8 @@ fastest way to learn the system.
    Interruptions charge the estimate as interrupted calls, and other exceptions charge it as
    unknown-outcome calls, both with unknown cost.
    Calls with reported usage or a successful completion sum tokens per attempt.
-   Each non-rejected failed attempt without usage adds the largest positive
-   reported prompt size in the call, or the reservation estimate if unavailable,
+   Each attempt without usage, except a definite failed rejection, adds the
+   largest positive reported prompt size in the call, or the reservation estimate if unavailable,
    with unknown cost. This lower bound excludes unreported generated output;
    `unreported_failed_attempts` survives checkpoints and resume. Unknown cost
    and estimated-token calls count once per call, without duplicating the
