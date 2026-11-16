@@ -17,6 +17,7 @@ import pytest
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.core.metrics import aggregate_model_metrics
+from garuda.model import streaming
 from garuda.model.protocol import ContextOverflowError, ModelResponse, StreamDelta
 from garuda.model.script_model import ScriptedStream, ScriptModel
 from garuda.model.streaming import LiveDelta, stream_complete
@@ -103,6 +104,45 @@ async def test_streamed_run_matches_the_ordinary_run(tmp_path: Path):
         (m.role, m.content) for m in plain.messages[1:]]
     assert "".join(d.text for d in seen if d.kind == "text") == "Writing then reading.All done."
     assert "".join(d.text for d in seen if d.kind == "reasoning") == "Plan: write, read."
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", None], ids=["finish-and-usage", "usage-only-done"])
+async def test_terminal_only_stream_matches_the_ordinary_run(tmp_path: Path, monkeypatch, finish_reason):
+    usage = {"prompt_tokens": 40, "completion_tokens": 0, "total_tokens": 40}
+    ordinary = ModelResponse(content=None, tool_calls=[], raw={"finish_reason": finish_reason}, usage=usage)
+    deltas = ([StreamDelta(finish_reason="stop", usage=usage), StreamDelta(done=True)]
+              if finish_reason is not None else [StreamDelta(usage=usage, done=True)])
+    plain, plain_events = await _run(tmp_path, [ordinary])
+
+    # Trajectory events omit finish_reason; observe the real assembled response
+    # on its way into the loop without replacing the streaming implementation.
+    assembled = []
+
+    async def observe_response(*args, **kwargs):
+        call = await stream_complete(*args, **kwargs)
+        assembled.append(call.response)
+        return call
+
+    monkeypatch.setattr(streaming, "stream_complete", observe_response)
+    seen: list[LiveDelta] = []
+    live, live_events = await _run(tmp_path, [ScriptedStream(deltas)], seen.append)
+
+    [response] = assembled
+    assert response.content == ordinary.content is None
+    assert response.tool_calls == ordinary.tool_calls == []
+    assert response.raw["finish_reason"] == ordinary.raw["finish_reason"] == finish_reason
+    assert response.usage == ordinary.usage == usage
+    [plain_response] = _of(plain_events, "model_response")
+    [live_response] = _of(live_events, "model_response")
+    assert _comparable(live_response) == _comparable(plain_response)
+    assert live_response["live_coverage"] == "streamed"
+    assert "stream_error" not in live_response
+    assert _of(live_events, "model_call_failed") == []
+    assert _of(live_events, "tool_call") == []
+    assert seen == []
+    assert live.success == plain.success is True
+    assert live.final_message == plain.final_message == ""
+    assert live.metadata["usage"] == plain.metadata["usage"] == usage
 
 
 async def test_truncated_streamed_arguments_are_not_dispatched(tmp_path: Path):
