@@ -329,3 +329,22 @@ def test_every_error_response_uses_one_envelope(ctx):
         assert set(payload) == {"error"}
         assert isinstance(payload["error"]["code"], str)
         assert isinstance(payload["error"]["message"], str)
+
+
+@pytest.mark.parametrize("path", ["/api/sessions", "/api/sessions/spend-api"])
+def test_session_api_transports_spend_snapshot(ctx, store, path):
+    from garuda.core.spend import SpendGate
+
+    gate = SpendGate(max_tokens=5000, max_cost_usd=2)
+    inherited = gate.inherit(None)
+    store.begin("spend-api", task="spend", model="m", agent="build", workspace="/tmp")
+    store.update_meta("spend-api", {"spend_gate": gate.snapshot(), "spend_inherited": inherited})
+    response = call(ctx, path)
+    assert response.status == 200
+    payload = body(response)
+    row = payload["sessions"][0] if path == "/api/sessions" else payload
+    spend = row["spend"]
+    assert spend["max_tokens"] == 5000 and spend["max_cost_usd"] == 2
+    assert spend["scope"] == "native_run_tree" and spend["cost_usd"] == "unknown"
+    assert spend["cost_unknown_calls"] == 1 and spend["prior_spend_unknown"] is True
+    assert spend["inherited"]["source"] == "unavailable"

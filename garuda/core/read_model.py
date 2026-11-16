@@ -11,15 +11,18 @@ The four independent facts of a session (``process``, ``work``, ``outcome`` and
 recorded owner. ``crashed`` is derived (see ``runtime/session_state.py``). A
 **review is not verification**: the flow ``review`` field is its own thing and
 never feeds ``verification``. Cost and usage are not computed here (Set E owns
-accounting); the row says ``unknown``.
+accounting); the row says ``unknown``. Persisted run-tree gate spend is projected
+separately, with explicit uncertainty and without rebuilding accounting.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
 
+from garuda.core.spend import SPEND_OPTIONAL_COUNTERS, SPEND_REQUIRED_FIELDS
 from garuda.runtime.session_state import effective_state, is_crashed, summary_label
 
 UNKNOWN = "unknown"
@@ -161,6 +164,71 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
 
 
+def _spend(meta: dict) -> dict | None:
+    """Project recorded native tree spend without reconstructing or repairing it.
+
+    Missing evidence is distinct from a malformed snapshot. Known dollars remain
+    visible as a lower bound when reservations or provenance leave cost unknown.
+    """
+    if "spend_gate" not in meta:
+        return None
+    snapshot = meta["spend_gate"]
+    unreadable = {"state": "unreadable"}
+    if not isinstance(snapshot, dict) or any(k not in snapshot for k in SPEND_REQUIRED_FIELDS):
+        return unreadable
+    # Refusals are projected but not inherited; their diagnostic count is optional too.
+    optional = (*SPEND_OPTIONAL_COUNTERS, "refused")
+    snapshot = {**snapshot, **{k: snapshot.get(k, 0) for k in optional}}
+    counters = ("settled_tokens", "cost_unknown_calls", *optional)
+    if any(type(snapshot.get(k)) is not int or snapshot[k] < 0 for k in counters):
+        return unreadable
+    if type(snapshot.get("prior_spend_unknown")) is not bool:
+        return unreadable
+
+    def dollars(value):
+        return (type(value) is int and value >= 0) or (
+            type(value) is float and value >= 0 and math.isfinite(value))
+
+    if not dollars(snapshot.get("settled_cost_usd")):
+        return unreadable
+    cap = snapshot.get("max_tokens")
+    if "max_tokens" not in snapshot or (cap is not None and (type(cap) is not int or cap <= 0)):
+        return unreadable
+    cap = snapshot.get("max_cost_usd")
+    if "max_cost_usd" not in snapshot or (cap is not None and (not dollars(cap) or cap <= 0)):
+        return unreadable
+    inherited = None
+    if "spend_inherited" in meta:
+        raw = meta["spend_inherited"]
+        if not isinstance(raw, dict) or raw.get("source") not in (
+                "unavailable", "spend_gate", "spend_checkpoint"):
+            return unreadable
+        keys = ("source", "inherited_tokens", "inherited_cost_usd", "inherited_cost_unknown_calls",
+                "interrupted_calls", "interrupted_tokens_charged")
+        if raw["source"] == "unavailable":
+            if raw.get("inherited_tokens") is not None or raw.get("inherited_cost_usd") is not None:
+                return unreadable
+        elif (type(raw.get("inherited_tokens")) is not int or raw["inherited_tokens"] < 0
+              or not dollars(raw.get("inherited_cost_usd"))
+              or type(raw.get("inherited_cost_unknown_calls")) is not int
+              or raw["inherited_cost_unknown_calls"] < 0):
+            return unreadable
+        for key in ("inherited_cost_unknown_calls", "interrupted_calls", "interrupted_tokens_charged"):
+            if key in raw and (type(raw[key]) is not int or raw[key] < 0):
+                return unreadable
+        inherited = {k: raw[k] for k in keys if k in raw}
+    unknown = (snapshot["prior_spend_unknown"] or any(snapshot[k] > 0 for k in (
+        "reserved_calls", "cost_unknown_calls", "interrupted_calls", "unknown_outcome_calls",
+        "unreported_failed_attempts")) or (inherited is not None and (
+            inherited["source"] == "unavailable" or inherited.get("inherited_cost_unknown_calls", 0) > 0)))
+    return {"state": "recorded", "scope": "native_run_tree",
+            **{k: snapshot[k] for k in (*counters, "max_tokens", "max_cost_usd",
+                                      "settled_cost_usd", "prior_spend_unknown")},
+            "cost_usd": UNKNOWN if unknown else snapshot["settled_cost_usd"],
+            "cost_status": UNKNOWN if unknown else "reported",
+            "inherited": inherited}
+
+
 def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=None) -> dict[str, Any]:
     """The shared row for one session."""
     session_id = meta.get("session_id") or ""
@@ -202,6 +270,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "quota_recovery": meta.get("quota_recovery"),
         "usage": UNKNOWN,
         "cost": UNKNOWN,
+        "spend": _spend(meta),
         "created_at": meta.get("created_at"),
         "updated_at": meta.get("updated_at"),
     }

@@ -19,6 +19,23 @@ The published numbers are deterministic contract evidence with scripted delays,
 not latency or quality claims. Model-driven fan-out and non-local backends remain
 open. See `docs/evaluation/index.md` for results and measurement boundaries.
 
+## 2026-11-16 — Spend gate is projected in session views (#363)
+
+The shared read model projects only the persisted native run-tree spend checkpoint
+and resume inheritance. CLI inspection and dashboard Sessions/Usage show selected
+caps, scope, settled/reserved tokens and uncertainty counters without rebuilding
+accounting or changing the existing usage/cost fields. Unknown cost remains
+`unknown`; known settled dollars are a labelled lower bound, including when
+outstanding reservations or contradictory counters or inheritance indicate
+unknown cost. Legacy sessions
+have no spend block (`null`); malformed snapshots are explicitly `unreadable`.
+Older checkpoints retain the gate's compatibility rule: core spend totals are
+required, while absent later counters default to zero. Present counters must
+still be non-negative integers, excluding booleans.
+The usage page keeps recent session snapshots separate from rolling ledger totals:
+resumed trees overlap and cannot be summed. This projection neither admits calls
+nor changes the gate's reported-spend dollar-stop semantics.
+
 ## 2026-11-16 — SDK-only opt-in labelled child live deltas (#389)
 
 `subagent_deltas=True` requires an SDK `on_delta` consumer. The default remains
