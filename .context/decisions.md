@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-16 — Spend checkpoints survive a crash (#363)
+
+The root runner initializes the shared gate's session checkpoint after resume
+inheritance and persists every reservation under the admission lock before
+sending a request. A failed checkpoint write refuses admission with cause
+`checkpoint` and rolls back the in-memory reservation; settlement write failures
+warn and leave the prior durable reservation intact. Children retain the
+asker's sink. The final segment snapshot remains in place.
+
+Resume charges outstanding reservations at their token estimate, records
+interrupted calls and unknown cost, and carries interrupted provenance through
+later resumes. Unknown cost never becomes zero; dollar-only admission refuses
+interrupted calls whose price cannot be established. This is estimated token
+charging, not exact provider billing. Legacy missing snapshots retain the
+existing unknown-prior-spend behavior; reconstructing them and charging
+cancelled or failed calls without usage remain outside this slice.
+
 ## 2026-11-12 — Collection attempts inherit root spend admission (#363)
 
 Collection workers inherit the active native run's spend gate when their child
@@ -54,6 +71,27 @@ recheck; authorized native execution retains complete-source reads. A missing
 optional legacy file spends no source bytes. The shared session-list owner
 refuses non-string saved timestamps before sorting, preserving missing legacy
 timestamps as empty strings instead of inventing an order for malformed evidence.
+
+## 2026-11-16 — Terminal chat attaches the shared live consumer (#389)
+
+Native `garuda chat` passes the existing renderer's `model_delta_consumer` on a
+TTY unless `--json` or `--no-stream` is selected. Its session-service lifecycle
+and event drain remain the owners; chat does not route through the run runner
+or add another renderer/observer. Non-TTY and opted-out chat keep ordinary output.
+Dumb/unset terminals retain renderer-level preview suppression.
+
+The thinking status stops before the preview starts and restarts after discard
+or response assembly, covering tools and waits for the next model call while
+supporting Rich versions that disallow nested Live displays. The thinking context
+stops the status on exit. Like `run`, streaming chat skips auxiliary-accounting
+`model_response` content (`accounting == "auxiliary"`); `--no-stream` chat still
+prints it. Events drain before the preview is discarded
+on every turn exit, including failure and cancellation. Reasoning and tool
+argument fragments never enter the preview. Assembly, fallback, tool dispatch,
+permissions and usage remain owned by the loop. Chat keeps its existing
+model-response and final done-panel copies; removing that duplication is a
+separate follow-up. Auxiliary/child calls and ACP/web streaming are outside this
+slice.
 
 ## 2026-11-12 — Interrupted editing workers close environment services (#384)
 

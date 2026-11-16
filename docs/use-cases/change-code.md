@@ -334,6 +334,11 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   `spend_inherited`. If the source recorded no spend (it ran without these
   flags), prior spend is unknown: a dollar-only budget then refuses to admit
   calls, and a token budget starts from zero and says so.
+- Capped runs checkpoint each reservation before sending and each settlement.
+  After a crash, resume charges interrupted calls their reserved token estimate
+  and records their cost as unknown (`spend_inherited.source: spend_checkpoint`).
+  A dollar-only cap refuses further calls while that cost is unknown. If a
+  reservation cannot be checkpointed, the call is refused before sending.
 
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.
@@ -420,29 +425,37 @@ values on `StreamDelta`. A provider that omits a value produces `None`; Garuda
 does not guess from content, tool calls, stream exhaustion, or `done=True`.
 Empty terminal chunks and later usage-only chunks preserve an observed value.
 
-These are model-helper APIs. Native `garuda run` attaches live output in a
-terminal as described below; `garuda chat` still renders completed turns.
+These are model-helper APIs. Native `garuda run` and `garuda chat` attach live
+output in a terminal as described below.
 External harness streaming follows its separate runtime path.
 
 ### Watch assistant text live in the terminal
 
 ```bash
 garuda run -t "Explain how the request router works"
+garuda chat --workspace .
+garuda chat --workspace . --no-stream
 garuda run --no-stream -t "Explain how the request router works"
 garuda run --quiet -t "Explain how the request router works"
 garuda run --json -t "Explain how the request router works" > events.jsonl
 TERM=dumb garuda run -t "Explain how the request router works"
 ```
 
-On a TTY, native `run` shows assistant text as it arrives. The preview is
-transient: the assembled response replaces it once. If streaming fails, the
+On a TTY, native `run` and interactive `chat` show assistant text as it arrives.
+In chat, enter a task at `task>`; the thinking spinner yields to the preview,
+resumes when the preview clears or is replaced, and stops at turn exit.
+Every turn exit clears the preview. Chat retains its existing final done panel.
+Like `run`, streaming chat skips auxiliary-accounting `model_response` content
+(`accounting == "auxiliary"`); `--no-stream` chat still prints it.
+The preview is transient: the assembled response replaces it once. If streaming fails, the
 preview is erased before the ordinary retry, whose completed answer replaces
 it. Cancellation or a failed call closes the preview. Only assistant text is
 shown live; reasoning and tool argument fragments are not. Complete tool calls
 and results use the existing terminal renderer.
 
-`--no-stream` keeps ordinary final-message output. `--quiet` also suppresses the
-native startup/model notices. JSON and redirected stdout automatically keep the
+`--no-stream` keeps ordinary completed output in either command. On `run`,
+`--quiet` also suppresses the native startup/model notices. JSON and redirected
+stdout automatically keep the
 ordinary path, without terminal control codes. No-edits runs also keep that path
 so outputs can be withheld if their check fails. A model without a streaming API
 still works through `complete()`.
@@ -451,9 +464,9 @@ Rich is optional. With it, the preview shows the last terminal-height-minus-one
 wrapped lines; without it, a bounded single-line preview shows the latest text.
 Previews refresh at most ten times per second. Dumb terminals (or an unset
 `TERM`) show completed responses without previews or preview erase codes. The full
-assembled response is always printed, and final output that repeats any already
-rendered response is suppressed, including when the run exhausts its turn budget.
-Terminal interactive chat and ACP do not attach this native consumer.
+assembled response is always printed. For `run`, final output that repeats any
+already rendered response is suppressed, including when the run exhausts its turn budget.
+ACP does not attach this native consumer.
 Dashboard chat and opt-in SDK callbacks use the same loop consumer.
 
 ### Watch assistant text in dashboard chat
@@ -503,9 +516,10 @@ turn's `model_response` event. That event's `live_coverage` is `streamed`,
 `fallback` (with the bounded `stream_error`) or `not_streamed` for a model without
 `stream()`. A consumer that raises is detached for the rest of that call and
 recorded as `live_consumer_error`; the run continues. Cancelling the run stops the
-stream and dispatches nothing. Without a consumer nothing changes, and
-`garuda chat`, the dashboard, SDK entry points and ACP surfaces do not attach
-one. Native TTY `garuda run` attaches it as described above.
+stream and dispatches nothing. Without a consumer nothing changes, and ACP does
+not attach one. Native TTY `garuda run` and `garuda chat` attach it as described
+above, dashboard chat attaches it for its preview, and SDK callers opt in with
+`on_delta`.
 
 ## Inspect retry and failed-call usage
 
