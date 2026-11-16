@@ -157,10 +157,12 @@ class SpendGate:
             if self.checkpoint is not None:
                 try:
                     self.checkpoint(self.snapshot())
-                except Exception as exc:
+                except BaseException as exc:
                     self.reserved_tokens -= estimate
                     self.reserved_calls -= 1
                     self.calls -= 1
+                    if not isinstance(exc, Exception):
+                        raise
                     self.refused += 1
                     self._last_refusal_cause = "checkpoint"
                     raise SpendLimitExceeded(

@@ -107,6 +107,22 @@ async def test_spend_checkpoint_write_failure_refuses_admission():
     assert gate.refused == 1
 
 
+async def test_spend_checkpoint_interrupt_rolls_back_admission():
+    interrupt = KeyboardInterrupt("checkpoint interrupted")
+
+    def interrupted(snapshot):
+        raise interrupt
+
+    gate = SpendGate(max_tokens=1000, checkpoint=interrupted)
+    calls, refused = gate.calls, gate.refused
+    with pytest.raises(KeyboardInterrupt) as raised:
+        await gate.admit("main", estimate_tokens=60)
+    assert raised.value is interrupt
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    assert gate.calls == calls and gate.refused == refused
+    assert gate.last_refusal_cause is None
+
+
 async def test_spend_checkpoint_settlement_failure_retains_safe_reservation(caplog):
     snapshots = []
 
@@ -351,11 +367,15 @@ async def test_spend_checkpoint_survives_a_real_crash(repo, tmp_path, monkeypatc
     meta = store.load_meta("resumed")
     inherited = meta["spend_inherited"]
     assert inherited["source"] == "spend_checkpoint"
-    assert inherited["inherited_tokens"] >= 400 + reservation
+    assert inherited["inherited_tokens"] == 400 + reservation
     assert inherited["interrupted_calls"] == 1
     assert inherited["interrupted_tokens_charged"] == reservation
     assert meta["spend_gate"]["cost_unknown_calls"] == 1
-    assert resumed.metadata.get("reason") == "spend_limit" or meta["spend_gate"]["settled_tokens"] > 400
+    # The inherited charge leaves too little for the resumed prompt plus its
+    # 50-token output reservation, so even the scripted 10-token call is refused.
+    assert not resumed.success and resumed.metadata["spend_limit"] == "tokens"
+    assert meta["spend_gate"]["settled_tokens"] == 400 + reservation
+    assert meta["spend_gate"]["calls"] == 0
 
 
 async def test_unknown_prior_spend_cannot_satisfy_a_dollar_only_cap(repo, tmp_path, monkeypatch):
