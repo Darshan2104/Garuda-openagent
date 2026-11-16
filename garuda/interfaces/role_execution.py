@@ -273,12 +273,9 @@ async def run_task(args) -> int:
 
     guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
 
-    from garuda.interfaces.cli import stream_run_output
+    from garuda.interfaces.cli import live_terminal, stream_run_output
 
-    try:
-        terminal = sys.stdout.isatty()
-    except (AttributeError, OSError, ValueError):
-        terminal = False
+    terminal = live_terminal(sys.stdout)
     stream = (terminal and not args.json and not getattr(args, "quiet", False)
               and not getattr(args, "no_stream", False) and guard is None)
     output = stream_run_output(events) if stream else contextlib.nullcontext(None)

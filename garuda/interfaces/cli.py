@@ -15,6 +15,14 @@ from garuda.types import AgentResult
 from garuda.workspace import evidence
 
 
+def live_terminal(stream) -> bool:
+    """Whether a human output stream supports interactive rendering."""
+    try:
+        return stream.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def resolved_model_name(session: AgentSession) -> str:
     """The event-safe resolved reasoning identity every entry point logs."""
     return safe_model_identity(session.model)
@@ -40,6 +48,7 @@ def _drain_events(
     *,
     render: bool,
     emit_json: bool,
+    live: bool = False,
 ) -> int:
     """Push events appended since ``offset`` to the renderer and/or JSONL stdout.
 
@@ -51,7 +60,7 @@ def _drain_events(
         if emit_json:
             print(json.dumps(event, default=str))
         if render:
-            _render_event(renderer, event)
+            _render_event(renderer, event, live=live)
     return len(all_events)
 
 
@@ -252,6 +261,7 @@ async def chat_loop(args) -> int:
     # JSONL mode must keep stdout machine-readable, so rich rendering is off there.
     render = not args.json
     renderer = ChatRenderer(use_rich=render, stream=human)
+    streaming = render and not getattr(args, "no_stream", False) and live_terminal(human)
     renderer.header(
         model=resolved_model_name(session),
         agent=session.profile.name,
@@ -299,6 +309,7 @@ async def chat_loop(args) -> int:
                     workspace_delta_loader=live.delta_loader,
                     collection_model=getattr(session, "collection", None),
                     collection_policy=getattr(session, "collection_policy", None),
+                    **({"model_delta_consumer": renderer.on_model_delta} if streaming else {}),
                 ))
             )
             # Run the turn in the background and drain events as they arrive so
@@ -308,7 +319,8 @@ async def chat_loop(args) -> int:
                 with status:
                     while not run_task.done():
                         offset = _drain_events(
-                            renderer, session.events, offset, render=render, emit_json=args.json
+                            renderer, session.events, offset, render=render,
+                            emit_json=args.json, live=streaming,
                         )
                         await asyncio.sleep(0.05)
                 result = await run_task
@@ -316,21 +328,25 @@ async def chat_loop(args) -> int:
                 run_task.cancel()
                 with contextlib.suppress(BaseException):
                     await run_task
+                offset = _drain_events(
+                    renderer, session.events, offset, render=render,
+                    emit_json=args.json, live=streaming,
+                )
+                renderer.discard_assistant()
                 # A failed turn is not a failed session. Ctrl-C and cancellation
                 # still propagate (the user meant those); an ordinary error — a
                 # provider 500, a bad tool argument — is reported and the prompt
                 # comes back, because losing the whole conversation to one bad turn
                 # is a worse outcome than the error itself.
                 if isinstance(exc, Exception):
-                    offset = _drain_events(
-                        renderer, session.events, offset, render=render, emit_json=args.json
-                    )
                     renderer.on_error(f"{type(exc).__name__}: {exc}")
                     continue
                 raise
             offset = _drain_events(
-                renderer, session.events, offset, render=render, emit_json=args.json
+                renderer, session.events, offset, render=render,
+                emit_json=args.json, live=streaming,
             )
+            renderer.discard_assistant()
             last_result = result
             renderer.on_done(result.final_message)
     except KeyboardInterrupt:

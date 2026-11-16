@@ -55,6 +55,23 @@ optional legacy file spends no source bytes. The shared session-list owner
 refuses non-string saved timestamps before sorting, preserving missing legacy
 timestamps as empty strings instead of inventing an order for malformed evidence.
 
+## 2026-11-16 — Terminal chat attaches the shared live consumer (#389)
+
+Native `garuda chat` passes the existing renderer's `model_delta_consumer` on a
+TTY unless `--json` or `--no-stream` is selected. Its session-service lifecycle
+and event drain remain the owners; chat does not route through the run runner
+or add another renderer/observer. Non-TTY and opted-out chat keep ordinary output.
+Dumb/unset terminals retain renderer-level preview suppression.
+
+The thinking status stops before the preview starts, supporting Rich versions
+that disallow nested Live displays. Events drain before the preview is discarded
+on every turn exit, including failure and cancellation. Reasoning and tool
+argument fragments never enter the preview. Assembly, fallback, tool dispatch,
+permissions and usage remain owned by the loop. Chat keeps its existing
+model-response and final done-panel copies; removing that duplication is a
+separate follow-up. Auxiliary/child calls and ACP/web streaming are outside this
+slice.
+
 ## 2026-11-12 — Interrupted editing workers close environment services (#384)
 
 The editing service closes its child environment on every exit from the child
