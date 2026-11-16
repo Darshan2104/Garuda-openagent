@@ -337,7 +337,12 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
 - Capped runs checkpoint each reservation before sending and each settlement.
   After a crash, resume charges interrupted calls their reserved token estimate
   and records their cost as unknown (`spend_inherited.source: spend_checkpoint`).
-  A dollar-only cap refuses further calls while that cost is unknown. If a
+  Cancelled or unknown-outcome failed calls are also charged their reservation
+  with unknown cost, even if they may never have been sent. Definite rejections
+  (context overflow or integer HTTP 4xx except 408) without usage release the
+  reservation without charge. A dollar-only cap refuses further calls while
+  any such cost is unknown: one unknown-outcome failure is enough. Use
+  `--max-run-tokens` to bound continued work. If a
   reservation cannot be checkpointed, the call is refused before sending.
 
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.

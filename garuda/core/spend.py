@@ -9,25 +9,27 @@ model calls against the same remaining budget.
 **Tokens are reserved.** A call reserves its estimated tokens (prompt estimate
 plus the requested output ceiling) under a lock before it is sent, so concurrent
 calls cannot both spend the same remainder. Settlement releases the reservation
-and charges the provider-reported usage. The root checkpoints admission before
-sending and settlement afterwards. A failed admission checkpoint refuses the
-call; a failed settlement checkpoint leaves the recorded reservation intact.
+and charges provider-reported usage or the estimate when usage is unknown. The
+root checkpoints admission before sending and settlement afterwards. A failed
+admission checkpoint refuses the call; a failed settlement checkpoint leaves the
+recorded reservation intact.
 On crash recovery, outstanding reservations are charged at their token estimate
 with unknown cost, and interrupted-call provenance survives later resumes.
 
 **Dollars are a stop, not a prepaid maximum.** A call's price is only known after
 it returns, so the dollar cap refuses admission once settled spend has reached
 it; a call already in flight can overshoot. Unknown cost is never counted as
-zero: under a dollar cap without a token cap, the first completed call whose
-cost the provider did not report stops further admission, because the cap cannot
-be enforced for that model. Pricing is only learned from a response, so this
-cannot be refused before the first call.
+zero: under a dollar cap without a token cap, the first completed, interrupted or
+unknown-outcome call whose cost the provider did not report stops further
+admission, because the cap cannot be enforced. Pricing is only learned from a
+response, so this cannot be refused before the first call.
 
-**A raised call is not an unpriced call.** A call that raised before the provider
-returned any usage (a context-overflow rejection, a transport error) releases its
-reservation and is counted apart as failed without usage; usage the exception
-carries is charged like any other. Such a call's spend, if the provider billed
-it at all, is not reported to Garuda and is not added to the settled total.
+**Unreported failures fail closed.** A definite rejection (context overflow or
+HTTP 4xx except 408) releases its reservation and counts as failed without usage.
+An interrupted call or any other failure with no reported usage is charged its
+reservation estimate with unknown cost, retaining interrupted or unknown-outcome
+provenance. Calls that were never sent cannot reliably be distinguished, so this
+can overcharge. Usage the exception carries is charged like any other report.
 
 **A completed call with no token fields is charged its estimate.** A provider
 that returns no usage at all (a stream whose server ignored ``include_usage``)
@@ -52,8 +54,8 @@ class SpendLimitExceeded(RuntimeError):
 
     ``cause`` says which limit refused it: ``tokens``, ``dollars`` (reported spend
     reached the cap) or ``cost_unknown`` (the dollar cap cannot be enforced because
-    a completed or interrupted call has unknown cost), or ``checkpoint`` (the
-    reservation could not be persisted before sending).
+    a completed, interrupted or unknown-outcome call has unknown cost), or
+    ``checkpoint`` (the reservation could not be persisted before sending).
     """
 
     def __init__(self, message: str, cause: str):
@@ -107,6 +109,7 @@ class SpendGate:
     reserved_tokens: int = 0
     reserved_calls: int = 0
     interrupted_calls: int = 0
+    unknown_outcome_calls: int = 0
     settled_tokens: int = 0
     settled_cost_usd: float = 0.0
     cost_unknown_calls: int = 0
@@ -182,10 +185,11 @@ class SpendGate:
                 return "dollars", (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
                                    f"(${self.settled_cost_usd:.6f} settled)")
             if self.cost_unknown_calls and self.max_tokens is None:
-                if self.interrupted_calls and not self.unpriced_model:
+                if (self.interrupted_calls or self.unknown_outcome_calls) and not self.unpriced_model:
                     return "cost_unknown", (
                         f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
-                        f"{self.interrupted_calls} interrupted call(s) have unknown cost; "
+                        f"{self.interrupted_calls} interrupted call(s) and "
+                        f"{self.unknown_outcome_calls} unknown-outcome call(s) have unknown cost; "
                         "use --max-run-tokens to bound this run")
                 if self.prior_spend_unknown and not self.unpriced_model:
                     return "cost_unknown", (
@@ -201,12 +205,16 @@ class SpendGate:
         return None
 
     async def settle(self, reservation: SpendReservation, usage: dict | None, *,
-                     failed: bool = False, model: str | None = None,
+                     failed: bool = False, rejected: bool = False, interrupted: bool = False,
+                     model: str | None = None,
                      cost_partial: bool = False) -> dict | None:
         """Release ``reservation`` and charge reported usage; returns a warning once.
 
         ``failed`` marks a call that raised; ``usage`` is then whatever the
-        exception carried, usually nothing. ``cost_partial`` marks a call whose
+        exception carried, usually nothing. With no usage, only ``rejected``
+        releases the reservation without charge; otherwise its estimate is
+        charged with unknown cost, classified by ``interrupted``.
+        ``cost_partial`` marks a call whose
         attempts (a retry, a stream fallback) used tokens that some attempt
         reported no price for: its known cost is charged and it still counts as
         unknown cost, so one priced attempt cannot make the whole call look priced.
@@ -217,10 +225,18 @@ class SpendGate:
             self.reserved_tokens = max(0, self.reserved_tokens - reservation.tokens)
             self.reserved_calls = max(0, self.reserved_calls - 1)
             if failed and not tokens and not isinstance(cost, (int, float)):
-                # Raised before the provider reported anything (an overflow
-                # rejection, a transport error): counted apart, not as a priced
-                # zero and not as a completed call whose price is unknown.
-                self.failed_without_usage += 1
+                if rejected:
+                    self.failed_without_usage += 1
+                else:
+                    # The provider may have processed the request. Keep its
+                    # estimate and unknown cost even if it was never sent.
+                    self.settled_tokens += reservation.tokens
+                    self.estimated_token_calls += 1
+                    self.cost_unknown_calls += 1
+                    if interrupted:
+                        self.interrupted_calls += 1
+                    else:
+                        self.unknown_outcome_calls += 1
             else:
                 if not failed and not reports_tokens(usage):
                     # Completed without any token count: the call consumed
@@ -258,7 +274,8 @@ class SpendGate:
         estimates as tokens and retain unknown cost, never a priced zero.
         """
         fields = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
-        counters = ("reserved_tokens", "reserved_calls", "interrupted_calls", "estimated_token_calls")
+        counters = ("reserved_tokens", "reserved_calls", "interrupted_calls", "unknown_outcome_calls",
+                    "estimated_token_calls")
         if not isinstance(snapshot, dict) or not all(
                 isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
                 and snapshot[k] >= 0 for k in fields) or not all(
@@ -273,6 +290,7 @@ class SpendGate:
         self.prior_spend_unknown = self.prior_spend_unknown or snapshot.get("prior_spend_unknown") is True
         self.unpriced_model = self.unpriced_model or snapshot.get("unpriced_model")
         self.interrupted_calls += snapshot.get("interrupted_calls", 0)
+        self.unknown_outcome_calls += snapshot.get("unknown_outcome_calls", 0)
         self.estimated_token_calls += snapshot.get("estimated_token_calls", 0)
         inherited = {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
                      "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
@@ -306,6 +324,7 @@ class SpendGate:
             "reserved_tokens": self.reserved_tokens,
             "reserved_calls": self.reserved_calls,
             "interrupted_calls": self.interrupted_calls,
+            "unknown_outcome_calls": self.unknown_outcome_calls,
             "settled_cost_usd": round(self.settled_cost_usd, 8),
             "cost_unknown_calls": self.cost_unknown_calls,
             "prior_spend_unknown": self.prior_spend_unknown,

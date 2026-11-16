@@ -21,6 +21,7 @@ from garuda.core.spend import SpendGate, SpendLimitExceeded
 from garuda.model import accounting
 from garuda.model.protocol import ContextOverflowError, ModelResponse
 from garuda.model.script_model import ScriptModel
+from garuda.model.streaming import IncompleteStreamError
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
@@ -147,10 +148,10 @@ async def test_unknown_cost_never_counts_as_free_under_a_dollar_cap():
     with pytest.raises(SpendLimitExceeded, match="cannot be enforced") as refused:
         await dollars.admit("main", estimate_tokens=10)
     assert refused.value.cause == "cost_unknown" and "--max-run-tokens" in str(refused.value)
-    # A call that raised before any usage was reported is counted apart: it is not
-    # a completed unpriced call, so it does not stop admission.
+    # A definite rejection with no usage is counted apart and does not stop admission.
     failed = SpendGate(max_cost_usd=1.0)
-    await failed.settle(await failed.admit("main", estimate_tokens=10), None, failed=True)
+    await failed.settle(await failed.admit("main", estimate_tokens=10), None,
+                        failed=True, rejected=True)
     assert (failed.failed_without_usage, failed.cost_unknown_calls) == (1, 0)
     assert failed.snapshot()["failed_without_usage"] == 1 and failed.reserved_tokens == 0
     await failed.admit("main", estimate_tokens=10)
@@ -174,6 +175,127 @@ async def test_a_reached_dollar_cap_stops_admission_and_warns_once():
                              {"total_tokens": 5, "cost_usd": 0.2}) is None
     with pytest.raises(SpendLimitExceeded, match="reached"):
         await gate.admit("main", estimate_tokens=1)
+
+
+class _HangingModel(ScriptModel):
+    def __init__(self):
+        super().__init__([])
+        self.started = asyncio.Event()
+
+    async def complete(self, *args, **kwargs):
+        self.started.set()
+        await asyncio.Future()
+
+
+async def test_auxiliary_cancellation_charges_the_reserved_estimate():
+    gate = SpendGate(max_tokens=10_000)
+    model = _HangingModel()
+    messages = [Message(role=Role.USER, content="summarize this")]
+    estimate = accounting.estimate_tokens(messages, 50)
+    token = accounting.bind(EventStore(session_id="spend"), gate)
+    try:
+        task = asyncio.create_task(accounting.complete(model, messages, purpose="summary", max_tokens=50))
+        try:
+            await asyncio.wait_for(model.started.wait(), timeout=5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    finally:
+        accounting.reset(token)
+    assert gate.settled_tokens == estimate
+    assert gate.interrupted_calls == gate.estimated_token_calls == gate.cost_unknown_calls == 1
+    assert gate.reserved_tokens == gate.reserved_calls == gate.failed_without_usage == 0
+    assert gate.unknown_outcome_calls == 0
+
+
+async def test_main_loop_cancellation_charges_the_reserved_estimate(tmp_path):
+    model = _HangingModel()
+    config = AgentConfig(max_turns=3, enable_verifier=False, max_tokens=50, max_run_tokens=10_000)
+    task = asyncio.create_task(DefaultAgent().run(
+        task="inspect the workspace", model=model,
+        env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(), config=config,
+    ))
+    try:
+        await asyncio.wait_for(model.started.wait(), timeout=5)
+        estimate = config.spend_gate.reserved_tokens
+        assert estimate > 0
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    gate = config.spend_gate
+    assert gate.settled_tokens == estimate
+    assert gate.interrupted_calls == gate.estimated_token_calls == gate.cost_unknown_calls == 1
+    assert gate.reserved_tokens == gate.reserved_calls == gate.failed_without_usage == 0
+    assert gate.unknown_outcome_calls == 0
+
+
+@pytest.mark.parametrize("error,status_code,rejected", [
+    pytest.param(Exception("lost reply"), None, False, id="no-status"),
+    pytest.param(Exception("unavailable"), 503, False, id="503"),
+    pytest.param(Exception("request timeout"), 408, False, id="408"),
+    pytest.param(ConnectionError("connection refused"), None, False, id="connection"),
+    pytest.param(IncompleteStreamError("no terminal chunk"), None, False, id="incomplete-stream"),
+    pytest.param(Exception("invalid request"), "400", False, id="string-status"),
+    pytest.param(Exception("invalid status"), True, False, id="boolean-status"),
+    pytest.param(Exception("bad request"), 400, True, id="400"),
+    pytest.param(Exception("rate limited"), 429, True, id="429"),
+    pytest.param(ContextOverflowError("prompt too long"), None, True, id="overflow"),
+])
+async def test_auxiliary_failure_charges_estimate_unless_rejected(error, status_code, rejected):
+    class FailingModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            raise error
+
+    if status_code is not None:
+        error.status_code = status_code
+    gate = SpendGate(max_tokens=10_000)
+    messages = [Message(role=Role.USER, content="summarize this")]
+    estimate = accounting.estimate_tokens(messages, 50)
+    token = accounting.bind(EventStore(session_id="spend"), gate)
+    try:
+        with pytest.raises(type(error)) as raised:
+            await accounting.complete(FailingModel([]), messages, purpose="summary", max_tokens=50)
+        assert raised.value is error
+    finally:
+        accounting.reset(token)
+    assert gate.settled_tokens == (0 if rejected else estimate)
+    assert gate.failed_without_usage == int(rejected)
+    assert gate.estimated_token_calls == gate.cost_unknown_calls == int(not rejected)
+    assert gate.snapshot().get("unknown_outcome_calls", 0) == int(not rejected)
+    assert gate.reserved_tokens == gate.reserved_calls == gate.interrupted_calls == 0
+
+
+async def test_unknown_outcome_failure_stops_dollar_only_admission():
+    gate = SpendGate(max_cost_usd=1.0)
+    # A caller that cannot classify the failure must fail closed by default.
+    await gate.settle(await gate.admit("main", estimate_tokens=100), None, failed=True)
+    assert gate.settled_tokens == 100
+    assert gate.settled_cost_usd == 0 and gate.cost_unknown_calls == 1
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("main", estimate_tokens=100)
+    assert refused.value.cause == "cost_unknown"
+    assert "--max-run-tokens" in str(refused.value)
+    assert "0 interrupted call(s)" in str(refused.value)
+    assert "1 unknown-outcome call(s)" in str(refused.value)
+
+
+async def test_unknown_outcome_provenance_survives_resume():
+    snapshots = []
+    gate = SpendGate(max_tokens=1000, checkpoint=snapshots.append)
+    await gate.settle(await gate.admit("main", estimate_tokens=100), None, failed=True)
+    assert gate.settled_tokens == 100
+    assert snapshots[-1]["unknown_outcome_calls"] == 1
+    assert snapshots[-1]["reserved_tokens"] == snapshots[-1]["reserved_calls"] == 0
+    resumed = SpendGate(max_cost_usd=1.0)
+    resumed.inherit(snapshots[-1])
+    assert resumed.settled_tokens == 100
+    assert resumed.snapshot()["unknown_outcome_calls"] == resumed.unknown_outcome_calls == 1
+    assert resumed.estimated_token_calls == resumed.cost_unknown_calls == 1
+    assert resumed.interrupted_calls == 0
+    with pytest.raises(SpendLimitExceeded, match="1 unknown-outcome call"):
+        await resumed.admit("main", estimate_tokens=1)
 
 
 async def test_a_subagent_admits_against_the_roots_gate(tmp_path, monkeypatch):
@@ -495,10 +617,11 @@ async def test_a_completed_call_with_no_reported_tokens_is_charged_its_estimate(
     assert gate.settled_tokens == 900 and gate.snapshot()["estimated_token_calls"] == 1
     with pytest.raises(SpendLimitExceeded):
         await gate.admit("main", estimate_tokens=900)
-    # A reported zero is a report; a raised call stays failed without usage.
+    # A reported zero is a report; a rejected call stays failed without usage.
     reported = SpendGate(max_tokens=1000)
     await reported.settle(await reported.admit("main", estimate_tokens=900), {"total_tokens": 0})
-    await reported.settle(await reported.admit("main", estimate_tokens=900), None, failed=True)
+    await reported.settle(await reported.admit("main", estimate_tokens=900), None,
+                          failed=True, rejected=True)
     assert (reported.settled_tokens, reported.estimated_token_calls,
             reported.failed_without_usage) == (0, 0, 1)
 

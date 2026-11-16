@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
+from garuda.model.protocol import ContextOverflowError
 from garuda.model.usage import usage_metadata
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
@@ -119,12 +120,18 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     """Settle one call from its ``response`` or the ``error`` it raised; the first
     crossing of the warning threshold is recorded.
 
-    A raised call is settled as failed with whatever usage the exception carries
-    (usually none), so a provider rejection does not read as an unpriced call.
+    A raised call charges whatever usage the exception carries. Without usage,
+    only a definite rejection releases the reservation without a charge;
+    interruptions and unknown outcomes charge the estimate with unknown cost.
     """
     from garuda.core.spend import usage_tokens
 
     source = error if error is not None else response
+    interrupted = error is not None and not isinstance(error, Exception)
+    status_code = getattr(error, "status_code", None)
+    rejected = isinstance(error, ContextOverflowError) or (
+        isinstance(status_code, int) and not isinstance(status_code, bool)
+        and 400 <= status_code <= 499 and status_code != 408)
     usage = getattr(source, "usage", None)
     attempts = getattr(source, "attempt_usage", None) or []
     # An attempt that used tokens without a price leaves the call's cost unknown,
@@ -136,6 +143,7 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
         for attempt in attempts)
     warning = await gate.settle(reservation, dict(usage) if isinstance(usage, dict) else None,
                                 failed=error is not None,
+                                rejected=rejected, interrupted=interrupted,
                                 model=getattr(model, "model_name", None),
                                 cost_partial=cost_partial)
     events = _events.get()

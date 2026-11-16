@@ -22,9 +22,11 @@ their complete acceptance criteria and exact merged revisions are verified.
 - **Spend:** dollar limits remain stops based on reported spend, rather than
   prepaid exact maxima. Crash/resume reservation provenance is covered by
   admission/settlement checkpoints and interrupted-reservation estimate charges
-  with unknown cost. Cancelled-call token charging and failed calls without
-  reported usage remain open. External ACP model calls remain outside native
-  spend enforcement.
+  with unknown cost. Cancelled and unknown-outcome failed calls without usage
+  now charge their reservation with unknown cost; definite rejections release
+  it without charge. Failed attempts without usage inside a call that later
+  succeeded (stream fallback or retried 5xx) remain a gap. External ACP model
+  calls remain outside native spend enforcement.
 - **Investigation:** preserve read-only collection briefs where sufficient.
   Preview is inspection, not a reservation: execution must independently
   revalidate the source and current workspace. Context rewind restores neither

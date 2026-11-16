@@ -1,5 +1,33 @@
 # Durable decisions
 
+## 2026-11-16 — Cancelled and unknown-outcome calls are charged their estimate (#363)
+
+This supersedes the 2026-11-06 spend policy's transport-error wording and
+#457's exclusion of cancelled or failed calls without usage. Both main-loop
+and auxiliary calls classify failures through shared model accounting. Reported
+usage remains authoritative, including usage carried by an exception.
+
+For a failed call with no tokens or cost, definite rejections
+(`ContextOverflowError`, or integer non-boolean HTTP status 400–499 except 408)
+release the reservation and increment only `failed_without_usage`, preserving
+overflow recovery under a dollar-only cap. Interruptions (a `BaseException`
+outside `Exception`, including cancellation and KeyboardInterrupt) charge the
+reservation's token estimate and increment `estimated_token_calls`,
+`cost_unknown_calls` and `interrupted_calls`, matching crash recovery. Other
+exceptions charge the same estimate with unknown cost and increment
+`unknown_outcome_calls` instead of `interrupted_calls`. Unclassified failures
+default to that conservative charge. Settlement still checkpoints; snapshots
+and resume inheritance retain unknown-outcome provenance.
+
+We cannot reliably identify calls that were never sent (cancellation while
+waiting for a governor slot or connection refusal), so overcharging their
+estimate is accepted. Unknown cost never becomes a priced zero. Under a
+dollar-only cap, one unknown-outcome failure stops further calls; use
+`--max-run-tokens` to bound continued work. Dollar caps remain reported-spend
+stops, not prepaid maxima or exact billing. Failed attempts without usage inside
+a call that later succeeds (stream fallback or retried 5xx) remain outside this
+slice, as does ACP spend enforcement.
+
 ## 2026-11-16 — Spend checkpoints survive a crash (#363)
 
 The root runner initializes the shared gate's session checkpoint after resume
