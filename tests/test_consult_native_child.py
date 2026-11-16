@@ -313,13 +313,18 @@ async def test_failed_or_cancelled_consult_settles_reported_usage(consult_world,
             request(consult_world, request_id="failed")))
         if cancel:
             await asyncio.wait_for(started.wait(), 5)
+            estimate = gate.reserved_tokens
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            assert gate.settled_tokens == max(150, estimate)
+            assert gate.cost_unknown_calls == 1
+            assert gate.interrupted_calls == 1
         else:
             result = await task
             assert result.outcome == "refused" and result.receipt["outcome"] == "failed"
-        assert gate.settled_tokens == 150 and gate.settled_cost_usd == 0.03
+            assert gate.settled_tokens == 150
+        assert gate.settled_cost_usd == 0.03
         assert gate.calls == 1 and gate.reserved_tokens == 0
         state = ConsultState(consult_world.store, consult_world.asker).snapshot()
         assert state["requests"]["failed"]["result"]["receipt"]["outcome"] == "failed"
