@@ -270,8 +270,15 @@ def allocate_name(
 
 
 def session_for_name(store_root: Path, project_id: str, name: str) -> str | None:
-    marker = _names_dir(store_root, project_id) / name / "session"
+    """Return a named session; refuse unsafe markers before ID-prefix fallback."""
+    from garuda.core.session_records import RecordError, UnsafeRecordError, read_bytes
+    from garuda.core.sessions import SessionStore
+
+    marker = Path(".names") / project_id / name / "session"
     try:
-        return marker.read_text(encoding="utf-8").strip() or None
-    except (OSError, ValueError):
-        return None
+        return read_bytes(SessionStore(store_root), marker, limit=256).decode("utf-8").strip() or None
+    except ValueError as exc:
+        if (isinstance(exc, RecordError) and not isinstance(exc, UnsafeRecordError)
+                and isinstance(exc.__cause__, FileNotFoundError)):
+            return None
+        raise RecordError(f"Unsafe session name marker for {name!r}: {exc}") from exc

@@ -126,6 +126,56 @@ def test_prefixes_and_latest_stay_in_the_project(tmp_path):
     assert store.resolve("abc222") == "abc222"  # a full id always resolves
 
 
+@pytest.mark.parametrize("mode", ["resolve", "resume", "inspection"])
+@pytest.mark.parametrize("marker_kind", ["regular", "missing", "symlink", "dangling", "oversize", "fifo", "directory"])
+def test_name_markers_refuse_unsafe_paths_but_allow_missing_prefix_lookup(tmp_path, mode, marker_kind):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    # An unsafe name must not silently select this otherwise matching prefix.
+    meta = _begin(store, "review-source", workspace, name="review")
+    marker = store.root / ".names" / meta["project_id"] / "review/session"
+    marker.unlink()
+    if marker_kind == "regular":
+        marker.write_text("review-source")
+    elif marker_kind in {"symlink", "dangling"}:
+        target = tmp_path / "target"
+        if marker_kind == "symlink":
+            target.write_text("review-source")
+        marker.symlink_to(target)
+    elif marker_kind == "oversize":
+        marker.write_text("review-source" + " " * 256)
+    elif marker_kind == "fifo":
+        os.mkfifo(marker)
+    elif marker_kind == "directory":
+        marker.mkdir()
+    code = textwrap.dedent(
+        """
+        import sys
+        from garuda.core.session_records import BoundedSessionRecords
+        from garuda.core.sessions import SessionStore
+        reader = BoundedSessionRecords(sys.argv[1], byte_budget=8 * 1024 * 1024)
+        resolve = {"resume": reader.resolve_for_resume, "inspection": reader.resolve_for_inspection,
+                   "resolve": SessionStore(sys.argv[1]).resolve}[sys.argv[3]]
+        try:
+            selected = resolve("review", workspace=sys.argv[2])
+        except ValueError as exc:
+            print("refused:", exc)
+        else:
+            print("resolved:", selected)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(store.root), str(workspace), mode],
+        capture_output=True, text=True, timeout=10, env=dict(os.environ, PYTHONPATH=str(ROOT)),
+    )
+    assert result.returncode == 0, result.stderr
+    if marker_kind in {"regular", "missing"}:
+        assert result.stdout.strip() == "resolved: review-source"
+    else:
+        assert "refused: Unsafe session name marker" in result.stdout
+
+
 def test_a_second_begin_keeps_the_identity(tmp_path):
     repo = _git_repo(tmp_path / "repo")
     store = SessionStore(tmp_path / "sessions")
