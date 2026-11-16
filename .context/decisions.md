@@ -5,9 +5,11 @@
 The editing service closes its child environment on every exit from the child
 run, retaining original interruption identity if cleanup fails unless cancellation
 arrives during close, in which case cancellation takes precedence. Close tasks
-are shielded and settled through repeated cancellation. Interrupted close failures
+are shielded and settled through repeated cancellation. All close failures
 record a fixed `environment_close: failed` receipt/event marker without exception
-details, including when the interrupt becomes a refusal. Closing environment-owned
+details, including after normal returns, during cancellation, and when the
+interrupt becomes a refusal. Cancellation retains any close-failure cause.
+Closing environment-owned
 services does not establish descendant settlement: uncertain repositories,
 leases and capacity remain quarantined under the existing recovery owner.
 
