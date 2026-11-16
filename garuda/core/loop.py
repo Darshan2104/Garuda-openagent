@@ -157,6 +157,7 @@ class DefaultAgent:
                 collection_model=collection_model,
                 collection_policy=collection_policy,
                 allowed_tool_effects=allowed_tool_effects,
+                model_delta_consumer=model_delta_consumer,
             )
             state.delta_consumer = model_delta_consumer
 

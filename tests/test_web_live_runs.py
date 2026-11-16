@@ -1015,3 +1015,17 @@ async def test_read_only_chats_share_the_workspace(chatting, monkeypatch):
     a = await call(ctx, "/api/chat", method="POST", body=body)
     b = await call(ctx, "/api/chat", method="POST", body=body)
     assert a.status == 201 and b.status == 201
+
+
+def test_chat_ignores_labelled_deltas_while_busy(tmp_path):
+    from garuda.model.streaming import LiveDelta
+
+    chat = LiveChat(
+        chat_id="parent", session=_FakeSession(), env=object(), env_handle=None,
+        workspace=tmp_path, permission_mode="smart", model="test", agent="build", busy=True,
+    )
+    chat.on_model_delta(LiveDelta("text", "child working", source="child", agent="harbor", depth=1))
+    assert chat.preview() is None
+    chat.on_model_delta(LiveDelta("text", "parent working"))
+    chat.on_model_delta(LiveDelta("discard", source="child", agent="harbor", depth=1))
+    assert chat.preview()["text"] == "parent working"

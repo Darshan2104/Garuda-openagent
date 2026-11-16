@@ -482,6 +482,42 @@ already rendered response is suppressed, including when the run exhausts its tur
 ACP does not attach this native consumer.
 Dashboard chat and opt-in SDK callbacks use the same loop consumer.
 
+SDK callers can opt into labelled child output. Group fragments by source so
+child text stays separate from the parent's answer:
+
+```python
+from collections import defaultdict
+from garuda.sdk.software_agent import SoftwareAgent
+
+text_by_source = defaultdict(str)
+labels = {}
+
+def on_delta(delta):
+    # None is the parent's own call; child sources are session ids.
+    labels[delta.source] = (delta.agent, delta.depth)
+    if delta.kind == "discard":
+        text_by_source[delta.source] = ""
+    elif delta.kind == "text":
+        text_by_source[delta.source] += delta.text
+
+agent = SoftwareAgent(workspace=".")
+result = await agent.run(
+    "Delegate an investigation to harbor, then summarize it",
+    on_delta=on_delta,
+    subagent_deltas=True,
+)
+```
+
+`subagent_deltas` defaults to false and requires `on_delta` when enabled. The
+parent's deltas have `source=None`, `agent=None`, `depth=0`. Child deltas carry
+session id, resolved profile and delegation depth; nested labels preserve the
+innermost child. Editing-worker sources are candidate ids. Concurrent workers
+interleave by scheduling while retaining order within each source. Discard
+clears only the current call for its source; applications keeping a full history
+should track call boundaries separately. Each conversation turn must opt in
+again. Consult and collection children are excluded. Terminal and dashboard
+previews show only the parent.
+
 ### Watch assistant text in dashboard chat
 
 ```bash

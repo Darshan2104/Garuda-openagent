@@ -91,6 +91,7 @@ class SoftwareAgent:
         fork: str | None = None,
         fork_at: int | None = None,
         on_delta: "DeltaConsumer | None" = None,
+        subagent_deltas: bool = False,
     ) -> AgentResult:
         """Execute a task and return the agent result.
 
@@ -106,9 +107,16 @@ class SoftwareAgent:
         callables are accepted. The result still comes from the assembled model
         response, and a consumer that raises is detached for that call (recorded
         as ``live_consumer_error``) without changing the run's outcome.
+        ``subagent_deltas=True`` requires ``on_delta`` and opts into child
+        deltas labelled with ``source`` (session id), ``agent`` and ``depth``.
+        Group by source: concurrent workers interleave by scheduling, preserving
+        order within each source. A labelled ``discard`` clears only that source.
+        Consult and collection children are excluded; the default is parent only.
         """
         from garuda.core.session_fork import validate_fork_request
 
+        if subagent_deltas and on_delta is None:
+            raise ValueError("subagent_deltas requires on_delta")
         if on_delta is not None and self.runtime_name != "native":
             raise ValueError("live deltas are only available for the native runtime")
         validate_fork_request(fork=fork, fork_at=fork_at, resume=resume)
@@ -136,6 +144,7 @@ class SoftwareAgent:
         profile, config, permissions, tools, agent, mcp_manager = prepared
         model = prepared.reasoning
         events = events or EventStore()
+        config.stream_subagent_deltas = subagent_deltas
         config.workspace_kind = self.workspace_kind
         config.docker_image = self.docker_image
         config.docker_host = self.docker_host
