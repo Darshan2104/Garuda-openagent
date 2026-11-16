@@ -14,10 +14,15 @@ function canWrite() {
 
 function runtimesView() {
   render('<div class="loading">Loading runtimes…</div>');
-  api("/api/runtimes")
-    .then(function (runtimes) {
-      STATE.runtimes = runtimes;
-      renderRuntimes(runtimes, null, null);
+  // Recent sessions only feed the session-id suggestions; failing to list them must not
+  // keep the board from rendering.
+  var sessions = api("/api/sessions?limit=50").then(function (p) { return (p && p.sessions) || []; },
+                                                   function () { return []; });
+  Promise.all([api("/api/runtimes"), sessions])
+    .then(function (both) {
+      STATE.runtimes = both[0];
+      STATE.rtSessions = both[1];
+      renderRuntimes(both[0], null, null);
     })
     .catch(function (err) {
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -31,7 +36,12 @@ function rtPill(rt) {
   return '<span class="pill success">available</span>';
 }
 
+var RT_INPUTS = ["rt-handoff-session", "rt-handoff-target", "rt-diff-session", "rt-recover-session"];
+
 function renderRuntimes(runtimes, detail, detailId) {
+  // Selecting a runtime re-renders the board; what was typed into the ops cards survives it.
+  var typed = {};
+  RT_INPUTS.forEach(function (id) { var node = el(id); if (node) typed[id] = node.value; });
   var rows = runtimes.map(function (rt) {
     return "<tr" + (detailId === rt.runtime_id ? ' class="selected"' : "") + ">" +
       '<td><a href="#" data-rt="' + esc(rt.runtime_id) + '">' + esc(rt.runtime_id) + "</a></td>" +
@@ -41,7 +51,7 @@ function renderRuntimes(runtimes, detail, detailId) {
       "<td>" + esc((rt.auth || "").toUpperCase()) + "</td>" +
       "</tr>";
   }).join("");
-  var detailHtml = '<div class="empty" id="rt-detail"><p>Select a runtime for detail.</p></div>';
+  var detailHtml = '<p class="stat-sub" id="rt-detail">Click a runtime name for its executable, capabilities and auth guidance.</p>';
   if (detail) detailHtml = renderRtDetail(detail);
   render(
     '<div class="page-head"><h1>Runtimes</h1>' +
@@ -50,8 +60,10 @@ function renderRuntimes(runtimes, detail, detailId) {
     "<th>Runtime</th><th>Kind</th><th>Health</th><th>Version</th><th>Auth</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     detailHtml +
-    renderRtOps()
+    renderRtOps() + rtDatalistsHtml(runtimes, STATE.rtSessions || [])
   );
+  RT_INPUTS.forEach(function (id) { if (typed[id]) el(id).value = typed[id]; });
+  if (detailId && !el("rt-handoff-target").value) el("rt-handoff-target").value = detailId;
   var links = document.querySelectorAll("#rt-table a[data-rt]");
   for (var i = 0; i < links.length; i++) {
     links[i].addEventListener("click", function (ev) {
@@ -60,6 +72,15 @@ function renderRuntimes(runtimes, detail, detailId) {
     });
   }
   wireRtOps();
+}
+
+function rtDatalistsHtml(runtimes, sessions) {
+  return '<datalist id="rt-runtime-ids">' + runtimes.map(function (rt) {
+      return '<option value="' + esc(rt.runtime_id) + '">' + esc(rt.kind) + "</option>";
+    }).join("") + "</datalist>" +
+    '<datalist id="rt-session-ids">' + sessions.map(function (row) {
+      return '<option value="' + esc(row.session_id) + '">' + esc((row.name || "") + " · " + (row.label || "")) + "</option>";
+    }).join("") + "</datalist>";
 }
 
 function renderRtDetail(rt) {
@@ -100,18 +121,18 @@ function renderRtOps() {
     "Dashboard is read-only: prepare and recover actions are disabled.</div></div>";
   return '<div class="grid cols-4">' +
     '<div class="card"><h2>Handoff</h2>' +
-    '<label>Session <input id="rt-handoff-session" placeholder="session id"></label>' +
-    '<label>Target <input id="rt-handoff-target" placeholder="runtime id"></label>' +
+    '<label>Session <input id="rt-handoff-session" list="rt-session-ids" autocomplete="off" placeholder="session id"></label>' +
+    '<label>Target <input id="rt-handoff-target" list="rt-runtime-ids" autocomplete="off" placeholder="runtime id"></label>' +
     '<div class="row"><button type="button" class="btn" id="rt-handoff-preview">Preview</button>' +
     '<button type="button" class="btn btn-primary" id="rt-handoff-prepare"' +
     (write ? "" : " disabled") + ">Prepare</button></div>" +
     '<div id="rt-handoff-result"></div></div>' +
     '<div class="card"><h2>Diff</h2>' +
-    '<label>Session <input id="rt-diff-session" placeholder="session id"></label>' +
+    '<label>Session <input id="rt-diff-session" list="rt-session-ids" autocomplete="off" placeholder="session id"></label>' +
     '<div class="row"><button type="button" class="btn" id="rt-diff-load">Load diff</button></div>' +
     '<div id="rt-diff-result"></div></div>' +
     '<div class="card"><h2>Recovery</h2>' +
-    '<label>Session <input id="rt-recover-session" placeholder="session id"></label>' +
+    '<label>Session <input id="rt-recover-session" list="rt-session-ids" autocomplete="off" placeholder="session id"></label>' +
     '<div class="row"><button type="button" class="btn" id="rt-recover-classify">Classify</button>' +
     '<button type="button" class="btn btn-primary" id="rt-recover-run"' +
     (write ? "" : " disabled") + ">Recover</button></div>" +

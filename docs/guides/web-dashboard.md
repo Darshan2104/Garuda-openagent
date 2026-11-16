@@ -61,6 +61,23 @@ open that exact URL.
 | Runtimes | `#/runtimes` | Runtime health, handoffs and recovery |
 | Chat | `#/chat` | A conversation with the native agent (not in `--read-only`) |
 
+## Finding your way
+
+The **Approvals** tab shows a red count whenever a request is waiting, so a
+parked approval is visible from every page. The count is a read-only poll of
+`/api/inbox` every 20 seconds and pauses while the tab is hidden.
+
+| Key | Does |
+|---|---|
+| `1`–`9` | Switch to the nth tab |
+| `/` | Focus the page's search field |
+| `r` | Reload the current view (not Chat) |
+| `t` | Toggle light and dark |
+| `?` | Show or hide the shortcut list |
+| `Esc` | Close the list or leave a field |
+
+Keys do nothing while you are typing in a field or holding Cmd, Ctrl or Alt.
+
 ## Starters
 
 Start with `garuda web --read-only --allow-workspace .` and open **Starters**.
@@ -211,8 +228,10 @@ history. On top of that:
 The Sessions page shows every session's state (**queued** with its position,
 **working**, **waiting** on an approval, **crashed** when its worker is gone,
 or how it ended), runtime, role and model, outcome and verification as
-separate columns, workspace and branch, and approvals waiting. A session's
-page adds:
+separate columns, workspace and branch, and approvals waiting. Type in the
+search field to match name, id, model or workspace, and click a state chip
+(**crashed 3**, **working 1**…) to show only that state; the filter stays in
+place when you open a session and come back. A session's page adds:
 
 - its pending approvals;
 - a live events panel that reconnects without repeating or skipping events;
@@ -294,7 +313,9 @@ and its **limits**.
   unpublished worktrees, each with a code and a fix you can copy (the same
   as `garuda doctor`, except that a login shows its last recorded check
   instead of running it; the version command of each harness your roles use
-  does run, and no prompt is sent).
+  does run, and no prompt is sent). Counts per level come first, errors are
+  listed before warnings, and a code that repeats more than three times (one
+  `lease.stale` per crashed run, say) folds into one expandable row.
 - The **role table**: each role's harness, exact model, effort, permissions
   and write policy, harness mode (**by permissions** when the role names
   none), agent and fallback chain.
@@ -326,6 +347,8 @@ Dashboard chat stays native; the board adds:
   workspace; and
 - recovery: classify a session, or run recovery.
 
+The session fields suggest recent session ids and the target field suggests
+runtime ids; clicking a runtime fills the target and keeps what you typed.
 Prepare and recovery controls are disabled in `--read-only`. See
 [External harnesses](external-harnesses.md) for ownership, verification and
 handoff failure semantics.

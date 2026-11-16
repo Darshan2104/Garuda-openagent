@@ -72,6 +72,7 @@ function boot() {
         if (chatLink) chatLink.hidden = true;
       }
       navigate();
+      startInboxBadge();
     })
     .catch(function (err) {
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -79,6 +80,81 @@ function boot() {
              '<div class="notice-body">' + esc(err.message) + "</div></div>");
     });
 }
+
+/* --- approvals count in the nav --------------------------------------------
+ * A slow read-only poll of the same /api/inbox the Approvals view renders, so a parked
+ * request is visible from any page. It answers nothing and refreshes no heartbeat, and the
+ * Poller pauses it while the tab is hidden. */
+
+var INBOX_BADGE = null;
+
+function startInboxBadge() {
+  if (INBOX_BADGE) return;
+  INBOX_BADGE = new Poller(refreshInboxBadge, 20000).start();
+}
+
+function refreshInboxBadge() {
+  return api("/api/inbox").then(function (payload) {
+    var count = (payload && payload.approvals ? payload.approvals : []).filter(function (a) { return !a.expired; }).length;
+    var badge = el("nav-inbox-count");
+    if (!badge) return;
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.hidden = count === 0;
+    badge.title = count + " approval" + (count === 1 ? "" : "s") + " waiting";
+  }).catch(function () { /* the badge is a convenience; the Approvals view reports errors */ });
+}
+
+/* --- keyboard shortcuts ------------------------------------------------------
+ * Single keys, never while typing in a field and never with a modifier, so they cannot
+ * collide with the chat composer's Cmd/Ctrl+Enter or with browser shortcuts. */
+
+function isTypingTarget(node) {
+  if (!node) return false;
+  var tag = node.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable;
+}
+
+function toggleKeysHelp(show) {
+  var help = el("keys-help");
+  if (!help) return;
+  help.hidden = show === undefined ? !help.hidden : !show;
+}
+
+function visibleNavLinks() {
+  return Array.prototype.filter.call(document.querySelectorAll(".nav-link"), function (link) { return !link.hidden; });
+}
+
+function onShortcut(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "Escape") {
+    toggleKeysHelp(false);
+    if (isTypingTarget(document.activeElement)) document.activeElement.blur();
+    return;
+  }
+  if (isTypingTarget(event.target)) return;
+  if (event.key === "?") { toggleKeysHelp(); event.preventDefault(); return; }
+  if (event.key === "/") {
+    var search = view().querySelector('input[type="search"]');
+    if (search) { search.focus(); search.select(); event.preventDefault(); }
+    return;
+  }
+  if (event.key === "r") {
+    // Chat is excluded: re-mounting it would end the composer state mid-thought.
+    if ((location.hash || "").indexOf("#/chat") !== 0) { navigate(); refreshInboxBadge(); }
+    return;
+  }
+  if (event.key === "t") { toggleTheme(); return; }
+  if (/^[1-9]$/.test(event.key)) {
+    var link = visibleNavLinks()[Number(event.key) - 1];
+    if (link) location.hash = link.getAttribute("href");
+  }
+}
+
+document.addEventListener("keydown", onShortcut);
+el("keys-toggle").addEventListener("click", function () { toggleKeysHelp(); });
+el("keys-help").addEventListener("click", function (event) {
+  if (event.target === el("keys-help")) toggleKeysHelp(false);
+});
 
 window.addEventListener("hashchange", navigate);
 boot();
