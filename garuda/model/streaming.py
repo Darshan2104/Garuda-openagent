@@ -48,10 +48,16 @@ class LiveDelta:
 
     ``kind`` is ``text`` or ``reasoning`` (``text`` holds the new fragment), or
     ``discard``: everything shown for this call so far was not the answer.
+    ``source=None``, ``agent=None`` and ``depth=0`` identify the run's own call.
+    Child deltas name their session, profile and depth; a labelled ``discard``
+    applies only to that source.
     """
 
     kind: str
     text: str = ""
+    source: str | None = None
+    agent: str | None = None
+    depth: int = 0
 
 
 DeltaConsumer = Callable[[LiveDelta], Awaitable[None] | None]

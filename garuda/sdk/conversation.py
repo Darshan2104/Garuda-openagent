@@ -90,7 +90,10 @@ class Conversation:
             )
         return self._session
 
-    async def run(self, task: str, *, on_delta: "DeltaConsumer | None" = None) -> AgentResult:
+    async def run(
+        self, task: str, *, on_delta: "DeltaConsumer | None" = None,
+        subagent_deltas: bool = False,
+    ) -> AgentResult:
         """Run a task in this conversation.
 
         ``on_delta`` (native runtime only) receives the live ``LiveDelta``
@@ -98,12 +101,20 @@ class Conversation:
         callables are accepted. The result still comes from the assembled model
         response, and a consumer that raises is detached for that call (recorded
         as ``live_consumer_error``) without changing the turn's outcome.
+        ``subagent_deltas=True`` requires ``on_delta`` and opts into child
+        deltas labelled with ``source`` (session id), ``agent`` and ``depth``.
+        Group by source: concurrent workers interleave by scheduling, preserving
+        order within each source. A labelled ``discard`` clears only that source.
+        Consult and collection children are excluded; the default is parent only.
         """
+        if subagent_deltas and on_delta is None:
+            raise ValueError("subagent_deltas requires on_delta")
         if on_delta is not None and self._runtime_name != "native":
             raise ValueError("live deltas are only available for the native runtime")
         if self._runtime_name != "native":
             return await self._run_acp(task)
         session = await self._ensure_session()
+        session.config.stream_subagent_deltas = subagent_deltas
         live = await self._ensure_live(session, task)
         context = session.prepare_context(task)
         return await live.turn(session.agent.run(

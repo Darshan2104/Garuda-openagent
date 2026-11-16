@@ -17,6 +17,7 @@ import pytest
 from garuda.core.events import EventStore
 from garuda.core.loop import DefaultAgent
 from garuda.core.metrics import aggregate_model_metrics
+from garuda.model import streaming
 from garuda.model.protocol import ContextOverflowError, ModelResponse, StreamDelta
 from garuda.model.script_model import ScriptedStream, ScriptModel
 from garuda.model.streaming import LiveDelta, stream_complete
@@ -103,6 +104,45 @@ async def test_streamed_run_matches_the_ordinary_run(tmp_path: Path):
         (m.role, m.content) for m in plain.messages[1:]]
     assert "".join(d.text for d in seen if d.kind == "text") == "Writing then reading.All done."
     assert "".join(d.text for d in seen if d.kind == "reasoning") == "Plan: write, read."
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", None], ids=["finish-and-usage", "usage-only-done"])
+async def test_terminal_only_stream_matches_the_ordinary_run(tmp_path: Path, monkeypatch, finish_reason):
+    usage = {"prompt_tokens": 40, "completion_tokens": 0, "total_tokens": 40}
+    ordinary = ModelResponse(content=None, tool_calls=[], raw={"finish_reason": finish_reason}, usage=usage)
+    deltas = ([StreamDelta(finish_reason="stop", usage=usage), StreamDelta(done=True)]
+              if finish_reason is not None else [StreamDelta(usage=usage, done=True)])
+    plain, plain_events = await _run(tmp_path, [ordinary])
+
+    # Trajectory events omit finish_reason; observe the real assembled response
+    # on its way into the loop without replacing the streaming implementation.
+    assembled = []
+
+    async def observe_response(*args, **kwargs):
+        call = await stream_complete(*args, **kwargs)
+        assembled.append(call.response)
+        return call
+
+    monkeypatch.setattr(streaming, "stream_complete", observe_response)
+    seen: list[LiveDelta] = []
+    live, live_events = await _run(tmp_path, [ScriptedStream(deltas)], seen.append)
+
+    [response] = assembled
+    assert response.content == ordinary.content is None
+    assert response.tool_calls == ordinary.tool_calls == []
+    assert response.raw["finish_reason"] == ordinary.raw["finish_reason"] == finish_reason
+    assert response.usage == ordinary.usage == usage
+    [plain_response] = _of(plain_events, "model_response")
+    [live_response] = _of(live_events, "model_response")
+    assert _comparable(live_response) == _comparable(plain_response)
+    assert live_response["live_coverage"] == "streamed"
+    assert "stream_error" not in live_response
+    assert _of(live_events, "model_call_failed") == []
+    assert _of(live_events, "tool_call") == []
+    assert seen == []
+    assert live.success == plain.success is True
+    assert live.final_message == plain.final_message == ""
+    assert live.metadata["usage"] == plain.metadata["usage"] == usage
 
 
 async def test_truncated_streamed_arguments_are_not_dispatched(tmp_path: Path):
@@ -587,3 +627,97 @@ async def test_litellm_stream_closed_before_finish_reason_falls_back(tmp_path: P
     assert unreported == unreported_attempts(attempts)
     assert gate.settled_tokens == reported + 30 * unreported
     assert gate.settled_tokens > 32
+
+
+def _subagent_call(name="invoke_subagent", **arguments):
+    return ModelResponse(content=None, tool_calls=[ToolCall("delegated", name, arguments)])
+
+
+def _child_stream(text="child working", *, fail=False):
+    return ScriptedStream([
+        StreamDelta(content_delta=text[:5]),
+        StreamDelta(content_delta=text[5:]),
+        *([ConnectionError("child disconnected")] if fail else [
+            StreamDelta(tool_call_delta={
+                "index": 0, "id": "child-done", "name": "task_complete",
+                "arguments": json.dumps({"summary": "Finished the delegated investigation."}),
+            }),
+            StreamDelta(done=True, finish_reason="tool_calls"),
+        ]),
+    ])
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_subagent_deltas_are_labelled_only_when_opted_in(tmp_path, enabled):
+    from garuda.types import Role
+
+    events = EventStore(persist_path=tmp_path / "events.jsonl")
+    seen = []
+    config = (AgentConfig(stream_subagent_deltas=True, enable_verifier=False)
+              if enabled else AgentConfig(enable_verifier=False))
+    child = (_child_stream() if enabled else
+             _subagent_call("task_complete", summary="Finished the delegated investigation."))
+    result = await DefaultAgent().run(
+        task="delegate then answer", model=ScriptModel([
+            _subagent_call(profile="harbor", task="investigate", handoff="none"),
+            child,
+            _subagent_call("task_complete", summary="Finished the delegated investigation."),
+            ScriptedStream([StreamDelta(content_delta="Parent answer."),
+                            StreamDelta(done=True, finish_reason="stop")]),
+        ]), env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
+        config=config, events=events, model_delta_consumer=seen.append,
+    )
+
+    assert result.success and result.final_message == "Parent answer."
+    [handoff] = [p for p in _of(events.get_all(), "user_message") if p.get("subagent")]
+    child_events = [json.loads(line) for line in
+                    (tmp_path / "subagents" / f"{handoff['session_id']}.jsonl").read_text().splitlines()]
+    labelled = [d for d in seen if d.source is not None]
+    if enabled:
+        assert "".join(d.text for d in labelled if d.kind == "text") == "child working"
+        assert {(d.source, d.agent, d.depth) for d in labelled} == {
+            (handoff["session_id"], "harbor", 1),
+        }
+        assert _of(child_events, "model_response")[0]["live_coverage"] == "streamed"
+    else:
+        assert labelled == []
+        assert all("live_coverage" not in p for p in _of(child_events, "model_response"))
+    assert "".join(d.text for d in seen if d.kind == "text" and d.source is None) == "Parent answer."
+    assert all(d.agent is None and d.depth == 0 for d in seen if d.source is None)
+    assert not any(m.role == Role.ASSISTANT and "child working" in (m.content or "")
+                   for m in result.messages)
+
+
+async def test_nested_child_fallback_discards_only_the_innermost_source(tmp_path):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    (agents / "relay.yaml").write_text(
+        "name: relay\npermission_mode: yolo\ntools: [invoke_subagent, task_complete]\n"
+        "enable_acceptance_contract: false\nenable_verifier: false\n"
+    )
+    seen = []
+
+    async def consume(delta):
+        seen.append(delta)
+
+    result = await DefaultAgent().run(
+        task="delegate twice", model=ScriptModel([
+            _subagent_call(profile="relay", task="delegate again", handoff="none"),
+            _subagent_call(profile="harbor", task="investigate", handoff="none"),
+            _child_stream(fail=True),
+            _subagent_call("task_complete", summary="Recovered the delegated investigation."),
+            _subagent_call("task_complete", summary="Finished the delegated investigation."),
+            ModelResponse(content="Relay finished.", tool_calls=[]),
+            _final(),
+        ]), env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
+        agents_dir=agents, config=AgentConfig(stream_subagent_deltas=True, enable_verifier=False),
+        model_delta_consumer=consume,
+    )
+    assert result.success
+    [discard] = [d for d in seen if d.kind == "discard"]
+    assert discard.source is not None and discard.agent == "harbor" and discard.depth == 2
+    assert {d.source for d in seen if d.text.startswith("child")} == {discard.source}
+    relay = [d for d in seen if d.agent == "relay"]
+    assert "".join(d.text for d in relay) == "Relay finished."
+    assert {d.depth for d in relay} == {1}
+    assert {d.source for d in relay}.isdisjoint({discard.source, None})

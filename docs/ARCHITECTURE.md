@@ -109,6 +109,28 @@ A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
 
+## SDK child live deltas
+
+The SDK's `SoftwareAgent.run` and `Conversation.run` accept
+`subagent_deltas=True` with `on_delta`. It is off by default.
+`AgentConfig.stream_subagent_deltas` carries this choice into `prepare_run`,
+which sets `SubagentRunner.parent_delta_consumer` only on runners it constructs;
+caller-supplied runners retain their own consumer policy. Ordinary child calls
+stream through that consumer with `LiveDelta.source` (child session id), `agent`
+(resolved child profile) and `depth`. The run's own calls retain `None` labels
+and depth zero. Editing workers use their candidate id as the source.
+
+Each child uses its own config and enables forwarding to nested runners. Labels
+are added only when `source is None`, preserving the innermost child's identity.
+A labelled `discard` invalidates only that source's current call. Concurrent
+editing workers forward as fragments arrive: order is preserved within each
+source, while sources interleave by scheduling. Consumers must group by source.
+Consumer errors detach for that model call and are recorded in the child's log;
+observation does not alter child context or parent messages. Terminal and
+dashboard consumers defensively ignore all labelled deltas, including discard,
+before changing preview or spinner state. Consult and collection children do
+not forward deltas.
+
 ## The run path
 
 A task flows through these in order. Following this list top to bottom is the
