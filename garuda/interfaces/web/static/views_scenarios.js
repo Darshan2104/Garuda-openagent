@@ -198,9 +198,13 @@ function requestStarterPreview(state, remedy) {
     body.remedy = "build-and-check";
     body.checks = el("starter-remedy-checks").value.split(/\r?\n/).filter(function (v) { return /\S/.test(v); });
   }
+  var submitted = submittedViewInputs(el("starter-form"));
+  var submittedRemedy = remedy ? submittedViewInputs(el("starter-remedy-checks").parentElement) : function () {};
   el("starter-preview").innerHTML = '<p class="loading">Compiling preview…</p>';
   return api("/api/scenarios/preview", { method: "POST", body: body }).then(function (data) {
     if (STATE.starterView !== state || revision !== state.revision) return;
+    submitted();
+    submittedRemedy();
     state.preview = data;
     state.previewInputs = body.inputs;
     el("starter-preview").innerHTML = starterPreviewHtml(data, state);

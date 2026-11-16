@@ -116,6 +116,11 @@ var fmt = {
     if (value === null || value === undefined) return "—";
     return String(value);
   },
+  /* Keeps the end of a path, which is the part that tells two workspaces apart. */
+  tail: function (text, limit) {
+    text = text === null || text === undefined ? "" : String(text);
+    return text.length > limit ? "…" + text.slice(text.length - limit + 1) : text;
+  },
   truncate: function (text, limit) {
     text = text === null || text === undefined ? "" : String(text);
     return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
@@ -172,15 +177,17 @@ Poller.prototype.stop = function () {
 function initTheme() {
   var stored = localStorage.getItem("garuda_theme");
   if (stored) document.documentElement.setAttribute("data-theme", stored);
-  el("theme-toggle").addEventListener("click", function () {
-    var current = document.documentElement.getAttribute("data-theme");
-    if (!current) {
-      current = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
-    var next = current === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem("garuda_theme", next);
-  });
+  el("theme-toggle").addEventListener("click", toggleTheme);
+}
+
+function toggleTheme() {
+  var current = document.documentElement.getAttribute("data-theme");
+  if (!current) {
+    current = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  var next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("garuda_theme", next);
 }
 
 function tokenRequiredPanel() {

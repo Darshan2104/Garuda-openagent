@@ -126,7 +126,16 @@ body {
 }
 .badge.rw { color: var(--warn); border-color: var(--warn); }
 
-.nav { display: flex; gap: 4px; margin-right: auto; }
+.nav { display: flex; gap: 4px; margin-right: auto; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.nav-link { white-space: nowrap; }
+
+/* Narrow windows: the nav scrolls sideways instead of wrapping into the page, and the
+ * version label gives up its space first. */
+@media (max-width: 900px) {
+  .topbar { gap: 12px; padding: 0 12px; }
+  .meta#version-label { display: none; }
+  .view { padding: 14px 12px; }
+}
 .nav-link {
   color: var(--muted);
   text-decoration: none;
@@ -178,6 +187,7 @@ h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
 .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .stack { display: grid; gap: 4px; margin-top: 8px; }
 #rt-table tr.selected td { background: var(--surface-2); }
+#rt-detail { margin: 14px 0; }
 .card label { display: grid; gap: 4px; margin-top: 8px; font-size: 13px; }
 .card input { width: 100%; box-sizing: border-box; }
 .grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
@@ -573,8 +583,9 @@ input[type="text"], input[type="url"] {
   flex: 1;
 }
 
-.btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
-.btn-primary:hover { filter: brightness(1.08); }
+/* Two classes, so this wins over the plain `.btn` rule declared further down. */
+.btn.btn-primary, .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+.btn.btn-primary:hover, .btn-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 
 /* --- chat --- */
@@ -675,6 +686,74 @@ label.btn { display: inline-flex; align-items: center; }
 }
 .btn:hover { border-color: var(--muted); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* A link styled as a button reads as a button: no underline, same box as <button>. */
+a.btn { display: inline-flex; align-items: center; text-decoration: none; line-height: 1.5; }
+
+/* --- stat tiles (usage) --- */
+.tile {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 16px; min-width: 0;
+}
+.tile-label {
+  font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.tile-value {
+  font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin-top: 6px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+#usage-tiles { margin: 10px 0; }
+.view .card + .card { margin-top: 14px; }
+.grid > .card + .card { margin-top: 0; }
+.page-head .spacer { margin-left: auto; }
+
+/* A chart that only has a handful of days must not grow taller than the page. */
+#daily-card svg { max-height: 220px; }
+
+/* Untyped inputs (the runtimes ops cards) get the same box as every other field. */
+input:not([type]), input[type="number"] {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 6px 9px; font: 13px var(--mono);
+}
+input:not([type]):focus, input[type="number"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* --- nav: pending-approvals count and keyboard help --- */
+.nav-count {
+  display: inline-block; min-width: 17px; margin-left: 5px; padding: 1px 5px;
+  border-radius: 9px; background: var(--err); color: var(--surface);
+  font: 10px/1.5 var(--mono); text-align: center; vertical-align: 1px;
+}
+.nav-count[hidden] { display: none; }
+kbd {
+  font: 11px/1 var(--mono); padding: 2px 5px; border-radius: 3px;
+  border: 1px solid var(--border); border-bottom-width: 2px; background: var(--surface-2);
+}
+.keys-help { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.keys-help[hidden] { display: none; }
+.keys-help .card { min-width: 300px; max-width: 90vw; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); }
+.keys-help table td { white-space: normal; border-bottom: 0; padding: 5px 8px; }
+.keys-help tbody tr { cursor: default; }
+.keys-help tbody tr:hover { background: none; }
+
+/* --- session filters --- */
+.state-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.state-chip {
+  font: 11px/1 var(--mono); padding: 5px 8px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+}
+.state-chip:hover { color: var(--text); border-color: var(--muted); }
+.state-chip.active { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+tr[hidden] { display: none; }
+.filter-empty { padding: 24px; text-align: center; color: var(--muted); }
+
+/* --- setup diagnostics: grouped, levels summarized --- */
+.diagnostics { list-style: none; margin: 0; padding: 0; }
+.diagnostics > li, .diag-group-body > li { padding: 7px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.diagnostics > li:first-child { border-top: 0; }
+.diag-group > summary { cursor: pointer; list-style: revert; }
+.diag-group-body { list-style: none; margin: 6px 0 0 18px; padding: 0; max-height: 360px; overflow-y: auto; }
+.diag-summary { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
 
 .toast {
   position: fixed;

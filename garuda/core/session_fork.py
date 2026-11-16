@@ -18,6 +18,8 @@ from garuda.core.session_records import (
 from garuda.core.sessions import message_from_dict
 from garuda.types import Message, Role
 
+INHERITED_CONTEXT_KEY = "context_fork_inherited"
+
 CONTEXT_REWIND_NOTICE = (
     "Context rewind only: filesystem and processes were not restored. "
     "All inherited candidate and verification evidence is stale; recheck the current workspace. "
@@ -178,6 +180,8 @@ def prepare_context_fork(reader, session_id: str, fork_at: int, *, bounded_reads
                               or segments[-1].get("runtime_id") != "native"))):
         raise ValueError("context fork requires a terminal native source without pending ownership or quarantine")
     messages, effective_at = _complete_prefix(_messages(snapshot["messages.json"]), fork_at)
+    for message in messages:
+        message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": session_id, "evidence": "stale"}
     state = parse_json(snapshot["state.json"]) if snapshot["state.json"] is not None else {}
     source_files = _digests(snapshot)
     digest = hashlib.sha256(json.dumps(source_files, sort_keys=True).encode()).hexdigest()

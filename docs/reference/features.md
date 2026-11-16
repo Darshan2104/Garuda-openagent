@@ -52,7 +52,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
 | Session record | Every run saved with its events and state | `garuda sessions show latest` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
-| Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
+| Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inherited history excluded from completion evidence, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
 | Resume | Continue a conversation | `garuda run --resume latest -t "…"` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Names and briefs | Hand one run's outcome to another | `garuda run -t "… @fix-tests …"` | [Level 2](../use-cases/change-code.md#name-a-session-and-build-on-it) |
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
@@ -76,7 +76,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Profile migration | Move an old profile to version 1 | `garuda agent migrate PATH` | [Level 3](../use-cases/customize.md#create-your-own-agent) |
 | Structured output | A JSON result checked against a schema | `output.schema` in an agent | [Level 3](../use-cases/customize.md#get-structured-json-back) |
 | Typed child results | Accepted schema output survives ordinary subagent handoff, inline or by verified buffer reference; post-tool hooks cannot replace its validated facts | `invoke_subagent` with a schema-bound child | [Level 3](../use-cases/customize.md#delegate-a-typed-result) |
-| Isolated editing workers | Opt-in sequential local native children edit detached repositories; checked integration refuses stale bases; session-scoped inventory, removable empty leftovers, private storage under any umask and pruned retired receipts preserve uncertainty during automatic cleanup and explicit discard | Programmatic `LocalEditingWorkers`, `editing_worker: true`, `integrate_editing_worker`, `sessions cleanup-workers`, `sessions discard-worker` | [Level 5](../use-cases/teams.md#isolate-a-native-editing-worker) |
+| Isolated editing workers | Opt-in sequential local native children edit detached repositories; checked integration refuses stale bases; capacity-refused admissions settle without quarantine; session-scoped inventory, removable empty leftovers, private storage under any umask and pruned retired receipts preserve uncertainty during automatic cleanup and explicit discard | Programmatic `LocalEditingWorkers`, `editing_worker: true`, `integrate_editing_worker`, `sessions cleanup-workers`, `sessions discard-worker` | [Level 5](../use-cases/teams.md#isolate-a-native-editing-worker) |
 | Memory notes | The agent proposes; you accept | `garuda memory review` | [Level 3](../use-cases/customize.md#let-the-agent-propose-notes-to-remember) |
 | Reviewed note retrieval | Project-scoped, bounded search with evidence and freshness labels | `garuda memory search` | [Retrieve notes](../use-cases/customize.md#retrieve-reviewed-notes-with-source-evidence) |
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
@@ -117,7 +117,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Dashboard | Runs, sessions, approvals, setup, chat | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
+| Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
 | Failed-call usage | Known retry and partial-stream usage survives once, with unknown coverage | Inspect `response.attempt_usage` or error attributes | [Level 2](../use-cases/change-code.md#inspect-retry-and-failed-call-usage) |
 | Usage ledger | Calls, tokens and known cost by model and role | `garuda web --read-only` → Usage | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | Provider limits | Login and quota readings with their source | `garuda web --read-only` → Providers | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |

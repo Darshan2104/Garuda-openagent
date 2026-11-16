@@ -61,7 +61,7 @@ function sessionRowHtml(row) {
     "<td>" + esc(identityText(row)) + "</td>" +
     "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + "</td>" +
     "<td>" + esc(queueText(row.queue)) + "</td>" +
-    "<td>" + esc(row.workspace ? fmt.truncate(row.workspace, 36) : "—") + (row.branch ? " @ " + esc(row.branch) : "") + "</td>" +
+    '<td title="' + esc(row.workspace || "") + '">' + esc(row.workspace ? fmt.tail(row.workspace, 36) : "—") + (row.branch ? " @ " + esc(row.branch) : "") + "</td>" +
     '<td class="num">' + esc(row.usage) + " / " + esc(row.cost) + "</td>" +
     '<td class="num">' + (row.approvals_pending ? '<span class="pill running">' + row.approvals_pending + " waiting</span>" : "—") + "</td>" +
     "<td>" + esc(fmt.when(row.updated_at)) + "</td>" +
@@ -78,20 +78,63 @@ function sessionsView() {
              "<p>Start one with <code>garuda run --bg -t &quot;your task&quot;</code>.</p></div>");
       return;
     }
+    var counts = {};
+    rows.forEach(function (r) { counts[r.label] = (counts[r.label] || 0) + 1; });
+    var filter = STATE.filters.sessions || { q: "", label: "" };
+    if (filter.label && !counts[filter.label]) filter.label = "";
     render(
-      '<div class="page-head"><h1>Sessions</h1><span class="meta">' + rows.length + "</span>" +
+      '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">' + rows.length + "</span>" +
       '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
+      '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
+      '<div class="state-chips" id="sessions-states">' +
+      '<button type="button" class="state-chip" data-label="">all ' + rows.length + "</button>" +
+      Object.keys(counts).sort().map(function (label) {
+        return '<button type="button" class="state-chip" data-label="' + esc(label) + '">' + esc(label) + " " + counts[label] + "</button>";
+      }).join("") + "</div></div>" +
       '<div class="table-wrap"><table class="table" id="sessions-table"><thead><tr>' +
       "<th>Session</th><th>State</th><th>Runtime · role · model</th><th>Outcome / verification</th>" +
       "<th>Queue</th><th>Workspace</th><th>Usage / cost</th><th>Approvals</th><th>Updated</th>" +
-      "</tr></thead><tbody>" + rows.map(sessionRowHtml).join("") + "</tbody></table></div>"
+      "</tr></thead><tbody>" + rows.map(sessionRowHtml).join("") + "</tbody></table>" +
+      '<div class="filter-empty" id="sessions-none" hidden>No session matches this filter.</div></div>'
     );
     el("sessions-refresh").addEventListener("click", sessionsView);
+    STATE.filters.sessions = filter;
+    applySessionFilter();
+    el("sessions-search").addEventListener("input", function (event) {
+      filter.q = event.target.value; applySessionFilter();
+    });
+    el("sessions-states").addEventListener("click", function (event) {
+      var button = event.target.closest(".state-chip");
+      if (!button) return;
+      filter.label = button.getAttribute("data-label"); applySessionFilter();
+    });
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load sessions</div>' +
            '<div class="notice-body">' + esc(err.message) + "</div></div>");
   });
+}
+
+/* Filtering hides rows rather than re-rendering them, so every row the API returned stays in
+ * the table and the filter survives a Refresh (it lives in STATE.filters). */
+function applySessionFilter() {
+  var filter = STATE.filters.sessions || { q: "", label: "" };
+  var needle = filter.q.trim().toLowerCase();
+  var shown = 0;
+  var rows = document.querySelectorAll("#sessions-table tr.session-row");
+  Array.prototype.forEach.call(rows, function (tr) {
+    var match = (!filter.label || tr.getAttribute("data-label") === filter.label) &&
+      (!needle || (tr.textContent + " " + tr.getAttribute("data-session") + " " + (tr.cells[5].title || "")).toLowerCase().indexOf(needle) >= 0);
+    tr.hidden = !match;
+    if (match) shown += 1;
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("#sessions-states .state-chip"), function (chipNode) {
+    chipNode.classList.toggle("active", chipNode.getAttribute("data-label") === filter.label);
+  });
+  var count = el("sessions-count");
+  if (count) count.textContent = shown === rows.length ? String(rows.length) : shown + " of " + rows.length;
+  var none = el("sessions-none");
+  if (none) none.hidden = shown !== 0;
 }
 
 function artifactText(ref) {
@@ -324,6 +367,7 @@ function answerInboxApproval(item, allow) {
   }).then(function () {
     result.textContent = "answer recorded — the broker decides";
     item.setAttribute("data-state", "recorded");
+    if (typeof refreshInboxBadge === "function") refreshInboxBadge();
   }).catch(function (err) {
     // Stale page, an earlier answer, an expired request: say so and let them reload.
     result.textContent = err.message + " (" + (err.code || err.status) + ")";
@@ -597,15 +641,49 @@ function setupConsultsHtml(k) {
     '<div class="table-wrap"><table class="table" id="consult-adapters"><thead><tr><th>Adapter</th><th>Forwards MCP</th><th>Permission identity</th><th>Pauses workspace</th><th>Tool</th></tr></thead><tbody>' + adapters + "</tbody></table></div></div>";
 }
 
+var DIAG_LEVELS = ["error", "warning", "info"];
+
+function diagnosticHtml(d) {
+  return '<li class="diag" data-code="' + esc(d.code) + '" data-level="' + esc(d.level) + '">' +
+    '<span class="pill ' + (d.level === "error" ? "failed" : (d.level === "warning" ? "running" : "unknown")) + '">' + esc(d.level) + "</span> " +
+    "<strong>" + esc(d.code) + "</strong> " + esc(d.message) +
+    (d.fix ? '<div class="stat-sub">Fix: <code>' + esc(d.fix) + "</code> " + copyButtonHtml(d.fix) + "</div>" : "") + "</li>";
+}
+
+/* Worst level first, and a code that repeats (one stale lease per crashed run, say) folds into
+ * one expandable group, so a single error is not buried under a hundred identical warnings.
+ * Every diagnostic is still in the DOM, with its own fix and Copy button. */
+function setupDiagnosticsHtml(list) {
+  var rank = function (level) { var i = DIAG_LEVELS.indexOf(level); return i < 0 ? DIAG_LEVELS.length : i; };
+  var groups = [];
+  var byKey = {};
+  list.forEach(function (d) {
+    var key = d.level + "\u0000" + d.code;
+    if (!byKey[key]) { byKey[key] = { level: d.level, code: d.code, items: [] }; groups.push(byKey[key]); }
+    byKey[key].items.push(d);
+  });
+  groups.sort(function (a, b) { return rank(a.level) - rank(b.level); });
+  var counts = {};
+  list.forEach(function (d) { counts[d.level] = (counts[d.level] || 0) + 1; });
+  var summary = list.length
+    ? '<div class="diag-summary" id="diag-summary">' + Object.keys(counts).sort(function (a, b) { return rank(a) - rank(b); }).map(function (level) {
+        return '<span class="chip ' + (level === "error" ? "chip-bad" : "chip-off") + '">' + esc(counts[level]) + " " + esc(level) + "</span>";
+      }).join("") + "</div>"
+    : '<p class="stat-sub">Nothing to report.</p>';
+  var items = groups.map(function (g) {
+    if (g.items.length <= 3) return g.items.map(diagnosticHtml).join("");
+    return '<li class="diag-group" data-code="' + esc(g.code) + '"><details' + (g.level === "error" ? " open" : "") + "><summary>" +
+      '<span class="pill ' + (g.level === "error" ? "failed" : (g.level === "warning" ? "running" : "unknown")) + '">' + esc(g.level) + "</span> " +
+      "<strong>" + esc(g.code) + "</strong> × " + g.items.length + ' <span class="stat-sub">' + esc(fmt.truncate(g.items[0].message, 90)) + "</span>" +
+      '</summary><ul class="diag-group-body">' + g.items.map(diagnosticHtml).join("") + "</ul></details></li>";
+  }).join("");
+  return summary + '<ul class="diagnostics" id="setup-diagnostics">' + items + "</ul>";
+}
+
 function setupView() {
   render('<div class="loading">Loading setup…</div>');
   return api("/api/setup").then(function (s) {
-    var diagnostics = s.diagnostics.map(function (d) {
-      return '<li class="diag" data-code="' + esc(d.code) + '" data-level="' + esc(d.level) + '">' +
-        '<span class="pill ' + (d.level === "error" ? "failed" : (d.level === "warning" ? "running" : "unknown")) + '">' + esc(d.level) + "</span> " +
-        "<strong>" + esc(d.code) + "</strong> " + esc(d.message) +
-        (d.fix ? '<div class="stat-sub">Fix: <code>' + esc(d.fix) + "</code> " + copyButtonHtml(d.fix) + "</div>" : "") + "</li>";
-    }).join("");
+    var diagnostics = setupDiagnosticsHtml(s.diagnostics);
     var roles = s.roles.map(function (r) {
       return '<tr class="role-row" data-role="' + esc(r.role) + '"><td>' + esc(r.role) + "</td><td>" + esc(r.harness) + "</td><td>" +
         esc(r.model_id || "—") + "</td><td>" + esc(r.effort || "—") + "</td><td>" +
@@ -623,7 +701,7 @@ function setupView() {
     render(
       '<div id="setup-root"><div class="page-head"><h1>Setup</h1><span class="meta">read-only</span></div>' +
       '<p class="stat-sub">Files: ' + esc(s.files.user) + " (yours), " + esc(s.files.project) + " (this project).</p>" +
-      '<div class="card"><h2>Diagnostics</h2><ul class="diagnostics" id="setup-diagnostics">' + diagnostics + "</ul></div>" +
+      '<div class="card"><h2>Diagnostics</h2>' + diagnostics + "</div>" +
       '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Permissions / writes</th><th>Harness mode</th><th>Agent</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
       setupAgentsHtml(s.agents) + setupConsultsHtml(s.consults) +

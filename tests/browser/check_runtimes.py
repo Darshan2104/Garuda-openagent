@@ -16,7 +16,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8895/")
 RO_BASE = os.environ.get("GARUDA_CHECK_RO_BASE", "")
@@ -69,6 +69,12 @@ with sync_playwright() as p:
     check("configured offline runtime listed", "offline" in body_text)
     check("disabled runtime listed", "disabled" in body_text)
 
+    # A clean board still reloads through the shortcut.
+    with page.expect_request(lambda r: r.url.endswith("/api/runtimes")):
+        page.locator("h1").click()
+        page.keyboard.press("r")
+    expect(page.locator("#rt-table")).to_be_visible(timeout=15000)
+
     def answered(selector, before):
         """Wait for ``selector`` to change: discovery runs per request, so a fixed wait races it."""
         for _ in range(75):
@@ -83,6 +89,34 @@ with sync_playwright() as p:
     answered("#rt-detail", before)
     detail = page.text_content("#rt-detail") or ""
     check("detail shows capabilities", "capabilities" in detail.lower(), detail[:80])
+    expect(page.locator("#rt-handoff-target")).to_have_value("native")
+    for runtime in ("offline", "native"):
+        before = page.text_content("#rt-detail") or ""
+        page.click(f'#rt-table a[data-rt="{runtime}"]')
+        answered("#rt-detail", before)
+        expect(page.locator("#rt-handoff-target")).to_have_value(runtime)
+
+    # User edits survive runtime selection and a reload key after focus leaves a field.
+    custom_target = 'custom café <runtime> "target"'
+    page.fill("#rt-handoff-target", custom_target)
+    for field in ("rt-handoff-session", "rt-diff-session", "rt-recover-session"):
+        page.fill("#" + field, SID)
+    before = page.text_content("#rt-detail") or ""
+    page.click('#rt-table a[data-rt="offline"]')
+    answered("#rt-detail", before)
+    page.locator("h1").click()
+    page.keyboard.press("r")
+    page.wait_for_load_state("networkidle")
+    expect(page.locator("#rt-handoff-target")).to_have_value(custom_target)
+    for field in ("rt-handoff-session", "rt-diff-session", "rt-recover-session"):
+        expect(page.locator("#" + field)).to_have_value(SID)
+
+    # Clearing an automatic target is also an edit and must survive selection.
+    page.fill("#rt-handoff-target", "")
+    before = page.text_content("#rt-detail") or ""
+    page.click('#rt-table a[data-rt="native"]')
+    answered("#rt-detail", before)
+    expect(page.locator("#rt-handoff-target")).to_have_value("")
 
     # --- handoff preview then prepare ---------------------------------------
     page.fill("#rt-handoff-session", SID)
@@ -108,6 +142,9 @@ with sync_playwright() as p:
         answered("#rt-handoff-result", before)
         refused = page.text_content("#rt-handoff-result") or ""
         check(f"preview rejects {target}", "request failed" in refused.lower(), refused[:120])
+        page.keyboard.press("r")  # focus remains on the Preview button
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("#rt-handoff-target")).to_have_value(target)
 
     # --- diff separates session work from pre-existing dirt ------------------
     page.fill("#rt-diff-session", SID)
@@ -131,6 +168,35 @@ with sync_playwright() as p:
     check("recover run reports", "resume" in recovered, recovered[:100])
 
     page.screenshot(path=str(SHOTS / "runtimes.png"))
+
+    # Successful submission releases only its fields; the failed handoff is still dirty.
+    page.keyboard.press("r")
+    page.wait_for_load_state("networkidle")
+    expect(page.locator("#rt-handoff-target")).to_have_value("missing-runtime")
+    page.fill("#rt-handoff-target", "native")
+    before = page.text_content("#rt-handoff-result") or ""
+    page.click("#rt-handoff-preview")
+    answered("#rt-handoff-result", before)
+    with page.expect_request(lambda r: r.url.endswith("/api/runtimes")):
+        page.keyboard.press("r")
+    expect(page.locator("#rt-handoff-session")).to_have_value("", timeout=15000)
+
+    # A successful response must not clear newer edits made while it was pending.
+    held = []
+    page.route("**/api/runs/*/diff", lambda route: held.append(route))
+    page.fill("#rt-diff-session", SID)
+    with page.expect_request(lambda r: r.url.endswith("/diff")):
+        page.click("#rt-diff-load")
+    page.fill("#rt-diff-session", "newer-draft")
+    assert held
+    with page.expect_response(lambda r: r.url.endswith("/diff")):
+        held.pop().continue_()
+    expect(page.locator("#rt-diff-result")).to_contain_text("work.txt")
+    page.locator("h1").click()
+    page.keyboard.press("r")
+    page.wait_for_load_state("networkidle")
+    expect(page.locator("#rt-diff-session")).to_have_value("newer-draft")
+    page.unroute("**/api/runs/*/diff")
 
     # --- read-only dashboard disables mutating controls -----------------------
     # NOTE: a different port is a different origin with its own session
