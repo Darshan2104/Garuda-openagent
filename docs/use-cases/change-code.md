@@ -344,6 +344,14 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   any such cost is unknown: one unknown-outcome failure is enough. Use
   `--max-run-tokens` to bound continued work. If a
   reservation cannot be checkpointed, the call is refused before sending.
+- A transient failure retried successfully still costs tokens. For example,
+  an unreported 500 followed by a success reporting 20 prompt and 4 output
+  tokens charges 44 tokens: 24 reported plus 20 for the failed request. Each
+  attempt without usage, except a definite failed rejection, adds the largest
+  reported prompt size in the call, or the reservation estimate when unavailable. Its cost
+  remains unknown, so a dollar-only cap stops further calls; include
+  `--max-run-tokens` to continue within a token budget. This is a lower bound:
+  unreported output from a failed stream is not counted.
 
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.

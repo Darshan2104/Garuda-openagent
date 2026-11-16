@@ -30,6 +30,11 @@ An interrupted call or any other failure with no reported usage is charged its
 reservation estimate with unknown cost, retaining interrupted or unknown-outcome
 provenance. Calls that were never sent cannot reliably be distinguished, so this
 can overcharge. Usage the exception carries is charged like any other report.
+For calls with reported usage or a successful completion, tokens are summed per
+attempt. Each attempt without usage, except a definite failed rejection, adds the
+largest reported prompt size in that call, or its reservation estimate if unavailable,
+with unknown cost. This lower bound excludes unreported generated output.
+The whole-call failure estimate above is never charged these extras too.
 
 **A completed call with no token fields is charged its estimate.** A provider
 that returns no usage at all (a stream whose server ignored ``include_usage``)
@@ -117,6 +122,8 @@ class SpendGate:
     prior_spend_unknown: bool = False
     failed_without_usage: int = 0
     estimated_token_calls: int = 0
+    # Retain the checkpoint key; it also counts successful attempts without usage.
+    unreported_failed_attempts: int = 0
     calls: int = 0
     refused: int = 0
     warned: bool = False
@@ -185,11 +192,18 @@ class SpendGate:
                 return "dollars", (f"run-tree dollar budget ${self.max_cost_usd:g} reached "
                                    f"(${self.settled_cost_usd:.6f} settled)")
             if self.cost_unknown_calls and self.max_tokens is None:
-                if (self.interrupted_calls or self.unknown_outcome_calls) and not self.unpriced_model:
+                if (self.interrupted_calls or self.unknown_outcome_calls
+                        or self.unreported_failed_attempts) and not self.unpriced_model:
+                    clauses = []
+                    if self.interrupted_calls:
+                        clauses.append(f"{self.interrupted_calls} interrupted call(s) have unknown cost")
+                    if self.unknown_outcome_calls:
+                        clauses.append(f"{self.unknown_outcome_calls} unknown-outcome call(s) have unknown cost")
+                    if self.unreported_failed_attempts:
+                        clauses.append(f"{self.unreported_failed_attempts} attempt(s) without reported usage")
                     return "cost_unknown", (
                         f"run-tree dollar budget ${self.max_cost_usd:g} cannot be enforced: "
-                        f"{self.interrupted_calls} interrupted call(s) and "
-                        f"{self.unknown_outcome_calls} unknown-outcome call(s) have unknown cost; "
+                        f"{'; '.join(clauses)}; "
                         "use --max-run-tokens to bound this run")
                 if self.prior_spend_unknown and not self.unpriced_model:
                     return "cost_unknown", (
@@ -207,7 +221,8 @@ class SpendGate:
     async def settle(self, reservation: SpendReservation, usage: dict | None, *,
                      failed: bool = False, rejected: bool = False, interrupted: bool = False,
                      model: str | None = None,
-                     cost_partial: bool = False) -> dict | None:
+                     cost_partial: bool = False, attempt_tokens: int = 0,
+                     estimated_attempts: int = 0, estimated_attempt_tokens: int = 0) -> dict | None:
         """Release ``reservation`` and charge reported usage; returns a warning once.
 
         ``failed`` marks a call that raised; ``usage`` is then whatever the
@@ -218,6 +233,9 @@ class SpendGate:
         attempts (a retry, a stream fallback) used tokens that some attempt
         reported no price for: its known cost is charged and it still counts as
         unknown cost, so one priced attempt cannot make the whole call look priced.
+        ``attempt_tokens`` preserves per-attempt token totals. Unreported non-rejected
+        attempts add ``estimated_attempt_tokens`` and unknown cost once per call,
+        except when the whole-call failure branch already charges its estimate.
         """
         tokens = usage_tokens(usage)
         cost = usage.get("cost_usd") if isinstance(usage, dict) else None
@@ -238,19 +256,27 @@ class SpendGate:
                     else:
                         self.unknown_outcome_calls += 1
             else:
-                if not failed and not reports_tokens(usage):
+                estimated = bool(estimated_attempts)
+                if attempt_tokens:
+                    tokens = attempt_tokens
+                elif not failed and not estimated_attempts and not reports_tokens(usage):
                     # Completed without any token count: the call consumed
                     # tokens nobody reported, so its estimate stands in.
                     tokens = reservation.tokens
+                    estimated = True
+                if estimated:
                     self.estimated_token_calls += 1
-                self.settled_tokens += tokens
+                self.unreported_failed_attempts += estimated_attempts
+                self.settled_tokens += tokens + estimated_attempt_tokens
                 if isinstance(cost, (int, float)):
                     self.settled_cost_usd = round(self.settled_cost_usd + float(cost), 8)
-                if not isinstance(cost, (int, float)) or cost_partial:
+                unpriced = not isinstance(cost, (int, float)) or cost_partial
+                if unpriced or estimated_attempts:
                     # Reported usage without a price: spend happened and its price
                     # is unknown — never zero.
                     self.cost_unknown_calls += 1
-                    self.unpriced_model = self.unpriced_model or model
+                    if unpriced:
+                        self.unpriced_model = self.unpriced_model or model
             if self.checkpoint is not None:
                 try:
                     self.checkpoint(self.snapshot())
@@ -275,7 +301,7 @@ class SpendGate:
         """
         fields = ("settled_tokens", "settled_cost_usd", "cost_unknown_calls")
         counters = ("reserved_tokens", "reserved_calls", "interrupted_calls", "unknown_outcome_calls",
-                    "estimated_token_calls")
+                    "estimated_token_calls", "unreported_failed_attempts")
         if not isinstance(snapshot, dict) or not all(
                 isinstance(snapshot.get(k), (int, float)) and not isinstance(snapshot.get(k), bool)
                 and snapshot[k] >= 0 for k in fields) or not all(
@@ -292,6 +318,7 @@ class SpendGate:
         self.interrupted_calls += snapshot.get("interrupted_calls", 0)
         self.unknown_outcome_calls += snapshot.get("unknown_outcome_calls", 0)
         self.estimated_token_calls += snapshot.get("estimated_token_calls", 0)
+        self.unreported_failed_attempts += snapshot.get("unreported_failed_attempts", 0)
         inherited = {"source": "spend_gate", "inherited_tokens": int(snapshot["settled_tokens"]),
                      "inherited_cost_usd": round(float(snapshot["settled_cost_usd"]), 8),
                      "inherited_cost_unknown_calls": int(snapshot["cost_unknown_calls"])}
@@ -331,6 +358,7 @@ class SpendGate:
             "unpriced_model": self.unpriced_model,
             "failed_without_usage": self.failed_without_usage,
             "estimated_token_calls": self.estimated_token_calls,
+            "unreported_failed_attempts": self.unreported_failed_attempts,
             "calls": self.calls,
             "refused": self.refused,
         }
