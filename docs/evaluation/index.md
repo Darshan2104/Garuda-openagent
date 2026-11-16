@@ -105,6 +105,74 @@ a guard. This is deterministic contract evidence only. A single run or pair neve
 establishes uplift. Optional live-model experiments are outside this slice and
 must be separately opted into with explicit spend/turn/time caps; tests never run them.
 
+## Deterministic editing-worker fan-out
+
+Opt-in, provider-free measurement for [#384](https://github.com/Darshan2104/Garuda-openagent/issues/384):
+
+```bash
+python -m garuda.eval.editing_fanout --delay 0.05 --out editing-fanout.json
+```
+
+This is a **deterministic fixture with scripted delays, not a latency or quality
+claim**. Scripts make two calls per child, each sleeping for the configured delay
+and reporting 120 invented tokens and zero dollars. No provider client is
+constructed; no provider calls or charges occur. The root `SpendGate` settles
+those synthetic usage reports through the normal native loop.
+
+Four disjoint file rewrites and four same-file rewrites each run in fresh
+temporary repositories. N=1 integrates after each batch of one, so the next
+child starts from a fresh parent base. N=4 launches one batch of four, waits for
+all children to settle, then attempts integration in request order. The whole
+parent snapshot is the precondition: after the first integration, even disjoint
+siblings refuse with `integration.stale_base`. No rebase or retry is attempted.
+For the overlapping scenario N=1 ends with the fourth rewrite; N=4 ends with
+the first. These are different delivered outcomes, so timing ratios would not
+compare equivalent completed work.
+
+One run on 2026-11-16, Python 3.12.0, macOS 26.7.1 arm64, 0.05 s per call:
+
+| Edits | N | Wall (s) | Ready / refused / quarantined | Integrated / stale-base | Integration wait sum (s) | Integration duration sum (s) | Discarded candidates / tokens / worker-seconds |
+|---|---:|---:|---|---|---:|---:|---|
+| Disjoint | 1 | 7.422 | 4 / 0 / 0 | 4 / 0 | 0.018 | 3.477 | 0 / 0 / 0 |
+| Disjoint | 4 | 4.223 | 4 / 0 / 0 | 1 / 3 | 4.698 | 2.214 | 3 / 720 / 3.765 |
+| Overlapping | 1 | 5.840 | 4 / 0 / 0 | 4 / 0 | 0.019 | 3.119 | 0 / 0 / 0 |
+| Overlapping | 4 | 4.204 | 4 / 0 / 0 | 1 / 3 | 4.432 | 2.019 | 3 / 720 / 4.185 |
+
+Every row has **4 launches, 8 scripted calls, 960 settled scripted tokens,
+zero remaining reservations, and $0 provider spend**. Per-candidate JSON rows
+retain the request order, typed outcome, observed usage (240 tokens each),
+integration state/code, and timings. Each candidate is ready before its own
+integration attempt; the separate integration refusals do not change that
+creation outcome.
+
+Wall time covers first batch dispatch through the last integration result,
+including native execution, Git snapshots, ownership operations, checks and
+retirement on that path. It excludes fixture setup, parent lease acquisition and
+release, and final temporary-directory cleanup. Integration wait is measured
+from a child's settled-ready event to its integration attempt, including the
+batch barrier and earlier integrations. It is coordinator wait, not lock wait:
+the service refuses busy integration instead of queueing it. Summed waits and
+worker times can overlap and exceed wall time. Integration duration includes
+checks/publication/retirement for winners and refusal processing for losers.
+Discarded work means unused stale candidates, their observed scripted tokens,
+and their summed admission-to-settled-ready time; it does not measure rerun cost
+or final directory deletion. The overlapping N=4 case exposes this conflict
+overhead; conservative whole-base validation imposes it on disjoint siblings too.
+
+The fixture substitutes only Docker check dispatch (inspecting actual materialized
+candidate files) and the current process's start identity, as the worker tests
+do for sandboxes without `/bin/ps`. Real native children, isolated repositories,
+lease/capacity records, permissions, snapshot revalidation and patch application
+remain in use. This is not live Docker, OS identity, provider or non-local backend
+validation. Run it in a dedicated process: fixture patches/settings are
+process-wide and temporary stores isolate it from user sessions and configuration.
+The report command exits nonzero for unexpected outcomes. The regression test
+checks outcomes, spend settlement and serialized dispatch, with no speed assertion:
+
+```bash
+pytest tests/test_eval_editing_fanout.py -q -p no:cacheprovider -p no:rerunfailures
+```
+
 ## Dual-model evaluation
 
 The optional collection role can gather bounded read-only evidence while the

@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)
+
+The opt-in `garuda.eval.editing_fanout` command measures four disjoint and four
+overlapping scripted edits as sequential fresh-base N=1 batches and one N=4
+batch. It records outcomes, wall time, shared SpendGate settlement, integration
+wait and stale-base discarded work without constructing a provider client.
+Docker check dispatch and current-process start identity are fixture substitutes;
+native child ownership, Git snapshots, permissions and integration stay real.
+Runtime code is unchanged. The whole-parent-base rule admits four sequential
+integrations but only one sibling from a shared base, even for disjoint edits.
+The published numbers are deterministic contract evidence with scripted delays,
+not latency or quality claims. Model-driven fan-out and non-local backends remain
+open. See `docs/evaluation/index.md` for results and measurement boundaries.
+
 ## 2026-11-16 — Interrupted streams retain reported usage as a lower bound (#389)
 
 Streaming cancellation carries accumulated usage and copied attempt provenance
