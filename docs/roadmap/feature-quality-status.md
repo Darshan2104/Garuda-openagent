@@ -49,6 +49,9 @@ their complete acceptance criteria and exact merged revisions are verified.
   archive pointer warns about inherited counts and source sessions.
 - **Workers:** bounded programmatic editing fan-out is supported with exclusive
   serialized integration; siblings remain stale after an integrated change.
+  A [deterministic provider-free fixture](../evaluation/index.md#deterministic-editing-worker-fan-out)
+  measures outcome/time/cost and conflict overhead for N=1/N=4; it makes no
+  latency or quality claim.
   Model-driven fan-out and non-local worker backends remain open, and approval
   prompts are not serialized. Capacity contention no longer quarantines a parent
   when store reads and workspace absence prove ownership was never acquired. Closing known
