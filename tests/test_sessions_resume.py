@@ -719,9 +719,9 @@ async def test_context_fork_history_is_not_completion_evidence(tmp_path, fork_so
     assert "exit 0" not in conversation
     assert f"[user] {task}" in conversation
     inherited = prompt.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
-    assert f"6 messages were inherited by context fork from session {source_id};" in inherited
+    sources = ", ".join(sorted([source_id, "earlier-source"]))
+    assert f"6 messages were inherited by context fork from session {sources};" in inherited
     assert "they are historical and are not evidence for the current workspace." in inherited
-    assert "earlier-source" not in inherited
 
 
 @pytest.mark.parametrize("requested,effective,large_events", [
@@ -805,9 +805,11 @@ async def test_context_fork_retains_complete_prefix_without_restoring_source(
         return payload
 
     assert [without_inherited(m) for m in retained] == [without_inherited(m) for m in original[1:effective + 1]]
-    assert all(m.metadata.get("context_fork_inherited") == {
-        "source_session_id": source_id, "evidence": "stale",
-    } for m in retained)
+    for message in retained:
+        expected_tag = {"source_session_id": source_id, "evidence": "stale"}
+        if message.content == "Observed original hypothesis.":
+            expected_tag["source_session_ids"] = sorted([source_id, "earlier-source"])
+        assert message.metadata.get("context_fork_inherited") == expected_tag
     for options in ({}, {"include_thinking": True}, {"include_reasoning": True}, {"include_images": True}):
         provider_messages = [_message_to_litellm(m, **options) for m in model.prompt]
         assert "context_fork_inherited" not in json.dumps(provider_messages)
@@ -1225,16 +1227,106 @@ async def test_context_fork_preview_all_projects_matches_run_selection(
                 assert "Artifact inheritance: not checked" in output.out
 
 
-async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):
-    from garuda.core.events import EventType
-    from garuda.core.session_fork import CONTEXT_REWIND_NOTICE
+def _long_fork_history(store, source_id, messages):
     from garuda.types import Message
 
-    store, source_id, messages = fork_source
     history = messages[:3]
     for index in range(40):
         history.append(Message(role=Role.ASSISTANT, content=(f"Exploration {index}: " + "x" * 4000) if index < 25 else f"Observation {index}"))
     store.checkpoint_messages(source_id, history)
+    return history
+
+
+@pytest.mark.parametrize("continuation", ["resume", "fork"])
+async def test_context_fork_compaction_summary_is_not_completion_evidence(tmp_path, fork_source, continuation):
+    from garuda.core.events import EventType
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
+    store, source_id, messages = fork_source
+    # Start with A's original history, then compact in B and continue in C.
+    messages[2].metadata.pop(INHERITED_CONTEXT_KEY)
+    history = _long_fork_history(store, source_id, messages)
+    events = EventStore()
+    calls = []
+
+    class Observe(ScriptModel):
+        async def complete(self, messages, **kwargs):
+            if not calls:
+                summaries = [e for e in events.get_all() if e["type"] == EventType.SUMMARIZATION.value]
+                assert len(summaries) == 1
+                assert summaries[0]["payload"]["action"] == "summarize"
+            calls.append(list(messages))
+            return await super().complete(messages, **kwargs)
+
+    def model():
+        return Observe([
+            ModelResponse(content=None, tool_calls=[ToolCall(
+                id="done", name="task_complete", arguments={"summary": "Completed the new investigation."},
+            )]),
+            ModelResponse(content='{"verdict":"APPROVED","reason":"ok"}', tool_calls=[]),
+        ])
+
+    config = AgentConfig(
+        max_turns=2, enable_verifier=True, enable_llm_verifier=True,
+        enable_acceptance_contract=False, bootstrap_environment=False, permission_mode="yolo",
+        max_context_tokens=24000, max_tokens=256, context_safety_margin_tokens=500,
+        proactive_summarize_threshold=8000, condenser="summarizing",
+        enable_three_step_summary=False, enable_working_state_card=False,
+    )
+    task = "Check the new candidate in the current workspace."
+    result = await run_agent_task(
+        task=task, model=model(), agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
+        config=config, permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=events,
+        store=store, fork=source_id, fork_at=len(history) - 1,
+    )
+    assert result.success
+    assert len(calls) == 2
+    prompt = calls[1][-1].content
+    conversation = prompt.split("## Recent conversation (most recent last)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert "Exploration" not in conversation and "Observation" not in conversation
+    notice = prompt.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
+    assert source_id in notice and "1 compaction summaries of inherited history" in notice
+    persisted = store.load_messages(events.session_id)
+    inherited = [m for m in persisted if isinstance(m.metadata.get(INHERITED_CONTEXT_KEY), dict)
+                 and m.metadata[INHERITED_CONTEXT_KEY].get("derived_from") == "compaction_summary"]
+    assert len(inherited) == 1
+    assert "Exploration" in inherited[0].content and "Observation" in inherited[0].content
+    assert inherited[0].metadata[INHERITED_CONTEXT_KEY] == {
+        "source_session_id": source_id, "evidence": "stale", "derived_from": "compaction_summary",
+    }
+    current = next(m for m in persisted if m.content.startswith("Conversation summary"))
+    assert INHERITED_CONTEXT_KEY not in current.metadata
+    assert task in current.content
+    assert "Exploration" not in current.content and "Observation" not in current.content
+    resumed_events = EventStore()
+    continued = await run_agent_task(
+        task="Continue the fork", model=model(), agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
+        config=config, permissions=PermissionEngine(mode="yolo"), workspace=str(tmp_path), events=resumed_events,
+        store=store, **({"resume": events.session_id} if continuation == "resume" else {
+            "fork": events.session_id, "fork_at": len(persisted) - 1,
+        }),
+    )
+    assert continued.success
+    saved = next(m for m in store.load_messages(resumed_events.session_id) if m.content == inherited[0].content)
+    if continuation == "resume":
+        assert saved.metadata == inherited[0].metadata
+    else:
+        assert saved.metadata[INHERITED_CONTEXT_KEY] == {
+            "source_session_id": events.session_id,
+            "source_session_ids": sorted([source_id, events.session_id]),
+            "evidence": "stale", "derived_from": "compaction_summary",
+        }
+        notice = calls[-1][-1].content.split("## Inherited context (excluded)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert source_id in notice and events.session_id in notice
+        assert "1 compaction summaries of inherited history" in notice
+
+
+async def test_context_fork_preserves_constraints_and_staleness_through_compaction_and_resume(tmp_path, fork_source):
+    from garuda.core.events import EventType
+    from garuda.core.session_fork import CONTEXT_REWIND_NOTICE
+
+    store, source_id, messages = fork_source
+    history = _long_fork_history(store, source_id, messages)
     events = EventStore()
 
     class Observe(ScriptModel):

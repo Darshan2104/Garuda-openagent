@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from garuda.core import evidence
-from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+from garuda.core.session_fork import INHERITED_CONTEXT_KEY, inherited_sources
 from garuda.types import AgentConfig, Message, Role
 from garuda.workspace.health import EnvironmentUnavailableError
 from garuda.workspace.protocol import Environment
@@ -182,20 +182,22 @@ def render_messages_compact(
 def _render_completion_conversation(messages: list[Message]) -> tuple[str, str]:
     """Exclude fork history before selecting the recent completion evidence."""
     current = []
-    sources = set()
+    sources = inherited_sources(messages)
+    summaries = 0
     for message in messages:
         if INHERITED_CONTEXT_KEY not in message.metadata:
             current.append(message)
             continue
         inherited = message.metadata[INHERITED_CONTEXT_KEY]
-        source = inherited.get("source_session_id") if isinstance(inherited, dict) else None
-        sources.add(source if isinstance(source, str) and source else "unknown")
+        if isinstance(inherited, dict) and inherited.get("derived_from") == "compaction_summary":
+            summaries += 1
     excluded = len(messages) - len(current)
     notice = ""
     if excluded:
+        derived = f", including {summaries} compaction summaries of inherited history" if summaries else ""
         notice = (
-            f"{excluded} messages were inherited by context fork from session {', '.join(sorted(sources))}; "
-            "they are historical and are not evidence for the current workspace."
+            f"{excluded} messages were inherited by context fork from session {', '.join(sorted(sources))}"
+            f"{derived}; they are historical and are not evidence for the current workspace."
         )
     return render_messages_compact(current), notice
 
