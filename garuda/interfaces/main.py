@@ -1050,7 +1050,28 @@ def run_sessions(args) -> int:
             print(_json.dumps(row, indent=2, default=str))
         else:
             shown = {**row, "consults": row.get("consults", {}).get("line") or "none"}
-            print("\n".join(f"{k}: {v}" for k, v in shown.items()))
+            print("\n".join(f"{k}: {v}" for k, v in shown.items() if k != "spend"))
+            spend = row["spend"]
+            if spend is None:
+                print("Spend: not recorded")
+            elif spend["state"] == "unreadable":
+                print("Spend: unreadable (unknown)")
+            else:
+                token_cap = spend["max_tokens"] if spend["max_tokens"] is not None else "none"
+                dollar_cap = spend["max_cost_usd"] if spend["max_cost_usd"] is not None else "none"
+                cost = (f"unknown; known settled USD (lower bound): {spend['settled_cost_usd']}"
+                        if spend["cost_status"] == "unknown" else f"settled USD: {spend['settled_cost_usd']}")
+                print(f"Spend: {spend['scope']}; caps: tokens={token_cap}, USD={dollar_cap}; "
+                      f"settled tokens: {spend['settled_tokens']}; reserved tokens: {spend['reserved_tokens']}; "
+                      f"cost: {cost}")
+                print("  " + "; ".join(f"{k}: {spend[k]}" for k in (
+                    "cost_unknown_calls", "prior_spend_unknown", "interrupted_calls", "unknown_outcome_calls",
+                    "unreported_failed_attempts", "estimated_token_calls", "refused")))
+                if spend["inherited"] is not None:
+                    inherited = spend["inherited"]
+                    tokens = inherited.get("inherited_tokens")
+                    print(f"  inherited: {inherited['source']}; tokens: "
+                          f"{tokens if tokens is not None else 'unknown'}")
         return 0
     rows = read_model.sessions(store, limit=args.limit, queue=queue)
     if getattr(args, "json", False):

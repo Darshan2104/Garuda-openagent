@@ -49,6 +49,25 @@ function queueText(queue) {
   return queue.state || "unknown";
 }
 
+function spendHtml(spend) {
+  if (!spend) return chip("spend", "not recorded");
+  if (spend.state !== "recorded") return chip("spend", "unreadable (unknown)");
+  var html = chip("scope", spend.scope) +
+    chip("token cap", spend.max_tokens === null ? "none" : spend.max_tokens) +
+    chip("USD cap", spend.max_cost_usd === null ? "none" : spend.max_cost_usd) +
+    chip("settled tokens", spend.settled_tokens) + chip("reserved tokens", spend.reserved_tokens) +
+    chip("cost", spend.cost_status === "unknown" ? "unknown" : "reported") +
+    chip(spend.cost_status === "unknown" ? "known settled USD (lower bound)" : "settled USD", spend.settled_cost_usd);
+  ["cost_unknown_calls", "prior_spend_unknown", "interrupted_calls", "unknown_outcome_calls",
+    "unreported_failed_attempts", "estimated_token_calls", "refused"].forEach(function (key) {
+    html += chip(key, spend[key]);
+  });
+  if (spend.inherited) {
+    html += chip("inherited source", spend.inherited.source) + chip("inherited tokens", spend.inherited.inherited_tokens);
+  }
+  return html;
+}
+
 function sessionRowHtml(row) {
   var state = row.state || {};
   return (
@@ -62,7 +81,7 @@ function sessionRowHtml(row) {
     "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + "</td>" +
     "<td>" + esc(queueText(row.queue)) + "</td>" +
     '<td title="' + esc(row.workspace || "") + '">' + esc(row.workspace ? fmt.tail(row.workspace, 36) : "—") + (row.branch ? " @ " + esc(row.branch) : "") + "</td>" +
-    '<td class="num">' + esc(row.usage) + " / " + esc(row.cost) + "</td>" +
+    '<td class="num">' + esc(row.usage) + " / " + esc(row.cost) + '<div class="chips">' + spendHtml(row.spend) + "</div></td>" +
     '<td class="num">' + (row.approvals_pending ? '<span class="pill running">' + row.approvals_pending + " waiting</span>" : "—") + "</td>" +
     "<td>" + esc(fmt.when(row.updated_at)) + "</td>" +
     "</tr>"
@@ -279,6 +298,7 @@ function sessionDetailView(id) {
       verificationChip(row.verification) +
       chip("queue", queueText(row.queue)) + chip("usage", row.usage) + chip("cost", row.cost) +
       "</div>" +
+      '<div class="card" id="session-spend"><h2>Spend</h2>' + spendHtml(row.spend) + "</div>" +
       '<p class="stat-sub">' + esc(identityText(row)) + " · " + esc(row.workspace || "") +
       (row.branch ? " @ " + esc(row.branch) : "") + (row.isolation !== "shared" ? " (" + esc(row.isolation) + ")" : "") + "</p>" +
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {

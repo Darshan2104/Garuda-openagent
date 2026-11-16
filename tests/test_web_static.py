@@ -8,7 +8,10 @@ suite would notice, because the frontend has no unit tests by design.
 """
 
 import fnmatch
+import json
 import re
+import shutil
+import subprocess
 import tomllib
 from importlib.resources import files
 from pathlib import Path
@@ -129,3 +132,44 @@ def test_no_two_scripts_define_the_same_global_function():
             defined[name].append(script.name)
     clashes = {name: files for name, files in defined.items() if len(files) > 1}
     assert not clashes, clashes
+
+
+def test_session_row_renders_spend_chips_as_escaped_text():
+    """Exercise the shipped renderer, with hostile wire values, without adding exports."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to execute the shipped session row renderer")
+    script = r"""
+const fs = require("fs"), vm = require("vm");
+const context = vm.createContext({sessionStorage: {getItem: () => ""}, location: {hash: ""}});
+for (const name of ["core.js", "views_sessions.js"]) {
+  vm.runInContext(fs.readFileSync(process.argv[1] + "/" + name, "utf8"), context);
+}
+const hostile = '<img src=x onerror="window.__pwned=1">';
+const spend = {state: "recorded", scope: hostile, max_tokens: 400000, max_cost_usd: 2,
+  settled_tokens: 80, reserved_tokens: 50, settled_cost_usd: 0.03, cost_status: "unknown",
+  cost_unknown_calls: 1, prior_spend_unknown: true, interrupted_calls: 0, unknown_outcome_calls: 0,
+  unreported_failed_attempts: 0, estimated_token_calls: 0, refused: 0,
+  inherited: {source: hostile, inherited_tokens: null}};
+const row = {session_id: "s", label: "completed", state: {}, workspace: null,
+  usage: "unknown", cost: "unknown", spend: spend};
+const html = context.sessionRowHtml(row);
+// Every projected value goes through the same escaping boundary, including counters/caps.
+for (const key of Object.keys(spend)) {
+  if (!["state", "cost_status", "inherited"].includes(key)) spend[key] = hostile;
+}
+spend.inherited.inherited_tokens = hostile;
+const hostileHtml = context.sessionRowHtml(row);
+console.log(JSON.stringify({html, hostileHtml}));
+"""
+    result = subprocess.run([node, "-e", script, str(STATIC_DIR)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    rendered = json.loads(result.stdout)
+    html = rendered["html"]
+    assert 'data-chip="token cap">token cap: 400000' in html
+    assert 'data-chip="scope">scope: &lt;img' in html
+    assert 'data-chip="cost">cost: unknown' in html
+    assert "known settled USD (lower bound): 0.03" in html
+    assert "inherited tokens: unknown" in html
+    assert "&lt;img" in rendered["hostileHtml"]
+    assert "<img" not in html and "<img" not in rendered["hostileHtml"]

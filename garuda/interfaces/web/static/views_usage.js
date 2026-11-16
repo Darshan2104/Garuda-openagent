@@ -28,7 +28,9 @@ function measureRowHtml(label, m) {
 function usageView(range) {
   range = USAGE_RANGES.indexOf(range) >= 0 ? range : "7d";
   render('<div class="loading">Loading usage…</div>');
-  return api("/api/usage?range=" + range).then(function (s) {
+  return Promise.all([api("/api/usage?range=" + range), api("/api/sessions?limit=200")]).then(function (payload) {
+    var s = payload[0];
+    var sessions = payload[1].sessions.filter(function (row) { return row.spend !== null; });
     var share = s.work_type_share;
     var tableHead = "<thead><tr><th>Name</th><th>Native calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead>";
     function table(id, rows, nameOf) {
@@ -63,7 +65,13 @@ function usageView(range) {
         { title: "Tokens per day (UTC)", emptyNote: "No usage in this range." }) + "</div>" +
       '<div class="card"><h2>By role</h2>' + table("role-table", s.by_role, function (r) { return r.role; }) + "</div>" +
       '<div class="card"><h2>By origin</h2><p class="stat-sub">Who made the calls: the run itself, a subagent, a flow step or a consulted role. These are the original events, so the rows add up to the total.</p>' + table("origin-table", s.by_origin, function (r) { return r.origin; }) + "</div>" +
-      '<div class="card"><h2>By project</h2><p class="stat-sub">Projects are opaque ids.</p>' + table("project-table", s.by_project, function (r) { return r.project_id; }) + "</div>"
+      '<div class="card"><h2>By project</h2><p class="stat-sub">Projects are opaque ids.</p>' + table("project-table", s.by_project, function (r) { return r.project_id; }) + "</div>" +
+      '<div class="card" id="usage-spend"><h2>Session spend limits</h2>' +
+      '<p class="stat-sub">Recorded native run-tree snapshots from up to 200 recent sessions, independent of the UTC window. Resumed trees overlap; these rows are not additive. Dollar caps stop on reported spend.</p>' +
+      (sessions.length ? sessions.map(function (row) {
+        return '<div><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' + esc(row.name || row.session_id) +
+          '</a><div class="chips">' + spendHtml(row.spend) + "</div></div>";
+      }).join("") : '<p class="stat-sub">No recorded spend snapshots.</p>') + "</div>"
     );
     el("export-csv").addEventListener("click", function () { downloadUsage(range, "csv"); });
     el("export-json").addEventListener("click", function () { downloadUsage(range, "json"); });

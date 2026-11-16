@@ -20,7 +20,10 @@ The four follow-ups are reviewable increments. Keep the parent issues open until
 their complete acceptance criteria and exact merged revisions are verified.
 
 - **Spend:** dollar limits remain stops based on reported spend, rather than
-  prepaid exact maxima. Crash/resume reservation provenance is covered by
+  prepaid exact maxima. Inspection/usage views now show limits and scope,
+  settled/reserved tokens, unknown-cost counts and resume inheritance through
+  `sessions show` and the dashboard. Known dollars are labelled as a lower bound
+  when cost is unknown; missing or unreadable snapshots never imply zero. Crash/resume reservation provenance is covered by
   admission/settlement checkpoints and interrupted-reservation estimate charges
   with unknown cost. Cancelled and unknown-outcome failed calls without usage
   now charge their reservation with unknown cost; definite rejections release

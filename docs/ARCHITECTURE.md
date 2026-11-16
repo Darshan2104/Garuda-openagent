@@ -161,6 +161,11 @@ fastest way to learn the system.
    of reported tokens and missing-attempt estimates, never an additional charge.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops
    based on reported spend. Legacy missing snapshots retain unknown prior spend.
+   `core/read_model.py` projects persisted spend limits, scope, settled/reserved
+   tokens, unknown-cost provenance and resume inheritance into session rows for
+   CLI inspection and dashboard Sessions/Usage views. It validates snapshots
+   without mutation: absent spend is `null`, malformed spend is `unreadable`,
+   and unknown cost retains known settled dollars only as a labelled lower bound.
    An opt-in `core/advisor.py` reuses consult admission and between-turn steering.
    Definitions select repeated-failure (the default), first-plan and
    first-candidate checkpoints. Notes require literal evidence citations and are

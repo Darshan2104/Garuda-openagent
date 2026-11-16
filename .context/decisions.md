@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-11-16 — Spend gate is projected in session views (#363)
+
+The shared read model projects only the persisted native run-tree spend checkpoint
+and resume inheritance. CLI inspection and dashboard Sessions/Usage show selected
+caps, scope, settled/reserved tokens and uncertainty counters without rebuilding
+accounting or changing the existing usage/cost fields. Unknown cost remains
+`unknown`; known settled dollars are a labelled lower bound. Legacy sessions
+have no spend block (`null`); malformed snapshots are explicitly `unreadable`.
+The usage page keeps recent session snapshots separate from rolling ledger totals:
+resumed trees overlap and cannot be summed. This projection neither admits calls
+nor changes the gate's reported-spend dollar-stop semantics.
+
 ## 2026-11-16 — Interrupted streams retain reported usage as a lower bound (#389)
 
 Streaming cancellation carries accumulated usage and copied attempt provenance

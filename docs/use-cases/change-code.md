@@ -353,6 +353,26 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   `--max-run-tokens` to continue within a token budget. This is a lower bound:
   unreported output from a failed stream is not counted.
 
+Inspect the selected limits and recorded spend with `garuda sessions show <id>`
+(or `--json` for the structured `spend` block). For example, after a resumed run
+with unpriced calls:
+
+```text
+garuda sessions show <id>
+Spend: native_run_tree; caps: tokens=400000, USD=2; settled tokens: 1200; reserved tokens: 0; cost: unknown; known settled USD (lower bound): 0.03
+  cost_unknown_calls: 2; prior_spend_unknown: False; interrupted_calls: 0; unknown_outcome_calls: 0; unreported_failed_attempts: 0; estimated_token_calls: 0; refused: 0
+  inherited: spend_gate; tokens: 800
+```
+
+Dollar caps are stops based on reported spend; unknown cost is shown as unknown,
+never zero. Known settled dollars remain visible as a labelled lower bound.
+The dashboard Sessions and Usage views show these caps, settled/reserved tokens,
+unknown-cost counts, inheritance and the `native_run_tree` scope. Usage shows
+snapshots from up to 200 recent sessions separately from its rolling-window
+ledger totals: resumed trees overlap, so snapshot rows must not be summed.
+Legacy sessions say spend is not recorded; malformed snapshots say unreadable.
+Snapshots are the last persisted checkpoint, not a live provider bill.
+
 - Check the `[garuda] reasoning=…` line at startup to confirm the model.
 - Start with the default mode. `eval` and `rigorous` add model calls.
 - Your provider's billing page is the authority on cost. Garuda does not guess
