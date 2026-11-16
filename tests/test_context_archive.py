@@ -346,3 +346,37 @@ async def test_archives_retain_argument_rendering_loss_with_complete_tool_observ
         assert capture["omitted_source_bytes"] > 0
     assert "full captured transcript" not in pointer.content
     assert "KNOWN_OBSERVATION" in buffer.read(capture["owner"]["reference"])
+
+
+@pytest.mark.parametrize("capture_fails", [False, True])
+@pytest.mark.parametrize("current_inputs", [False, True])
+async def test_archive_pointer_warns_about_inherited_history_on_current_message(tmp_path, capture_fails, current_inputs):
+    from garuda.context.condenser import SummarizingCondenser
+    from garuda.core.session_fork import INHERITED_CONTEXT_KEY
+
+    buffer = ToolOutputBuffer(session_id="s", root=tmp_path / "buffers")
+    if capture_fails:
+        (tmp_path / "buffers").write_text("not a directory")
+    history = _history(6, tool_output="INHERITED observation")
+    for message in history[2:]:
+        message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": "source", "evidence": "stale"}
+    if not current_inputs:
+        for message in history[:2]:
+            message.metadata[INHERITED_CONTEXT_KEY] = {"source_session_id": "source", "evidence": "stale"}
+    cm = _cm(SummarizingCondenser(), buffer=buffer)
+    _seed(cm, history)
+    cm.note_usage({"prompt_tokens": 950})
+    assert await cm.maybe_summarize()
+    messages = cm.get_messages()
+    pointer = next(m for m in messages if "[context-archive]" in m.content)
+    assert "8 of these were inherited by context fork from session source (historical; not current evidence)." in pointer.content
+    assert INHERITED_CONTEXT_KEY not in pointer.metadata
+    if current_inputs:
+        assert "Conversation summary" in pointer.content
+    else:
+        assert messages.index(pointer) == 2
+    assert not any("[context-archive]" in m.content for m in messages if INHERITED_CONTEXT_KEY in m.metadata)
+    if capture_fails:
+        assert "capture failed" in pointer.content
+    else:
+        assert "INHERITED observation" in buffer.read(_BUFFER_POINTER_RE.search(pointer.content).group(1))

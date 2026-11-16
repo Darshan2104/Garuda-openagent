@@ -874,8 +874,18 @@ Retained messages carry `context_fork_inherited` metadata naming the immediate
 source session and stale evidence. The marker survives checkpoints and resume,
 stays out of provider payloads, and excludes those messages from the completion
 judge's evidence with a count and source-session notice. Source bytes and digests
-are unchanged. Compaction summaries do not inherit the marker; the state-card
-staleness notice remains their guard.
+are unchanged. Compaction splits inherited and current inputs into separate
+summaries: inherited summaries retain stale source provenance and
+`derived_from: compaction_summary`, while current summaries use only untagged
+inputs. The judge excludes derived summaries and reports their count. Only
+inherited messages dropped by the rebuild are summarized; system, task and
+recent-window messages retain their original markers. When only previous
+inherited summaries remain, they carry forward unchanged without a model call.
+Microcompact maintains separate running notes for each provenance segment.
+Archive pointers attach to a new untagged summary, or are inserted after the
+task, and warn how many archived messages were inherited and from which sessions.
+Agent-initiated `buffer_grep`/`buffer_slice` reads of archived inherited text
+remain fresh observations of historical text; the pointer warns about this limit.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

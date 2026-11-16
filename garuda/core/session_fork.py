@@ -20,6 +20,37 @@ from garuda.types import Message, Role
 
 INHERITED_CONTEXT_KEY = "context_fork_inherited"
 
+
+def inherited_sources(messages: list[Message]) -> set[str]:
+    """Collect fork provenance, treating malformed markers as unknown history."""
+    sources: set[str] = set()
+    for message in messages:
+        if INHERITED_CONTEXT_KEY not in message.metadata:
+            continue
+        tag = message.metadata[INHERITED_CONTEXT_KEY]
+        if not isinstance(tag, dict):
+            sources.add("unknown")
+            continue
+        if "source_session_ids" in tag:
+            values = tag["source_session_ids"]
+            if not isinstance(values, (list, tuple, set)) or not values:
+                sources.add("unknown")
+                continue
+        else:
+            values = [tag.get("source_session_id")]
+        sources.update(value if isinstance(value, str) and value.strip() else "unknown" for value in values)
+    return sources
+
+
+def mark_inherited(message: Message, sources: set[str], derived_from: str) -> None:
+    """Mark derived history as stale without discarding unrelated metadata."""
+    ordered = sorted(sources or {"unknown"})
+    tag = {"source_session_id": ordered[0], "evidence": "stale", "derived_from": derived_from}
+    if len(ordered) > 1:
+        tag["source_session_ids"] = ordered
+    message.metadata[INHERITED_CONTEXT_KEY] = tag
+
+
 CONTEXT_REWIND_NOTICE = (
     "Context rewind only: filesystem and processes were not restored. "
     "All inherited candidate and verification evidence is stale; recheck the current workspace. "

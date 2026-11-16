@@ -908,11 +908,19 @@ class ContextManager:
                 f'details with buffer_grep(buffer_id="{buffer_id}", pattern="...") or '
                 f'buffer_slice(buffer_id="{buffer_id}", start_line=N, end_line=M).'
             )
+        from garuda.core.session_fork import INHERITED_CONTEXT_KEY, inherited_sources
+
+        inherited_count = sum(INHERITED_CONTEXT_KEY in m.metadata for m in dropped)
+        if inherited_count:
+            sources = ", ".join(sorted(inherited_sources(dropped)))
+            pointer += (f" {inherited_count} of these were inherited by context fork from session {sources} "
+                        "(historical; not current evidence).")
         # Attach the pointer to the message the condenser just created (the summary),
         # or, for condensers that drop without summarizing, insert it after the task.
         old_ids = {id(m) for m in self._messages}
         summary = next(
-            (m for m in new_messages if id(m) not in old_ids and m.role == Role.USER), None
+            (m for m in new_messages if id(m) not in old_ids and m.role == Role.USER
+             and INHERITED_CONTEXT_KEY not in m.metadata), None
         )
         if summary is not None:
             summary.content = f"{summary.content}\n\n{pointer}"
