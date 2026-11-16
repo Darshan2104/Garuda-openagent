@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from garuda.core import evidence
+from garuda.core.session_fork import INHERITED_CONTEXT_KEY
 from garuda.types import AgentConfig, Message, Role
 from garuda.workspace.health import EnvironmentUnavailableError
 from garuda.workspace.protocol import Environment
@@ -176,6 +177,27 @@ def render_messages_compact(
             line += f" (tool calls: {names})"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _render_completion_conversation(messages: list[Message]) -> tuple[str, str]:
+    """Exclude fork history before selecting the recent completion evidence."""
+    current = []
+    sources = set()
+    for message in messages:
+        if INHERITED_CONTEXT_KEY not in message.metadata:
+            current.append(message)
+            continue
+        inherited = message.metadata[INHERITED_CONTEXT_KEY]
+        source = inherited.get("source_session_id") if isinstance(inherited, dict) else None
+        sources.add(source if isinstance(source, str) and source else "unknown")
+    excluded = len(messages) - len(current)
+    notice = ""
+    if excluded:
+        notice = (
+            f"{excluded} messages were inherited by context fork from session {', '.join(sorted(sources))}; "
+            "they are historical and are not evidence for the current workspace."
+        )
+    return render_messages_compact(current), notice
 
 
 @dataclass
@@ -809,7 +831,7 @@ class CompletionVerifier:
         completion gate — a broken verifier must not rubber-stamp wrong answers.
         """
         git_evidence = await gather_git_evidence(env)
-        conversation = render_messages_compact(messages or [])
+        conversation, inherited_notice = _render_completion_conversation(messages or [])
 
         prompt_parts = [
             f"## Task\n{task}",
@@ -837,6 +859,8 @@ class CompletionVerifier:
             prompt_parts.append(f"## Git evidence from the workspace\n{git_evidence}")
         if conversation:
             prompt_parts.append(f"## Recent conversation (most recent last)\n{conversation}")
+        if inherited_notice:
+            prompt_parts.append(f"## Inherited context (excluded)\n{inherited_notice}")
         if has_numeric_contradiction(summary):
             note = (
                 "## Caution\nThe summary contains numbers that differ by more than 10x. "
