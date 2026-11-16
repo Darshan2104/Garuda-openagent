@@ -10,7 +10,9 @@ panel and the saved file without any check in this suite reaching the network.
 """
 
 import asyncio
+import io
 import sys
+from email.message import Message as Headers
 from pathlib import Path
 
 from garuda.interfaces.web import DashboardConfig, build_context, launch_url
@@ -65,10 +67,20 @@ class ArmedAskModel(ScriptModel):
                              arguments={"command": ASK_COMMAND})
                 ],
             )
-        return ModelResponse(content="Done with the build directory.", tool_calls=[])
+        return ModelResponse(content="Done with the build directory.", tool_calls=[
+            ToolCall(id=f"done{self._calls}", name="task_complete", arguments={
+                "summary": "Finished the requested build directory cleanup operation.",
+            }),
+        ])
 
     async def stream(self, messages, tools=None, temperature=None, max_tokens=None):
-        return await self.complete(messages, tools, temperature, max_tokens)
+        response = await self.complete(messages, tools, temperature, max_tokens)
+        # Delay after real deltas so Chrome can observe the in-flight preview
+        # before tool dispatch/completion, without a provider or a UI stub.
+        async for delta in ScriptModel([response]).stream(messages, tools, temperature, max_tokens):
+            yield delta
+            if delta.content_delta:
+                await asyncio.sleep(0.6)
 
 
 #: Stands in for the real page body. The fetcher itself is covered by unit tests; what a
@@ -89,6 +101,8 @@ async def main() -> None:
         # Two model calls per turn is all this needs; a cap keeps a runaway loop from
         # filling the transcript if the script ever changes.
         session.config.max_turns = 4
+        session.config.enable_verifier = False
+        session.config.enable_acceptance_contract = False
         return session
 
     session_module.AgentSession.create = classmethod(create_with_script)
@@ -97,9 +111,26 @@ async def main() -> None:
     # subject is the route, the panel and the file that lands in the workspace.
     from garuda.tools import web as web_module
 
-    web_module._blocking_fetch = lambda url, max_bytes: (
-        None, f"Retry documentation for {url}.\n\nThe ceiling is 120 seconds."
-    )
+    class Page(io.BytesIO):
+        status = 200
+
+        def __init__(self, url):
+            super().__init__(f"Retry documentation for {url}.\n\nThe ceiling is 120 seconds.".encode())
+            self.url = url
+            self.headers = Headers()
+            self.headers["Content-Type"] = "text/plain; charset=utf-8"
+
+        def geturl(self):
+            return self.url
+
+    class Opener:
+        def open(self, request, timeout):
+            return Page(request.full_url)
+
+    # Replace only address lookup and HTTP transport; extraction, provenance,
+    # source persistence and rendering remain the production owners.
+    web_module._ssrf_error = lambda url: None
+    web_module._build_opener = lambda allowed_domains=None: Opener()
 
     config = DashboardConfig(
         port=port,

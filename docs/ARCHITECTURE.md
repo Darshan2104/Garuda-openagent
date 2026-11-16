@@ -180,8 +180,16 @@ fastest way to learn the system.
    output is deduplicated against all rendered responses of the run.
    Tool arguments and reasoning are never
    displayed as live text. The SDK exposes the same consumer as `on_delta` on
-   `SoftwareAgent.run` and `Conversation.run`. Chat, web and ACP surfaces do not
-   attach it; external harness streaming is a separate runtime path.
+   `SoftwareAgent.run` and `Conversation.run`. Dashboard chat attaches the same
+   consumer and exposes only a transient 4,000-character text tail in its live
+   chat state. The browser matches that preview's event anchor to the persisted
+   tail to suppress stale previews after completion or fallback. Reasoning and
+   partial tool calls stay outside this preview; no delta events are persisted.
+   Turn admission, accepted chat stop or job-cancel requests, and the owning
+   job's settlement clear the preview, including before a new turn waits in the
+   job queue. Both cancellation routes clear matching chats on the event loop
+   before returning; the chat stays busy until its job settles.
+   Terminal chat and ACP do not attach it; external harness streaming is separate.
    Standalone ACP runs can use explicit post-run acceptance checks even though
    the native completion gate does not run inside the external harness.
    Native edit/write/multi-edit tools return bounded advisory syntax/lint state
@@ -250,7 +258,14 @@ fastest way to learn the system.
    parent content is captured and preserved; any base drift refuses. Receipts
    and `editing_worker` events record admission through integration or refusal.
    Active-child cancellation and uncertain child cleanup retain the repository,
-   lease and capacity and block further editing dispatch. Cancelled integration
+   lease and capacity and block further editing dispatch. The editing service
+   closes its child environment's optional services on interrupted exits as well
+   as normal returns, waiting through repeated cancellation before unwinding.
+   Every close failure records `environment_close: failed` on the receipt and
+   event without exception details. Cancellation during close takes precedence
+   over an earlier child exception and retains any close-failure cause.
+   This does not prove descendant settlement or release quarantined ownership.
+   Cancelled integration
    settles its checker and retains an uncertain candidate. Durable receipts
    prevent a fresh service from bypassing retained uncertainty for that parent.
    Local worker receipts also bind parent ownership, repository identity and
@@ -802,6 +817,28 @@ fastest way to learn the system.
 8. **Record** — `core/events.py` appends an event log; `core/sessions.py`
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.
+
+`garuda sessions fork-preview` uses the context-fork preparation owner and
+bounded selected-source reader to validate a checkpoint and recheck its digests
+without launching execution. Metadata selection, snapshot preparation and final
+revalidation share one 8 MiB read allowance; oversize or aggregate exhaustion
+refuses without validating a partial source. The plan retains the bounded-read
+policy for its recheck, while native execution keeps full-checkpoint reads.
+The shared list owner refuses non-string timestamps before sorting `latest`;
+absent legacy timestamps retain empty-string ordering.
+Its metadata explicitly leaves admission and artifact inheritance unchecked.
+Preview does not build resumed context or inherit artifacts; either step can
+still refuse after ordinary workspace/capacity admission, even if preview succeeds.
+Preview selection uses the shared project/name resolver in read-only mode,
+loading only an existing identity key and retaining the selected directory
+binding. Opt-in `--all-projects` forwards the run's cross-project selection policy.
+Preview and resume read name markers through the shared no-follow regular-file
+reader with a 256-byte limit. Unsafe markers refuse before ID-prefix fallback;
+missing markers still permit that fallback. Text and JSON expose any checkpoint
+adjustment reason and the retained message count. Native launch keeps its
+allocation policy. The fork
+preparation owner validates nested source shapes before deserialization; the CLI
+renders identity and record failures as exit-2 refusals.
 
 Failure inspection is a separate read boundary. `core/failure_evidence.py`
 combines bounded native events, allowlisted ACP causal records, flow receipts,

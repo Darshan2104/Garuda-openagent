@@ -43,7 +43,7 @@ a behaviour.
 | `side_effects.py` | Sweeps agent-started background processes before verification. Tracks each launch by its process group — the command text is a fallback, since a process can rename itself — and re-probes after every signal so absence is confirmed rather than assumed. |
 | `permissions.py` | `PermissionEngine`: allow/deny/ask per tool, path, and command, plus the canonical file-write tool classification consumed by the side-effect ledger. Normalizes path spellings against the workspace and explicit command cwd. Screens original and joined continuations without treating in-word hashes as comments; allow prefixes must match both forms. Incomplete tokenization requires approval while detected dangerous commands still refuse. Guardrails, not confinement. |
 | `sessions.py` | On-disk session store; `meta.json` writes are locked and atomic. |
-| `session_fork.py` | Context-only fork planning over a selected native checkpoint. Validates a terminal source, moves an inclusive message index back to a complete tool batch, binds source-file digests and historical references, and discards inherited candidate/check state. The runner reuses resume context construction and artifact inheritance after ordinary admission, skips source recovery, and captures a fresh workspace baseline. |
+| `session_fork.py` | Context-only fork planning and read-only preview over a selected native checkpoint. Validates a terminal source, moves an inclusive message index back to a complete tool batch, binds source-file digests and historical references, and discards inherited candidate/check state. Preview supports opt-in cross-project selection and revalidates the source without execution; admission and artifact inheritance are explicitly unchecked. The runner builds resumed context and inherits artifacts after ordinary admission, where either step may still refuse; it skips source recovery and captures a fresh workspace baseline. |
 | `session_publication.py` | Opt-in durable metadata policy for verified-flow publication: a retained common lock, external policy registry and metadata head reject missing or replaced records. All shared SessionStore writers honor that policy; check-enabled flows keep it through terminal publication and reconciliation. |
 | `events.py` | Append-only JSONL event log, crash-safe. |
 | `session_records.py` | Shared bounded, no-follow session record access. `BoundedSessionRecords` accounts for aggregate reads, including failed attempts, across a projection or support summary. Authorized native selection retains existing project/name semantics while resolving through this reader before workspace/lease setup; exhausted metadata allowances refuse. Recovery and replay then read metadata, checkpoints and events through that retained directory binding, with separate full-snapshot allowances. |
@@ -448,8 +448,13 @@ Rich, or a single plain line. Dumb/unset terminals suppress previews and their
 erase codes. Discard, response assembly, failure and cancellation clear previews.
 The completed response renders in full; a final message identical to any already
 rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
-output withholding retain the ordinary model path. Chat, web, SDK and ACP do
-not attach the native consumer. `StreamDelta`
+output withholding retain the ordinary model path. Terminal interactive chat and
+ACP do not attach the native consumer; dashboard chat and the SDK's `on_delta`
+do. Dashboard `live.py` clears matching chat previews on accepted
+`POST /api/chat/<id>/stop` and `POST /api/jobs/<id>/cancel` requests on the event
+loop, before job cleanup settles; other chats retain their previews. Turn
+admission and owning-job settlement also reset retained text and cursor.
+`StreamDelta`
 has optional provider terminal fields. `litellm_model.py` emits them even when a
 terminal chunk has no content, retains the latest non-null values across trailing
 usage chunks, and assembles them into `ModelResponse.raw`. Missing metadata is

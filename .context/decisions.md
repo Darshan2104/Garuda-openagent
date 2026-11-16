@@ -16,6 +16,58 @@ callers that catch admission exceptions cannot hide budget exhaustion. Because
 the gate is shared, concurrent refusals conservatively stop the job too; a
 refusal predating the attempt alone does not suppress ordinary failure fallback.
 
+## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
+
+Dashboard chat attaches the shared loop consumer. Live state holds only a bounded
+assistant text tail, anchored to the last persisted event. New events, discard,
+or turn settlement invalidate it; the browser checks that anchor after tailing
+to prevent a stale HTTP snapshot duplicating a completed response. Reasoning and
+tool fragments are excluded. No transient deltas enter the append-only event log.
+
+Turn admission, accepted chat stop or job-cancel requests, and owner-bound job
+settlement clear the retained preview text and cursor. Both cancellation routes
+clear matching chat state on the event loop before returning, while `busy` stays
+set until settlement. Cancelling a job leaves other chats' previews alone. `busy`
+alone never revives an earlier cancelled preview while a subsequent turn waits
+for job capacity.
+
+## 2026-11-12 — Context fork preview shares execution validation (#370)
+
+`sessions fork-preview` resolves and binds the source through the bounded
+no-follow reader, calls the existing fork preparation owner, and rechecks source
+digests before returning metadata. It creates no session or admission and does
+not return transcript text. Preview records admission and artifact inheritance
+as not checked; it does not build resumed context or inherit artifacts. A later
+execution can still refuse those steps after workspace/capacity admission and
+must independently revalidate its source. Filesystem/process restoration remains
+outside context rewind.
+
+The preview uses the shared project/name selection owner in non-allocating mode:
+names, prefixes and latest require an existing key; full IDs retain explicit
+selection without one. Missing/malformed identity never creates a key or lock.
+Fork preparation validates nested source shapes and the CLI reports typed
+identity/record refusal without a traceback. Native launch allocation is unchanged.
+
+Preview snapshot reads, including final digest revalidation, spend the same 8 MiB
+allowance as metadata selection. The fork plan retains this read policy for its
+recheck; authorized native execution retains complete-source reads. A missing
+optional legacy file spends no source bytes. The shared session-list owner
+refuses non-string saved timestamps before sorting, preserving missing legacy
+timestamps as empty strings instead of inventing an order for malformed evidence.
+
+## 2026-11-12 — Interrupted editing workers close environment services (#384)
+
+The editing service closes its child environment on every exit from the child
+run, retaining original interruption identity if cleanup fails unless cancellation
+arrives during close, in which case cancellation takes precedence. Close tasks
+are shielded and settled through repeated cancellation. All close failures
+record a fixed `environment_close: failed` receipt/event marker without exception
+details, including after normal returns, during cancellation, and when the
+interrupt becomes a refusal. Cancellation retains any close-failure cause.
+Closing environment-owned
+services does not establish descendant settlement: uncertain repositories,
+leases and capacity remain quarantined under the existing recovery owner.
+
 ## 2026-10-29 — Artifact completeness is one authorized read projection (#361)
 
 - `core/artifact_read_model.py` defines the bounded version-1 descriptor for
@@ -3058,6 +3110,8 @@ and historical event/state/receipt references survive compaction and resume in
 the working-state card. Fork lineage inspection reads persisted metadata only.
 Terminal native sources without pending ownership or quarantine are supported;
 ACP state, live-source forks and combined workspace isolation are refused.
+Read-only preview does not build resumed context or inherit artifacts; it labels
+artifact inheritance unchecked because execution can still refuse after admission.
 
 ## 2026-11-06 — Sequential isolated native editing workers (#384)
 
@@ -3310,3 +3364,24 @@ that consumer for the call and surface as `live_consumer_error` rather than
 failing the run. ACP runtimes refuse `on_delta` before launch; no harness
 streaming or fallback is implied. The default `None` keeps every existing path
 unchanged.
+
+## 2026-11-11 — Bound fork name lookup and disclose preview limits (#370)
+
+For #370/#415 context forks, preview and resume share no-follow name-marker
+reads that accept only regular files of at most 256 bytes. Symlinks, special
+files and oversized markers raise a clean `ValueError` refusal, including when
+the name also matches an ID prefix; a missing marker still allows prefix fallback.
+Session tags translate that refusal into their existing typed error. Preview adds an
+opt-in `--all-projects` flag through the existing selection owner, matching
+`run --fork` while preserving project-scoped defaults and non-allocating reads.
+
+Preview reports artifact inheritance as not checked alongside admission. It
+neither builds resumed context nor inherits artifacts; either operation may
+still refuse after ordinary admission even when checkpoint preview succeeds.
+The runner remains the execution owner; no environment or interpreter
+requirement is added.
+
+Text and JSON preview both disclose checkpoint adjustment reasons and retained
+message counts. The no-write contract includes empty directories. Metadata read
+across the store during `latest` or prefix selection shares the preview budget,
+so store size can prevent preview of an otherwise small selected checkpoint.
