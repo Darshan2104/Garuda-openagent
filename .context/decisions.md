@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-16 — Spend checkpoints survive a crash (#363)
+
+The root runner initializes the shared gate's session checkpoint after resume
+inheritance and persists every reservation under the admission lock before
+sending a request. A failed checkpoint write refuses admission with cause
+`checkpoint` and rolls back the in-memory reservation; settlement write failures
+warn and leave the prior durable reservation intact. Children retain the
+asker's sink. The final segment snapshot remains in place.
+
+Resume charges outstanding reservations at their token estimate, records
+interrupted calls and unknown cost, and carries interrupted provenance through
+later resumes. Unknown cost never becomes zero; dollar-only admission refuses
+interrupted calls whose price cannot be established. This is estimated token
+charging, not exact provider billing. Legacy missing snapshots retain the
+existing unknown-prior-spend behavior; reconstructing them and charging
+cancelled or failed calls without usage remain outside this slice.
+
 ## 2026-11-12 — Collection attempts inherit root spend admission (#363)
 
 Collection workers inherit the active native run's spend gate when their child

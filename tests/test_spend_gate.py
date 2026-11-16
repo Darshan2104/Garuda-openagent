@@ -5,6 +5,10 @@ against the same remaining budget, and unknown cost is never treated as free.
 """
 
 import asyncio
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -52,6 +56,89 @@ async def test_concurrent_calls_cannot_both_spend_the_same_remainder():
     await gate.settle(admitted, {"total_tokens": 30})
     assert gate.reserved_tokens == 0 and gate.settled_tokens == 30
     await gate.admit("c", estimate_tokens=60)  # the released remainder is reusable
+
+
+async def test_spend_checkpoint_records_admission_and_settlement():
+    snapshots = []
+    gate = SpendGate(max_tokens=1000, checkpoint=snapshots.append)
+    reservation = await gate.admit("main", estimate_tokens=60)
+    assert snapshots[-1]["reserved_tokens"] == 60
+    assert snapshots[-1]["reserved_calls"] == 1
+    await gate.settle(reservation, {"total_tokens": 40, "cost_usd": 0.01})
+    assert snapshots[-1]["reserved_tokens"] == snapshots[-1]["reserved_calls"] == 0
+    assert snapshots[-1]["settled_tokens"] == 40
+
+
+@pytest.mark.parametrize("caps", [{"max_tokens": 1000}, {"max_cost_usd": 1.0}])
+async def test_spend_checkpoint_charges_interrupted_reservations(caps):
+    gate = SpendGate(**caps)
+    inherited = gate.inherit({"settled_tokens": 400, "reserved_tokens": 60,
+                              "reserved_calls": 1, "settled_cost_usd": 0.04,
+                              "cost_unknown_calls": 0})
+    assert gate.settled_tokens == 460
+    assert inherited == {"source": "spend_checkpoint", "inherited_tokens": 460,
+                         "inherited_cost_usd": 0.04, "inherited_cost_unknown_calls": 1,
+                         "interrupted_calls": 1, "interrupted_tokens_charged": 60}
+    assert gate.estimated_token_calls == 1
+    assert gate.cost_unknown_calls == gate.interrupted_calls == 1
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("main", estimate_tokens=541)
+    assert refused.value.cause == ("tokens" if "max_tokens" in caps else "cost_unknown")
+    if "max_cost_usd" in caps:
+        assert "1 interrupted call" in str(refused.value)
+    # A clean checkpoint in a later segment retains the interrupted provenance,
+    # without charging the reservation twice or blaming the current model.
+    resumed = SpendGate(max_cost_usd=1.0)
+    resumed.inherit(gate.snapshot())
+    assert resumed.settled_tokens == 460 and resumed.interrupted_calls == 1
+    with pytest.raises(SpendLimitExceeded, match="1 interrupted call"):
+        await resumed.admit("main", estimate_tokens=1)
+
+
+async def test_spend_checkpoint_write_failure_refuses_admission():
+    def broken(snapshot):
+        raise OSError("disk full")
+
+    gate = SpendGate(max_tokens=1000, checkpoint=broken)
+    with pytest.raises(SpendLimitExceeded) as refused:
+        await gate.admit("main", estimate_tokens=60)
+    assert refused.value.cause == gate.last_refusal_cause == "checkpoint"
+    assert gate.reserved_tokens == gate.reserved_calls == gate.calls == 0
+    assert gate.refused == 1
+
+
+async def test_spend_checkpoint_interrupt_rolls_back_admission():
+    interrupt = KeyboardInterrupt("checkpoint interrupted")
+
+    def interrupted(snapshot):
+        raise interrupt
+
+    gate = SpendGate(max_tokens=1000, checkpoint=interrupted)
+    calls, refused = gate.calls, gate.refused
+    with pytest.raises(KeyboardInterrupt) as raised:
+        await gate.admit("main", estimate_tokens=60)
+    assert raised.value is interrupt
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    assert gate.calls == calls and gate.refused == refused
+    assert gate.last_refusal_cause is None
+
+
+async def test_spend_checkpoint_settlement_failure_retains_safe_reservation(caplog):
+    snapshots = []
+
+    def once(snapshot):
+        if snapshots:
+            raise OSError("disk full")
+        snapshots.append(snapshot)
+
+    gate = SpendGate(max_tokens=1000, checkpoint=once)
+    await gate.settle(await gate.admit("main", estimate_tokens=60),
+                      {"total_tokens": 40, "cost_usd": 0.01})
+    assert gate.settled_tokens == 40 and gate.reserved_calls == 0
+    assert "checkpoint" in caplog.text.lower()
+    recovered = SpendGate(max_tokens=1000)
+    recovered.inherit(snapshots[-1])
+    assert recovered.settled_tokens == 60 and recovered.cost_unknown_calls == 1
 
 
 async def test_unknown_cost_never_counts_as_free_under_a_dollar_cap():
@@ -202,6 +289,93 @@ async def test_a_resumed_run_continues_the_source_tree_spend(repo, tmp_path, mon
     assert second["spend_inherited"]["inherited_tokens"] == 200
     assert second["spend_gate"]["settled_tokens"] == 400
     assert second["spend_gate"]["settled_cost_usd"] == 0.04
+
+
+async def test_spend_checkpoint_survives_a_real_crash(repo, tmp_path, monkeypatch):
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.runtime.recovery import _process_live
+    from garuda.tools import tools_for_names
+    from garuda.workspace.lease import LeaseStore
+
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    store = SessionStore(tmp_path / "sessions")
+    code = textwrap.dedent('''
+        import asyncio, os, sys
+        from garuda.core.events import EventStore
+        from garuda.core.loop import DefaultAgent
+        from garuda.core.permissions import PermissionEngine
+        from garuda.core.sessions import SessionStore
+        from garuda.interfaces.runner import run_agent_task
+        from garuda.model.accounting import current_gate
+        from garuda.model.script_model import ScriptModel
+        from garuda.types import AgentConfig
+        from garuda.tools import tools_for_names
+        from tests.test_spend_gate import _call
+
+        class CrashModel(ScriptModel):
+            sent = 0
+
+            async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+                self.sent += 1
+                if self.sent == 2:
+                    # Observe admission at the model boundary; never synthesize
+                    # the durable checkpoint this test protects.
+                    print(current_gate().reserved_tokens, flush=True)
+                    os._exit(9)
+                return await super().complete(messages, tools, temperature, max_tokens)
+
+        asyncio.run(run_agent_task(
+            task="start", model=CrashModel([
+                _call("todo", "1", {"total_tokens": 400, "cost_usd": 0.04},
+                      todos=[{"content": "finish", "status": "in_progress"}]),
+            ]), agent=DefaultAgent(), tools=tools_for_names(["todo"]),
+            config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo",
+                               max_tokens=50, max_run_tokens=1000, system_prompt="sys",
+                               bootstrap_environment=False),
+            permissions=PermissionEngine(mode="yolo"), workspace=sys.argv[1],
+            events=EventStore(session_id="crashed"), store=SessionStore(sys.argv[2]),
+        ))
+    ''')
+    crashed = subprocess.run(
+        [sys.executable, "-c", code, str(repo), str(store.root)],
+        env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert crashed.returncode == 9, crashed.stdout + crashed.stderr
+    reservation = int(crashed.stdout.strip())
+    assert reservation > 0
+    # Ownership recovery deliberately retains crashed owners' leases. This
+    # fixture ran only the in-memory todo tool (no workspace processes), and
+    # subprocess.run has reaped its owner. Explicitly retire just that fixture
+    # lease; spend and source session records remain entirely untouched.
+    holder, = LeaseStore().holders_of(repo)
+    assert holder.session_id == "crashed" and _process_live(holder.pid) is False
+    assert not store.load_meta("crashed").get("runtime_children")
+    lease_path, = (tmp_path / "leases").glob("*.json")
+    lease_path.unlink()
+
+    resumed = await run_agent_task(
+        task="finish", model=ScriptModel([_done("2", {"total_tokens": 10, "cost_usd": 0.01})]),
+        agent=DefaultAgent(), tools=tools_for_names(["task_complete"]),
+        config=AgentConfig(max_turns=5, enable_verifier=False, permission_mode="yolo",
+                           max_tokens=50, max_run_tokens=1000, system_prompt="sys",
+                           bootstrap_environment=False),
+        permissions=PermissionEngine(mode="yolo"), workspace=str(repo),
+        events=EventStore(session_id="resumed"), store=store, resume="crashed",
+    )
+    meta = store.load_meta("resumed")
+    inherited = meta["spend_inherited"]
+    assert inherited["source"] == "spend_checkpoint"
+    assert inherited["inherited_tokens"] == 400 + reservation
+    assert inherited["interrupted_calls"] == 1
+    assert inherited["interrupted_tokens_charged"] == reservation
+    assert meta["spend_gate"]["cost_unknown_calls"] == 1
+    # The inherited charge leaves too little for the resumed prompt plus its
+    # 50-token output reservation, so even the scripted 10-token call is refused.
+    assert not resumed.success and resumed.metadata["spend_limit"] == "tokens"
+    assert meta["spend_gate"]["settled_tokens"] == 400 + reservation
+    assert meta["spend_gate"]["calls"] == 0
 
 
 async def test_unknown_prior_spend_cannot_satisfy_a_dollar_only_cap(repo, tmp_path, monkeypatch):

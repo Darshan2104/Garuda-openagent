@@ -135,6 +135,16 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
+   `core/spend.py::SpendGate` shares a token/dollar budget across the native run
+   tree. The root runner writes an initial `spend_gate` checkpoint after resume
+   inheritance, then checkpoints each admission under the gate lock before the
+   request is sent and each settlement after usage is charged. A checkpoint
+   write failure at admission refuses the call with cause `checkpoint`; a
+   settlement write failure warns and retains the previous reservation record.
+   Resume charges crash-interrupted reservations at their token estimate with
+   unknown cost, retaining interrupted-call provenance through later resumes.
+   Dollar-only admission refuses that unknown cost; dollar caps remain stops
+   based on reported spend. Legacy missing snapshots retain unknown prior spend.
    An opt-in `core/advisor.py` reuses consult admission and between-turn steering.
    Definitions select repeated-failure (the default), first-plan and
    first-candidate checkpoints. Notes require literal evidence citations and are
