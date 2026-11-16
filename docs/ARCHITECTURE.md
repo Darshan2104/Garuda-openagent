@@ -241,7 +241,14 @@ fastest way to learn the system.
    parent content is captured and preserved; any base drift refuses. Receipts
    and `editing_worker` events record admission through integration or refusal.
    Active-child cancellation and uncertain child cleanup retain the repository,
-   lease and capacity and block further editing dispatch. Cancelled integration
+   lease and capacity and block further editing dispatch. The editing service
+   closes its child environment's optional services on interrupted exits as well
+   as normal returns, waiting through repeated cancellation before unwinding.
+   Every close failure records `environment_close: failed` on the receipt and
+   event without exception details. Cancellation during close takes precedence
+   over an earlier child exception and retains any close-failure cause.
+   This does not prove descendant settlement or release quarantined ownership.
+   Cancelled integration
    settles its checker and retains an uncertain candidate. Durable receipts
    prevent a fresh service from bypassing retained uncertainty for that parent.
    Local worker receipts also bind parent ownership, repository identity and
