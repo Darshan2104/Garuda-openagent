@@ -438,7 +438,10 @@ TERM=dumb garuda run -t "Explain how the request router works"
 
 On a TTY, native `run` and interactive `chat` show assistant text as it arrives.
 In chat, enter a task at `task>`; the thinking spinner yields to the preview,
-and every turn exit clears it. Chat retains its existing final done panel.
+resumes when the preview clears or is replaced, and stops at turn exit.
+Every turn exit clears the preview. Chat retains its existing final done panel.
+Like `run`, streaming chat skips auxiliary-accounting `model_response` content
+(`accounting == "auxiliary"`); `--no-stream` chat still prints it.
 The preview is transient: the assembled response replaces it once. If streaming fails, the
 preview is erased before the ordinary retry, whose completed answer replaces
 it. Cancellation or a failed call closes the preview. Only assistant text is

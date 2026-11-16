@@ -63,8 +63,12 @@ and event drain remain the owners; chat does not route through the run runner
 or add another renderer/observer. Non-TTY and opted-out chat keep ordinary output.
 Dumb/unset terminals retain renderer-level preview suppression.
 
-The thinking status stops before the preview starts, supporting Rich versions
-that disallow nested Live displays. Events drain before the preview is discarded
+The thinking status stops before the preview starts and restarts after discard
+or response assembly, covering tools and waits for the next model call while
+supporting Rich versions that disallow nested Live displays. The thinking context
+stops the status on exit. Like `run`, streaming chat skips auxiliary-accounting
+`model_response` content (`accounting == "auxiliary"`); `--no-stream` chat still
+prints it. Events drain before the preview is discarded
 on every turn exit, including failure and cancellation. Reasoning and tool
 argument fragments never enter the preview. Assembly, fallback, tool dispatch,
 permissions and usage remain owned by the loop. Chat keeps its existing

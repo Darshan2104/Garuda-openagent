@@ -452,7 +452,10 @@ output withholding retain the ordinary model path for `run`.
 `interfaces/cli.py::chat_loop` attaches the shared consumer on a TTY unless
 `--json` or `--no-stream` is selected, draining events through the existing
 renderer. `tui.py::ChatRenderer` stops the active thinking status before starting
-the preview, supporting Rich versions that cannot nest Live displays. Chat drains
+the preview and restarts it after discard or response assembly, supporting Rich
+versions that cannot nest Live displays. The thinking context stops the status
+on exit. Like `run`, streaming chat skips auxiliary-accounting `model_response`
+content (`accounting == "auxiliary"`); `--no-stream` chat still prints it. Chat drains
 events before clearing previews on every turn exit, including errors and
 cancellation, and retains its final done panel. ACP does not attach the native
 consumer; dashboard chat and the SDK's `on_delta` do. Dashboard `live.py` clears matching chat previews on accepted

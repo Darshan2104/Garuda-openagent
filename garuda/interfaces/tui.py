@@ -187,6 +187,8 @@ class ChatRenderer:
                 live.stop()
         elif text:
             self._out("\r\033[2K", end="")
+        if self._status is not None:
+            self._status.start()
 
     def on_assistant_response(self, text: str | None) -> None:
         self.discard_assistant()

@@ -180,7 +180,9 @@ fastest way to learn the system.
    output is deduplicated against all rendered responses of the run.
    Native `garuda chat` attaches the same consumer on a TTY unless `--json` or
    `--no-stream` is selected, using its existing renderer and event drain. Its
-   thinking status spinner yields to the preview, and every turn exit clears
+   thinking status spinner yields to the preview and resumes when it is cleared
+   or replaced, covering tool execution and waits for the next model call. The
+   thinking context stops the status on exit, and every turn exit clears
    that preview after draining events, including failure and cancellation.
    Chat retains its existing final done panel.
    Tool arguments and reasoning are never

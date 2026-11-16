@@ -16,6 +16,7 @@ from garuda.core.sessions import SessionStore
 from garuda.interfaces import cli, main, tui
 from garuda.model.protocol import ModelResponse, StreamDelta
 from garuda.model.script_model import ScriptedStream, ScriptModel
+from garuda.model.streaming import LiveDelta
 from garuda.types import AgentConfig, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
@@ -427,6 +428,49 @@ async def test_run_preserves_output_for_ordinary_paths(command, flags, tty, lega
         assert output == "Ordinary answer.\n"
     else:
         assert output == "[garuda] reasoning=script/test (builtin)\nOrdinary answer.\n"
+
+
+@pytest.mark.skipif(not tui.rich_available(), reason="rich not installed")
+@pytest.mark.parametrize("clear", ["assembled", "discarded"])
+def test_chat_spinner_resumes_between_text_previews(monkeypatch, clear):
+    monkeypatch.setenv("TERM", "xterm")
+    terminal = Terminal()
+    renderer = tui.ChatRenderer(use_rich=True, stream=terminal)
+
+    with renderer.thinking("Working"):
+        status = renderer._status
+        assert status._live.is_started
+        renderer.on_model_delta(LiveDelta(kind="text", text="Running tests."))
+        assert not status._live.is_started
+        assert renderer._assistant_live.is_started
+
+        if clear == "assembled":
+            renderer.on_assistant_response("Running tests.")
+        else:
+            renderer.on_model_delta(LiveDelta(kind="discard"))
+        assert renderer._assistant_live is None
+        assert status._live.is_started
+
+        renderer.on_tool_call("bash", {"command": "pytest"})
+        renderer.on_tool_result("bash", "Tests passed.")
+        before_wait = terminal.getvalue()
+        status._live.refresh()
+        assert "Working" in terminal.getvalue()[len(before_wait):]
+
+        renderer.on_model_delta(LiveDelta(kind="text", text="All tests passed."))
+        assert not status._live.is_started
+        assert renderer._assistant_live.is_started
+        renderer.on_assistant_response("All tests passed.")
+        assert status._live.is_started
+
+    assert renderer._status is None
+    assert not status._live.is_started
+    renderer.discard_assistant()  # The turn's final event drain cannot restart it.
+    assert not status._live.is_started
+    with renderer.thinking("Next turn"):
+        assert renderer._status._live.is_started
+        assert not status._live.is_started
+    assert renderer._status is None
 
 
 @pytest.mark.parametrize("rich", [False, True])
