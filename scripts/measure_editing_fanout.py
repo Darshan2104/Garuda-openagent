@@ -1,8 +1,14 @@
-"""Opt-in, provider-free editing-worker measurement for #384.
+"""Provider-free editing-worker measurement development script for #384.
 
 Real native children, SpendGate settlement and Git integration; synthetic model
 usage, process start identity and Docker check dispatch. No speed/quality claim.
-Run in a dedicated process: fixture patches and environment are process-wide.
+Run only in a dedicated process. This script substitutes Docker dispatch and
+process identity and redirects lease, recovery, session and settings stores via
+process-wide patches. Never import it into a process doing real agent work.
+
+Usage::
+
+    python scripts/measure_editing_fanout.py --delay 0.05 --out editing-fanout.json
 """
 
 from __future__ import annotations
@@ -13,19 +19,22 @@ import json
 import math
 import os
 import platform
+import sys
 import tempfile
 import time
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-from garuda.core.events import EventStore
-from garuda.core.permissions import PermissionEngine
-from garuda.core.spend import SpendGate, usage_tokens
-from garuda.core.subagent import DelegationBudget, SubagentRunner
-from garuda.model.protocol import ModelResponse
-from garuda.model.script_model import ScriptModel
-from garuda.types import Role, ToolCall
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from garuda.core.events import EventStore  # noqa: E402
+from garuda.core.permissions import PermissionEngine  # noqa: E402
+from garuda.core.spend import SpendGate, usage_tokens  # noqa: E402
+from garuda.core.subagent import DelegationBudget, SubagentRunner  # noqa: E402
+from garuda.model.protocol import ModelResponse  # noqa: E402
+from garuda.model.script_model import ScriptModel  # noqa: E402
+from garuda.types import Role, ToolCall  # noqa: E402
 
 TASKS = ("alpha", "beta", "gamma", "delta")
 USAGE = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost_usd": 0.0}

@@ -648,11 +648,15 @@ open; the model-facing tool and CLI keep their existing dispatch behavior.
 
 ### Measure editing fan-out offline
 
+Run this development script from a source checkout in a dedicated process. It
+substitutes Docker dispatch and process identity with process-wide patches; never
+import it into a process doing real agent work.
+
 Compare sequential fresh-base batches with four concurrent scripted workers using
 the [deterministic outcome/time/cost and conflict measurement](../evaluation/index.md#deterministic-editing-worker-fan-out), with no provider spend or speed claim:
 
 ```bash
-python -m garuda.eval.editing_fanout --delay 0.05 --out editing-fanout.json
+python scripts/measure_editing_fanout.py --delay 0.05 --out editing-fanout.json
 ```
 
 ### Inspect and resolve retained editing workers

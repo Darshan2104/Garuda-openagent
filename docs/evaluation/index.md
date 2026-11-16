@@ -107,10 +107,10 @@ must be separately opted into with explicit spend/turn/time caps; tests never ru
 
 ## Deterministic editing-worker fan-out
 
-Opt-in, provider-free measurement for [#384](https://github.com/Darshan2104/Garuda-openagent/issues/384):
+Provider-free development script for [#384](https://github.com/Darshan2104/Garuda-openagent/issues/384):
 
 ```bash
-python -m garuda.eval.editing_fanout --delay 0.05 --out editing-fanout.json
+python scripts/measure_editing_fanout.py --delay 0.05 --out editing-fanout.json
 ```
 
 This is a **deterministic fixture with scripted delays, not a latency or quality
@@ -164,8 +164,10 @@ candidate files) and the current process's start identity, as the worker tests
 do for sandboxes without `/bin/ps`. Real native children, isolated repositories,
 lease/capacity records, permissions, snapshot revalidation and patch application
 remain in use. This is not live Docker, OS identity, provider or non-local backend
-validation. Run it in a dedicated process: fixture patches/settings are
-process-wide and temporary stores isolate it from user sessions and configuration.
+validation. Run it from a source checkout in a dedicated process. Never import
+it into a process doing real agent work: Docker dispatch, process identity and environment
+settings are patched process-wide. Lease, recovery, session and settings stores
+are redirected to temporary directories for the measurement.
 The report command exits nonzero for unexpected outcomes. The regression test
 checks outcomes, spend settlement and serialized dispatch, with no speed assertion:
 

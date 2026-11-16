@@ -8,7 +8,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Editing-worker fan-out measurement | Provider-free scripted N=1/N=4 outcome, time, settled token and conflict evidence; no speed claim | `python -m garuda.eval.editing_fanout --out editing-fanout.json` | [Measure editing fan-out](../use-cases/teams.md#measure-editing-fan-out-offline) |
+| Editing-worker fan-out measurement | Development script for a dedicated process: provider-free scripted N=1/N=4 outcome, time, settled token and conflict evidence; substitutes Docker dispatch and process identity; never import into real agent work; no speed claim | `python scripts/measure_editing_fanout.py --out editing-fanout.json` | [Measure editing fan-out](../use-cases/teams.md#measure-editing-fan-out-offline) |
 | Bounded file pages and tails | Inspect UTF-8 ranges with bounded allocation and an end-seeking tail on local/sandbox backends | `read_file` tool: `offset`, `limit`, `tail`, `bounded` | [Bounded inspection](../use-cases/automate.md#read-a-bounded-file-page-or-tail) |
 | Packaged starters | Five goal-oriented journeys using existing roles and flows | `garuda starter list` | [Workflows](../use-cases/workflows.md) |
 | Harness modes | Run an external role in one of its harness's own permission modes, with defaults from the role's permissions | `garuda run --role coder --harness-mode workspace-write -t "…"` | [Configuration](../guides/configuration.md#a-roles-harness-mode) |

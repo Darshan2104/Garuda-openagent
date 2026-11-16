@@ -1,13 +1,29 @@
 """The offline measurement must report real outcomes and settled shared spend."""
 
+import importlib.util
 import json
 import socket
+from pathlib import Path
+
+import pytest
 
 from garuda.core.editing_worker import LocalEditingWorkers
-from garuda.eval.editing_fanout import run_measurement
 
 
-async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integration(tmp_path, monkeypatch):
+@pytest.fixture(scope="module")
+def measurement():
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "measure_editing_fanout", root / "scripts" / "measure_editing_fanout.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integration(
+    tmp_path, monkeypatch, measurement,
+):
     # Primary owner: the measurement artifact. Worker locking itself is covered
     # by test_editing_workers; this catches dropped/reordered rows, concurrent
     # integration dispatch, invented usage and a baseline that reuses stale bases.
@@ -32,7 +48,7 @@ async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integra
 
     monkeypatch.setattr(LocalEditingWorkers, "integrate", observe)
     destination = tmp_path / "reports" / "fanout.json"
-    report = await run_measurement(destination, delay=0.001)
+    report = await measurement.run_measurement(destination, delay=0.001)
     saved = json.loads(destination.read_text())
     assert saved == report
     assert report["provider_calls"] == 0 and report["provider_cost_usd"] == 0
