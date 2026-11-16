@@ -1136,6 +1136,8 @@ class CollectionCoordinator:
             call_purpose="collector",
         )
         started = time.monotonic()
+        spend_gate = config.spend_gate
+        refused_before = spend_gate.refused if spend_gate is not None else 0
         result = await DefaultAgent(profile_name="collection").run(
             task=request.objective,
             model=model,
@@ -1172,8 +1174,13 @@ class CollectionCoordinator:
             model_binding_role=role,
         )
         error: str | SpendLimitExceeded | None = None
-        if "spend_limit" in result.metadata:
-            cause = result.metadata["spend_limit"]
+        cause = result.metadata.get("spend_limit")
+        # Auxiliary callers can swallow admission exceptions, and final submission
+        # can return an ordinary exhausted result. Any new shared-gate refusal
+        # during this attempt must stop the job before recording a fallback.
+        if spend_gate is not None and spend_gate.refused > refused_before:
+            cause = spend_gate.last_refusal_cause or "unknown"
+        if cause is not None:
             error = SpendLimitExceeded(
                 f"collection worker stopped by spend_limit ({cause}): {result.final_message}",
                 cause,
