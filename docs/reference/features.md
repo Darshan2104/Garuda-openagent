@@ -18,6 +18,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Headless run | One task, an answer, a saved session | `garuda run -t "…"` | [Level 2](../use-cases/change-code.md#fix-a-bug-with-a-git-safety-net) |
 | Interactive chat | Turn-by-turn work with `y/N` approvals | `garuda chat` | [Level 2](../use-cases/change-code.md#chat-and-approve-risky-actions-yourself) |
 | Read-only mode | Inspection only, blocked writes | `garuda run --mode readonly -t "…"` | [Level 1](../use-cases/explore.md#ask-questions-about-a-codebase) |
+| Path permission rules | Deny/ask decisions always NFC-normalize and casefold file, search/ls and shell operands, including new writes; distinct case-sensitive files may be over-denied | Profile path rules | [Create an agent](../use-cases/customize.md#create-your-own-agent) |
 | Investigation scopes | A read-only subagent that hands back only a validated report of evidence, conclusions, rejected approaches and coverage | `invoke_subagent` with `profile: investigate` | [Level 1](../use-cases/explore.md#investigate-without-filling-the-main-conversation) |
 | No-edits guard | A run that is checked to have changed nothing | `garuda run --no-edits -t "…"` | [Level 1](../use-cases/explore.md#make-sure-a-run-changes-nothing) |
 | Acceptance checks | "Done" means your command passed | `garuda run --check "pytest -q" -t "…"` | [Level 2](../use-cases/change-code.md#verify-the-result-with-your-own-check) |
@@ -56,6 +57,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Session record | Every run saved with its events and state | `garuda sessions show latest` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Context fork | Read-only preview with optional cross-project selection; admission and artifact inheritance unchecked; new session from a complete conversation prefix, current workspace, stale inherited evidence, inherited history excluded from completion evidence, compaction summaries of inherited history stay marked and excluded, inspectable lineage | `garuda sessions fork-preview latest --at 5 --all-projects --json`; `garuda run --fork SESSION --fork-at 5 -t "…"` | [Level 7](../use-cases/advanced.md#fork-an-earlier-conversation-context) |
+| Context-pack redaction | Generated current-task/handoff files redact environment credential assignments and common tokens from evidence and failures | Session `current-task.md` / `handoff.md` | [Handoff](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
 | Resume | Continue a conversation | `garuda run --resume latest -t "…"` | [Level 1](../use-cases/explore.md#ask-a-follow-up-question) |
 | Names and briefs | Hand one run's outcome to another | `garuda run -t "… @fix-tests …"` | [Level 2](../use-cases/change-code.md#name-a-session-and-build-on-it) |
 | Background runs | Queue a task and get your terminal back | `garuda run --bg -t "…"` | [Level 4](../use-cases/parallel.md#run-a-task-in-the-background) |
@@ -84,7 +86,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Reviewed note retrieval | Project-scoped, bounded search with evidence and freshness labels | `garuda memory search` | [Retrieve notes](../use-cases/customize.md#retrieve-reviewed-notes-with-source-evidence) |
 | Skills | Procedures loaded on demand, filtered per agent | `.agent/skills/NAME/SKILL.md` | [Level 3](../use-cases/customize.md#add-a-skill) |
 | Tool options | Bash timeouts, web domain allowlists, subagent limits | `tools.options` in an agent | [Agents guide](../guides/agents.md#tools) |
-| MCP tools | Tools from MCP servers, trusted per entry | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
+| MCP tools | Trust binds launch files and script/package trees, excludes bytecode with Python cache isolation, and uses workspace cwd; code-loading env, package runners and unresolved code carry explicit unpinned reasons | `garuda mcp list`, `garuda mcp trust` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | MCP resources and prompts | Opt-in bounded lists and text retrieval through admitted sessions; untrusted data, read-only effects and explicit unsupported capabilities | Global `context_access`, `mcp__<server>__context` | [Level 3](../use-cases/customize.md#read-mcp-resources-and-prompts) |
 | Required MCP servers | A required server must be ready by the startup barrier or the run refuses; per-server state, reason and bounded stdio reconnects are inspectable | `"required": true` in `mcp.json`, `garuda mcp list` | [Level 3](../use-cases/customize.md#connect-mcp-tools) |
 | Semantic edit preview/apply | Version/digest-bound rename and edit-only code actions, per-path permissions, explicit apply/rollback results | `lsp` rename/code_action → `lsp_apply` preview token | [Level 3](../use-cases/customize.md#preview-and-apply-a-semantic-refactor) |

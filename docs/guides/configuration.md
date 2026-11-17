@@ -142,7 +142,25 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
 
 - A server from a project file (including `.cursor/mcp.json`) starts only after
   you trust it with `garuda mcp trust`. The grant covers that exact entry and
-  any repository script it runs, in that repository; untrusted servers are
+  identified repository launch files, in that repository. Attached option paths,
+  `-r`/`--require`/`--import`/`--loader` values and local Python `-m` modules are
+  bound. Scripts bind their containing directory trees, and packages bind their
+  trees, with the same 4,096-entry limit. Enumeration/hash failures refuse trust.
+  `__pycache__`, `.pyc` and `.pyo` are excluded; project Python launches disable
+  bytecode writes and use a Garuda-owned cache outside the repository to ignore
+  planted repository caches. Stdio servers start in the workspace root.
+  Sourceless repository bytecode and Python flags that override cache isolation
+  refuse launch; provide source and keep the cache controls enabled.
+  Code-loading environment variables (including `NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `PYTHONHOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
+  `RUBYOPT`, `PERL5OPT`, `JAVA_TOOL_OPTIONS`), package runners, and unresolved
+  code/path operands are labelled **code not pinned** with reasons before consent,
+  stored with `code_pinned: false`, and warned about at trust checks. Such a grant
+  covers configuration and identified files only. Installed dependencies and
+  dynamic imports are outside this static binding. Older MCP grants require
+  review again after the binding revision, with an explicit update notice.
+  Consent names the bound trees; one unbindable server does not skip later entries.
+  Untrusted servers are
   skipped with `agent.untrusted_project_code`, and a profile that requires one
   refuses. `--mcp-config FILE` and the global file are yours and need no grant.
 - Project and global servers merge by default; trusted project entries win name

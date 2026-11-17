@@ -64,6 +64,15 @@ disabled.
 Permission rules and OS sandbox policies are useful defense in depth. Don't
 describe or treat them as equivalent to containment.
 
+Path deny/ask rules always normalize Unicode to NFC and then casefold both
+patterns and operands, on every platform. `.env` and `.ENV`, or
+`secrets/key.pem` and `SECRETS/key.pem`, receive the same rule decision for file
+tools, new writes, search/ls and literal shell operands. Canonically equivalent
+Unicode spellings also share a decision. This deliberately over-denies distinct
+files on case-sensitive filesystems (including Linux); filesystem entries cannot
+disable folding. Operands are normalized once per check, before matching rules.
+Broad search results and shell indirection remain outside argument screening.
+
 ### When a run dies: leases and slots stay held
 
 Each editing session holds a **lease** on its workspace, and each run holds a
