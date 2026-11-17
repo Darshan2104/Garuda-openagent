@@ -11,9 +11,9 @@ import pytest
 
 from garuda.core.events import EventStore, EventType
 from garuda.core.sessions import SessionStore
-from garuda.interfaces.web.routes import DashboardContext, dispatch
+from garuda.interfaces.web.routes import DashboardContext, dispatch, sse_frames
 from garuda.interfaces.web.security import TOKEN_HEADER
-from garuda.interfaces.web.tail import MAX_TAIL_BYTES, tail_jsonl
+from garuda.interfaces.web.tail import MAX_TAIL_BYTES, tail_jsonl, tail_records
 from garuda.interfaces.web.wire import Request
 from garuda.types import AgentResult
 
@@ -193,6 +193,62 @@ def test_a_burst_larger_than_the_cap_is_delivered_over_several_polls(store):
     assert total == count
 
 
+def test_tail_advances_past_oversized_event_and_counts_it(ctx, live):
+    sid, events, path = live
+    events.append(EventType.TOOL_CALL, {"name": "bash", "arguments": {"command": "before"}})
+    events.append(EventType.TOOL_CALL, {
+        "name": "write_file", "arguments": {"content": "x" * (5 * 1024 * 1024)},
+    })
+    events.append(EventType.TOOL_CALL, {"name": "bash", "arguments": {"command": "after"}})
+    offset, seen, malformed = 0, [], 0
+    for _ in range(6):
+        page = body(call(ctx, f"/api/runs/{sid}/tail", query=f"offset={offset}"))
+        seen.extend(e["payload"]["arguments"]["command"] for e in page["events"])
+        malformed += page["malformed"]
+        offset = page["offset"]
+        if page["eof"]:
+            break
+    assert seen == ["before", "after"]
+    assert malformed == 1
+    assert offset == path.stat().st_size
+
+
+def test_sse_advances_past_oversized_event_and_resumes(store, live):
+    sid, events, path = live
+    events.append(EventType.MODEL_RESPONSE, {"content": "before"})
+    events.append(EventType.TOOL_CALL, {"content": "x" * (5 * 1024 * 1024)})
+    events.append(EventType.MODEL_RESPONSE, {"content": "after"})
+    store.finish(sid, AgentResult(success=True, final_message="done", messages=[], turns=1))
+    frames = list(sse_frames(store, sid, 0, poll=0.0, sleep=lambda _: None,
+                             clock=iter(range(100)).__next__, max_seconds=10))
+    delivered = [frame for frame in frames if b"event: event\n" in frame]
+    assert [json.loads(f.split(b"data: ")[1])["payload"]["content"] for f in delivered] == [
+        "before", "after",
+    ]
+    assert delivered[-1].startswith(f"id: {path.stat().st_size}\n".encode())
+    assert sum(json.loads(f.split(b"data: ")[1])["malformed"]
+               for f in frames if b"event: skipped\n" in f) == 1
+    resumed = list(sse_frames(store, sid, path.stat().st_size, poll=0))
+    assert len(resumed) == 1 and b"event: end\n" in resumed[0]
+
+
+@pytest.mark.parametrize("reader", [tail_jsonl, tail_records])
+def test_oversized_torn_line_waits_for_newline(tmp_path, reader):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"content":"' + b"x" * (MAX_TAIL_BYTES + 1))
+    result = reader(path)
+    offset = result.offset if reader is tail_jsonl else result[1]
+    assert offset == 0
+    with path.open("ab") as handle:
+        handle.write(b'"}\n{"after":true}\n')
+    result = reader(path, offset)
+    offset = result.offset if reader is tail_jsonl else result[1]
+    assert offset > MAX_TAIL_BYTES
+    result = reader(path, offset)
+    records = result.events if reader is tail_jsonl else [r for _, r in result[0]]
+    assert records == [{"after": True}]
+
+
 def test_a_missing_file_is_reported_not_raised(store):
     """A session directory exists before its first event is written, and a poller that
     starts with the run must not fail on that gap."""
@@ -278,3 +334,34 @@ def test_the_tail_and_events_routes_use_different_cursors(ctx, store, live):
     assert window["start"] == 4
     assert window["events"][0]["payload"]["turn"] == 4
     assert tail["size"] == tail["offset"]
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_finished_sse_ends_at_torn_final_line(store, live, oversized):
+    sid, events, path = live
+    events.append(EventType.MODEL_RESPONSE, {"content": "complete"})
+    boundary = path.stat().st_size
+    with path.open("ab") as handle:
+        handle.write(b'{"content":"' + b"x" * (MAX_TAIL_BYTES + 1 if oversized else 5))
+    store.finish(sid, AgentResult(success=False, final_message="crashed", messages=[], turns=1))
+    sleeps = []
+    frames = list(sse_frames(store, sid, 0, max_seconds=10,
+                             clock=iter(range(100)).__next__, sleep=sleeps.append))
+    assert b"event: event\n" in frames[0]
+    assert frames[-1] == f'id: {boundary}\nevent: end\ndata: {{}}\n\n'.encode()
+    assert not sleeps, "a finished torn log must end without waiting for another append"
+
+
+def test_sse_skip_notice_does_not_jump_over_undelivered_events(store, live):
+    sid, events, path = live
+    events.append(EventType.MODEL_RESPONSE, {"content": "before"})
+    with path.open("ab") as handle:
+        handle.write(b"broken json\n")
+    events.append(EventType.MODEL_RESPONSE, {"content": "after"})
+    store.finish(sid, AgentResult(success=True, final_message="done", messages=[], turns=1))
+    frames = list(sse_frames(store, sid, 0, poll=0))
+    ids = [int(frame.split(b"\n", 1)[0].removeprefix(b"id: ")) for frame in frames]
+    assert ids == sorted(ids), "a skip notice must not acknowledge events before delivery"
+    assert b"event: skipped\n" in frames[-2]
+    assert json.loads(frames[-2].split(b"data: ")[1]) == {"malformed": 1}
+    assert b"event: end\n" in frames[-1]

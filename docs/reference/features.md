@@ -8,6 +8,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
+| Public CLI help | Usage and command help hide internal worker and consult entry points while preserving internal invocation | `garuda --help` | [Cheat sheet](cheat-sheet.md#set-up) |
 | Model-driven editing-worker fan-out | Opt-in bounded isolated local editing workers with ordered typed receipts and optional serialized checked integration; honors delegation and integration tool ASK/DENY rules; refused in readonly, non-local and restricted runs; unavailable to children | Programmatic `AgentConfig(editing_workers=..., editing_worker_fanout=True)`; `fan_out_editing_workers` | [Let the model fan out](../use-cases/teams.md#let-the-model-fan-out-editing-workers) |
 | Editing-worker fan-out measurement | Development script for a dedicated process: provider-free scripted N=1/N=4 outcome, time, settled token, rebased integration and conflict evidence; substitutes Docker dispatch and process identity; never import into real agent work; no speed claim | `python scripts/measure_editing_fanout.py --out editing-fanout.json` | [Measure editing fan-out](../use-cases/teams.md#measure-editing-fan-out-offline) |
 | Bounded file pages and tails | Inspect UTF-8 ranges with bounded allocation and an end-seeking tail on local/sandbox backends | `read_file` tool: `offset`, `limit`, `tail`, `bounded` | [Bounded inspection](../use-cases/automate.md#read-a-bounded-file-page-or-tail) |
@@ -120,7 +121,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard) |
+| Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts; header security checks before body reads, invalid lengths refused, 12 MiB bodies; tail and SSE skip oversized records without stalling later events | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard), [HTTP API](../guides/web-dashboard.md#http-api) |
 | Failed-call usage | Known retry and partial-stream usage survives once, with unknown coverage | Inspect `response.attempt_usage` or error attributes | [Level 2](../use-cases/change-code.md#inspect-retry-and-failed-call-usage) |
 | Usage ledger | Calls, tokens and known cost by model and role | `garuda web --read-only` → Usage | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | Provider limits | Login and quota readings with their source | `garuda web --read-only` → Providers | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
@@ -136,7 +137,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Live model deltas | Native SDK runs forward text/reasoning fragments while the model generates | `await agent.run("…", on_delta=show)` | [Level 6](../use-cases/automate.md#stream-live-model-deltas) |
 | Dashboard live model output | Bounded transient assistant text and collapsible per-subagent previews while native chat generates, replaced by completed responses | `garuda web --allow-workspace .` | [Level 2](../use-cases/change-code.md#watch-assistant-text-in-dashboard-chat) |
 | `AgentSpec` | Load and narrow an agent from Python | `AgentSpec.load(NAME).narrow(...)` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
-| HTTP service | JSON-RPC jobs with an agent allowlist and operator-owned launch settings when restricted | `garuda serve --allow-agent reviewer` | [Level 6](../use-cases/automate.md#call-garuda-over-http) |
+| HTTP service | JSON-RPC jobs with an agent allowlist and operator-owned launch settings when restricted; header authentication before body reads, 32 MiB bodies and 32 active connections; excess connections receive 503 | `garuda serve --allow-agent reviewer` | [Level 6](../use-cases/automate.md#call-garuda-over-http) |
 
 ## External harnesses
 
@@ -152,6 +153,6 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Routing | Rules choose the starting runtime | `routing:` in `~/.agent/settings.yaml` | [Level 7](../use-cases/advanced.md#route-tasks-to-runtimes-automatically) |
 | Quota fallback | Skip a harness whose plan limit is reached | a role `fallback` | [Level 7](../use-cases/advanced.md#skip-a-harness-whose-subscription-limit-is-used-up) |
 | Collection model | A cheaper model for read-only investigation, subject to collection and root spend limits | `collection:` in settings | [Level 7](../use-cases/advanced.md#add-a-cheaper-model-for-investigation) |
-| ACP server | Use Garuda from an ACP editor | `python -m garuda.acp.server` | [Level 7](../use-cases/advanced.md#use-garuda-from-an-acp-editor) |
+| ACP server | Use Garuda from an ACP editor; fragmented NDJSON frames buffered up to 16 MiB, blank lines ignored, malformed/oversized/unfinished records refused; module launch without a runpy warning | `python -m garuda.acp.server` | [Level 7](../use-cases/advanced.md#use-garuda-from-an-acp-editor) |
 | Evaluation | Benchmark modes and paired reports | `garuda eval dual-model report …` | [Evaluation](../evaluation/index.md) |
 | Offline incident regressions | Synthetic fixtures, frozen minimal config and explicit guard gaps | `python -m garuda.eval.contract_matrix --incidents --out incident-reports` | [Level 7](../use-cases/advanced.md#run-offline-incident-regressions) |

@@ -29,14 +29,41 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 logger = logging.getLogger(__name__)
 
 #: One poll's ceiling. A run that produces a burst larger than this is delivered over
 #: several polls with `eof: false`, which the client already handles — it polls again
 #: immediately rather than waiting out the interval.
+#: A single complete line beyond this limit is scanned past without retaining
+#: its payload; tail_jsonl counts it as malformed. Torn lines stay unconsumed.
 MAX_TAIL_BYTES = 4 * 1024 * 1024
+
+
+def _read_window(handle: BinaryIO, available: int, max_bytes: int) -> tuple[bytes, int, int]:
+    """Complete lines, bytes consumed, oversized count; never retain a huge line.
+
+    When the first record exceeds the window, scan to its newline in bounded
+    chunks. Stop at the size observed by the caller: a concurrently growing torn
+    record must not keep this poll running forever or move its cursor mid-line.
+    """
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    chunk = handle.read(min(max_bytes, available))
+    cut = chunk.rfind(b"\n")
+    if cut >= 0:
+        return chunk[:cut + 1], cut + 1, 0
+    scanned = len(chunk)
+    while scanned < available:
+        chunk = handle.read(min(max_bytes, available - scanned))
+        if not chunk:
+            break
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            return b"", scanned + newline + 1, 1
+        scanned += len(chunk)
+    return b"", 0, 0
 
 
 @dataclass
@@ -53,7 +80,7 @@ class TailResult:
     #: The file shrank or was replaced; `offset` has been reset to 0 and the client should
     #: discard what it has rather than appending to it.
     truncated: bool = False
-    #: Complete lines that would not parse. Skipped, but counted — silently dropping them
+    #: Complete lines that are oversized or would not parse. Skipped, but counted — silently dropping them
     #: would make a corrupt log look like a quiet one.
     malformed: int = 0
     #: The file does not exist. Not an error: a session directory exists before its first
@@ -90,20 +117,19 @@ def tail_jsonl(path: Path, offset: int = 0, *, max_bytes: int = MAX_TAIL_BYTES) 
     try:
         with path.open("rb") as handle:
             handle.seek(offset)
-            chunk = handle.read(max_bytes)
+            chunk, advanced, oversized = _read_window(handle, size - offset, max_bytes)
     except OSError:
         logger.debug("Could not read %s at %d", path, offset, exc_info=True)
         return TailResult(offset=offset, size=size, eof=False)
 
-    cut = chunk.rfind(b"\n")
-    if cut == -1:
+    if not advanced:
         # A partial line and nothing else. Consume nothing: advancing here would leave the
         # cursor inside a JSON object and desync every later read.
         return TailResult(offset=offset, size=size, eof=False)
 
     events: list[dict[str, Any]] = []
-    malformed = 0
-    for line in chunk[: cut + 1].splitlines():
+    malformed = oversized
+    for line in chunk.splitlines():
         if not line.strip():
             # Blank lines are skipped silently, matching `EventStore.load`.
             continue
@@ -117,7 +143,7 @@ def tail_jsonl(path: Path, offset: int = 0, *, max_bytes: int = MAX_TAIL_BYTES) 
         else:
             malformed += 1
 
-    consumed = offset + cut + 1
+    consumed = offset + advanced
     return TailResult(
         offset=consumed,
         size=size,
@@ -128,40 +154,44 @@ def tail_jsonl(path: Path, offset: int = 0, *, max_bytes: int = MAX_TAIL_BYTES) 
 
 
 def tail_records(path: Path, offset: int = 0, *,
-                 max_bytes: int = MAX_TAIL_BYTES) -> tuple[list[tuple[int, dict[str, Any]]], int]:
+                 max_bytes: int = MAX_TAIL_BYTES) -> tuple[list[tuple[int, dict[str, Any]]], int, int]:
     """Like :func:`tail_jsonl`, but each record carries the byte offset just after its line.
 
     That offset is a stable resume point: a stream that reconnects with the last one it
     saw continues with the next record, never repeating or skipping one. A shrunken file
-    restarts from the beginning (offset 0) rather than seeking past its end."""
+    restarts from the beginning (offset 0) rather than seeking past its end.
+    The third result counts malformed or oversized complete lines skipped in this poll."""
     offset = max(0, offset)
     try:
         size = path.stat().st_size
     except OSError:
-        return [], offset
+        return [], offset, 0
     if offset > size:
         offset = 0
     if offset == size:
-        return [], offset
+        return [], offset, 0
     try:
         with path.open("rb") as handle:
             handle.seek(offset)
-            chunk = handle.read(max_bytes)
+            chunk, advanced, oversized = _read_window(handle, size - offset, max_bytes)
     except OSError:
-        return [], offset
-    cut = chunk.rfind(b"\n")
-    if cut == -1:
-        return [], offset
+        return [], offset, 0
+    if not advanced:
+        return [], offset, 0
     records: list[tuple[int, dict[str, Any]]] = []
+    malformed = oversized
     position = offset
-    for line in chunk[: cut + 1].splitlines(keepends=True):
+    for line in chunk.splitlines(keepends=True):
         position += len(line)
         if not line.strip():
             continue
         try:
             record = json.loads(line)
         except ValueError:
+            malformed += 1
             continue
         if isinstance(record, dict):
             records.append((position, record))
-    return records, position
+        else:
+            malformed += 1
+    return records, offset + advanced, malformed

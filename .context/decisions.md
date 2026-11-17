@@ -1,5 +1,27 @@
 # Durable decisions
 
+## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
+
+Inbound HTTP authenticates headers before body reads and refuses ambiguous
+framing. JSON-RPC separates bounded, short-lived header admission from
+authenticated request capacity; long runs have their own bounded slots so
+control calls remain available. Untrusted header reads cannot reserve request
+slots, and fresh connections can replace the oldest pending header read.
+
+ACP retains bounded incomplete frames across reads and drains replies at EOF
+until completion, writer failure or the cleanup deadline. Its package export
+is lazy so module execution does not preload the entry point.
+
+Dashboard tail and SSE share bounded scanning without changing persisted logs.
+Oversized complete records advance at their newline and are counted in polling
+and SSE skip notices. Torn records never advance the cursor; a finished
+session ends its SSE stream when a poll delivers no records and makes no cursor
+progress, including a torn final append. Internal CLI commands remain parseable
+while public help and invalid-choice errors omit them.
+
+Transport sizes, deadlines and response codes are documented in
+[Architecture](../docs/ARCHITECTURE.md).
+
 ## 2026-11-17 — Opt-in model-driven editing-worker fan-out tool (#471, #384)
 
 Trusted Python callers may set `AgentConfig.editing_worker_fanout=True` alongside

@@ -4,6 +4,9 @@ Every command and its flags. `--help` on any command (for example `garuda run --
 for your installed version. For ready-made examples, see the
 [Cheat sheet](cheat-sheet.md).
 
+Top-level usage and help list public commands only. Internal worker and consult
+entry points remain callable by Garuda's subprocesses.
+
 ## Commands
 
 | Area | Command | Use |

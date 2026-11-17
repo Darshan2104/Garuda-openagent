@@ -24,6 +24,7 @@ import asyncio
 import logging
 import re
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -100,22 +101,34 @@ class _Handler(BaseHTTPRequestHandler):
     def _read(self) -> Request | None:
         parts = urlsplit(self.path)
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            lengths = self.headers.get_all("Content-Length", ["0"])
+            if ("Transfer-Encoding" in self.headers or len(set(lengths)) != 1
+                    or re.fullmatch(r"[0-9]+", lengths[0]) is None):
+                raise ValueError("ambiguous or invalid body framing")
+            length = int(lengths[0])
         except ValueError:
-            length = 0
+            self.close_connection = True
+            self._send(error("invalid_request", "Invalid Content-Length.", status=400))
+            return None
         if length > MAX_REQUEST_BODY_BYTES:
             # Refused on the declared length, before reading, so a large
             # Content-Length cannot be used to exhaust memory.
+            self.close_connection = True
             self._send(error("payload_too_large", "Request body is too large.", status=413))
             return None
-        body = self.rfile.read(length) if length else b""
-        return Request(
+        request = Request(
             method=self.command,
             path=parts.path,
             query=parse_qs(parts.query),
             headers={key.lower(): value for key, value in self.headers.items()},
-            body=body,
         )
+        refusal = check_request(request, port=self.ctx.port, token=self.ctx.token)
+        if refusal is not None:
+            # An unread body cannot become a second request on a persistent socket.
+            self.close_connection = True
+            self._send(refusal)
+            return None
+        return replace(request, body=self.rfile.read(length) if length else b"")
 
     def _send_stream(self, response: Response) -> None:
         self.send_response(response.status)

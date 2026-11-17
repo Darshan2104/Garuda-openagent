@@ -24,10 +24,11 @@ PARSE_ERROR_CODE = -32700
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
-def _write_simple(writer: "asyncio.StreamWriter", status: bytes, message: str) -> None:
+def _write_simple(writer: "asyncio.StreamWriter", status: bytes, message: str,
+                  *, code: int = PARSE_ERROR_CODE) -> None:
     """Write a minimal JSON error response for requests rejected before dispatch."""
     body = json.dumps(
-        {"jsonrpc": "2.0", "id": None, "error": {"code": PARSE_ERROR_CODE, "message": message}}
+        {"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}}
     ).encode("utf-8")
     writer.write(
         status
@@ -43,6 +44,11 @@ REQUEST_READ_TIMEOUT = 30.0
 # a file write), and small enough that a declared Content-Length cannot be used to
 # exhaust memory before the request is even authenticated.
 MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+# Authenticated body reads and ordinary dispatch; excess work is refused.
+MAX_CONNECTIONS = 32
+# A separate short-lived header phase cannot occupy authenticated request slots.
+MAX_HEADER_CONNECTIONS = 128
+HEADER_READ_TIMEOUT = 5.0
 
 
 @dataclass
@@ -115,6 +121,9 @@ class JsonRpcServer:
     def __init__(self, config: ServerConfig):
         self._config = config
         self._job_manager: JobManager | None = None
+        self._connection_slots = asyncio.BoundedSemaphore(MAX_CONNECTIONS)
+        self._run_slots = asyncio.BoundedSemaphore(MAX_CONNECTIONS)
+        self._header_reads: dict[asyncio.Task[bytes], None] = {}
 
     def _authorized(self, headers: dict[str, str] | None) -> bool:
         if not self._config.token:
@@ -134,6 +143,13 @@ class JsonRpcServer:
         it blocks cross-site CSRF / DNS-rebinding attempts as defense-in-depth."""
         return any(k.lower() == "origin" for k in (headers or {}))
 
+    def _auth_refusal(self, headers: dict[str, str] | None) -> str | None:
+        if self._has_browser_origin(headers):
+            return "Unauthorized: cross-origin (browser) requests are not allowed"
+        if not self._authorized(headers):
+            return "Unauthorized: missing or invalid bearer token"
+        return None
+
     async def handle(
         self,
         payload: dict[str, Any],
@@ -143,22 +159,14 @@ class JsonRpcServer:
         method = payload.get("method")
         params = payload.get("params") or {}
 
-        if self._has_browser_origin(headers):
+        refusal = self._auth_refusal(headers)
+        if refusal is not None:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {
                     "code": UNAUTHORIZED_CODE,
-                    "message": "Unauthorized: cross-origin (browser) requests are not allowed",
-                },
-            }
-        if not self._authorized(headers):
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {
-                    "code": UNAUTHORIZED_CODE,
-                    "message": "Unauthorized: missing or invalid bearer token",
+                    "message": refusal,
                 },
             }
 
@@ -561,14 +569,31 @@ class JsonRpcServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        admitted = run_admitted = False
         try:
+            # Replace the oldest untrusted header read when full, rather than
+            # letting idle peers prevent a fresh client from authenticating.
+            if len(self._header_reads) >= MAX_HEADER_CONNECTIONS:
+                oldest = next(iter(self._header_reads))
+                self._header_reads.pop(oldest)
+                oldest.cancel()
+
+            async def read_headers():
+                async with asyncio.timeout(HEADER_READ_TIMEOUT):
+                    return await reader.readuntil(b"\r\n\r\n")
+
+            header_read = asyncio.create_task(read_headers())
+            self._header_reads[header_read] = None
             try:
-                raw = await asyncio.wait_for(
-                    reader.readuntil(b"\r\n\r\n"), timeout=REQUEST_READ_TIMEOUT
-                )
+                raw = await header_read
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+                return  # This header read was evicted to admit a fresh client.
             except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-                # Slow-loris, oversized header line, or torn request: drop it.
                 return
+            finally:
+                self._header_reads.pop(header_read, None)
             header, _, body_bytes = raw.partition(b"\r\n\r\n")
             headers: dict[str, str] = {}
             for line in header.split(b"\r\n")[1:]:
@@ -603,6 +628,18 @@ class JsonRpcServer:
                 )
                 await writer.drain()
                 return
+            refusal = self._auth_refusal(headers)
+            if refusal is not None:
+                _write_simple(writer, b"HTTP/1.1 401 Unauthorized", refusal, code=UNAUTHORIZED_CODE)
+                await writer.drain()
+                return
+            # No await between checking capacity and acquiring an available slot.
+            if self._connection_slots.locked():
+                _write_simple(writer, b"HTTP/1.1 503 Service Unavailable", "Too many requests")
+                await writer.drain()
+                return
+            await self._connection_slots.acquire()
+            admitted = True
             if length and len(body_bytes) < length:
                 try:
                     body_bytes += await asyncio.wait_for(
@@ -615,6 +652,17 @@ class JsonRpcServer:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 payload = None
             if isinstance(payload, dict):
+                if payload.get("method") == "run":
+                    # Long runs have their own bounded capacity. Control calls
+                    # must still be able to observe and cancel work.
+                    if self._run_slots.locked():
+                        _write_simple(writer, b"HTTP/1.1 503 Service Unavailable", "Too many runs")
+                        await writer.drain()
+                        return
+                    await self._run_slots.acquire()
+                    run_admitted = True
+                    self._connection_slots.release()
+                    admitted = False
                 response = await self.handle(payload, headers=headers)
             else:
                 # Malformed body or a JSON scalar/array: return a proper parse error
@@ -636,8 +684,14 @@ class JsonRpcServer:
             )
             await writer.drain()
         finally:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                if admitted:
+                    self._connection_slots.release()
+                if run_admitted:
+                    self._run_slots.release()
 
 
 async def serve(config: ServerConfig) -> None:
