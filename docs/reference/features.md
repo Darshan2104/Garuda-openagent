@@ -100,7 +100,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 
 | Feature | What you get | Try it | Demo |
 |---|---|---|---|
-| Setup and diagnostics | Proposed roles; checks with fixes | `garuda init`, `garuda doctor` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
+| Setup and diagnostics | Proposed roles; global settings validation across sections, with fixes and JSON errors | `garuda init`, `garuda doctor` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Effective configuration | Every value and where it came from | `garuda config show` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
