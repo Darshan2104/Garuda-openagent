@@ -1,5 +1,51 @@
 # Durable decisions
 
+## 2026-11-17 — Rebase spelling checks include directory prefixes; lineage requires publication evidence (#470 review)
+
+Rebase rejects newly ambiguous NFC/casefold spellings across every file and
+directory prefix in the combined tree, including collisions with unchanged
+parent paths. Identically spelled shared directories remain allowed. Existing
+parent ambiguities cannot gain new spellings. Git metadata basenames are
+excluded after NFC/casefold normalization too, including mixed-case ignore,
+attributes and modules files.
+
+This strengthens the disjointness claim below and replaces unconditional
+post-apply lineage recording. After recording integration, a best-effort parent
+snapshot must equal the checked tree before the service records a new lineage
+edge. A mismatch or capture exception leaves the integration state unchanged
+and adds no edge; subsequent stale siblings cannot attribute that publication.
+Rebase receipt tree IDs describe the proved, checked candidate and destination
+at validation time, not isolation from concurrent external writers. The
+preimage equality proof follows from path disjointness; there is no separate
+user-facing `preimage_changed` reason. These controls remain guardrails.
+
+## 2026-11-17 — Stale editing siblings rebase only over this service's own disjoint integrations (#470)
+
+This supersedes the whole-base refusal policy in the 2026-11-16 editing-worker
+concurrency and measurement decisions. A ready stale candidate can rebase only
+when parent HEAD, symbolic ref and staged index match admission and the current
+tree is reachable from its base through successful integrations recorded by this
+service instance in memory. Outside drift, restarts and terminal refusals cannot
+be retried through this path. No-op integrations preserve existing lineage edges
+instead of recording self-cycles.
+
+Candidate and parent changes must be disjoint by exact spelling, NFC/casefold
+and directory ancestry. Changes to `.gitignore`, `.gitattributes`, `.gitmodules`,
+symlinks or gitlinks refuse. Each candidate preimage must remain byte- and
+mode-identical. A scratch parent index rebuilds the combined tree; entry
+substitution and patch/path equivalence must prove that exact tree. No merge or
+same-file hunk resolution is attempted.
+
+Parent write and acceptance permissions still apply. Confined checks run again
+on the combined tree, then destination revalidation and apply use the snapshot
+captured for this integration. A parent change during checks still refuses;
+cancellation settles the checker and records uncertainty. Candidate provenance
+and the worker repository remain unchanged by rebasing, preserving retirement's
+original candidate-tree proof. Receipts and events carry successful rebase tree
+IDs, paths and drift count; refusals retain `integration.stale_base` with a
+`rebase.reason`. Local detached repositories and permission screening remain
+guardrails, not a sandbox boundary.
+
 ## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)
 
 The development script `python scripts/measure_editing_fanout.py` measures four

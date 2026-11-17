@@ -341,8 +341,24 @@ fastest way to learn the system.
    typed-output provenance by SHA-256. The existing confined integration checker
    checks the exact candidate tree before destination revalidation and checked
    patch application. It never merges, stages or advances parent refs. Dirty
-   parent content is captured and preserved; any base drift refuses. Receipts
-   and `editing_worker` events record admission through integration or refusal.
+   parent content is captured and preserved. Stale siblings rebase only over
+   successful integrations recorded in memory by this same service, with
+   unchanged parent HEAD, symbolic ref and index. Changed paths must be disjoint
+   by exact spelling, NFC/casefold and directory ancestry. The combined tree must
+   introduce no ambiguous normalized spellings of files or directory prefixes,
+   including collisions with unchanged parent paths. Git metadata basenames are
+   excluded after NFC/casefold normalization; symlinks and gitlinks refuse.
+   Candidate preimages remain identical by disjointness, and a
+   scratch parent index proves the rebuilt tree and patch paths. Checks run on
+   that combined tree, then apply revalidates against the captured current
+   snapshot. Outside drift, overlap and restarts stay closed; there is no content
+   merge. After integration is recorded, a best-effort parent capture must match
+   the checked tree before a new lineage edge is recorded. Capture failure or
+   mismatch adds no edge and does not change the completed integration state.
+   This does not isolate publication from concurrent external writers.
+   Rebase never changes the worker repository or candidate provenance.
+   Receipts and `editing_worker` events record admission through integration or
+   refusal, with `rebase` checked-tree/path evidence or a stale refusal's `rebase.reason`.
    Capacity-full admission is a settled refusal only when real capacity and
    lease store reads and workspace absence prove ownership was never acquired.
    Its receipt records the repository as removed for pruning on a later cleanup

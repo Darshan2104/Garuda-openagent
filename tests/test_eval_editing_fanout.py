@@ -51,6 +51,7 @@ async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integra
     report = await measurement.run_measurement(destination, delay=0.001)
     saved = json.loads(destination.read_text())
     assert saved == report
+    assert report["schema_version"] == 2
     assert report["provider_calls"] == 0 and report["provider_cost_usd"] == 0
     assert peak == 1 and active == 0
     assert [(row["scenario"], row["max_concurrent"]) for row in saved["measurements"]] == [
@@ -76,12 +77,17 @@ async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integra
         ]
         timestamps = [item["seconds"] for item in row["integration_trace"]]
         assert timestamps == sorted(timestamps)  # Ordering only; no duration/speed threshold.
-        if row["max_concurrent"] == 1:
+        if row["max_concurrent"] == 1 or row["scenario"] == "disjoint":
+            assert row["rebased_integrations"] == (3 if row["max_concurrent"] == 4 else 0)
+            assert row["work_discarded"]["worker_seconds"] == 0
+            assert all(candidate["integration"] == {"state": "integrated"} for candidate in row["candidates"])
             assert row["integrated"] == 4 and row["stale_base_refusals"] == 0
             assert row["work_discarded"]["candidates"] == row["work_discarded"]["scripted_tokens"] == 0
             expected = ({"shared.txt": "delta\n"} if row["scenario"] == "overlapping" else
                         {f"{task}.txt": f"{task}\n" for task in ("alpha", "beta", "gamma", "delta")})
         else:
+            assert row["rebased_integrations"] == 0
+            assert all(candidate["rebase"]["reason"] == "overlap" for candidate in row["candidates"][1:])
             assert row["integrated"] == 1 and row["stale_base_refusals"] == 3
             assert row["work_discarded"]["candidates"] == 3
             assert row["work_discarded"]["scripted_tokens"] == 720

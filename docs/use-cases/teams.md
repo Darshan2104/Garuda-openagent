@@ -637,12 +637,29 @@ permissions. Screening workspace state is a task-local context variable;
 approval prompts are not serialized and may overlap.
 
 Integration refuses `worker.busy` while any run or another integration is live.
-After all children settle, integrate candidates one at a time. A changed parent
-makes siblings stale (`integration.stale_base`), even for disjoint edits; there
-is no automatic rebase or conflict resolution. Only the same service instance's
-currently live `admitted`/`running` siblings are exempt from admission uncertainty
-checks. Uncertain siblings, other service instances' live workers and exited
-runs whose receipts still say running block later admission and integration.
+After all children settle, integrate candidates one at a time. Disjoint stale
+siblings rebase onto this service instance's own successful integrations and
+re-run confined checks on the combined tree. Parent HEAD, symbolic ref and staged
+index must match admission; changed paths must be disjoint even after NFC/casefold
+and directory ancestry comparisons. New aliases in file or directory-prefix
+spellings refuse too: `D/x.txt` and `d/y.txt` cannot rebase together, while
+`d/x.txt` and `d/y.txt` can. Git ignore/attributes/modules basenames are excluded
+regardless of case; symlink/gitlink changes refuse.
+For example, siblings editing `a.txt` and `b.txt`
+can both integrate; siblings editing the same file cannot. Successful receipts
+include `rebase: {base_tree, onto_tree, rebased_tree, paths, drift_paths}`.
+Overlap or outside drift still returns `integration.stale_base` with a
+`rebase.reason` (such as `overlap` or `unattributed_drift`). Parent changes during
+checks still refuse. There is no content merge, retry of refused candidates or
+rebase across a service restart. A new lineage edge requires a post-apply parent
+snapshot equal to the checked tree. If that best-effort capture fails or differs,
+the completed integration remains recorded, but adds no lineage edge to
+authorize later stale siblings. Receipt tree IDs identify the checked tree;
+they do not provide isolation from concurrent external writes.
+Only the same service instance's currently live
+`admitted`/`running` siblings are exempt from admission uncertainty checks.
+Uncertain siblings, other service instances' live workers and exited runs whose
+receipts still say running block later admission and integration.
 Model-driven fan-out, non-local backends and approval prompt serialization remain
 open; the model-facing tool and CLI keep their existing dispatch behavior.
 
