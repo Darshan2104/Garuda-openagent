@@ -245,12 +245,12 @@ def parse_global_selection(data: object, *, source: str = "global selection") ->
     if not isinstance(data, dict):
         raise SelectionError(f"{source}: must be a mapping")
     known = {"default_runtime", "fallback_runtime", "trust_project_routes", "rules", "classifier"}
-    if isinstance(data.get("routing"), dict):
+    if data.get("routing") is not None:
         block = data["routing"]
     elif any(key in data for key in known):
         block = data
     else:
-        # No routing section: global settings carry unrelated harness
+        # Missing/null routing section: global settings carry unrelated harness
         # settings alongside, so absence means defaults, not an error.
         return GlobalSelectionConfig()
     if not isinstance(block, dict):

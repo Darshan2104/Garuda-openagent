@@ -172,9 +172,12 @@ def test_trusted_disablement_flows_from_global_settings(tmp_path, monkeypatch):
         registry.get("fake")
 
 
-def test_malformed_global_runtime_settings_refuse_discovery_and_selection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("document", ["disabled_runtimes: [fake\n", "0\n", "false\n", "[]\n"])
+def test_malformed_global_runtime_settings_refuse_discovery_and_selection(
+    tmp_path, monkeypatch, document,
+):
     settings_path = tmp_path / "settings.yaml"
-    settings_path.write_text("disabled_runtimes: [fake\n", encoding="utf-8")
+    settings_path.write_text(document, encoding="utf-8")
     monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings_path))
 
     with pytest.raises(ValueError, match="trusted runtime settings"):
@@ -183,6 +186,19 @@ def test_malformed_global_runtime_settings_refuse_discovery_and_selection(tmp_pa
         load_trusted_disabled()
     with pytest.raises(ValueError, match="trusted runtime settings"):
         prepare_runtime_catalog(tmp_path)
+
+
+@pytest.mark.parametrize("document", ["", "# Global settings\n# No overrides yet\n", "null\n"])
+def test_empty_global_runtime_settings_use_defaults(tmp_path, monkeypatch, document):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(document, encoding="utf-8")
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings_path))
+
+    assert load_trusted_runtime_settings() == {}
+    assert load_trusted_disabled() == frozenset()
+    catalog = prepare_runtime_catalog(tmp_path)
+    assert catalog.registry.get("native").runtime_id == "native"
+    assert catalog.registry.disabled_ids == frozenset()
 
 
 def test_project_suggestions_are_recommendation_only():

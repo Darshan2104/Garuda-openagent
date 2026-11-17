@@ -12,7 +12,7 @@ export OPENROUTER_API_KEY=sk-or-...        # default model's key (placeholder)
 export GARUDA_MODEL=anthropic/MODEL_ID     # optional: another LiteLLM model
 garuda --help
 garuda init                                # propose roles in ~/.agent/garuda.yaml
-garuda doctor                              # configuration, harness logins, leases, worktrees
+garuda doctor                              # global settings, configuration, harness logins, leases, worktrees
 ```
 
 `garuda --help` lists public commands; internal process entry points are hidden

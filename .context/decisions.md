@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-11-17 — Diagnose malformed global settings before harness probes (#497)
+
+Doctor reads the same strict global settings loader as runtime catalog preparation
+and reuses runtime section parsers, collecting errors across sections as
+`settings.invalid` in text and JSON with exit 1. Missing settings remain valid.
+Invalid settings withhold configuration-dependent harness probes; the settings
+check constructs hook callbacks without executing them. Missing, empty and
+comment-only files, and null configuration sections, retain built-in defaults.
+Explicit non-null, non-mapping routing sections and zero/false/empty-sequence
+global documents now refuse in the shared parsers rather than silently becoming
+defaults. Null reminder sections also load as absent under strict validation.
+
 ## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
 
 Inbound HTTP authenticates headers before body reads and refuses ambiguous

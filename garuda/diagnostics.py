@@ -21,6 +21,7 @@ REGISTRY: dict[str, str] = {
     "config.trust_requires_terminal": "Run `garuda config trust` in an interactive terminal.",
     "config.missing": "Create one with `garuda init`.",
     "config.ok": "Nothing to do.",
+    "settings.invalid": "Fix {path} in {file} using the reported requirement; rerun `garuda doctor`.",
     "role.options_unproven": "Remove model_id/effort from the role, or use a proven adapter.",
     "role.model_unavailable": "Pick a model id the agent offers; `garuda doctor` lists them.",
     "role.model_not_allowed": "Add the model to harnesses.{harness}.allowed_models, or change it.",

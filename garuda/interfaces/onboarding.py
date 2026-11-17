@@ -43,6 +43,71 @@ FLOW_INVOCATIONS = {
 # --- doctor ------------------------------------------------------------------------
 
 
+def _global_settings_diagnostics() -> list[Diagnostic]:
+    """Validate global settings with the same loaders/parsers as a run, without execution."""
+    from garuda.acp.catalog import load_trusted_disabled, load_trusted_runtime_settings
+    from garuda.agents.authority import project_ceiling
+    from garuda.config.agent_home import global_settings_path
+    from garuda.config.routing import parse_global_models, parse_model_bindings
+    from garuda.lsp.config import parse_language_servers
+    from garuda.model.config import parse_collection_policy
+    from garuda.plugins.hooks import HookRegistry
+    from garuda.plugins.reminders import load_reminders
+    from garuda.runtime.capacity import CapacityError, configured_ceiling
+    from garuda.runtime.registry import RegistryError, parse_global_manifests
+    from garuda.runtime.selection.scoring import parse_global_selection
+
+    path = global_settings_path()
+    source = f"global settings ({path})"
+    out = []
+
+    def problem(key, message):
+        out.append(diagnostic("settings.invalid", f"{source} {key}: {message}",
+                              level="error", file=path, path=key))
+
+    def check(key, validate):
+        try:
+            return validate()
+        except (ValueError, TypeError, AttributeError, OSError, CapacityError, RegistryError) as exc:
+            problem(key, str(exc))
+            return None
+
+    try:
+        # The shared loader treats a missing file as defaults. Distinguish an
+        # existing non-file (including a dangling symlink) from that valid case.
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return out
+        if not path.is_file():
+            raise ValueError("settings must be a regular file")
+        settings = load_trusted_runtime_settings()
+    except (ValueError, OSError) as exc:
+        problem("(file)", str(exc))
+        return out
+
+    capacity = settings.get("capacity")
+    if capacity is not None:
+        for key in capacity if isinstance(capacity, dict) else ("native",):
+            check(f"capacity.{key}" if isinstance(capacity, dict) else "capacity",
+                  lambda key=key: configured_ceiling(key, settings))
+    check("routing", lambda: parse_global_selection(settings, source=source))
+    models = check("models", lambda: parse_global_models(settings.get("models"), source=source))
+    check("model_bindings", lambda: parse_model_bindings(
+        settings.get("model_bindings"), models or {}, source=source))
+    check("collection", lambda: parse_collection_policy(settings.get("collection"), source=source))
+    check("agents", lambda: project_ceiling(settings))
+    check("runtimes", lambda: parse_global_manifests(settings.get("runtimes"), source=source))
+    check("disabled_runtimes", lambda: load_trusted_disabled(settings))
+    for message in parse_language_servers(settings.get("language_servers"))[1]:
+        problem("language_servers", message)
+    # These loaders only construct rules and hook callbacks; they never fire
+    # commands. Omit the workspace so project hooks/reminders are not loaded.
+    check("reminders", lambda: load_reminders(strict=True))
+    check("hooks", lambda: HookRegistry.from_config(path))
+    return out
+
+
 def _config_diagnostics(workspace) -> tuple[list[Diagnostic], object]:
     from garuda.config import garuda_yaml as gy
 
@@ -147,7 +212,13 @@ def doctor_report(workspace, *, runtimes=(), login_run=None) -> list[Diagnostic]
     """Every check `garuda doctor` runs, as diagnostics."""
     from garuda.agents.setup import prepare_runtime_catalog
 
-    out, resolved = _config_diagnostics(workspace)
+    out = _global_settings_diagnostics()
+    if out:
+        # Invalid trust settings must not turn into a default/empty catalog and
+        # authorize probes. State diagnostics remain safe and useful.
+        return out + _state_diagnostics()
+    config, resolved = _config_diagnostics(workspace)
+    out += config
     targets = set(runtimes)
     if resolved is not None:
         targets |= {r["harness"] for r in resolved.config.get("roles", {}).values()}

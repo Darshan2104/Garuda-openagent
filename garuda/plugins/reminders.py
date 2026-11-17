@@ -158,7 +158,7 @@ def load_reminders(workspace=None, *, strict: bool = False) -> ReminderConfig:
     project_trusted = global_data.get("trust_project_hooks") is True
 
     def extend(data, path, *, project=False):
-        if "reminders" not in data:
+        if data.get("reminders") is None:
             return
         source = str(path.absolute())
         if project and not project_trusted:
