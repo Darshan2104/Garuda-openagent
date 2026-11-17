@@ -57,7 +57,8 @@ def seed(root: Path, workspace: str) -> dict:
         "code": "flow.quota_wait", "message": "later recovery refusal",
     }})
     store.finish(IDS["done"], AgentResult(success=True, final_message="ok", messages=[], turns=2,
-                                          metadata={"completion_gate": {"verifier": True}}))
+                                          metadata={"completion_gate": {"verifier": True,
+                                                                        "self_check": "no_evidence"}}))
     store.update_meta(IDS["queued"], {"status": "queued", "state": session_state.queued(),
                                       "background": True})
     os.environ.setdefault("GARUDA_SEED", "1")
