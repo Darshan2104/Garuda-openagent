@@ -75,9 +75,42 @@ Path rules compare normalized workspace-relative paths, including physical alias
 of the workspace root and operands relative to a command's explicit `cwd`.
 Relative patterns never match ancestor directories above an in-workspace path;
 absolute patterns still match absolute paths, and outside paths retain literal
-and absolute screening.
+and absolute screening. `core/path_identity.py` always normalizes operands and
+rules to NFC and then casefolds them. There is no filesystem case probe; distinct
+case-sensitive files may be over-denied. Operand forms are computed once before
+matching rules. Read, write, search, ls and shell checks share this comparison.
 The active root is scoped to each async run and restored on exit, so concurrent
 runs can share a policy without changing each other's path decisions.
+
+Project MCP trust binds the raw configuration and identified repository launch
+files: positional paths, attached option values, path-taking flag values, local
+Python `-m` modules/packages, and the containing directory trees of scripts.
+`mcp/launch_files.py` discovers these without importing project code;
+`mcp/trust.py` hashes and persists the grant. All trees use the same 4,096-entry
+limit; enumeration/hash errors and oversized trees refuse trust. `__pycache__`,
+`.pyc` and `.pyo` are excluded. Project Python servers launch with
+`PYTHONDONTWRITEBYTECODE=1` and a `PYTHONPYCACHEPREFIX` in an owner-only Garuda
+cache outside the repository, so planted repository bytecode is not selected.
+Sourceless bytecode in selected trees and interpreter flags that bypass the
+cache controls refuse launch rather than execute unbound bytes.
+Stdio servers use the workspace root as `cwd`, matching trust resolution.
+
+Code-loading environment variables (`NODE_OPTIONS`, `PYTHONPATH`,
+`PYTHONSTARTUP`, `PYTHONHOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
+`RUBYOPT`, `PERL5OPT`, `JAVA_TOOL_OPTIONS`), unresolved code/path operands and
+package runners produce `code_pinned: false` with reasons before consent and
+at trust checks. Consent names the bound trees and exclusions. Ordinary scalar
+arguments such as `stdio` or `--port 8080` do not imply unpinned code. Installed
+code and dependencies outside the selected trees remain outside this static
+binding. Older grants say "trust needs review after the binding update";
+users must review and trust them again. The trust command reports each server
+and continues after a binding failure, returning a failure status if any fail.
+
+Generated context redaction covers credential identifiers such as `DB_PASSWORD`,
+`AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY` and `HF_TOKEN`, including `=` and `:`
+assignments, plus standalone `hf_` and `sk-ant-` token shapes. Both current-task
+and handoff writers redact check evidence and failures before publishing.
+This is best-effort pattern redaction, not a guarantee for unknown secret forms.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.
 `WorkspaceAccessDenied` marks workspace-policy refusals; ordinary OS access errors

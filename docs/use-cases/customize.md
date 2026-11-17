@@ -107,7 +107,12 @@ garuda run --agent docs-writer -t "Update the install section of README.md for P
   result. MCP tools and tools you register are added on top.
 - In `smart` mode the path and bash rules are checked on every call: deny beats
   allow, and in `garuda run` an "ask" is denied because nobody is there to
-  approve it.
+  approve it. On every platform, the example also denies
+  `read_file({"path":".ENV"})`, `write_file({"path":"SECRETS/new.pem",...})`,
+  searches rooted at `SECRETS`, and `bash({"command":"cat .ENV"})`. Equivalent
+  spellings retain the same deny/ask decision through NFC normalization and
+  casefolding, intentionally over-denying distinct case-sensitive files. Broad
+  search results and shell indirection remain outside this argument screening.
 - Version 1 is strict. A misspelled field, an unknown tool or a duplicate key
   refuses the agent with a code and a fix, before anything runs:
 
@@ -513,8 +518,26 @@ garuda mcp list
 - A server defined in the project's own config doesn't start, and its URL isn't
   contacted, until you trust it. `garuda mcp trust` shows what each server
   would run and records your answer for that exact entry in this repository;
-  editing the entry or a script it runs means trusting it again. Until then,
-  runs skip it with `agent.untrusted_project_code`.
+  editing the entry or an identified launch file means trusting it again. For
+  example, `node --require=./hook.js server.js` binds both JavaScript files, and
+  `python3 -m srv` binds the local module's directory tree; `python3 app/main.py`
+  binds the `app/` tree, including sibling imports. `python3 -m pkg` binds the
+  package tree. Every tree has the same 4,096-entry limit and excludes
+  `__pycache__`, `.pyc` and `.pyo`. Project Python launches set
+  `PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX` to a Garuda-owned cache
+  outside the repository, so repository bytecode is ignored. Stdio launches use
+  the workspace root as their working directory. Sourceless bytecode and Python
+  flags that bypass cache isolation refuse launch. Separated `-r`/`--require`/`--import`/
+  `--loader` values and attached `--option=path` files are also bound. Discovery
+  never imports the project. Consent names the bound trees. Code-loading env
+  variables such as `NODE_OPTIONS`, `PYTHONPATH` or `LD_PRELOAD`, package runners,
+  and unresolved modules or code/path operands display **code not pinned** with
+  reasons before approval. Garuda stores `code_pinned: false` and emits a
+  warning when the grant is used. It authorizes the configuration and identified
+  files only; installed dependencies and dynamic code remain outside the binding.
+  Older MCP grants explicitly report that trust needs review after the binding
+  update. Unbindable entries are reported without skipping later servers. Until
+  trusted, runs skip the server with `agent.untrusted_project_code`.
 - Project and global (`~/.agent/mcp.json`) servers are merged; a trusted
   project entry wins on a name clash. Set `GARUDA_MCP_MERGE=0` to use only one file.
 - With many tools, Garuda exposes `search_tool` and `use_tool` instead of every

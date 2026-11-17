@@ -3880,3 +3880,45 @@ Consult children remain excluded: live text would bypass their post-run
 workspace guard's withholding/quarantine decision. Collection children are
 auxiliary maintenance and retain their separate accounting without forwarding.
 No changes to child semantics, SDK defaults, editing-worker activation or SSE.
+
+
+## 2026-11-17: Filesystem case identity, generated credential redaction and MCP launch binding (#482, #483, #487)
+
+Permission deny/ask rules ALWAYS NFC-normalize and then casefold both patterns
+and operands, on every platform. Filesystem probing is removed: planted filenames
+cannot disable folding. Distinct files on case-sensitive systems may be
+over-denied; this is the accepted fail-closed cost. Operand identity is computed
+once per check before matching rules, shared by file, search/ls and shell tools.
+This remains argument screening, not confinement.
+
+Generated context redaction covers quoted/JSON credentials, environment names
+ending in password/pass/pwd, API/access/secret/private key or token markers,
+URL credentials, Basic/Bearer auth, password flags and common provider token
+prefixes. Diagnostic names such as max_tokens, tokenizer, password_hash and
+secret_scanning remain readable; standalone HF tokens require at least 30
+alphanumeric characters after hf_. Unknown formats remain a best-effort
+limitation; generated files must not promise absolute secrecy.
+
+MCP discovery statically binds positional/attached paths, path-taking flags,
+local Python -m modules/packages, and script-containing project directory trees
+without importing code. The same 4,096-entry bound applies to every tree;
+enumeration/hash errors and size limits refuse trust. __pycache__, .pyc and .pyo
+are excluded. Project Python servers set PYTHONDONTWRITEBYTECODE=1 and
+PYTHONPYCACHEPREFIX to an owner-only Garuda cache outside the repository, so
+repo bytecode is ignored and cache writes do not invalidate grants. Stdio
+launch refuses sourceless bytecode in selected trees and Python interpreter
+flags that bypass these cache controls rather than executing unbound bytes.
+Stdio servers launch with cwd at the workspace root used by trust resolution.
+
+Code-loading environment variables (NODE_OPTIONS, PYTHONPATH, PYTHONSTARTUP,
+PYTHONHOME, LD_PRELOAD, LD_LIBRARY_PATH, DYLD_*, RUBYOPT, PERL5OPT,
+JAVA_TOOL_OPTIONS), unresolved code/path operands and package runners produce
+code_pinned=false with reasons before consent and at trust checks. Scalar
+arguments do not imply unpinned code. Consent describes bound trees and cache
+exclusions and snapshots exactly the digest it grants. Installed code and
+dependencies outside selected trees remain outside this static binding.
+
+Binding version 3 invalidates earlier MCP grants without changing the shared
+store format or project garuda.yaml grants. Stored older grants explain that
+"trust needs review after the binding update". The trust command reports each
+unbindable server, continues to later entries, and returns an error if any fail.

@@ -7,6 +7,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -557,10 +558,16 @@ class McpClientManager:
         """
         transport = normalize_transport(server.transport, has_url=bool(server.url))
         if transport == "stdio":
+            from garuda.mcp.launch_files import is_python_command, python_launch_environment
+
+            environment = server.env
+            if server.project_scoped and is_python_command(server.command):
+                environment = python_launch_environment(self._workspace, server.command, server.args, environment)
             params = StdioServerParameters(
                 command=server.command,
                 args=server.args,
-                env=server.env or None,
+                env=environment or None,
+                cwd=str(Path(self._workspace).expanduser().resolve()) if self._workspace else None,
             )
             read, write = await server_stack.enter_async_context(stdio_client(params))
             if lost is not None:
