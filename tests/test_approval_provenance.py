@@ -758,6 +758,38 @@ async def test_cli_lists_requester_in_human_and_json_output(store, monkeypatch, 
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("surface", ["inbox", "cli"])
+@pytest.mark.parametrize("requester", ["old-writer", ["worker"], 42, {"agent": "editor"},
+                                        {"session_id": 42, "agent": "editor", "depth": 1}])
+def test_malformed_requester_does_not_hide_pending_approvals(
+    store, monkeypatch, capsys, surface, requester,
+):
+    from garuda.acp.approval_channel import FileApprovalChannel
+    from garuda.acp.broker import ApprovalRequest
+    from garuda.core.read_model import approvals
+    from garuda.interfaces.main import build_parser, run_approvals
+
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    directory = store.session_dir(SID) / "approvals"
+    channel = FileApprovalChannel(directory, SID)
+    for approval_id in ("bad", "good"):
+        channel.publish(
+            ApprovalRequest(approval_id, f"action-{approval_id}", "approval", "native", SID),
+            ceiling="ceiling", expires_at=9999999999,
+        )
+    path = directory / "bad.request.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "requester": requester}))
+    if surface == "inbox":
+        rows = approvals(store, SID)
+        assert {r["approval_id"] for r in rows} == {"bad", "good"}
+        assert {r["action"] for r in rows} == {"action-bad", "action-good"}
+    else:
+        args = build_parser().parse_args(["approvals", "list", SID, "--workspace", "w"])
+        assert run_approvals(args) == 0
+        output = capsys.readouterr().out
+        assert "action-bad" in output and "action-good" in output
+
+
 async def test_native_subagent_context_restores_the_enclosing_requester(store, tmp_path):
     from garuda.core.approval_outcome import ApprovalRequester, approval_requester
     from garuda.core.subagent import SubagentRunner

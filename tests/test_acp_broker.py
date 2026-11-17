@@ -74,6 +74,60 @@ async def test_ask_answer_allow_and_deny(tmp_path):
         broker.answer("nope", True)
 
 
+@pytest.mark.parametrize("entry", ["tool", "acp"])
+async def test_duplicate_id_leaves_original_prompt_and_requester_answerable(tmp_path, entry):
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+
+    store = SessionStore(tmp_path)
+    store.begin("s1", task="t", model="m", agent="a", workspace="w")
+    entered, withdrawn = asyncio.Event(), asyncio.Event()
+
+    async def answer(request):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            withdrawn.set()
+
+    broker = _broker(store=store, answerer=answer)
+
+    async def ask(action):
+        if entry == "tool":
+            return await broker.decide_tool(
+                "bash", {"command": action}, family="terminal", runtime_id="native",
+                session_id="s1", approval_id="dup",
+            )
+        return await broker.decide_acp(
+            "approval", action, runtime_id="acp", session_id="s1", approval_id="dup",
+        )
+
+    identity = ApprovalRequester("first-worker", "editor", 1, "editing_worker", "s1")
+    with approval_requester(identity, PermissionEngine()):
+        first = asyncio.create_task(ask("sudo ls"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        original, = broker.pending()
+        # Different provenance must not replace the first request's ceiling.
+        with approval_requester(
+            ApprovalRequester("second-worker", "reviewer", 1, "subagent", "s1"),
+            PermissionEngine(mode="readonly"),
+        ):
+            with pytest.raises(KeyError, match="already parked"):
+                await ask("sudo pwd")
+        await asyncio.sleep(0)
+        assert broker.pending() == [original]
+        assert not withdrawn.is_set()
+        broker.answer("dup", True, digest=original.digest)
+        assert await asyncio.wait_for(first, 1) == (True, None)
+        record = _persisted(store, "s1", "dup")
+        assert record["requester"] == identity.to_dict()
+        assert record["request_digest"] == original.digest
+        assert record["outcome"] == "allow"
+    finally:
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+
+
 async def test_timeout_and_disconnect_deny_closed(tmp_path):
     store = SessionStore(tmp_path)
     store.begin("s1", task="t", model="m", agent="a", workspace="w")
@@ -288,6 +342,20 @@ async def test_concurrent_asks_present_one_at_a_time_in_park_order():
     assert all(results)
     assert peak == 1
     assert entered == ['0', '1', '2']
+
+
+async def test_presentation_count_is_a_snapshot_separate_from_pending_requests():
+    presentations = []
+
+    async def answer(request):
+        presentations.append((request.action, request.queue_length,
+                              [r.queue_length for r in broker.pending()]))
+        return True
+
+    broker = _broker(answerer=answer)
+    assert all(await asyncio.gather(*(broker.handler()(str(i)) for i in range(3))))
+    assert presentations == [("0", 3, [None, None, None]),
+                             ("1", 2, [None, None]), ("2", 1, [None])]
 
 
 @pytest.mark.parametrize('settlement', ['cancel', 'timeout', 'disconnect', 'answered'])

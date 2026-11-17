@@ -638,10 +638,15 @@ task-local context variables. The root broker presents attached answerers one
 at a time in park order, including SDK callbacks. A terminal request looks like:
 
 ```text
-[garuda] approval 1 of 2: worker worker-12345 · agent editor · depth 1
+[garuda] approval (2 waiting): worker worker-12345 · agent editor · depth 1
   bash({'command': 'echo alpha'})
 Approve? [y/N]:
 ```
+
+The count is a snapshot of unanswered, unexpired asks at presentation time,
+including the current ask. Terminal approval users must share one event loop,
+as CLI run/chat do. Concurrent loops in different threads are not serialized;
+do not replace a loop while a withdrawn input read remains outstanding.
 
 `garuda approvals list latest` appends `worker <id> agent editor depth 1` to
 child requests. For full requester identity and its ceiling fingerprint:
@@ -659,7 +664,8 @@ Cancellation, timeout, disconnect or another channel's answer withdraws the
 attached prompt. Queued time counts toward expiry, and a settled queued ask is
 never presented. Terminal input cannot be interrupted: the next line belonging
 to a withdrawn prompt is discarded and the current prompt is printed again.
-That read can still compete with chat's own `input()` for a subsequent line;
+That read can still compete with chat's own `input()` or the cross-project
+resume confirmation's input for a subsequent line;
 it never applies that line to another approval. Root prompts remain unlabelled.
 
 Integration refuses `worker.busy` while any run or another integration is live.

@@ -1,7 +1,6 @@
 """Terminal approval routing through the real broker and builtins.input."""
 
 import asyncio
-import functools
 import io
 import queue
 import threading
@@ -11,8 +10,8 @@ import pytest
 from garuda.acp.broker import ApprovalBroker, ApprovalRequest
 from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
-from garuda.interfaces.cli import stdin_approval
 from garuda.interfaces.run_guard import approval_answerer
+from garuda.interfaces.terminal_approval import TerminalApprover
 
 
 async def until(predicate):
@@ -42,7 +41,7 @@ def tty(monkeypatch):
 async def test_concurrent_stdin_prompts_show_one_and_route_the_line_to_it(tty):
     out = io.StringIO()
     broker = ApprovalBroker(PermissionEngine(), answerer=approval_answerer(
-        functools.partial(stdin_approval, stream=out)))
+        TerminalApprover(out)))
     first = asyncio.create_task(broker.handler()('rm -rf build'))
     second = asyncio.create_task(broker.handler()('ls'))
     try:
@@ -66,7 +65,7 @@ async def test_concurrent_stdin_prompts_show_one_and_route_the_line_to_it(tty):
 async def test_line_for_withdrawn_prompt_is_discarded_and_prompt_reshown(tty, line_arrives_before_next_prompt):
     out = io.StringIO()
     broker = ApprovalBroker(PermissionEngine(), timeout_sec=0.15,
-                            answerer=approval_answerer(functools.partial(stdin_approval, stream=out)))
+                            answerer=approval_answerer(TerminalApprover(out)))
     assert not await broker.handler()('A')
     broker._timeout_sec = 2
     if line_arrives_before_next_prompt:
@@ -89,19 +88,17 @@ async def test_line_for_withdrawn_prompt_is_discarded_and_prompt_reshown(tty, li
         await asyncio.gather(second, return_exceptions=True)
 
 
-async def test_prompt_labels_worker_agent_depth_and_queue_position(tty):
-    from garuda.interfaces.terminal_approval import TerminalApprover
-
+async def test_prompt_labels_worker_agent_depth_and_waiting_count(tty):
     out = io.StringIO()
     request = ApprovalRequest('id', 'bash(echo exact)', 'approval', 'native', 'root',
                               requester={'session_id': 'worker-123456789', 'agent': 'editor',
                                          'depth': 1, 'kind': 'editing_worker'},
-                              queue_position=1, queue_length=2)
+                              queue_length=2)
     task = asyncio.create_task(TerminalApprover(out).ask_request(request))
     try:
         await until(lambda: 'Approve?' in out.getvalue())
         prompt = out.getvalue()
-        assert '1 of 2' in prompt and 'worker worker-12345' in prompt
+        assert '2 waiting' in prompt and 'worker worker-12345' in prompt
         assert 'agent editor' in prompt and 'depth 1' in prompt
         assert request.action in prompt
         tty.put('yes')
@@ -115,7 +112,7 @@ async def test_eof_denies_as_disconnected(tty, tmp_path):
     store = SessionStore(tmp_path)
     store.begin('root', task='t', model='m', agent='a', workspace='w')
     broker = ApprovalBroker(PermissionEngine(), store=store,
-                            answerer=approval_answerer(functools.partial(stdin_approval, stream=io.StringIO())))
+                            answerer=approval_answerer(TerminalApprover(io.StringIO())))
     tty.put(EOFError())
     assert not await broker.handler(session_id='root')('A')
     records = [v for k, v in store.load_meta('root').items() if k.startswith('approval:')]
@@ -123,8 +120,6 @@ async def test_eof_denies_as_disconnected(tty, tmp_path):
 
 
 async def test_separate_brokers_share_terminal_presentation(tty):
-    from garuda.interfaces.terminal_approval import TerminalApprover
-
     out = io.StringIO()
     brokers = [ApprovalBroker(PermissionEngine(), answerer=approval_answerer(TerminalApprover(out)))
                for _ in range(2)]

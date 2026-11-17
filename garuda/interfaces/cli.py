@@ -28,11 +28,6 @@ def resolved_model_name(session: AgentSession) -> str:
     return safe_model_identity(session.model)
 
 
-async def stdin_approval(action: str, stream=None):
-    # Human output can be routed to stderr to keep JSONL stdout parseable.
-    return await TerminalApprover(stream or sys.stdout)(action)
-
-
 def _drain_events(
     renderer: ChatRenderer,
     events,

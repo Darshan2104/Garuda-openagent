@@ -766,6 +766,16 @@ a borrowed step propagates it to its parent and retains its own reservation,
 including cleanup after revocation. Ordinary reaped completion releases as
 before; supervised recovery receipts remain separate work).
 
+`terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
+depth and waiting-count labels, plus one shielded stdin reader per event loop.
+It is single-loop only: all approval users of one stdin must share that loop;
+concurrent loops in different threads are not serialized. A withdrawn prompt
+retains its read ownership; that line is discarded before a fresh read for the
+reprinted current prompt. Do not replace the loop while that reader is outstanding.
+`run_guard.approval_answerer` opts into callable `ask_request(request)` when
+present and otherwise preserves string callbacks. The broker passes queue
+counts on a presentation snapshot, leaving parked requests unchanged.
+
 ## `flows/` — sequential role steps (C.6a)
 
 `quota_recovery.py` owns private versioned continuation records for quota-stopped
@@ -1135,11 +1145,3 @@ A page can carry `content_sha256`, the digest of the whole file's text as
 with bounded memory); `read_file` derives its source version from it and reports
 the version as unknown when a tail/bounded read did not cover the whole file.
 Outlines always parse the full `read_file` text, never a page.
-
-
-`interfaces/terminal_approval.py` owns `TerminalApprover`: request-aware worker,
-agent, depth and queue labels, plus one shielded stdin reader per event loop.
-A withdrawn prompt retains its read ownership; that line is discarded before a
-fresh read for the reprinted current prompt. `interfaces/cli.py::stdin_approval`
-remains the string-callback entry point. `run_guard.approval_answerer` opts into
-`ask_request(request)` when present and otherwise preserves string callbacks.

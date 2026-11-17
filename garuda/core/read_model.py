@@ -66,7 +66,7 @@ def approvals(store, session_id: str, *, requests: list[dict] | None = None) -> 
                                                  "digest")},
                         **({"requester": {k: redact_text(v)[0] if isinstance(v, str) else v
                                           for k, v in r["requester"].items()}}
-                           if r.get("requester") is not None else {}),
+                           if isinstance(r.get("requester"), dict) else {}),
                         "expired": time.time() > float(r.get("expires_at") or 0)})
         return out
     except Exception:

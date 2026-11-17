@@ -20,7 +20,7 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from garuda.acp.authority import (
@@ -59,7 +59,7 @@ class ApprovalRequest:
     expires_at: float | None = None
     requester: dict | None = None
     requester_ceiling: str | None = None
-    queue_position: int | None = None
+    # Presentation snapshot only; the parked request keeps this unset.
     queue_length: int | None = None
 
 
@@ -139,6 +139,9 @@ class ApprovalBroker:
     With a :class:`~garuda.acp.approval_channel.FileApprovalChannel` a parked
     approval is also published to files, and a valid file answer resolves it
     exactly like a terminal or dashboard answer (B.8).
+
+    Confined to one event loop at a time; concurrent use from different loops
+    or threads is unsupported. Sequential reuse across asyncio.run calls is OK.
     """
 
     def __init__(
@@ -375,6 +378,8 @@ class ApprovalBroker:
         (:class:`Decision`), because the runtime is told after this returns.
         """
         approval_id = approval_id or self._next_id()
+        if approval_id in self._parked or approval_id in self._answers:
+            raise KeyError(f"approval {approval_id!r} is already parked")
         request = self._request(family, action, runtime_id, session_id, approval_id)
         if self._cancelled_reason is not None:
             self._requester_engines.pop(approval_id, None)
@@ -464,6 +469,9 @@ class ApprovalBroker:
     ) -> tuple[ApprovalOutcome, str, str | None]:
         """``(outcome, via, reason)`` for one parked approval; no audit here."""
         approval_id = request.approval_id
+        # Only the invocation that parks this id owns its settlement cleanup.
+        if approval_id in self._parked or approval_id in self._answers:
+            raise KeyError(f"approval {approval_id!r} is already parked")
         try:
             return await self._wait_outcome(request)
         finally:
@@ -481,8 +489,6 @@ class ApprovalBroker:
         self, request: ApprovalRequest
     ) -> tuple[ApprovalOutcome, str, str | None]:
         approval_id, action = request.approval_id, request.action
-        if approval_id in self._parked:
-            raise KeyError(f"approval {approval_id!r} is already parked")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         poll = None
@@ -590,10 +596,16 @@ class ApprovalBroker:
                     or (request.expires_at is not None and time.time() >= request.expires_at)):
                 return
             self._presented_at[approval_id] = time.time()
-            request.queue_position, request.queue_length = 1, len(self._parked)
+            now = time.time()
+            waiting = sum(
+                not self._answers[key].done()
+                and (parked.expires_at is None or now < parked.expires_at)
+                for key, parked in self._parked.items()
+            )
+            presentation = replace(request, queue_length=waiting)
             try:
                 answerer = self._answerer
-                result = await answerer(request) if answerer is not None else False
+                result = await answerer(presentation) if answerer is not None else False
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -612,6 +624,9 @@ class ApprovalBroker:
                 self._terminal.pop(approval_id, None)
 
     def _presenting_lock(self) -> asyncio.Lock:
+        # Broker maps and futures share this single-loop ownership contract.
+        # Rebind only for sequential reuse, after the previous loop has settled;
+        # this does not support overlapping loops in different threads.
         loop = asyncio.get_running_loop()
         if self._presenting is None or self._lock_loop is not loop:
             self._presenting = asyncio.Lock()

@@ -1563,8 +1563,11 @@ def run_approvals(args) -> int:
         return 0
     for request in pending:
         requester = request.get("requester")
-        label = (f"  worker {requester['session_id'][:12]} agent {requester['agent']} "
-                 f"depth {requester['depth']}" if requester else "")
+        label = ""
+        if isinstance(requester, dict):
+            worker = str(requester.get("session_id") or "unknown")[:12]
+            label = (f"  worker {worker} agent {requester.get('agent', 'unknown')} "
+                     f"depth {requester.get('depth', 'unknown')}")
         print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
               f"  digest={request.get('digest')}{label}")
     return 0
