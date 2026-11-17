@@ -34,14 +34,109 @@ digest, preserving ASK/DENY through the installed session broker. Refusal maps t
 still enforces the parent's effective path and acceptance permissions.
 Entries omit the pre-integration receipt `state` after an integration attempt;
 `outcome` and `integration.state` describe the result without a stale ready claim.
-It stops on quarantine and maps stale-base outcomes without rebase logic.
+It stops on quarantine and maps integration outcomes, passing through the
+service's `rebase` evidence for successful disjoint rebases and stale-base refusals.
 Ordinary `ExceptionGroup` maps to `worker.batch_failed` after sibling quarantine;
-cancellation and fatal base exceptions propagate. Approval prompts remain
-unserialized on this branch; #476 owns shared serialization and requester
-attribution. After merging #476, verify those paths and update the overlap caveats
-here, in ARCHITECTURE, teams and feature-quality-status. CLI/dashboard service
-construction remains deferred. Permission checks are guardrails, not a sandbox.
+cancellation and fatal base exceptions propagate. The shared root broker
+serializes approval asks FIFO and attributes worker asks to their candidate
+IDs; in-order integration asks retain the parent identity (#476). Disjoint
+stale siblings can rebase through the existing integration service (#475).
+CLI/dashboard service construction remains deferred. Permission checks are
+guardrails, not a sandbox.
 No speed, cost or quality measurement is added.
+
+## 2026-11-17 — Run-tree approval asks are presented one at a time and attributed (#473)
+
+The root session broker already receives descendant asks through delegated
+permissions. Its attached answerer now presents FIFO in park order, with one
+invocation active; settlement cancels that request's answerer, and queued asks
+that settle are never presented. Expiry starts at park time, including time
+queued. External file, inbox and native answer channels remain unserialized:
+they already name an id and digest and retain first-answer-wins routing.
+Duplicate active ids are rejected before constructing a request or taking
+cleanup ownership, preserving the original prompt, provenance and answer path.
+Each broker is confined to one event loop at a time; reuse across sequential
+`asyncio.run` calls does not support overlapping loops or threads.
+
+`core.approval_outcome.approval_requester(identity, engine)` supplies task-local
+child session, agent, depth, kind and parent session provenance around native
+child execution. Nested children restore the enclosing identity. Identity grants
+no authority. Requester identity and effective ceiling fingerprint are bound
+into request digests, file publication and outcome records; allows recheck both
+root and requester ceilings, and a missing requester engine denies. Root asks
+keep their existing digest fields, record keys and unlabelled prompt; presentation
+timestamps are recorded only for attributed children. No remembered allow or
+always-allow grant is introduced; identical sibling actions need separate answers.
+
+`TerminalApprover` is single-loop only: all approval users of one stdin must
+share the same event loop, as CLI run/chat do. It does not serialize concurrent
+loops in different threads. Do not replace a loop with a withdrawn read still
+outstanding: closing the loop cannot stop its input thread, which can consume
+a later loop's input without a reprint. Within the shared loop it serializes
+prompts across brokers and retains one shielded input reader with its prompt owner.
+Worker queue labels show a presentation-time count of unanswered, unexpired
+requests, including the current ask ("N waiting"). This snapshot is passed to
+the answerer without changing the parked request returned by `pending()`.
+Withdrawal prints a notice; that read's line is discarded even if it completed before the next
+prompt, which is reprinted for a fresh answer. EOF records disconnected. The
+remaining stale read can compete with chat's own `input()` or
+`confirm_cross_project`'s bare input for a subsequent line;
+that line is never applied to an approval. Dashboard live-chat card labels and
+vendor fan-out remain follow-ups. This supersedes the historical approval policy
+in the #384 entry below.
+
+Native broker callbacks must cooperate with async cancellation. Cancelling an
+await of `to_thread` does not stop its thread; only `TerminalApprover` retains
+and drains such stale reads. Request-aware callbacks opt in with a callable
+`ask_request(request)` method; ordinary string callbacks remain supported.
+The unused `cli.stdin_approval` wrapper is removed; production entry points
+and tests use `TerminalApprover(stream)` directly.
+
+## 2026-11-17 — Rebase spelling checks include directory prefixes; lineage requires publication evidence (#470 review)
+
+Rebase rejects newly ambiguous NFC/casefold spellings across every file and
+directory prefix in the combined tree, including collisions with unchanged
+parent paths. Identically spelled shared directories remain allowed. Existing
+parent ambiguities cannot gain new spellings. Git metadata basenames are
+excluded after NFC/casefold normalization too, including mixed-case ignore,
+attributes and modules files.
+
+This strengthens the disjointness claim below and replaces unconditional
+post-apply lineage recording. After recording integration, a best-effort parent
+snapshot must equal the checked tree before the service records a new lineage
+edge. A mismatch or capture exception leaves the integration state unchanged
+and adds no edge; subsequent stale siblings cannot attribute that publication.
+Rebase receipt tree IDs describe the proved, checked candidate and destination
+at validation time, not isolation from concurrent external writers. The
+preimage equality proof follows from path disjointness; there is no separate
+user-facing `preimage_changed` reason. These controls remain guardrails.
+
+## 2026-11-17 — Stale editing siblings rebase only over this service's own disjoint integrations (#470)
+
+This supersedes the whole-base refusal policy in the 2026-11-16 editing-worker
+concurrency and measurement decisions. A ready stale candidate can rebase only
+when parent HEAD, symbolic ref and staged index match admission and the current
+tree is reachable from its base through successful integrations recorded by this
+service instance in memory. Outside drift, restarts and terminal refusals cannot
+be retried through this path. No-op integrations preserve existing lineage edges
+instead of recording self-cycles.
+
+Candidate and parent changes must be disjoint by exact spelling, NFC/casefold
+and directory ancestry. Changes to `.gitignore`, `.gitattributes`, `.gitmodules`,
+symlinks or gitlinks refuse. Each candidate preimage must remain byte- and
+mode-identical. A scratch parent index rebuilds the combined tree; entry
+substitution and patch/path equivalence must prove that exact tree. No merge or
+same-file hunk resolution is attempted.
+
+Parent write and acceptance permissions still apply. Confined checks run again
+on the combined tree, then destination revalidation and apply use the snapshot
+captured for this integration. A parent change during checks still refuses;
+cancellation settles the checker and records uncertainty. Candidate provenance
+and the worker repository remain unchanged by rebasing, preserving retirement's
+original candidate-tree proof. Receipts and events carry successful rebase tree
+IDs, paths and drift count; refusals retain `integration.stale_base` with a
+`rebase.reason`. Local detached repositories and permission screening remain
+guardrails, not a sandbox boundary.
 
 ## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)
 
@@ -55,12 +150,14 @@ native child ownership, Git snapshots, permissions and integration stay real.
 The harness lives outside the shipped package and must run in a dedicated
 process. Never import it into a process doing real agent work: Docker dispatch,
 process identity and lease/recovery/session/settings environment overrides are
-process-wide. Runtime code is unchanged. The whole-parent-base rule admits four
-sequential integrations but only one sibling from a shared base, even for
-disjoint edits.
+process-wide. Runtime code is unchanged. The initial whole-parent-base rule
+admitted four sequential integrations but only one sibling from a shared base.
+The delivered disjoint-sibling rebase (#475) supersedes that rule and the fixture
+now records rebased integrations as well as stale-base refusals.
 The published numbers are deterministic contract evidence with scripted delays,
-not latency or quality claims. Model-driven fan-out and non-local backends remain
-open. See `docs/evaluation/index.md` for results and measurement boundaries.
+not latency or quality claims. Model-driven fan-out is now opt-in through trusted
+Python configuration (#471); non-local backends remain open.
+See `docs/evaluation/index.md` for results and measurement boundaries.
 
 ## 2026-11-16 — Spend gate is projected in session views (#363)
 
@@ -134,8 +231,9 @@ After recovery settles, only this instance's currently live candidate IDs with
 `admitted`/`running` receipts are exempt from uncertainty checks. Uncertain
 siblings, foreign service instances and exited runs with stale running receipts
 remain blocking. Integration stays exclusive with runs and other integrations;
-the existing stale-base check prevents a sibling from overwriting an integrated
-candidate, with no rebase or automatic conflict resolution.
+the stale-base check prevents a sibling from overwriting an integrated candidate.
+The later disjoint-sibling rebase decision (#475) permits checked integration over
+this service's own recorded lineage; overlapping edits still refuse.
 With the default limit of one, a second run or integration during a live run
 returns `worker.busy`, replacing the previous `worker.uncertain` once a running
 receipt was published.
@@ -153,9 +251,10 @@ native slot counted. Capacity-full admission keeps the existing settled refusal.
 The root SpendGate and DelegationBudget are shared unchanged.
 
 Children inherit the parent's approval handler and relocated permissions;
-screening workspace state is a context variable. Prompts are not serialized.
-Model-driven fan-out and non-local backends remain open. This supersedes earlier
-#384 concurrency deferrals without changing ordinary subagent/tool dispatch,
+screening workspace state is a context variable. Shared broker serialization and
+worker attribution are now delivered (#476), and model-driven fan-out is opt-in
+through trusted Python configuration (#471). Non-local backends remain open.
+This supersedes earlier #384 concurrency deferrals without changing ordinary subagent/tool dispatch,
 workspace guardrail claims or restart integration policy.
 
 ## 2026-11-16 — Failed attempts inside completed calls are charged (#363)

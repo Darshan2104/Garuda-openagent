@@ -191,7 +191,9 @@ async def run_fanout(runner, arguments, *, env, session_id, permissions, output_
             # The admission receipt describes the child before integration;
             # expose the current outcome instead of retaining a stale state.
             entry.pop("state", None)
-            entry["integration"] = {k: outcome[k] for k in ("state", "code", "message") if k in outcome}
+            entry["integration"] = {
+                k: outcome[k] for k in ("state", "code", "message", "rebase") if k in outcome
+            }
             entry["code"] = outcome.get("code")
             if outcome["state"] == "integrated":
                 entry["outcome"] = "integrated"

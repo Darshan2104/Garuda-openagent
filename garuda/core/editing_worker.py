@@ -41,9 +41,11 @@ from garuda.workspace.lease import LeaseError
 from garuda.workspace.local import LocalEnvironment
 from garuda.workspace.settlement import settle_task
 from garuda.workspace.worktrees import (
+    RebaseRefused,
     WorktreeError,
     apply_snapshot_patch,
     check_snapshot_tree,
+    rebase_snapshot_patch,
     snapshot_patch_paths,
 )
 
@@ -166,6 +168,7 @@ class LocalEditingWorkers:
         self._admissions = 0
         self._live: set[str] = set()
         self._integrating = False
+        self._integrated_edges: dict[str, str] = {}
 
     async def _authorize(self, env, session_id, *, exempt=frozenset()):
         backend = env
@@ -445,6 +448,17 @@ class LocalEditingWorkers:
                 self._admissions -= 1
             self._live.discard(worker_id)
 
+    def _drift_is_ours(self, base_tree: str, current_tree: str) -> bool:
+        seen = set()
+        for _ in range(len(self._integrated_edges) + 1):
+            if current_tree == base_tree:
+                return True
+            if current_tree in seen or current_tree not in self._integrated_edges:
+                return False
+            seen.add(current_tree)
+            current_tree = self._integrated_edges[current_tree]
+        return False
+
     async def integrate(self, candidate_id, provenance_digest, *, env, session_id, permissions):
         worker = self._workers.get(candidate_id)
         owns_integration = False
@@ -468,9 +482,27 @@ class LocalEditingWorkers:
             # including deleted paths. A tool-level allow alone cannot authorize it.
             parent = Path(env.workspace_root)
             current = snap.capture(parent)
+            rebase = None
+            check_tree, apply_base = worker.tree, worker.base
             if current.tree != worker.base.tree:
-                raise WorktreeError("integration.stale_base", "parent workspace changed since admission")
-            paths = snapshot_patch_paths(parent, patch, current.tree, worker.tree)
+                index = _digest(snap.git(parent, "ls-files", "-s", "-z").stdout)
+                ref = snap.git(parent, "symbolic-ref", "-q", "HEAD", check=False).stdout
+                if (current.source_head != worker.base.source_head
+                        or index != worker.index_digest or ref != worker.head_ref):
+                    raise RebaseRefused("parent_ref_or_index_moved", "parent HEAD, ref or index changed since admission")
+                if not self._drift_is_ours(worker.base.tree, current.tree):
+                    raise RebaseRefused("unattributed_drift", "parent changed outside this service's integrations")
+                rebased = rebase_snapshot_patch(
+                    parent, patch, worker_repo=worker.workspace, base_tree=worker.base.tree,
+                    candidate_tree=worker.tree, onto_tree=current.tree,
+                )
+                check_tree, apply_base = rebased.tree, current
+                rebase = {"base_tree": worker.base.tree, "onto_tree": current.tree,
+                          "rebased_tree": rebased.tree, "paths": list(rebased.paths),
+                          "drift_paths": rebased.drift_paths}
+                paths = list(rebased.paths)
+            else:
+                paths = snapshot_patch_paths(parent, patch, current.tree, worker.tree)
             for path in paths:
                 allowed, _ = await permissions.evaluate_tool_call("write_file", {"path": path})
                 if not allowed:
@@ -480,7 +512,7 @@ class LocalEditingWorkers:
                 if not allowed:
                     raise WorktreeError("integration.permission_denied", "parent refused an integration check")
             check_task = asyncio.create_task(asyncio.to_thread(
-                check_snapshot_tree, parent, worker.tree, checks=list(self.checks),
+                check_snapshot_tree, parent, check_tree, checks=list(self.checks),
                 image=self.image, timeout=self.timeout,
             ))
             try:
@@ -497,11 +529,21 @@ class LocalEditingWorkers:
                 raise WorktreeError("integration.candidate_changed", "candidate changed during checks")
             # No await between destination revalidation and apply. A crash after
             # this intent never produces a replayable candidate on restart.
-            self._record(worker, "integrating", checks=checks)
-            apply_snapshot_patch(Path(env.workspace_root), patch, worker.base,
+            self._record(worker, "integrating", checks=checks, **({"rebase": rebase} if rebase else {}))
+            apply_snapshot_patch(parent, patch, apply_base,
                                  index_digest=worker.index_digest.removeprefix("sha256:"),
-                                 head_ref=worker.head_ref, candidate_tree=worker.tree)
+                                 head_ref=worker.head_ref, candidate_tree=check_tree)
             self._record(worker, "integrated")
+            # A post-apply read failure cannot undo publication or change its
+            # state. Only a proved destination may authorize later siblings.
+            try:
+                published = snap.capture(parent)
+            except Exception:
+                pass
+            else:
+                # A no-op must not replace an existing edge with a self-cycle.
+                if published.tree == check_tree and check_tree != current.tree:
+                    self._integrated_edges[check_tree] = current.tree
             await self._retire(worker)
             return dict(worker.receipt)
         except asyncio.CancelledError as cancelled:
@@ -517,6 +559,8 @@ class LocalEditingWorkers:
                          and not isinstance(exc, WorktreeError))
             outcome = {"state": "uncertain" if uncertain else "refused", "candidate_id": candidate_id,
                        "code": getattr(exc, "code", "integration.failed"), "message": str(exc)}
+            if isinstance(exc, RebaseRefused):
+                outcome["rebase"] = {"reason": exc.reason}
             if owns_integration and worker is not None:
                 self._record(worker, outcome["state"], integration=outcome)
             return outcome

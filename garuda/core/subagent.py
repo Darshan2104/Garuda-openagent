@@ -404,23 +404,31 @@ class SubagentRunner:
                         "agent.delegation_deadline", "the run's deadline passed during child preparation"
                     )
                 config.deadline_sec = min(config.deadline_sec or remaining, remaining)
-            result = await agent.run(
-                task=task,
-                model=self.model,
-                env=self.env,
-                tools=tools,
-                config=config,
-                events=sub_events,
-                permissions=permissions,
-                hooks=self.hooks,
-                context=context,
-                buffer=shared_buffer,
-                model_delta_consumer=(
-                    _labelled(self.parent_delta_consumer, source=sub_events.session_id,
-                              agent=profile.name, depth=self.depth)
-                    if self.parent_delta_consumer is not None else None
-                ),
+            from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+
+            identity = ApprovalRequester(
+                sub_events.session_id, profile.name, self.depth,
+                "editing_worker" if self.child_session_id is not None else "subagent",
+                self.events.session_id,
             )
+            with approval_requester(identity, permissions):
+                result = await agent.run(
+                    task=task,
+                    model=self.model,
+                    env=self.env,
+                    tools=tools,
+                    config=config,
+                    events=sub_events,
+                    permissions=permissions,
+                    hooks=self.hooks,
+                    context=context,
+                    buffer=shared_buffer,
+                    model_delta_consumer=(
+                        _labelled(self.parent_delta_consumer, source=sub_events.session_id,
+                                  agent=profile.name, depth=self.depth)
+                        if self.parent_delta_consumer is not None else None
+                    ),
+                )
         finally:
             self.busy = False
             if mcp_manager is not None:
