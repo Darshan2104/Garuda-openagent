@@ -64,6 +64,9 @@ def approvals(store, session_id: str, *, requests: list[dict] | None = None) -> 
                         "action": redact_text(str(r.get("action", "")))[0],
                         **{k: r.get(k) for k in ("family", "runtime_id", "expires_at", "ceiling",
                                                  "digest")},
+                        **({"requester": {k: redact_text(v)[0] if isinstance(v, str) else v
+                                          for k, v in r["requester"].items()}}
+                           if r.get("requester") is not None else {}),
                         "expired": time.time() > float(r.get("expires_at") or 0)})
         return out
     except Exception:

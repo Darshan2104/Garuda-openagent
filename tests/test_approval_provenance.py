@@ -654,3 +654,142 @@ async def test_decision_flood_keeps_session_metadata_and_observation_storage_bou
     assert "PRIVATE" not in json.dumps(retained)
     if kind == "refusal":
         assert retained[-1]["answered_approval_id"].startswith("foreign-5999-")
+
+
+async def test_worker_requester_is_bound_into_digest_channel_and_listing(store, native_factory):
+    from garuda.acp.approval_channel import request_digest, write_answer
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+    from garuda.core.read_model import approvals
+    from garuda.runtime.events import RuntimeEventKind
+
+    runtime, _, broker = native_factory()
+    await runtime.start(task='approval', session_id=SID)
+    identity = ApprovalRequester('worker-a', 'editor', 1, 'editing_worker', SID)
+    child = PermissionEngine()
+    with approval_requester(identity, child):
+        task = asyncio.create_task(broker.handler(session_id=SID)('bash(echo x)'))
+    try:
+        request = await _parked(broker)
+        directory = store.session_dir(SID) / 'approvals'
+        path = directory / f'{request.approval_id}.request.json'
+        fields = json.loads(path.read_text())
+        assert fields['requester'] == identity.to_dict()
+        digest = fields.pop('digest')
+        assert digest == request_digest(fields) == request.digest
+        assert fields['requester_ceiling'] == request.requester_ceiling
+        row, = approvals(store, SID)
+        assert row['requester'] == identity.to_dict()
+        events, _ = await runtime.poll_events(0)
+        event, = [e for e in events if e.kind == RuntimeEventKind.APPROVAL_REQUEST]
+        assert event.payload['requester'] == identity.to_dict()
+        # A changed requester invalidates the file's original digest.
+        path.write_text(json.dumps({**fields, 'digest': digest,
+                                    'requester': {**fields['requester'], 'session_id': 'worker-b'}}))
+        with pytest.raises(ValueError, match='modified|digest'):
+            write_answer(directory, SID, request.approval_id, allow=True, expect_digest=digest)
+        path.write_text(json.dumps({**fields, 'digest': digest}))
+        write_answer(directory, SID, request.approval_id, allow=True, expect_digest=digest)
+        assert await asyncio.wait_for(task, 2)
+        record = _records(store)[f'approval:{request.approval_id}']
+        assert record['requester'] == identity.to_dict()
+        assert record['requester_ceiling'] == request.requester_ceiling
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_requester_ceiling_change_denies_pending_allow(store):
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+
+    broker = ApprovalBroker(PermissionEngine(), store=store)
+    child = PermissionEngine()
+    with approval_requester(ApprovalRequester('worker', 'editor', 1, 'editing_worker', SID), child):
+        task = asyncio.create_task(broker.handler(session_id=SID)('bash(echo x)'))
+    request = await _parked(broker)
+    child._bash_rules = {'deny': ['.*']}
+    broker.answer(request.approval_id, True)
+    assert not await task
+    record = _records(store)[f'approval:{request.approval_id}']
+    assert record['outcome'] == 'deny'
+    assert "requester's permission ceiling" in record['reason']
+
+
+async def test_root_requests_keep_existing_record_shape(store):
+    from garuda.acp.approval_channel import request_digest
+
+    async def allow(request):
+        assert not getattr(request, 'requester', None)
+        assert request.digest == request_digest({
+            'approval_id': request.approval_id, 'session_id': SID, 'action': 'A',
+            'family': 'approval', 'runtime_id': 'native', 'ceiling': request.ceiling,
+            'expires_at': request.expires_at,
+        })
+        return True
+
+    broker = ApprovalBroker(PermissionEngine(), store=store, answerer=allow)
+    assert await broker.handler(session_id=SID)('A')
+    record, = _records(store).values()
+    assert set(record) == {'approval_id', 'outcome', 'action', 'family', 'runtime_id',
+                           'decided_at', 'via', 'reason', 'request_digest', 'ceiling',
+                           'ceiling_source', 'requested_at', 'expires_at'}
+
+
+async def test_cli_lists_requester_in_human_and_json_output(store, monkeypatch, capsys):
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+    from garuda.interfaces.main import build_parser, run_approvals
+
+    monkeypatch.setenv('GARUDA_SESSIONS_DIR', str(store.root))
+    engine = PermissionEngine()
+    broker = install_session_broker(engine, store, SID, external=True)
+    with approval_requester(ApprovalRequester('worker-a', 'editor', 1, 'editing_worker', SID), engine):
+        task = asyncio.create_task(broker.handler(session_id=SID)('bash(echo x)'))
+    try:
+        request = await _parked(broker)
+        parse = build_parser().parse_args
+        assert run_approvals(parse(['approvals', 'list', SID, '--workspace', 'w'])) == 0
+        assert 'worker worker-a agent editor depth 1' in capsys.readouterr().out
+        assert run_approvals(parse(['approvals', 'list', SID, '--workspace', 'w', '--json'])) == 0
+        row, = json.loads(capsys.readouterr().out)
+        assert row['requester'] == request.requester
+        assert row['digest'] == request.digest
+        assert row['requester_ceiling'] == request.requester_ceiling
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_native_subagent_context_restores_the_enclosing_requester(store, tmp_path):
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+    from garuda.core.subagent import SubagentRunner
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import default_tools
+    from garuda.workspace.local import LocalEnvironment
+    from tests.test_subagent_ceiling import _call, _done
+
+    engine = PermissionEngine(bash_rules={'ask': ['^echo ']})
+    broker = install_session_broker(engine, store, SID)
+
+    async def allow(request):
+        return True
+
+    broker.set_answerer(allow)
+    events = EventStore(session_id='outer')
+    runner = SubagentRunner(
+        model=ScriptModel([_call('bash', command='echo inner'), _done()]),
+        env=LocalEnvironment(tmp_path), events=events, workspace_root=str(tmp_path),
+        parent_permissions=engine, parent_tools=default_tools(), depth=2,
+    )
+    outer = ApprovalRequester('outer', 'editor', 1, 'subagent', SID)
+    with approval_requester(outer, engine):
+        result = await runner.run('harbor', 'inner')
+        assert await broker.handler(session_id=SID)('outer action')
+    assert await broker.handler(session_id=SID)('root action')
+    records = list(_records(store).values())
+    inner, = [r for r in records if 'echo inner' in r['action']]
+    assert inner['requester'] == {
+        'session_id': result.metadata['subagent_session_id'],
+        'agent': result.metadata['subagent_resolved_profile'], 'depth': 2,
+        'kind': 'subagent', 'parent_session_id': 'outer',
+    }
+    assert next(r for r in records if r['action'] == 'outer action')['requester'] == outer.to_dict()
+    assert 'requester' not in next(r for r in records if r['action'] == 'root action')

@@ -633,8 +633,34 @@ Each worker has its own capacity holder, lease identity and heartbeat. Capacity
 contention settles as `worker.capacity_unavailable` when no ownership began;
 other children can still finish. The root spend gate and delegation budget are
 shared unchanged. Children use the parent's approval handler and relocated
-permissions. Screening workspace state is a task-local context variable;
-approval prompts are not serialized and may overlap.
+permissions. Screening workspace state and approval requester identity are
+task-local context variables. The root broker presents attached answerers one
+at a time in park order, including SDK callbacks. A terminal request looks like:
+
+```text
+[garuda] approval 1 of 2: worker worker-12345 · agent editor · depth 1
+  bash({'command': 'echo alpha'})
+Approve? [y/N]:
+```
+
+`garuda approvals list latest` appends `worker <id> agent editor depth 1` to
+child requests. For full requester identity and its ceiling fingerprint:
+
+```bash
+garuda approvals list latest --json
+```
+
+Queued asks remain available there and in the dashboard inbox,
+answerable by id and digest. Every allow rechecks root and requester ceilings;
+identical actions from siblings require separate answers. There is no remembered
+or always-allow grant.
+
+Cancellation, timeout, disconnect or another channel's answer withdraws the
+attached prompt. Queued time counts toward expiry, and a settled queued ask is
+never presented. Terminal input cannot be interrupted: the next line belonging
+to a withdrawn prompt is discarded and the current prompt is printed again.
+That read can still compete with chat's own `input()` for a subsequent line;
+it never applies that line to another approval. Root prompts remain unlabelled.
 
 Integration refuses `worker.busy` while any run or another integration is live.
 After all children settle, integrate candidates one at a time. A changed parent
@@ -643,8 +669,8 @@ is no automatic rebase or conflict resolution. Only the same service instance's
 currently live `admitted`/`running` siblings are exempt from admission uncertainty
 checks. Uncertain siblings, other service instances' live workers and exited
 runs whose receipts still say running block later admission and integration.
-Model-driven fan-out, non-local backends and approval prompt serialization remain
-open; the model-facing tool and CLI keep their existing dispatch behavior.
+Model-driven fan-out and non-local backends remain open; the model-facing tool
+and CLI keep their existing dispatch behavior.
 
 ### Measure editing fan-out offline
 

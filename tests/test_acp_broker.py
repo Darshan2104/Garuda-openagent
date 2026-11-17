@@ -263,3 +263,149 @@ async def test_facade_runs_share_the_broker_path(tmp_path, monkeypatch):
         v.get("outcome") == ApprovalOutcome.DENY.value
         for k, v in meta.items() if k.startswith("approval:")
     ), "the denial must be audited"
+
+
+async def test_concurrent_asks_present_one_at_a_time_in_park_order():
+    entered, active, peak = [], 0, 0
+    second = asyncio.Event()
+
+    async def answer(request):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        entered.append(request.action)
+        if active > 1:
+            second.set()
+        try:
+            await asyncio.wait_for(second.wait(), 0.1)
+        except TimeoutError:
+            pass
+        active -= 1
+        return True
+
+    broker = _broker(answerer=answer)
+    results = await asyncio.gather(*(broker.handler()(str(i)) for i in range(3)))
+    assert all(results)
+    assert peak == 1
+    assert entered == ['0', '1', '2']
+
+
+@pytest.mark.parametrize('settlement', ['cancel', 'timeout', 'disconnect', 'answered'])
+async def test_settled_request_withdraws_its_running_answerer(tmp_path, settlement):
+    store = SessionStore(tmp_path)
+    store.begin('s1', task='t', model='m', agent='a', workspace='w')
+    entered, withdrawn = asyncio.Event(), asyncio.Event()
+
+    async def answer(request):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            withdrawn.set()
+            raise
+
+    broker = _broker(store=store, timeout_sec=0.15, answerer=answer)
+    task = asyncio.create_task(broker.handler(session_id='s1')('action'))
+    await asyncio.wait_for(entered.wait(), 1)
+    request, = broker.pending()
+    if settlement == 'cancel':
+        task.cancel()
+    elif settlement == 'disconnect':
+        broker.disconnected(request.approval_id)
+    elif settlement == 'answered':
+        broker.answer(request.approval_id, False, via='file')
+    if settlement == 'cancel':
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert not await task
+    await asyncio.sleep(0)
+    assert withdrawn.is_set()
+    assert _persisted(store, 's1', request.approval_id)['outcome'] == {
+        'cancel': 'cancelled', 'timeout': 'timeout', 'disconnect': 'disconnected',
+        'answered': 'deny',
+    }[settlement]
+
+
+@pytest.mark.parametrize('settlement', ['cancel', 'timeout', 'disconnect', 'answered'])
+async def test_queued_request_that_settles_is_never_presented(tmp_path, settlement):
+    store = SessionStore(tmp_path)
+    store.begin('s1', task='t', model='m', agent='a', workspace='w')
+    entered, release = [], asyncio.Event()
+
+    async def answer(request):
+        entered.append(request.action)
+        await release.wait()
+        return True
+
+    broker = _broker(store=store, answerer=answer)
+    first = asyncio.create_task(broker.handler(session_id='s1')('A'))
+    await asyncio.sleep(0.03)
+    # Only B has a short lifetime. A retains its original bound expiry.
+    if settlement == 'timeout':
+        broker._timeout_sec = 0.1
+    second = asyncio.create_task(broker.handler(session_id='s1')('B'))
+    await asyncio.sleep(0.03)
+    request = next(r for r in broker.pending() if r.action == 'B')
+    if settlement == 'cancel':
+        second.cancel()
+    elif settlement == 'disconnect':
+        broker.disconnected(request.approval_id)
+    elif settlement == 'answered':
+        broker.answer(request.approval_id, False, via='file')
+    try:
+        if settlement == 'cancel':
+            with pytest.raises(asyncio.CancelledError):
+                await second
+        else:
+            assert not await second
+    finally:
+        release.set()
+        await first
+    assert entered == ['A']
+    record = _persisted(store, 's1', request.approval_id)
+    assert record['outcome'] == {'cancel': 'cancelled', 'timeout': 'timeout',
+                                 'disconnect': 'disconnected', 'answered': 'deny'}[settlement]
+    assert 'presented_at' not in record
+    if settlement == 'timeout':
+        assert 'before it was presented' in record['reason']
+
+
+async def test_identical_actions_need_separate_answers():
+    from garuda.core.approval_outcome import ApprovalRequester, approval_requester
+
+    seen = []
+
+    async def answer(request):
+        seen.append(request.requester['session_id'])
+        return len(seen) == 1
+
+    broker = _broker(answerer=answer)
+
+    async def ask(sid):
+        with approval_requester(ApprovalRequester(sid, 'editor', 1, 'editing_worker', 'root'),
+                                PermissionEngine()):
+            return bool(await broker.handler()('bash(echo x)'))
+
+    assert await asyncio.gather(ask('A'), ask('B')) == [True, False]
+    assert seen == ['A', 'B']
+
+
+async def test_disconnect_wins_over_answerer_returning_before_withdrawal(tmp_path):
+    store = SessionStore(tmp_path)
+    store.begin('s1', task='t', model='m', agent='a', workspace='w')
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def answer(request):
+        entered.set()
+        await release.wait()
+        return True
+
+    broker = _broker(store=store, answerer=answer)
+    task = asyncio.create_task(broker.handler(session_id='s1')('A'))
+    await entered.wait()
+    request, = broker.pending()
+    broker.disconnected(request.approval_id)
+    release.set()
+    assert not await task
+    assert _persisted(store, 's1', request.approval_id)['outcome'] == 'disconnected'
