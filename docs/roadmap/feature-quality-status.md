@@ -48,7 +48,9 @@ their complete acceptance criteria and exact merged revisions are verified.
   of archived inherited text remain fresh observations of historical text; the
   archive pointer warns about inherited counts and source sessions.
 - **Workers:** bounded programmatic editing fan-out is supported with exclusive
-  serialized integration; siblings remain stale after an integrated change.
+  serialized integration. Disjoint stale siblings rebase only over this service's
+  recorded integrations and are checked on the combined tree; overlap, outside
+  drift and parent HEAD/ref/index movement still refuse.
   A [deterministic provider-free fixture](../evaluation/index.md#deterministic-editing-worker-fan-out)
   measures outcome/time/cost and conflict overhead for N=1/N=4; it makes no
   latency or quality claim.

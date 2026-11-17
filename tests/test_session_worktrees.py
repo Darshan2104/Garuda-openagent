@@ -355,3 +355,32 @@ def test_a_detached_head_needs_an_explicit_destination(repo, monkeypatch):
         wt.merge_session(meta, checks=["true"], image=IMAGE)
     assert caught.value.code == "integration.no_destination"
     assert wt.merge_session(meta, checks=["true"], image=IMAGE, destination="main").destination == "main"
+
+
+@pytest.mark.parametrize("side", ["candidate", "parent"])
+@pytest.mark.parametrize("entry_mode,entry_name,reason", [
+    ("120000", "link", "link_entry"),
+    ("160000", "module", "link_entry"),
+    ("100644", ".gitmodules", "metadata_path"),
+])
+def test_rebase_rejects_link_entries_and_module_metadata(repo, side, entry_mode, entry_name, reason):
+    # The snapshot owner refuses submodules before integrate can reach the
+    # rebase helper. Exercise the helper's independent tree-entry contract with
+    # real Git objects, without weakening snapshot admission or mocking proofs.
+    base = snap.capture(repo).tree
+    entries = snap.git(repo, "ls-tree", base).stdout
+    blob = snap.git(repo, "hash-object", "-w", "--stdin", input=b"new\n").stdout.strip()
+    oid = snap.git(repo, "rev-parse", "HEAD").stdout.strip() if entry_mode == "160000" else blob
+    kind = "commit" if entry_mode == "160000" else "blob"
+    special = snap.git(repo, "mktree", input=entries +
+                       f"{entry_mode} {kind} ".encode() + oid + b"\t" + entry_name.encode() + b"\n").stdout.decode().strip()
+    regular = snap.git(repo, "mktree", input=entries + b"100644 blob " + blob + b"\tother.txt\n").stdout.decode().strip()
+    candidate, onto = (special, regular) if side == "candidate" else (regular, special)
+    patch = snap.git(repo, "diff", "--binary", "--full-index", base, candidate).stdout
+    before = _checkout_state(repo)
+    with pytest.raises(WorktreeError) as caught:
+        wt.rebase_snapshot_patch(repo, patch, worker_repo=repo, base_tree=base,
+                                 candidate_tree=candidate, onto_tree=onto)
+    assert caught.value.code == "integration.stale_base"
+    assert caught.value.reason == reason
+    assert _checkout_state(repo) == before

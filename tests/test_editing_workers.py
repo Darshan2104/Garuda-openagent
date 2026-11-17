@@ -195,7 +195,9 @@ async def test_siblings_share_budget_and_stale_sibling_cannot_overwrite_winner(e
     assert runner.budget.launches == 2
     monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
     assert (await _integrate(runner, workers, first))["state"] == "integrated"
-    assert (await _integrate(runner, workers, second))["code"] == "integration.stale_base"
+    outcome = await _integrate(runner, workers, second)
+    assert outcome["code"] == "integration.stale_base"
+    assert outcome["rebase"]["reason"] == "overlap"
     assert (repo / "main.txt").read_text() == "worker\n"
     runner.budget.max_launches = 2
     refused = await runner.run("editor", "three", editing_worker=True)
@@ -205,6 +207,138 @@ async def test_siblings_share_budget_and_stale_sibling_cannot_overwrite_winner(e
     assert [path.name for path in workers.root.glob("worker-*")] == [
         Path(second["workspace"]).parent.name,
     ]
+
+
+async def _ready_edit(runner, path, content):
+    runner.model = ScriptModel([_call("write_file", path=path, content=content), _done()])
+    return _receipt(await runner.run("editor", f"edit {path}", editing_worker=True))
+
+
+@pytest.mark.parametrize("noop", [False, True])
+async def test_disjoint_stale_siblings_rebase_onto_integrated_chain(editing, monkeypatch, noop):
+    runner, workers, repo = editing
+    # Retirement refuses extra untracked data; exercise rewrites of tracked files.
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (repo / name).write_text("original\n")
+    snap.git(repo, "add", ".")
+    snap.git(repo, "commit", "-qm", "tracked sibling inputs")
+    receipts = [await _ready_edit(runner, name, content) for name, content in
+                [("a.txt", "alpha\n"), ("b.txt", "beta\n"), ("c.txt", "gamma\n")]]
+    base = snap.capture(repo).tree
+    head = snap.git(repo, "rev-parse", "HEAD").stdout
+    index = snap.git(repo, "ls-files", "-s", "-z").stdout
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    onto = base
+    for i, receipt in enumerate(receipts):
+        outcome = await _integrate(runner, workers, receipt)
+        assert outcome["state"] == "integrated", outcome
+        applied = snap.capture(repo).tree
+        if i:
+            assert outcome["rebase"] == {
+                "base_tree": base, "onto_tree": onto, "rebased_tree": applied,
+                "paths": [f"{'abc'[i]}.txt"], "drift_paths": i,
+            }
+            saved = json.loads(Path(receipt["workspace"]).parent.joinpath("receipt.json").read_text())
+            assert saved["rebase"] == outcome["rebase"]
+            events = runner.events.get_all()
+            assert any(e["payload"].get("rebase") == outcome["rebase"] and
+                       e["payload"]["state"] == "integrated" for e in events)
+        else:
+            assert "rebase" not in outcome
+        assert outcome["repository_state"] == "removed"
+        assert not Path(receipt["workspace"]).exists()
+        onto = applied
+        if i == 0 and noop:
+            runner.model = ScriptModel([_done()])
+            no_op = _receipt(await runner.run("editor", "no changes", editing_worker=True))
+            assert (await _integrate(runner, workers, no_op))["state"] == "integrated"
+    assert {p.name: p.read_text() for p in repo.glob("*.txt")} == {
+        "main.txt": "original\n", "a.txt": "alpha\n", "b.txt": "beta\n", "c.txt": "gamma\n",
+    }
+    assert snap.git(repo, "rev-parse", "HEAD").stdout == head
+    assert snap.git(repo, "ls-files", "-s", "-z").stdout == index
+
+
+async def test_rebase_checks_the_combined_tree(editing, monkeypatch):
+    runner, workers, repo = editing
+    first = await _ready_edit(runner, "a.txt", "alpha\n")
+    second = await _ready_edit(runner, "b.txt", "beta\n")
+    checked = []
+
+    def check(directory, *args):
+        checked.append({p.name: p.read_text() for p in Path(directory).glob("*.txt")})
+        return {"passed": True}
+
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", check)
+    assert (await _integrate(runner, workers, first))["state"] == "integrated"
+    assert (await _integrate(runner, workers, second))["state"] == "integrated"
+    assert checked == [
+        {"main.txt": "original\n", "a.txt": "alpha\n"},
+        {"main.txt": "original\n", "a.txt": "alpha\n", "b.txt": "beta\n"},
+    ]
+
+
+@pytest.mark.parametrize("change,reason", [
+    ("same-file", "overlap"), ("ancestor", "overlap"), ("casefold", "overlap"),
+    ("gitignore", "metadata_path"), ("user-edit", "unattributed_drift"),
+    ("unintegrated-drift", "unattributed_drift"), ("commit", "parent_ref_or_index_moved"),
+    ("index", "parent_ref_or_index_moved"),
+])
+async def test_stale_sibling_rebase_refuses_and_never_applies(editing, monkeypatch, change, reason):
+    runner, workers, repo = editing
+    paths = {"same-file": ("main.txt", "main.txt"), "ancestor": ("d", "d/x.txt"),
+             "casefold": ("Notes.txt", "notes.txt"), "gitignore": (".gitignore", "b.txt")}
+    a, b = paths.get(change, ("a.txt", "b.txt"))
+    first = await _ready_edit(runner, a, "alpha\n")
+    second = await _ready_edit(runner, b, "beta\n")
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    if change != "unintegrated-drift":
+        assert (await _integrate(runner, workers, first))["state"] == "integrated"
+    if change in {"user-edit", "unintegrated-drift"}:
+        (repo / "z.txt").write_text("user\n")
+    elif change == "commit":
+        snap.git(repo, "add", ".")
+        snap.git(repo, "commit", "-qm", "user commit")
+    elif change == "index":
+        snap.git(repo, "add", "a.txt")
+    before = snap.capture(repo).tree
+    index = snap.git(repo, "ls-files", "-s", "-z").stdout
+    head = snap.git(repo, "rev-parse", "HEAD").stdout
+    outcome = await _integrate(runner, workers, second)
+    assert outcome["state"] == "refused"
+    assert outcome["code"] == "integration.stale_base"
+    assert outcome["rebase"]["reason"] == reason
+    assert snap.capture(repo).tree == before
+    assert snap.git(repo, "ls-files", "-s", "-z").stdout == index
+    assert snap.git(repo, "rev-parse", "HEAD").stdout == head
+
+
+@pytest.mark.parametrize("change", ["check-fails", "during-check"])
+async def test_rebased_candidate_check_failure_and_drift_during_checks_never_apply(editing, monkeypatch, change):
+    runner, workers, repo = editing
+    first = await _ready_edit(runner, "a.txt", "alpha\n")
+    second = await _ready_edit(runner, "b.txt", "beta\n")
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    assert (await _integrate(runner, workers, first))["state"] == "integrated"
+    checked = []
+    before = snap.capture(repo).tree
+
+    def check(directory, *args):
+        checked.append(Path(directory, "b.txt").read_text())
+        if change == "during-check":
+            (repo / "z.txt").write_text("user\n")
+        return {"passed": change != "check-fails"}
+
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", check)
+    outcome = await _integrate(runner, workers, second)
+    assert checked == ["beta\n"]
+    assert outcome["state"] == "refused"
+    assert outcome["code"] == ("integration.check_failed" if change == "check-fails" else "integration.stale_base")
+    assert not (repo / "b.txt").exists()
+    if change == "during-check":
+        assert (repo / "z.txt").read_text() == "user\n"
+        (repo / "z.txt").unlink()
+    assert snap.capture(repo).tree == before
 
 
 async def test_cancellation_retains_worker_lease_capacity_and_uncertain_receipt(editing):
@@ -241,12 +375,19 @@ async def test_cancellation_retains_worker_lease_capacity_and_uncertain_receipt(
     assert (repo / "main.txt").read_text() == "original\n"
 
 
+@pytest.mark.parametrize("rebased", [False, True])
 @pytest.mark.parametrize("check_passes", [True, False])
-async def test_cancelling_integration_settles_checks_and_never_applies(editing, monkeypatch, check_passes):
+async def test_cancelling_integration_settles_checks_and_never_applies(editing, monkeypatch, check_passes, rebased):
     runner, workers, repo = editing
+    if rebased:
+        sibling = await _ready_edit(runner, "a.txt", "alpha\n")
+        runner.model = ScriptModel([_call("write_file", path="b.txt", content="beta\n"), _done()])
     if not check_passes:
         runner.model = ScriptModel([_done()])
     receipt = _receipt(await runner.run("editor", "edit", editing_worker=True))
+    if rebased:
+        monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+        assert (await _integrate(runner, workers, sibling))["state"] == "integrated"
     entered, finish = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
 
@@ -267,6 +408,9 @@ async def test_cancelling_integration_settles_checks_and_never_applies(editing, 
     retained = json.loads(Path(receipt["workspace"]).parent.joinpath("receipt.json").read_text())
     assert retained["state"] == "uncertain"
     assert (repo / "main.txt").read_text() == "original\n"
+    if rebased:
+        assert (repo / "a.txt").read_text() == "alpha\n"
+        assert not (repo / "b.txt").exists()
     recovered = LocalEditingWorkers(
         workers.parent_guard, checks=list(workers.checks), image=workers.image, root=workers.root,
     )
@@ -1677,8 +1821,9 @@ async def test_concurrent_workers_run_together_and_integrate_serially(editing, m
         finish_check.set()
         integrated = await integrating
     assert integrated["state"] == "integrated"
-    assert (await _integrate(runner, workers, beta))["code"] == "integration.stale_base"
-    assert (repo / "a.txt").read_text() == "alpha\n" and not (repo / "b.txt").exists()
+    assert (await _integrate(runner, workers, beta))["state"] == "integrated"
+    assert (repo / "a.txt").read_text() == "alpha\n"
+    assert (repo / "b.txt").read_text() == "beta\n"
     assert runner.budget.launches == 2
     assert runner.spend_gate.reserved_tokens == 0
 

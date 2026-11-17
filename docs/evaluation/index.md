@@ -122,27 +122,29 @@ those synthetic usage reports through the normal native loop.
 Four disjoint file rewrites and four same-file rewrites each run in fresh
 temporary repositories. N=1 integrates after each batch of one, so the next
 child starts from a fresh parent base. N=4 launches one batch of four, waits for
-all children to settle, then attempts integration in request order. The whole
-parent snapshot is the precondition: after the first integration, even disjoint
-siblings refuse with `integration.stale_base`. No rebase or retry is attempted.
+all children to settle, then attempts integration in request order. Disjoint
+stale siblings rebase onto this service's recorded integrations, with checks on
+the combined tree and destination revalidation before apply. Overlap, outside
+drift, parent HEAD/ref/index movement, metadata and link changes still refuse.
+There is no content merge or retry of refused candidates.
 For the overlapping scenario N=1 ends with the fourth rewrite; N=4 ends with
 the first. These are different delivered outcomes, so timing ratios would not
 compare equivalent completed work.
 
-One run on 2026-11-16, Python 3.12.0, macOS 26.7.1 arm64, 0.05 s per call:
+One run on 2026-11-17, Python 3.12.0, `macOS-26.7.1-arm64-arm-64bit`, 0.05 s per call:
 
-| Edits | N | Wall (s) | Ready / refused / quarantined | Integrated / stale-base | Integration wait sum (s) | Integration duration sum (s) | Discarded candidates / tokens / worker-seconds |
+| Edits | N | Wall (s) | Ready / refused / quarantined | Integrated (rebased) / stale-base | Integration wait sum (s) | Integration duration sum (s) | Discarded candidates / tokens / worker-seconds |
 |---|---:|---:|---|---|---:|---:|---|
-| Disjoint | 1 | 7.422 | 4 / 0 / 0 | 4 / 0 | 0.018 | 3.477 | 0 / 0 / 0 |
-| Disjoint | 4 | 4.223 | 4 / 0 / 0 | 1 / 3 | 4.698 | 2.214 | 3 / 720 / 3.765 |
-| Overlapping | 1 | 5.840 | 4 / 0 / 0 | 4 / 0 | 0.019 | 3.119 | 0 / 0 / 0 |
-| Overlapping | 4 | 4.204 | 4 / 0 / 0 | 1 / 3 | 4.432 | 2.019 | 3 / 720 / 4.185 |
+| Disjoint | 1 | 7.274 | 4 / 0 / 0 | 4 (0) / 0 | 0.018 | 3.511 | 0 / 0 / 0.000 |
+| Disjoint | 4 | 5.792 | 4 / 0 / 0 | 4 (3) / 0 | 6.781 | 3.841 | 0 / 0 / 0.000 |
+| Overlapping | 1 | 5.369 | 4 / 0 / 0 | 4 (0) / 0 | 0.018 | 2.825 | 0 / 0 / 0.000 |
+| Overlapping | 4 | 3.801 | 4 / 0 / 0 | 1 (0) / 3 | 4.137 | 2.072 | 3 / 720 / 3.354 |
 
 Every row has **4 launches, 8 scripted calls, 960 settled scripted tokens,
 zero remaining reservations, and $0 provider spend**. Per-candidate JSON rows
 retain the request order, typed outcome, observed usage (240 tokens each),
-integration state/code, and timings. Each candidate is ready before its own
-integration attempt; the separate integration refusals do not change that
+integration state/code, rebase evidence and timings; aggregate rows count
+rebased integrations. Each candidate is ready before its own integration attempt; the separate integration refusals do not change that
 creation outcome.
 
 Wall time covers first batch dispatch through the last integration result,
@@ -157,7 +159,8 @@ checks/publication/retirement for winners and refusal processing for losers.
 Discarded work means unused stale candidates, their observed scripted tokens,
 and their summed admission-to-settled-ready time; it does not measure rerun cost
 or final directory deletion. The overlapping N=4 case exposes this conflict
-overhead; conservative whole-base validation imposes it on disjoint siblings too.
+overhead; the disjoint N=4 case now delivers all four edits with three checked
+rebases and no discarded candidates.
 
 The fixture substitutes only Docker check dispatch (inspecting actual materialized
 candidate files) and the current process's start identity, as the worker tests
