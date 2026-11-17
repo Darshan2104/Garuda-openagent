@@ -584,9 +584,12 @@ fastest way to learn the system.
    issued capability and capacity through ECHILD; child release is logical only.
    Frozen role values and an actual-PID-bound private control channel avoid
    constructing authority from copied lease records. Owned ACP read-only or
-   no-edits launches refuse: Docker container lifetime ownership is not yet
-   supported by this process-tree owner. Its closure evidence feeds the cumulative
-   flow manifest and final check eligibility decision.
+   no-edits roles run in a Docker container whose lifetime `DockerRoleOwner`
+   owns alongside the supervised process tree. Preparation refuses with
+   `workspace.readonly_unenforced` when no confinement image is configured.
+   Container absence must be proved before workspace/capacity release; ambiguous
+   cleanup retains quarantine. Closure evidence feeds the cumulative flow
+   manifest and final check eligibility decision.
    Starter task-file digests are validated under the parent lease before the
    first step. Configuration digests remain bound through role preparation,
    closure and acceptance checks; task files may change during the work and

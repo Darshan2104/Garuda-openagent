@@ -35,7 +35,6 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Python codemod preview/apply | Bounded declarative import renames with diffs, source digests, per-path permissions and verified restoration on write failure | Opt in to `python_codemod` | [Level 2](../use-cases/change-code.md#preview-a-python-import-migration) |
 | Documents | PDF and spreadsheet readers using the environment's file-path policy | `garuda run --mode readonly -t "Summarize report.pdf"` | [Level 1](../use-cases/explore.md#read-pdfs-and-spreadsheets) |
 | Web source provenance | `web_fetch` names the delivered source, redirect chain, digest, sections and omission evidence; opt-in session references page retained text and the visible section inventory (`sections_from`) without refetching; dashboard grounding saves the same provenance; `web_search` names its one provider | `garuda run -t "Fetch https://docs.python.org/3/whatsnew/3.13.html and cite it"` | [Level 1](../use-cases/explore.md#cite-a-web-page-by-its-source) |
-
 | Python outlines | Opt-in host AST metadata with qualified definitions, signatures, imports, SHA-256 identity and hidden body ranges | `read_file({"path":"app.py","outline":true})` | [Level 1](../use-cases/explore.md#outline-python-before-reading-bodies) |
 | Optional Python debugger | Agent-launched local debugpy sessions, bounded stacks/variables/output and stepping; explicit opt-in | `tools.add: [debug_launch, debug_inspect, debug_variables, debug_control]` | [Debug a Python script](../use-cases/advanced.md#debug-an-agent-launched-python-script) |
 | Confined Python cells | Opt-in aggregation with screened nested tools, bounded lifetime and cell provenance | Agent `tools.add: [code_cell]` | [Confined code cells](../use-cases/advanced.md#aggregate-tool-results-in-a-confined-python-cell) |
@@ -114,7 +113,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
-| Read-only external roles | A harness in a proven read-only container | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |
+| Read-only external roles | Read-only/no-edits ACP roles use a configured confinement image; owned launches prove container removal before releasing workspace/capacity, retaining quarantine on uncertainty | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |
 | Config migration | `settings.yaml` limits into `garuda.yaml` | `garuda config migrate` | [Level 5](../use-cases/teams.md#move-runtime-limits-into-garudayaml) |
 
 ## Watch and measure
@@ -133,7 +132,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Recipes | Parameterised multi-step YAML | `garuda recipe run file.yaml` | [Level 6](../use-cases/automate.md#run-a-multi-step-recipe) |
 | CI and scripts | Exit status and JSON events | `garuda run --json -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
-| Python SDK | `SoftwareAgent`, conversations, your own tools | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
+| Python SDK | `SoftwareAgent`, conversations, your own tools; native conversations persist sessions with workspace baselines and shared approvals, and ACP conversations broker approval requests | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
 | Live model deltas | Native SDK runs forward text/reasoning fragments while the model generates | `await agent.run("…", on_delta=show)` | [Level 6](../use-cases/automate.md#stream-live-model-deltas) |
 | Dashboard live model output | Bounded transient assistant text and collapsible per-subagent previews while native chat generates, replaced by completed responses | `garuda web --allow-workspace .` | [Level 2](../use-cases/change-code.md#watch-assistant-text-in-dashboard-chat) |
 | `AgentSpec` | Load and narrow an agent from Python | `AgentSpec.load(NAME).narrow(...)` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
@@ -148,7 +147,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | oh-my-pi runtime | omp's native `omp acp` as its own runtime, separate from `pi`; no-prompt conformance only (omp 18.16.0) | `garuda runtime inspect omp` | [Level 7](../use-cases/advanced.md#install-a-harness), [conformance report](../development/omp-acp-conformance.md) |
 | Standalone ACP acceptance | Explicit post-run checks verify selected criteria separately from harness completion | `garuda run --runtime codex -t "…" --check "pytest -q"` | [Harness acceptance checks](../use-cases/advanced.md#run-a-task-with-claude-code-codex-or-another-harness) |
 | Handoff | Move a native session to a harness | `garuda runtime handoff --session latest --to codex` | [Level 7](../use-cases/advanced.md#hand-off-a-garuda-session-to-an-external-harness) |
-| Recover and reclaim | Repair ownership after an interruption | `garuda runtime recover --session latest` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
+| Recover and reclaim | Repair interrupted ownership; explicitly reclaim native ownership only after proving the external owner stopped and a native checkpoint exists | `garuda runtime recover --session latest`; `garuda runtime reclaim --session latest` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Continue elsewhere | Resume on another runtime from a brief | `garuda run --resume latest --as claude -t "…"` | [Level 7](../use-cases/advanced.md#recover-or-take-back-a-session) |
 | Routing | Rules choose the starting runtime | `routing:` in `~/.agent/settings.yaml` | [Level 7](../use-cases/advanced.md#route-tasks-to-runtimes-automatically) |
 | Quota fallback | Skip a harness whose plan limit is reached | a role `fallback` | [Level 7](../use-cases/advanced.md#skip-a-harness-whose-subscription-limit-is-used-up) |

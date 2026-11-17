@@ -8,7 +8,7 @@ The rule that makes this useful: nothing here is marked done. If you fix it,
 delete it. A ledger that mixes open and closed items cannot tell you what is left
 without re-auditing the code, which is what the archived ledgers turned into.
 
-Last verified against code: 2026-08-04.
+Last verified against code: 2026-11-17 (session ownership, evidence and approvals entries).
 
 **The measurement constraint, stated once because it governs the whole file.**
 There is no budget for repeated-trial (multi-seed) benchmark runs. Every score
@@ -236,13 +236,6 @@ from handoff state, checkpoints, and the trail; the `cancellations` list is
 append-only evidence that no classification reads, so a cancel recorded just
 before a crash does not change how the session restarts.
 
-**A session handed to an external runtime cannot come back.** After an
-acknowledged handoff the session's active segment is the ACP target, `recover()`
-reports it `external`, and native resume refuses; there is no ACP-to-native (or
-ACP-to-ACP) handoff and no cross-process ACP resume, so continuing means starting
-a new session. The one-shot CLI closes the target after the package turn;
-continued supervised work on the target is not wired.
-
 **ACP harnesses get no API-key or custom config-dir passthrough.** The adapter
 child environment is `PATH`/`HOME`/`LANG` only (`acp/client.py::_child_env`),
 and manifests reject `env`. A user who authenticates a vendor CLI only through
@@ -252,31 +245,16 @@ be a per-manifest allowlist of variable *names* in trusted global settings only,
 passed through without Garuda reading or logging the values, with a decision
 record on why that is not token proxying.
 
-**SDK `Conversation`, `recipe run`, and eval runners carry no workspace
-baseline.** They persist no session (`sdk/conversation.py`,
-`config/recipes.run_recipe` via `interfaces/main.run_recipe_command`,
-`eval/harbor_adapter.py`, `eval/ablation.py`, subagents in `core/subagent.py`),
-so they never enter
-`workspace/evidence.begin_session_evidence`: their verifier gets no
-`workspace_delta_loader` and nothing records what the run changed versus
-preexisting dirt. Fix by giving them a persisted session (or an explicit
-in-memory evidence store) and routing them through the same boundary, with a
-refusal test per entry point.
-
-**The dashboard still parks approvals outside the P0.17 broker.**
-`garuda.acp.broker.ApprovalBroker` is installed by `run_agent_task`
-(`interfaces/runner.py`) and, for ACP `session/request_permission` asks, by
-`garuda run --runtime` and `garuda runtime handoff --confirm`
-(`interfaces/run_guard.py`). Dashboard chat (`interfaces/web/live.py`) builds its own
-`interfaces/web/approvals.ApprovalBroker` and runs turns through `agent.run`
-directly, so browser allow/deny/timeout outcomes are not persisted as
-`approval:<id>` session records. ACP asks reach the broker as generic
-`approval` parks (headless: deny, audited; TTY: y/N prompt);
-`ApprovalBroker.decide_acp()` is exercised only by tests, so no ACP adapter
-screens terminal/edit requests against the ceiling yet. The fix is to
-keep the web module as a transport (thread marshalling, heartbeat, structured
-arguments) over the shared broker, and to route ACP family requests through
-`decide_acp` before execution, with an integration test on each path.
+**`recipe run`, eval runners and ordinary subagents carry no session workspace
+baseline.** `config/recipes.run_recipe` (via
+`interfaces/main.run_recipe_command`), `eval/harbor_adapter.py`,
+`eval/ablation.py` and ordinary children in `core/subagent.py` do not enter
+`workspace/evidence.begin_session_evidence`; their verifier gets no
+`workspace_delta_loader` backed by a persisted session baseline. Subagents
+already collect per-child `workspace_evidence` observations, but those are not
+the session-baseline delta loader. Give these entry points a persisted session
+(or an explicit in-memory evidence store) and route verification through the
+same boundary, with a refusal test per entry point.
 
 **The deliverable check is new and its hit rate is unknown.**
 `eval/answer_checks.py` extracts the output files a task statement unconditionally
