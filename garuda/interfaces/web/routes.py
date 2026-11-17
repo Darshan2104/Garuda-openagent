@@ -454,7 +454,7 @@ def sse_frames(store, session_id: str, offset: int, *, max_seconds: float = STRE
 
     Each event frame's ``id`` is the offset just after its line, so ``Last-Event-ID``
     resumes with the next event: nothing repeats and nothing is skipped. The stream ends
-    with an ``end`` frame once the session is finished and its log is drained, and after
+    with an ``end`` frame once the session is finished and a poll makes no progress, and after
     ``max_seconds`` regardless (the client reconnects with its last id)."""
     import time as _time
 
@@ -465,9 +465,14 @@ def sse_frames(store, session_id: str, offset: int, *, max_seconds: float = STRE
     path = store.events_path(session_id)
     started = last_sent = clock()
     while True:
-        records, offset = tail_records(path, offset)
+        previous = offset
+        records, offset, malformed = tail_records(path, offset)
         for end, event in records:
             yield f"id: {end}\nevent: event\ndata: {json.dumps(event, default=str)}\n\n".encode()
+            last_sent = clock()
+        if malformed:
+            yield (f"id: {offset}\nevent: skipped\ndata: "
+                   f"{json.dumps({'malformed': malformed})}\n\n").encode()
             last_sent = clock()
         if not records:
             try:
@@ -475,7 +480,7 @@ def sse_frames(store, session_id: str, offset: int, *, max_seconds: float = STRE
                     not in ACTIVE_WORK
             except (OSError, ValueError):
                 finished = True
-            if finished:
+            if finished and offset == previous:
                 yield f"id: {offset}\nevent: end\ndata: {{}}\n\n".encode()
                 return
         now = clock()

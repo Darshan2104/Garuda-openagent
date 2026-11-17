@@ -480,6 +480,13 @@ python -m garuda.acp.server --workspace /path/to/workspace
 Point an ACP-capable editor at this command to use Garuda's native agent from
 the editor.
 
+The stdio transport buffers split writes and frames larger than 64 KiB until
+their newline arrives, with a 16 MiB limit per frame. Blank lines are ignored.
+Malformed or oversized frames, and an unfinished record at EOF, end the server
+with exit code 2. Launching this module leaves stderr free of `runpy` warnings.
+At EOF, queued replies drain before writer shutdown; a failed or timed-out drain
+returns a nonzero exit code.
+
 ## Debug an agent-launched Python script
 
 Install `debugpy==1.8.19` into the Python environment running Garuda. Save this

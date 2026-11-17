@@ -164,6 +164,29 @@ A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
 
+HTTP transports validate declared body bounds before allocation and apply their
+header security gates before reading bodies. Dashboard Host/Origin/token rules
+and JSON-RPC's bearer/no-Origin policy remain distinct. JSON-RPC permits 32
+authenticated body reads and ordinary dispatches; excess requests receive 503.
+Long synchronous `run` dispatches use a separate 32-slot limit so status/cancel
+remain available. Headers have a separate 128-read cap and five-second deadline;
+a fresh connection replaces the oldest pending header read when full. Completion,
+read failure and cancellation release only the capacity that request acquired.
+The dashboard requires decimal Content-Length values, rejects differing duplicate
+lengths and any Transfer-Encoding with 400, and closes on header refusals. Its
+body limit is 12 MiB, versus JSON-RPC's 32 MiB; body reads use 30-second timeouts.
+
+Inbound ACP retains partial NDJSON across reads up to the codec's 16 MiB frame
+bound, ignores blank lines and refuses unfinished records at EOF. The package
+exports `AcpServer` lazily so module execution does not preload its entry point.
+EOF drains queued replies until completion, writer failure or the cleanup deadline.
+Dashboard tail and SSE readers share bounded window scanning: complete event
+lines over 4 MiB are skipped at a newline, counted in the tail's `malformed` field
+and SSE `skipped` events (`data: {"malformed": count}`). Torn final lines retain
+their cursor. SSE ends a finished session when a poll delivers no records and
+leaves the cursor unchanged, including when a crash left a torn final append.
+A poll that skips an oversized record advances the cursor and continues streaming.
+
 ## Child live deltas
 
 The SDK's `SoftwareAgent.run` and `Conversation.run` accept

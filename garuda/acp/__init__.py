@@ -6,6 +6,8 @@ vendor SDK — the transport owns framing and lifecycle while exposing agent
 notifications and requests for the capability/authority layers above it.
 """
 
+from typing import TYPE_CHECKING
+
 from garuda.acp.adapter import AcpRuntime
 from garuda.acp.authority import (
     AgentCapabilities,
@@ -51,7 +53,20 @@ from garuda.acp.protocol import (
     decode_frame,
     encode_frame,
 )
-from garuda.acp.server import AcpServer
+
+if TYPE_CHECKING:
+    from garuda.acp.server import AcpServer
+
+
+def __getattr__(name: str):
+    # Keep the public export without importing an executable module before runpy
+    # launches it with `python -m garuda.acp.server`.
+    if name == "AcpServer":
+        from garuda.acp.server import AcpServer
+
+        return AcpServer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ACP_VERSION",

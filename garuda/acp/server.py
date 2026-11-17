@@ -31,6 +31,7 @@ from typing import Any
 
 from garuda.acp.protocol import (
     ACP_VERSION,
+    MAX_FRAME_BYTES,
     AcpCancelledError,
     AcpError,
     AcpProtocolError,
@@ -349,7 +350,11 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
 
     async def _writer() -> None:
         while True:
-            await loop.run_in_executor(None, _write_stdout, await outbox.get())
+            frame = await outbox.get()
+            try:
+                await loop.run_in_executor(None, _write_stdout, frame)
+            finally:
+                outbox.task_done()
 
     server = AcpServer(make_runtime, _send)
     writer = asyncio.ensure_future(_writer())
@@ -381,13 +386,17 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
                 break
             buffer += chunk
             while True:
+                newline = buffer.find(b"\n")
+                if 0 <= newline <= MAX_FRAME_BYTES and not buffer[:newline].strip():
+                    buffer = buffer[newline + 1:]
+                    continue
                 try:
                     message, buffer = decode_frame(buffer)
                 except ValueError:
                     break
                 await _dispatch(message)
-            if buffer.strip():
-                raise AcpProtocolError("incomplete NDJSON record")
+        if buffer.strip():
+            raise AcpProtocolError("incomplete NDJSON record")
     except AcpProtocolError:
         print("error: malformed input frame", file=sys.stderr)
         exit_code = 2
@@ -399,8 +408,22 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
             for task in waiting:
                 task.cancel()
             await asyncio.gather(*waiting, return_exceptions=True)
+        # EOF may arrive immediately after a batch: dispatch has queued replies
+        # that the executor-backed writer has not flushed yet.
+        drain = asyncio.create_task(outbox.join())
+        try:
+            done, _ = await asyncio.wait(
+                (drain, writer), timeout=CLEANUP_TIMEOUT, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if drain not in done:
+                exit_code = exit_code or 1
+        finally:
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
         writer.cancel()
-        await asyncio.gather(writer, return_exceptions=True)
+        writer_result, = await asyncio.gather(writer, return_exceptions=True)
+        if isinstance(writer_result, Exception):
+            exit_code = exit_code or 1
         for session in list(server._sessions.values()):
             try:
                 await asyncio.wait_for(session.close(), CLEANUP_TIMEOUT)

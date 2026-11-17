@@ -15,6 +15,9 @@ garuda init                                # propose roles in ~/.agent/garuda.ya
 garuda doctor                              # configuration, harness logins, leases, worktrees
 ```
 
+`garuda --help` lists public commands; internal process entry points are hidden
+from both usage and the command list.
+
 ## Read and understand (read-only)
 
 ```bash

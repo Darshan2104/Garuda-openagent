@@ -592,6 +592,17 @@ garuda serve --workspace . --port 8765
 If you don't set a token on loopback, Garuda generates one and prints it once.
 Binding a non-loopback `--host` without a token is refused.
 
+Authorization and Origin are checked from the headers before reading the body;
+browser requests and missing or invalid bearer tokens receive HTTP 401. These
+early JSON-RPC errors have `id: null` because the body has not been read.
+Bodies are limited to 32 MiB, with a 30-second read timeout. At most 32
+authenticated requests can read bodies or dispatch ordinary methods at once;
+excess requests receive HTTP 503 and close. Long synchronous `run` dispatches
+have a separate 32-slot limit so status and cancel remain available. Header
+reads have a separate 128-connection cap and five-second deadline. At that cap,
+a new connection replaces the oldest pending header read, so idle unauthenticated
+clients cannot occupy authenticated request slots.
+
 Submit a job, then poll it:
 
 ```bash

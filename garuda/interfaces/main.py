@@ -143,7 +143,22 @@ def build_parser():
     import argparse
     import os
 
-    parser = argparse.ArgumentParser(prog="garuda", description="Garuda Open Agent harness")
+    class PublicSubparsers(argparse._SubParsersAction):
+        def _get_subactions(self):
+            # Retain SUPPRESS metadata for tooling that discovers public commands.
+            return [action for action in super()._get_subactions() if action.help != argparse.SUPPRESS]
+
+    class PublicArgumentParser(argparse.ArgumentParser):
+        def _check_value(self, action, value):
+            if isinstance(action, PublicSubparsers) and value not in action.choices:
+                hidden = {item.dest for item in action._choices_actions
+                          if item.help == argparse.SUPPRESS}
+                choices = ", ".join(repr(name) for name in action.choices if name not in hidden)
+                raise argparse.ArgumentError(action, f"invalid choice: {value!r} (choose from {choices})")
+            super()._check_value(action, value)
+
+    parser = PublicArgumentParser(prog="garuda", description="Garuda Open Agent harness")
+    parser.register("action", "parsers", PublicSubparsers)
     subparsers = parser.add_subparsers(dest="command")
     from garuda.interfaces.scenario_cli import add_parser as add_starter_parser
 
@@ -873,6 +888,10 @@ def build_parser():
         "--confirm-digest", help="Exact digest returned by --preview; required by --capture"
     )
 
+    # argparse renders SUPPRESS literally for subparser help. Keep the parsers
+    # addressable by Garuda's subprocesses while limiting discovery to public commands.
+    hidden = {action.dest for action in subparsers._choices_actions if action.help == argparse.SUPPRESS}
+    subparsers.metavar = "{" + ",".join(name for name in subparsers.choices if name not in hidden) + "}"
     return parser
 
 

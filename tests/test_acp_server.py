@@ -5,7 +5,11 @@ sessions with cancellation, and the no-listener refusal.
 """
 
 import asyncio
+import io
+import os
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -127,9 +131,11 @@ async def test_unknown_methods_fail_closed_not_hung():
 
 
 async def test_inbound_outbound_isolation():
+    from garuda.acp import AcpServer as PackageServer
     from garuda.acp import client as outbound
 
     server, duplex = _server()
+    assert PackageServer is type(server)
     assert not hasattr(server, "_process")
     assert outbound.AcpProcess.__module__ == "garuda.acp.client"
     await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
@@ -154,6 +160,65 @@ async def _read_reply(stdout, call_id: int) -> dict:
         if not chunk:
             raise AssertionError("server closed stdout")
         buffer += chunk
+
+
+@pytest.mark.parametrize("framing", ["large", "blank-lines"])
+async def test_stdio_accepts_fragmented_large_and_blank_lines(framing):
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "garuda.acp.server", "--driver", "echo",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        process.stdin.write(encode_frame({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": ACP_VERSION},
+        }))
+        await process.stdin.drain()
+        assert "result" in await _read_reply(process.stdout, 1)
+        frame = encode_frame({
+            "jsonrpc": "2.0", "id": 2, "method": "session/new",
+            "params": {"pad": "x" * 100_000} if framing == "large" else {},
+        })
+        process.stdin.write((b"\n\r\n \t\r\n" if framing == "blank-lines" else b"") + frame)
+        await process.stdin.drain()
+        reply = await _read_reply(process.stdout, 2)
+        assert reply["result"]["sessionId"].startswith("garuda-")
+        process.stdin.close()
+        assert await asyncio.wait_for(process.wait(), 10) == 0
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+
+
+def test_module_launch_has_no_runpy_warning():
+    result = subprocess.run(
+        [sys.executable, "-m", "garuda.acp.server", "--help"],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+async def test_stdio_drains_replies_to_large_batch_before_eof_exit():
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "garuda.acp.server", "--driver", "echo",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    batch = encode_frame({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": ACP_VERSION, "clientInfo": {"pad": "x" * 100_000}},
+    }) + encode_frame({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(batch), 10)
+        assert process.returncode == 0, stderr
+        assert [decode_frame(line + b"\n")[0]["id"] for line in stdout.splitlines()] == [1, 2]
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
 
 
 async def test_subprocess_conformance_against_echo_driver():
@@ -369,7 +434,12 @@ async def test_permission_request_roundtrip_streams_mid_turn():
     assert decode_frame(sent[-1])[0]["result"]["sessionId"] != session_id
 
 
-async def test_malformed_framing_exits_nonzero_without_details():
+@pytest.mark.parametrize("frame", [
+    b"not-framed\r\n\r\n{}",
+    encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": ACP_VERSION}})[:-1],
+])
+async def test_malformed_framing_exits_nonzero_without_details(frame):
     argv = [sys.executable, "-m", "garuda.acp.server", "--driver", "echo"]
     process = await asyncio.create_subprocess_exec(
         *argv,
@@ -380,7 +450,7 @@ async def test_malformed_framing_exits_nonzero_without_details():
     )
     assert process.stdin is not None
     try:
-        process.stdin.write(b"not-framed\r\n\r\n{}")
+        process.stdin.write(frame)
         await process.stdin.drain()
         process.stdin.close()
         code = await asyncio.wait_for(process.wait(), 15)
@@ -435,3 +505,90 @@ def test_no_listener_without_secure_config(capsys):
     source = open("garuda/acp/server.py").read()
     for marker in ("import socket", "socket.socket", "socketserver", "socket.create"):
         assert marker not in source, marker
+
+
+async def test_stdio_eof_does_not_wait_for_dead_writer(monkeypatch):
+    from garuda.acp.server import serve_stdio
+
+    frame = encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                          "params": {"protocolVersion": ACP_VERSION}})
+
+    class BrokenOutput:
+        def write(self, data):
+            raise BrokenPipeError("client closed stdout")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(frame * 100)})())
+    monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": BrokenOutput()})())
+    started = time.monotonic()
+    code = await asyncio.wait_for(serve_stdio(make_echo_runtime), 10)
+    assert code == 1
+    assert time.monotonic() - started < 1, "a dead writer cannot drain its remaining queue"
+
+
+async def test_stdio_refuses_oversized_unterminated_frame_before_eof():
+    from garuda.acp.protocol import MAX_FRAME_BYTES
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "garuda.acp.server", "--driver", "echo",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        process.stdin.write(b"x" * (MAX_FRAME_BYTES + 1))
+        try:
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        assert await asyncio.wait_for(process.wait(), 10) == 2
+        assert await process.stdout.read() == b""
+        assert await process.stderr.read() == b"error: malformed input frame\n"
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        process.stdin.close()
+
+
+async def test_stdio_waits_for_consumed_fragment_before_reading_remainder(monkeypatch):
+    from garuda.acp.server import serve_stdio
+
+    read_fd, write_fd = os.pipe()
+    consumed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    output = io.BytesIO()
+
+    class ObservedPipe(io.BufferedReader):
+        def read1(self, size=-1):
+            chunk = super().read1(size)
+            loop.call_soon_threadsafe(consumed.set)
+            return chunk
+
+    pipe = ObservedPipe(io.FileIO(read_fd, "rb", closefd=True))
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": pipe})())
+    monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": output})())
+    frame = encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                          "params": {"protocolVersion": ACP_VERSION}})
+    task = asyncio.create_task(serve_stdio(make_echo_runtime))
+    try:
+        os.write(write_fd, frame[:20])
+        # This acknowledgement comes from the real pipe read, so two writes
+        # cannot coalesce into one server read even on a heavily loaded host.
+        await asyncio.wait_for(consumed.wait(), 2)
+        assert output.getvalue() == b""
+        os.write(write_fd, frame[20:])
+        os.close(write_fd)
+        write_fd = None
+        assert await asyncio.wait_for(task, 2) == 0
+        reply, rest = decode_frame(output.getvalue())
+        assert reply["id"] == 1 and reply["result"]["protocolVersion"] == ACP_VERSION
+        assert rest == b""
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        pipe.close()
