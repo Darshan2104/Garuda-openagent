@@ -1,5 +1,34 @@
 # Durable decisions
 
+## 2026-11-17 — Opt-in model-driven editing-worker fan-out tool (#471, #384)
+
+Trusted Python callers may set `AgentConfig.editing_worker_fanout=True` alongside
+an editing-worker service. The default is off; profiles, project settings, CLI,
+dashboard and ACP cannot enable it. Shared `prepare_run` inserts the reserved
+`fan_out_editing_workers` tool only with admitted `invoke_subagent`, a local
+workspace, unrestricted effects, effective permission outside readonly, no
+explicit removal, a nonempty allowlist when configured and another depth level.
+Caller-supplied tools with this name are removed before assembly. Children never
+inherit it; workers retain their stateless built-in toolkit and no delegation.
+
+`core/editing_fanout.py` validates the whole request, rechecks permissions and
+local backends, and refuses an already exhausted shared SpendGate before launch.
+`SpendGate.would_refuse(0)` recognizes tokens exactly at the cap without changing
+reservation or refusal counters; per-call `admit` remains authoritative.
+`run_editing_workers` owns unchanged allowlist/depth/launch/deadline/capacity
+bounds and concurrent settlement. Ordered versioned JSON receipts use existing
+typed child delivery. Tiny live budgets refuse before launch; compact receipts
+omit summaries and ancillary paths before generic shaping can clip them.
+
+Optional in-order integration calls only the existing checked service after
+children settle, with the parent's effective path and acceptance permissions.
+It stops on quarantine and maps stale-base outcomes without rebase logic.
+Ordinary `ExceptionGroup` maps to `worker.batch_failed` after sibling quarantine;
+cancellation and fatal base exceptions propagate. Approval prompts remain
+unserialized and CLI/dashboard service construction is deferred until shared
+prompt serialization lands. Permission checks are guardrails, not a sandbox.
+No speed, cost or quality measurement is added.
+
 ## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)
 
 The development script `python scripts/measure_editing_fanout.py` measures four

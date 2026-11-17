@@ -643,8 +643,99 @@ is no automatic rebase or conflict resolution. Only the same service instance's
 currently live `admitted`/`running` siblings are exempt from admission uncertainty
 checks. Uncertain siblings, other service instances' live workers and exited
 runs whose receipts still say running block later admission and integration.
-Model-driven fan-out, non-local backends and approval prompt serialization remain
-open; the model-facing tool and CLI keep their existing dispatch behavior.
+Non-local backends and approval prompt serialization remain open.
+
+### Let the model fan out editing workers
+
+A trusted Python caller can enable `fan_out_editing_workers` for a native parent.
+The service alone keeps existing callers sequential; the separate
+`AgentConfig.editing_worker_fanout` flag defaults to `False`. Profiles, project
+settings, CLI, dashboard and ACP entry points cannot enable it. Use a local Git
+workspace and an `editor` profile with an output schema, as above:
+
+```python
+from garuda.core.loop import DefaultAgent
+from garuda.types import AgentConfig
+
+
+async def model_edits(model, workspace, agents_dir, check_image):
+    env = LocalEnvironment(workspace)
+    events = EventStore()
+    permissions = PermissionEngine(workspace_root=env.workspace_root)
+    guard = WorkspaceLeaseGuard(env.workspace_root, events.session_id,
+                                capacity_key="native")
+    guard.acquire()
+    guard.start_heartbeat()
+    try:
+        config = AgentConfig(
+            editing_workers=LocalEditingWorkers(
+                guard, checks=["pytest -q"], image=check_image, max_concurrent=2,
+            ),
+            editing_worker_fanout=True,
+            subagents=["editor"],
+        )
+        return await guard.race(DefaultAgent().run(
+            "Use editing workers for alpha and beta; return both candidates for review.",
+            model, env, default_tools(), config=config, events=events,
+            permissions=permissions, agents_dir=agents_dir,
+        ))
+    finally:
+        await env.aclose()
+        await guard.release()
+```
+
+The model can issue this call (the default `integrate` is `"none"`):
+
+```json
+{"tasks":[{"profile":"editor","task":"Implement alpha."},
+          {"profile":"editor","task":"Implement beta."}],"integrate":"none"}
+```
+
+The schema bounds `tasks` by the service's `max_concurrent` and enumerates an
+explicit subagent allowlist. Each item requires only `profile` and `task`;
+unknown keys, empty tasks and tasks over 20,000 characters refuse before launch.
+
+The version 1 canonical JSON response lists workers in request order:
+
+| Outcome | Meaning |
+|---|---|
+| `refused` | Worker admission refused; inspect `code` |
+| `failed` | Child did not produce a successful ready candidate |
+| `quarantined` | Child cleanup or integration is uncertain; retain ownership |
+| `ready` | Isolated candidate is available; parent files are unchanged |
+| `integrated` | Existing checked integration applied the candidate |
+| `stale_base` | Parent changed since admission (`integration.stale_base`) |
+| `integration_refused` | Integration checks or parent permissions refused |
+
+`candidate_id` and `provenance_digest` identify ready candidates. `child_result`
+uses the ordinary typed inline, referenced or unavailable delivery contract.
+Summaries are limited to 512 UTF-8 bytes. Under a small live output budget,
+summaries, paths and ancillary receipt fields are omitted and typed delivery is
+marked unavailable rather than clipped. If even compact receipts cannot fit,
+`fanout.output_budget_too_small` refuses before launch.
+
+With `integrate: "in_order"`, all children settle before ready candidates pass
+one at a time through the existing service's `integrate`. Parent path writes and
+acceptance commands keep their effective permission ceiling. Overlapping siblings
+can return `integrated`, then `stale_base`; there is no automatic rebase here.
+Integration stops at the first quarantined candidate; later ready candidates
+carry `fanout.halted_after_uncertain` and remain available for inspection.
+
+Shared assembly omits the tool without the opt-in, service, admitted
+`invoke_subagent`, local workspace, unrestricted effects, permitted tool,
+nonempty allowlist (when configured), and another delegation level. Explicit
+removal and readonly mode also omit it. Direct calls recheck local environment
+and effective permissions. Busy runners, oversized batches, disallowed profiles,
+depth, shared launch limits and deadlines refuse the whole batch. An already
+exhausted run-tree spend gate refuses before launch; each child model call still
+reserves and settles on that shared gate. Children never receive this tool.
+
+An escaped ordinary child exception yields `worker.batch_failed`, after live
+siblings quarantine; nothing is integrated. Cancellation propagates after worker
+settlement. Inspect retained ownership with `garuda sessions show SESSION --json`.
+Approval prompts may still overlap until prompt serialization lands. CLI and
+dashboard exposure is deferred until then. Permission checks are guardrails, not
+a sandbox. This feature makes no speed, cost or quality claim.
 
 ### Measure editing fan-out offline
 

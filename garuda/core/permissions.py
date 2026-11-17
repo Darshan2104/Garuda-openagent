@@ -169,6 +169,7 @@ READONLY_DENIED_TOOLS = {
     "bash_background",
     "kill_task",
     "integrate_editing_worker",
+    "fan_out_editing_workers",
     "debug_launch",
     "debug_control",
     "debug_variables",

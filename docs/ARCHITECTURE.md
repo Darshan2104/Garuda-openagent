@@ -332,7 +332,20 @@ fastest way to learn the system.
    in request order. Child exceptions propagate as `BaseExceptionGroup` after
    siblings are cancelled and each settles through its quarantine path; caller
    cancellation likewise quarantines each live child independently. Ordinary
-   `run()` and model-driven `invoke_subagent` remain sequential.
+   `run()` and model-driven `invoke_subagent` remain sequential. A trusted caller
+   can also set `AgentConfig.editing_worker_fanout=True` to admit the run-scoped
+   `fan_out_editing_workers` tool. Shared assembly requires a service, admitted
+   `invoke_subagent`, local workspace, unrestricted effects, effective tool
+   permission outside readonly, no explicit removal, a nonempty allowlist when
+   configured, and another delegation level. Profiles, settings, CLI and ACP
+   cannot set the opt-in; delegated children never inherit the tool. The tool
+   validates the whole request and refuses exhausted run-tree spend before
+   delegating unchanged bounds to `run_editing_workers`. Typed receipts follow
+   request order and fit the live output budget; insufficient receipt space
+   refuses before launch. Optional `in_order` integration only calls the existing
+   checked `integrate` after all children settle and stops at quarantine.
+   Ordinary escaped exception groups map to `worker.batch_failed`; cancellation
+   propagates. Permission checks remain guardrails, not a sandbox.
    Every child inherits the parent's approval handler through relocated permission
    checks; screening workspace state is task-local through a context variable.
    Approval prompts are not serialized. The shared root `SpendGate` and

@@ -158,6 +158,18 @@ class SpendGate:
         """
         return self._last_refusal_cause
 
+    def would_refuse(self, estimate_tokens: int) -> str | None:
+        """Read-only advisory admission check; zero also detects an exhausted cap.
+
+        Per-call ``admit`` remains authoritative and owns reservation accounting.
+        """
+        estimate = max(0, int(estimate_tokens))
+        if (self.max_tokens is not None
+                and self.settled_tokens + self.reserved_tokens >= self.max_tokens):
+            return "tokens"
+        refusal = self._refusal(estimate)
+        return refusal[0] if refusal is not None else None
+
     async def admit(self, purpose: str, *, estimate_tokens: int) -> SpendReservation:
         """Reserve ``estimate_tokens`` for one call, or raise :class:`SpendLimitExceeded`."""
         estimate = max(0, int(estimate_tokens))
