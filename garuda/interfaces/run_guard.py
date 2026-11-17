@@ -358,7 +358,9 @@ def approval_answerer(
         from garuda.acp.broker import Unanswered
 
         try:
-            result = await handler(request.action)
+            ask_request = getattr(handler, "ask_request", None)
+            result = (await ask_request(request) if callable(ask_request)
+                      else await handler(request.action))
             # A responder's timeout/disconnect stays distinct from a "no".
             return result if isinstance(result, Unanswered) else bool(result)
         except Exception:
@@ -410,11 +412,9 @@ def interactive_approval() -> Callable[[str], Awaitable[bool]] | None:
         interactive = False
     if not interactive:
         return None
-    import functools
+    from garuda.interfaces.terminal_approval import TerminalApprover
 
-    from garuda.interfaces.cli import stdin_approval
-
-    return functools.partial(stdin_approval, stream=sys.stderr)
+    return TerminalApprover(sys.stderr)
 
 
 def broker_approval_handler(

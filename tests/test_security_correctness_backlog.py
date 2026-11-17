@@ -348,10 +348,10 @@ def test_renderer_defaults_to_stdout(capsys):
 def test_approval_prompt_can_be_routed_off_stdout(capsys, monkeypatch):
     import asyncio
 
-    from garuda.interfaces.cli import stdin_approval
+    from garuda.interfaces.terminal_approval import TerminalApprover
 
     monkeypatch.setattr("builtins.input", lambda: "y")
-    assert asyncio.run(stdin_approval("run rm", stream=sys.stderr)) is True
+    assert asyncio.run(TerminalApprover(sys.stderr)("run rm")) is True
     captured = capsys.readouterr()
     assert "Approve" in captured.err
     assert captured.out == ""

@@ -1,5 +1,52 @@
 # Durable decisions
 
+## 2026-11-17 — Run-tree approval asks are presented one at a time and attributed (#473)
+
+The root session broker already receives descendant asks through delegated
+permissions. Its attached answerer now presents FIFO in park order, with one
+invocation active; settlement cancels that request's answerer, and queued asks
+that settle are never presented. Expiry starts at park time, including time
+queued. External file, inbox and native answer channels remain unserialized:
+they already name an id and digest and retain first-answer-wins routing.
+Duplicate active ids are rejected before constructing a request or taking
+cleanup ownership, preserving the original prompt, provenance and answer path.
+Each broker is confined to one event loop at a time; reuse across sequential
+`asyncio.run` calls does not support overlapping loops or threads.
+
+`core.approval_outcome.approval_requester(identity, engine)` supplies task-local
+child session, agent, depth, kind and parent session provenance around native
+child execution. Nested children restore the enclosing identity. Identity grants
+no authority. Requester identity and effective ceiling fingerprint are bound
+into request digests, file publication and outcome records; allows recheck both
+root and requester ceilings, and a missing requester engine denies. Root asks
+keep their existing digest fields, record keys and unlabelled prompt; presentation
+timestamps are recorded only for attributed children. No remembered allow or
+always-allow grant is introduced; identical sibling actions need separate answers.
+
+`TerminalApprover` is single-loop only: all approval users of one stdin must
+share the same event loop, as CLI run/chat do. It does not serialize concurrent
+loops in different threads. Do not replace a loop with a withdrawn read still
+outstanding: closing the loop cannot stop its input thread, which can consume
+a later loop's input without a reprint. Within the shared loop it serializes
+prompts across brokers and retains one shielded input reader with its prompt owner.
+Worker queue labels show a presentation-time count of unanswered, unexpired
+requests, including the current ask ("N waiting"). This snapshot is passed to
+the answerer without changing the parked request returned by `pending()`.
+Withdrawal prints a notice; that read's line is discarded even if it completed before the next
+prompt, which is reprinted for a fresh answer. EOF records disconnected. The
+remaining stale read can compete with chat's own `input()` or
+`confirm_cross_project`'s bare input for a subsequent line;
+that line is never applied to an approval. Dashboard live-chat card labels and
+vendor fan-out remain follow-ups. This supersedes “Prompts are not serialized”
+in the historical #384 entry below.
+
+Native broker callbacks must cooperate with async cancellation. Cancelling an
+await of `to_thread` does not stop its thread; only `TerminalApprover` retains
+and drains such stale reads. Request-aware callbacks opt in with a callable
+`ask_request(request)` method; ordinary string callbacks remain supported.
+The unused `cli.stdin_approval` wrapper is removed; production entry points
+and tests use `TerminalApprover(stream)` directly.
+
 ## 2026-11-17 — Rebase spelling checks include directory prefixes; lineage requires publication evidence (#470 review)
 
 Rebase rejects newly ambiguous NFC/casefold spellings across every file and

@@ -340,6 +340,7 @@ class NativeGarudaRuntime:
                 self._announced_approvals.add(request.approval_id)
                 self._emit(RuntimeEventKind.APPROVAL_REQUEST, {
                     "approval_id": request.approval_id, "action": request.action,
+                    **({"requester": request.requester} if request.requester is not None else {}),
                     "request_digest": request.digest, "ceiling": request.ceiling,
                     "ceiling_source": request.ceiling_source, "expires_at": request.expires_at,
                 })

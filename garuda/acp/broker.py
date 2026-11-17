@@ -20,7 +20,7 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from garuda.acp.authority import (
@@ -30,7 +30,11 @@ from garuda.acp.authority import (
     negotiate,
 )
 from garuda.acp.protocol import AcpError
-from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
+from garuda.core.approval_outcome import (
+    ApprovalOutcome,
+    Unanswered,
+    current_approval_requester,
+)
 from garuda.core.permissions import PermissionDecision, PermissionEngine
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,10 @@ class ApprovalRequest:
     ceiling: str | None = None
     ceiling_source: str | None = None
     expires_at: float | None = None
+    requester: dict | None = None
+    requester_ceiling: str | None = None
+    # Presentation snapshot only; the parked request keeps this unset.
+    queue_length: int | None = None
 
 
 @dataclass
@@ -71,6 +79,7 @@ class ApprovalRecord:
     policy_mode: str | None = None
     ceiling: str | None = None
     ceiling_source: str | None = None
+    presented_at: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = {
@@ -90,6 +99,12 @@ class ApprovalRecord:
                           ceiling_source=self.request.ceiling_source,
                           requested_at=self.request.requested_at,
                           expires_at=self.request.expires_at)
+            if self.request.requester is not None:
+                record["requester"] = self.request.requester
+            if self.request.requester_ceiling is not None:
+                record["requester_ceiling"] = self.request.requester_ceiling
+        if self.presented_at is not None:
+            record["presented_at"] = self.presented_at
         if self.answered_approval_id is not None:
             record["answered_approval_id"] = self.answered_approval_id
         if self.via == "policy":
@@ -124,6 +139,9 @@ class ApprovalBroker:
     With a :class:`~garuda.acp.approval_channel.FileApprovalChannel` a parked
     approval is also published to files, and a valid file answer resolves it
     exactly like a terminal or dashboard answer (B.8).
+
+    Confined to one event loop at a time; concurrent use from different loops
+    or threads is unsupported. Sequential reuse across asyncio.run calls is OK.
     """
 
     def __init__(
@@ -155,6 +173,11 @@ class ApprovalBroker:
         self._terminal: dict[str, Unanswered] = {}
         self._cancelled_reason: str | None = None
         self._seq = 0
+        self._requester_engines: dict[str, object] = {}
+        self._answerer_tasks: dict[str, asyncio.Task] = {}
+        self._presented_at: dict[str, float] = {}
+        self._presenting: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def answerer(self):
@@ -355,11 +378,15 @@ class ApprovalBroker:
         (:class:`Decision`), because the runtime is told after this returns.
         """
         approval_id = approval_id or self._next_id()
+        if approval_id in self._parked or approval_id in self._answers:
+            raise KeyError(f"approval {approval_id!r} is already parked")
         request = self._request(family, action, runtime_id, session_id, approval_id)
         if self._cancelled_reason is not None:
+            self._requester_engines.pop(approval_id, None)
             reason = f"Approval cancelled with the turn ({self._cancelled_reason}): {action}"
             err = self._audit(session_id, approval_id, ApprovalOutcome.CANCELLED, action, family,
-                              runtime_id, via="cancel", reason=reason, request=request)
+                              runtime_id, via="cancel", reason=reason, request=request,
+                              presented_at=self._presented_at.pop(approval_id, None))
             return False, reason if err is None else f"{reason}; {err}"
         try:
             outcome, via, reason = await self._await_outcome(request)
@@ -381,7 +408,8 @@ class ApprovalBroker:
                     logger.warning("Could not record cancelled approval %s", approval_id,
                                    exc_info=True)
             self._audit(session_id, approval_id, ApprovalOutcome.CANCELLED, action, family,
-                        runtime_id, via="cancel", reason=reason, request=request)
+                        runtime_id, via="cancel", reason=reason, request=request,
+                        presented_at=self._presented_at.pop(approval_id, None))
             raise
         if self._channel is not None and via != "replay":
             from garuda.acp.approval_channel import ChannelError
@@ -393,7 +421,8 @@ class ApprovalBroker:
             except ChannelError as exc:
                 outcome, reason = ApprovalOutcome.DENY, f"approval record failed, denying: {exc}"
         err = self._audit(session_id, approval_id, outcome, action, family, runtime_id,
-                          via=via, reason=reason, request=request)
+                          via=via, reason=reason, request=request,
+                          presented_at=self._presented_at.pop(approval_id, None))
         if err is not None:
             return False, err if outcome is ApprovalOutcome.ALLOW else f"{reason}; {err}"
         if outcome is not ApprovalOutcome.ALLOW:
@@ -420,20 +449,46 @@ class ApprovalBroker:
             ceiling=ceiling_fingerprint(self._engine), ceiling_source=self._ceiling_source,
         )
         request.expires_at = round(request.requested_at + self._timeout_sec, 3)
-        request.digest = request_digest({
+        fields = {
             "approval_id": approval_id, "session_id": request.session_id, "action": action,
             "family": family, "runtime_id": runtime_id, "ceiling": request.ceiling,
             "expires_at": request.expires_at,
-        })
+        }
+        requester = current_approval_requester()
+        if requester is not None:
+            identity, engine = requester
+            request.requester = identity.to_dict()
+            request.requester_ceiling = ceiling_fingerprint(engine)
+            self._requester_engines[approval_id] = engine
+            fields.update(requester=request.requester, requester_ceiling=request.requester_ceiling)
+        request.digest = request_digest(fields)
         return request
 
     async def _await_outcome(
         self, request: ApprovalRequest
     ) -> tuple[ApprovalOutcome, str, str | None]:
         """``(outcome, via, reason)`` for one parked approval; no audit here."""
-        approval_id, action = request.approval_id, request.action
-        if approval_id in self._parked:
+        approval_id = request.approval_id
+        # Only the invocation that parks this id owns its settlement cleanup.
+        if approval_id in self._parked or approval_id in self._answers:
             raise KeyError(f"approval {approval_id!r} is already parked")
+        try:
+            return await self._wait_outcome(request)
+        finally:
+            task = self._answerer_tasks.pop(approval_id, None)
+            if task is not None and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+            self._parked.pop(approval_id, None)
+            self._answers.pop(approval_id, None)
+            self._disconnected.discard(approval_id)
+            self._via.pop(approval_id, None)
+            self._terminal.pop(approval_id, None)
+            self._requester_engines.pop(approval_id, None)
+
+    async def _wait_outcome(
+        self, request: ApprovalRequest
+    ) -> tuple[ApprovalOutcome, str, str | None]:
+        approval_id, action = request.approval_id, request.action
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         poll = None
@@ -445,15 +500,20 @@ class ApprovalBroker:
         self._parked[approval_id] = request
         self._answers[approval_id] = future
         if self._answerer is not None:
-            asyncio.ensure_future(self._run_answerer(approval_id, request))
+            self._answerer_tasks[approval_id] = asyncio.create_task(
+                self._run_answerer(approval_id, request))
         try:
             allowed = await asyncio.wait_for(
-                _wait_answer(future, self._alive, poll), self._timeout_sec
+                _wait_answer(future, self._alive, poll),
+                max(0, (request.expires_at or time.time()) - time.time())
             )
         except TimeoutError:
             self._parked.pop(approval_id, None)
             self._answers.pop(approval_id, None)
-            return ApprovalOutcome.TIMEOUT, "timeout", f"Approval timed out: {action}"
+            reason = (f"Approval timed out before it was presented: {action}"
+                      if self._answerer is not None and approval_id not in self._presented_at
+                      else f"Approval timed out: {action}")
+            return ApprovalOutcome.TIMEOUT, "timeout", reason
         except _Disconnected:
             self._parked.pop(approval_id, None)
             self._answers.pop(approval_id, None)
@@ -482,6 +542,12 @@ class ApprovalBroker:
             if ceiling_fingerprint(self._engine) != request.ceiling:
                 return ApprovalOutcome.DENY, via, (
                     f"Rejected {via} answer: the permission ceiling changed while it was pending")
+            if request.requester_ceiling is not None:
+                engine = self._requester_engines.get(approval_id)
+                if engine is None or ceiling_fingerprint(engine) != request.requester_ceiling:
+                    return ApprovalOutcome.DENY, via, (
+                        f"Rejected {via} answer: the requester's permission ceiling changed "
+                        "while it was pending")
             return ApprovalOutcome.ALLOW, via, None
         return ApprovalOutcome.DENY, via, why or f"Denied: {action}"
 
@@ -523,18 +589,49 @@ class ApprovalBroker:
         Answerer failures deny rather than hang; a timeout/disconnect that
         already resolved the approval wins (the late answer is ignored).
         """
-        assert self._answerer is not None
-        try:
-            result = await self._answerer(request)
-        except Exception:
-            logger.warning("Approval answerer failed for %s; denying", approval_id, exc_info=True)
-            result = False
-        if isinstance(result, Unanswered) and approval_id in self._parked:
-            self._terminal[approval_id] = result
-        try:
-            self.answer(approval_id, bool(result))
-        except KeyError:
-            self._terminal.pop(approval_id, None)
+        async with self._presenting_lock():
+            future = self._answers.get(approval_id)
+            if (approval_id not in self._parked or future is None or future.done()
+                    or not self._alive()
+                    or (request.expires_at is not None and time.time() >= request.expires_at)):
+                return
+            self._presented_at[approval_id] = time.time()
+            now = time.time()
+            waiting = sum(
+                not self._answers[key].done()
+                and (parked.expires_at is None or now < parked.expires_at)
+                for key, parked in self._parked.items()
+            )
+            presentation = replace(request, queue_length=waiting)
+            try:
+                answerer = self._answerer
+                result = await answerer(presentation) if answerer is not None else False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Approval answerer failed for %s; denying", approval_id, exc_info=True)
+                result = False
+            # Disconnect has already settled the future even while the request
+            # remains bindable for the native cancellation response contract.
+            future = self._answers.get(approval_id)
+            if future is None or future.done():
+                return
+            if isinstance(result, Unanswered) and approval_id in self._parked:
+                self._terminal[approval_id] = result
+            try:
+                self.answer(approval_id, bool(result))
+            except KeyError:
+                self._terminal.pop(approval_id, None)
+
+    def _presenting_lock(self) -> asyncio.Lock:
+        # Broker maps and futures share this single-loop ownership contract.
+        # Rebind only for sequential reuse, after the previous loop has settled;
+        # this does not support overlapping loops in different threads.
+        loop = asyncio.get_running_loop()
+        if self._presenting is None or self._lock_loop is not loop:
+            self._presenting = asyncio.Lock()
+            self._lock_loop = loop
+        return self._presenting
 
     def _audit(
         self, session_id: str, approval_id: str, outcome: ApprovalOutcome,
@@ -542,6 +639,10 @@ class ApprovalBroker:
     ) -> str | None:
         """Persist one outcome. Returns None, or the denial reason when the
         audit write failed — the caller must not allow what it cannot record."""
+        # Root record keys are a compatibility contract.
+        request = provenance.get("request")
+        if request is not None and request.requester is None:
+            provenance.pop("presented_at", None)
         try:
             self._record(session_id, approval_id, outcome, action, family, runtime_id,
                          **provenance)

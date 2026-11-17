@@ -706,6 +706,7 @@ def build_parser():
     approvals_list = approvals_sub.add_parser("list", help="Parked approvals of a session")
     approvals_list.add_argument("session", help="Session id, unique prefix, or name")
     approvals_list.add_argument("--workspace", default=".")
+    approvals_list.add_argument("--json", action="store_true", help="Print pending request records")
     approvals_answer = approvals_sub.add_parser(
         "answer", help="Answer one parked approval (bound to that exact request)"
     )
@@ -1526,6 +1527,7 @@ def run_flow(args) -> int:
 
 def run_approvals(args) -> int:
     """`garuda approvals list|answer` over the session's file channel (B.8)."""
+    import json
     import sys
 
     from garuda.acp.approval_channel import FileApprovalChannel, write_answer
@@ -1553,12 +1555,21 @@ def run_approvals(args) -> int:
               "(the session decides once; a late or mismatched answer is a denial)")
         return 0
     pending = FileApprovalChannel(directory, session_id).pending()
+    if getattr(args, "json", False):
+        print(json.dumps(pending, indent=2))
+        return 0
     if not pending:
         print("No parked approvals.")
         return 0
     for request in pending:
+        requester = request.get("requester")
+        label = ""
+        if isinstance(requester, dict):
+            worker = str(requester.get("session_id") or "unknown")[:12]
+            label = (f"  worker {worker} agent {requester.get('agent', 'unknown')} "
+                     f"depth {requester.get('depth', 'unknown')}")
         print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
-              f"  digest={request.get('digest')}")
+              f"  digest={request.get('digest')}{label}")
     return 0
 
 

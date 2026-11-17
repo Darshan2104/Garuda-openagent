@@ -2112,3 +2112,51 @@ async def test_concurrent_worker_deltas_use_candidate_ids(editing):
         fragments = [d for d in seen if d.source == source]
         assert "".join(d.text for d in fragments if d.kind == "text") == answer
         assert {(d.agent, d.depth) for d in fragments} == {("editor", 1)}
+
+
+async def test_concurrent_worker_asks_are_serialized_and_attributed(editing, tmp_path):
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.run_guard import install_session_broker
+
+    scripts = {name: [_call('bash', command=f'echo {name}'),
+                      _call('write_file', path=f'{name}.txt', content=name), _done()]
+               for name in ('alpha', 'beta')}
+    runner, workers, repo = _concurrent_workers(
+        editing, TaskScriptModel(barrier=asyncio.Barrier(2), scripts=scripts))
+    active, peak = 0, 0
+    second = asyncio.Event()
+
+    async def record(action):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active > 1:
+            second.set()
+        try:
+            await asyncio.wait_for(second.wait(), 0.1)
+        except TimeoutError:
+            pass
+        active -= 1
+        return True
+
+    permissions = PermissionEngine(mode='smart', workspace_root=repo,
+                                    bash_rules={'ask': [r'^echo ']}, approval_handler=record)
+    store = SessionStore(tmp_path / 'store')
+    sid = runner.events.session_id
+    store.begin(sid, task='t', model='m', agent='a', workspace=str(repo))
+    install_session_broker(permissions, store, sid)
+    runner.parent_permissions = permissions
+    results = await runner.run_editing_workers([
+        ('editor', name) for name in ('alpha', 'beta')])
+    assert peak == 1
+    receipts = [_receipt(result) for result in results]
+    records = [v for k, v in store.load_meta(sid).items() if k.startswith('approval:')]
+    assert len(records) == 2
+    assert {r['requester']['session_id'] for r in records} == {r['candidate_id'] for r in receipts}
+    assert len({r['request_digest'] for r in records}) == 2
+    for record in records:
+        assert record['requester']['agent'] == 'editor'
+        assert record['requester']['depth'] == 1
+        assert record['requester']['kind'] == 'editing_worker'
+        assert record['requester']['parent_session_id'] == sid
+        assert record['presented_at'] >= record['requested_at']

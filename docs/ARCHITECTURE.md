@@ -335,8 +335,11 @@ fastest way to learn the system.
    `run()` and model-driven `invoke_subagent` remain sequential.
    Every child inherits the parent's approval handler through relocated permission
    checks; screening workspace state is task-local through a context variable.
-   Approval prompts are not serialized. The shared root `SpendGate` and
-   `DelegationBudget` remain unchanged.
+   The root approval broker presents attached answerers one at a time in park
+   order, labels child requests and withdraws settled asks; queued time counts
+   toward expiry. Requester identity and its effective ceiling are digest-bound,
+   and an allow rechecks both root and requester ceilings. The shared root
+   `SpendGate` and `DelegationBudget` remain unchanged.
    Integration binds a retained binary patch, base snapshot/HEAD/index and
    typed-output provenance by SHA-256. The existing confined integration checker
    checks the exact candidate tree before destination revalidation and checked
