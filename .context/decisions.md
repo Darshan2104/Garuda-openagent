@@ -1,5 +1,43 @@
 # Durable decisions
 
+## 2026-11-17 — Local writes prefer atomic publication and retain newlines; glob propagates failures (#478, #481, #484)
+
+LocalEnvironment validates UTF-8 before touching the destination, stages a sibling
+file, flushes/fsyncs it and replaces the destination atomically. If staging
+creation fails with EACCES, EPERM or EROFS for an existing writable regular file,
+it instead truncates and writes the already-encoded bytes in place. This fallback
+preserves edits in non-writable directories but can lose data on a mid-write I/O
+error; encoding failures still leave the destination intact. Other staging or
+replacement failures leave the destination intact and clean any staging file.
+Existing mode bits and file-symlink referents are preserved; special files are
+refused and existing destinations must still be writable. New files use the
+normal umask. Replacement changes the inode (hard-link aliases retain old bytes);
+ownership, ACLs and extended attributes are not copied. Directory write permission
+is required for atomic replacement. Sibling files named `.garuda-write-<hex>.tmp`
+are visible to watchers and Git during staging and may remain after SIGKILL.
+Symlink resolution loops become ELOOP tool errors. Cancellation settles the write
+thread before returning, without a rollback guarantee; concurrent writers and
+directory-fsync crash durability are outside this contract. Docker and remote
+environments share host upload staging
+cleanup, including encoding and transfer failures; `docker cp` destination writes
+retain their existing semantics. Write/edit/multi-edit return encoding and OS
+write failures as tool errors.
+
+Local full reads decode strict UTF-8 without newline translation, and bounded
+page digests hash that same original content. CRLF, bare CR and mixed endings
+round-trip through local edit/multi-edit. This supersedes the historical universal
+newline and non-atomic-local-write descriptions in the #368 decision below;
+version preconditions remain observations rather than a compare-and-write lock.
+The accepted local-CRLF limitation is removed from BACKLOG.
+
+Glob uses the grep fallback's portable file-descriptor status channel to retain
+find, sort and refining-filter failures through pipelines. These utilities' own
+stderr joins the status channel, so diagnostics fail closed as tool errors even
+with a zero utility status or no matching paths. Unrelated login-shell startup
+stderr does not fail a successful search.
+No workspace interpreter or Bash pipefail dependency is introduced. Completeness
+still depends on utility reporting: macOS find can silently ignore symlink cycles.
+
 ## 2026-11-17 — Correct delivered ownership and session documentation (#490)
 
 The architecture and module references describe the existing `DockerRoleOwner`

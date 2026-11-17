@@ -100,6 +100,69 @@ from garuda.tools import search  # noqa: E402
 from garuda.tools.search import GlobTool  # noqa: E402
 
 
+@pytest.mark.parametrize("pattern,expected", [
+    ("*.py", "./a.py"),
+    ("**/*.py", "./a.py"),
+    ("*.missing", "No files matched pattern *.missing"),
+])
+async def test_glob_tolerates_shell_startup_stderr(tmp_path, pattern, expected):
+    class NoisyEnvironment(LocalEnvironment):
+        async def execute(self, command, timeout=None, cwd=None):
+            result = await super().execute(command, timeout=timeout, cwd=cwd)
+            # Login-shell noise is outside the search pipeline's status channel.
+            result.stderr = "bash: warning: setlocale: LC_ALL: cannot change locale\n" + result.stderr
+            return result
+
+    (tmp_path / "a.py").write_text("x\n")
+    result = await GlobTool().execute({"pattern": pattern}, NoisyEnvironment(tmp_path), CTX)
+    assert not result.is_error, result.content
+    assert result.content == expected
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
+@pytest.mark.parametrize("pattern", ["*.py", "**/*.py", "*.missing"])
+async def test_glob_reports_unreadable_directory(tmp_path, pattern):
+    (tmp_path / "a.py").write_text("x\n")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "b.py").write_text("y\n")
+    locked.chmod(0o000)
+    try:
+        result = await GlobTool().execute({"pattern": pattern}, LocalEnvironment(tmp_path), CTX)
+    finally:
+        locked.chmod(0o755)
+    assert result.is_error, result.content
+    assert "glob failed" in result.content
+    assert "locked" in result.content
+    assert "Permission denied" in result.content
+
+
+@pytest.mark.parametrize("pattern", ["*.py", "**/*.py", "*.missing"])
+@pytest.mark.parametrize("status,diagnostic", [
+    (1, "find: ./locked/up: filesystem loop detected"),
+    (1, ""),
+    (0, "find: ./locked/up: filesystem loop detected"),
+], ids=["loop-error", "status-only", "diagnostic-only"])
+async def test_glob_propagates_find_failure(tmp_path, monkeypatch, pattern, status, diagnostic):
+    # A real shell pipeline with a controlled producer exercises failure
+    # propagation independently of the host find's handling of symlink cycles
+    # (macOS find can ignore them without either a diagnostic or an error).
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    producer = bin_dir / "find"
+    producer.write_text(
+        "#!/bin/sh\nprintf './a.py\\n'\n"
+        f"printf '%s' '{diagnostic}' >&2\nexit {status}\n"
+    )
+    producer.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    result = await GlobTool().execute({"pattern": pattern}, LocalEnvironment(tmp_path), CTX)
+    assert result.is_error, result.content
+    assert "glob failed" in result.content
+    if diagnostic:
+        assert diagnostic in result.content
+
+
 class _Recording:
     """The real local environment, recording how much stdout each search captured."""
 

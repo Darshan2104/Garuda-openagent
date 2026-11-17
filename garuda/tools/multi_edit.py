@@ -2,9 +2,10 @@
 
 `multi_edit` applies a sequence of find/replace edits to ONE file in a single call.
 Edits are applied in order to an in-memory copy — so edit *k* sees the result of
-edit *k-1* — and the file is written only if **every** edit matches. Any failure
-leaves the file untouched and reports which edit failed, so the model fixes one
-hunk instead of a half-applied file. It reuses the same layered matcher as `edit`
+edit *k-1* — and the file is written only if **every** edit matches. A validation
+or matching failure leaves the file untouched and reports which edit failed, so
+the model fixes one hunk instead of a half-applied file. Publication follows the
+workspace backend's write guarantees. It reuses the same layered matcher as `edit`
 (`resolve_edit`), so line-number-prefix / CRLF / indentation recovery applies here
 too.
 """
@@ -13,7 +14,7 @@ from garuda.tools.edit import _first_diff, _snippet_around, resolve_edit
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.tools.source_version import contract_option, precondition_error
 from garuda.types import ToolResult
-from garuda.workspace.protocol import Environment
+from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 
 class MultiEditTool:
@@ -120,7 +121,13 @@ class MultiEditTool:
             if outcome.note:
                 notes.append(f"edit #{index}: {outcome.note}")
 
-        await env.write_file(path, working)
+        try:
+            await env.write_file(path, working)
+        except (OSError, UnicodeError) as exc:
+            return ToolResult(
+                tool_call_id="", content=f"Cannot write {path}: {exc}", is_error=True,
+                metadata={"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {},
+            )
 
         snippet = _snippet_around(working, _first_diff(content, working))
         message = f"Applied {n} edit{'s' if n != 1 else ''} to {path} ({total_replacements} replacement(s) total)"

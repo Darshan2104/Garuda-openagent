@@ -525,13 +525,22 @@ class GlobTool:
             matcher = f"-path {shlex.quote(converted)}"
             segment_filter = _glob_regex(pattern)
             ere = shlex.quote(_glob_translate(pattern, ere=True))
-            refine = f" | {{ LC_ALL=C grep -E -e {ere} || [ $? -eq 1 ]; }}"
+            refine = f" | {{ LC_ALL=C grep -E -e {ere} 2>&3 || [ $? -eq 1 ] || echo error >&3; }}"
 
         # `-L` follows symlinks so a symlinked directory under the base is
         # traversed (matches shell globbing / bash reach).
+        # POSIX sh has no pipefail. As in the grep fallback, carry each stage's
+        # failure on fd 3 while the sorted paths stream directly through fd 4.
+        # An empty refining grep is normal; find/sort/grep errors and their own
+        # diagnostics fail closed, independently of login-shell startup stderr.
+        listing = (
+            f"{{ find -L . -type f {matcher} -not -path '*/.git/*' 2>&3 || echo error >&3; }}"
+            f" | {{ sort 2>&3 || echo error >&3; }}{refine}"
+        )
         command = (
             f"cd {shlex.quote(base)} && "
-            f"find -L . -type f {matcher} -not -path '*/.git/*' | sort{refine}"
+            f"{{ r=$( {{ {listing}; }} 3>&1 1>&4 ); }} 4>&1 && "
+            '{ [ -z "$r" ] || { printf \'%s\\n\' "$r" >&2; false; }; }'
         )
         # Sorting needs the whole listing, but capture of the filtered list stays
         # bounded; the result cap is applied below, so no line cap is applied here.

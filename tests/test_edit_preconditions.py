@@ -92,7 +92,7 @@ async def test_the_versioned_contract_requires_and_chains_versions(tmp_path):
 
 @pytest.mark.parametrize("tool", ["edit", "multi_edit"])
 async def test_a_chained_version_is_what_the_next_read_reports(tmp_path, tool):
-    # Writing "\r\n" or "\r" reads back as "\n", so the token must name the re-read text.
+    # CRLF and bare CR survive a local round trip; chained tokens name that text.
     (tmp_path / "b.txt").write_text("one\ntwo\n")
     env, ctx = LocalEnvironment(workspace_root=tmp_path), _ctx(options=VERSIONED)
     token, _ = await _version(env, ctx, "b.txt")
@@ -162,7 +162,7 @@ async def test_a_large_page_reports_the_full_content_version(tmp_path, monkeypat
     import garuda.workspace.text_reads as reads
 
     # Small blocks put CRLF pairs, lone CRs and multi-byte characters across
-    # block boundaries; the digest must follow read_file's universal newlines.
+    # block boundaries; the digest must retain read_file's original newlines.
     monkeypatch.setattr(reads, "SCAN_BLOCK_BYTES", 7)
     body = "".join(f"line {i} é\r\n" if i % 3 else f"line {i}\r" for i in range(4000))
     path = tmp_path / "big.txt"
@@ -176,6 +176,7 @@ async def test_a_large_page_reports_the_full_content_version(tmp_path, monkeypat
                                        "new_string": "target = 2", "expected_version": token},
                                       env, ctx)
     assert not result.is_error, result.content
+    assert path.read_bytes() == (body + "target = 2\n").encode("utf-8")
 
 
 async def test_legacy_large_pages_stay_bounded_and_never_report_a_page_version(tmp_path):

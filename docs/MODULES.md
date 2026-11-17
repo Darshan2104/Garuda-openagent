@@ -95,7 +95,8 @@ look-ahead line or 512 KiB is captured, keep the producer's exit status via a
 marker line so early stopping is distinguishable from completion, sort
 output by path (the grep fallback greps a sorted file list), offer an opt-in content-mode `per_file_limit`, window long
 lines around the match, and bind `next_cursor` to the search options and a
-digest of earlier results so changed scope is refused as stale),
+digest of earlier results so changed scope is refused as stale; glob propagates
+find/sort/filter errors and their own diagnostics independently of shell startup stderr),
 `diagnostics.py` (post-edit syntax + lint), `language.py` (`lsp` previews/navigation and
 `lsp_apply`, present only
 when the user's global settings configure a language server, and `lsp_apply` only for a
@@ -171,6 +172,17 @@ files, disable history expansion and avoid user history files. Safely quoted
 `eval` framing keeps completion markers outside user comments, so only raw-key
 requests (`marker_polling: false`) need smart-mode history approval in
 `core/permissions.py`. `parse_tmux_version` gates pane start on tmux 3.2 or newer.
+
+`file_writes.py` owns local UTF-8 validation and sibling-file publication
+(flush/fsync/replace, existing mode and symlink referent preserved, failed staging
+removed), normalizes symlink loops to ELOOP, and falls back to an already-encoded
+in-place write for an existing writable regular file only when staging creation
+fails with EACCES/EPERM/EROFS. The fallback can lose data on mid-write I/O failure.
+Sibling `.garuda-write-<hex>.tmp` files are visible during staging and may survive
+SIGKILL. `local.py` retains original text line endings and settles write threads
+before returning cancellation. `uploads.py` owns host staging and cleanup for
+both Docker environments' `docker cp` writes, including encoding/transfer errors.
+Container destination writes keep their existing Docker CLI semantics.
 
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it

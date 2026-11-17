@@ -132,8 +132,7 @@ async def test_edit_near_miss_whitespace_hint(tmp_path: Path):
 
 
 def test_no_match_hint_line_endings():
-    # LocalEnvironment normalizes CRLF on write, so exercise the branch directly
-    # (relevant for envs/files that preserve CRLF).
+    # The hint explains a match that differs only in line endings.
     from garuda.tools.edit import _no_match_hint
 
     hint = _no_match_hint("alpha\r\nbeta\r\n", "alpha\nbeta")
