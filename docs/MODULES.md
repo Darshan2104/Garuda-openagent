@@ -642,9 +642,12 @@ the worker rejects changed or newly appeared inputs. The public flow service
 uses that request for durable phase admission and final verification publication.
 Owned workers
 currently refuse live SDK clients, executable project tool imports, and enabled
-nested collection profiles. Owned ACP read-only/no-edits execution also refuses
-before launch: its required Docker container lifetime is outside the proven
-process-tree ownership boundary. Flows without selected checks remain unverified;
+nested collection profiles. Owned ACP read-only/no-edits roles run in a Docker
+container whose lifetime `workspace/owned_confinement.py::DockerRoleOwner` owns
+alongside the supervised process tree. Preparation refuses with
+`workspace.readonly_unenforced` when no confinement image is configured. Container
+absence must be proved before workspace/capacity release; ambiguous cleanup
+retains quarantine. Flows without selected checks remain unverified;
 public Linux flow checks use the retained parent owner. Browser launch remains
 separately gated.
 

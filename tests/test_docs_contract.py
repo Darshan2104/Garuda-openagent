@@ -11,6 +11,9 @@ import argparse
 import builtins
 import importlib.util
 import pathlib
+import re
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "scripts" / "check_docs.py"
@@ -108,6 +111,70 @@ def test_duplicate_rows_are_scoped_to_one_table(tmp_path):
         "| same | row |\n"
     )
     assert checker.find_duplicate_table_rows(tmp_path) == []
+
+
+def test_blank_line_cannot_silently_detach_feature_rows(tmp_path, capsys):
+    reference = tmp_path / "docs" / "reference"
+    reference.mkdir(parents=True)
+    (reference / "features.md").write_text(
+        "| Feature | Description |\n"
+        "|---|---|\n"
+        "| Web source provenance | Source evidence |\n"
+        "\n"
+        "| Python outlines | AST metadata |\n"
+        "| Optional Python debugger | Local debugpy |\n"
+        "| Confined Python cells | Bounded aggregation |\n"
+    )
+
+    assert checker.main(["--root", str(tmp_path)]) == 1
+    output = capsys.readouterr().out
+    assert "docs/reference/features.md:5" in output
+    assert "table" in output and "delimiter" in output
+
+
+@pytest.mark.parametrize("fence", ["````", "~~~~"])
+def test_table_check_accepts_separate_tables_and_ignores_fenced_examples(tmp_path, fence):
+    (tmp_path / "README.md").write_text(
+        "| Name | Value |\n"
+        "|:---|---:|\n"
+        "| same | row |\n\n"
+        f"{fence}text\n"
+        "| example | without a delimiter |\n\n"
+        "| another | example |\n"
+        "```\n"  # A shorter or different fence must not close this block.
+        "| still | example data |\n"
+        f"{fence}\n\n"
+        "| Name | Value |\n"
+        "|---|---|\n"
+        "| same | row |\n"
+    )
+    assert checker.find_orphan_table_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("path", ["docs/ARCHITECTURE.md", "docs/MODULES.md"])
+def test_owned_acp_docs_explain_container_owner_and_image_requirement(path):
+    # This is the published security contract, not a grep of runtime source.
+    paragraphs = (REPO_ROOT / path).read_text().split("\n\n")
+    paragraph = next(
+        " ".join(part.split()) for part in paragraphs if "Owned ACP read-only" in part
+    )
+    assert "DockerRoleOwner" in paragraph
+    assert "confinement image" in paragraph
+    assert "workspace.readonly_unenforced" in paragraph
+
+
+@pytest.mark.parametrize(
+    "resolved_claim",
+    [
+        "A session handed to an external runtime cannot come back",
+        "SDK `Conversation`",
+        "The dashboard still parks approvals outside the P0.17 broker",
+    ],
+)
+def test_backlog_does_not_reopen_resolved_session_contracts(resolved_claim):
+    backlog = (REPO_ROOT / "docs" / "BACKLOG.md").read_text()
+    headings = [" ".join(heading.split()) for heading in re.findall(r"\*\*(.*?)\*\*", backlog, re.S)]
+    assert not any(resolved_claim in heading for heading in headings)
 
 
 def _fixture_parser():
@@ -295,6 +362,10 @@ def test_release_docs_have_no_test_count_claims():
 
 def test_release_docs_have_no_duplicate_table_rows():
     assert checker.find_duplicate_table_rows(REPO_ROOT) == []
+
+
+def test_release_docs_have_no_orphan_table_rows():
+    assert checker.find_orphan_table_rows(REPO_ROOT) == []
 
 
 def _write_site_page(site, rel, body):
