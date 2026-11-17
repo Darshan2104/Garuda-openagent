@@ -1,5 +1,16 @@
 # Durable decisions
 
+## 2026-11-17 — Correct delivered ownership and session documentation (#490)
+
+The architecture and module references describe the existing `DockerRoleOwner`
+boundary: owned readonly/no-edits ACP roles require a confinement image and
+proved container removal before workspace/capacity release; ambiguous cleanup
+retains quarantine. This corrects stale refusal wording, without changing runtime
+authority or the earlier daemon-resource closure decision. The backlog no longer
+lists native reclaim, SDK conversation session evidence or dashboard chat's
+shared approval audit as missing. Recipe/eval/ordinary-subagent session-baseline
+evidence remains open; per-child workspace observations do not close that gap.
+
 ## 2026-11-17 — Opt-in model-driven editing-worker fan-out tool (#471, #384)
 
 Trusted Python callers may set `AgentConfig.editing_worker_fanout=True` alongside
