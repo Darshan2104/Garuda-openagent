@@ -55,7 +55,7 @@ a behaviour.
 | `child_result.py` | Versioned native child-result envelopes, accepted schema provenance, bounded inline delivery, parent-buffer publication and size/digest-checked reference resolution. The runner snapshots validated envelopes before hooks, retaining semantic facts independently of summary rendering. Referenced values carry the common artifact descriptor while pre-descriptor version-1 references remain readable. Failed publications share a stable unavailable capture adapter across live delivery, inspection and inheritance, without inventing a payload reference. |
 | `bootstrap.py` | One-shot environment probe folded into the first-turn prompt. |
 | `subagent.py` | `run_editing_workers(requests)` admits a bounded programmatic batch before launch, runs a TaskGroup, preserves result order and cancels siblings on child exceptions. Ordinary `run()` remains sequential. Forked child runs, capped by the parent's effective permissions (`DelegatedPermissionEngine`) and admitted tools. Captures a child-scoped workspace baseline and attaches authoritative changed-path evidence or an explicit unsupported/error attribution state. |
-| `editing_worker.py` | Opt-in `EditingWorkerService` and bounded `LocalEditingWorkers(max_concurrent=1)` (1–8): detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Admission exempts only this instance's live admitted/running siblings after recovery; uncertainty and foreign siblings still block. Integration stays exclusive with all runs and other integrations, uses the existing worktree checker and refuses changed candidates or stale destinations. Capacity-full admissions settle only with store-read proof that ownership was never acquired. Cancellation retains uncertain ownership. Settled integrated or unchanged terminal repositories retire through `workspace/editing_workers.py`; retained receipts and patches remain, a later cleanup prunes fully retired receipts, and recovery never replays candidates. |
+| `editing_worker.py` | Opt-in `EditingWorkerService` and bounded `LocalEditingWorkers(max_concurrent=1)` (1–8): detached snapshot repositories, independent lease/capacity identities, typed child results and patch provenance. Admission exempts only this instance's live admitted/running siblings after recovery; uncertainty and foreign siblings still block. Integration stays exclusive with all runs and other integrations, uses the existing worktree checker, rebases disjoint stale siblings over this instance's integrated tree lineage, and refuses changed candidates or other stale destinations. Capacity-full admissions settle only with store-read proof that ownership was never acquired. Cancellation retains uncertain ownership. Settled integrated or unchanged terminal repositories retire through `workspace/editing_workers.py`; retained receipts and patches remain, a later cleanup prunes fully retired receipts, and recovery never replays candidates. |
 | `action_memo.py` | Session memory of what has already been asked, so a repeated read is answered rather than re-run. Filesystem reads stop being memoized while a background task is live — it writes between calls, and no call marks that. `bash_background` reports settled capture/process groups so caching resumes; a raw `cmd &` reports nothing, so it suspends caching for the session. |
 
 ## `tools/` — what the agent can do
@@ -332,8 +332,11 @@ into a handoff; `garuda runtime handoff --confirm` passes its workspace. The
 Generated pack files live in the session store, so they never appear in the
 workspace delta.
 
-`snapshot_proto.py` is the A.5 spike (#154); `worktrees.py` builds on it. It
-snapshots a work tree (tracked edits, deletions, untracked non-ignored files)
+`snapshot_proto.py` is the A.5 spike (#154); `worktrees.py` builds on it.
+`worktrees.rebase_snapshot_patch` proves path-disjoint rebases in a scratch parent
+index, rejects new NFC/casefold aliases in file and directory-prefix spellings,
+and excludes normalized Git metadata basenames without changing the worker
+repository. The snapshot owner captures a work tree (tracked edits, deletions, untracked non-ignored files)
 with sanitized Git: no inherited `GIT_*`, no system/global config, fsmonitor
 and hooks off, files read without following symlinks and hashed with
 `hash-object --no-filters` into a temporary index — never `git add`. The
