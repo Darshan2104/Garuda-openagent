@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from garuda.types import ExecResult
+from garuda.workspace.file_writes import write_local_text
 from garuda.workspace.paths import read_path_bytes, resolve_workspace_path
 from garuda.workspace.settlement import settle_task
 from garuda.workspace.text_reads import TextPage
@@ -257,7 +258,8 @@ class LocalEnvironment:
 
     async def read_file(self, path: str) -> str:
         target = self._resolve_path(path)
-        return await asyncio.to_thread(target.read_text, encoding="utf-8")
+        # Decode bytes without universal-newline translation.
+        return (await asyncio.to_thread(target.read_bytes)).decode("utf-8")
 
     async def read_text_page(self, path: str, *, offset: int = 1,
                              limit: int = 2000, tail: bool = False,
@@ -288,5 +290,14 @@ class LocalEnvironment:
 
     async def write_file(self, path: str, content: str) -> None:
         target = self._resolve_path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_text, content, encoding="utf-8")
+        task = asyncio.create_task(asyncio.to_thread(write_local_text, target, content))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as cancelled:
+            # A thread cannot be cancelled; finish publication/cleanup before
+            # returning ownership. Cancellation is not a rollback guarantee.
+            try:
+                await settle_task(task)
+            except Exception as exc:
+                raise cancelled from exc
+            raise

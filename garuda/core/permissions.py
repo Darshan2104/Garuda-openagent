@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from garuda.core.path_identity import path_forms, path_patterns
 from garuda.core.shell_syntax import SHELL_BLANKS, has_history_reference, shell_lexer
 from garuda.core.shell_syntax import strip_simple_comments as _without_shell_comments
 
@@ -347,36 +348,24 @@ class PermissionEngine:
     def _workspace_root(self) -> str:
         return _active_workspace.get() or self._configured_workspace_root
 
-    def _path_matches(self, path: str, pattern: str, cwd: str | None = None) -> bool:
-        base = os.path.join(self._workspace_root, cwd or "")
-        absolute = os.path.normpath(os.path.join(base, path))
-        root = self._workspace_root
-        real_root = os.path.realpath(root)
-        physical = os.path.realpath(absolute)
-        forms = set()
-        for candidate, anchor in ((absolute, root), (physical, real_root)):
-            if os.path.commonpath((candidate, anchor)) == anchor:
-                # Relative rules describe workspace contents, never its parents.
-                forms.add(os.path.relpath(candidate, anchor))
-                if os.path.isabs(pattern):
-                    forms.add(candidate)
-            elif os.path.commonpath((physical, real_root)) != real_root:
-                forms.update((path, candidate))
-        normalized = pattern.removeprefix("**/")
-        patterns = {pattern, normalized}
-        if os.path.isabs(pattern):
-            patterns.add(os.path.realpath(pattern))
-        # A directory rule covers the directory itself, including searches rooted there.
-        patterns |= {p[:-3] for p in list(patterns) if p.endswith("/**") and len(p) > 3}
-        return any(fnmatch.fnmatch(form, rule) or Path(form).name == normalized
-                   for form in forms for rule in patterns)
-
     def _match_path_rules(self, path: str, cwd: str | None = None) -> PermissionDecision | None:
+        if not self._deny_paths and not self._ask_paths:
+            return None
+        relative_forms, all_forms = path_forms(path, self._workspace_root, cwd)
+
+        def matches(pattern: str) -> bool:
+            patterns = path_patterns(pattern)
+            # Relative rules screen workspace contents, never their ancestors.
+            candidates = all_forms if os.path.isabs(pattern) else relative_forms
+            names = {Path(form).name for form in candidates}
+            return bool(names & patterns) or any(fnmatch.fnmatchcase(form, rule)
+                                                for form in candidates for rule in patterns)
+
         for index, pattern in enumerate(self._deny_paths):
-            if self._path_matches(path, pattern, cwd):
+            if matches(pattern):
                 return _policy_decision(PermissionDecision.DENY, f"path-rule:deny:{index}", self._mode)
         for index, pattern in enumerate(self._ask_paths):
-            if self._path_matches(path, pattern, cwd):
+            if matches(pattern):
                 return _policy_decision(PermissionDecision.ASK, f"path-rule:ask:{index}", self._mode)
         return None
 

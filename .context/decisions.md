@@ -22,6 +22,55 @@ while public help and invalid-choice errors omit them.
 Transport sizes, deadlines and response codes are documented in
 [Architecture](../docs/ARCHITECTURE.md).
 
+## 2026-11-17 — Local writes prefer atomic publication and retain newlines; glob propagates failures (#478, #481, #484)
+
+LocalEnvironment validates UTF-8 before touching the destination, stages a sibling
+file, flushes/fsyncs it and replaces the destination atomically. If staging
+creation fails with EACCES, EPERM or EROFS for an existing writable regular file,
+it instead truncates and writes the already-encoded bytes in place. This fallback
+preserves edits in non-writable directories but can lose data on a mid-write I/O
+error; encoding failures still leave the destination intact. Other staging or
+replacement failures leave the destination intact and clean any staging file.
+Existing mode bits and file-symlink referents are preserved; special files are
+refused and existing destinations must still be writable. New files use the
+normal umask. Replacement changes the inode (hard-link aliases retain old bytes);
+ownership, ACLs and extended attributes are not copied. Directory write permission
+is required for atomic replacement. Sibling files named `.garuda-write-<hex>.tmp`
+are visible to watchers and Git during staging and may remain after SIGKILL.
+Symlink resolution loops become ELOOP tool errors. Cancellation settles the write
+thread before returning, without a rollback guarantee; concurrent writers and
+directory-fsync crash durability are outside this contract. Docker and remote
+environments share host upload staging
+cleanup, including encoding and transfer failures; `docker cp` destination writes
+retain their existing semantics. Write/edit/multi-edit return encoding and OS
+write failures as tool errors.
+
+Local full reads decode strict UTF-8 without newline translation, and bounded
+page digests hash that same original content. CRLF, bare CR and mixed endings
+round-trip through local edit/multi-edit. This supersedes the historical universal
+newline and non-atomic-local-write descriptions in the #368 decision below;
+version preconditions remain observations rather than a compare-and-write lock.
+The accepted local-CRLF limitation is removed from BACKLOG.
+
+Glob uses the grep fallback's portable file-descriptor status channel to retain
+find, sort and refining-filter failures through pipelines. These utilities' own
+stderr joins the status channel, so diagnostics fail closed as tool errors even
+with a zero utility status or no matching paths. Unrelated login-shell startup
+stderr does not fail a successful search.
+No workspace interpreter or Bash pipefail dependency is introduced. Completeness
+still depends on utility reporting: macOS find can silently ignore symlink cycles.
+
+## 2026-11-17 — Correct delivered ownership and session documentation (#490)
+
+The architecture and module references describe the existing `DockerRoleOwner`
+boundary: owned readonly/no-edits ACP roles require a confinement image and
+proved container removal before workspace/capacity release; ambiguous cleanup
+retains quarantine. This corrects stale refusal wording, without changing runtime
+authority or the earlier daemon-resource closure decision. The backlog no longer
+lists native reclaim, SDK conversation session evidence or dashboard chat's
+shared approval audit as missing. Recipe/eval/ordinary-subagent session-baseline
+evidence remains open; per-child workspace observations do not close that gap.
+
 ## 2026-11-17 — Opt-in model-driven editing-worker fan-out tool (#471, #384)
 
 Trusted Python callers may set `AgentConfig.editing_worker_fanout=True` alongside
@@ -3853,3 +3902,45 @@ Consult children remain excluded: live text would bypass their post-run
 workspace guard's withholding/quarantine decision. Collection children are
 auxiliary maintenance and retain their separate accounting without forwarding.
 No changes to child semantics, SDK defaults, editing-worker activation or SSE.
+
+
+## 2026-11-17: Filesystem case identity, generated credential redaction and MCP launch binding (#482, #483, #487)
+
+Permission deny/ask rules ALWAYS NFC-normalize and then casefold both patterns
+and operands, on every platform. Filesystem probing is removed: planted filenames
+cannot disable folding. Distinct files on case-sensitive systems may be
+over-denied; this is the accepted fail-closed cost. Operand identity is computed
+once per check before matching rules, shared by file, search/ls and shell tools.
+This remains argument screening, not confinement.
+
+Generated context redaction covers quoted/JSON credentials, environment names
+ending in password/pass/pwd, API/access/secret/private key or token markers,
+URL credentials, Basic/Bearer auth, password flags and common provider token
+prefixes. Diagnostic names such as max_tokens, tokenizer, password_hash and
+secret_scanning remain readable; standalone HF tokens require at least 30
+alphanumeric characters after hf_. Unknown formats remain a best-effort
+limitation; generated files must not promise absolute secrecy.
+
+MCP discovery statically binds positional/attached paths, path-taking flags,
+local Python -m modules/packages, and script-containing project directory trees
+without importing code. The same 4,096-entry bound applies to every tree;
+enumeration/hash errors and size limits refuse trust. __pycache__, .pyc and .pyo
+are excluded. Project Python servers set PYTHONDONTWRITEBYTECODE=1 and
+PYTHONPYCACHEPREFIX to an owner-only Garuda cache outside the repository, so
+repo bytecode is ignored and cache writes do not invalidate grants. Stdio
+launch refuses sourceless bytecode in selected trees and Python interpreter
+flags that bypass these cache controls rather than executing unbound bytes.
+Stdio servers launch with cwd at the workspace root used by trust resolution.
+
+Code-loading environment variables (NODE_OPTIONS, PYTHONPATH, PYTHONSTARTUP,
+PYTHONHOME, LD_PRELOAD, LD_LIBRARY_PATH, DYLD_*, RUBYOPT, PERL5OPT,
+JAVA_TOOL_OPTIONS), unresolved code/path operands and package runners produce
+code_pinned=false with reasons before consent and at trust checks. Scalar
+arguments do not imply unpinned code. Consent describes bound trees and cache
+exclusions and snapshots exactly the digest it grants. Installed code and
+dependencies outside selected trees remain outside this static binding.
+
+Binding version 3 invalidates earlier MCP grants without changing the shared
+store format or project garuda.yaml grants. Stored older grants explain that
+"trust needs review after the binding update". The trust command reports each
+unbindable server, continues to later entries, and returns an error if any fail.

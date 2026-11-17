@@ -11,16 +11,23 @@ A grant binds:
 - the repository identity (the canonical workspace path);
 - the server name;
 - a digest of the raw entry as written (before ``${VAR}`` interpolation, so no
-  resolved secret is hashed or stored), plus the bytes of any repository file the
-  command or its arguments point at, and where any such symlink resolves.
+  resolved secret is hashed or stored), plus directly identifiable repository
+  launch files and their symlink targets. This includes attached option values,
+  -r/--require/--import/--loader operands and project-local Python -m modules
+  and script-containing directory trees. Trees exclude __pycache__, .pyc and
+  .pyo. Discovery never imports repository code.
 
 Changing the entry, a referenced script, or a symlink target invalidates the grant.
 The store lives next to the user's global settings, is owner-only, is written
 atomically under a lock, and never follows a symlink; a missing, corrupt or
 unexpected store grants nothing.
 
-This is a configuration and code-selection grant. It is not proof of what the
-server process does once started.
+Unresolved code operands, package runners and code-loading environment variables
+are explicitly marked "code not pinned" with reasons in the prompt,
+stored grant and trust-check warning. Their grant binds configuration and any
+identified files only. Installed executables, external dependencies, dynamic
+imports and shell/interpreter indirection are not transitively pinned. This is
+a configuration and code-selection grant, not proof of process behavior.
 """
 
 from __future__ import annotations
@@ -37,10 +44,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.config_sources import record_digest, record_source
+from garuda.mcp.launch_files import LaunchBindingError, discover_launch_files
 
 logger = logging.getLogger(__name__)
 
 STORE_VERSION = 1
+BINDING_VERSION = 3
 _MAX_SCRIPT_BYTES = 16 * 1024 * 1024
 _MAX_STORE_BYTES = 4 * 1024 * 1024
 UNTRUSTED_CODE = "agent.untrusted_project_code"
@@ -55,6 +64,9 @@ class TrustKey:
     repository: str
     name: str
     digest: str
+    code_pinned: bool = True
+    unpinned_reasons: tuple[str, ...] = ()
+    bound_trees: tuple[str, ...] = ()
 
 
 def trust_store_path() -> Path:
@@ -90,44 +102,43 @@ def _file_digest(path: Path) -> str:
     return value
 
 
-def _referenced_files(tokens: list[str], workspace: Path) -> list[dict]:
+def _referenced_files(paths: list[Path], workspace: Path) -> list[dict]:
     """Repository files the command line names, with how each one resolves."""
     refs: list[dict] = []
-    for token in tokens:
-        if not token or token.startswith("-"):
-            continue
-        raw = Path(token).expanduser()
-        candidate = raw if raw.is_absolute() else workspace / raw
-        if not _within(Path(os.path.abspath(candidate)), workspace):
-            continue
-        try:
-            if not candidate.exists() and not candidate.is_symlink():
-                continue
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        ref = {"token": token, "symlink": candidate.is_symlink(), "target": str(resolved)}
+    for candidate in sorted(set(paths)):
+        resolved = candidate.resolve()
+        ref = {"token": str(candidate.relative_to(workspace)),
+               "symlink": candidate.is_symlink(), "target": str(resolved)}
         if resolved.is_file() and _within(resolved, workspace):
             ref["sha256"] = _file_digest(resolved)
         refs.append(ref)
     return refs
 
 
-def entry_digest(server, workspace: str | Path) -> str:
-    """Digest of one server entry as the repository wrote it, plus its scripts."""
+def trust_key(server, workspace: str | Path) -> TrustKey:
+    """Snapshot the entry and identified launch files for review and granting."""
     root = Path(repository_identity(workspace))
+    try:
+        files = discover_launch_files([server.command, *server.args], root, server.env)
+        references = _referenced_files(files.paths, root)
+    except (LaunchBindingError, RuntimeError) as exc:
+        raise TrustError(str(exc)) from exc
     payload = {
         "version": STORE_VERSION,
+        "binding_version": BINDING_VERSION,
         "name": server.name,
         "spec": server.spec_digest,
-        "files": _referenced_files([server.command, *server.args], root),
+        "files": references,
+        "code_pinned": not files.unpinned,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(blob).hexdigest()
+    return TrustKey(str(root), server.name, hashlib.sha256(blob).hexdigest(), not files.unpinned,
+                    tuple(files.reasons), tuple(str(path.relative_to(root)) for path in files.trees))
 
 
-def trust_key(server, workspace: str | Path) -> TrustKey:
-    return TrustKey(repository_identity(workspace), server.name, entry_digest(server, workspace))
+def entry_digest(server, workspace: str | Path) -> str:
+    """Digest of the entry, identified files and explicit binding status."""
+    return trust_key(server, workspace).digest
 
 
 def _read_store(path: Path) -> list[dict]:
@@ -172,17 +183,29 @@ def is_trusted(server, workspace: str | Path) -> bool:
     except (TrustError, OSError) as exc:
         logger.warning("MCP server %r cannot be trusted: %s", server.name, exc)
         return False
-    return has_grant(key)
+    trusted = has_grant(key)
+    if trusted and not key.code_pinned:
+        logger.warning("MCP server %r: code not pinned (%s); grant covers configuration and identified files only",
+                       server.name, "; ".join(key.unpinned_reasons))
+    return trusted
 
 
 def has_grant(key: TrustKey) -> bool:
-    """Whether this exact (repository, name, digest) was granted. Content-bound:
-    any change to what the digest covers means no grant."""
+    """Whether this exact identity, digest and binding status were granted.
+
+    Changes to covered content invalidate a grant. An explicitly unpinned key
+    authorizes its configuration/identified files, not unresolved code bytes.
+    """
     for grant in _read_store(trust_store_path()):
+        same_entry = grant.get("repository") == key.repository and grant.get("name") == key.name
+        if same_entry and grant.get("binding_version") != BINDING_VERSION:
+            logger.warning("MCP server %r: trust needs review after the binding update", key.name)
+            continue
         if (
             grant.get("repository") == key.repository
             and grant.get("name") == key.name
             and grant.get("digest") == key.digest
+            and grant.get("code_pinned", True) is key.code_pinned
         ):
             return True
     return False
@@ -229,6 +252,8 @@ def grant_key(key: TrustKey) -> TrustKey:
                 "repository": key.repository,
                 "name": key.name,
                 "digest": key.digest,
+                "code_pinned": key.code_pinned,
+                "binding_version": BINDING_VERSION,
                 "granted_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             }
         )

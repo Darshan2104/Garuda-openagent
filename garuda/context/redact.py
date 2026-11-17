@@ -37,12 +37,21 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("private-key", re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")),
     ("api-token", re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")),
-    ("api-token", re.compile(r"\bghp_[A-Za-z0-9]{8,}")),
-    ("api-token", re.compile(r"\bgho_[A-Za-z0-9]{8,}")),
+    ("api-token", re.compile(r"\bgh[psuro]_[A-Za-z0-9]{8,}")),
     ("api-token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{8,}")),
+    ("api-token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
+    ("api-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{8,}")),
+    ("api-token", re.compile(r"\bAIza[A-Za-z0-9_-]{8,}")),
+    ("api-token", re.compile(r"\bnpm_[A-Za-z0-9]{8,}")),
     ("api-token", re.compile(r"\bxox[bpas]-[A-Za-z0-9-]{8,}")),
     ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}")),
-    ("credential", re.compile(r"(?i)\b(password|passwd|api_?key|secret|token)\b\s*[:=]\s*\S+")),
+    ("url-credential", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@")),
+    ("credential", re.compile(
+        r'''(?i)\b[\w-]*(?:password|passwd|pass|pwd|secret|token|api[_-]?key|access_?key(?:_id)?|secret_?key|private_?key)["']?\s*[:=]\s*'''
+        r'''(?:"[^"\n]+"|'[^'\n]+'|[^\s\[\]{}"',;=]+)'''
+    )),
+    ("credential", re.compile(r'''(?i)--password\s+(?:"[^"\n]+"|'[^'\n]+'|[^\s\[\]"']+)''')),
+    ("basic-auth", re.compile(r"(?i)\bauthorization:\s*basic\s+[A-Za-z0-9+/]+=*")),
     ("bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}")),
 )
 
@@ -97,6 +106,11 @@ def redact_text(text: str) -> tuple[str, list[RedactionFinding]]:
     for kind, pattern in _SECRET_PATTERNS:
 
         def _mask(match: re.Match[str], kind: str = kind) -> str:
+            # Preserve the conventional assertion diagnostic, not credential
+            # assignments whose value happens to be the word "expected".
+            if (kind == "credential" and match.group() == "token: expected"
+                    and match.string[max(0, match.start() - 16):match.start()].endswith("AssertionError: ")):
+                return match.group()
             findings.append(RedactionFinding(kind=kind, count=1))
             return f"[REDACTED:{kind}]"
 

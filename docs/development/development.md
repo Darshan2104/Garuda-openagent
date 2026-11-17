@@ -42,8 +42,10 @@ so sibling containers see the fixture workspace. Ordinary pytest does not opt in
 ## Documentation contract (P0.3)
 
 CI fails on broken local Markdown links, unexpected nested `README.md` files,
-hand-maintained test-count claims, and duplicate table rows in maintained user
-docs. These checks are stdlib-only and never fetch remote URLs:
+hand-maintained test-count claims, duplicate table rows and pipe-row blocks
+missing a header delimiter in maintained user docs. Fenced code examples are
+excluded from the delimiter check. These checks are stdlib-only and never fetch
+remote URLs:
 
 ```bash
 python scripts/check_docs.py

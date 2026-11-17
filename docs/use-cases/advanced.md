@@ -177,6 +177,14 @@ records why in the session. The native run then uses your model API key.
 
 ## Hand off a Garuda session to an external harness
 
+Generated context carries redacted evidence: a check such as
+`DB_PASSWORD=example-value pytest tests/test_login.py` appears as
+`[REDACTED:credential] pytest tests/test_login.py` in `current-task.md` and
+`handoff.md`. Failure summaries receive the same treatment, including
+`AWS_SECRET_ACCESS_KEY`/`HF_TOKEN` assignments and standalone `hf_`/`sk-ant-`
+tokens. A redaction note records the transformation. Unknown secret formats can
+still escape pattern matching; keep credentials out of commands and evidence.
+
 <p class="gd-facts">Changes: session ownership · Preview first, then confirm</p>
 
 **Use it when** a native session has done the groundwork and you want a

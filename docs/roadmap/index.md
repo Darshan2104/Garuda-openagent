@@ -1,5 +1,13 @@
 # Roadmaps
 
+Native file/search reliability fixes (#478, #481, #484) prefer atomic local file
+publication, with an in-place fallback when staging permission is denied for an
+existing writable file. They preserve original local line endings and
+source-version digests, clean failed container upload staging, and report glob
+traversal failures.
+See [file editing](../use-cases/change-code.md#preserve-files-and-line-endings-when-editing)
+and [search behavior](../use-cases/explore.md#search-large-trees-without-flooding-the-context).
+
 [Remaining feature-quality campaign work](feature-quality-status.md) records the
 12 November review of the four open implementation issues and their follow-up
 PRs, with merged mechanisms, residual scope and validation owners kept explicit.

@@ -13,6 +13,13 @@ and [Level 5 · Build a team of roles](../use-cases/teams.md).
 A session lives in `~/.agent/sessions/<id>/`: its metadata, event log,
 approvals and, for a background run, `worker.log`.
 
+Generated `current-task.md` and `handoff.md` redact credential assignments in
+check evidence and failure summaries before writing. Environment-style names
+such as `DB_PASSWORD=...`, `AWS_SECRET_ACCESS_KEY=...` and `OPENAI_API_KEY: ...`
+are covered, along with common standalone tokens including `hf_` and `sk-ant-`.
+Affected files include a redaction note. This is best-effort pattern matching;
+avoid putting credentials or novel secret formats in commands and tool output.
+
 ### The four facts
 
 Garuda keeps four separate facts about every session, so "it finished" is

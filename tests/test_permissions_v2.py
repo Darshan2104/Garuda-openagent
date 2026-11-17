@@ -557,3 +557,78 @@ def test_allow_prefix_uses_bash_word_separators(separator):
     engine = PermissionEngine(bash_rules={"allow_prefixes": ["cat"], "ask": [".*"]})
     expected = PermissionDecision.ALLOW if separator in " \t" else PermissionDecision.ASK
     assert engine.check_command("cat" + separator + "file") == expected
+
+
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+@pytest.mark.parametrize("tool,args", [
+    ("read_file", {"path": ".ENV"}),
+    ("write_file", {"path": ".ENV", "content": "changed"}),
+    ("edit", {"path": "SECRETS/key.pem", "old_string": "PEM", "new_string": "changed"}),
+    ("write_file", {"path": "SECRETS/new.pem", "content": "new"}),
+    ("grep", {"pattern": "KEY", "path": "SECRETS"}),
+    ("glob", {"pattern": "SECRETS/*"}),
+    ("ls", {"path": "SECRETS"}),
+    ("bash", {"command": "cat .ENV"}),
+    ("bash", {"command": "cat key.pem", "cwd": "SECRETS"}),
+])
+def test_path_rules_follow_filesystem_case_identity(tmp_path, rule, tool, args):
+    """Every spelling of the same on-disk operand retains deny/ask (#482)."""
+    (tmp_path / ".env").write_text("SECRET=topsecret")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets/key.pem").write_text("PEM")
+    engine = PermissionEngine(workspace_root=tmp_path,
+                              path_rules={rule: ["**/.env", "secrets/**"]})
+    expected = PermissionDecision(rule)
+    assert engine.decide(tool, args)[0] == expected
+    assert engine.decide("read_file", {"path": ".env"})[0] == PermissionDecision(rule)
+    assert engine.decide("read_file", {"path": "public.txt"})[0] == PermissionDecision.ALLOW
+
+
+@pytest.mark.parametrize("spelling", [".ENV", "./.ENV", "absolute"])
+def test_absolute_path_rules_follow_filesystem_case_identity(tmp_path, spelling):
+    (tmp_path / ".env").write_text("SECRET=topsecret")
+    path = str(tmp_path / ".ENV") if spelling == "absolute" else spelling
+    engine = PermissionEngine(workspace_root=tmp_path,
+                              path_rules={"deny": [str(tmp_path / ".env")]})
+    expected = PermissionDecision.DENY
+    assert engine.decide("read_file", {"path": path})[0] == expected
+
+
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+@pytest.mark.parametrize("tool,args", [
+    ("read_file", {"path": ".ENV"}),
+    ("write_file", {"path": ".ENV", "content": "changed"}),
+    ("ls", {"path": "SECRETS"}),
+    ("grep", {"pattern": "PEM", "path": "SECRETS"}),
+    ("glob", {"pattern": "SECRETS/*"}),
+    ("bash", {"command": "cat .ENV"}),
+])
+def test_review_planted_names_cannot_disable_path_rules(tmp_path, rule, tool, args):
+    for index in range(64):
+        (tmp_path / f"ı{index}").touch()
+    (tmp_path / ".env").write_text("secret")
+    (tmp_path / "secrets").mkdir()
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={rule: ["**/.env", "secrets/**"]})
+    assert engine.decide(tool, args)[0] == PermissionDecision(rule)
+
+
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+def test_review_unicode_path_rules_are_canonically_equivalent(tmp_path, rule):
+    engine = PermissionEngine(workspace_root=tmp_path, path_rules={rule: ["café/**"]})
+    assert engine.check_path("cafe\u0301/key", "read") == PermissionDecision(rule)
+
+
+def test_review_path_screening_resolves_operands_once(tmp_path, monkeypatch):
+    # More rules must not multiply filesystem work for each shell operand.
+    engine = PermissionEngine(workspace_root=tmp_path,
+                              path_rules={"deny": [f"private{i}/**" for i in range(21)]})
+    original = permissions.os.path.realpath
+    calls = []
+
+    def observe(path, *args, **kwargs):
+        calls.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(permissions.os.path, "realpath", observe)
+    assert engine.check_path("public.txt", "read") == PermissionDecision.ALLOW
+    assert len(calls) <= 3
