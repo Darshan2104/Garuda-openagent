@@ -35,7 +35,13 @@ never confused with "it worked":
 `garuda sessions` shows one word per session: the work state while it is
 active, the outcome once it ends, or **crashed** when the process is gone but
 the work never ended. The agent's own completion check is recorded apart, as
-`self_check`.
+`self_check`: `passed`, `failed`, or `no_evidence`. An approved native completion
+records `passed` only when that attempt has verification command results
+examined by the gate; otherwise it records `no_evidence`. Tool results, workspace
+changes, and summary claims do not qualify. A run with no reported self-check
+keeps `self_check: null` (not judged). The run summary, `sessions show` (text and JSON), and dashboard expose
+that status. Completion still exits successfully; only checks with a named
+authority can change independent `verification`.
 
 ```bash
 garuda sessions                 # this project's recent sessions

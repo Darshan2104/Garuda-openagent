@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from garuda.core.events import EventStore, EventType
+from garuda.model.protocol import count_request_tokens, estimate_tools_tokens, output_token_bounds
 from garuda.model.usage import (
     is_definite_rejection,
     reported_prompt_tokens,
@@ -29,19 +30,21 @@ from garuda.model.usage import (
 
 _events: ContextVar[EventStore | None] = ContextVar("garuda_accounting_events", default=None)
 _gate: ContextVar[Any] = ContextVar("garuda_accounting_spend_gate", default=None)
+_thinking_budget: ContextVar[int | None] = ContextVar("garuda_accounting_thinking_budget", default=None)
 
 #: Output tokens reserved for an auxiliary call that does not state its own ceiling.
 AUXILIARY_OUTPUT_ESTIMATE = 4096
 
 
-def bind(events: EventStore, gate: Any = None):
+def bind(events: EventStore, gate: Any = None, *, thinking_budget_tokens: int | None = None):
     """Make ``events`` the store auxiliary calls record to, and ``gate`` the run
     tree's spend gate they admit against; returns the reset token."""
-    return _events.set(events), _gate.set(gate)
+    return _events.set(events), _gate.set(gate), _thinking_budget.set(thinking_budget_tokens)
 
 
 def reset(token) -> None:
-    events_token, gate_token = token
+    events_token, gate_token, thinking_token = token
+    _thinking_budget.reset(thinking_token)
     _gate.reset(gate_token)
     _events.reset(events_token)
 
@@ -89,7 +92,25 @@ async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwarg
     gate = _gate.get()
     reservation = None
     if gate is not None:
-        reservation = await admit(gate, purpose, estimate_tokens(messages, kwargs.get("max_tokens")))
+        if gate.max_tokens is not None:
+            # Normalize the Model protocol's positional options before replacing
+            # max_tokens; otherwise a positional ceiling and our keyword collide.
+            if len(args) > 3:
+                raise TypeError("complete accepts at most tools, temperature and max_tokens")
+            for name, value in zip(("tools", "temperature", "max_tokens"), args, strict=False):
+                if name in kwargs:
+                    raise TypeError(f"complete got multiple values for {name}")
+                kwargs[name] = value
+            args = ()
+            requested = kwargs.get("max_tokens")
+            reservation = await admit_call(
+                gate, purpose, model, messages,
+                tools=kwargs.get("tools"),
+                max_tokens=AUXILIARY_OUTPUT_ESTIMATE if requested is None else requested,
+            )
+            kwargs["max_tokens"] = reservation.output_tokens
+        else:
+            reservation = await admit(gate, purpose, estimate_tokens(messages, kwargs.get("max_tokens")))
     started = time.monotonic()
     try:
         response = await model.complete(messages, *args, **kwargs)
@@ -105,12 +126,29 @@ async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwarg
     return response
 
 
-async def admit(gate: Any, purpose: str, estimate: int):
+async def admit_call(gate: Any, purpose: str, model: Any, messages: list, *,
+                     tools: list | None = None, max_tokens: int, shrink_output: bool = False):
+    """Reserve the complete prompt and the exact bounded output sent to a model."""
+    if callable(getattr(model, "count_tokens", None)):
+        prompt = count_request_tokens(model, messages, tools)
+    else:
+        prompt = estimate_tokens(messages, 1) - 1 + estimate_tools_tokens(tools)
+    ceiling, provider_minimum = output_token_bounds(
+        model, max_tokens, thinking_budget_tokens=_thinking_budget.get())
+    # Auxiliary work needs its whole requested response (e.g. a state summary).
+    # Main work may use the remainder, with useful answer room after thinking.
+    minimum = (min(ceiling, 1024 + (provider_minimum if provider_minimum > 1 else 0))
+               if shrink_output else ceiling)
+    return await admit(gate, purpose, prompt + ceiling,
+                       output_tokens=ceiling, minimum_output_tokens=minimum)
+
+
+async def admit(gate: Any, purpose: str, estimate: int, **bounds: Any):
     """Admit one call against ``gate``, recording a refusal on the run's store."""
     from garuda.core.spend import SpendLimitExceeded
 
     try:
-        return await gate.admit(purpose, estimate_tokens=estimate)
+        return await gate.admit(purpose, estimate_tokens=estimate, **bounds)
     except SpendLimitExceeded as exc:
         events = _events.get()
         if events is not None:
@@ -173,6 +211,9 @@ class _Tagged:
 
     async def complete(self, messages: list, *args: Any, **kwargs: Any):
         return await complete(self._model, messages, *args, purpose=self._purpose, **kwargs)
+
+    def output_token_bounds(self, ceiling: int) -> tuple[int, int]:
+        return output_token_bounds(self._model, ceiling, thinking_budget_tokens=_thinking_budget.get())
 
 
 def tagged(model: Any, purpose: str) -> _Tagged:

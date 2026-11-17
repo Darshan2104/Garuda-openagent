@@ -1118,6 +1118,7 @@ function gateHtml(gate) {
     '<div class="gate-head">' +
     '<span class="pill ' + verdictClass(gate.approved) + '">' +
     verdictWord(gate.approved) + "</span>" +
+    (gate.self_check ? '<span class="meta">self-check: ' + esc(gate.self_check) + "</span>" : "") +
     (gate.attempt !== null && gate.attempt !== undefined
       ? '<span class="meta">attempt ' + esc(gate.attempt) + "</span>" : "") +
     (gate.contract_action ? '<span class="meta">' + esc(gate.contract_action) + "</span>" : "") +

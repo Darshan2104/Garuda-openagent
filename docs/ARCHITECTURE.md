@@ -250,7 +250,23 @@ fastest way to learn the system.
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it.
    `core/spend.py::SpendGate` shares a token/dollar budget across the native run
-   tree. The root runner writes an initial `spend_gate` checkpoint after resume
+   tree. With a token cap, `model/accounting.py::admit_call` counts the complete
+   request and obtains the model's output bounds. Admission clamps the output
+   ceiling to the remaining tokens under the gate lock and reserves prompt plus
+   exactly the ceiling sent on main, streaming and auxiliary calls. LiteLLM's
+   `output_token_bounds` shares thinking requirements with request building and
+   every model wrapper, and clamps to LiteLLM's known `max_output_tokens` limit
+   (unknown limits keep the requested ceiling). Main calls require the smaller
+   of their ceiling and 1,024 tokens, adding the thinking budget plus one when
+   enabled, up to the ceiling. Auxiliary calls require their entire requested
+   output (4,096 when unset). Admission refuses when the minimum cannot fit.
+   Without a token cap, an unset output ceiling stays unset. Prompt counts are
+   estimates. Stream fallback can make a second full non-streaming call inside
+   one reservation, roughly doubling that call's spend; transport retries also
+   re-send requests. Actual usage is retained even above the reservation.
+   Forced final-submission refusals use the same `spend_limit` result, event and
+   cause metadata as ordinary turns.
+   The root runner writes an initial `spend_gate` checkpoint after resume
    inheritance, then checkpoints each admission under the gate lock before the
    request is sent and each settlement after usage is charged. A checkpoint
    write failure at admission refuses the call with cause `checkpoint`; a

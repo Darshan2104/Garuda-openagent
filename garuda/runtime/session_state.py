@@ -15,8 +15,8 @@ The session record now keeps them apart:
                 with the authority that produced it
 ==============  ============================================================
 
-A **self-check** — the native completion gate accepting the agent's own
-verification commands — is recorded separately and never counts as
+A **self-check** — the native completion gate's verdict, including ``no_evidence``
+for approved completion without observed evidence — is recorded separately and never counts as
 verification. Only an authoritative grader (and, later, trusted acceptance
 checks) can make verification ``passed``.
 
@@ -36,7 +36,7 @@ WORK = ("queued", "working", "waiting", "done", "stopped")
 ACTIVE_WORK = ("queued", "working", "waiting")
 OUTCOME = ("completed", "failed", "refused", "cancelled")
 VERIFICATION = ("passed", "failed", "unavailable", "invalidated")
-SELF_CHECK = ("passed", "failed")
+SELF_CHECK = ("passed", "failed", "no_evidence")
 
 
 class SessionStateError(ValueError):
@@ -118,8 +118,9 @@ def finished(*, success: bool, completion_gate: dict | None = None,
     if verification is not None:
         derived_verification = dict(verification)
     self_check = None
-    if gate.get("verifier"):
-        self_check = {"status": "passed" if success else "failed", "source": "native-completion-gate"}
+    if gate.get("verifier") and gate.get("self_check") is not None:
+        status = gate["self_check"]
+        self_check = {"status": status, "source": "native-completion-gate"}
     return validate(
         {
             "version": STATE_VERSION,

@@ -252,6 +252,28 @@ def test_evidence_rejection_still_constrains_the_next_attempt(tmp_path: Path):
     )
 
 
+async def test_permission_denial_does_not_lock_out_command_free_completion(tmp_path):
+    """#492: a command that never ran cannot taint later evidence."""
+    from garuda.core.completion import CompletionGate
+    from garuda.core.events import EventStore
+    from garuda.core.modes import apply_mode_preset
+    from garuda.core.permissions import PermissionEngine
+
+    config = AgentConfig()
+    apply_mode_preset(config, "readonly")
+    gate = CompletionGate(
+        task="q", config=config, context=_NullContext(), env=LocalEnvironment(tmp_path),
+        events=EventStore(), tool_map={},
+        permissions=PermissionEngine(mode="readonly", workspace_root=str(tmp_path)),
+    )
+    denied, feedback = await gate.attempt(_complete(["python3 -m pytest -q"]).tool_calls[0])
+    assert not denied and "denied by permission policy" in feedback
+    assert gate.gate.rejections == 1
+    approved, _ = await gate.attempt(_complete([]).tool_calls[0])
+    assert approved, "dropping a command that policy never allowed must permit completion"
+    assert gate.gate.rejected_command_sets == []
+
+
 class _NullContext:
     """Minimal ContextManager stand-in: the gate path only appends and reads."""
 

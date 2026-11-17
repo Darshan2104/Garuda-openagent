@@ -49,6 +49,7 @@ with sync_playwright() as p:
     check("usage and cost stay unknown", "unknown / unknown" in table)
     check("a self-check is not verification", "verification: unavailable" in table
           and "verification: passed" not in table)
+    check("evidence-free completion is labelled", "self-check: no_evidence" in table)
     check("the waiting session shows its approval", "2 waiting" in table)
     page.screenshot(path=str(SHOTS / "sessions-list.png"))
     check("spend limits and scope are visible in the list",
@@ -56,6 +57,8 @@ with sync_playwright() as p:
     done = "00000000-0000-0000-0000-000000000001"
     page.goto(f"{BASE}#/sessions/{done}", wait_until="load")
     page.wait_for_selector("#session-spend")
+    check("detail preserves evidence-free self-check",
+          "self-check: no_evidence" in page.locator("#session-facts").inner_text())
     spend = page.locator("#session-spend").inner_text()
     check("spend detail preserves unknown cost and inheritance",
           "cost: unknown" in spend and "known settled USD (lower bound)" in spend

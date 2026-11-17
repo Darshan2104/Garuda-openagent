@@ -97,12 +97,17 @@ commands are executed in it.
 
 ## 4. Run mode: when work counts as done
 
-Native Garuda does not accept "I'm done" on the model's word. The run mode
-chooses which checks apply before a result is accepted.
+The run mode chooses which checks apply before native Garuda accepts completion.
+Interactive and readonly runs can accept a summary without verification evidence.
+That approval records `self_check: passed` only when this completion attempt
+includes verification commands that the gate ran and examined. Otherwise it records
+`self_check: no_evidence`. Tool results, workspace changes, earlier attempts, and
+claims in the summary do not count as verification evidence. Completion and exit status are unchanged;
+independent verification remains separate.
 
 | `--mode` | Checks | Extra model cost |
 |---|---|---|
-| `interactive` (default) | Local structural checks | None |
+| `interactive` (default) | Local structural checks; evidence-free approval is labelled `no_evidence` | None |
 | `readonly` | Same as interactive, with permissions forced read-only | None |
 | `eval` | Acceptance criteria, LLM judge, and discriminating, stable evidence | About two calls per completion attempt |
 | `rigorous` | Eval checks plus a plan → execute → critique → repair cycle | More than eval |
@@ -117,6 +122,11 @@ flowchart LR
 
 `standard` is an alias for `interactive`. An explicit `--permission-mode`
 overrides the permissions a mode or profile would pick.
+
+A verification command denied by policy still rejects that attempt, but its
+unrun command set does not restrict later attempts. A command-free readonly
+completion can therefore follow a denied check. Checks that actually fail still
+constrain resubmission; eval and rigorous evidence requirements still apply.
 
 ## 5. Session: what gets recorded
 

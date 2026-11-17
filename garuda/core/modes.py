@@ -79,8 +79,8 @@ FORCED_FIELDS = frozenset({"permission_mode"})
 
 MODE_PRESETS: dict[str, dict[str, object]] = {
     # enable_verifier stays on even here: it is the structural completion gate
-    # (task_complete must carry evidence), not a model call. Turning it off is an
-    # ablation, not a posture.
+    # (task_complete must carry a summary), not a model call. Evidence-free
+    # approvals are recorded as no_evidence. Turning it off is an ablation.
     "interactive": {**_ALL_GATES_OFF, "enable_verifier": True},
     "eval": {**_ALL_GATES_ON, "enable_verifier": True},
     "rigorous": {**_ALL_GATES_ON, "enable_verifier": True},

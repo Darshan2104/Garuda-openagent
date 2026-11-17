@@ -324,6 +324,12 @@ async def run_task(args) -> int:
         if renderer is None or result.final_message.strip() not in renderer.rendered_assistant_text:
             print(result.final_message)
         if not getattr(args, "quiet", False):
+            from garuda.runtime.session_state import finished
+
+            state = finished(success=result.success,
+                             completion_gate=result.metadata.get("completion_gate"))
+            if state["self_check"] is not None:
+                print(f"[garuda] self-check: {state['self_check']['status']}")
             if getattr(args, "isolation", "shared") != "shared" or args.resume:
                 _print_worktree_note(fallback_store, events.session_id)
             _print_consult_line(fallback_store, events.session_id)

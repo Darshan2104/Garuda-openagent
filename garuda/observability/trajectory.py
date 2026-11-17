@@ -361,6 +361,7 @@ class GateRecord:
     answer_rationale: str | None = None
     checklist: dict[str, Any] = field(default_factory=dict)
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    self_check: str | None = None
     feedback: str | None = None
     contract_action: str | None = None
     outstanding: list[str] = field(default_factory=list)
@@ -1062,6 +1063,7 @@ def _gate_from_verification(
         attempt=_as_int(payload.get("attempt"), None),
         checklist=payload.get("checklist") or {},
         evidence=payload.get("evidence") or [],
+        self_check=payload.get("self_check"),
         feedback=payload.get("feedback"),
         turn_number=_explicit_turn(payload),
         timestamp=timestamp,

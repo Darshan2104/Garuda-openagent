@@ -211,6 +211,8 @@ class RunState:
             "completion_gate": {
                 "verifier": bool(self.config.enable_verifier),
                 "authoritative_grader": _has_authoritative_grader(self.config),
+                "self_check": getattr(getattr(self.terminal, "completion_gate", None),
+                                      "self_check_status", None),
             },
         }
         contract = self.completion_contract
@@ -573,9 +575,8 @@ def reserved_output_tokens(config: AgentConfig) -> int:
 
     Prefers a figure the run actually commits to over the configured guess:
 
-    * a thinking budget implies at least ``budget + 4096``, because
-      ``LitellmModel._apply_reasoning`` forces ``max_tokens`` there — reserving less
-      would leave the budget wrong on exactly the runs with least room to spare;
+    * a thinking budget raises a missing or too-small explicit ceiling to
+      ``budget + 4096``, matching ``LitellmModel._apply_reasoning``;
     * an explicit ``max_tokens`` is the real ceiling on the response, so reserve
       exactly that rather than a default that is probably too large;
     * otherwise fall back to the configured reserve.
@@ -584,9 +585,11 @@ def reserved_output_tokens(config: AgentConfig) -> int:
     earlier, and compactions cost summary calls and latency.
     """
     budget = getattr(config, "thinking_budget_tokens", None)
-    if budget:
-        return max(config.reserved_output_tokens, int(budget) + 4096)
     max_tokens = getattr(config, "max_tokens", None)
+    if budget:
+        if max_tokens:
+            return int(max_tokens) if max_tokens > budget else int(budget) + 4096
+        return max(config.reserved_output_tokens, int(budget) + 4096)
     if max_tokens:
         return int(max_tokens)
     return config.reserved_output_tokens

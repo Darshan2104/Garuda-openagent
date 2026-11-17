@@ -146,6 +146,21 @@ def chat_events():
             store.events_path(session["session_id"]).read_text().splitlines()]
 
 
+async def test_evidence_free_completion_keeps_exit_zero_and_labels_run_summary(command):
+    run, _ = command
+    claimed = "Fixed calc.py and ran python3 -m pytest -q, which reported 1 passed."
+    response = ModelResponse(content=None, tool_calls=[ToolCall(
+        id="done", name="task_complete", arguments={"summary": claimed},
+    )])
+    status, _, output = await run([response], "--mode", "readonly", verifier=True)
+    assert status == 0
+    assert claimed in output
+    assert "[garuda] self-check: no_evidence" in output
+    store = SessionStore()
+    meta = store.list_sessions(limit=1)[0]
+    assert meta["state"]["self_check"]["status"] == "no_evidence"
+
+
 @pytest.mark.parametrize("rich", [False, True])
 async def test_chat_shows_text_before_assembly_and_dispatches_only_complete_tools(chat, rich):
     responses = [ModelResponse(

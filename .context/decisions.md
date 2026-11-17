@@ -3916,6 +3916,38 @@ auxiliary maintenance and retain their separate accounting without forwarding.
 No changes to child semantics, SDK defaults, editing-worker activation or SSE.
 
 
+## 2026-11-17 — Bounded token admission and honest completion evidence (#479, #480, #491, #492)
+
+With a run-tree token cap, every main, streaming and auxiliary model call sends
+an output ceiling. Admission chooses that ceiling atomically from the remaining
+budget after the complete prompt estimate and reserves exactly prompt plus output.
+Thinking minima are shared with LiteLLM request building and forwarded by model
+wrappers. Unreported bounds conservatively add the configured thinking budget.
+Main calls require the smaller of their ceiling and 1024 output tokens, adding
+the thinking budget plus one when enabled, up to the ceiling. Auxiliary calls
+require the full requested ceiling (4096 when unset); they never shrink to fit.
+LiteLLM clamps ceilings to known max_output_tokens limits, leaving unknown limits
+unchanged. Without a token cap, an unset ceiling stays unset. Truncated summaries
+keep the prior state. Prompt estimates can still differ from actual usage.
+Stream fallback can make a second full non-streaming call in one reservation,
+roughly doubling that call's spend; transport retries also re-send requests.
+Settlement retains actual usage even when it exceeds the reservation.
+Forced final-submission spend refusals retain the ordinary spend_limit event,
+cause and result metadata instead of becoming turn/deadline exhaustion.
+
+Interactive and readonly completion remain permissive. An approved completion
+records self_check: passed only when this completion attempt has non-empty
+verification command evidence examined by the gate (result.evidence); otherwise
+it records no_evidence, separately from outcome and independent verification.
+Tool results, workspace changes, earlier attempts, and summary claims do not count.
+A missing self-check judgment remains None. Session storage,
+inspection, dashboard and run output expose this state; successful exit codes
+are unchanged. Eval/rigorous evidence requirements remain in force.
+
+A permission-denied verification command rejects and counts the attempt, but its
+unexamined command set is not filed as rejected evidence. Actual failed checks
+still constrain later attempts. Permission policy is unchanged.
+
 ## 2026-11-17: Filesystem case identity, generated credential redaction and MCP launch binding (#482, #483, #487)
 
 Permission deny/ask rules ALWAYS NFC-normalize and then casefold both patterns

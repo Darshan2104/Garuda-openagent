@@ -205,6 +205,21 @@ Project-aware commands retain their existing trust requirements.
 
 ## Make Garuda prove the fix
 
+Interactive and readonly runs allow a summary without evidence. To inspect that
+distinction after a run:
+
+```bash
+garuda sessions show latest
+garuda sessions show latest --json
+```
+
+An approved completion records `self_check: passed` only when this attempt has
+verification command results examined by the gate. Otherwise it records
+`self_check: no_evidence`; tool results, workspace changes, and summary claims
+do not count. The run summary and dashboard show the same status; exit
+code 0 still means completion was accepted. Choose eval or rigorous for required
+evidence, and `--check` for independent verification.
+
 <p class="gd-facts">Changes files: yes · Costs: extra model calls</p>
 
 **Use it when** "it says it's done" isn't good enough and you want the agent
@@ -343,10 +358,25 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
   calls, summaries, the verifier, collection workers, rigorous mode's plan and
   critic, and every native subagent and native consult (including advisors)
   share one budget.
-  Each call reserves its estimate first, so parallel
-  calls cannot spend the same remainder; a call whose provider reports no token
+  Each call sends an output `max_tokens` ceiling. Main calls can reduce it to
+  the remaining budget after the full prompt estimate, including tool schemas,
+  but require at least the smaller of that ceiling and 1,024 tokens. With
+  thinking enabled, the minimum adds the thinking budget plus one token, up to
+  the ceiling. Auxiliary calls (summaries, verifier, contract, critic, and buffer
+  queries) require their full requested ceiling, or 4,096 tokens when unset;
+  they are refused instead of shortened. Provider thinking requirements count
+  toward admission, including through model wrappers. LiteLLM clamps ceilings
+  to a known model `max_output_tokens` limit; unknown limits leave them unchanged.
+  The gate reserves the prompt estimate plus the output ceiling under one lock.
+  Without a token cap, an unset `max_tokens` stays unset.
+  Prompt counts remain estimates. A failed stream can trigger a second full
+  non-streaming call inside the same reservation, roughly doubling one call's
+  spend. Transport retries also re-send the request. Actual reported usage is
+  charged even when it exceeds the reservation. A call whose provider reports no token
   usage is charged that estimate. When the budget is gone the run stops with
   `spend_limit`, and the session records the final `spend_gate` snapshot.
+  A spend refusal during forced final submission also reports `spend_limit`
+  with its cause, instead of telling you to raise `--max-turns`.
 - `--max-run-cost-usd` stops admitting calls once provider-reported spend
   reaches the amount. It is a stop, not a prepaid maximum: a call in flight
   can overshoot. If a completed call returns no provider-reported cost, the

@@ -79,6 +79,7 @@ class SpendLimitExceeded(RuntimeError):
 class SpendReservation:
     purpose: str
     tokens: int
+    output_tokens: int | None = None
 
 
 def usage_tokens(usage: dict | None) -> int:
@@ -172,10 +173,28 @@ class SpendGate:
         refusal = self._refusal(estimate)
         return refusal[0] if refusal is not None else None
 
-    async def admit(self, purpose: str, *, estimate_tokens: int) -> SpendReservation:
-        """Reserve ``estimate_tokens`` for one call, or raise :class:`SpendLimitExceeded`."""
+    async def admit(self, purpose: str, *, estimate_tokens: int,
+                    output_tokens: int | None = None,
+                    minimum_output_tokens: int = 1) -> SpendReservation:
+        """Reserve a call, or raise :class:`SpendLimitExceeded`.
+
+        With ``output_tokens``, the estimate includes that ceiling. Under a token
+        cap, shrink it atomically to the remainder and return the exact ceiling
+        the caller must send. Refuse when even ``minimum_output_tokens`` cannot fit.
+        """
         estimate = max(0, int(estimate_tokens))
+        if output_tokens is not None and (
+                type(output_tokens) is not int or type(minimum_output_tokens) is not int
+                or minimum_output_tokens < 1 or output_tokens < minimum_output_tokens):
+            raise ValueError("model output ceiling must be a positive integer at least its minimum")
         async with self._lock:
+            if self.max_tokens is not None and output_tokens is not None:
+                # Choose and reserve under the same lock: concurrent calls cannot
+                # both send a ceiling derived from the same remaining tokens.
+                prompt = max(0, estimate - output_tokens)
+                remaining = self.max_tokens - self.settled_tokens - self.reserved_tokens - prompt
+                output_tokens = min(output_tokens, remaining)
+                estimate = prompt + max(output_tokens, minimum_output_tokens)
             refusal = self._refusal(estimate)
             if refusal is not None:
                 self.refused += 1
@@ -199,7 +218,7 @@ class SpendGate:
                     raise SpendLimitExceeded(
                         f"{purpose} call refused: spend checkpoint could not be recorded",
                         "checkpoint") from exc
-            return SpendReservation(purpose, estimate)
+            return SpendReservation(purpose, estimate, output_tokens)
 
     def _refusal(self, estimate: int) -> tuple[str, str] | None:
         if self.max_tokens is not None:
