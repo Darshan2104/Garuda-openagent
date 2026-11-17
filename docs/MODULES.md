@@ -96,7 +96,8 @@ look-ahead line or 512 KiB is captured, keep the producer's exit status via a
 marker line so early stopping is distinguishable from completion, sort
 output by path (the grep fallback greps a sorted file list), offer an opt-in content-mode `per_file_limit`, window long
 lines around the match, and bind `next_cursor` to the search options and a
-digest of earlier results so changed scope is refused as stale),
+digest of earlier results so changed scope is refused as stale; glob propagates
+find/sort/filter errors and their own diagnostics independently of shell startup stderr),
 `diagnostics.py` (post-edit syntax + lint), `language.py` (`lsp` previews/navigation and
 `lsp_apply`, present only
 when the user's global settings configure a language server, and `lsp_apply` only for a
@@ -172,6 +173,17 @@ files, disable history expansion and avoid user history files. Safely quoted
 `eval` framing keeps completion markers outside user comments, so only raw-key
 requests (`marker_polling: false`) need smart-mode history approval in
 `core/permissions.py`. `parse_tmux_version` gates pane start on tmux 3.2 or newer.
+
+`file_writes.py` owns local UTF-8 validation and sibling-file publication
+(flush/fsync/replace, existing mode and symlink referent preserved, failed staging
+removed), normalizes symlink loops to ELOOP, and falls back to an already-encoded
+in-place write for an existing writable regular file only when staging creation
+fails with EACCES/EPERM/EROFS. The fallback can lose data on mid-write I/O failure.
+Sibling `.garuda-write-<hex>.tmp` files are visible during staging and may survive
+SIGKILL. `local.py` retains original text line endings and settles write threads
+before returning cancellation. `uploads.py` owns host staging and cleanup for
+both Docker environments' `docker cp` writes, including encoding/transfer errors.
+Container destination writes keep their existing Docker CLI semantics.
 
 `sandbox.py` / `sandbox_policy.py` build the OS sandbox (bubblewrap on Linux,
 Seatbelt on macOS) — read the `sandbox_policy.py` docstring before touching it, it
@@ -643,9 +655,12 @@ the worker rejects changed or newly appeared inputs. The public flow service
 uses that request for durable phase admission and final verification publication.
 Owned workers
 currently refuse live SDK clients, executable project tool imports, and enabled
-nested collection profiles. Owned ACP read-only/no-edits execution also refuses
-before launch: its required Docker container lifetime is outside the proven
-process-tree ownership boundary. Flows without selected checks remain unverified;
+nested collection profiles. Owned ACP read-only/no-edits roles run in a Docker
+container whose lifetime `workspace/owned_confinement.py::DockerRoleOwner` owns
+alongside the supervised process tree. Preparation refuses with
+`workspace.readonly_unenforced` when no confinement image is configured. Container
+absence must be proved before workspace/capacity release; ambiguous cleanup
+retains quarantine. Flows without selected checks remain unverified;
 public Linux flow checks use the retained parent owner. Browser launch remains
 separately gated.
 

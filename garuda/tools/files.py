@@ -234,8 +234,14 @@ class WriteFileTool:
     ) -> ToolResult:
         content = arguments["content"]
         path = arguments["path"]
-        await env.write_file(path, content)
-        size = len(content.encode("utf-8"))
+        try:
+            size = len(content.encode("utf-8"))
+            await env.write_file(path, content)
+        except (OSError, UnicodeError) as exc:
+            return ToolResult(
+                tool_call_id="", content=f"Cannot write {path}: {exc}", is_error=True,
+                metadata={"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {},
+            )
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         message = f"Wrote {path} ({size} bytes, {line_count} lines)"
         from garuda.tools.diagnostics import post_edit_report
