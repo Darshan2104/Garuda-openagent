@@ -168,6 +168,8 @@ class AgentConfig:
     spend_gate: Any = None
     # Trusted programmatic service; absent keeps ordinary subagents unchanged.
     editing_workers: Any = None
+    # Trusted programmatic opt-in; requires a service and is not profile-authorable.
+    editing_worker_fanout: bool = False
     stream_subagent_deltas: bool = False
     buffer_tool_output: bool = True
     buffer_threshold_bytes: int = 30_720

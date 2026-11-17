@@ -1,5 +1,50 @@
 # Durable decisions
 
+## 2026-11-17 — Opt-in model-driven editing-worker fan-out tool (#471, #384)
+
+Trusted Python callers may set `AgentConfig.editing_worker_fanout=True` alongside
+an editing-worker service. The default is off; profiles, project settings, CLI,
+dashboard and ACP cannot enable it. Shared `prepare_run` inserts the reserved
+`fan_out_editing_workers` tool only with admitted `invoke_subagent`, a local
+workspace, unrestricted effects, effective permission outside readonly, no
+denial of `invoke_subagent` or `integrate_editing_worker`, no
+explicit removal, a nonempty allowlist when configured and another depth level.
+Caller-supplied tools with this name are removed before assembly. Children never
+inherit it; workers retain their stateless built-in toolkit and no delegation.
+
+`core/editing_fanout.py` validates the whole request, rechecks permissions and
+local backends, and refuses an already exhausted shared SpendGate before launch
+with `cause` (`tokens`, `dollars` or `cost_unknown`). Every task resolves
+`evaluate_tool_call("invoke_subagent", ...)` before any launch; an ASK refusal
+refuses the entire batch without charging launches.
+`SpendGate.would_refuse(0)` recognizes tokens exactly at the cap without changing
+reservation or refusal counters. This advisory precheck refuses at equality,
+where a zero-token `admit` could still succeed; per-call `admit` remains authoritative.
+`run_editing_workers` owns unchanged allowlist/depth/launch/deadline/capacity
+bounds and concurrent settlement. Ordered versioned JSON receipts use existing
+typed child delivery. Tiny live budgets refuse before launch; compact receipts
+omit summaries and ancillary paths before generic shaping can clip them. The
+delivery budget is the smaller of live output space and the buffer threshold.
+
+Optional in-order integration calls only the existing checked service after
+children settle. Each candidate first resolves
+`evaluate_tool_call("integrate_editing_worker", ...)` with its ID and provenance
+digest, preserving ASK/DENY through the installed session broker. Refusal maps to
+`integration_refused` / `integration.permission_denied`; the existing service
+still enforces the parent's effective path and acceptance permissions.
+Entries omit the pre-integration receipt `state` after an integration attempt;
+`outcome` and `integration.state` describe the result without a stale ready claim.
+It stops on quarantine and maps integration outcomes, passing through the
+service's `rebase` evidence for successful disjoint rebases and stale-base refusals.
+Ordinary `ExceptionGroup` maps to `worker.batch_failed` after sibling quarantine;
+cancellation and fatal base exceptions propagate. The shared root broker
+serializes approval asks FIFO and attributes worker asks to their candidate
+IDs; in-order integration asks retain the parent identity (#476). Disjoint
+stale siblings can rebase through the existing integration service (#475).
+CLI/dashboard service construction remains deferred. Permission checks are
+guardrails, not a sandbox.
+No speed, cost or quality measurement is added.
+
 ## 2026-11-17 — Run-tree approval asks are presented one at a time and attributed (#473)
 
 The root session broker already receives descendant asks through delegated
@@ -37,8 +82,8 @@ prompt, which is reprinted for a fresh answer. EOF records disconnected. The
 remaining stale read can compete with chat's own `input()` or
 `confirm_cross_project`'s bare input for a subsequent line;
 that line is never applied to an approval. Dashboard live-chat card labels and
-vendor fan-out remain follow-ups. This supersedes “Prompts are not serialized”
-in the historical #384 entry below.
+vendor fan-out remain follow-ups. This supersedes the historical approval policy
+in the #384 entry below.
 
 Native broker callbacks must cooperate with async cancellation. Cancelling an
 await of `to_thread` does not stop its thread; only `TerminalApprover` retains
@@ -105,12 +150,14 @@ native child ownership, Git snapshots, permissions and integration stay real.
 The harness lives outside the shipped package and must run in a dedicated
 process. Never import it into a process doing real agent work: Docker dispatch,
 process identity and lease/recovery/session/settings environment overrides are
-process-wide. Runtime code is unchanged. The whole-parent-base rule admits four
-sequential integrations but only one sibling from a shared base, even for
-disjoint edits.
+process-wide. Runtime code is unchanged. The initial whole-parent-base rule
+admitted four sequential integrations but only one sibling from a shared base.
+The delivered disjoint-sibling rebase (#475) supersedes that rule and the fixture
+now records rebased integrations as well as stale-base refusals.
 The published numbers are deterministic contract evidence with scripted delays,
-not latency or quality claims. Model-driven fan-out and non-local backends remain
-open. See `docs/evaluation/index.md` for results and measurement boundaries.
+not latency or quality claims. Model-driven fan-out is now opt-in through trusted
+Python configuration (#471); non-local backends remain open.
+See `docs/evaluation/index.md` for results and measurement boundaries.
 
 ## 2026-11-16 — Spend gate is projected in session views (#363)
 
@@ -184,8 +231,9 @@ After recovery settles, only this instance's currently live candidate IDs with
 `admitted`/`running` receipts are exempt from uncertainty checks. Uncertain
 siblings, foreign service instances and exited runs with stale running receipts
 remain blocking. Integration stays exclusive with runs and other integrations;
-the existing stale-base check prevents a sibling from overwriting an integrated
-candidate, with no rebase or automatic conflict resolution.
+the stale-base check prevents a sibling from overwriting an integrated candidate.
+The later disjoint-sibling rebase decision (#475) permits checked integration over
+this service's own recorded lineage; overlapping edits still refuse.
 With the default limit of one, a second run or integration during a live run
 returns `worker.busy`, replacing the previous `worker.uncertain` once a running
 receipt was published.
@@ -203,9 +251,10 @@ native slot counted. Capacity-full admission keeps the existing settled refusal.
 The root SpendGate and DelegationBudget are shared unchanged.
 
 Children inherit the parent's approval handler and relocated permissions;
-screening workspace state is a context variable. Prompts are not serialized.
-Model-driven fan-out and non-local backends remain open. This supersedes earlier
-#384 concurrency deferrals without changing ordinary subagent/tool dispatch,
+screening workspace state is a context variable. Shared broker serialization and
+worker attribution are now delivered (#476), and model-driven fan-out is opt-in
+through trusted Python configuration (#471). Non-local backends remain open.
+This supersedes earlier #384 concurrency deferrals without changing ordinary subagent/tool dispatch,
 workspace guardrail claims or restart integration policy.
 
 ## 2026-11-16 — Failed attempts inside completed calls are charged (#363)

@@ -39,6 +39,7 @@ async def test_readonly_denies_edit_write_and_tmux_exec():
         ("write_file", {"path": "a.txt", "content": "x"}),
         ("edit", {"path": "a.txt", "old_string": "a", "new_string": "b"}),
         ("tmux_exec", {"command": "echo hi"}),
+        ("fan_out_editing_workers", {"tasks": []}),
     ):
         allowed, _ = await engine.evaluate_tool_call(tool, args)
         assert not allowed, f"{tool} must be denied in readonly mode"

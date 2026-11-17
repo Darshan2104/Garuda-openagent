@@ -711,10 +711,10 @@ async def prepare_run(
             },
         )
 
-    # Reserved collection names are supplied only by the trusted run assembler.
-    # A caller/project tool cannot smuggle either boundary into a single-model
-    # run or replace the internal implementation in a dual-model run.
-    reserved_names = {"delegate_collection"}
+    # Run-scoped dynamic tools are supplied only by the trusted assembler.
+    # A caller/project tool cannot bypass their admission or replace their
+    # implementation by supplying a reserved name.
+    reserved_names = {"delegate_collection", "fan_out_editing_workers"}
     if terminal_strategy is None or terminal_strategy.tool_name != "submit_collection":
         reserved_names.add("submit_collection")
     available_tools = [tool for tool in tools if tool.name not in reserved_names]
@@ -824,6 +824,20 @@ async def prepare_run(
         tools = [InvokeSubagentTool.with_editing_workers(t) if t.name == "invoke_subagent" else t
                  for t in tools]
         tools = [*tools, IntegrateEditingWorkerTool(config.editing_workers)]
+    from garuda.core.editing_fanout import fanout_exposure_refusal
+
+    fanout_refusal = fanout_exposure_refusal(
+        config, permissions=permissions, tool_names={t.name for t in tools},
+        allowed_tool_effects=allowed_tool_effects,
+    )
+    if fanout_refusal is None:
+        from garuda.tools.editing_fanout import FanOutEditingWorkersTool
+
+        tools = [*tools, FanOutEditingWorkersTool.for_service(
+            config.editing_workers.max_concurrent, config.subagents,
+        )]
+    else:
+        logger.debug("fan_out_editing_workers not offered: %s", fanout_refusal)
     notes_ledger = None
     if config.memory_notes == "propose":
         # Reviewed notes (H.9): one ledger for the whole task tree, so the limit on
