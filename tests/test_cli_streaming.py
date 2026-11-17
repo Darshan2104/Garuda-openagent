@@ -591,7 +591,7 @@ async def test_child_preview_is_cleared_before_child_tool_dispatch(chat):
         if state.prompts == 1:
             return "test"
         if state.prompts == 2:
-            # The real broker and stdin_approval reach input before bash
+            # The real broker and TerminalApprover reach input before bash
             # dispatch. Deny so the scripted command never reaches the shell.
             snapshots.append(state.terminal.getvalue())
             return "n"
@@ -602,11 +602,40 @@ async def test_child_preview_is_cleared_before_child_tool_dispatch(chat):
         "shell", "bash", {"command": "rm -rf build/"})]))
     status, _, _ = await chat.run(script, "--permission-mode", "smart", input_fn=input_fn)
     assert status == 0 and len(snapshots) == 1
-    before_prompt, prompt = snapshots[0].rsplit("[garuda] Approve", 1)
+    before_prompt, prompt = snapshots[0].rsplit("[garuda] approval", 1)
     assert "harbor" in before_prompt and "CHILD" in before_prompt
     assert "\033[2K" in before_prompt
     assert "CHILD" not in before_prompt.rsplit("\033[2K", 1)[-1]
     assert "rm -rf build/" in prompt
+    assert "subagent" in prompt and "agent harbor" in prompt and "depth 1" in prompt
+
+
+@pytest.mark.skipif(not tui.rich_available(), reason="rich not installed")
+async def test_no_stream_chat_resumes_spinner_after_approval(chat):
+    spinner_states = []
+
+    def input_fn(state):
+        if state.prompts == 1:
+            return "test"
+        if state.prompts == 2:
+            spinner_states.append(("prompt", state.renderer._status._live.is_started))
+            return "n"
+        return ""
+
+    class ApprovalModel(ObservedModel):
+        async def complete(self, *args, **kwargs):
+            spinner_states.append(("model", chat.renderer._status._live.is_started))
+            return await super().complete(*args, **kwargs)
+
+    status, model, output = await chat.run([
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            "shell", "bash", {"command": "rm -rf build/"})]),
+        ModelResponse(content="Finished.", tool_calls=[]),
+    ], "--no-stream", "--permission-mode", "smart", rich=True,
+        model_type=ApprovalModel, input_fn=input_fn)
+    assert status == 0 and not model.previews
+    assert "Approve" in output
+    assert spinner_states == [("model", True), ("prompt", False), ("model", True)]
 
 
 async def test_nested_children_render_each_source(command):

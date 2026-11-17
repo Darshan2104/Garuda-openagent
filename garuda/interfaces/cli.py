@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import functools
 import json
 import os
 import sys
@@ -8,11 +7,8 @@ import sys
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import resolve_environment
 from garuda.interfaces.session import AgentSession
-from garuda.interfaces.tui import (
-    ChatRenderer,
-    preview_terminal,
-    suspend_previews,
-)
+from garuda.interfaces.terminal_approval import TerminalApprover
+from garuda.interfaces.tui import ChatRenderer, preview_terminal
 from garuda.model.factory import safe_model_identity
 from garuda.model.streaming import PARENT_CLEARS_CHILDREN
 from garuda.plugins.hooks import build_hook_registry
@@ -31,18 +27,6 @@ def live_terminal(stream) -> bool:
 def resolved_model_name(session: AgentSession) -> str:
     """The event-safe resolved reasoning identity every entry point logs."""
     return safe_model_identity(session.model)
-
-
-async def stdin_approval(action: str, stream=None) -> bool:
-    # The prompt is human-facing, never data: in JSONL mode the caller passes
-    # stderr so stdout stays parseable.
-    with suspend_previews():
-        print(
-            f"\n[garuda] Approve {action}? [y/N]: ",
-            end="", flush=True, file=stream or sys.stdout,
-        )
-        answer = await asyncio.to_thread(input)
-    return answer.strip().lower() in ("y", "yes")
 
 
 def _drain_events(
@@ -194,7 +178,7 @@ async def chat_loop(args) -> int:
     # decoration.
     human = sys.stderr if args.json else sys.stdout
     approval = (
-        functools.partial(stdin_approval, stream=human)
+        TerminalApprover(human)
         if profile.permission_mode == "smart"
         else None
     )

@@ -350,6 +350,23 @@ def test_child_lines_are_bounded(child_renderer):
         assert "(+7)" in terminal.getvalue().rsplit("\033[2K", 1)[-1]
 
 
+@pytest.mark.parametrize("text", ["old " * 200 + "LATEST", "界" * 500 + "LATEST"],
+                         ids=["ascii", "wide"])
+def test_child_line_shows_latest_text_within_terminal_width(child_renderer, text):
+    renderer, terminal = child_renderer
+    renderer.on_model_delta(child_delta(text=text))
+    if renderer._rich:
+        lines = renderer._console.render_lines(renderer._assistant_live.renderable)
+        visible = "".join(segment.text for line in lines for segment in line)
+        from rich.text import Text
+
+        assert all(sum(Text(segment.text).cell_len for segment in line) <= 60 for line in lines)
+    else:
+        visible = terminal.getvalue().rsplit("\033[2K", 1)[-1]
+    assert "harbor" in visible
+    assert "LATEST" in visible
+
+
 def test_child_text_and_label_are_sanitised(child_renderer):
     renderer, terminal = child_renderer
     renderer.on_model_delta(child_delta(text="safe\x1b]0;x\x07", agent="evil\x1b[31m"))

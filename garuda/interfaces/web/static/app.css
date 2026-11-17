@@ -801,4 +801,4 @@ a { color: var(--accent); }
 
 /* Transient child text shares the subagent family colour of completed handoffs. */
 .chat-child-preview summary { grid-column: 1 / -1; cursor: pointer; color: var(--muted); }
-.chat-child-preview pre { grid-column: 1 / -1; max-height: 12em; overflow: auto; }
+.chat-child-preview pre { grid-column: 1 / -1; max-height: none; }

@@ -1,4 +1,4 @@
-"""Provider-free editing-worker measurement development script for #384.
+"""Provider-free editing-worker measurement development script for #384 and #470.
 
 Real native children, SpendGate settlement and Git integration; synthetic model
 usage, process start identity and Docker check dispatch. No speed/quality claim.
@@ -148,7 +148,7 @@ async def _measure(root: Path, scenario: str, concurrency: int, delay: float) ->
                     "refusal_detail": result.final_message if not result.success else None,
                     "scripted_tokens": tokens[candidate],
                     "worker_seconds": ready[candidate] - admitted[candidate] if candidate in ready else None,
-                    "integration": None, "integration_wait_seconds": None,
+                    "integration": None, "rebase": None, "rebased": False, "integration_wait_seconds": None,
                     "integration_seconds": None,
                 }
                 if state == "ready":
@@ -161,6 +161,8 @@ async def _measure(root: Path, scenario: str, concurrency: int, delay: float) ->
                     )
                     finished = time.perf_counter()
                     trace.append({"task": task, "phase": "integration_end", "seconds": finished - started})
+                    row["rebase"] = outcome.get("rebase")
+                    row["rebased"] = "rebase" in outcome and outcome["state"] == "integrated"
                     row["integration_seconds"] = finished - attempt
                     row["integration"] = {key: outcome[key] for key in ("state", "code") if key in outcome}
                 candidates.append(row)
@@ -172,9 +174,11 @@ async def _measure(root: Path, scenario: str, concurrency: int, delay: float) ->
 
     stale = [row for row in candidates if (row["integration"] or {}).get("code") == "integration.stale_base"]
     integrated = sum((row["integration"] or {}).get("state") == "integrated" for row in candidates)
+    rebased = sum(row["rebased"] for row in candidates)
+    all_integrate = concurrency == 1 or scenario == "disjoint"
     expected_files = ({"shared.txt": "delta\n" if concurrency == 1 else "alpha\n"}
                       if scenario == "overlapping" else {
-                          f"{task}.txt": f"{task}\n" if concurrency == 1 or task == "alpha" else "original\n"
+                          f"{task}.txt": f"{task}\n"
                           for task in TASKS
                       })
     return {
@@ -182,7 +186,7 @@ async def _measure(root: Path, scenario: str, concurrency: int, delay: float) ->
         "launches": runner.budget.launches, "spend_gate": gate.snapshot(),
         "scripted_calls": sum(model.calls.values()), "candidates": candidates,
         "outcomes": dict(Counter(row["outcome"] for row in candidates)),
-        "integrated": integrated, "stale_base_refusals": len(stale),
+        "integrated": integrated, "rebased_integrations": rebased, "stale_base_refusals": len(stale),
         "integration_wait_seconds": sum(row["integration_wait_seconds"] or 0 for row in candidates),
         "integration_seconds": sum(row["integration_seconds"] or 0 for row in candidates),
         "work_discarded": {
@@ -192,8 +196,9 @@ async def _measure(root: Path, scenario: str, concurrency: int, delay: float) ->
         "integration_trace": trace, "final_files": final_files,
         "fixture_passed": (all(row["outcome"] == "ready" and row["success"] and row["output"] == {"edited": True}
                                for row in candidates)
-                           and integrated == (4 if concurrency == 1 else 1)
-                           and len(stale) == (0 if concurrency == 1 else 3)
+                           and integrated == (4 if all_integrate else 1)
+                           and rebased == (3 if scenario == "disjoint" and concurrency == 4 else 0)
+                           and len(stale) == (0 if all_integrate else 3)
                            and final_files == expected_files and gate.settled_tokens == 960
                            and gate.reserved_tokens == 0 and runner.budget.launches == 4),
     }
@@ -234,7 +239,7 @@ async def run_measurement(out: str | Path, *, delay: float = 0.05) -> dict:
             measurements = [await _measure(root / f"{scenario}-{n}", scenario, n, delay)
                             for scenario in ("disjoint", "overlapping") for n in (1, 4)]
     report = {
-        "schema_version": 1, "fixture": "editing-fanout-v1", "scripted_delay_seconds": delay,
+        "schema_version": 2, "fixture": "editing-fanout-v1", "scripted_delay_seconds": delay,
         "python": platform.python_version(), "platform": platform.platform(),
         "provider_calls": 0, "provider_cost_usd": 0,
         "caveat": "Deterministic fixture with scripted delays; not a latency or quality claim. "

@@ -1,5 +1,98 @@
 # Durable decisions
 
+## 2026-11-17 — Run-tree approval asks are presented one at a time and attributed (#473)
+
+The root session broker already receives descendant asks through delegated
+permissions. Its attached answerer now presents FIFO in park order, with one
+invocation active; settlement cancels that request's answerer, and queued asks
+that settle are never presented. Expiry starts at park time, including time
+queued. External file, inbox and native answer channels remain unserialized:
+they already name an id and digest and retain first-answer-wins routing.
+Duplicate active ids are rejected before constructing a request or taking
+cleanup ownership, preserving the original prompt, provenance and answer path.
+Each broker is confined to one event loop at a time; reuse across sequential
+`asyncio.run` calls does not support overlapping loops or threads.
+
+`core.approval_outcome.approval_requester(identity, engine)` supplies task-local
+child session, agent, depth, kind and parent session provenance around native
+child execution. Nested children restore the enclosing identity. Identity grants
+no authority. Requester identity and effective ceiling fingerprint are bound
+into request digests, file publication and outcome records; allows recheck both
+root and requester ceilings, and a missing requester engine denies. Root asks
+keep their existing digest fields, record keys and unlabelled prompt; presentation
+timestamps are recorded only for attributed children. No remembered allow or
+always-allow grant is introduced; identical sibling actions need separate answers.
+
+`TerminalApprover` is single-loop only: all approval users of one stdin must
+share the same event loop, as CLI run/chat do. It does not serialize concurrent
+loops in different threads. Do not replace a loop with a withdrawn read still
+outstanding: closing the loop cannot stop its input thread, which can consume
+a later loop's input without a reprint. Within the shared loop it serializes
+prompts across brokers and retains one shielded input reader with its prompt owner.
+Worker queue labels show a presentation-time count of unanswered, unexpired
+requests, including the current ask ("N waiting"). This snapshot is passed to
+the answerer without changing the parked request returned by `pending()`.
+Withdrawal prints a notice; that read's line is discarded even if it completed before the next
+prompt, which is reprinted for a fresh answer. EOF records disconnected. The
+remaining stale read can compete with chat's own `input()` or
+`confirm_cross_project`'s bare input for a subsequent line;
+that line is never applied to an approval. Dashboard live-chat card labels and
+vendor fan-out remain follow-ups. This supersedes “Prompts are not serialized”
+in the historical #384 entry below.
+
+Native broker callbacks must cooperate with async cancellation. Cancelling an
+await of `to_thread` does not stop its thread; only `TerminalApprover` retains
+and drains such stale reads. Request-aware callbacks opt in with a callable
+`ask_request(request)` method; ordinary string callbacks remain supported.
+The unused `cli.stdin_approval` wrapper is removed; production entry points
+and tests use `TerminalApprover(stream)` directly.
+
+## 2026-11-17 — Rebase spelling checks include directory prefixes; lineage requires publication evidence (#470 review)
+
+Rebase rejects newly ambiguous NFC/casefold spellings across every file and
+directory prefix in the combined tree, including collisions with unchanged
+parent paths. Identically spelled shared directories remain allowed. Existing
+parent ambiguities cannot gain new spellings. Git metadata basenames are
+excluded after NFC/casefold normalization too, including mixed-case ignore,
+attributes and modules files.
+
+This strengthens the disjointness claim below and replaces unconditional
+post-apply lineage recording. After recording integration, a best-effort parent
+snapshot must equal the checked tree before the service records a new lineage
+edge. A mismatch or capture exception leaves the integration state unchanged
+and adds no edge; subsequent stale siblings cannot attribute that publication.
+Rebase receipt tree IDs describe the proved, checked candidate and destination
+at validation time, not isolation from concurrent external writers. The
+preimage equality proof follows from path disjointness; there is no separate
+user-facing `preimage_changed` reason. These controls remain guardrails.
+
+## 2026-11-17 — Stale editing siblings rebase only over this service's own disjoint integrations (#470)
+
+This supersedes the whole-base refusal policy in the 2026-11-16 editing-worker
+concurrency and measurement decisions. A ready stale candidate can rebase only
+when parent HEAD, symbolic ref and staged index match admission and the current
+tree is reachable from its base through successful integrations recorded by this
+service instance in memory. Outside drift, restarts and terminal refusals cannot
+be retried through this path. No-op integrations preserve existing lineage edges
+instead of recording self-cycles.
+
+Candidate and parent changes must be disjoint by exact spelling, NFC/casefold
+and directory ancestry. Changes to `.gitignore`, `.gitattributes`, `.gitmodules`,
+symlinks or gitlinks refuse. Each candidate preimage must remain byte- and
+mode-identical. A scratch parent index rebuilds the combined tree; entry
+substitution and patch/path equivalence must prove that exact tree. No merge or
+same-file hunk resolution is attempted.
+
+Parent write and acceptance permissions still apply. Confined checks run again
+on the combined tree, then destination revalidation and apply use the snapshot
+captured for this integration. A parent change during checks still refuses;
+cancellation settles the checker and records uncertainty. Candidate provenance
+and the worker repository remain unchanged by rebasing, preserving retirement's
+original candidate-tree proof. Receipts and events carry successful rebase tree
+IDs, paths and drift count; refusals retain `integration.stale_base` with a
+`rebase.reason`. Local detached repositories and permission screening remain
+guardrails, not a sandbox boundary.
+
 ## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)
 
 The development script `python scripts/measure_editing_fanout.py` measures four
@@ -3653,7 +3746,7 @@ message counts. The no-write contract includes empty directories. Metadata read
 across the store during `latest` or prefix selection shares the preview budget,
 so store size can prevent preview of an otherwise small selected checkpoint.
 
-## 2026-11-17 — Terminal and dashboard show labelled subagent previews (#389)
+## 2026-11-17 — Terminal and dashboard show labelled subagent previews (#472)
 
 Native TTY run/chat enable ordinary child forwarding wherever the parent's
 preview is on with usable TERM; `--no-stream` disables both. Quiet/JSON/non-TTY
@@ -3662,6 +3755,8 @@ per turn. The SDK default remains false: callers joining text retain their API
 contract. Child calls select the existing streaming transport, adding
 `live_coverage` (and existing stream/consumer errors when applicable) to child
 `model_response` events; execution and accounting remain owned by the loop.
+Child spend follows the parent streaming path's usage semantics: when a provider
+omits stream usage, attempts are charged at estimated prompt size with unknown cost.
 
 Previews are bounded and transient. Terminal child lines share the parent's one
 Live region (or one erasable plain line), never final scrollback. Three lines
@@ -3674,8 +3769,14 @@ cursor hazard. Inherited synchronous observers clear each child's line on call
 completion/failure/session end before tools or approvals, and parent progress
 retires all child tails. This resolves the between-call terminal hazard. Approval
 prompts additionally suspend every terminal renderer process-wide so sibling
-streams cannot redraw during input. Turn admission, stop, job cancel, settlement
-and renderer teardown clear retained previews.
+streams cannot redraw during input. Suspension lives inside `TerminalApprover`'s
+presentation lock through withdrawn-input draining and re-prompting; on exit it
+redraws retained previews or restarts the thinking spinner, including with
+`--no-stream`. This adds spinner stop/restart control bytes around those prompts.
+After cancellation previews resume even though an orphan `input()` thread may
+still own stdin; the next presenter drains and discards that thread's line.
+Turn admission, stop, job cancel, settlement and renderer teardown clear retained
+previews.
 
 Consult children remain excluded: live text would bypass their post-run
 workspace guard's withholding/quarantine decision. Collection children are

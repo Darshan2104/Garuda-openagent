@@ -383,6 +383,11 @@ function appendChatRow(kind, text, isError, toolName) {
 function renderChatLog() {
   var node = el("chat-log");
   if (!node) return;
+  // The DOM changes before the asynchronous toggle event. Preserve it even if
+  // this poll replaces the element before the capture listener can run.
+  node.querySelectorAll(".chat-child-preview").forEach(function (child) {
+    STATE.chat.childOpen[child.dataset.source] = child.open;
+  });
   // Whether to stick to the bottom is decided *before* the re-render: afterwards the
   // scrollHeight has already changed, so every comparison says "not at the bottom" and the
   // view stops following a running turn.

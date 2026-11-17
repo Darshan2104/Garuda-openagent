@@ -355,3 +355,96 @@ def test_a_detached_head_needs_an_explicit_destination(repo, monkeypatch):
         wt.merge_session(meta, checks=["true"], image=IMAGE)
     assert caught.value.code == "integration.no_destination"
     assert wt.merge_session(meta, checks=["true"], image=IMAGE, destination="main").destination == "main"
+
+
+@pytest.mark.parametrize("side", ["candidate", "parent"])
+@pytest.mark.parametrize("entry_mode,entry_name,reason", [
+    ("120000", "link", "link_entry"),
+    ("160000", "module", "link_entry"),
+    ("100644", ".gitmodules", "metadata_path"),
+])
+def test_rebase_rejects_link_entries_and_module_metadata(repo, side, entry_mode, entry_name, reason):
+    # The snapshot owner refuses submodules before integrate can reach the
+    # rebase helper. Exercise the helper's independent tree-entry contract with
+    # real Git objects, without weakening snapshot admission or mocking proofs.
+    base = snap.capture(repo).tree
+    entries = snap.git(repo, "ls-tree", base).stdout
+    blob = snap.git(repo, "hash-object", "-w", "--stdin", input=b"new\n").stdout.strip()
+    oid = snap.git(repo, "rev-parse", "HEAD").stdout.strip() if entry_mode == "160000" else blob
+    kind = "commit" if entry_mode == "160000" else "blob"
+    special = snap.git(repo, "mktree", input=entries +
+                       f"{entry_mode} {kind} ".encode() + oid + b"\t" + entry_name.encode() + b"\n").stdout.decode().strip()
+    regular = snap.git(repo, "mktree", input=entries + b"100644 blob " + blob + b"\tother.txt\n").stdout.decode().strip()
+    candidate, onto = (special, regular) if side == "candidate" else (regular, special)
+    patch = snap.git(repo, "diff", "--binary", "--full-index", base, candidate).stdout
+    before = _checkout_state(repo)
+    with pytest.raises(WorktreeError) as caught:
+        wt.rebase_snapshot_patch(repo, patch, worker_repo=repo, base_tree=base,
+                                 candidate_tree=candidate, onto_tree=onto)
+    assert caught.value.code == "integration.stale_base"
+    assert caught.value.reason == reason
+    assert _checkout_state(repo) == before
+
+
+@pytest.mark.parametrize("reason", ["unreadable", "apply_failed", "tree_mismatch"])
+def test_rebase_refuses_unreadable_trees_and_unproved_patches(repo, reason):
+    # Service admission binds the patch and trees, so corrupt combinations are
+    # exercised at the helper boundary with real Git, rather than mocked proof.
+    base = snap.capture(repo).tree
+    (repo / "app.txt").write_text("candidate\n")
+    candidate = snap.capture(repo).tree
+    patch = snap.git(repo, "diff", "--binary", "--full-index", base, candidate).stdout
+    if reason == "tree_mismatch":
+        (repo / "app.txt").write_text("wrong patch content\n")
+        wrong_tree = snap.capture(repo).tree
+        # The path set is correct, but the bytes disagree with candidate.
+        patch = snap.git(repo, "diff", "--binary", "--full-index", base, wrong_tree).stdout
+    (repo / "app.txt").write_text("one\n")
+    (repo / "other.txt").write_text("parent drift\n")
+    onto = snap.capture(repo).tree
+    if reason == "unreadable":
+        base = snap.ZERO_OID  # Valid oid syntax, absent from the worker ODB.
+    elif reason == "apply_failed":
+        patch = b"not a Git patch\n"
+    # Prime Git's stat cache before recording byte-for-byte index evidence;
+    # _checkout_state itself calls status, which may refresh that cache.
+    sh(repo, "status", "--porcelain=v1", "--ignored")
+    before = _checkout_state(repo)
+    with pytest.raises(wt.RebaseRefused) as caught:
+        wt.rebase_snapshot_patch(repo, patch, worker_repo=repo, base_tree=base,
+                                 candidate_tree=candidate, onto_tree=onto)
+    assert caught.value.code == "integration.stale_base"
+    assert caught.value.reason == reason
+    assert snap.capture(repo).tree == onto
+    assert _checkout_state(repo) == before
+
+
+@pytest.mark.parametrize("parent_dir,worker_dir,existing", [
+    ("caf\u00e9", "cafe\u0301", False), ("D", "d", True),
+])
+def test_rebase_rejects_directory_aliases_including_unchanged_paths(repo, parent_dir, worker_dir, existing):
+    # macOS Git can precompose paths or reuse an existing directory's spelling
+    # during snapshotting. Build distinct spellings in real trees so the helper
+    # contract is exercised on every filesystem, including that dev host.
+    blob = snap.git(repo, "hash-object", "-w", "--stdin", input=b"entry\n").stdout.strip()
+
+    def tree(entries):
+        return snap.git(repo, "mktree", "-z", input=b"".join(
+            f"{mode} {kind} {oid}\t{name}".encode() + b"\0"
+            for mode, kind, oid, name in entries
+        )).stdout.decode().strip()
+
+    parent_subdir = tree([("100644", "blob", blob.decode(), "x.txt")])
+    worker_subdir = tree([("100644", "blob", blob.decode(), "y.txt")])
+    parent_entry = ("040000", "tree", parent_subdir, parent_dir)
+    worker_entry = ("040000", "tree", worker_subdir, worker_dir)
+    base = tree([parent_entry] if existing else [])
+    candidate = tree(([parent_entry] if existing else []) + [worker_entry])
+    onto = tree([parent_entry, ("100644", "blob", blob.decode(), "drift.txt")])
+    patch = snap.git(repo, "diff", "--binary", "--full-index", base, candidate).stdout
+    before = _checkout_state(repo)
+    with pytest.raises(wt.RebaseRefused) as caught:
+        wt.rebase_snapshot_patch(repo, patch, worker_repo=repo, base_tree=base,
+                                 candidate_tree=candidate, onto_tree=onto)
+    assert caught.value.reason == "overlap"
+    assert _checkout_state(repo) == before

@@ -563,14 +563,18 @@ With a TTY and usable `TERM`, native run/chat show dim lines such as
 region with the parent tail: at most three child lines plus an overflow count,
 tracking eight sources with 512-character tails and 32-character labels. The
 plain backend uses one erasable line; the parent wins when both have text.
-Child text and labels are reduced to printable characters.
+Child text and labels are reduced to printable characters; newlines become spaces.
+Each line shows the newest text that fits the terminal width.
 
 Each child's line clears when its model call completes or fails, on session end,
 or on its labelled discard. Parent response/tool/user/session events clear all
 children; budget and metric events do not. Turn exit clears everything. Clearing
 happens before child tools run, and terminal approval prompts suspend every live
 preview in the process, including streaming siblings. The thinking spinner yields
-to previews and resumes when the last preview clears.
+to previews and resumes when the last preview clears. Approval presentation stops
+and restarts it even with `--no-stream`, adding terminal control bytes around the
+prompt. After a cancelled prompt, previews resume while its orphan stdin reader
+may remain; the next approval discards that reader's line before asking again.
 
 `--no-stream` disables both parent and child previews. Quiet, JSON, non-TTY,
 dumb/unset `TERM` and run's no-edits mode keep child forwarding off. Dashboard
@@ -583,6 +587,8 @@ These tails never become the parent answer or persisted events. Completed child
 responses and the existing subagent handoff remain authoritative. Enabling
 forwarding selects the child's streaming transport, so child `model_response`
 events gain `live_coverage` and any existing stream/consumer error metadata.
+Child spend follows the parent streaming path's usage semantics: if a provider
+omits stream usage, attempts are charged at estimated prompt size with unknown cost.
 The SDK remains opt-in. Consults stay excluded because their answers can be
 withheld by a post-run workspace check; collection is auxiliary maintenance.
 Reasoning and tool arguments never appear in live previews.

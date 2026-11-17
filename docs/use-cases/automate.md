@@ -523,6 +523,17 @@ retain the permission engine's configured root.
 `agent.run(task, resume="latest")` continues this workspace's newest saved
 session; pass `resume_all_projects=True` for the newest one anywhere.
 
+Native session `approval_handler` callbacks receive the action string and are
+serialized by the session broker. A callable object can opt into request-aware
+dispatch by defining async `ask_request(request)`; when callable, that method
+receives the approval request (including child requester identity and a
+presentation-time `queue_length` count) instead of calling the object with the
+action string. Callbacks must cooperate with async cancellation: awaiting
+`asyncio.to_thread` cannot stop the underlying thread on withdrawal, so blocking
+work may outlive its prompt and overlap the next callback. `TerminalApprover`
+handles stale stdin reads, but requires all approval users of one stdin to share
+one event loop. The CLI follows this single-loop contract.
+
 ### Stream live model deltas
 
 <p class="gd-facts">Native runtime · Opt-in · The result stays authoritative</p>

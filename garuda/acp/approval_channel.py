@@ -174,6 +174,8 @@ class FileApprovalChannel:
             "expires_at": round(expires_at, 3),
             "ceiling": ceiling,
         }
+        if getattr(request, "requester", None) is not None:
+            fields.update(requester=request.requester, requester_ceiling=request.requester_ceiling)
         digest = request_digest(fields)
         try:
             _create_exclusive(self._path(request.approval_id, "request"),

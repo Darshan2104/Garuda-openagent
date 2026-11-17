@@ -175,16 +175,13 @@ class ChatRenderer:
         yield
 
     # -- assistant text ----------------------------------------------------
-    def _preview_enabled(self) -> bool:
-        return preview_terminal()
-
     def on_model_delta(self, delta) -> None:
         if getattr(delta, "source", None) is not None:
             self._on_child_delta(delta)
             return
         if delta.kind == "discard":
             self.discard_assistant()
-        elif delta.kind == "text" and delta.text and self._preview_enabled():
+        elif delta.kind == "text" and delta.text and preview_terminal():
             console = self._console
             rich_preview = (self._rich and console is not None
                             and console.is_terminal and not console.is_dumb_terminal)
@@ -195,7 +192,7 @@ class ChatRenderer:
             self._draw()
 
     def _on_child_delta(self, delta) -> None:
-        if not self._preview_enabled():
+        if not preview_terminal():
             return
         if delta.kind == "discard":
             if self._children.pop(delta.source, None) is not None:
@@ -261,13 +258,20 @@ class ChatRenderer:
         width, height = (console.size if rich_preview else shutil.get_terminal_size())
         children = sorted(self._children.values(), key=lambda child: child.updated, reverse=True)
         if rich_preview:
+            from rich.cells import cell_len
             from rich.console import Group
             from rich.live import Live
             from rich.text import Text
 
-            child_lines = [Text(f"↳ {child.agent} · depth {child.depth} │ {child.tail}",
-                                style="dim", no_wrap=True, overflow="ellipsis")
-                           for child in children[:MAX_CHILD_LINES]]
+            child_lines = []
+            for child in children[:MAX_CHILD_LINES]:
+                label = f"↳ {child.agent} · depth {child.depth} │ "
+                room = max(0, width - cell_len(label))
+                tail = child.tail[-room:] if room else ""
+                # Keep the newest text, including when characters occupy two cells.
+                while cell_len(tail) > room:
+                    tail = tail[1:]
+                child_lines.append(Text(label + tail, style="dim", no_wrap=True, overflow="crop"))
             if len(children) > MAX_CHILD_LINES:
                 child_lines.append(Text(f"+{len(children) - MAX_CHILD_LINES} more subagents",
                                         style="dim", no_wrap=True, overflow="ellipsis"))
@@ -302,7 +306,7 @@ class ChatRenderer:
 
     @contextlib.contextmanager
     def suspended(self):
-        """Close the display while retaining bounded state; a later delta redraws."""
+        """Close the display, retaining bounded state to redraw when input ends."""
         self._suspended += 1
         if self._suspended == 1:
             if self._status is not None:
@@ -312,6 +316,8 @@ class ChatRenderer:
             yield
         finally:
             self._suspended -= 1
+            if self._suspended == 0:
+                self._draw(force=True)
 
     def on_assistant_response(self, text: str | None) -> None:
         self.discard_assistant()

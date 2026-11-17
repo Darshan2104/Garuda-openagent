@@ -248,8 +248,11 @@ fastest way to learn the system.
    to a terminal tail and refreshed at most ten times per second; dumb/unset
    terminals suppress previews and child forwarding. Labelled subagent tails
    share the region; child event observers retire them before tools, and approval
-   prompts suspend every renderer. Completed responses render in full, and final
-   output is deduplicated against all rendered responses of the run.
+   prompts suspend every renderer inside `TerminalApprover`'s presentation lock,
+   including withdrawn-input draining and re-prompts. Exiting suspension redraws
+   retained tails or resumes the spinner even with `--no-stream`. Completed
+   responses render in full, and final output is deduplicated against all rendered
+   responses of the run.
    Native `garuda chat` attaches the same consumer on a TTY unless `--json` or
    `--no-stream` is selected, using its existing renderer and event drain. Its
    thinking status spinner yields to the preview and resumes when it is cleared
@@ -351,14 +354,33 @@ fastest way to learn the system.
    `run()` and model-driven `invoke_subagent` remain sequential.
    Every child inherits the parent's approval handler through relocated permission
    checks; screening workspace state is task-local through a context variable.
-   Approval prompts are not serialized. The shared root `SpendGate` and
-   `DelegationBudget` remain unchanged.
+   The root approval broker presents attached answerers one at a time in park
+   order, labels child requests and withdraws settled asks; queued time counts
+   toward expiry. Requester identity and its effective ceiling are digest-bound,
+   and an allow rechecks both root and requester ceilings. The shared root
+   `SpendGate` and `DelegationBudget` remain unchanged.
    Integration binds a retained binary patch, base snapshot/HEAD/index and
    typed-output provenance by SHA-256. The existing confined integration checker
    checks the exact candidate tree before destination revalidation and checked
    patch application. It never merges, stages or advances parent refs. Dirty
-   parent content is captured and preserved; any base drift refuses. Receipts
-   and `editing_worker` events record admission through integration or refusal.
+   parent content is captured and preserved. Stale siblings rebase only over
+   successful integrations recorded in memory by this same service, with
+   unchanged parent HEAD, symbolic ref and index. Changed paths must be disjoint
+   by exact spelling, NFC/casefold and directory ancestry. The combined tree must
+   introduce no ambiguous normalized spellings of files or directory prefixes,
+   including collisions with unchanged parent paths. Git metadata basenames are
+   excluded after NFC/casefold normalization; symlinks and gitlinks refuse.
+   Candidate preimages remain identical by disjointness, and a
+   scratch parent index proves the rebuilt tree and patch paths. Checks run on
+   that combined tree, then apply revalidates against the captured current
+   snapshot. Outside drift, overlap and restarts stay closed; there is no content
+   merge. After integration is recorded, a best-effort parent capture must match
+   the checked tree before a new lineage edge is recorded. Capture failure or
+   mismatch adds no edge and does not change the completed integration state.
+   This does not isolate publication from concurrent external writers.
+   Rebase never changes the worker repository or candidate provenance.
+   Receipts and `editing_worker` events record admission through integration or
+   refusal, with `rebase` checked-tree/path evidence or a stale refusal's `rebase.reason`.
    Capacity-full admission is a settled refusal only when real capacity and
    lease store reads and workspace absence prove ownership was never acquired.
    Its receipt records the repository as removed for pruning on a later cleanup

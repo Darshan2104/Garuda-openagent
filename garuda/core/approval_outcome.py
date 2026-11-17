@@ -7,6 +7,10 @@ generic runtime layer can use them without depending on a vendor protocol.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -40,3 +44,38 @@ class Unanswered:
 
     def __repr__(self) -> str:
         return f"Unanswered({self.outcome.value!r})"
+
+
+@dataclass(frozen=True)
+class ApprovalRequester:
+    """Child provenance, never an authority grant."""
+
+    session_id: str
+    agent: str
+    depth: int
+    kind: str
+    parent_session_id: str | None
+
+    def to_dict(self) -> dict:
+        return {"session_id": self.session_id[:256], "agent": self.agent[:256],
+                "depth": self.depth, "kind": self.kind[:256],
+                "parent_session_id": (self.parent_session_id[:256]
+                                      if self.parent_session_id is not None else None)}
+
+
+_requester: ContextVar[tuple[ApprovalRequester, object] | None] = ContextVar(
+    "approval_requester", default=None)
+
+
+@contextmanager
+def approval_requester(identity: ApprovalRequester, engine: object) -> Iterator[None]:
+    """Attribute asks within a child run; nested children restore their parent."""
+    token = _requester.set((identity, engine))
+    try:
+        yield
+    finally:
+        _requester.reset(token)
+
+
+def current_approval_requester() -> tuple[ApprovalRequester, object] | None:
+    return _requester.get()
