@@ -82,6 +82,28 @@ Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.
 `WorkspaceAccessDenied` marks workspace-policy refusals; ordinary OS access errors
 remain tool errors and are not counted as policy denials.
+Local full-text reads retain original line endings, and bounded read digests
+identify that same UTF-8 content. Local writes encode before touching the target,
+stage in its directory, flush and fsync, then replace atomically while preserving
+the existing file mode and following file symlinks. If staging creation fails
+with EACCES, EPERM or EROFS for an existing writable regular file, the write falls
+back to truncating and writing the already-encoded bytes in place. This permits
+edits in non-writable directories but can lose data on mid-write I/O failure.
+Other staging or replacement failures leave the destination unchanged. Staging
+files named `.garuda-write-<hex>.tmp` are visible to watchers and Git and may
+remain after SIGKILL. Symlink resolution loops return ELOOP tool errors.
+Cancellation waits for the write thread to settle but does not promise rollback.
+This is single-file publication, without a
+compare-and-write lock or directory-fsync crash guarantee. Docker/remote uploads
+validate UTF-8 before staging and always clean up host staging files; their
+`docker cp` destination writes do not acquire the local atomicity guarantee.
+File-writing tools report encoding and OS write failures as tool errors.
+Glob carries find/sort/filter failures and these utilities' own stderr through
+its shell pipeline's status channel. Diagnostics fail closed even with a zero
+utility exit status; unrelated login-shell startup stderr does not fail a
+successful search.
+Traversal completeness still depends on the host utilities reporting failures;
+macOS find can silently ignore symlink cycles.
 Lazy `use_tool` calls resolve into the shared runner before target hooks, required
 arguments, memo, ledger and event handling. Resolved tools remain bound to that
 call instead of expanding the run's direct tool map. Null lazy arguments retain

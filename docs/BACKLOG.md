@@ -46,15 +46,6 @@ use a Docker workspace when confinement is required.
 **`pane_delta` falls back to full scrollback on a prefix miss.** A fidelity
 trade-off — more output, never less. Not a defect.
 
-**A file tool cannot see CRLF through a local workspace.**
-`LocalEnvironment.read_file` goes through `Path.read_text`, whose universal-newline
-translation strips `\r` before any tool sees it; CRLF reaches a tool only from an
-Environment that preserves it (a container `cat`). So byte-exactness in the file tools
-is testable at unit level and effectively untestable through a local Environment —
-which is why a snippet-offset drift lived there as long as it did, and it applies to
-any other byte-exactness assumption in `tools/`. Recorded as permanent because the fix
-is a second read path that exists only in order to be tested.
-
 **The judge cannot check what the grader checks.** The LLM verdict reads the task
 statement back against observed output; it has no access to the benchmark's own
 oracle, so a run can satisfy every self-chosen criterion and still be graded

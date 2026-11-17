@@ -6,7 +6,6 @@ import contextlib
 import math
 import os
 import shlex
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +14,7 @@ from garuda.types import ExecResult
 from garuda.workspace.paths import check_read_size
 from garuda.workspace.sandbox_policy import DockerLimits
 from garuda.workspace.text_reads import TextPage
+from garuda.workspace.uploads import upload_text
 
 
 class RemoteWorkspace:
@@ -250,18 +250,5 @@ class RemoteEnvironment:
         return check_read_size(base64.b64decode(result.stdout), max_bytes)
 
     async def write_file(self, path: str, content: str) -> None:
-        temp = Path(tempfile.gettempdir()) / f"garuda-remote-upload-{uuid.uuid4().hex}.txt"
-        await asyncio.to_thread(temp.write_text, content, encoding="utf-8")
         target = path if path.startswith("/") else f"{self._workspace_root}/{path}"
-        process = await asyncio.create_subprocess_exec(
-            *self._docker_base,
-            "cp",
-            str(temp),
-            f"{self._container_name}:{target}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-        temp.unlink(missing_ok=True)
-        if process.returncode != 0:
-            raise RuntimeError(stderr.decode(errors="replace").strip())
+        await upload_text(self._docker_base, self._container_name, target, content)

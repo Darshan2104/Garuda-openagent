@@ -2,7 +2,6 @@
 
 import codecs
 import hashlib
-import io
 import os
 import re
 import stat
@@ -33,7 +32,7 @@ class TextPage:
     has_more: bool
     bytes_read: int
     # SHA-256 (hex) of the UTF-8 encoding of the whole file's text exactly as the
-    # backend's read_file returns it (strict UTF-8, universal newlines), taken in
+    # backend's read_file returns it (strict UTF-8, original newlines), taken in
     # the same pass as the page. None when this read did not cover the whole file.
     content_sha256: str | None = None
 
@@ -92,11 +91,10 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
     count = scanned = 0
     skip_lf = False
     decoder = codecs.getincrementaldecoder('utf-8')('strict')
-    # The digest covers what LocalEnvironment.read_file returns (Path.read_text:
-    # strict UTF-8 with universal newlines), so it equals the digest an edit
+    # The digest covers what LocalEnvironment.read_file returns (strict UTF-8
+    # with original newlines), so it equals the digest an edit
     # computes from its own full read of unchanged content.
     hasher = hashlib.sha256()
-    newlines = io.IncrementalNewlineDecoder(None, translate=True)
 
     # Nonblocking open avoids getting stuck opening a FIFO; only regular files
     # support this capability. The caller resolves through its normal path policy.
@@ -125,7 +123,7 @@ def read_local_page(path: Path, offset: int, limit: int, tail: bool,
             eof = not data
             text = decoder.decode(data, final=eof)
             if not start_byte:
-                hasher.update(newlines.decode(text, final=eof).encode('utf-8'))
+                hasher.update(data)
             if skip_lf and text:
                 # The CR ending the previous block already closed its line.
                 skip_lf = False

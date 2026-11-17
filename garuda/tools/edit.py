@@ -9,7 +9,7 @@ from garuda.tools.source_version import (
     versioned_reads,
 )
 from garuda.types import ToolResult
-from garuda.workspace.protocol import Environment
+from garuda.workspace.protocol import Environment, WorkspaceAccessDenied
 
 _SNIPPET_CONTEXT_LINES = 2
 
@@ -416,7 +416,13 @@ class EditTool:
         if not outcome.ok:
             return ToolResult(tool_call_id="", content=outcome.error, is_error=True)
 
-        await env.write_file(path, outcome.updated)
+        try:
+            await env.write_file(path, outcome.updated)
+        except (OSError, UnicodeError) as exc:
+            return ToolResult(
+                tool_call_id="", content=f"Cannot write {path}: {exc}", is_error=True,
+                metadata={"permission_denied": True} if isinstance(exc, WorkspaceAccessDenied) else {},
+            )
 
         snippet = _snippet_around(outcome.updated, _first_diff(content, outcome.updated))
         plural = "s" if outcome.replacements != 1 else ""
