@@ -259,35 +259,45 @@ async def test_disjoint_stale_siblings_rebase_onto_integrated_chain(editing, mon
     assert snap.git(repo, "ls-files", "-s", "-z").stdout == index
 
 
-async def test_rebase_checks_the_combined_tree(editing, monkeypatch):
+@pytest.mark.parametrize("directory", ["", "shared/"])
+async def test_rebase_checks_the_combined_tree(editing, monkeypatch, directory):
     runner, workers, repo = editing
-    first = await _ready_edit(runner, "a.txt", "alpha\n")
-    second = await _ready_edit(runner, "b.txt", "beta\n")
+    first = await _ready_edit(runner, f"{directory}a.txt", "alpha\n")
+    second = await _ready_edit(runner, f"{directory}b.txt", "beta\n")
     checked = []
 
     def check(directory, *args):
-        checked.append({p.name: p.read_text() for p in Path(directory).glob("*.txt")})
+        checked.append({str(p.relative_to(directory)): p.read_text() for p in Path(directory).rglob("*.txt")})
         return {"passed": True}
 
     monkeypatch.setattr("garuda.workspace.worktrees._run_check", check)
     assert (await _integrate(runner, workers, first))["state"] == "integrated"
-    assert (await _integrate(runner, workers, second))["state"] == "integrated"
+    outcome = await _integrate(runner, workers, second)
+    assert outcome["state"] == "integrated"
+    assert snap.capture(repo).tree == outcome["rebase"]["rebased_tree"]
     assert checked == [
-        {"main.txt": "original\n", "a.txt": "alpha\n"},
-        {"main.txt": "original\n", "a.txt": "alpha\n", "b.txt": "beta\n"},
+        {"main.txt": "original\n", f"{directory}a.txt": "alpha\n"},
+        {"main.txt": "original\n", f"{directory}a.txt": "alpha\n", f"{directory}b.txt": "beta\n"},
     ]
 
 
 @pytest.mark.parametrize("change,reason", [
     ("same-file", "overlap"), ("ancestor", "overlap"), ("casefold", "overlap"),
+    ("dir-casefold", "overlap"),
     ("gitignore", "metadata_path"), ("user-edit", "unattributed_drift"),
+    ("mixed-gitignore", "metadata_path"), ("gitattributes", "metadata_path"),
+    ("mixed-gitattributes", "metadata_path"),
     ("unintegrated-drift", "unattributed_drift"), ("commit", "parent_ref_or_index_moved"),
     ("index", "parent_ref_or_index_moved"),
 ])
 async def test_stale_sibling_rebase_refuses_and_never_applies(editing, monkeypatch, change, reason):
     runner, workers, repo = editing
     paths = {"same-file": ("main.txt", "main.txt"), "ancestor": ("d", "d/x.txt"),
-             "casefold": ("Notes.txt", "notes.txt"), "gitignore": (".gitignore", "b.txt")}
+             "casefold": ("Notes.txt", "notes.txt"), "gitignore": (".gitignore", "b.txt"),
+             "dir-casefold": ("D/x.txt", "d/y.txt"),
+             "mixed-gitignore": ("a.txt", ".GitIgnore"),
+             "gitattributes": (".gitattributes", "b.txt"),
+             "mixed-gitattributes": ("a.txt", ".GitAttributes")}
     a, b = paths.get(change, ("a.txt", "b.txt"))
     first = await _ready_edit(runner, a, "alpha\n")
     second = await _ready_edit(runner, b, "beta\n")
@@ -311,6 +321,41 @@ async def test_stale_sibling_rebase_refuses_and_never_applies(editing, monkeypat
     assert snap.capture(repo).tree == before
     assert snap.git(repo, "ls-files", "-s", "-z").stdout == index
     assert snap.git(repo, "rev-parse", "HEAD").stdout == head
+
+
+@pytest.mark.parametrize("post_apply_change", ["z.txt", ".gitmodules"])
+async def test_unproved_publication_cannot_authorize_later_siblings(editing, monkeypatch, post_apply_change):
+    runner, workers, repo = editing
+    receipts = []
+    changed = []
+
+    def external_edit(event, store):
+        payload = event["payload"]
+        if (event["type"] == "editing_worker" and payload.get("state") == "integrated"
+                and payload.get("candidate_id") == receipts[1]["candidate_id"]):
+            (repo / post_apply_change).write_text("outside edit\n")
+            changed.append(post_apply_change)
+
+    # A real event observer introduces an outside edit after
+    # apply and integrated publication, before a lineage edge can be justified.
+    runner.events.add_observer(external_edit)
+    receipts = [await _ready_edit(runner, name, content) for name, content in
+                [("a.txt", "alpha\n"), ("b.txt", "beta\n"), ("c.txt", "gamma\n")]]
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    assert (await _integrate(runner, workers, receipts[0]))["state"] == "integrated"
+    outcome = await _integrate(runner, workers, receipts[1])
+    assert changed == [post_apply_change]
+    assert outcome["state"] == "integrated"
+    assert (repo / "b.txt").read_text() == "beta\n"
+    (repo / post_apply_change).unlink()
+    before = snap.capture(repo).tree
+    assert before == outcome["rebase"]["rebased_tree"]
+    refused = await _integrate(runner, workers, receipts[2])
+    assert refused["state"] == "refused"
+    assert refused["code"] == "integration.stale_base"
+    assert refused["rebase"]["reason"] == "unattributed_drift"
+    assert snap.capture(repo).tree == before
+    assert not (repo / "c.txt").exists()
 
 
 @pytest.mark.parametrize("change", ["check-fails", "during-check"])
@@ -426,15 +471,24 @@ async def test_cancelling_integration_settles_checks_and_never_applies(editing, 
     assert not Path(receipt["workspace"]).exists()
 
 
-async def test_ignored_parent_collision_is_not_overwritten(editing, monkeypatch):
+@pytest.mark.parametrize("rebased", [False, True])
+async def test_ignored_parent_collision_is_not_overwritten(editing, monkeypatch, rebased):
     runner, workers, repo = editing
+    if rebased:
+        sibling = await _ready_edit(runner, "a.txt", "alpha\n")
     runner.model = ScriptModel([_call("write_file", path="fresh.txt", content="worker\n"), _done()])
     receipt = _receipt(await runner.run("editor", "add a file", editing_worker=True))
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    if rebased:
+        assert (await _integrate(runner, workers, sibling))["state"] == "integrated"
     (repo / ".git" / "info" / "exclude").write_text("/fresh.txt\n")
     (repo / "fresh.txt").write_text("user ignored file\n")
-    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
-    assert (await _integrate(runner, workers, receipt))["code"] == "integration.conflicts"
+    before = snap.capture(repo).tree
+    outcome = await _integrate(runner, workers, receipt)
+    assert outcome["state"] == "refused"
+    assert outcome["code"] == "integration.conflicts"
     assert (repo / "fresh.txt").read_text() == "user ignored file\n"
+    assert snap.capture(repo).tree == before
 
 
 async def test_child_model_crash_cannot_publish(editing):

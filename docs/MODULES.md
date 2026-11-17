@@ -333,7 +333,9 @@ workspace delta.
 
 `snapshot_proto.py` is the A.5 spike (#154); `worktrees.py` builds on it.
 `worktrees.rebase_snapshot_patch` proves path-disjoint rebases in a scratch parent
-index without changing the worker repository. The snapshot owner captures a work tree (tracked edits, deletions, untracked non-ignored files)
+index, rejects new NFC/casefold aliases in file and directory-prefix spellings,
+and excludes normalized Git metadata basenames without changing the worker
+repository. The snapshot owner captures a work tree (tracked edits, deletions, untracked non-ignored files)
 with sanitized Git: no inherited `GIT_*`, no system/global config, fsmonitor
 and hooks off, files read without following symlinks and hashed with
 `hash-object --no-filters` into a temporary index — never `git add`. The

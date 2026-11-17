@@ -329,6 +329,21 @@ def _tree_entries(repo: Path, tree: str) -> dict[str, tuple[str, str]]:
     return entries
 
 
+def _path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def _path_spellings(paths) -> dict[str, set[str]]:
+    """Include directories, which Git's recursive file listing omits."""
+    spellings: dict[str, set[str]] = {}
+    for path in paths:
+        parts = path.split("/")
+        for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
+            spellings.setdefault(_path_key(prefix), set()).add(prefix)
+    return spellings
+
+
 def rebase_snapshot_patch(repo: Path, patch: bytes, *, worker_repo: Path,
                           base_tree: str, candidate_tree: str, onto_tree: str) -> RebasedPatch:
     """Prove a disjoint patch on a new tree without writing to the worker repo."""
@@ -338,15 +353,15 @@ def rebase_snapshot_patch(repo: Path, patch: bytes, *, worker_repo: Path,
         onto = _tree_entries(repo, onto_tree)
         paths = {p for p in base.keys() | candidate.keys() if base.get(p) != candidate.get(p)}
         drift = {p for p in base.keys() | onto.keys() if base.get(p) != onto.get(p)}
-        if any(p.rsplit("/", 1)[-1] in {".gitignore", ".gitattributes", ".gitmodules"}
+        if any(_path_key(p.rsplit("/", 1)[-1]) in {".gitignore", ".gitattributes", ".gitmodules"}
                for p in paths | drift):
             raise RebaseRefused("metadata_path", "candidate or parent changed Git metadata")
         if any(entries.get(p, (None,))[0] in {"120000", "160000"}
                for changed, sides in ((paths, (base, candidate)), (drift, (base, onto)))
                for p in changed for entries in sides):
             raise RebaseRefused("link_entry", "candidate or parent changed a symlink or gitlink")
-        worker_keys = {unicodedata.normalize("NFC", p).casefold() for p in paths}
-        drift_keys = {unicodedata.normalize("NFC", p).casefold() for p in drift}
+        worker_keys = {_path_key(p) for p in paths}
+        drift_keys = {_path_key(p) for p in drift}
         ancestor_overlap = any(
             "/".join(parts[:depth]) in other
             for keys, other in ((worker_keys, drift_keys), (drift_keys, worker_keys))
@@ -354,8 +369,18 @@ def rebase_snapshot_patch(repo: Path, patch: bytes, *, worker_repo: Path,
         )
         if paths & drift or worker_keys & drift_keys or ancestor_overlap:
             raise RebaseRefused("overlap", "candidate and parent paths overlap")
-        if any(base.get(p) != onto.get(p) for p in paths):
-            raise RebaseRefused("preimage_changed", "candidate preimage differs in the parent")
+        # Disjointness implies that every candidate preimage equals onto's:
+        # any differing entry would be in drift and have refused as overlap.
+        expected = dict(onto)
+        for p in paths:
+            if p in candidate:
+                expected[p] = candidate[p]
+            else:
+                expected.pop(p, None)
+        onto_spellings = _path_spellings(onto)
+        if any(len(names) > 1 and not names <= onto_spellings.get(key, set())
+               for key, names in _path_spellings(expected).items()):
+            raise RebaseRefused("overlap", "rebased paths introduce ambiguous directory or file spellings")
         with tempfile.TemporaryDirectory(prefix="garuda-rebase-index-") as scratch:
             index = Path(scratch) / "index"
             git(repo, "read-tree", onto_tree, index=index)
@@ -365,12 +390,6 @@ def rebase_snapshot_patch(repo: Path, patch: bytes, *, worker_repo: Path,
                 if applied.returncode != 0:
                     raise RebaseRefused("apply_failed", "candidate patch does not apply to the current tree")
             tree = git(repo, "write-tree", index=index).stdout.decode().strip()
-        expected = dict(onto)
-        for p in paths:
-            if p in candidate:
-                expected[p] = candidate[p]
-            else:
-                expected.pop(p, None)
         if _tree_entries(repo, tree) != expected:
             raise RebaseRefused("tree_mismatch", "rebased tree differs from candidate entry substitution")
         try:

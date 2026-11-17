@@ -534,9 +534,16 @@ class LocalEditingWorkers:
                                  index_digest=worker.index_digest.removeprefix("sha256:"),
                                  head_ref=worker.head_ref, candidate_tree=check_tree)
             self._record(worker, "integrated")
-            # A no-op must not replace an existing edge with a self-cycle.
-            if check_tree != current.tree:
-                self._integrated_edges[check_tree] = current.tree
+            # A post-apply read failure cannot undo publication or change its
+            # state. Only a proved destination may authorize later siblings.
+            try:
+                published = snap.capture(parent)
+            except Exception:
+                pass
+            else:
+                # A no-op must not replace an existing edge with a self-cycle.
+                if published.tree == check_tree and check_tree != current.tree:
+                    self._integrated_edges[check_tree] = current.tree
             await self._retire(worker)
             return dict(worker.receipt)
         except asyncio.CancelledError as cancelled:

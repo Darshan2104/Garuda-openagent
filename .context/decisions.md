@@ -1,5 +1,24 @@
 # Durable decisions
 
+## 2026-11-17 — Rebase spelling checks include directory prefixes; lineage requires publication evidence (#470 review)
+
+Rebase rejects newly ambiguous NFC/casefold spellings across every file and
+directory prefix in the combined tree, including collisions with unchanged
+parent paths. Identically spelled shared directories remain allowed. Existing
+parent ambiguities cannot gain new spellings. Git metadata basenames are
+excluded after NFC/casefold normalization too, including mixed-case ignore,
+attributes and modules files.
+
+This strengthens the disjointness claim below and replaces unconditional
+post-apply lineage recording. After recording integration, a best-effort parent
+snapshot must equal the checked tree before the service records a new lineage
+edge. A mismatch or capture exception leaves the integration state unchanged
+and adds no edge; subsequent stale siblings cannot attribute that publication.
+Rebase receipt tree IDs describe the proved, checked candidate and destination
+at validation time, not isolation from concurrent external writers. The
+preimage equality proof follows from path disjointness; there is no separate
+user-facing `preimage_changed` reason. These controls remain guardrails.
+
 ## 2026-11-17 — Stale editing siblings rebase only over this service's own disjoint integrations (#470)
 
 This supersedes the whole-base refusal policy in the 2026-11-16 editing-worker

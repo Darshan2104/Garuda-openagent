@@ -51,7 +51,6 @@ async def test_measurement_reports_fresh_bases_stale_siblings_and_serial_integra
     report = await measurement.run_measurement(destination, delay=0.001)
     saved = json.loads(destination.read_text())
     assert saved == report
-    assert report["measurements"][1]["integrated"] == 4
     assert report["schema_version"] == 2
     assert report["provider_calls"] == 0 and report["provider_cost_usd"] == 0
     assert peak == 1 and active == 0

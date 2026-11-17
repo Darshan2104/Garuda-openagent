@@ -131,21 +131,22 @@ For the overlapping scenario N=1 ends with the fourth rewrite; N=4 ends with
 the first. These are different delivered outcomes, so timing ratios would not
 compare equivalent completed work.
 
-One run on 2026-11-17, Python 3.12.0, `macOS-26.7.1-arm64-arm-64bit`, 0.05 s per call:
+One run on 2026-11-17, Python 3.12.0, `macOS-26.7.1-arm64-arm-64bit`, 0.05 s per call,
+alongside the regression suite:
 
 | Edits | N | Wall (s) | Ready / refused / quarantined | Integrated (rebased) / stale-base | Integration wait sum (s) | Integration duration sum (s) | Discarded candidates / tokens / worker-seconds |
 |---|---:|---:|---|---|---:|---:|---|
-| Disjoint | 1 | 7.274 | 4 / 0 / 0 | 4 (0) / 0 | 0.018 | 3.511 | 0 / 0 / 0.000 |
-| Disjoint | 4 | 5.792 | 4 / 0 / 0 | 4 (3) / 0 | 6.781 | 3.841 | 0 / 0 / 0.000 |
-| Overlapping | 1 | 5.369 | 4 / 0 / 0 | 4 (0) / 0 | 0.018 | 2.825 | 0 / 0 / 0.000 |
-| Overlapping | 4 | 3.801 | 4 / 0 / 0 | 1 (0) / 3 | 4.137 | 2.072 | 3 / 720 / 3.354 |
+| Disjoint | 1 | 8.115 | 4 / 0 / 0 | 4 (0) / 0 | 0.019 | 4.229 | 0 / 0 / 0.000 |
+| Disjoint | 4 | 5.920 | 4 / 0 / 0 | 4 (3) / 0 | 6.980 | 3.945 | 0 / 0 / 0.000 |
+| Overlapping | 1 | 5.789 | 4 / 0 / 0 | 4 (0) / 0 | 0.019 | 3.220 | 0 / 0 / 0.000 |
+| Overlapping | 4 | 4.120 | 4 / 0 / 0 | 1 (0) / 3 | 4.601 | 2.189 | 3 / 720 / 3.592 |
 
 Every row has **4 launches, 8 scripted calls, 960 settled scripted tokens,
 zero remaining reservations, and $0 provider spend**. Per-candidate JSON rows
 retain the request order, typed outcome, observed usage (240 tokens each),
 integration state/code, rebase evidence and timings; aggregate rows count
-rebased integrations. Each candidate is ready before its own integration attempt; the separate integration refusals do not change that
-creation outcome.
+rebased integrations. Each candidate is ready before its own integration
+attempt; the separate integration refusals do not change that creation outcome.
 
 Wall time covers first batch dispatch through the last integration result,
 including native execution, Git snapshots, ownership operations, checks and
