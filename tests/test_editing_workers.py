@@ -2114,6 +2114,393 @@ async def test_concurrent_worker_deltas_use_candidate_ids(editing):
         assert {(d.agent, d.depth) for d in fragments} == {("editor", 1)}
 
 
+class FanoutModel(TaskScriptModel):
+    """The parent emits one batch; child scripts are selected by child task."""
+
+    def __init__(self, *, tasks=None, integrate="none", **kwargs):
+        super().__init__(**kwargs)
+        self.batch = {"tasks": tasks or [{"profile": "editor", "task": name}
+                                       for name in ("alpha", "beta")], "integrate": integrate}
+        self.parent_called = False
+        self.child_tool_names = []
+
+    async def complete(self, messages, **kwargs):
+        if any(m.role == Role.USER and m.content == "delegate requested edits" for m in messages):
+            if not self.parent_called:
+                self.parent_called = True
+                assert "fan_out_editing_workers" in {t["function"]["name"] for t in kwargs["tools"]}
+                return _call("fan_out_editing_workers", **self.batch)
+            return ModelResponse(content="parent finished", tool_calls=[])
+        if not kwargs.get("tools"):
+            return ModelResponse(content='{"criteria": []}', tool_calls=[])
+        self.child_tool_names.append({t["function"]["name"] for t in kwargs["tools"]})
+        return await super().complete(messages, **kwargs)
+
+
+async def _model_fanout(editing, model, **config_options):
+    runner, workers, repo = _concurrent_workers(editing, model)
+    config = AgentConfig(enable_verifier=False, enable_acceptance_contract=False,
+                         max_turns=3, editing_workers=workers, editing_worker_fanout=True,
+                         delegation_budget=runner.budget, **config_options)
+    result = await DefaultAgent().run(
+        "delegate requested edits", model, runner.env, default_tools(), config=config,
+        events=runner.events, permissions=runner.parent_permissions, agents_dir=runner.agents_dir,
+    )
+    message = next(m for m in result.messages
+                   if m.role == Role.TOOL and m.name == "fan_out_editing_workers")
+    return json.loads(message.content), message, runner, workers, repo
+
+
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+async def test_fanout_delegation_tool_refusal_launches_no_workers(editing, rule):
+    from garuda.core.editing_fanout import run_fanout
+    from garuda.interfaces.run_guard import install_session_broker
+
+    runner, workers, _ = _concurrent_workers(editing, TaskScriptModel())
+    asks = []
+
+    async def approve(action):
+        asks.append(action)
+        # Refuse the second task: even an approved first task must not launch.
+        return len(asks) == 1
+
+    permissions = PermissionEngine(tool_rules={"invoke_subagent": rule}, approval_handler=approve)
+    install_session_broker(permissions, None, runner.events.session_id)
+    payload, error = await run_fanout(
+        runner, {"tasks": [{"profile": "editor", "task": n} for n in ("alpha", "beta")]},
+        env=runner.env, session_id=runner.events.session_id, permissions=permissions,
+        output_budget=16_000,
+    )
+    assert error and payload["code"] == "fanout.delegation_not_admitted"
+    assert runner.budget.launches == 0
+    assert not list(workers.root.glob("worker-*"))
+    if rule == "ask":
+        assert len(asks) == 2
+        assert all("invoke_subagent(" in action and "'editing_worker': True" in action for action in asks)
+        assert "alpha" in asks[0] and "beta" in asks[1]
+    else:
+        assert asks == []
+
+
+@pytest.mark.parametrize("rule", ["deny", "ask"])
+async def test_fanout_integration_tool_refusal_preserves_ready_candidate(editing, monkeypatch, rule):
+    from garuda.core.editing_fanout import run_fanout
+    from garuda.interfaces.run_guard import install_session_broker
+
+    runner, workers, repo = _concurrent_workers(editing, TaskScriptModel())
+    asks, checked = [], []
+
+    async def approve(action):
+        asks.append(action)
+        return False
+
+    def check(*args):
+        checked.append(args)
+        return {"passed": True}
+
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", check)
+    permissions = PermissionEngine(tool_rules={"integrate_editing_worker": rule},
+                                   approval_handler=approve)
+    install_session_broker(permissions, None, runner.events.session_id)
+    payload, error = await run_fanout(
+        runner, {"tasks": [{"profile": "editor", "task": "alpha"}], "integrate": "in_order"},
+        env=runner.env, session_id=runner.events.session_id,
+        permissions=permissions, output_budget=16_000,
+    )
+    entry, = payload["workers"]
+    assert error and entry["outcome"] == "integration_refused"
+    assert entry["integration"]["code"] == "integration.permission_denied"
+    assert "state" not in entry
+    assert checked == []
+    assert not (repo / "a.txt").exists()
+    assert json.loads((Path(entry["workspace"]).parent / "receipt.json").read_text())["state"] == "ready"
+    if rule == "ask":
+        assert len(asks) == 1
+        assert "integrate_editing_worker(" in asks[0]
+        assert entry["candidate_id"] in asks[0] and entry["provenance_digest"] in asks[0]
+    else:
+        assert asks == []
+
+
+async def test_model_fanout_runs_workers_concurrently_and_returns_ordered_receipts(editing):
+    model = FanoutModel(barrier=asyncio.Barrier(2))
+    payload, message, runner, workers, repo = await _model_fanout(editing, model)
+    assert payload["version"] == 1 and payload["state"] == "completed"
+    assert [w["index"] for w in payload["workers"]] == [0, 1]
+    assert [w["outcome"] for w in payload["workers"]] == ["ready", "ready"]
+    for entry, name in zip(payload["workers"], ("alpha", "beta"), strict=True):
+        assert entry["child_result"]["outcome"]["validation"] == "accepted"
+        assert entry["child_result"]["output"] == {"edited": True}
+        assert Path(entry["workspace"], f"{name[0]}.txt").read_text() == f"{name}\n"
+    assert all("fan_out_editing_workers" not in names for names in model.child_tool_names)
+    assert runner.budget.launches == 2
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert not (repo / "a.txt").exists() and not (repo / "b.txt").exists()
+    assert "[buffer:" not in message.content
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+async def test_model_fanout_in_order_integration_preserves_rebase_receipts(editing, monkeypatch, overlap):
+    from garuda.interfaces.run_guard import install_session_broker
+
+    runner, _, repo = editing
+    asks = []
+
+    async def approve(action):
+        asks.append(action)
+        return True
+
+    runner.parent_permissions = PermissionEngine(
+        workspace_root=repo, approval_handler=approve,
+        tool_rules={"invoke_subagent": "ask", "integrate_editing_worker": "ask"},
+    )
+    install_session_broker(runner.parent_permissions, None, runner.events.session_id)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    model = FanoutModel(barrier=asyncio.Barrier(2), integrate="in_order", scripts={
+        name: [_call("write_file", path="main.txt" if overlap else f"{name[0]}.txt",
+                     content=f"{name}\n"), _done()]
+        for name in ("alpha", "beta")
+    })
+    payload, _, _, _, repo = await _model_fanout(editing, model)
+    first, second = payload["workers"]
+    assert [w["outcome"] for w in payload["workers"]] == [
+        "integrated", "stale_base" if overlap else "integrated",
+    ]
+    assert all("state" not in w for w in payload["workers"])
+    assert "rebase" not in first["integration"]
+    rebase = second["integration"]["rebase"]
+    saved = json.loads((Path(second["workspace"]).parent / "receipt.json").read_text())
+    if overlap:
+        assert second["integration"]["code"] == "integration.stale_base"
+        assert rebase == {"reason": "overlap"}
+        assert rebase == saved["integration"]["rebase"]
+    else:
+        assert rebase == saved["rebase"]
+        assert rebase["rebased_tree"] == snap.capture(repo).tree
+        assert rebase["base_tree"] != rebase["onto_tree"] != rebase["rebased_tree"]
+        assert rebase["paths"] == ["b.txt"] and rebase["drift_paths"] == 1
+        assert (repo / "a.txt").read_text() == "alpha\n"
+        assert (repo / "b.txt").read_text() == "beta\n"
+    assert [action.split("(", 1)[0] for action in asks] == [
+        "invoke_subagent", "invoke_subagent", "integrate_editing_worker", "integrate_editing_worker",
+    ]
+    for action, entry in zip(asks[2:], payload["workers"], strict=True):
+        assert entry["candidate_id"] in action and entry["provenance_digest"] in action
+    assert (repo / "main.txt").read_text() == ("alpha\n" if overlap else "original\n")
+
+
+async def test_model_fanout_integration_respects_parent_path_denial(editing, monkeypatch):
+    runner, _, repo = editing
+    runner.parent_permissions = PermissionEngine(workspace_root=repo,
+                                                path_rules={"deny": [str(repo / "main.txt")]})
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    model = FanoutModel(tasks=[{"profile": "editor", "task": "alpha"}], integrate="in_order",
+                        scripts={"alpha": [_call("write_file", path="main.txt", content="denied\n"), _done()]})
+    payload, _, _, _, _ = await _model_fanout(editing, model)
+    assert payload["workers"][0]["outcome"] == "failed"
+    assert "integration" not in payload["workers"][0]
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
+async def test_model_fanout_child_exception_quarantines_and_integrates_nothing(editing, monkeypatch):
+    # Ordinary model errors are caught by the loop. Crash the real child's
+    # environment settlement so TaskGroup observes an ordinary escaped exception.
+    model = FanoutModel(barrier=asyncio.Barrier(2), integrate="in_order",
+                        waits={("beta", 0): asyncio.Event()})
+    close = LocalEnvironment.aclose
+
+    async def crash_child(environment):
+        await close(environment)
+        if (environment.workspace_root / "a.txt").exists():
+            raise RuntimeError("child close failed")
+
+    monkeypatch.setattr(LocalEnvironment, "aclose", crash_child)
+    payload, _, runner, workers, repo = await _model_fanout(editing, model)
+    assert payload["code"] == "worker.batch_failed"
+    receipts = [json.loads(p.read_text()) for p in workers.root.glob("worker-*/receipt.json")]
+    assert len(receipts) == 2 and all(r["state"] == "uncertain" for r in receipts)
+    assert (repo / "main.txt").read_text() == "original\n" and not (repo / "a.txt").exists()
+    assert not runner.busy
+
+
+@pytest.mark.parametrize("reason,code", [
+    ("oversized", "worker.batch_invalid"), ("allowlist", "agent.subagent_not_allowed"),
+    ("launches", "agent.delegation_exhausted"), ("deadline", "agent.delegation_deadline"),
+])
+async def test_model_fanout_oversized_batch_from_model_launches_nothing(editing, reason, code):
+    runner, _, _ = editing
+    tasks = [{"profile": "editor", "task": name} for name in ("alpha", "beta")]
+    options = {}
+    if reason == "oversized":
+        tasks.append({"profile": "editor", "task": "third"})
+    elif reason == "allowlist":
+        options["subagents"] = ["editor"]
+        tasks[1]["profile"] = "foreign"
+    elif reason == "launches":
+        runner.budget.max_launches = 1
+    else:
+        options["deadline_sec"] = 0.000001
+    payload, _, runner, workers, _ = await _model_fanout(editing, FanoutModel(tasks=tasks), **options)
+    assert payload["code"] == code
+    assert runner.budget.launches == 0
+    assert not list(workers.root.glob("worker-*"))
+
+
+async def test_model_fanout_refuses_non_local_environment(editing):
+    from garuda.core.editing_fanout import run_fanout
+    from garuda.workspace.health import HealthMonitoredEnvironment
+
+    runner, workers, repo = _concurrent_workers(editing, TaskScriptModel())
+    # Exercise a direct call: shared assembly correctly hides the tool for a
+    # non-local config. A monitored foreign backend must still refuse at call time.
+    class ForeignEnvironment:
+        workspace_root = repo
+
+    runner.env = HealthMonitoredEnvironment(ForeignEnvironment())
+    payload, error = await run_fanout(runner, {"tasks": [{"profile": "editor", "task": "alpha"}]},
+                                     env=runner.env, session_id=runner.events.session_id,
+                                     permissions=runner.parent_permissions, output_budget=16_000)
+    assert error and payload["code"] == "worker.unsupported_environment"
+    assert runner.budget.launches == 0
+    assert not list(workers.root.glob("worker-*"))
+
+
+async def test_model_fanout_children_share_run_tree_spend_gate(editing):
+    from garuda.core.spend import SpendGate
+
+    gate = SpendGate(max_tokens=1_000_000)
+    payload, _, _, _, _ = await _model_fanout(editing, FanoutModel(barrier=asyncio.Barrier(2)),
+                                            spend_gate=gate)
+    assert all(w["outcome"] == "ready" for w in payload["workers"])
+    assert gate.calls >= 6 and gate.settled_tokens > 0
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+
+
+@pytest.mark.parametrize("output_limit,buffer_threshold", [(1800, 30_720), (30_720, 1800)])
+async def test_model_fanout_output_fits_live_budget(editing, output_limit, buffer_threshold):
+    payload, message, _, _, _ = await _model_fanout(
+        editing, FanoutModel(barrier=asyncio.Barrier(2)), max_output_bytes=output_limit,
+        buffer_threshold_bytes=buffer_threshold,
+    )
+    assert len(message.content.encode("utf-8")) <= min(output_limit, buffer_threshold)
+    for worker in payload["workers"]:
+        assert worker["outcome"] == "ready" and worker["candidate_id"]
+        assert worker["child_result"]["delivery"]["state"] in {"unavailable", "referenced"}
+
+
+async def test_fanout_cancellation_propagates_and_quarantines_live_children(editing):
+    from garuda.core.editing_fanout import run_fanout
+
+    blocked = asyncio.Event()
+    model = TaskScriptModel(barrier=asyncio.Barrier(2), waits={
+        ("alpha", 0): blocked, ("beta", 0): blocked,
+    })
+    runner, workers, repo = _concurrent_workers(editing, model)
+    task = asyncio.create_task(run_fanout(
+        runner, {"tasks": [{"profile": "editor", "task": n} for n in ("alpha", "beta")],
+                 "integrate": "in_order"}, env=runner.env,
+        session_id=runner.events.session_id, permissions=runner.parent_permissions, output_budget=16_000,
+    ))
+    try:
+        for name in ("alpha", "beta"):
+            await asyncio.wait_for(model.reached[name, 0].wait(), 10)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    receipts = [json.loads(p.read_text()) for p in workers.root.glob("worker-*/receipt.json")]
+    assert len(receipts) == 2 and all(r["state"] == "uncertain" for r in receipts)
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
+async def test_model_fanout_uncertain_integration_halts_later_candidates(editing, monkeypatch):
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+
+    def interrupted_apply(*args, **kwargs):
+        raise OSError("cannot prove patch application")
+
+    monkeypatch.setattr("garuda.core.editing_worker.apply_snapshot_patch", interrupted_apply)
+    payload, _, _, workers, repo = await _model_fanout(
+        editing, FanoutModel(barrier=asyncio.Barrier(2), integrate="in_order"),
+    )
+    assert [w["outcome"] for w in payload["workers"]] == ["quarantined", "ready"]
+    assert "state" not in payload["workers"][0]
+    assert payload["workers"][1]["integration"] == {
+        "state": "skipped", "code": "fanout.halted_after_uncertain",
+    }
+    assert (repo / "main.txt").read_text() == "original\n"
+    assert not (repo / "a.txt").exists() and not (repo / "b.txt").exists()
+    assert sorted(json.loads(p.read_text())["state"]
+                  for p in workers.root.glob("worker-*/receipt.json")) == ["ready", "uncertain"]
+
+
+async def test_model_fanout_large_typed_output_uses_parent_retrieval(editing):
+    result = {"edited": True, "details": "λ" * 10_000}
+    done = _call("task_complete", summary="Updated the requested file in the isolated worker.",
+                 result=result, verification_commands=["test -s main.txt"])
+    payload, _, _, _, _ = await _model_fanout(editing, FanoutModel(scripts={
+        name: [_call("write_file", path=f"{name[0]}.txt", content=f"{name}\n"), done]
+        for name in ("alpha", "beta")
+    }))
+    from garuda.core.buffer import ToolOutputBuffer
+    from garuda.core.child_result import read_child_result_reference
+
+    for entry in payload["workers"]:
+        envelope = entry["child_result"]
+        assert envelope["outcome"]["validation"] == "accepted"
+        assert envelope["delivery"]["state"] == "referenced"
+        ref = envelope["delivery"]["reference"]
+        storage = ToolOutputBuffer(session_id=ref["parent_session_id"])
+        assert read_child_result_reference(ref, storage=storage)[0] == result
+
+
+@pytest.mark.parametrize("denial", ["path", "acceptance"])
+async def test_model_fanout_integration_rechecks_parent_permission_after_children_settle(editing, denial):
+    runner, _, repo = editing
+    settled = False
+    asks = []
+
+    async def approve(action):
+        asks.append((action, settled))
+        return not settled
+
+    runner.parent_permissions = PermissionEngine(
+        workspace_root=repo, approval_handler=approve,
+        path_rules={"ask": [str(repo / "main.txt")]} if denial == "path" else None,
+        bash_rules={"ask": [r"^test -s main.txt$"]} if denial == "acceptance" else None,
+    )
+
+    def observe(event, store):
+        nonlocal settled
+        if (event["type"] == "editing_worker" and event["payload"].get("state") == "ready"
+                and event["payload"].get("child_settled")):
+            settled = True
+
+    runner.events.add_observer(observe)
+    model = FanoutModel(tasks=[{"profile": "editor", "task": "alpha"}], integrate="in_order",
+                        scripts={"alpha": [_call("write_file", path="main.txt", content="alpha\n"), _done()]})
+    payload, _, _, _, _ = await _model_fanout(editing, model)
+    entry, = payload["workers"]
+    assert entry["child_result"]["outcome"]["validation"] == "accepted"
+    assert entry["outcome"] == "integration_refused"
+    assert entry["integration"]["code"] == "integration.permission_denied"
+    assert asks[-1][1] is True
+    assert (repo / "main.txt").read_text() == "original\n"
+
+
+async def test_model_fanout_uncertain_child_halts_before_ready_sibling(editing):
+    class CrashingChild(FanoutModel):
+        async def complete(self, messages, **kwargs):
+            if kwargs.get("tools") and any(m.role == Role.USER and m.content == "alpha" for m in messages):
+                raise RuntimeError("ordinary child model failure")
+            return await super().complete(messages, **kwargs)
+
+    payload, _, _, _, repo = await _model_fanout(editing, CrashingChild(integrate="in_order"))
+    assert [w["outcome"] for w in payload["workers"]] == ["quarantined", "ready"]
+    assert payload["workers"][1]["integration"]["code"] == "fanout.halted_after_uncertain"
+    assert not (repo / "b.txt").exists()
+
+
 async def test_concurrent_worker_asks_are_serialized_and_attributed(editing, tmp_path):
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.run_guard import install_session_broker
@@ -2160,3 +2547,46 @@ async def test_concurrent_worker_asks_are_serialized_and_attributed(editing, tmp
         assert record['requester']['kind'] == 'editing_worker'
         assert record['requester']['parent_session_id'] == sid
         assert record['presented_at'] >= record['requested_at']
+
+
+async def test_model_fanout_approval_attributes_worker_and_parent_integration(editing, monkeypatch):
+    from garuda.interfaces.run_guard import install_session_broker
+
+    runner, _, repo = editing
+    requests = []
+
+    class Approver:
+        async def __call__(self, action):
+            pytest.fail("broker must preserve the request for a request-aware answerer")
+
+        async def ask_request(self, request):
+            requests.append(request)
+            return True
+
+    runner.parent_permissions = PermissionEngine(
+        workspace_root=repo, approval_handler=Approver(),
+        bash_rules={"ask": [r"^echo "]},
+        tool_rules={"integrate_editing_worker": "ask"},
+    )
+    install_session_broker(runner.parent_permissions, None, runner.events.session_id)
+    monkeypatch.setattr("garuda.workspace.worktrees._run_check", lambda *a: {"passed": True})
+    model = FanoutModel(
+        tasks=[{"profile": "editor", "task": "alpha"}], integrate="in_order",
+        scripts={"alpha": [_call("bash", command="echo alpha"),
+                           _call("write_file", path="a.txt", content="alpha\n"), _done()]},
+    )
+    payload, _, _, _, _ = await _model_fanout(editing, model)
+    entry, = payload["workers"]
+    assert entry["outcome"] == "integrated"
+    worker_ask, integration_ask = requests
+    assert worker_ask.action == "bash({'command': 'echo alpha'})"
+    assert worker_ask.requester == {
+        "session_id": entry["candidate_id"], "agent": "editor", "depth": 1,
+        "kind": "editing_worker", "parent_session_id": runner.events.session_id,
+    }
+    assert integration_ask.action.startswith("integrate_editing_worker(")
+    assert entry["candidate_id"] in integration_ask.action
+    assert integration_ask.session_id == runner.events.session_id
+    assert integration_ask.requester is None
+    assert integration_ask.requester_ceiling is None
+    assert (repo / "a.txt").read_text() == "alpha\n"

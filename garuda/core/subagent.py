@@ -466,7 +466,10 @@ class SubagentRunner:
 
 # Tools a run inserts for itself; a child gets its own copies from its own setup
 # when its configuration enables them, never the parent's bound instances.
-_RUN_SCOPED_TOOLS = frozenset({"delegate_collection", "submit_collection", "integrate_editing_worker"})
+_RUN_SCOPED_TOOLS = frozenset({
+    "delegate_collection", "submit_collection", "integrate_editing_worker",
+    "fan_out_editing_workers",
+})
 _MCP_META_TOOLS = frozenset({"search_tool", "use_tool"})
 
 

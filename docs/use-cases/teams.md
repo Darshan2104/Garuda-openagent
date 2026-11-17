@@ -692,8 +692,120 @@ Only the same service instance's currently live
 `admitted`/`running` siblings are exempt from admission uncertainty checks.
 Uncertain siblings, other service instances' live workers and exited runs whose
 receipts still say running block later admission and integration.
-Model-driven fan-out and non-local backends remain open (approval prompts from
-concurrent workers are serialized and attributed); the model-facing tool and CLI keep their existing dispatch behavior.
+Non-local backends remain open. Approval prompts from concurrent workers are
+serialized and attributed.
+
+### Let the model fan out editing workers
+
+A trusted Python caller can enable `fan_out_editing_workers` for a native parent.
+The service alone keeps existing callers sequential; the separate
+`AgentConfig.editing_worker_fanout` flag defaults to `False`. Profiles, project
+settings, CLI, dashboard and ACP entry points cannot enable it. Use a local Git
+workspace and an `editor` profile with an output schema, as above:
+
+```python
+from garuda.core.loop import DefaultAgent
+from garuda.types import AgentConfig
+
+
+async def model_edits(model, workspace, agents_dir, check_image):
+    env = LocalEnvironment(workspace)
+    events = EventStore()
+    permissions = PermissionEngine(workspace_root=env.workspace_root)
+    guard = WorkspaceLeaseGuard(env.workspace_root, events.session_id,
+                                capacity_key="native")
+    guard.acquire()
+    guard.start_heartbeat()
+    try:
+        config = AgentConfig(
+            editing_workers=LocalEditingWorkers(
+                guard, checks=["pytest -q"], image=check_image, max_concurrent=2,
+            ),
+            editing_worker_fanout=True,
+            subagents=["editor"],
+        )
+        return await guard.race(DefaultAgent().run(
+            "Use editing workers for alpha and beta; return both candidates for review.",
+            model, env, default_tools(), config=config, events=events,
+            permissions=permissions, agents_dir=agents_dir,
+        ))
+    finally:
+        await env.aclose()
+        await guard.release()
+```
+
+The model can issue this call (the default `integrate` is `"none"`):
+
+```json
+{"tasks":[{"profile":"editor","task":"Implement alpha."},
+          {"profile":"editor","task":"Implement beta."}],"integrate":"none"}
+```
+
+The schema bounds `tasks` by the service's `max_concurrent` and enumerates an
+explicit subagent allowlist. Each item requires only `profile` and `task`;
+unknown keys, empty tasks and tasks over 20,000 characters refuse before launch.
+
+The version 1 canonical JSON response lists workers in request order:
+
+| Outcome | Meaning |
+|---|---|
+| `refused` | Worker admission refused; inspect `code` |
+| `failed` | Child did not produce a successful ready candidate |
+| `quarantined` | Child cleanup or integration is uncertain; retain ownership |
+| `ready` | Isolated candidate is available; parent files are unchanged |
+| `integrated` | Existing checked integration applied the candidate |
+| `stale_base` | Parent drift cannot be safely rebased (`integration.stale_base`) |
+| `integration_refused` | Integration checks or parent permissions refused |
+
+`candidate_id` and `provenance_digest` identify ready candidates. `child_result`
+uses the ordinary typed inline, referenced or unavailable delivery contract.
+After an integration attempt, the pre-integration receipt `state` is omitted;
+read `outcome` and `integration.state` for the integration result. A refused
+integration can leave the retained candidate ready for a later authorized attempt.
+Summaries are limited to 512 UTF-8 bytes. Output fits the smaller of the live
+output budget and the configured buffer threshold. Under a small budget,
+summaries, paths and ancillary receipt fields are omitted and typed delivery is
+marked unavailable rather than clipped. If even compact receipts cannot fit,
+`fanout.output_budget_too_small` refuses before launch.
+If a custom service returns oversized identities that still exceed the budget
+after compaction, `fanout.receipt_budget_exceeded` reports `delivery_failed`.
+
+With `integrate: "in_order"`, all children settle before ready candidates pass
+one at a time through the existing service's `integrate`. Parent path writes and
+acceptance commands keep their effective permission ceiling. Every task first
+passes the parent's `invoke_subagent` permission check, including ASK approval,
+before any worker launches. Each integration separately passes
+`integrate_editing_worker` permission checks with the candidate ID and provenance
+digest; a refusal returns `integration_refused` / `integration.permission_denied`.
+These checks use the session approval broker when installed. Disjoint siblings
+can both integrate through the service's checked rebase; overlapping siblings
+can return `integrated`, then `stale_base`. The tool passes through
+`integration.rebase` when present, including tree/path evidence on success and
+`reason` on refusal.
+Integration stops at the first quarantined candidate; later ready candidates
+carry `fanout.halted_after_uncertain` and remain available for inspection.
+
+Shared assembly omits the tool without the opt-in, service, admitted
+`invoke_subagent`, local workspace, unrestricted effects, permitted tool,
+nonempty allowlist (when configured), and another delegation level. Explicit
+denial of `invoke_subagent` or `integrate_editing_worker`, removal and readonly
+mode also omit it. Direct calls recheck local environment
+and effective permissions. Busy runners, oversized batches, disallowed profiles,
+depth, shared launch limits and deadlines refuse the whole batch. An already
+exhausted run-tree spend gate returns `spend.exhausted` before launch, with `cause`
+set to `tokens`, `dollars` or `cost_unknown`; the last means a dollar-only cap
+cannot be enforced with unknown costs. The token precheck refuses when settled
+plus reserved tokens equal the cap, even though a zero-token reservation could
+still be admitted. Each child model call still
+reserves and settles on that shared gate. Children never receive this tool.
+
+An escaped ordinary child exception yields `worker.batch_failed`, after live
+siblings quarantine; nothing is integrated. Cancellation propagates after worker
+settlement. Inspect retained ownership with `garuda sessions show SESSION --json`.
+The shared approval broker presents asks one at a time in FIFO order and
+attributes worker asks to their candidate IDs. In-order integration asks carry
+the parent identity. CLI and dashboard exposure remains deferred. Permission
+checks are guardrails, not a sandbox. This feature makes no speed, cost or quality claim.
 
 ### Measure editing fan-out offline
 

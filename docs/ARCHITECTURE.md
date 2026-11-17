@@ -351,13 +351,34 @@ fastest way to learn the system.
    in request order. Child exceptions propagate as `BaseExceptionGroup` after
    siblings are cancelled and each settles through its quarantine path; caller
    cancellation likewise quarantines each live child independently. Ordinary
-   `run()` and model-driven `invoke_subagent` remain sequential.
+   `run()` and model-driven `invoke_subagent` remain sequential. A trusted caller
+   can also set `AgentConfig.editing_worker_fanout=True` to admit the run-scoped
+   `fan_out_editing_workers` tool. Shared assembly requires a service, admitted
+   `invoke_subagent`, local workspace, unrestricted effects, effective tool
+   permission outside readonly, no denial of `invoke_subagent` or
+   `integrate_editing_worker`, no explicit removal, a nonempty allowlist when
+   configured, and another delegation level. Profiles, settings, CLI and ACP
+   cannot set the opt-in; delegated children never inherit the tool. The tool
+   validates the whole request and refuses exhausted run-tree spend before
+   delegating unchanged bounds to `run_editing_workers`. Each task resolves the
+   parent's `invoke_subagent` permission, including ASK, before any launch;
+   integration resolves `integrate_editing_worker` permission per candidate through
+   the same engine and session broker. Typed receipts follow request order and fit
+   the smaller of the live output budget and buffer threshold; insufficient receipt space
+   refuses before launch. Optional `in_order` integration only calls the existing
+   checked `integrate` after all children settle and stops at quarantine. Entries
+   omit the pre-integration `state` after an attempt; `outcome` and
+   `integration.state` describe its result. Integration receipts pass through
+   the service's `rebase` evidence when present. Spend refusals preserve their cause.
+   Ordinary escaped exception groups map to `worker.batch_failed`; cancellation
+   propagates. Permission checks remain guardrails, not a sandbox.
    Every child inherits the parent's approval handler through relocated permission
    checks; screening workspace state is task-local through a context variable.
    The root approval broker presents attached answerers one at a time in park
    order, labels child requests and withdraws settled asks; queued time counts
-   toward expiry. Requester identity and its effective ceiling are digest-bound,
-   and an allow rechecks both root and requester ceilings. The shared root
+   toward expiry. Fan-out worker asks use the candidate ID; in-order integration
+   asks retain the parent identity. Requester identity and its effective ceiling
+   are digest-bound, and an allow rechecks both root and requester ceilings. The shared root
    `SpendGate` and `DelegationBudget` remain unchanged.
    Integration binds a retained binary patch, base snapshot/HEAD/index and
    typed-output provenance by SHA-256. The existing confined integration checker
