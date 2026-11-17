@@ -274,10 +274,12 @@ async def run_task(args) -> int:
     guard = NoEditsGuard(args.workspace) if _no_edits_requested(args) else None
 
     from garuda.interfaces.cli import live_terminal, stream_run_output
+    from garuda.interfaces.tui import preview_terminal
 
     terminal = live_terminal(sys.stdout)
     stream = (terminal and not args.json and not getattr(args, "quiet", False)
               and not getattr(args, "no_stream", False) and guard is None)
+    config.stream_subagent_deltas = bool(stream and preview_terminal())
     output = stream_run_output(events) if stream else contextlib.nullcontext(None)
     with output as renderer:
         result = await run_agent_task(

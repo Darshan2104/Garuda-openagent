@@ -70,11 +70,11 @@ def terminal_environment(tmp_path, monkeypatch):
 def command(terminal_environment, monkeypatch):
     workspace, has_rich = terminal_environment
 
-    async def run(responses, *flags, tty=True, legacy=False, rich=False, verifier=False):
+    async def run(responses, *flags, tty=True, legacy=False, rich=False, verifier=False, terminal=None, model_type=ObservedModel):
         if rich and not has_rich:
             pytest.skip("rich not installed")
         monkeypatch.setattr(tui, "rich_available", lambda: rich)
-        terminal = Terminal(tty)
+        terminal = terminal if terminal is not None else Terminal(tty)
         monkeypatch.setattr(sys, "stdout", terminal)
         args = main.build_parser().parse_args([
             "run", "-t", "test", "--runtime", "native", "--workspace", str(workspace),
@@ -82,7 +82,7 @@ def command(terminal_environment, monkeypatch):
             "--no-three-step-summary", "--no-collection", "--max-turns", "3", *flags,
             *([] if verifier else ["--no-verifier"]),
         ])
-        model = ObservedModel(responses, terminal)
+        model = model_type(responses, terminal)
         args.model = (SimpleNamespace(model_name=model.model_name, supports_tool_calling=True,
                                       complete=model.complete, count_tokens=model.count_tokens)
                       if legacy else model)
@@ -101,14 +101,18 @@ def chat(terminal_environment, monkeypatch):
         "version: 1\nextends: garuda/build\n"
         "completion: {verifier: false, acceptance_contract: false}\n"
         "limits: {max_turns: 3}\ncontext: {three_step_summary: false}\n"
+        "tools: {subagents: [harbor]}\n"
     )
 
-    async def run(responses, *flags, tty=True, legacy=False, rich=False, model_type=ObservedModel):
+    async def run(responses, *flags, tty=True, legacy=False, rich=False, model_type=ObservedModel, input_fn=None):
         if rich and not has_rich:
             pytest.skip("rich not installed")
         # Select the real renderer backend, leaving its status/preview lifecycle intact.
-        monkeypatch.setattr(cli, "ChatRenderer", lambda **kwargs: tui.ChatRenderer(
-            **{**kwargs, "use_rich": rich and kwargs["use_rich"]}))
+        def render(**kwargs):
+            state.renderer = tui.ChatRenderer(**{**kwargs, "use_rich": rich and kwargs["use_rich"]})
+            return state.renderer
+
+        monkeypatch.setattr(cli, "ChatRenderer", render)
         state.terminal = Terminal(tty)
         monkeypatch.setattr(sys, "stdout", state.terminal)
         args = main.build_parser().parse_args([
@@ -125,7 +129,7 @@ def chat(terminal_environment, monkeypatch):
 
         def read_input():
             state.prompts += 1
-            return next(prompts)
+            return input_fn(state) if input_fn is not None else next(prompts)
 
         monkeypatch.setattr("builtins.input", read_input)
         status = await cli.chat_loop(args)
@@ -543,23 +547,294 @@ async def test_renderer_closes_preview_on_response_failure_or_cancellation(tmp_p
     assert terminal.getvalue() == closed
 
 
-async def test_tty_run_delegation_previews_only_the_parent(command):
-    run, _ = command
-    status, model, output = await run([
+def delegation_script(child_text="CHILD-LIVE"):
+    return [
         ModelResponse(content=None, tool_calls=[ToolCall(
             "delegate", "invoke_subagent", {"profile": "harbor", "task": "investigate", "handoff": "none"},
-        )]),
-        ModelResponse(content="CHILD-PRIVATE-PREVIEW", tool_calls=[ToolCall(
+        )], usage={"total_tokens": 10}),
+        ModelResponse(content=child_text * 3, tool_calls=[ToolCall(
             "done", "task_complete", {"summary": "Finished the delegated investigation."},
-        )]),
+        )], usage={"total_tokens": 20}),
         ModelResponse(content=None, tool_calls=[ToolCall(
             "contract-probe", "task_complete", {"summary": "Finished the delegated investigation."},
-        )]),
-        ScriptedStream([StreamDelta(content_delta="Parent answer."),
-                        StreamDelta(done=True, finish_reason="stop")]),
-    ])
+        )], usage={"total_tokens": 30}),
+        ModelResponse(content="Parent answer.", tool_calls=[], usage={"total_tokens": 40}),
+    ]
+
+
+def delegated_events():
+    store = SessionStore()
+    session = store.list_sessions(limit=1)[0]
+    parent = [json.loads(line) for line in store.events_path(session["session_id"]).read_text().splitlines()]
+    children = [[json.loads(line) for line in p.read_text().splitlines()]
+                for p in store.events_path(session["session_id"]).parent.glob("subagents/**/*.jsonl")]
+    return parent, children
+
+
+@pytest.mark.parametrize("rich", [False, True])
+async def test_tty_run_previews_labelled_child_then_erases_it(command, rich):
+    run, _ = command
+    status, model, output = await run(delegation_script(), rich=rich)
     assert status == 0
-    assert model.previews
-    assert any("Parent" in preview for _, preview in model.previews)
-    assert all("CHILD-PRIVATE-PREVIEW" not in preview for _, preview in model.previews)
-    assert "CHILD-PRIVATE-PREVIEW" not in output
+    assert any("CHILD" in preview and "harbor" in preview for _, preview in model.previews)
+    assert "CHILD-LIVE" not in output.rsplit("\033[2K", 1)[-1]
+    assert output.rsplit("\033[2K", 1)[-1].count("Parent answer.") == 1
+    _, children = delegated_events()
+    assert len(children) == 1
+    assert next(e["payload"] for e in children[0] if e["type"] == "model_response")["live_coverage"] == "streamed"
+
+
+async def test_child_preview_is_cleared_before_child_tool_dispatch(chat):
+    snapshots = []
+
+    def input_fn(state):
+        if state.prompts == 1:
+            return "test"
+        if state.prompts == 2:
+            # The real broker and TerminalApprover reach input before bash
+            # dispatch. Deny so the scripted command never reaches the shell.
+            snapshots.append(state.terminal.getvalue())
+            return "n"
+        return ""
+
+    script = delegation_script()
+    script.insert(1, ModelResponse(content="CHILD-LIVE" * 3, tool_calls=[ToolCall(
+        "shell", "bash", {"command": "rm -rf build/"})]))
+    status, _, _ = await chat.run(script, "--permission-mode", "smart", input_fn=input_fn)
+    assert status == 0 and len(snapshots) == 1
+    before_prompt, prompt = snapshots[0].rsplit("[garuda] approval", 1)
+    assert "harbor" in before_prompt and "CHILD" in before_prompt
+    assert "\033[2K" in before_prompt
+    assert "CHILD" not in before_prompt.rsplit("\033[2K", 1)[-1]
+    assert "rm -rf build/" in prompt
+    assert "subagent" in prompt and "agent harbor" in prompt and "depth 1" in prompt
+
+
+@pytest.mark.skipif(not tui.rich_available(), reason="rich not installed")
+async def test_no_stream_chat_resumes_spinner_after_approval(chat):
+    spinner_states = []
+
+    def input_fn(state):
+        if state.prompts == 1:
+            return "test"
+        if state.prompts == 2:
+            spinner_states.append(("prompt", state.renderer._status._live.is_started))
+            return "n"
+        return ""
+
+    class ApprovalModel(ObservedModel):
+        async def complete(self, *args, **kwargs):
+            spinner_states.append(("model", chat.renderer._status._live.is_started))
+            return await super().complete(*args, **kwargs)
+
+    status, model, output = await chat.run([
+        ModelResponse(content=None, tool_calls=[ToolCall(
+            "shell", "bash", {"command": "rm -rf build/"})]),
+        ModelResponse(content="Finished.", tool_calls=[]),
+    ], "--no-stream", "--permission-mode", "smart", rich=True,
+        model_type=ApprovalModel, input_fn=input_fn)
+    assert status == 0 and not model.previews
+    assert "Approve" in output
+    assert spinner_states == [("model", True), ("prompt", False), ("model", True)]
+
+
+async def test_nested_children_render_each_source(command):
+    run, workspace = command
+    agents = workspace / ".agent" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "relay.yaml").write_text(
+        "name: relay\npermission_mode: yolo\ntools: [invoke_subagent, task_complete]\n"
+        "enable_acceptance_contract: false\nenable_verifier: false\n")
+    script = delegation_script()
+    script[0].tool_calls[0].arguments["profile"] = "relay"
+    script[1:2] = [
+        ModelResponse(content="RELAY-LIVE" * 3, tool_calls=delegation_script()[0].tool_calls),
+        ScriptedStream([StreamDelta(content_delta="HARBOR-LIVE"), ConnectionError("drop")]),
+        delegation_script()[1], delegation_script()[2],
+        ModelResponse(content="Relay finished.", tool_calls=[]),
+    ]
+    status, model, _ = await run(script)
+    assert status == 0
+    assert any("relay d1" in text and "RELAY" in text for _, text in model.previews)
+    assert any("harbor d2" in text and "HARBOR" in text for _, text in model.previews)
+    # The child fallback's discard is scoped; the per-source renderer test covers
+    # overlapping sources since sequential delegation ends relay's current call first.
+    assert model.before_fallback.endswith("\r\033[2K")
+
+
+@pytest.mark.parametrize(("flags", "tty", "term"), [
+    (["--no-stream"], True, "xterm"), (["--quiet"], True, "xterm"),
+    (["--json"], True, "xterm"), ([], False, "xterm"), ([], True, "dumb"),
+    (["--no-edits"], True, "xterm"), ([], True, ""),
+])
+async def test_child_previews_off_paths_are_byte_identical(command, monkeypatch, flags, tty, term):
+    run, _ = command
+    monkeypatch.setenv("TERM", term)
+    status, _, output = await run(delegation_script(), *flags, tty=tty)
+    assert status == 0
+    assert "\033" not in output and "CHILD-LIVE" not in output
+    parent, children = delegated_events()
+    assert children and all("live_coverage" not in e["payload"] for child in children
+                            for e in child if e["type"] == "model_response")
+    if "--quiet" in flags:
+        assert output == "Parent answer.\n"
+    elif term in {"dumb", ""}:
+        assert output == (
+            '[garuda] reasoning=script/test (builtin)\n\n'
+            '[tool] invoke_subagent {"profile": "harbor", "task": "investigate", "handoff": "none"}\n'
+            '[tool-result] invoke_subagent: Subagent @harbor finished (success=True, turns=1).\n'
+            'Summary:\nFinished the delegated investigation.\nParent answer.\n')
+    elif "--json" not in flags and "--no-edits" not in flags:
+        assert output == "[garuda] reasoning=script/test (builtin)\nParent answer.\n"
+    else:
+        assert any(e["type"] == "session_end" for e in parent)
+
+
+async def test_child_previews_do_not_change_results_or_spend(command, monkeypatch):
+    from garuda.interfaces import main
+
+    run, _ = command
+    original = main.run_agent_task
+    captured = []
+
+    async def capture(**kwargs):
+        from garuda.core.spend import SpendGate
+
+        gate = SpendGate()
+        kwargs["config"].spend_gate = gate
+        result = await original(**kwargs)
+        captured.append((result, gate.settled_tokens))
+        return result
+
+    monkeypatch.setattr(main, "run_agent_task", capture)
+    snapshots = []
+    ledger_totals = []
+    for flags in [[], ["--no-stream"]]:
+        status, _, _ = await run(delegation_script(), *flags)
+        assert status == 0
+        parent, children = delegated_events()
+        snapshots.append((parent, children))
+        from garuda.observability.ledger import Ledger, totals
+
+        session_ids = {parent[0]["session_id"], children[0][0]["session_id"]}
+        ledger_totals.append(totals([r for r in Ledger().records() if r.get("session_id") in session_ids]))
+    (a, spend_a), (b, spend_b) = captured
+    assert a.final_message == b.final_message == "Parent answer."
+
+    def message_content(messages):
+        # Artifact capture metadata names each fresh session; conversation and
+        # tool-call contents remain independently comparable.
+        return [(m.role, m.content, m.name, m.tool_call_id, m.tool_calls) for m in messages]
+
+    assert message_content(a.messages) == message_content(b.messages)
+    assert spend_a == spend_b == 100
+    assert ledger_totals[0] == ledger_totals[1]
+    assert ledger_totals[0]["total_tokens"] == 100
+
+    def canonical(events):
+        # Session ids, timings and streaming coverage describe execution; all
+        # transcript content, calls, handoffs and reported usage must agree.
+        return [(e["type"], {k: v for k, v in e["payload"].items()
+                 if k not in {"live_coverage", "stream_error", "live_consumer_error", "session_id",
+                              "duration_ms", "elapsed_ms", "wall_ms", "timings", "timestamp"}})
+                for e in events if e["type"] in {"model_response", "tool_call", "user_message"}]
+
+    assert canonical(snapshots[0][1][0]) == canonical(snapshots[1][1][0])
+    for left, right in [(snapshots[0][0], snapshots[1][0]),
+                        (snapshots[0][1][0], snapshots[1][1][0])]:
+        assert [e["type"] for e in left] == [e["type"] for e in right]
+    # Handoff content contains the child id; compare its independent content fields.
+    for parent, _ in snapshots:
+        handoff = next(e["payload"] for e in parent if e["type"] == "user_message" and e["payload"].get("subagent"))
+        assert "Finished the delegated investigation." in handoff["content"]
+
+
+async def test_raising_child_render_detaches_without_failing_run(command, monkeypatch):
+    run, _ = command
+
+    def fail(self, delta):
+        raise RuntimeError("renderer broke")
+
+    monkeypatch.setattr(tui.ChatRenderer, "_on_child_delta", fail)
+    status, model, output = await run(delegation_script())
+    assert status == 0 and "Parent answer." in output
+    assert any("Paren" in preview for _, preview in model.previews)
+    _, children = delegated_events()
+    response = next(e["payload"] for e in children[0] if e["type"] == "model_response")
+    assert response["live_consumer_error"] == "RuntimeError"
+
+
+@pytest.mark.parametrize("rich", [False, True])
+async def test_chat_child_preview_and_spinner_lifecycle(chat, rich):
+    spinner_states = []
+
+    class LifecycleModel(ObservedModel):
+        async def stream(self, *args, **kwargs):
+            status = chat.renderer._status
+            if rich and status is not None:
+                spinner_states.append(("start_call", status._live.is_started))
+            async for delta in super().stream(*args, **kwargs):
+                yield delta
+                if rich and delta.content_delta.startswith("CHILD"):
+                    spinner_states.append(("child_text", status._live.is_started))
+
+    status, model, output = await chat.run(delegation_script(), rich=rich, model_type=LifecycleModel)
+    assert status == 0
+    assert any("harbor" in text and "CHILD" in text for _, text in model.previews)
+    assert "CHILD" not in output.rsplit("\033[2K", 1)[-1]
+    if rich:
+        assert ("child_text", False) in spinner_states
+        assert spinner_states[-1] == ("start_call", True)
+    _, children = delegated_events()
+    assert next(e["payload"] for e in children[0] if e["type"] == "model_response")["live_coverage"] == "streamed"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pseudo-terminal")
+async def test_real_pty_child_preview_has_no_leaks(command, monkeypatch):
+    import concurrent.futures
+    import pty
+
+    run, _ = command
+    master, slave = pty.openpty()
+    writer = os.fdopen(slave, "w", buffering=1)
+    chunks = []
+
+    def drain():
+        while True:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            chunks.append(chunk)
+
+    class ObservedPTY:
+        def isatty(self):
+            return writer.isatty()
+
+        def write(self, value):
+            return writer.write(value)
+
+        def flush(self):
+            writer.flush()
+
+        def getvalue(self):
+            return b"".join(chunks).decode(errors="replace")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        reader = pool.submit(drain)
+        try:
+            status, _, _ = await run(delegation_script("CHILD-LIVE\x1b]0;pwn\x07"), terminal=ObservedPTY())
+            assert status == 0
+        finally:
+            writer.close()
+            reader.result(timeout=5)
+            os.close(master)
+    output = b"".join(chunks)
+    assert b"harbor" in output and b"CHILD" in output
+    assert b"\x1b]0;pwn\x07" not in output
+    last_child = output.rfind(b"CHILD")
+    final = output.rfind(b"Parent answer.")
+    assert last_child < final
+    assert b"\x1b[2K" in output[last_child:final]

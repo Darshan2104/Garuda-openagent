@@ -145,7 +145,7 @@ successful preview can still be refused by those steps after admission.
     | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, collection worker, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
     | `--max-run-cost-usd X` | Stop admitting calls once reported spend reaches X (finite, > 0); unreported cost stops admission unless `--max-run-tokens` is set. Refused on an ACP runtime |
     | `--json` | Print JSONL events instead of the human-readable result; disables native live text |
-    | `--no-stream` | Disable native TTY assistant text streaming; pipes automatically use ordinary output |
+    | `--no-stream` | Disable live assistant and subagent previews in a terminal; pipes automatically use ordinary output |
     | `--quiet` | Print the native final message without startup notices or live output |
     | `--trajectory PATH` | Also save the run's events to a JSONL file; for an external harness, the trail Garuda recorded (event kinds, turns, request digests) |
 
@@ -172,8 +172,8 @@ isolation boundary.
 
     `garuda chat` takes the model, workspace, agent, MCP, `--mode`, and
     `--permission-mode` flags of `run`, plus `--json` and `--no-stream`.
-    Native assistant text streams on a TTY; `--no-stream` disables the live
-    preview, and `--json` keeps stdout as JSONL. It has no `-t`: type
+    Native assistant and labelled subagent text streams on a TTY; `--no-stream`
+    disables the live preview, and `--json` keeps stdout as JSONL. It has no `-t`: type
     tasks at the `task>` prompt, and finish with an empty line or ++ctrl+d++.
     `--with`, `--with-id` and `--allow-cross-project-context` attach briefs to
     the first turn; `@name` in any message attaches that session's brief to

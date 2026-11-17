@@ -197,7 +197,8 @@ separate event logs remain owned by the child. Raising consumers detach per call
 through the existing forwarder and record errors in the child log.
 
 Follow-ups: terminal child status line, dashboard child previews, and explicit
-consult/collection child support. Default-on child streaming is outside this slice.
+consult/collection child support. Terminal/dashboard previews are addressed by
+the 2026-11-17 decision below.
 
 ## 2026-11-16 — Interrupted streams retain reported usage as a lower bound (#389)
 
@@ -3793,3 +3794,40 @@ Text and JSON preview both disclose checkpoint adjustment reasons and retained
 message counts. The no-write contract includes empty directories. Metadata read
 across the store during `latest` or prefix selection shares the preview budget,
 so store size can prevent preview of an otherwise small selected checkpoint.
+
+## 2026-11-17 — Terminal and dashboard show labelled subagent previews (#472)
+
+Native TTY run/chat enable ordinary child forwarding wherever the parent's
+preview is on with usable TERM; `--no-stream` disables both. Quiet/JSON/non-TTY
+and run's no-edits mode leave child forwarding off. Dashboard chat enables it
+per turn. The SDK default remains false: callers joining text retain their API
+contract. Child calls select the existing streaming transport, adding
+`live_coverage` (and existing stream/consumer errors when applicable) to child
+`model_response` events; execution and accounting remain owned by the loop.
+Child spend follows the parent streaming path's usage semantics: when a provider
+omits stream usage, attempts are charged at estimated prompt size with unknown cost.
+
+Previews are bounded and transient. Terminal child lines share the parent's one
+Live region (or one erasable plain line), never final scrollback. Three lines
+plus overflow track eight sources with 512-character tails; dashboard retains
+four 1,000-character tails in escaped collapsible rows. Reasoning is excluded.
+Source-separated state prevents child text from entering the parent answer,
+resolving the text-joining hazard in the 2026-11-16 decision. Dashboard state has
+a parent cursor anchor checked again by the browser, resolving the sibling-store
+cursor hazard. Inherited synchronous observers clear each child's line on call
+completion/failure/session end before tools or approvals, and parent progress
+retires all child tails. This resolves the between-call terminal hazard. Approval
+prompts additionally suspend every terminal renderer process-wide so sibling
+streams cannot redraw during input. Suspension lives inside `TerminalApprover`'s
+presentation lock through withdrawn-input draining and re-prompting; on exit it
+redraws retained previews or restarts the thinking spinner, including with
+`--no-stream`. This adds spinner stop/restart control bytes around those prompts.
+After cancellation previews resume even though an orphan `input()` thread may
+still own stdin; the next presenter drains and discards that thread's line.
+Turn admission, stop, job cancel, settlement and renderer teardown clear retained
+previews.
+
+Consult children remain excluded: live text would bypass their post-run
+workspace guard's withholding/quarantine decision. Collection children are
+auxiliary maintenance and retain their separate accounting without forwarding.
+No changes to child semantics, SDK defaults, editing-worker activation or SSE.

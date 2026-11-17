@@ -2,6 +2,8 @@
 
 Cancellation cannot stop input() in a thread. Retain its ownership so the next
 approval discards that read, even if the line arrived between prompts.
+Previews resume when a cancelled presentation exits, while that orphan input()
+thread may still own stdin until the next presentation drains its line.
 
 Single-loop only: all approval users of one stdin must share the same event
 loop, as the CLI does. Concurrent loops in different threads are not serialized.
@@ -17,6 +19,7 @@ import weakref
 from dataclasses import dataclass, field
 
 from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
+from garuda.interfaces.tui import suspend_previews
 
 
 @dataclass
@@ -62,22 +65,23 @@ class TerminalApprover:
         loop = asyncio.get_running_loop()
         state = _states.setdefault(loop, _TerminalState())
         async with state.lock:
-            self._print(text)
-            try:
-                if state.read is not None and state.owner != key:
-                    # A completed read also belongs to the withdrawn prompt.
-                    await self._read_line(state)
-                    self._print("\n[garuda] discarded input for a withdrawn approval; answer again:\n")
-                    self._print(text)
-                state.read = asyncio.create_task(asyncio.to_thread(input))
-                state.owner = key
-                line = await self._read_line(state)
-            except asyncio.CancelledError:
-                self._print("\n[garuda] approval withdrawn; the next line typed is discarded\n")
-                raise
-            except EOFError:
-                return Unanswered(ApprovalOutcome.DISCONNECTED, "terminal input closed")
-            return line.strip().lower() in ("y", "yes")
+            with suspend_previews():
+                self._print(text)
+                try:
+                    if state.read is not None and state.owner != key:
+                        # A completed read also belongs to the withdrawn prompt.
+                        await self._read_line(state)
+                        self._print("\n[garuda] discarded input for a withdrawn approval; answer again:\n")
+                        self._print(text)
+                    state.read = asyncio.create_task(asyncio.to_thread(input))
+                    state.owner = key
+                    line = await self._read_line(state)
+                except asyncio.CancelledError:
+                    self._print("\n[garuda] approval withdrawn; the next line typed is discarded\n")
+                    raise
+                except EOFError:
+                    return Unanswered(ApprovalOutcome.DISCONNECTED, "terminal input closed")
+                return line.strip().lower() in ("y", "yes")
 
     @staticmethod
     async def _read_line(state: _TerminalState) -> str:

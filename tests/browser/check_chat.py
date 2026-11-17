@@ -208,6 +208,62 @@ with sync_playwright() as p:
             "reaper did not fire, so a closed tab wedges the run"
         )
 
+    # --- labelled child preview, escaping and expansion across polls ----------
+    page.goto(f"{BASE}#/chat", wait_until="networkidle")
+    page.wait_for_selector("#chat-form")
+    # The reaper's denial does not end turn 3: the model still streams its closing
+    # answer. Submitting now gets 409 turn_in_flight and no delegation ever starts.
+    page.wait_for_function("() => STATE.chat && STATE.chat.info && !STATE.chat.info.busy",
+                           timeout=20_000)
+    previous_turns = page.evaluate("STATE.chat.info.turns")
+    page.fill("#chat-task", "delegate-child-preview")
+    page.click("#chat-send")
+    page.wait_for_function("turns => STATE.chat.info.turns === turns + 1",
+                           arg=previous_turns, timeout=10_000)
+    child = page.wait_for_selector(".chat-child-preview", timeout=15_000)
+    label = child.query_selector("summary").text_content() or ""
+    if "harbor" not in label or "depth 1" not in label:
+        problems.append(f"child label missing: {label}")
+    if child.get_attribute("open") is not None:
+        problems.append("child preview was open by default")
+    # A poll can replace the element before its asynchronous toggle is delivered.
+    # Change the real DOM and render in the same task to force that ordering.
+    for opened in (True, False):
+        survived = page.evaluate("""opened => {
+            document.querySelector('.chat-child-preview').open = opened;
+            renderChatLog();
+            return document.querySelector('.chat-child-preview').open === opened;
+        }""", opened)
+        if not survived:
+            problems.append(f"child toggle to {opened} lost to polling render")
+    page.click(".chat-child-preview summary")
+    page.wait_for_timeout(3000)
+    child = page.query_selector(".chat-child-preview")
+    if child is None or child.get_attribute("open") is None:
+        problems.append("child expansion did not survive polling")
+    if "<b>child</b>" not in page.inner_text(".chat-child-preview pre"):
+        problems.append("child text did not render literally")
+    if page.query_selector(".chat-child-preview pre b"):
+        problems.append("child HTML was interpreted")
+    if any("child" in node.inner_text() for node in page.query_selector_all(".chat-preview")):
+        problems.append("child text leaked into parent preview")
+    # Exercise overflow within the real 1,000-character bound. The newest line
+    # must be visible after a poll rebuilds an expanded child.
+    latest_visible = page.evaluate("""() => {
+        const item = STATE.chat.info.child_previews.items[0];
+        const saved = item.text;
+        item.text = ('line\\n'.repeat(150) + 'LATEST');
+        renderChatLog();
+        const pre = document.querySelector('.chat-child-preview[open] pre');
+        const visible = pre && pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 1;
+        item.text = saved;
+        renderChatLog();
+        return visible;
+    }""")
+    if not latest_visible:
+        problems.append("latest child text hidden below its scroll viewport after polling")
+    page.wait_for_selector(".chat-child-preview", state="detached", timeout=20_000)
+
     browser.close()
 
 print("\n=== problems ===")

@@ -10,8 +10,10 @@ import pytest
 from garuda.acp.broker import ApprovalBroker, ApprovalRequest
 from garuda.core.permissions import PermissionEngine
 from garuda.core.sessions import SessionStore
+from garuda.interfaces import tui
 from garuda.interfaces.run_guard import approval_answerer
 from garuda.interfaces.terminal_approval import TerminalApprover
+from garuda.model.streaming import LiveDelta
 
 
 async def until(predicate):
@@ -138,3 +140,45 @@ async def test_separate_brokers_share_terminal_presentation(tty):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize('rich', [False, True], ids=['plain', 'rich'])
+async def test_queued_approvals_suspend_sibling_stream_until_each_answer(tty, monkeypatch, rich):
+    if rich and not tui.rich_available():
+        pytest.skip('rich not installed')
+    monkeypatch.setenv('TERM', 'xterm')
+    out = io.StringIO()
+    renderer = tui.ChatRenderer(use_rich=rich, stream=out)
+    if rich:
+        from rich.console import Console
+
+        renderer._console = Console(file=out, force_terminal=True, width=80)
+    ticks = iter(range(1000))
+    monkeypatch.setattr(tui, 'monotonic', lambda: next(ticks))
+
+    def stream_sibling(text):
+        renderer.on_model_delta(LiveDelta('text', text, source='sibling', agent='harbor', depth=1))
+
+    stream_sibling('SIBLING-LIVE')
+    assert 'SIBLING-LIVE' in out.getvalue()
+    brokers = [ApprovalBroker(PermissionEngine(), answerer=approval_answerer(TerminalApprover(out)))
+               for _ in range(2)]
+    tasks = [asyncio.create_task(broker.handler()(action))
+             for broker, action in zip(brokers, ('A', 'B'), strict=True)]
+    try:
+        for index, action in enumerate(('A', 'B')):
+            prompt = f'\n[garuda] Approve {action}? [y/N]: '
+            await until(lambda prompt=prompt: prompt in out.getvalue())
+            before = out.getvalue()
+            assert before.endswith(prompt)
+            stream_sibling(f'SIBLING-DURING-{action}')
+            await asyncio.sleep(0.03)
+            assert out.getvalue() == before
+            tty.put('y')
+            assert await asyncio.wait_for(tasks[index], 2)
+        assert 'SIBLING-DURING-B' in out.getvalue()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        renderer.discard_assistant()

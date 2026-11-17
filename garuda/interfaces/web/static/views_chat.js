@@ -62,7 +62,7 @@ function chatSpec() {
 function openChat(chatId, known) {
   STATE.chat = {
     id: chatId, rows: [], offset: 0, info: known || null,
-    approvals: [], sources: [], pending: [], lastEvent: null
+    approvals: [], sources: [], pending: [], lastEvent: null, childOpen: Object.create(null)
   };
   render(chatShellHtml(chatId));
   wireChat();
@@ -162,6 +162,13 @@ function renderSources() {
 }
 
 function wireChat() {
+  // toggle does not bubble. Capture expansion before a polling render replaces it.
+  el("chat-log").addEventListener("toggle", function (event) {
+    var target = event.target;
+    if (STATE.chat && target.classList.contains("chat-child-preview") && target.isConnected) {
+      STATE.chat.childOpen[target.dataset.source] = target.open;
+    }
+  }, true);
   el("chat-form").addEventListener("submit", function (event) {
     event.preventDefault();
     sendChatTurn();
@@ -376,13 +383,26 @@ function appendChatRow(kind, text, isError, toolName) {
 function renderChatLog() {
   var node = el("chat-log");
   if (!node) return;
+  // The DOM changes before the asynchronous toggle event. Preserve it even if
+  // this poll replaces the element before the capture listener can run.
+  node.querySelectorAll(".chat-child-preview").forEach(function (child) {
+    STATE.chat.childOpen[child.dataset.source] = child.open;
+  });
   // Whether to stick to the bottom is decided *before* the re-render: afterwards the
   // scrollHeight has already changed, so every comparison says "not at the bottom" and the
   // view stops following a running turn.
   var atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
   var preview = STATE.chat.info && STATE.chat.info.preview;
   if (preview && preview.after !== STATE.chat.lastEvent) preview = null;
-  if (!STATE.chat.rows.length && !preview) {
+  var children = STATE.chat.info && STATE.chat.info.child_previews;
+  if (children && children.after !== STATE.chat.lastEvent) children = null;
+  var items = children ? children.items : [];
+  Object.keys(STATE.chat.childOpen).forEach(function (source) {
+    if (!items.some(function (item) { return item.source === source; })) {
+      delete STATE.chat.childOpen[source];
+    }
+  });
+  if (!STATE.chat.rows.length && !preview && !items.length) {
     // An empty <div> collapses to a hairline, which reads as a broken pane rather than as an
     // empty one. Say what it is instead.
     node.innerHTML =
@@ -397,6 +417,11 @@ function renderChatLog() {
       "<pre" + (row.error ? ' class="out-err"' : "") + ">" +
       esc(fmt.truncate(row.text, 4000)) + "</pre></div>"
     );
+  }).join("") + items.map(function (item) {
+    return '<details class="chat-row chat-subagent chat-child-preview" data-source="' +
+      esc(item.source) + '"' + (STATE.chat.childOpen[item.source] ? " open" : "") + '>' +
+      '<summary><span class="chat-who">↳ ' + esc(item.agent) + '</span> · depth ' +
+      Number(item.depth) + ' · writing…</summary><pre>' + esc(item.text) + '</pre></details>';
   }).join("") + (preview
     ? '<div class="chat-row chat-agent chat-preview"><span class="chat-who">writing…</span><pre>' +
       esc(preview.text) + '</pre></div>' : "");

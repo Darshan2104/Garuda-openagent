@@ -547,7 +547,51 @@ interleave by scheduling while retaining order within each source. Discard
 clears only the current call for its source; applications keeping a full history
 should track call boundaries separately. Each conversation turn must opt in
 again. Consult and collection children are excluded. Terminal and dashboard
-previews show only the parent.
+previews group ordinary subagents separately from the parent.
+
+### Watch subagents work live
+
+```bash
+garuda run -t "Delegate an investigation to harbor, then summarize it"
+garuda chat --workspace .
+garuda run --no-stream -t "Delegate an investigation to harbor, then summarize it"
+garuda web --allow-workspace .
+```
+
+With a TTY and usable `TERM`, native run/chat show dim lines such as
+`↳ harbor · depth 1 │ checking the request router`. Rich shares one transient
+region with the parent tail: at most three child lines plus an overflow count,
+tracking eight sources with 512-character tails and 32-character labels. The
+plain backend uses one erasable line; the parent wins when both have text.
+Child text and labels are reduced to printable characters; newlines become spaces.
+Each line shows the newest text that fits the terminal width.
+
+Each child's line clears when its model call completes or fails, on session end,
+or on its labelled discard. Parent response/tool/user/session events clear all
+children; budget and metric events do not. Turn exit clears everything. Clearing
+happens before child tools run, and terminal approval prompts suspend every live
+preview in the process, including streaming siblings. The thinking spinner yields
+to previews and resumes when the last preview clears. Approval presentation stops
+and restarts it even with `--no-stream`, adding terminal control bytes around the
+prompt. After a cancelled prompt, previews resume while its orphan stdin reader
+may remain; the next approval discards that reader's line before asking again.
+
+`--no-stream` disables both parent and child previews. Quiet, JSON, non-TTY,
+dumb/unset `TERM` and run's no-edits mode keep child forwarding off. Dashboard
+chat always enables it: collapsed **harbor · depth 1 · writing…** rows open to
+show child tails, with expansion preserved across polls. It retains at most four
+sources, 1,000 characters each and 64-character labels. Completion, stop, job
+cancel and settlement clear them. A parent-event anchor rejects stale snapshots.
+
+These tails never become the parent answer or persisted events. Completed child
+responses and the existing subagent handoff remain authoritative. Enabling
+forwarding selects the child's streaming transport, so child `model_response`
+events gain `live_coverage` and any existing stream/consumer error metadata.
+Child spend follows the parent streaming path's usage semantics: if a provider
+omits stream usage, attempts are charged at estimated prompt size with unknown cost.
+The SDK remains opt-in. Consults stay excluded because their answers can be
+withheld by a post-run workspace check; collection is auxiliary maintenance.
+Reasoning and tool arguments never appear in live previews.
 
 ### Watch assistant text in dashboard chat
 
@@ -563,7 +607,8 @@ returns, even while cleanup continues. The chat stays busy until cleanup finishe
 other chats keep their previews. Each turn starts with an empty preview,
 including while queued behind other work. On a stream fallback, discarded text is
 replaced by the completed answer. Reasoning and tool arguments are excluded from
-the preview. Only completed responses enter the saved event log; previews are
+the preview. Collapsible labelled child rows show ordinary delegated work separately.
+Only completed responses enter the saved event log; previews are
 transient and refresh with the dashboard poll. Non-streaming models keep their
 ordinary response behavior.
 

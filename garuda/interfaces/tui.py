@@ -2,7 +2,8 @@
 
 TTY runs attach the loop's delta consumer for a transient assistant preview;
 completed response events replace it with the authoritative text. Interactive
-chat drains those events and yields its thinking spinner to the preview.
+chat drains those events and yields its thinking spinner to the preview. Labelled
+child tails share that transient region and never become assistant responses.
 
 The renderer degrades gracefully: if ``rich`` is not installed it falls back to
 plain ``print`` output with an identical method surface. It is intentionally
@@ -17,8 +18,45 @@ import json
 import os
 import shutil
 import sys
+import weakref
+from dataclasses import dataclass
 from time import monotonic
 from typing import Any
+
+from garuda.model.streaming import CHILD_CALL_END
+
+CHILD_TAIL_CHARS = 512
+MAX_CHILD_SOURCES = 8
+MAX_CHILD_LINES = 3
+CHILD_LABEL_CHARS = 32
+_LIVE: weakref.WeakSet[ChatRenderer] = weakref.WeakSet()
+
+
+@dataclass
+class _ChildPreview:
+    agent: str
+    depth: int
+    tail: str
+    updated: float
+
+
+def _printable(text: str) -> str:
+    return "".join(c if c.isprintable() else " " for c in text)
+
+
+def preview_terminal() -> bool:
+    """Whether TERM permits transient previews (independent of the output TTY)."""
+    return os.environ.get("TERM", "").lower() not in {"", "dumb", "unknown"}
+
+
+@contextlib.contextmanager
+def suspend_previews():
+    """Reserve the process's terminal for an approval, including sibling streams."""
+    with contextlib.ExitStack() as stack:
+        for renderer in list(_LIVE):
+            stack.enter_context(renderer.suspended())
+        yield
+
 
 _TODO_MARKS = {"pending": "☐", "in_progress": "▶", "completed": "☑"}
 
@@ -60,7 +98,8 @@ class ChatRenderer:
     The public method surface is identical in both modes:
     ``header``, ``on_assistant_delta``, ``on_model_delta``, ``on_assistant_response``,
     ``discard_assistant``, ``on_tool_call``, ``on_tool_result``, ``on_todo``,
-    ``on_done`` and the ``thinking`` context manager.
+    ``on_done`` and the ``thinking`` context manager. Child deltas draw bounded,
+    labelled tails; call-end observers clear them before tools or approvals.
     """
 
     def __init__(self, use_rich: bool | None = None, stream=None):
@@ -76,6 +115,10 @@ class ChatRenderer:
         self._assistant_live = None
         self._assistant_refreshed: float | None = None
         self._status = None
+        self._children: dict[str, _ChildPreview] = {}
+        self._suspended = 0
+        self._plain_visible = False
+        _LIVE.add(self)
         self.rendered_assistant_text: set[str] = set()
         if self._rich:
             try:
@@ -134,63 +177,147 @@ class ChatRenderer:
     # -- assistant text ----------------------------------------------------
     def on_model_delta(self, delta) -> None:
         if getattr(delta, "source", None) is not None:
+            self._on_child_delta(delta)
             return
         if delta.kind == "discard":
             self.discard_assistant()
-        elif delta.kind == "text" and delta.text:
-            if os.environ.get("TERM", "").lower() in {"", "dumb", "unknown"}:
-                return
-            if self._status is not None:
-                self._status.stop()
+        elif delta.kind == "text" and delta.text and preview_terminal():
             console = self._console
             rich_preview = (self._rich and console is not None
                             and console.is_terminal and not console.is_dumb_terminal)
             width, height = (console.size if rich_preview else shutil.get_terminal_size())
             rows = max(1, height - 1) if rich_preview else 1
-            # Only the preview needs a tail; the response event owns the full text.
             limit = max(1, width) * rows
             self._assistant_text = (self._assistant_text + delta.text[-limit:])[-limit:]
-            now = monotonic()
-            if self._assistant_refreshed is not None and now - self._assistant_refreshed < 0.1:
-                return
-            self._assistant_refreshed = now
-            if rich_preview:
-                from rich.live import Live
-                from rich.text import Text
+            self._draw()
 
-                lines = Text(self._assistant_text).wrap(console, max(1, width))
-                preview = Text("\n").join(lines[-rows:])
-                if self._assistant_live is None:
-                    self._assistant_live = Live(
-                        preview, console=console,
-                        auto_refresh=False, transient=True,
-                    )
-                    self._assistant_live.start(refresh=True)
-                else:
-                    self._assistant_live.update(preview, refresh=True)
-            else:
-                # Keep the plain preview on one line so discard can erase it,
-                # even without Rich. Allow two terminal cells per character.
-                width = max(0, (width - 1) // 2)
-                text = "".join(c if c.isprintable() else " " for c in self._assistant_text)
-                self._out("\r\033[2K" + (text[-width:] if width else ""), end="")
+    def _on_child_delta(self, delta) -> None:
+        if not preview_terminal():
+            return
+        if delta.kind == "discard":
+            if self._children.pop(delta.source, None) is not None:
+                self._draw(force=True)
+        elif delta.kind == "text" and delta.text:
+            previous = self._children.get(delta.source)
+            tail = (previous.tail if previous else "") + _printable(delta.text[-CHILD_TAIL_CHARS:])
+            self._children[delta.source] = _ChildPreview(
+                _printable((delta.agent or "subagent")[:CHILD_LABEL_CHARS]),
+                int(delta.depth), tail[-CHILD_TAIL_CHARS:], monotonic(),
+            )
+            if len(self._children) > MAX_CHILD_SOURCES:
+                oldest = min(self._children, key=lambda source: self._children[source].updated)
+                del self._children[oldest]
+            self._draw()
 
-    def discard_assistant(self) -> None:
-        text, live = self._assistant_text, self._assistant_live
-        self._assistant_text = ""
-        self._assistant_live = None
+    def on_child_event(self, source_id: str, event: dict) -> None:
+        """Retire a child's call synchronously, before its tool dispatch."""
+        if event.get("type") in CHILD_CALL_END and source_id in self._children:
+            del self._children[source_id]
+            # Event observers must never interrupt append/tool dispatch, even
+            # when a terminal disappears while its last frame is being erased.
+            with contextlib.suppress(Exception):
+                self._draw(force=True)
+
+    def clear_children(self) -> None:
+        if self._children:
+            self._children.clear()
+            with contextlib.suppress(Exception):
+                self._draw(force=True)
+
+    def _close_preview(self) -> None:
+        live, self._assistant_live = self._assistant_live, None
         self._assistant_refreshed = None
         if live is not None:
-            # Rich's stop renders once with overflow visible; clear first so a
-            # long discarded answer cannot spill into terminal scrollback.
+            # Clear before stop: Rich's final overflow render must not spill
+            # provisional text into scrollback.
             try:
                 live.update("", refresh=True)
             finally:
                 live.stop()
-        elif text:
+        elif self._plain_visible:
             self._out("\r\033[2K", end="")
+        self._plain_visible = False
+
+    def _draw(self, force: bool = False) -> None:
+        if self._suspended:
+            return
+        if not self._assistant_text and not self._children:
+            self._close_preview()
+            if self._status is not None:
+                self._status.start()
+            return
         if self._status is not None:
-            self._status.start()
+            self._status.stop()
+        now = monotonic()
+        if not force and self._assistant_refreshed is not None and now - self._assistant_refreshed < 0.1:
+            return
+        self._assistant_refreshed = now
+        console = self._console
+        rich_preview = (self._rich and console is not None
+                        and console.is_terminal and not console.is_dumb_terminal)
+        width, height = (console.size if rich_preview else shutil.get_terminal_size())
+        children = sorted(self._children.values(), key=lambda child: child.updated, reverse=True)
+        if rich_preview:
+            from rich.cells import cell_len
+            from rich.console import Group
+            from rich.live import Live
+            from rich.text import Text
+
+            child_lines = []
+            for child in children[:MAX_CHILD_LINES]:
+                label = f"↳ {child.agent} · depth {child.depth} │ "
+                room = max(0, width - cell_len(label))
+                tail = child.tail[-room:] if room else ""
+                # Keep the newest text, including when characters occupy two cells.
+                while cell_len(tail) > room:
+                    tail = tail[1:]
+                child_lines.append(Text(label + tail, style="dim", no_wrap=True, overflow="crop"))
+            if len(children) > MAX_CHILD_LINES:
+                child_lines.append(Text(f"+{len(children) - MAX_CHILD_LINES} more subagents",
+                                        style="dim", no_wrap=True, overflow="ellipsis"))
+            rows = max(1, height - 1 - len(child_lines))
+            lines = Text(self._assistant_text).wrap(console, max(1, width))
+            if self._assistant_text:
+                child_lines.append(Text("\n").join(lines[-rows:]))
+            preview = Group(*child_lines)
+            if self._assistant_live is None:
+                self._assistant_live = Live(preview, console=console, auto_refresh=False, transient=True)
+                self._assistant_live.start(refresh=True)
+            else:
+                self._assistant_live.update(preview, refresh=True)
+        else:
+            # Allow two terminal cells per printable character, as for parent tails.
+            cells = max(0, (width - 1) // 2)
+            if self._assistant_text:
+                text = _printable(self._assistant_text)[-cells:] if cells else ""
+            else:
+                child = children[0]
+                label = f"[{child.agent} d{child.depth}] "
+                suffix = f" (+{len(children) - 1})" if len(children) > 1 else ""
+                room = max(0, cells - len(label) - len(suffix))
+                text = (label + (child.tail[-room:] if room else "") + suffix)[:cells]
+            self._out("\r\033[2K" + text, end="")
+            self._plain_visible = True
+
+    def discard_assistant(self) -> None:
+        self._assistant_text = ""
+        self._children.clear()
+        self._draw(force=True)
+
+    @contextlib.contextmanager
+    def suspended(self):
+        """Close the display, retaining bounded state to redraw when input ends."""
+        self._suspended += 1
+        if self._suspended == 1:
+            if self._status is not None:
+                self._status.stop()
+            self._close_preview()
+        try:
+            yield
+        finally:
+            self._suspended -= 1
+            if self._suspended == 0:
+                self._draw(force=True)
 
     def on_assistant_response(self, text: str | None) -> None:
         self.discard_assistant()

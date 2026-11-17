@@ -798,3 +798,7 @@ a { color: var(--accent); }
 .starter-bindings th, .starter-bindings td { padding: 6px; text-align: left; overflow-wrap: anywhere; }
 .starter-build-check { margin: 20px 0; border-top: 1px solid var(--border); }
 .starter-result .btn { margin: 4px 8px 4px 0; }
+
+/* Transient child text shares the subagent family colour of completed handoffs. */
+.chat-child-preview summary { grid-column: 1 / -1; cursor: pointer; color: var(--muted); }
+.chat-child-preview pre { grid-column: 1 / -1; max-height: none; }

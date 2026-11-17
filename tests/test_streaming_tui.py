@@ -289,17 +289,151 @@ def test_renderer_rich_smoke():
     renderer.on_done("done")
 
 
-@pytest.mark.parametrize("kind", ["text", "discard"])
-def test_renderer_ignores_labelled_deltas_without_stopping_spinner(monkeypatch, capsys, kind):
+@pytest.fixture(params=[False, True], ids=["plain", "rich"])
+def child_renderer(request, monkeypatch):
+    import io
+
+    if request.param and not tui.rich_available():
+        pytest.skip("rich not installed")
+    monkeypatch.setenv("TERM", "xterm")
+    terminal = io.StringIO()
+    renderer = ChatRenderer(use_rich=request.param, stream=terminal)
+    if request.param:
+        from rich.console import Console
+
+        renderer._console = Console(file=terminal, force_terminal=True, width=60, height=10)
+    # Exercise every frame rather than depending on wall-clock speed.
+    ticks = iter(range(1000))
+    monkeypatch.setattr(tui, "monotonic", lambda: next(ticks))
+    yield renderer, terminal
+    renderer.discard_assistant()
+
+
+def child_delta(source="child", text="child working", **kwargs):
     from garuda.model.streaming import LiveDelta
 
-    monkeypatch.setenv("TERM", "xterm")
-    renderer = ChatRenderer(use_rich=False)
-    status_calls = []
-    renderer._status = SimpleNamespace(
-        stop=lambda: status_calls.append("stop"), start=lambda: status_calls.append("start"),
-    )
-    renderer.on_model_delta(LiveDelta(kind, "child working", source="child", agent="harbor", depth=1))
-    assert capsys.readouterr().out == ""
+    return LiveDelta("text", text, source=source, agent=kwargs.get("agent", "harbor"),
+                     depth=kwargs.get("depth", 1))
+
+
+def test_child_delta_draws_labelled_line_and_stops_spinner(child_renderer):
+    renderer, terminal = child_renderer
+    calls = []
+    renderer._status = SimpleNamespace(stop=lambda: calls.append("stop"),
+                                       start=lambda: calls.append("start"))
+    from garuda.model.streaming import LiveDelta
+
+    renderer.on_model_delta(LiveDelta("reasoning", "private", source="child", agent="harbor", depth=1))
+    assert terminal.getvalue() == "" and calls == []
+    renderer.on_model_delta(child_delta())
+    assert "stop" in calls
+    assert "harbor" in terminal.getvalue() and "child working" in terminal.getvalue()
+    assert ("depth 1" if renderer._rich else "[harbor d1]") in terminal.getvalue()
     assert renderer._assistant_text == ""
-    assert status_calls == []
+
+
+def test_child_lines_are_bounded(child_renderer):
+    renderer, terminal = child_renderer
+    for i in range(12):
+        renderer.on_model_delta(child_delta(str(i), "x" * 5000, agent=f"agent{i}"))
+    assert len(renderer._children) == 8
+    assert all(len(c.tail) <= 512 for c in renderer._children.values())
+    if renderer._rich:
+        rendered = renderer._console.render_lines(renderer._assistant_live.renderable)
+        lines = ["".join(segment.text for segment in line) for line in rendered]
+        assert sum("depth 1" in line for line in lines) == 3
+        assert all(f"agent{i}" in lines[11 - i] for i in (11, 10, 9))
+        assert any("+5 more subagents" in line for line in lines)
+        from rich.text import Text
+        assert all(Text.from_ansi(line).cell_len <= 60 for line in lines)
+    else:
+        assert "(+7)" in terminal.getvalue().rsplit("\033[2K", 1)[-1]
+
+
+@pytest.mark.parametrize("text", ["old " * 200 + "LATEST", "界" * 500 + "LATEST"],
+                         ids=["ascii", "wide"])
+def test_child_line_shows_latest_text_within_terminal_width(child_renderer, text):
+    renderer, terminal = child_renderer
+    renderer.on_model_delta(child_delta(text=text))
+    if renderer._rich:
+        lines = renderer._console.render_lines(renderer._assistant_live.renderable)
+        visible = "".join(segment.text for line in lines for segment in line)
+        from rich.text import Text
+
+        assert all(sum(Text(segment.text).cell_len for segment in line) <= 60 for line in lines)
+    else:
+        visible = terminal.getvalue().rsplit("\033[2K", 1)[-1]
+    assert "harbor" in visible
+    assert "LATEST" in visible
+
+
+def test_child_text_and_label_are_sanitised(child_renderer):
+    renderer, terminal = child_renderer
+    renderer.on_model_delta(child_delta(text="safe\x1b]0;x\x07", agent="evil\x1b[31m"))
+    output = terminal.getvalue()
+    assert "evil" in output and "safe" in output
+    assert "\x1b]" not in output and "\x1b[31m" not in output
+    renderer.on_model_delta(child_delta(agent="evil\x1b[31m" + "x" * 1000))
+    assert len(renderer._children["child"].agent) == 32
+
+
+def test_labelled_discard_clears_only_that_source(child_renderer):
+    from garuda.model.streaming import LiveDelta
+
+    renderer, _ = child_renderer
+    renderer.on_model_delta(LiveDelta("text", "parent tail"))
+    renderer.on_model_delta(child_delta("a"))
+    renderer.on_model_delta(child_delta("b"))
+    renderer.on_model_delta(LiveDelta("discard", source="a"))
+    assert set(renderer._children) == {"b"}
+    assert renderer._assistant_text == "parent tail"
+
+
+@pytest.mark.parametrize("event", ["model_response", "model_call_failed", "session_end"])
+def test_child_call_end_event_clears_line_and_restarts_spinner(child_renderer, event):
+    renderer, terminal = child_renderer
+    calls = []
+    renderer._status = SimpleNamespace(stop=lambda: calls.append("stop"),
+                                       start=lambda: calls.append("start"))
+    renderer.on_model_delta(child_delta())
+    renderer.on_child_event("other", {"type": event})
+    assert renderer._children
+    renderer.on_child_event("child", {"type": "tool_call"})
+    assert renderer._children
+    renderer.on_child_event("child", {"type": event})
+    assert not renderer._children and renderer._assistant_live is None
+    assert calls == ["stop", "start"]
+    assert "\033[2K" in terminal.getvalue()
+
+
+def test_parent_response_clears_children(child_renderer):
+    renderer, terminal = child_renderer
+    renderer.on_model_delta(child_delta())
+    renderer.on_assistant_response("authoritative")
+    assert not renderer._children
+    assert "child working" not in terminal.getvalue().rsplit("\033[2K", 1)[-1]
+
+
+def test_suspend_previews_closes_and_blocks_drawing(child_renderer):
+    renderer, terminal = child_renderer
+    renderer.on_model_delta(child_delta())
+    with tui.suspend_previews():
+        assert renderer._assistant_live is None
+        entry = terminal.getvalue()
+        with tui.suspend_previews():
+            renderer.on_model_delta(child_delta(text="sibling still writing"))
+        assert terminal.getvalue() == entry
+    renderer.on_model_delta(child_delta(text=" resumes"))
+    assert len(terminal.getvalue()) > len(entry)
+
+
+@pytest.mark.parametrize("term", ["dumb", "unknown", None])
+def test_dumb_terminal_child_delta_is_inert(monkeypatch, capsys, term):
+    if term is None:
+        monkeypatch.delenv("TERM", raising=False)
+    else:
+        monkeypatch.setenv("TERM", term)
+    renderer = ChatRenderer(use_rich=False)
+    renderer.on_model_delta(child_delta())
+    assert capsys.readouterr().out == ""
+    assert not getattr(renderer, "_children", {})
