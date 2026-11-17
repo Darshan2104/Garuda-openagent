@@ -59,6 +59,12 @@ async def test_sdk_acp_run_wraps_result(monkeypatch):
     monkeypatch.setattr(
         agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra())
     )
+
+    async def refuse_native_assembly(*args, **kwargs):
+        pytest.fail("External runtimes must not assemble native tools, including editing fan-out")
+
+    monkeypatch.setattr("garuda.sdk.software_agent.prepare_agent_run", refuse_native_assembly)
+    monkeypatch.setattr("garuda.core.loop.prepare_run", refuse_native_assembly)
     agent = SoftwareAgent(workspace=".", runtime="faketest")
     result = await agent.run("hello via sdk")
     assert result.success is True

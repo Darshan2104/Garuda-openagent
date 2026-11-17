@@ -709,14 +709,25 @@ The version 1 canonical JSON response lists workers in request order:
 
 `candidate_id` and `provenance_digest` identify ready candidates. `child_result`
 uses the ordinary typed inline, referenced or unavailable delivery contract.
-Summaries are limited to 512 UTF-8 bytes. Under a small live output budget,
+After an integration attempt, the pre-integration receipt `state` is omitted;
+read `outcome` and `integration.state` for the integration result. A refused
+integration can leave the retained candidate ready for a later authorized attempt.
+Summaries are limited to 512 UTF-8 bytes. Output fits the smaller of the live
+output budget and the configured buffer threshold. Under a small budget,
 summaries, paths and ancillary receipt fields are omitted and typed delivery is
 marked unavailable rather than clipped. If even compact receipts cannot fit,
 `fanout.output_budget_too_small` refuses before launch.
+If a custom service returns oversized identities that still exceed the budget
+after compaction, `fanout.receipt_budget_exceeded` reports `delivery_failed`.
 
 With `integrate: "in_order"`, all children settle before ready candidates pass
 one at a time through the existing service's `integrate`. Parent path writes and
-acceptance commands keep their effective permission ceiling. Overlapping siblings
+acceptance commands keep their effective permission ceiling. Every task first
+passes the parent's `invoke_subagent` permission check, including ASK approval,
+before any worker launches. Each integration separately passes
+`integrate_editing_worker` permission checks with the candidate ID and provenance
+digest; a refusal returns `integration_refused` / `integration.permission_denied`.
+These checks use the session approval broker when installed. Overlapping siblings
 can return `integrated`, then `stale_base`; there is no automatic rebase here.
 Integration stops at the first quarantined candidate; later ready candidates
 carry `fanout.halted_after_uncertain` and remain available for inspection.
@@ -724,17 +735,24 @@ carry `fanout.halted_after_uncertain` and remain available for inspection.
 Shared assembly omits the tool without the opt-in, service, admitted
 `invoke_subagent`, local workspace, unrestricted effects, permitted tool,
 nonempty allowlist (when configured), and another delegation level. Explicit
-removal and readonly mode also omit it. Direct calls recheck local environment
+denial of `invoke_subagent` or `integrate_editing_worker`, removal and readonly
+mode also omit it. Direct calls recheck local environment
 and effective permissions. Busy runners, oversized batches, disallowed profiles,
 depth, shared launch limits and deadlines refuse the whole batch. An already
-exhausted run-tree spend gate refuses before launch; each child model call still
+exhausted run-tree spend gate returns `spend.exhausted` before launch, with `cause`
+set to `tokens`, `dollars` or `cost_unknown`; the last means a dollar-only cap
+cannot be enforced with unknown costs. The token precheck refuses when settled
+plus reserved tokens equal the cap, even though a zero-token reservation could
+still be admitted. Each child model call still
 reserves and settles on that shared gate. Children never receive this tool.
 
 An escaped ordinary child exception yields `worker.batch_failed`, after live
 siblings quarantine; nothing is integrated. Cancellation propagates after worker
 settlement. Inspect retained ownership with `garuda sessions show SESSION --json`.
-Approval prompts may still overlap until prompt serialization lands. CLI and
-dashboard exposure is deferred until then. Permission checks are guardrails, not
+Approval prompts may still overlap on this branch. Shared serialization and
+requester attribution belong to [#476](https://github.com/Darshan2104/Garuda-openagent/pull/476);
+remove this caveat once that work is merged and verified. CLI and dashboard
+exposure remains deferred. Permission checks are guardrails, not
 a sandbox. This feature makes no speed, cost or quality claim.
 
 ### Measure editing fan-out offline

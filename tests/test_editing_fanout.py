@@ -63,6 +63,8 @@ async def test_fanout_schema_bounds_batch_and_enumerates_allowlist(tmp_path):
     ("delegation", "fanout.delegation_not_admitted"), ("removed", "fanout.removed"),
     ("effects", "fanout.restricted_effects"), ("remote", "worker.unsupported_environment"),
     ("readonly", "fanout.readonly"), ("denied", "fanout.denied"),
+    ("delegation-denied", "fanout.delegation_not_admitted"),
+    ("integration-denied", "fanout.denied"),
     ("allowlist", "agent.subagent_not_allowed"), ("depth", "agent.delegation_too_deep"),
 ])
 async def test_fanout_exposure_refusals(tmp_path, reason, code):
@@ -85,6 +87,10 @@ async def test_fanout_exposure_refusals(tmp_path, reason, code):
         permissions = PermissionEngine(mode="readonly")
     elif reason == "denied":
         permissions = PermissionEngine(tool_rules={NAME: "deny"})
+    elif reason == "delegation-denied":
+        permissions = PermissionEngine(tool_rules={"invoke_subagent": "deny"})
+    elif reason == "integration-denied":
+        permissions = PermissionEngine(tool_rules={"integrate_editing_worker": "deny"})
     elif reason == "allowlist":
         config.subagents = []
     elif reason == "depth":
@@ -157,25 +163,44 @@ async def test_direct_call_refuses_without_launch(tmp_path, reason, code):
     assert runner.budget.launches == 0
 
 
-async def test_exhausted_spend_gate_refuses_batch_before_launch(tmp_path):
+@pytest.mark.parametrize("limits,cause", [
+    ({"max_tokens": 1, "settled_tokens": 1}, "tokens"),
+    ({"max_cost_usd": 1, "settled_cost_usd": 1}, "dollars"),
+    ({"max_cost_usd": 1, "cost_unknown_calls": 1}, "cost_unknown"),
+])
+async def test_exhausted_spend_gate_refuses_batch_before_launch(tmp_path, limits, cause):
     from garuda.core.editing_fanout import run_fanout
 
-    gate = SpendGate(max_tokens=1, settled_tokens=1)
+    gate = SpendGate(**limits)
     runner = _runner(tmp_path, editing_workers=SimpleNamespace(max_concurrent=2),
                      spend_gate=gate, workspace_kind="local")
     payload, error = await run_fanout(runner, TASKS, env=runner.env, session_id="s",
                                      permissions=PermissionEngine(), output_budget=16_000)
     assert error and payload["code"] == "spend.exhausted"
+    assert payload["cause"] == cause
     assert runner.budget.launches == gate.calls == 0
 
 
-async def test_acp_served_session_never_offers_fanout(tmp_path):
+async def test_acp_served_session_never_offers_fanout(tmp_path, monkeypatch):
+    from garuda.acp.server import make_native_runtime
     from garuda.agents.setup import prepare_agent_run
 
-    prepared = await prepare_agent_run("build", workspace=str(tmp_path), model=ScriptModel([]))
-    state = await _prepare(tmp_path, prepared.config, permissions=prepared.permissions,
-                           tools=prepared.tools)
-    assert NAME not in state.tool_map
+    async def scripted_prepare(*args, **kwargs):
+        return await prepare_agent_run(*args, **kwargs, model=ScriptModel([]))
+
+    # Replace only inference transport. Exercise the ACP server's actual factory,
+    # including any config changes it makes after shared preparation.
+    monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", scripted_prepare)
+    runtime = await make_native_runtime("acp-parent", workspace=str(tmp_path))
+    await runtime.start(task="inspect ACP configuration", session_id="acp-parent")
+    try:
+        assert runtime._config.editing_worker_fanout is False
+        assert runtime._config.editing_workers is None
+        state = await _prepare(tmp_path, runtime._config, permissions=runtime._permissions,
+                               tools=runtime._tools)
+        assert NAME not in state.tool_map
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("kwargs,cause", [

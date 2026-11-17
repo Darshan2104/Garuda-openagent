@@ -48,6 +48,8 @@ class FanOutEditingWorkersTool:
 
     async def execute(self, arguments, env, ctx):
         budget = ctx.output_budget(False) if ctx.output_budget else 16_000
+        if ctx.buffer is not None:
+            budget = min(budget, ctx.buffer.threshold_bytes)
         if budget < 2:
             # There is no valid JSON object in a zero/one-byte budget. Refuse
             # before orchestration rather than clip a receipt after execution.

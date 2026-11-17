@@ -161,6 +161,8 @@ class SpendGate:
     def would_refuse(self, estimate_tokens: int) -> str | None:
         """Read-only advisory admission check; zero also detects an exhausted cap.
 
+        A token cap is exhausted at settled + reserved >= max, so this refuses
+        at equality even when ``admit(estimate_tokens=0)`` could reserve zero.
         Per-call ``admit`` remains authoritative and owns reservation accounting.
         """
         estimate = max(0, int(estimate_tokens))

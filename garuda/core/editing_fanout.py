@@ -30,7 +30,10 @@ def fanout_exposure_refusal(config, *, permissions, tool_names, allowed_tool_eff
         return "worker.unsupported_environment"
     if permissions.mode == "readonly":
         return "fanout.readonly"
-    if permissions.check_tool(TOOL_NAME) == PermissionDecision.DENY:
+    if permissions.check_tool("invoke_subagent") == PermissionDecision.DENY:
+        return "fanout.delegation_not_admitted"
+    if any(permissions.check_tool(name) == PermissionDecision.DENY
+           for name in (TOOL_NAME, "integrate_editing_worker")):
         return "fanout.denied"
     if config.subagents == []:
         return "agent.subagent_not_allowed"
@@ -101,14 +104,24 @@ async def run_fanout(runner, arguments, *, env, session_id, permissions, output_
     if runner.workspace_kind not in (None, "local") or not _local(env) or not _local(runner.env):
         return _refused("worker.unsupported_environment", output_budget)
     gate = runner.spend_gate
-    if gate is not None and gate.limited and gate.would_refuse(0) is not None:
-        return _refused("spend.exhausted", output_budget)
+    if gate is not None and gate.limited:
+        cause = gate.would_refuse(0)
+        if cause is not None:
+            return _refused("spend.exhausted", output_budget, cause=cause)
     tasks = arguments["tasks"]
     integrate = arguments.get("integrate", "none")
     # Reserve enough space for identities, outcomes and compact typed delivery
     # before launching. Paths and summaries alone can exceed the live budget.
     if output_budget < 256 + sum(512 + len(canonical_json(t["profile"]).encode("utf-8")) for t in tasks):
         return _refused("fanout.output_budget_too_small", output_budget)
+    # The batch is another route to the ordinary delegation capability. Resolve
+    # every task's ASK/DENY before admitting any child, through the same broker.
+    for task in tasks:
+        allowed, _ = await permissions.evaluate_tool_call(
+            "invoke_subagent", {**task, "editing_worker": True},
+        )
+        if not allowed:
+            return _refused("fanout.delegation_not_admitted", output_budget)
     try:
         results = await runner.run_editing_workers([(t["profile"], t["task"]) for t in tasks])
     except ExceptionGroup as group:
@@ -162,10 +175,22 @@ async def run_fanout(runner, arguments, *, env, session_id, permissions, output_
             if halted:
                 entry["integration"] = {"state": "skipped", "code": "fanout.halted_after_uncertain"}
                 continue
-            outcome = await runner.editing_workers.integrate(
-                entry["candidate_id"], entry["provenance_digest"],
-                env=env, session_id=session_id, permissions=permissions,
+            allowed, _ = await permissions.evaluate_tool_call(
+                "integrate_editing_worker", {
+                    "candidate_id": entry["candidate_id"],
+                    "provenance_digest": entry["provenance_digest"],
+                },
             )
+            if allowed:
+                outcome = await runner.editing_workers.integrate(
+                    entry["candidate_id"], entry["provenance_digest"],
+                    env=env, session_id=session_id, permissions=permissions,
+                )
+            else:
+                outcome = {"state": "refused", "code": "integration.permission_denied"}
+            # The admission receipt describes the child before integration;
+            # expose the current outcome instead of retaining a stale state.
+            entry.pop("state", None)
             entry["integration"] = {k: outcome[k] for k in ("state", "code", "message") if k in outcome}
             entry["code"] = outcome.get("code")
             if outcome["state"] == "integrated":

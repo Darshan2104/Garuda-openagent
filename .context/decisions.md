@@ -7,26 +7,40 @@ an editing-worker service. The default is off; profiles, project settings, CLI,
 dashboard and ACP cannot enable it. Shared `prepare_run` inserts the reserved
 `fan_out_editing_workers` tool only with admitted `invoke_subagent`, a local
 workspace, unrestricted effects, effective permission outside readonly, no
+denial of `invoke_subagent` or `integrate_editing_worker`, no
 explicit removal, a nonempty allowlist when configured and another depth level.
 Caller-supplied tools with this name are removed before assembly. Children never
 inherit it; workers retain their stateless built-in toolkit and no delegation.
 
 `core/editing_fanout.py` validates the whole request, rechecks permissions and
-local backends, and refuses an already exhausted shared SpendGate before launch.
+local backends, and refuses an already exhausted shared SpendGate before launch
+with `cause` (`tokens`, `dollars` or `cost_unknown`). Every task resolves
+`evaluate_tool_call("invoke_subagent", ...)` before any launch; an ASK refusal
+refuses the entire batch without charging launches.
 `SpendGate.would_refuse(0)` recognizes tokens exactly at the cap without changing
-reservation or refusal counters; per-call `admit` remains authoritative.
+reservation or refusal counters. This advisory precheck refuses at equality,
+where a zero-token `admit` could still succeed; per-call `admit` remains authoritative.
 `run_editing_workers` owns unchanged allowlist/depth/launch/deadline/capacity
 bounds and concurrent settlement. Ordered versioned JSON receipts use existing
 typed child delivery. Tiny live budgets refuse before launch; compact receipts
-omit summaries and ancillary paths before generic shaping can clip them.
+omit summaries and ancillary paths before generic shaping can clip them. The
+delivery budget is the smaller of live output space and the buffer threshold.
 
 Optional in-order integration calls only the existing checked service after
-children settle, with the parent's effective path and acceptance permissions.
+children settle. Each candidate first resolves
+`evaluate_tool_call("integrate_editing_worker", ...)` with its ID and provenance
+digest, preserving ASK/DENY through the installed session broker. Refusal maps to
+`integration_refused` / `integration.permission_denied`; the existing service
+still enforces the parent's effective path and acceptance permissions.
+Entries omit the pre-integration receipt `state` after an integration attempt;
+`outcome` and `integration.state` describe the result without a stale ready claim.
 It stops on quarantine and maps stale-base outcomes without rebase logic.
 Ordinary `ExceptionGroup` maps to `worker.batch_failed` after sibling quarantine;
 cancellation and fatal base exceptions propagate. Approval prompts remain
-unserialized and CLI/dashboard service construction is deferred until shared
-prompt serialization lands. Permission checks are guardrails, not a sandbox.
+unserialized on this branch; #476 owns shared serialization and requester
+attribution. After merging #476, verify those paths and update the overlap caveats
+here, in ARCHITECTURE, teams and feature-quality-status. CLI/dashboard service
+construction remains deferred. Permission checks are guardrails, not a sandbox.
 No speed, cost or quality measurement is added.
 
 ## 2026-11-16 — Editing-worker fan-out is measured with a deterministic fixture (#384)

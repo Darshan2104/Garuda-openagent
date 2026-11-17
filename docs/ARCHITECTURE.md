@@ -336,19 +336,26 @@ fastest way to learn the system.
    can also set `AgentConfig.editing_worker_fanout=True` to admit the run-scoped
    `fan_out_editing_workers` tool. Shared assembly requires a service, admitted
    `invoke_subagent`, local workspace, unrestricted effects, effective tool
-   permission outside readonly, no explicit removal, a nonempty allowlist when
+   permission outside readonly, no denial of `invoke_subagent` or
+   `integrate_editing_worker`, no explicit removal, a nonempty allowlist when
    configured, and another delegation level. Profiles, settings, CLI and ACP
    cannot set the opt-in; delegated children never inherit the tool. The tool
    validates the whole request and refuses exhausted run-tree spend before
-   delegating unchanged bounds to `run_editing_workers`. Typed receipts follow
-   request order and fit the live output budget; insufficient receipt space
+   delegating unchanged bounds to `run_editing_workers`. Each task resolves the
+   parent's `invoke_subagent` permission, including ASK, before any launch;
+   integration resolves `integrate_editing_worker` permission per candidate through
+   the same engine and session broker. Typed receipts follow request order and fit
+   the smaller of the live output budget and buffer threshold; insufficient receipt space
    refuses before launch. Optional `in_order` integration only calls the existing
-   checked `integrate` after all children settle and stops at quarantine.
+   checked `integrate` after all children settle and stops at quarantine. Entries
+   omit the pre-integration `state` after an attempt; `outcome` and
+   `integration.state` describe its result. Spend refusals preserve their cause.
    Ordinary escaped exception groups map to `worker.batch_failed`; cancellation
    propagates. Permission checks remain guardrails, not a sandbox.
    Every child inherits the parent's approval handler through relocated permission
    checks; screening workspace state is task-local through a context variable.
-   Approval prompts are not serialized. The shared root `SpendGate` and
+   Approval prompts are not serialized on this branch; #476 owns that follow-up
+   and requester attribution. The shared root `SpendGate` and
    `DelegationBudget` remain unchanged.
    Integration binds a retained binary patch, base snapshot/HEAD/index and
    typed-output provenance by SHA-256. The existing confined integration checker
