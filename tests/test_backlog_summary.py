@@ -4,6 +4,7 @@ from garuda.context.condenser import CondenserContext, MicrocompactCondenser
 from garuda.context.summarizer import summarize_incremental
 from garuda.core.subagent import format_subagent_summary
 from garuda.model.protocol import ModelResponse
+from garuda.model.script_model import ScriptModel
 from garuda.types import AgentResult, Message, Role, ToolCall
 
 # --- #3: structured subagent summary ----------------------------------------
@@ -88,6 +89,13 @@ async def test_summarize_incremental_merges_prior_state():
     # Prior state and the new transcript were both provided to the model.
     assert "OLD_FACT" in model.prompts[0]
     assert "did a new thing" in model.prompts[0]
+
+
+async def test_a_truncated_summary_preserves_the_prior_state():
+    prior = "## Key findings\nDo not lose this established fact."
+    model = ScriptModel([ModelResponse(content="## Key findings\nPartial", tool_calls=[],
+                                       raw={"finish_reason": "length"})])
+    assert await summarize_incremental(model, prior, [], "task") == prior
 
 
 async def test_condenser_uses_incremental_state():

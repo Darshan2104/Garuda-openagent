@@ -130,7 +130,7 @@ class RigorousAgent:
         # all admit against the same budget. The critic is an auxiliary call, so
         # it is bound here for admission and for its model_response record.
         gate = gate_for(config)
-        accounting_token = accounting.bind(events, gate)
+        accounting_token = accounting.bind(events, gate, thinking_budget_tokens=config.thinking_budget_tokens)
         try:
             plan_profile = load_profile("plan")
             plan_config = plan_profile.to_agent_config()

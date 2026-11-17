@@ -15,8 +15,8 @@ MCP, and observability.
   prompt caching, concurrency control, and reproducible cost accounting.
 - Gives agents safe, inspectable tools for shell, files, edits, search, documents,
   tmux, web access, MCP, skills, custom tools, and subagents.
-- Persists sessions, records event logs and trajectories, and requires useful
-  completion evidence rather than accepting a bare claim of success.
+- Persists sessions, event logs and trajectories, and labels evidence-free
+  completion as `self_check: no_evidence`; eval and rigorous modes require evidence.
 - Verifies results with checks you choose (`--check`, trusted project checks),
   kept apart from the agent's own completion check.
 - Runs locally, in a sandbox, tmux, Docker, or a remote Docker environment, and

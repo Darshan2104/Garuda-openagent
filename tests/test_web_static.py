@@ -152,7 +152,7 @@ const spend = {state: "recorded", scope: hostile, max_tokens: 400000, max_cost_u
   unreported_failed_attempts: 0, estimated_token_calls: 0, refused: 0,
   inherited: {source: hostile, inherited_tokens: null}};
 const row = {session_id: "s", label: "completed", state: {}, workspace: null,
-  usage: "unknown", cost: "unknown", spend: spend};
+  usage: "unknown", cost: "unknown", spend: spend, self_check: {status: "no_evidence"}};
 const html = context.sessionRowHtml(row);
 // Every projected value goes through the same escaping boundary, including counters/caps.
 for (const key of Object.keys(spend)) {
@@ -160,12 +160,22 @@ for (const key of Object.keys(spend)) {
 }
 spend.inherited.inherited_tokens = hostile;
 const hostileHtml = context.sessionRowHtml(row);
-console.log(JSON.stringify({html, hostileHtml}));
+let detailHtml = "";
+context.document = {getElementById: () => null};
+context.render = html => { detailHtml = html; };
+context.api = () => Promise.resolve({...row, approvals: []});
+context.startSessionStream = () => {};
+context.loadStarterResult = () => {};
+context.sessionDetailView("s").then(() => {
+  console.log(JSON.stringify({html, hostileHtml, detailHtml}));
+});
 """
     result = subprocess.run([node, "-e", script, str(STATIC_DIR)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
     html = rendered["html"]
+    assert 'data-chip="self-check">self-check: no_evidence' in html
+    assert 'data-chip="self-check">self-check: no_evidence' in rendered["detailHtml"]
     assert 'data-chip="token cap">token cap: 400000' in html
     assert 'data-chip="scope">scope: &lt;img' in html
     assert 'data-chip="cost">cost: unknown' in html

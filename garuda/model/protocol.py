@@ -96,6 +96,16 @@ class Model(Protocol):
 
     def count_tokens(self, messages: list[Message]) -> int: ...
 
+    def output_token_bounds(self, ceiling: int) -> tuple[int, int]:
+        """Effective output ceiling and smallest provider-compatible output.
+
+        Transports that rewrite max_tokens must report that rewrite here, and
+        wrappers must forward it. Without transport knowledge, reserve thinking
+        in addition to the requested output rather than assuming it is free.
+        """
+        budget = getattr(self, "thinking_budget_tokens", None) or 0
+        return ceiling + budget, budget + 1
+
     # Optional. Counts the *whole request* — messages plus the tool schemas that
     # ride along with every call. Implementations MAY provide it; callers must go
     # through the ``count_request_tokens`` free function below, which falls back to
@@ -119,6 +129,17 @@ class Model(Protocol):
 def supports_streaming(model: object) -> bool:
     """True when ``model`` exposes the optional streaming interface."""
     return hasattr(model, "stream")
+
+
+def output_token_bounds(
+    model: object, ceiling: int, *, thinking_budget_tokens: int | None = None,
+) -> tuple[int, int]:
+    """Transport bounds, or a conservative allowance for unreported thinking."""
+    bounds = getattr(model, "output_token_bounds", None)
+    if callable(bounds) and getattr(type(model), "output_token_bounds", None) is not Model.output_token_bounds:
+        return bounds(ceiling)
+    budget = thinking_budget_tokens or getattr(model, "thinking_budget_tokens", None) or 0
+    return ceiling + budget, budget + 1
 
 
 def estimate_tools_tokens(tools: list[dict] | None) -> int:

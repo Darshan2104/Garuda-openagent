@@ -491,6 +491,23 @@ class LitellmModel:
             "include_images": self._supports_vision(),
         }
 
+    def output_token_bounds(self, ceiling: int) -> tuple[int, int]:
+        """Output ceiling and minimum that survive provider request building."""
+        minimum = 1
+        if self._reasoning_enabled() and self._thinking_budget_tokens:
+            budget = self._thinking_budget_tokens
+            ceiling = budget + 4096 if ceiling <= budget else ceiling
+            minimum = budget + 1
+        try:
+            limit = litellm.get_model_info(self._model_name).get("max_output_tokens")
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                ceiling = min(ceiling, limit)
+        except Exception:
+            pass  # Unknown model: retain the requested ceiling.
+        if ceiling < minimum:
+            raise ValueError("model output limit cannot accommodate the thinking budget")
+        return ceiling, minimum
+
     def _apply_reasoning(self, kwargs: dict) -> None:
         """Attach extended-thinking params. ``drop_params`` lets litellm silently
         ignore them on models that don't support reasoning, so the same profile
@@ -502,8 +519,8 @@ class LitellmModel:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
             # Anthropic requires max_tokens > thinking budget; ensure headroom.
             current_max = kwargs.get("max_tokens")
-            if current_max is None or current_max <= budget:
-                kwargs["max_tokens"] = budget + 4096
+            kwargs["max_tokens"] = self.output_token_bounds(
+                budget if current_max is None else current_max)[0]
             # Anthropic rejects temperature != 1 when thinking is on.
             kwargs.pop("temperature", None)
         elif self._reasoning_effort:

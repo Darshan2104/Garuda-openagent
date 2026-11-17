@@ -181,7 +181,7 @@ def test_an_inherited_check_is_stale_once_the_tree_differs(tmp_path):
     workspace = _repo(tmp_path / "w")
     sid = _session(store, workspace, "checked")
     store.update_meta(sid, {
-        "state": finished(success=True, completion_gate={"verifier": True}),
+        "state": finished(success=True, completion_gate={"verifier": True, "self_check": "passed"}),
         FINAL_STATE_KEY: capture_baseline(workspace).to_dict(),
     })
 

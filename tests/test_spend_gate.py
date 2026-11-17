@@ -19,7 +19,7 @@ from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.core.spend import SpendGate, SpendLimitExceeded
 from garuda.model import accounting
-from garuda.model.protocol import ContextOverflowError, ModelResponse
+from garuda.model.protocol import ContextOverflowError, ModelResponse, count_request_tokens
 from garuda.model.script_model import ScriptModel
 from garuda.model.streaming import IncompleteStreamError
 from garuda.tools import default_tools
@@ -57,6 +57,297 @@ async def test_concurrent_calls_cannot_both_spend_the_same_remainder():
     await gate.settle(admitted, {"total_tokens": 30})
     assert gate.reserved_tokens == 0 and gate.settled_tokens == 30
     await gate.admit("c", estimate_tokens=60)  # the released remainder is reusable
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_token_cap_sends_the_reserved_ceiling_on_main_calls(tmp_path, streaming):
+    """#479: a provider must receive the ceiling the gate reserves."""
+    gate = SpendGate(max_tokens=20_000)
+    sent = []
+
+    class Recording(ScriptModel):
+        def provider_response(self, messages, tools, max_tokens):
+            prompt = count_request_tokens(self, messages, tools)
+            sent.append((max_tokens, gate.reserved_tokens, prompt))
+            # A provider may generate 30k tokens by default, but must honor a
+            # ceiling it receives. Do not teach this double the run's budget.
+            output = min(30_000, max_tokens) if max_tokens is not None else 30_000
+            return ModelResponse(content="answer", tool_calls=[], usage={
+                "prompt_tokens": prompt, "completion_tokens": output, "total_tokens": prompt + output,
+            })
+
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            return self.provider_response(messages, tools, max_tokens)
+
+        async def stream(self, messages, tools=None, temperature=None, max_tokens=None):
+            provider = ScriptModel([self.provider_response(messages, tools, max_tokens)])
+            async for delta in provider.stream(messages, tools, temperature, max_tokens):
+                yield delta
+
+    config = AgentConfig(max_turns=2, enable_verifier=False, spend_gate=gate)
+    result = await DefaultAgent().run(
+        task="t", model=Recording([]),
+        env=LocalEnvironment(tmp_path), tools=default_tools(), config=config,
+        model_delta_consumer=(lambda delta: None) if streaming else None,
+    )
+    assert result.success
+    ceiling, reserved, prompt = sent[0]
+    assert ceiling is not None, "token-capped calls must not send an unbounded output"
+    assert 0 < ceiling <= config.reserved_output_tokens
+    assert reserved == prompt + ceiling <= gate.max_tokens
+    assert gate.settled_tokens == reserved <= gate.max_tokens
+
+
+@pytest.mark.parametrize("thinking,cap", [(None, 1000), (None, 5000), (8000, 10_000), (8000, 20_000), (8000, 8000)])
+async def test_token_cap_sends_and_reserves_auxiliary_thinking_ceiling(monkeypatch, thinking, cap):
+    """#479: the actual provider payload, including thinking, fits admission."""
+    import litellm
+
+    from garuda.model.litellm_model import LitellmModel
+
+    gate = SpendGate(max_tokens=cap)
+    sent = []
+    model = LitellmModel("anthropic/claude-sonnet-4-20250514", thinking_budget_tokens=thinking)
+    messages = [Message(role=Role.USER, content="hi")]
+
+    async def provider(**kwargs):
+        sent.append((kwargs.get("max_tokens"), gate.reserved_tokens))
+        return litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "ok"}}])
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    token = accounting.bind(EventStore(), gate)
+    try:
+        if cap < (12_096 if thinking else 4096):
+            with pytest.raises(SpendLimitExceeded):
+                await accounting.complete(model, messages, purpose="verifier")
+            assert sent == [] and gate.calls == gate.reserved_tokens == 0
+            return
+        await accounting.complete(model, messages, purpose="verifier")
+    finally:
+        accounting.reset(token)
+    ceiling, reserved = sent[0]
+    assert ceiling is not None and (thinking or 0) < ceiling <= cap
+    assert reserved == model.count_request_tokens(messages) + ceiling <= cap
+
+
+async def test_concurrent_auxiliary_calls_send_only_their_atomic_reservations():
+    """#479: concurrent auxiliary calls each need their full requested output."""
+    gate = SpendGate(max_tokens=100)
+    sent = []
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    class Concurrent(ScriptModel):
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            sent.append(max_tokens)
+            admitted.set()
+            await release.wait()
+            return ModelResponse(content="ok", tool_calls=[])
+
+    token = accounting.bind(EventStore(), gate)
+    try:
+        model = Concurrent([])
+        messages = [Message(role=Role.USER, content="12345678")]
+        first = asyncio.create_task(accounting.complete(model, messages, purpose="summarizer", max_tokens=80))
+        await asyncio.wait_for(admitted.wait(), 2)
+        try:
+            second = asyncio.create_task(accounting.complete(model, messages, purpose="summarizer", max_tokens=80))
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(SpendLimitExceeded):
+                await second
+        finally:
+            release.set()
+            await first
+    finally:
+        accounting.reset(token)
+    assert sent == [80]
+    assert gate.settled_tokens == 82 and gate.reserved_tokens == 0
+
+
+@pytest.mark.parametrize("requested", [None, 30])
+async def test_auxiliary_call_refuses_instead_of_sending_a_partial_ceiling(requested):
+    gate = SpendGate(max_tokens=200)
+    gate.settled_tokens = 150
+    model = _Counting([ModelResponse(content="truncated", tool_calls=[])])
+    token = accounting.bind(EventStore(), gate)
+    try:
+        with pytest.raises(SpendLimitExceeded):
+            await accounting.complete(model, [Message(role=Role.USER, content="x" * 100)],
+                                      purpose="summarizer", max_tokens=requested)
+    finally:
+        accounting.reset(token)
+    assert model.sent == gate.calls == gate.reserved_tokens == 0
+
+
+@pytest.mark.parametrize("configured,remaining,admitted", [(None, 1023, False), (None, 1024, True),
+                                                         (50, 49, False), (50, 50, True)])
+async def test_main_calls_require_a_useful_output_minimum(tmp_path, configured, remaining, admitted):
+    sent = []
+
+    class Recording(ScriptModel):
+        def count_request_tokens(self, messages, tools=None):
+            return 0
+
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            sent.append(max_tokens)
+            return ModelResponse(content="done", tool_calls=[], usage={"total_tokens": 1})
+
+    result = await DefaultAgent().run(
+        task="t", model=Recording([]), env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=AgentConfig(max_turns=1, enable_verifier=False, max_tokens=configured,
+                           max_run_tokens=remaining),
+    )
+    assert result.success is admitted
+    assert sent == ([remaining] if admitted else [])
+    if not admitted:
+        assert result.metadata["spend_limit"] == "tokens"
+
+
+@pytest.mark.parametrize("dollar_cap", [None, 5.0])
+async def test_without_a_token_cap_main_calls_keep_the_provider_default(tmp_path, dollar_cap):
+    sent = []
+
+    class Recording(ScriptModel):
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            sent.append(max_tokens)
+            return ModelResponse(content="done", tool_calls=[], usage={"total_tokens": 1, "cost_usd": 0.01})
+
+    result = await DefaultAgent().run(
+        task="t", model=Recording([]), env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=AgentConfig(max_turns=1, enable_verifier=False, max_run_cost_usd=dollar_cap),
+    )
+    assert result.success and sent == [None]
+
+
+async def test_wrapped_thinking_reserves_the_full_provider_payload(monkeypatch):
+    import litellm
+
+    from garuda.eval.harbor_adapter import _UsageTrackingModel
+    from garuda.model.litellm_model import LitellmModel
+
+    gate = SpendGate(max_tokens=100_000)
+    sent = []
+    inner = LitellmModel("anthropic/claude-sonnet-4-20250514", thinking_budget_tokens=8000)
+    model = _UsageTrackingModel(inner)
+    messages = [Message(role=Role.USER, content="hi")]
+
+    async def provider(**kwargs):
+        sent.append((kwargs["max_tokens"], gate.reserved_tokens))
+        return litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "ok"}}])
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    token = accounting.bind(EventStore(), gate)
+    try:
+        await accounting.complete(model, messages, purpose="verifier")
+    finally:
+        accounting.reset(token)
+    assert sent == [(12_096, inner.count_request_tokens(messages) + 12_096)]
+
+
+@pytest.mark.parametrize("protocol_default", [False, True])
+async def test_an_unreported_model_bound_uses_the_configured_thinking_budget(tmp_path, protocol_default):
+    from garuda.model.protocol import Model
+
+    gate = SpendGate(max_tokens=100_000)
+    sent = []
+
+    class UnreportedBounds(ScriptModel):
+        if protocol_default:
+            output_token_bounds = Model.output_token_bounds
+
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            sent.append((max_tokens, gate.reserved_tokens, count_request_tokens(self, messages, tools)))
+            return await super().complete(messages, tools, temperature, max_tokens)
+
+    model = UnreportedBounds([
+        _call("task_complete", "done", {"total_tokens": 1}, summary="Completed and checked the work.",
+              verification_commands=["true"]),
+        _text("APPROVED", 1),
+    ])
+    config = AgentConfig(max_turns=2, enable_llm_verifier=True, thinking_budget_tokens=8000,
+                         spend_gate=gate)
+    result = await DefaultAgent().run(
+        task="t", model=model, env=LocalEnvironment(tmp_path), tools=default_tools(), config=config,
+        permissions=PermissionEngine(mode="yolo"),
+    )
+    assert result.success and len(sent) == 2
+    ceiling, reserved, prompt = sent[1]
+    assert ceiling == 4096 + 8000
+    assert reserved == prompt + ceiling
+
+
+@pytest.mark.parametrize("limit", [4096, 8192, None, "unknown"])
+async def test_token_capped_main_ceiling_respects_known_model_output_limit(tmp_path, monkeypatch, limit):
+    import litellm
+
+    from garuda.model.litellm_model import LitellmModel
+
+    sent = []
+
+    def info(model):
+        if limit == "unknown":
+            raise ValueError("model not in catalog")
+        return {"max_output_tokens": limit}
+
+    async def provider(**kwargs):
+        sent.append(kwargs["max_tokens"])
+        return litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "ok"}}])
+
+    monkeypatch.setattr(litellm, "get_model_info", info)
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    config = AgentConfig(max_turns=1, enable_verifier=False, max_run_tokens=100_000)
+    result = await DefaultAgent().run(
+        task="t", model=LitellmModel("test/output-limit"), env=LocalEnvironment(tmp_path),
+        tools=default_tools(), config=config,
+    )
+    assert result.success
+    assert sent == [limit if isinstance(limit, int) else 16_000]
+
+
+@pytest.mark.parametrize("configured", [50, 9000, 50_000])
+async def test_main_thinking_ceiling_matches_the_provider_and_config(tmp_path, monkeypatch, configured):
+    """#479: thinking raises small ceilings, but preserves valid explicit ones."""
+    import litellm
+
+    from garuda.model.litellm_model import LitellmModel
+
+    gate = SpendGate(max_tokens=100_000)
+    sent = []
+    model = LitellmModel("anthropic/claude-sonnet-4-20250514", thinking_budget_tokens=8000)
+
+    async def provider(**kwargs):
+        sent.append((kwargs["max_tokens"], gate.reserved_tokens))
+        return litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "ok"}}])
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    config = AgentConfig(max_turns=1, enable_verifier=False, thinking_budget_tokens=8000,
+                         max_tokens=configured, spend_gate=gate)
+    result = await DefaultAgent().run(task="t", model=model, env=LocalEnvironment(tmp_path),
+                                      tools=default_tools(), config=config)
+    assert result.success
+    ceiling, reservation = sent[0]
+    assert ceiling == (12_096 if configured <= 8000 else configured)
+    assert ceiling < reservation <= gate.max_tokens
+    assert gate.settled_tokens == reservation
+
+
+async def test_final_submission_spend_refusal_reports_spend_limit(tmp_path):
+    """#480: the forced final exchange has the ordinary spend failure contract."""
+    config = AgentConfig(max_turns=1, enable_verifier=True, max_tokens=50, max_run_tokens=40_000)
+    events = EventStore()
+    result = await DefaultAgent().run(
+        task="t", model=ScriptModel([_call("ls", "c1", {"total_tokens": 39_990}, path=".")]),
+        env=LocalEnvironment(tmp_path), tools=default_tools(), config=config,
+        permissions=PermissionEngine(mode="yolo"), events=events,
+    )
+    records = events.get_all()
+    assert any(e["type"] == "budget" and e["payload"].get("stage") == "final_submission"
+               for e in records)
+    assert any(e["type"] == "budget" and e["payload"].get("refused") == "main" for e in records)
+    end = [e["payload"] for e in records if e["type"] == "session_end"][-1]
+    assert end["reason"] == "spend_limit"
+    assert end["spend_cause"] == result.metadata["spend_limit"] == "tokens"
 
 
 async def test_spend_checkpoint_records_admission_and_settlement():
@@ -393,9 +684,9 @@ async def test_a_subagent_admits_against_the_roots_gate(tmp_path, monkeypatch):
     admitted = []
     original = SpendGate.admit
 
-    async def recording(self, purpose, *, estimate_tokens):
+    async def recording(self, purpose, *, estimate_tokens, **bounds):
         admitted.append((id(self), purpose))
-        return await original(self, purpose, estimate_tokens=estimate_tokens)
+        return await original(self, purpose, estimate_tokens=estimate_tokens, **bounds)
 
     monkeypatch.setattr(SpendGate, "admit", recording)
     result, config, _ = await _run(tmp_path, script, max_run_tokens=1_000_000)
@@ -792,8 +1083,8 @@ async def test_the_rigorous_plan_and_build_share_one_gate(tmp_path):
 
 
 async def test_a_refused_critic_call_ends_a_rigorous_run_on_the_spend_limit(tmp_path):
-    # Plan and build fit; the build's report leaves less than a critic call's
-    # output reservation, so the critic is refused rather than sent unbudgeted.
+    # Plan and build fit; the build leaves too little for the critic's full
+    # requested output, so the critic is refused before sending.
     script = [_text("PLAN: do it", 100), _text("done", 197_000)] + [_text("REJECTED: no", 10)] * 6
     result, config, events, model = await _rigorous(tmp_path, script, max_run_tokens=200_000)
     assert model.sent == 2 and not result.success

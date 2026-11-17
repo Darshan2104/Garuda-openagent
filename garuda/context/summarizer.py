@@ -1,3 +1,5 @@
+import logging
+
 from garuda.model import accounting
 from garuda.model.protocol import Model
 from garuda.types import Message, Role
@@ -74,6 +76,9 @@ async def summarize_incremental(
             ),
         ]
     )
+    if response.raw.get("finish_reason") == "length":
+        logging.getLogger(__name__).warning("Incremental summary truncated; keeping prior state")
+        return prior_state
     return (response.content or "").strip() or prior_state
 
 

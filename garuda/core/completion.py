@@ -1,7 +1,7 @@
 """The completion gate: what happens when the agent calls ``task_complete``.
 
-Split out of ``core/loop.py``. Calling ``task_complete`` does not end a run — this
-does, and only if the run can show its work. In order:
+Split out of ``core/loop.py``. Calling ``task_complete`` asks this gate to decide
+whether the run can end, according to its mode. In order:
 
 1. **Acceptance contract** — derive checkable criteria from the task statement (once,
    lazily) and refuse while any is outstanding.
@@ -89,6 +89,7 @@ class CompletionGate:
     output_failures: int = 0
     failure: str | None = None
     failure_message: str = ""
+    self_check_status: str | None = None
 
     def _defer(self, content: str) -> None:
         """Queue a USER-role message to append *after* the call's tool result.
@@ -170,13 +171,21 @@ class CompletionGate:
             # Separate key: `evidence` stays a list of command outputs, which
             # the judge prompt and the dashboard render as such.
             payload["workspace_delta"] = result.workspace
+        if result.approved and self.config.enable_verifier:
+            self.self_check_status = "passed" if result.evidence else "no_evidence"
+            payload["self_check"] = self.self_check_status
+        elif self.config.enable_verifier:
+            self.self_check_status = "failed"
         self.events.append(EventType.VERIFICATION, payload)
         if result.approved:
             self.gate.approvals += 1
             return True, summary
 
         feedback = result.feedback or "Completion verification failed."
-        self.gate.record_rejection(verification_commands, feedback)
+        if result.permission_denied:
+            self.gate.record_unexamined_rejection(feedback)
+        else:
+            self.gate.record_rejection(verification_commands, feedback)
         self._reject(call, feedback)
         return False, feedback
 

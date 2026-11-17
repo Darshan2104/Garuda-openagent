@@ -27,7 +27,7 @@ from garuda.core.completion import CONTRACT_REJECT_LIMIT
 from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
 from garuda.core.permissions import PermissionEngine, permission_workspace
-from garuda.core.run_state import RunState, prepare_run
+from garuda.core.run_state import RunState, prepare_run, reserved_output_tokens
 from garuda.core.spend import SpendLimitExceeded
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
@@ -163,7 +163,9 @@ class DefaultAgent:
 
             # Auxiliary model calls (summarizer, buffer_query, verifier, ...) record to this
             # run's store for as long as it runs.
-            accounting_token = accounting.bind(state.events, state.config.spend_gate)
+            accounting_token = accounting.bind(
+                state.events, state.config.spend_gate,
+                thinking_budget_tokens=state.config.thinking_budget_tokens)
             try:
                 turn = 0
                 for turn in range(1, state.config.max_turns + 1):
@@ -262,6 +264,10 @@ class DefaultAgent:
         model_ms = [0.0]
         try:
             response = await self._complete_or_shrink(state, model, turn, model_ms, tools=schema)
+        except SpendLimitExceeded as exc:
+            if state.metrics.current is not None:
+                state.metrics.current.model_ms = model_ms[0]
+            return self._spend_limited(state, exc, turns)
         except Exception as exc:
             # The run had already failed; a model error here changes nothing about
             # that, so it is logged and the ordinary exhausted result stands.
@@ -334,6 +340,18 @@ class DefaultAgent:
             )
         return state.result(True, decision.summary, turns, output=decision.output)
 
+    def _spend_limited(self, state: RunState, exc: SpendLimitExceeded, turns: int) -> AgentResult:
+        """The same terminal spend result for ordinary and forced exchanges."""
+        if state.emit_session_events:
+            state.events.append(EventType.SESSION_END, {
+                "success": False, "reason": "spend_limit", "spend_cause": exc.cause,
+                "error": str(exc),
+            })
+        what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
+        result = state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turns)
+        result.metadata["spend_limit"] = exc.cause
+        return result
+
     async def _timed_complete(
         self, state: RunState, model: Model, model_ms: list[float], tools: list[dict] | None = None
     ):
@@ -353,12 +371,21 @@ class DefaultAgent:
         tools = state.tools_schema if tools is None else tools
         gate = state.config.spend_gate
         reservation = None
+        max_tokens = state.config.max_tokens
         if gate is not None:
             # Prompt as the context gauge measures it, plus the requested output
             # ceiling. A refusal raises before anything is sent.
-            estimate = (state.context.budget_snapshot()["used_tokens"]
-                        + (state.config.max_tokens or accounting.AUXILIARY_OUTPUT_ESTIMATE))
-            reservation = await accounting.admit(gate, "main", estimate)
+            if gate.max_tokens is not None:
+                reservation = await accounting.admit_call(
+                    gate, "main", model, messages, tools=tools,
+                    max_tokens=reserved_output_tokens(state.config),
+                    shrink_output=True,
+                )
+                max_tokens = reservation.output_tokens
+            else:
+                estimate = (state.context.budget_snapshot()["used_tokens"]
+                            + (max_tokens or accounting.AUXILIARY_OUTPUT_ESTIMATE))
+                reservation = await accounting.admit(gate, "main", estimate)
         response = error = None
         try:
             with stopwatch() as holder:
@@ -373,13 +400,13 @@ class DefaultAgent:
                         # max_tokens would shrink the reserve while leaving the response
                         # free to exceed it — making the budget less safe on exactly the
                         # config that reads as tightening it.
-                        max_tokens=state.config.max_tokens,
+                        max_tokens=max_tokens,
                     )
                     return response
                 # Live output is a view of the same call: the response is assembled
                 # in full before anything below dispatches a tool from it.
                 call = await streaming.stream_complete(
-                    model, messages, tools=tools, max_tokens=state.config.max_tokens,
+                    model, messages, tools=tools, max_tokens=max_tokens,
                     consumer=state.delta_consumer,
                 )
                 call.response.raw = {**call.response.raw, "live": call.metadata()}
@@ -504,17 +531,7 @@ class DefaultAgent:
         except SpendLimitExceeded as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
-            if state.emit_session_events:
-                state.events.append(
-                    EventType.SESSION_END,
-                    {"success": False, "reason": "spend_limit", "spend_cause": exc.cause,
-                     "error": str(exc)},
-                )
-            what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
-            result = state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turn)
-            # Read by a caller that runs phases of its own (rigorous) to stop there.
-            result.metadata["spend_limit"] = exc.cause
-            return result
+            return self._spend_limited(state, exc, turn)
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]

@@ -213,6 +213,8 @@ class VerificationResult:
     #: The session's workspace delta from its recorded baseline, when the entry
     #: point supplied one. Kept apart from ``evidence`` (command outputs only).
     workspace: dict = field(default_factory=dict)
+    # Policy refusals never judge the commands, including ones not yet run.
+    permission_denied: bool = False
 
 
 @dataclass
@@ -241,7 +243,7 @@ class CompletionGateState:
 
         Only for verdicts that examined ``commands`` and found them wanting —
         those are the ones a resubmission must improve on. A rejection made on
-        other grounds must use :meth:`record_contract_rejection`.
+        other grounds must use :meth:`record_unexamined_rejection`.
         """
         self.rejections += 1
         self.rejected_command_sets.append(frozenset(commands))
@@ -259,6 +261,10 @@ class CompletionGateState:
         was to invent a verification command it never needed, so runs burned to
         the turn cap with the work already correct on disk.
         """
+        self.record_unexamined_rejection(feedback)
+
+    def record_unexamined_rejection(self, feedback: str | None) -> None:
+        """Count a refusal without judging the attempt's command set."""
         self.rejections += 1
         self.last_feedback = feedback
 
@@ -718,6 +724,7 @@ class CompletionVerifier:
             approved=False,
             checklist=checklist,
             evidence=observed,
+            permission_denied=True,
             feedback=(
                 f"Verification command denied by permission policy: {command}"
                 + (f" ({reason})" if reason else "")

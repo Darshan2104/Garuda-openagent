@@ -35,6 +35,12 @@ function verificationChip(v) {
   return chip("verification", text, v.status === "passed" ? "chip-on" : (v.status === "failed" ? "chip-bad" : "chip-off"));
 }
 
+function selfCheckChip(check) {
+  if (!check) return "";
+  return chip("self-check", check.status, check.status === "passed" ? "chip-on" :
+    (check.status === "failed" ? "chip-bad" : "chip-off"));
+}
+
 function identityText(row) {
   var parts = [row.runtime || "native"];
   if (row.role && row.role.name) parts.push("role " + row.role.name);
@@ -78,7 +84,7 @@ function sessionRowHtml(row) {
     (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") + "</td>" +
     '<td><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' + esc(row.label) + "</span></td>" +
     "<td>" + esc(identityText(row)) + "</td>" +
-    "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + "</td>" +
+    "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
     "<td>" + esc(queueText(row.queue)) + "</td>" +
     '<td title="' + esc(row.workspace || "") + '">' + esc(row.workspace ? fmt.tail(row.workspace, 36) : "—") + (row.branch ? " @ " + esc(row.branch) : "") + "</td>" +
     '<td class="num">' + esc(row.usage) + " / " + esc(row.cost) + '<div class="chips">' + spendHtml(row.spend) + "</div></td>" +
@@ -296,6 +302,7 @@ function sessionDetailView(id) {
       chip("process", state.process) + chip("work", state.work) +
       chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) +
       verificationChip(row.verification) +
+      selfCheckChip(row.self_check) +
       chip("queue", queueText(row.queue)) + chip("usage", row.usage) + chip("cost", row.cost) +
       "</div>" +
       '<div class="card" id="session-spend"><h2>Spend</h2>' + spendHtml(row.spend) + "</div>" +

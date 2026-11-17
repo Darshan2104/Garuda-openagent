@@ -38,9 +38,10 @@ def test_impossible_states_are_rejected(state):
         ss.validate(state)
 
 
-def _done():
-    return ScriptModel([ModelResponse(content=None, tool_calls=[ToolCall(
-        id="d", name="task_complete", arguments={"summary": "A fully detailed completion summary of the work done."})])])
+def _done(*prefix, commands=None):
+    return ScriptModel([*prefix, ModelResponse(content=None, tool_calls=[ToolCall(
+        id="d", name="task_complete", arguments={"summary": "A fully detailed completion summary of the work done.",
+                                                "verification_commands": commands or []})])])
 
 
 async def _run(tmp_path, config):
@@ -48,17 +49,84 @@ async def _run(tmp_path, config):
     return await DefaultAgent().run(task="t", model=_done(), env=env, tools=default_tools(), config=config)
 
 
-async def test_a_gate_pass_is_a_self_check_not_verification(tmp_path):
-    result = await _run(tmp_path, AgentConfig(max_turns=3, enable_verifier=True))
+@pytest.mark.parametrize("mode", ["interactive", "readonly"])
+async def test_a_gate_pass_without_evidence_records_no_evidence(tmp_path, mode, monkeypatch, capsys):
+    from garuda.core.modes import apply_mode_preset
+
+    config = AgentConfig(max_turns=3)
+    apply_mode_preset(config, mode)
+    result = await _run(tmp_path, config)
     store = SessionStore(tmp_path / "sessions")
     store.begin("s1", task="t", model="m", agent="a", workspace=str(tmp_path))
     store.finish("s1", result)
 
     state = store.load_meta("s1")["state"]
     assert state["outcome"] == "completed" and state["work"] == "done"
-    assert state["self_check"] == {"status": "passed", "source": "native-completion-gate"}
+    assert result.success
+    assert state["self_check"] == {"status": "no_evidence", "source": "native-completion-gate"}
     assert state["verification"] == {"status": "unavailable"}
     assert store.load_meta("s1")["status"] == "success"  # legacy projection unchanged
+
+    from garuda.observability.trajectory import build_run
+
+    trajectory = build_run(result.metadata["events"]).to_dict()
+    assert trajectory["turns"][-1]["gates"][-1]["self_check"] == "no_evidence"
+
+    from garuda.interfaces.main import build_parser, run_sessions
+
+    monkeypatch.setenv("GARUDA_SESSIONS_DIR", str(store.root))
+    args = ["sessions", "show", "s1", "--workspace", str(tmp_path)]
+    assert run_sessions(build_parser().parse_args(args)) == 0
+    assert "'status': 'no_evidence'" in capsys.readouterr().out
+    assert run_sessions(build_parser().parse_args([*args, "--json"])) == 0
+    assert json.loads(capsys.readouterr().out)["self_check"]["status"] == "no_evidence"
+
+
+@pytest.mark.parametrize("tool,arguments,expected", [
+    (None, {}, "passed"),
+    ("read_file", {"path": "a.txt"}, "no_evidence"),
+    ("read_file", {"path": "missing.txt"}, "no_evidence"),
+    ("write_file", {"path": "a.txt", "content": "fabricated fix"}, "no_evidence"),
+])
+async def test_only_commands_examined_by_the_completion_gate_supply_evidence(tmp_path, tool, arguments, expected):
+    """#491: reads and claims cannot substitute for this attempt's checks."""
+    from garuda.core.modes import apply_mode_preset
+    from garuda.core.permissions import PermissionEngine
+
+    (tmp_path / "a.txt").write_text("original")
+    config = AgentConfig(max_turns=3)
+    apply_mode_preset(config, "readonly")
+    model = (_done(ModelResponse(content=None, tool_calls=[ToolCall(id="read", name=tool, arguments=arguments)]))
+             if tool else _done(commands=["cat a.txt"]))
+    result = await DefaultAgent().run(
+        task="t", model=model, env=LocalEnvironment(tmp_path), tools=default_tools(), config=config,
+        permissions=PermissionEngine(mode="readonly", workspace_root=str(tmp_path)),
+    )
+    assert result.success
+    state = ss.finished(success=result.success, completion_gate=result.metadata["completion_gate"])
+    assert state["self_check"]["status"] == expected
+    assert state["verification"]["status"] == "unavailable"
+    assert (tmp_path / "a.txt").read_text() == "original"
+
+
+async def test_previous_run_verification_does_not_supply_current_completion_evidence(tmp_path):
+    from garuda.core.events import EventStore
+
+    (tmp_path / "a.txt").write_text("original")
+    events = EventStore()
+    options = dict(task="q", env=LocalEnvironment(tmp_path), tools=default_tools(), events=events,
+                   config=AgentConfig(max_turns=3))
+    first = await DefaultAgent().run(model=_done(commands=["cat a.txt"]), **options)
+    assert first.success and first.metadata["completion_gate"]["self_check"] == "passed"
+    second = await DefaultAgent().run(model=_done(), **options)
+    assert second.success
+    assert second.metadata["completion_gate"]["self_check"] == "no_evidence"
+
+
+@pytest.mark.parametrize("success", [True, False])
+@pytest.mark.parametrize("gate", [{}, {"verifier": True}, {"verifier": True, "self_check": None}])
+def test_a_gate_without_a_reported_self_check_is_not_judged(success, gate):
+    assert ss.finished(success=success, completion_gate=gate)["self_check"] is None
 
 
 async def test_an_authoritative_grader_verifies(tmp_path):
