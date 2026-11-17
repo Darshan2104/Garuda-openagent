@@ -1,6 +1,6 @@
 """Documentation contract checks for issue #9 (P0.3).
 
-Four dependency-free checks, local only — no remote fetching:
+Five dependency-free checks, local only — no remote fetching:
 
 1. Broken local Markdown links: every relative ``[text](target)`` in a tracked
    ``*.md`` file must resolve to an existing path. Remote URLs, mailto links,
@@ -12,8 +12,10 @@ Four dependency-free checks, local only — no remote fetching:
    are excluded; everything else under ``README.md``, ``AGENTS.md`` and
    ``docs/`` is checked.
 4. Duplicate Markdown table rows in maintained user documentation.
+5. Pipe-row blocks missing a header delimiter in maintained user documentation
+   (fenced code examples are excluded).
 
-With ``--commands``, a fifth check imports Garuda's argparse parser and verifies
+With ``--commands``, an additional check imports Garuda's argparse parser and verifies
 every ``garuda ...`` command in maintained fenced and inline code, plus every
 choice offered by an interactive command builder (``data-garuda-builder``
 blocks). This mode requires the package to be installed; the default remains
@@ -265,6 +267,42 @@ def find_duplicate_table_rows(root: pathlib.Path) -> list[str]:
             else:
                 seen[cells] = line_number
     return sorted(duplicates)
+
+
+def find_orphan_table_rows(root: pathlib.Path) -> list[str]:
+    """Reject pipe-row blocks that render as prose instead of Markdown tables."""
+    errors = []
+    for path in iter_maintained_markdown_files(root):
+        lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+        rel = path.relative_to(root).as_posix()
+        fence_character = ""
+        fence_length = 0
+        in_table = False
+        for index, line in enumerate(lines):
+            if fence_character:
+                if re.fullmatch(
+                    rf"\s*{re.escape(fence_character)}{{{fence_length},}}\s*", line
+                ):
+                    fence_character = ""
+                continue
+            opening = FENCE_OPEN_RE.match(line)
+            if opening:
+                fence_character = opening.group("fence")[0]
+                fence_length = len(opening.group("fence"))
+                in_table = False
+                continue
+            cells = _table_cells(line)
+            if cells is None:
+                in_table = False
+                continue
+            if not in_table:
+                following = _table_cells(lines[index + 1]) if index + 1 < len(lines) else None
+                if following is None or not _is_table_separator(following):
+                    errors.append(
+                        f"{rel}:{index + 1}: pipe-row block missing table header delimiter"
+                    )
+            in_table = True
+    return sorted(errors)
 
 
 def _normalize_shell_line(line: str) -> str:
@@ -546,6 +584,8 @@ def check(root: pathlib.Path) -> list[str]:
         errors.append(f"test-count claim: {item}")
     for item in find_duplicate_table_rows(root):
         errors.append(f"duplicate table row: {item}")
+    for item in find_orphan_table_rows(root):
+        errors.append(f"orphan table row: {item}")
     return errors
 
 

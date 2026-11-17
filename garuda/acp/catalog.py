@@ -314,7 +314,9 @@ def load_trusted_runtime_settings() -> Mapping[str, Any]:
     try:
         import yaml
 
-        data = yaml.safe_load(read_source_text(Path(path))) or {}
+        data = yaml.safe_load(read_source_text(Path(path)))
+        if data is None:
+            data = {}
     except (OSError, yaml.YAMLError) as exc:
         raise RuntimeSettingsError(f"cannot read trusted runtime settings {path}: {exc}") from exc
     if not isinstance(data, Mapping):

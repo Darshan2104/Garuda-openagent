@@ -75,13 +75,68 @@ Path rules compare normalized workspace-relative paths, including physical alias
 of the workspace root and operands relative to a command's explicit `cwd`.
 Relative patterns never match ancestor directories above an in-workspace path;
 absolute patterns still match absolute paths, and outside paths retain literal
-and absolute screening.
+and absolute screening. `core/path_identity.py` always normalizes operands and
+rules to NFC and then casefolds them. There is no filesystem case probe; distinct
+case-sensitive files may be over-denied. Operand forms are computed once before
+matching rules. Read, write, search, ls and shell checks share this comparison.
 The active root is scoped to each async run and restored on exit, so concurrent
 runs can share a policy without changing each other's path decisions.
+
+Project MCP trust binds the raw configuration and identified repository launch
+files: positional paths, attached option values, path-taking flag values, local
+Python `-m` modules/packages, and the containing directory trees of scripts.
+`mcp/launch_files.py` discovers these without importing project code;
+`mcp/trust.py` hashes and persists the grant. All trees use the same 4,096-entry
+limit; enumeration/hash errors and oversized trees refuse trust. `__pycache__`,
+`.pyc` and `.pyo` are excluded. Project Python servers launch with
+`PYTHONDONTWRITEBYTECODE=1` and a `PYTHONPYCACHEPREFIX` in an owner-only Garuda
+cache outside the repository, so planted repository bytecode is not selected.
+Sourceless bytecode in selected trees and interpreter flags that bypass the
+cache controls refuse launch rather than execute unbound bytes.
+Stdio servers use the workspace root as `cwd`, matching trust resolution.
+
+Code-loading environment variables (`NODE_OPTIONS`, `PYTHONPATH`,
+`PYTHONSTARTUP`, `PYTHONHOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
+`RUBYOPT`, `PERL5OPT`, `JAVA_TOOL_OPTIONS`), unresolved code/path operands and
+package runners produce `code_pinned: false` with reasons before consent and
+at trust checks. Consent names the bound trees and exclusions. Ordinary scalar
+arguments such as `stdio` or `--port 8080` do not imply unpinned code. Installed
+code and dependencies outside the selected trees remain outside this static
+binding. Older grants say "trust needs review after the binding update";
+users must review and trust them again. The trust command reports each server
+and continues after a binding failure, returning a failure status if any fail.
+
+Generated context redaction covers credential identifiers such as `DB_PASSWORD`,
+`AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY` and `HF_TOKEN`, including `=` and `:`
+assignments, plus standalone `hf_` and `sk-ant-` token shapes. Both current-task
+and handoff writers redact check evidence and failures before publishing.
+This is best-effort pattern redaction, not a guarantee for unknown secret forms.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.
 `WorkspaceAccessDenied` marks workspace-policy refusals; ordinary OS access errors
 remain tool errors and are not counted as policy denials.
+Local full-text reads retain original line endings, and bounded read digests
+identify that same UTF-8 content. Local writes encode before touching the target,
+stage in its directory, flush and fsync, then replace atomically while preserving
+the existing file mode and following file symlinks. If staging creation fails
+with EACCES, EPERM or EROFS for an existing writable regular file, the write falls
+back to truncating and writing the already-encoded bytes in place. This permits
+edits in non-writable directories but can lose data on mid-write I/O failure.
+Other staging or replacement failures leave the destination unchanged. Staging
+files named `.garuda-write-<hex>.tmp` are visible to watchers and Git and may
+remain after SIGKILL. Symlink resolution loops return ELOOP tool errors.
+Cancellation waits for the write thread to settle but does not promise rollback.
+This is single-file publication, without a
+compare-and-write lock or directory-fsync crash guarantee. Docker/remote uploads
+validate UTF-8 before staging and always clean up host staging files; their
+`docker cp` destination writes do not acquire the local atomicity guarantee.
+File-writing tools report encoding and OS write failures as tool errors.
+Glob carries find/sort/filter failures and these utilities' own stderr through
+its shell pipeline's status channel. Diagnostics fail closed even with a zero
+utility exit status; unrelated login-shell startup stderr does not fail a
+successful search.
+Traversal completeness still depends on the host utilities reporting failures;
+macOS find can silently ignore symlink cycles.
 Lazy `use_tool` calls resolve into the shared runner before target hooks, required
 arguments, memo, ledger and event handling. Resolved tools remain bound to that
 call instead of expanding the run's direct tool map. Null lazy arguments retain
@@ -108,6 +163,29 @@ allow prefix. Pane start refuses a reported tmux older than 3.2
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
+
+HTTP transports validate declared body bounds before allocation and apply their
+header security gates before reading bodies. Dashboard Host/Origin/token rules
+and JSON-RPC's bearer/no-Origin policy remain distinct. JSON-RPC permits 32
+authenticated body reads and ordinary dispatches; excess requests receive 503.
+Long synchronous `run` dispatches use a separate 32-slot limit so status/cancel
+remain available. Headers have a separate 128-read cap and five-second deadline;
+a fresh connection replaces the oldest pending header read when full. Completion,
+read failure and cancellation release only the capacity that request acquired.
+The dashboard requires decimal Content-Length values, rejects differing duplicate
+lengths and any Transfer-Encoding with 400, and closes on header refusals. Its
+body limit is 12 MiB, versus JSON-RPC's 32 MiB; body reads use 30-second timeouts.
+
+Inbound ACP retains partial NDJSON across reads up to the codec's 16 MiB frame
+bound, ignores blank lines and refuses unfinished records at EOF. The package
+exports `AcpServer` lazily so module execution does not preload its entry point.
+EOF drains queued replies until completion, writer failure or the cleanup deadline.
+Dashboard tail and SSE readers share bounded window scanning: complete event
+lines over 4 MiB are skipped at a newline, counted in the tail's `malformed` field
+and SSE `skipped` events (`data: {"malformed": count}`). Torn final lines retain
+their cursor. SSE ends a finished session when a poll delivers no records and
+leaves the cursor unchanged, including when a crash left a torn final append.
+A poll that skips an oversized record advances the cursor and continues streaming.
 
 ## Child live deltas
 
@@ -578,9 +656,12 @@ fastest way to learn the system.
    issued capability and capacity through ECHILD; child release is logical only.
    Frozen role values and an actual-PID-bound private control channel avoid
    constructing authority from copied lease records. Owned ACP read-only or
-   no-edits launches refuse: Docker container lifetime ownership is not yet
-   supported by this process-tree owner. Its closure evidence feeds the cumulative
-   flow manifest and final check eligibility decision.
+   no-edits roles run in a Docker container whose lifetime `DockerRoleOwner`
+   owns alongside the supervised process tree. Preparation refuses with
+   `workspace.readonly_unenforced` when no confinement image is configured.
+   Container absence must be proved before workspace/capacity release; ambiguous
+   cleanup retains quarantine. Closure evidence feeds the cumulative flow
+   manifest and final check eligibility decision.
    Starter task-file digests are validated under the parent lease before the
    first step. Configuration digests remain bound through role preparation,
    closure and acceptance checks; task files may change during the work and

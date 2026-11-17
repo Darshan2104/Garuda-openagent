@@ -14,6 +14,18 @@ Click a problem to see the fix.
     something unexpected is reported as such, never as "logged out". Only
     the harnesses your roles use are checked; add `--runtime ID` for another.
 
+    Doctor also validates `~/.agent/settings.yaml` (or `GARUDA_GLOBAL_SETTINGS`)
+    with the runtime's loaders and section validators: capacity, routing, models,
+    model bindings, collection, reminders, language servers, hooks, agent ceilings,
+    runtime manifests and disablement. It collects errors across sections as
+    `settings.invalid`, with the file path, key and a fix hint. Invalid YAML or a
+    non-mapping file is also an error. Missing, empty and comment-only files
+    use defaults, as do null sections such as `routing:` with all entries
+    commented out. Non-null invalid values such as `routing: 7` remain errors.
+    Errors exit 1 and appear in `garuda doctor --json`; valid settings exit 0
+    unless another check fails. Invalid global settings prevent harness probes;
+    configured hooks are never executed by this settings check.
+
 ??? question "`garuda: command not found`"
 
     Activate the virtual environment you installed into

@@ -7,7 +7,7 @@ redaction touches only pack text — never repository documentation.
 
 import pytest
 
-from garuda.context.pack import ContextPackManager, compile_handoff
+from garuda.context.pack import ContextPackManager, compile_handoff, sync_context_pack
 from garuda.context.redact import (
     UnsafeHandoffError,
     assert_safe_for_switch,
@@ -172,3 +172,63 @@ def test_nested_unknown_fields_and_task_are_scrubbed_at_writer(tmp_path):
     assert task_value not in parsed.task
     assert nested_value not in str(parsed.extra.get("mystery", ""))
     assert parsed.redacted is True
+
+
+@pytest.mark.parametrize("credential,value", [
+    ("DB_PASSWORD=", "hunter2hunter2"),
+    ("AWS_SECRET_ACCESS_KEY=", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+    ("OPENAI_API_KEY: ", "opaque-provider-credential"),
+    ("GITHUB_TOKEN=", "opaque-github-credential"),
+    ("HF_TOKEN=", "hf_abcdefghijklmnopqrstuvwxyz"),
+    ("AWS_ACCESS_KEY_ID=", "opaque-access-credential"),
+    ("", "hf_abcdefghijklmnopqrstuvwxyz012345"),
+    ("", "sk-ant-abcdefghijklmnopqrstuvwxyz"),
+])
+def test_generated_packs_redact_environment_credentials(tmp_path, credential, value):
+    """Failed commands and check evidence must not persist credentials (#483)."""
+    state = WorkingState(task="fix login")
+    assignment = credential + value
+    state.note_check(assignment + " pytest tests/test_login.py", 0, turn=3)
+    state.note_failure("bash", "env output: " + assignment)
+    paths = sync_context_pack(ContextPackManager(tmp_path), state, session_id="s1")
+    for path in paths.values():
+        written = path.read_text()
+        assert value not in written
+        assert "Redaction:" in written
+        assert "pytest tests/test_login.py" in written
+
+
+@pytest.mark.parametrize("text,secret", [
+    ('config {"api_key": "opaque-json-value"}', "opaque-json-value"),
+    ('"password": "hunter2hunter2"', "hunter2hunter2"),
+    ("password = 'hunter2 hunter3'", "hunter3"),
+    ("https://user:p4ssw0rd123@host/repo", "p4ssw0rd123"),
+    ("postgres://admin:SuperSecret99@db:5432/app", "SuperSecret99"),
+    ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+    ("DB_PASS=opaque-pass", "opaque-pass"),
+    ("MYSQL_PWD=opaque-pwd", "opaque-pwd"),
+    ("PRIVATE_KEY=opaque-private-key", "opaque-private-key"),
+    ("x-api-key: opaque-header-key", "opaque-header-key"),
+    ("--password opaque-flag-value", "opaque-flag-value"),
+    ("ghs_abcdefghijklmnop", "ghs_abcdefghijklmnop"),
+    ("ghu_abcdefghijklmnop", "ghu_abcdefghijklmnop"),
+    ("ghr_abcdefghijklmnop", "ghr_abcdefghijklmnop"),
+    ("glpat-abcdefghijklmnopqrst", "glpat-abcdefghijklmnopqrst"),
+    ("AIzaSyA-abcdefghijklmnopqrstuvwxyz12345", "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345"),
+    ("npm_abcdefghijklmnopqrstuvwxyz0123456789", "npm_abcdefghijklmnopqrstuvwxyz0123456789"),
+])
+def test_review_generated_pack_credential_formats(tmp_path, text, secret):
+    state = WorkingState(task="fix login")
+    state.note_failure("bash", text)
+    for path in sync_context_pack(ContextPackManager(tmp_path), state, session_id="review").values():
+        assert secret not in path.read_text()
+        assert "Redaction:" in path.read_text()
+
+
+@pytest.mark.parametrize("text", [
+    "max_tokens=4096", "num_tokens: 1234", "tokenizer: cl100k_base",
+    "secret_scanning: enabled", "password_hash == expected",
+    "AssertionError: token: expected 3", "hf_transfer",
+])
+def test_review_redaction_preserves_nonsecret_diagnostics(text):
+    assert redact_text(text) == (text, [])

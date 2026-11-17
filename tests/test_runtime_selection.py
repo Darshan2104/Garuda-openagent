@@ -294,6 +294,12 @@ def test_global_selection_parsing_with_trust_flag():
         parse_project_selection({"routing": {"rules": [], "command": ["x"]}})
 
 
+@pytest.mark.parametrize("block", [7, 0, False, "", []])
+def test_non_null_non_mapping_routing_is_rejected(block):
+    with pytest.raises(SelectionError, match=r"routing: must be a mapping"):
+        parse_global_selection({"routing": block})
+
+
 # --- pre-start validation ---------------------------------------------------
 
 

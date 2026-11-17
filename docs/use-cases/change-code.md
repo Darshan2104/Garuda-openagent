@@ -42,6 +42,41 @@ and delete any new files that `git status` lists.
 - Garuda records the starting state, so the session's changes stay separate
   from edits that were already there.
 
+## Preserve files and line endings when editing
+
+Local and OS-sandbox workspaces preserve original text line endings. For example,
+an agent can issue these tool calls:
+
+```json
+[
+  {"tool":"write_file","arguments":{"path":"example.txt","content":"alpha\r\nbeta\r\ngamma\r\n"}},
+  {"tool":"edit","arguments":{"path":"example.txt","old_string":"beta","new_string":"BETA"}}
+]
+```
+
+The bytes become `b"alpha\r\nBETA\r\ngamma\r\n"`. Bare CR and mixed endings
+also survive outside the replacement. `multi_edit` uses the same local read/write
+path, and versioned edits hash the original endings, including across paged reads.
+
+Local writes validate UTF-8, write and fsync a sibling staging file, then replace
+the destination. An unencodable string (such as a lone JSON surrogate) returns a
+tool error and keeps the destination unchanged. When staging is available, a
+full-disk failure before replacement or failed replacement also preserves the
+destination. Existing mode bits and file symlinks are preserved;
+new files use the normal umask. Staging files named `.garuda-write-<hex>.tmp` are
+visible to watchers and Git during writes and may remain after SIGKILL.
+Replacement creates a new inode: hard-link aliases
+retain the previous contents, and ownership, ACLs and extended attributes are not
+copied. Atomic replacement needs directory permission as well as destination
+write permission. If staging creation fails with EACCES, EPERM or EROFS for an
+existing writable regular file, Garuda falls back to truncating and writing the
+already-encoded bytes in place. This allows edits in non-writable directories,
+but a mid-write I/O error can leave a partial or empty file. Encoding failures
+still preserve the original file. Symlink loops return tool errors.
+This does not lock out concurrent writers or guarantee rollback after cancellation.
+Docker/remote uploads clean host staging files on failure, but retain `docker cp`
+destination semantics.
+
 ## Chat and approve risky actions yourself
 
 <p class="gd-facts">Changes files: yes · Runs on: your machine · Interactive</p>

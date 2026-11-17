@@ -373,6 +373,13 @@ reads it.
 Every route needs the dashboard token in the `X-Garuda-Token` header and passes
 the same `Host` and `Origin` checks. Write routes are refused in `--read-only`.
 
+The HTTP transport checks Host, Origin and token before reading request bodies.
+`Content-Length` must contain only decimal digits. Invalid values, differing
+duplicate lengths and any `Transfer-Encoding` receive HTTP 400; lengths
+above 12 MiB receive HTTP 413, without reading the body. Header refusals close
+the connection so an unread body cannot become another request. The dashboard
+allows up to 32 simultaneous connections, each with a 30-second read timeout.
+
 | Route | Purpose |
 |---|---|
 | `GET /api/scenarios`, `GET /api/scenarios/<id>` | Installed starter library/detail and configured readiness; optional allowlisted `workspace` index |
@@ -411,9 +418,16 @@ are never accepted as authority. The same token, Host, Origin, workspace allowli
 and body limits apply. Read-only mode refuses both operation routes.
 
 **The live stream.** Each event's `id` is a byte offset into the session's
-log, so reconnecting with `Last-Event-ID` continues with the next event: none
-repeats and none is skipped. The stream sends a heartbeat every 15 seconds,
-ends with an `end` event once the session is finished and drained, and closes
+log, so reconnecting with `Last-Event-ID` continues with the next event.
+Both the run tail and the session stream skip complete records larger than
+their 4 MiB window by scanning to the next newline with bounded memory.
+The tail counts these records in `malformed`; the stream reports a `skipped`
+event with a `malformed` count. Later events remain available,
+and the persisted log is unchanged. A torn final record keeps its cursor until
+its newline arrives, including when it is oversized.
+The stream sends a heartbeat every 15 seconds,
+ends with an `end` event once the session is finished and a poll delivers no
+records and makes no cursor progress, including a torn final append, and closes
 after a minute for the client to reconnect. A browser `EventSource` can't send
 the token header, so read it with `fetch`.
 

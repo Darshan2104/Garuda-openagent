@@ -1,5 +1,6 @@
 """`garuda init`, `doctor`, `config show` and the diagnostics registry (#158, C.4)."""
 
+import json
 import os
 import stat
 import string
@@ -161,6 +162,132 @@ def test_doctor_reports_a_missing_cli_and_an_invalid_file(two_harnesses, monkeyp
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     report = onboarding.doctor_report(two_harnesses, runtimes=["fakea"])
     assert "harness.cli_missing" in _codes(report) and "config.missing" in _codes(report)
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["text", "json"])
+@pytest.mark.parametrize("settings, keys", [
+    pytest.param(None, (), id="missing"),
+    pytest.param("", (), id="empty-file"),
+    pytest.param("# Global settings\n# routing: {default_runtime: native}\n", (), id="comments-only"),
+    *[
+        pytest.param(f"{section}:\n  # No entries configured\n", (), id=f"null-{section}")
+        for section in (
+            "routing", "models", "model_bindings", "collection", "capacity", "runtimes",
+            "language_servers", "reminders", "hooks", "agents", "disabled_runtimes",
+        )
+    ],
+    pytest.param(
+        "routing:\nmodels:\nmodel_bindings:\ncollection:\ncapacity:\nruntimes:\n"
+        "language_servers:\nreminders:\nhooks:\nagents:\ndisabled_runtimes:\n",
+        (), id="all-null-sections",
+    ),
+    pytest.param(
+        "capacity: {native: 2}\nrouting: {default_runtime: native}\n"
+        "models: {fast: {model: test/model}}\n"
+        "model_bindings: {default: {reasoning: fast}}\n"
+        "collection: {enabled: false}\nreminders: {rules: []}\n"
+        "language_servers: []\nhooks: {}\nagents: {project_ceiling: smart}\n"
+        "runtimes: []\ndisabled_runtimes: []\n",
+        (), id="valid",
+    ),
+    pytest.param("capacity: {native: banana}\n", ("capacity.native",), id="one-section"),
+    pytest.param("routing: 7\n", ("routing",), id="routing-scalar"),
+    *[
+        pytest.param(f"routing: {value}\n", ("routing",), id=f"routing-{label}")
+        for label, value in (("zero", "0"), ("false", "false"),
+                             ("empty-string", "''"), ("empty-sequence", "[]"))
+    ],
+    pytest.param(
+        "capacity: {native: banana}\nrouting: 7\n",
+        ("capacity.native", "routing"), id="issue-497",
+    ),
+    pytest.param(
+        "capacity: {native: banana, unused: false}\nrouting: 7\nmodels: 7\n"
+        "model_bindings: 7\ncollection: 7\nreminders: 7\nlanguage_servers: 7\n"
+        "hooks: 7\nagents: 7\nruntimes: 7\ndisabled_runtimes: 7\n",
+        ("capacity.native", "capacity.unused", "routing", "models", "model_bindings",
+         "collection", "reminders", "language_servers", "hooks", "agents", "runtimes",
+         "disabled_runtimes"), id="all-sections",
+    ),
+    pytest.param("capacity: [\n", ("(file)",), id="invalid-yaml"),
+    pytest.param("- not-a-mapping\n", ("(file)",), id="non-mapping"),
+    pytest.param("[]\n", ("(file)",), id="empty-sequence"),
+    pytest.param("false\n", ("(file)",), id="false-scalar"),
+    pytest.param("0\n", ("(file)",), id="zero-scalar"),
+    pytest.param(
+        "models: {fast: {model: 7}}\n"
+        "model_bindings: {default: {reasoning: missing}}\n"
+        "collection: {budget: {max_jobs_per_run: 0}}\n"
+        "reminders: {rules: [{id: note, text: hi, when: {event: unsupported}}]}\n"
+        "language_servers: [{name: broken}]\n"
+        "hooks: {before_tool: [7]}\n",
+        ("models", "model_bindings", "collection", "reminders", "language_servers", "hooks"),
+        id="invalid-section-fields",
+    ),
+])
+def test_doctor_validates_global_settings(tmp_path, monkeypatch, capsys, json_output,
+                                         settings, keys):
+    """The CLI diagnoses every section without losing structured output on errors."""
+    path = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    if settings is not None:
+        path.write_text(settings)
+    flags = ["--json"] if json_output else []
+    code, out = _main(monkeypatch, capsys, "doctor", "--workspace", str(tmp_path), *flags)
+
+    assert code == (1 if keys else 0), out
+    if json_output:
+        report = json.loads(out)
+        errors = [item for item in report if item["level"] == "error"]
+        assert len(errors) == len(keys), report
+        for key in keys:
+            assert any(item["code"] == "settings.invalid" and str(path) in item["message"]
+                       and key in item["message"] and key in item["fix"]
+                       and str(path) in item["fix"] for item in errors), report
+    else:
+        assert out.count("settings.invalid:") == len(keys), out
+        for key in keys:
+            assert any(str(path) in line and key in line for line in out.splitlines()), out
+            assert any("fix:" in line and key in line and str(path) in line
+                       for line in out.splitlines()), out
+
+
+def test_doctor_does_not_execute_global_hooks(tmp_path, monkeypatch, capsys):
+    marker = tmp_path / "hook-ran"
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(
+        f"hooks:\n  session_start:\n    - command: 'touch {marker}'\n"
+    )
+    code, out = _main(monkeypatch, capsys, "doctor", "--workspace", str(tmp_path), "--json")
+    assert code == 0, out
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("problem", ["directory", "invalid-utf8"])
+def test_doctor_refuses_unreadable_global_settings(tmp_path, monkeypatch, capsys, problem):
+    path = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    if problem == "directory":
+        path.mkdir()
+    else:
+        path.write_bytes(b"\xff")
+    code, out = _main(monkeypatch, capsys, "doctor", "--workspace", str(tmp_path), "--json")
+    assert code == 1
+    report = json.loads(out)
+    assert any(item["code"] == "settings.invalid" and item["level"] == "error"
+               and str(path) in item["message"] for item in report)
+
+
+def test_invalid_global_settings_prevent_harness_probes(tmp_path, monkeypatch, capsys):
+    marker = tmp_path / "probed"
+    command = tmp_path / "harness"
+    command.write_text(f"#!/bin/sh\ntouch '{marker}'\necho 1.0\n")
+    command.chmod(0o700)
+    Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(
+        "capacity: {native: banana}\n"
+        f"runtimes: [{{runtime_id: fakeprobe, kind: acp, command: ['{command}'], version: '1'}}]\n"
+    )
+    code, out = _main(monkeypatch, capsys, "doctor", "--workspace", str(tmp_path),
+                      "--runtime", "fakeprobe", "--json")
+    assert code == 1, out
+    assert not marker.exists()
 
 
 # --- init ----------------------------------------------------------------------------------

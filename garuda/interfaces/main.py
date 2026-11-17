@@ -143,7 +143,22 @@ def build_parser():
     import argparse
     import os
 
-    parser = argparse.ArgumentParser(prog="garuda", description="Garuda Open Agent harness")
+    class PublicSubparsers(argparse._SubParsersAction):
+        def _get_subactions(self):
+            # Retain SUPPRESS metadata for tooling that discovers public commands.
+            return [action for action in super()._get_subactions() if action.help != argparse.SUPPRESS]
+
+    class PublicArgumentParser(argparse.ArgumentParser):
+        def _check_value(self, action, value):
+            if isinstance(action, PublicSubparsers) and value not in action.choices:
+                hidden = {item.dest for item in action._choices_actions
+                          if item.help == argparse.SUPPRESS}
+                choices = ", ".join(repr(name) for name in action.choices if name not in hidden)
+                raise argparse.ArgumentError(action, f"invalid choice: {value!r} (choose from {choices})")
+            super()._check_value(action, value)
+
+    parser = PublicArgumentParser(prog="garuda", description="Garuda Open Agent harness")
+    parser.register("action", "parsers", PublicSubparsers)
     subparsers = parser.add_subparsers(dest="command")
     from garuda.interfaces.scenario_cli import add_parser as add_starter_parser
 
@@ -873,6 +888,10 @@ def build_parser():
         "--confirm-digest", help="Exact digest returned by --preview; required by --capture"
     )
 
+    # argparse renders SUPPRESS literally for subparser help. Keep the parsers
+    # addressable by Garuda's subprocesses while limiting discovery to public commands.
+    hidden = {action.dest for action in subparsers._choices_actions if action.help == argparse.SUPPRESS}
+    subparsers.metavar = "{" + ",".join(name for name in subparsers.choices if name not in hidden) + "}"
     return parser
 
 
@@ -1810,13 +1829,13 @@ def run_lsp_list(args) -> int:
 def run_mcp_trust(args, *, ask=input) -> int:
     """Show each untrusted project MCP server and record the user's trust in it.
 
-    A grant binds this exact entry (and any repository script it runs) to this
-    repository; editing either later means asking again.
+    A grant binds this exact entry and identified repository launch files to
+    this repository. Unresolved code is explicitly labelled before consent.
     """
     import sys
 
     from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
-    from garuda.mcp.trust import describe, grant, repository_identity
+    from garuda.mcp.trust import TrustError, describe, grant_key, repository_identity, trust_key
 
     explicit = getattr(args, "mcp_config", None)
     paths = [explicit] if explicit else resolve_mcp_config_paths(args.workspace)
@@ -1840,9 +1859,23 @@ def run_mcp_trust(args, *, ask=input) -> int:
         )
         return 2
     repository = repository_identity(args.workspace)
+    status = 1 if unknown else 0
     for server in candidates:
+        try:
+            key = trust_key(server, args.workspace)
+        except (TrustError, OSError) as exc:
+            print(f"Cannot bind MCP server {server.name!r}: {exc}", file=sys.stderr)
+            status = 2
+            continue
         print(f"\n{server.name}  (from {server.source_path})")
         print(f"  This would {describe(server)}")
+        print("  Binds the configuration and identified repository launch files.")
+        for tree in key.bound_trees:
+            print(f"  Binds directory tree {tree}/ (excluding __pycache__, .pyc and .pyo; file limits apply).")
+        if not key.code_pinned:
+            print("  WARNING: code not pinned; this grant covers configuration and identified files only.")
+            for reason in key.unpinned_reasons:
+                print(f"    {reason}")
         if server.env:
             print(f"  with environment variables: {', '.join(sorted(server.env))}")
         if not args.yes:
@@ -1850,9 +1883,14 @@ def run_mcp_trust(args, *, ask=input) -> int:
             if answer not in ("y", "yes"):
                 print("  skipped")
                 continue
-        grant(server, args.workspace)
+        try:
+            grant_key(key)
+        except (TrustError, OSError) as exc:
+            print(f"Cannot grant MCP server {server.name!r}: {exc}", file=sys.stderr)
+            status = 2
+            continue
         print("  trusted")
-    return 0
+    return status
 
 
 def _configured_catalog(workspace: str = "."):

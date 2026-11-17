@@ -191,7 +191,7 @@ class ContextPackManager:
         return target
 
     def write_current_task(self, doc: CurrentTask, body: str = "") -> Path:
-        """Validate, redact, then publish. Secrets never reach the file; other
+        """Validate, redact known secret patterns, then publish; other
         violations (paths, size, reasoning) block with an actionable error."""
         doc, body = self._scrub(doc, body)
         return self._publish(CURRENT_TASK_NAME, schemas.render(doc.to_frontmatter(), body))

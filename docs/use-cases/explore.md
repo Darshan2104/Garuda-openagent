@@ -333,6 +333,13 @@ next_cursor: eyJ2IjoxLCJxIjoi…
   page; the output says when the cap was reached. Counts are never capped.
 - A very long line is shown as a window around the match with
   `[…N chars omitted]` markers.
+- `glob({"pattern":"**/*.py"})` returns a tool error with the diagnostic if
+  traversal reports an unreadable directory or a symlink loop. Sorting or
+  filtering failures also return errors, even when some paths were found.
+  Diagnostics from find, sort and the filter fail the search even if that utility
+  exits successfully. Unrelated login-shell startup warnings do not fail it.
+  A clean empty search still reports no matches. This depends on the workspace's
+  find reporting the problem: macOS find can silently ignore symlink cycles.
 
 ## Browse past runs in the dashboard
 

@@ -126,7 +126,9 @@ ACP negotiation assigns each tool family to exactly one owner. Garuda brokers ap
 
 ### P2 — platform expansion
 
-9. Expose Garuda as an ACP server for ACP-native editors.
+9. Expose Garuda as an ACP server for ACP-native editors. The inbound stdio
+   transport buffers fragmented NDJSON up to 16 MiB, ignores blank lines and
+   refuses malformed or oversized frames and unfinished records at EOF (#486).
 10. Add direct model transports only where vendor documentation supports required authentication, tool calling, streaming, and session semantics.
 11. Optional routing policies based on declared capability, user preference, budget, availability, and measured quality.
 
@@ -154,6 +156,11 @@ rollout plan. GitHub tracks each listed child as a sub-issue of its linked epic.
 A P1 release is complete only when a user can select at least two authenticated ACP harnesses, run a task in an isolated workspace, stop at a safe turn boundary, switch harnesses using a validated handoff, inspect normalized events and diffs, and recover from a failed target startup without losing the original session.
 
 No API key, OAuth token, raw reasoning, or unredacted transcript may be written to the Git repository, `.context/`, or normal event views.
+Generated session packs apply best-effort credential redaction, including
+prefixed environment assignments and common provider token shapes. Permission
+path deny/ask checks always NFC-normalize and casefold on every platform. MCP grants bind statically
+identified launch files and label unresolved code explicitly as unpinned; neither
+mechanism proves confinement or complete transitive code identity.
 
 ## Measurable acceptance targets
 

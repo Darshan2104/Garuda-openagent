@@ -4,6 +4,9 @@ Every command and its flags. `--help` on any command (for example `garuda run --
 for your installed version. For ready-made examples, see the
 [Cheat sheet](cheat-sheet.md).
 
+Top-level usage and help list public commands only. Internal worker and consult
+entry points remain callable by Garuda's subprocesses.
+
 ## Commands
 
 | Area | Command | Use |
@@ -25,7 +28,7 @@ for your installed version. For ready-made examples, see the
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda approvals list S` | List a running session's parked approvals with each request digest |
 | | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed |
-| | `garuda doctor [--runtime ID] [--json]` | Check configuration, the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
+| | `garuda doctor [--runtime ID] [--json]` | Validate global settings and configuration, check the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |

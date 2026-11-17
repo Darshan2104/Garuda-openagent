@@ -35,7 +35,7 @@ class ProjectOrchestration:
     collection: CollectionPolicy | None = None
 
 
-def _parse_bindings(
+def parse_model_bindings(
     data: object, models: dict[str, ModelSpec], *, source: str
 ) -> dict[str, ModelBindings]:
     if data is None:
@@ -63,17 +63,23 @@ def _parse_bindings(
     return out
 
 
+def parse_global_models(data: object, *, source: str) -> dict[str, ModelSpec]:
+    """Parse the trusted model aliases shared by runtime loading and diagnostics."""
+    models_data = data or {}
+    if not isinstance(models_data, dict):
+        raise ConfigError(f"{source}.models: must be a mapping")
+    return {str(k): parse_model_spec(v, source=f"{source}.models.{k}")
+            for k, v in models_data.items()}
+
+
 def parse_global_orchestration(data: object, *, source: str = "global settings") -> GlobalOrchestration:
     """Parse trusted global orchestration config."""
     if data is None:
         return GlobalOrchestration()
     if not isinstance(data, dict):
         raise ConfigError(f"{source}: must be a mapping")
-    models_data = data.get("models", {}) or {}
-    if not isinstance(models_data, dict):
-        raise ConfigError(f"{source}.models: must be a mapping")
-    models = {str(k): parse_model_spec(v, source=f"{source}.models.{k}") for k, v in models_data.items()}
-    bindings = _parse_bindings(data.get("model_bindings"), models, source=source)
+    models = parse_global_models(data.get("models"), source=source)
+    bindings = parse_model_bindings(data.get("model_bindings"), models, source=source)
     collection = parse_collection_policy(data.get("collection"), source=f"{source}.collection")
     default_binding = str(data.get("model_bindings_default", "default"))
     # Unknown top-level keys are ignored: the global settings.yaml carries
