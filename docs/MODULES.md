@@ -435,7 +435,7 @@ makes the validated report — question, evidence-backed conclusions, sources,
 rejected approaches and coverage — the only thing its parent receives through the
 ordinary typed child-result handoff.
 
-## SDK child delta forwarding
+## Child delta forwarding
 
 `types.py::AgentConfig.stream_subagent_deltas` defaults to false. The SDK's
 `subagent_deltas=True` requires `on_delta`; both SDK entry points assign the flag
@@ -452,9 +452,15 @@ candidate ids because `core/editing_worker.py` copies the runner with that child
 session id. Concurrent sources interleave by scheduling, with order retained
 within each source; SDK callers group by source and scope labelled discard to
 that source. The existing model forwarder detaches raising consumers per call
-and records the error in that child's log. `tui.py` and dashboard `web/live.py`
-ignore labelled deltas before touching previews or the thinking spinner.
-Consult and collection children remain outside this path.
+and records the error in that child's log. Terminal run/chat and dashboard
+chat assign the flag each turn where previews are enabled (SDK remains opt-in).
+`tui.ChatRenderer` groups bounded labelled child tails in the parent's single Live
+region; `on_child_event` and `clear_children` retire them synchronously through
+`cli.route_child_events`. `tui.suspend_previews` reserves the process-wide terminal
+for approval prompts. `web/live.py::LiveChat.child_previews/observe_event` own four
+bounded child tails with a parent cursor anchor, exposed as `child_previews` by
+the chat route and rendered as escaped collapsible rows. Reset/settlement clears
+both kinds of preview. Consult and collection forwarding stays excluded.
 
 ## `model/` — provider access
 
@@ -474,11 +480,12 @@ the loop's opt-in `model_delta_consumer` path both use it; without a consumer
 the loop calls `complete()` as before. `interfaces/role_execution.py` attaches
 that consumer for native TTY `run` output through `interfaces/runner.py`;
 `interfaces/cli.py::stream_run_output` subscribes the existing event renderer
-only to the root run's events (not inherited child or auxiliary accounting
-records). `tui.py::ChatRenderer` keeps only a bounded preview tail, refreshed at
+only to the root run's events, while `route_child_events` uses inherited child
+events solely to retire their transient previews. Auxiliary accounting content
+is excluded. `tui.py::ChatRenderer` keeps only a bounded preview tail, refreshed at
 most ten times per second: the last terminal-height-minus-one wrapped lines with
-Rich, or a single plain line. Dumb/unset terminals suppress previews and their
-erase codes. Discard, response assembly, failure and cancellation clear previews.
+Rich, with bounded child lines above the parent, or a single plain line. Dumb/unset
+terminals suppress child forwarding, previews and their erase codes. Discard, response assembly, failure and cancellation clear previews.
 The completed response renders in full; a final message identical to any already
 rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
 output withholding retain the ordinary model path for `run`.

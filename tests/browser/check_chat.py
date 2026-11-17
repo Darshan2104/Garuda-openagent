@@ -208,6 +208,30 @@ with sync_playwright() as p:
             "reaper did not fire, so a closed tab wedges the run"
         )
 
+    # --- labelled child preview, escaping and expansion across polls ----------
+    page.goto(f"{BASE}#/chat", wait_until="networkidle")
+    page.wait_for_selector("#chat-form")
+    page.fill("#chat-task", "delegate-child-preview")
+    page.click("#chat-send")
+    child = page.wait_for_selector(".chat-child-preview", timeout=15_000)
+    label = child.inner_text()
+    if "harbor" not in label or "depth 1" not in label:
+        problems.append(f"child label missing: {label}")
+    if child.get_attribute("open") is not None:
+        problems.append("child preview was open by default")
+    page.click(".chat-child-preview summary")
+    page.wait_for_timeout(3000)
+    child = page.query_selector(".chat-child-preview")
+    if child is None or child.get_attribute("open") is None:
+        problems.append("child expansion did not survive polling")
+    if "<b>child</b>" not in page.inner_text(".chat-child-preview pre"):
+        problems.append("child text did not render literally")
+    if page.query_selector(".chat-child-preview pre b"):
+        problems.append("child HTML was interpreted")
+    if any("child" in node.inner_text() for node in page.query_selector_all(".chat-preview")):
+        problems.append("child text leaked into parent preview")
+    page.wait_for_selector(".chat-child-preview", state="detached", timeout=20_000)
+
     browser.close()
 
 print("\n=== problems ===")

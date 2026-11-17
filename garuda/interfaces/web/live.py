@@ -42,6 +42,7 @@ from garuda.interfaces.web import grounding
 from garuda.interfaces.web.approvals import ApprovalBroker
 from garuda.model.config import ConfigError
 from garuda.model.protocol import DEFAULT_MODEL
+from garuda.model.streaming import CHILD_CALL_END, PARENT_CLEARS_CHILDREN
 from garuda.workspace import evidence
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ LOOP_CALL_TIMEOUT = 30.0
 
 MAX_TASK_CHARS = 20_000
 MAX_PREVIEW_CHARS = 4_000
+MAX_CHILD_PREVIEW_CHARS = 1_000
+MAX_CHILD_PREVIEWS = 4
+CHILD_LABEL_CHARS = 64
 
 
 class WorkspaceBusy(Exception):
@@ -322,6 +326,7 @@ class LiveRuns:
             agent=session.profile.name, last_seen_at=time.monotonic(),
             workspace_delta_loader=live.delta_loader, lease=live.lease, live=live,
         )
+        session.events.add_observer(chat.observe_event)
         self.chats[chat_id] = chat
         logger.info("Dashboard opened chat %s in %s as %s", chat_id, workspace, permission_mode)
         return chat.as_dict()
@@ -362,6 +367,7 @@ class LiveRuns:
             chat.session_task = task[:200]
             self.store.update_meta(chat.session_id, {"task": chat.session_task})
         context = chat.session.prepare_context(prompt)
+        chat.session.config.stream_subagent_deltas = True
         job = self.jobs.submit(
             lambda job: chat.guarded(chat.session.agent.run(
                 task=prompt,
@@ -604,10 +610,16 @@ class LiveChat:
     live: Any = None
     _preview_text: str = ""
     _preview_cursor: int = -1
+    # Delta consumers, event observers and HTTP snapshots (via call_on_loop)
+    # all execute on the agent loop, so this transient state needs no lock.
+    _child_previews: dict[str, dict] = field(default_factory=dict)
+    _child_cursor: int = -1
 
     def reset_preview(self) -> None:
         self._preview_text = ""
         self._preview_cursor = -1
+        self._child_previews.clear()
+        self._child_cursor = -1
 
     def finish_turn(self, job_id: str) -> None:
         if self.job_id == job_id:
@@ -617,6 +629,7 @@ class LiveChat:
     def on_model_delta(self, delta) -> None:
         """Bounded transient text; reasoning and partial calls never enter the log."""
         if getattr(delta, "source", None) is not None:
+            self._on_child_delta(delta)
             return
         cursor = self.session.events.count()
         if cursor != self._preview_cursor or delta.kind == "discard":
@@ -624,6 +637,44 @@ class LiveChat:
         self._preview_cursor = cursor
         if delta.kind == "text":
             self._preview_text = (self._preview_text + delta.text[-MAX_PREVIEW_CHARS:])[-MAX_PREVIEW_CHARS:]
+
+    def _on_child_delta(self, delta) -> None:
+        if not self.busy or delta.kind == "reasoning":
+            return
+        cursor = self.session.events.count()
+        if cursor != self._child_cursor:
+            self._child_previews.clear()
+            self._child_cursor = cursor
+        if delta.kind == "discard":
+            self._child_previews.pop(delta.source, None)
+        elif delta.kind == "text" and delta.text:
+            previous = self._child_previews.get(delta.source, {}).get("text", "")
+            self._child_previews[delta.source] = {
+                "agent": (delta.agent or "subagent")[:CHILD_LABEL_CHARS], "depth": int(delta.depth),
+                "text": (previous + delta.text[-MAX_CHILD_PREVIEW_CHARS:])[-MAX_CHILD_PREVIEW_CHARS:],
+                "updated": time.monotonic(),
+            }
+            if len(self._child_previews) > MAX_CHILD_PREVIEWS:
+                oldest = min(self._child_previews, key=lambda key: self._child_previews[key]["updated"])
+                del self._child_previews[oldest]
+
+    def observe_event(self, event, store) -> None:
+        if store is self.session.events:
+            if event.get("type") in PARENT_CLEARS_CHILDREN:
+                self._child_previews.clear()
+        elif event.get("type") in CHILD_CALL_END:
+            self._child_previews.pop(store.session_id, None)
+
+    def child_previews(self) -> dict | None:
+        events = self.session.events
+        if not self.busy or not self._child_previews or self._child_cursor != events.count():
+            return None
+        previous = events.get_since(self._child_cursor - 1)
+        return {
+            "after": previous[-1]["timestamp"] if previous else None,
+            "items": [{"source": source, "agent": child["agent"], "depth": child["depth"],
+                       "text": child["text"]} for source, child in self._child_previews.items()],
+        }
 
     def preview(self) -> dict | None:
         events = self.session.events
@@ -659,6 +710,7 @@ class LiveChat:
             "workspace": str(self.workspace),
             "busy": self.busy,
             "preview": self.preview(),
+            "child_previews": self.child_previews(),
             "turns": self.turn_index,
             "task": self.session_task,
             "sources": len(self.sources),

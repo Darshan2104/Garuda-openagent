@@ -109,7 +109,7 @@ A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
 
-## SDK child live deltas
+## Child live deltas
 
 The SDK's `SoftwareAgent.run` and `Conversation.run` accept
 `subagent_deltas=True` with `on_delta`. It is off by default.
@@ -126,10 +126,24 @@ A labelled `discard` invalidates only that source's current call. Concurrent
 editing workers forward as fragments arrive: order is preserved within each
 source, while sources interleave by scheduling. Consumers must group by source.
 Consumer errors detach for that model call and are recorded in the child's log;
-observation does not alter child context or parent messages. Terminal and
-dashboard consumers defensively ignore all labelled deltas, including discard,
-before changing preview or spinner state. Consult and collection children do
-not forward deltas.
+observation does not alter child context or parent messages. Native terminal
+run/chat enable forwarding wherever the parent preview is enabled and TERM is
+usable; dashboard chat enables it for each turn. The SDK default stays unchanged.
+Terminal child tails share a single transient Rich Live with the parent (three
+visible child lines, eight tracked sources, 512 characters per tail); the plain
+backend gives the parent priority on one erasable line. Inherited event observers
+synchronously retire child calls before tool dispatch and clear all child tails
+on parent response/tool/user/session events. Approval prompts suspend previews
+process-wide so sibling streams cannot overwrite a prompt.
+
+Dashboard `child_previews` is null or `{after, items: [{source, agent, depth, text}]}`:
+four bounded 1,000-character tails, anchored to the parent event cursor. The client
+rejects stale anchors and displays escaped, collapsible rows with expansion
+preserved across polls. Admission, stop, job cancel and settlement reset state.
+Child deltas never enter event logs. Streamed child responses gain the existing
+`live_coverage` and error metadata. Consults do not forward because their answers
+can be withheld after a workspace guard; collection calls are auxiliary and also
+excluded.
 
 ## The run path
 
@@ -232,7 +246,9 @@ fastest way to learn the system.
    replaces the transient text preview on discard or response assembly and
    closes it on failure/cancellation. Preview storage and rendering are bounded
    to a terminal tail and refreshed at most ten times per second; dumb/unset
-   terminals suppress previews. Completed responses render in full, and final
+   terminals suppress previews and child forwarding. Labelled subagent tails
+   share the region; child event observers retire them before tools, and approval
+   prompts suspend every renderer. Completed responses render in full, and final
    output is deduplicated against all rendered responses of the run.
    Native `garuda chat` attaches the same consumer on a TTY unless `--json` or
    `--no-stream` is selected, using its existing renderer and event drain. Its

@@ -8,8 +8,13 @@ import sys
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.runner import resolve_environment
 from garuda.interfaces.session import AgentSession
-from garuda.interfaces.tui import ChatRenderer
+from garuda.interfaces.tui import (
+    ChatRenderer,
+    preview_terminal,
+    suspend_previews,
+)
 from garuda.model.factory import safe_model_identity
+from garuda.model.streaming import PARENT_CLEARS_CHILDREN
 from garuda.plugins.hooks import build_hook_registry
 from garuda.types import AgentResult
 from garuda.workspace import evidence
@@ -31,13 +36,12 @@ def resolved_model_name(session: AgentSession) -> str:
 async def stdin_approval(action: str, stream=None) -> bool:
     # The prompt is human-facing, never data: in JSONL mode the caller passes
     # stderr so stdout stays parseable.
-    print(
-        f"\n[garuda] Approve {action}? [y/N]: ",
-        end="",
-        flush=True,
-        file=stream or sys.stdout,
-    )
-    answer = await asyncio.to_thread(input)
+    with suspend_previews():
+        print(
+            f"\n[garuda] Approve {action}? [y/N]: ",
+            end="", flush=True, file=stream or sys.stdout,
+        )
+        answer = await asyncio.to_thread(input)
     return answer.strip().lower() in ("y", "yes")
 
 
@@ -95,15 +99,30 @@ def _render_event(renderer: ChatRenderer, event: dict, *, live: bool = False) ->
         )
 
 
+def route_child_events(renderer, parent_events):
+    """Retire child previews at call boundaries; parent progress retires all."""
+    def observe(event, source):
+        if source is parent_events:
+            if event.get("type") in PARENT_CLEARS_CHILDREN:
+                renderer.clear_children()
+        else:
+            renderer.on_child_event(source.session_id, event)
+    return observe
+
+
 @contextlib.contextmanager
 def stream_run_output(events):
     """Attach the run's renderer without rendering inherited child/auxiliary events."""
     renderer = ChatRenderer()
     active = True
 
+    route = route_child_events(renderer, events)
+
     def render(event, source):
-        if active and source is events:
-            _render_event(renderer, event, live=True)
+        if active:
+            route(event, source)
+            if source is events:
+                _render_event(renderer, event, live=True)
 
     events.add_observer(render)
     try:
@@ -262,6 +281,15 @@ async def chat_loop(args) -> int:
     render = not args.json
     renderer = ChatRenderer(use_rich=render, stream=human)
     streaming = render and not getattr(args, "no_stream", False) and live_terminal(human)
+    active = True
+    route = route_child_events(renderer, session.events)
+
+    def observe(event, source):
+        if active:
+            route(event, source)
+
+    if streaming:
+        session.events.add_observer(observe)
     renderer.header(
         model=resolved_model_name(session),
         agent=session.profile.name,
@@ -294,6 +322,7 @@ async def chat_loop(args) -> int:
                 record_links(store, live.session_id, attached)
             prompt = prompt_with(attached, task.strip())
             context = session.prepare_context(prompt)
+            session.config.stream_subagent_deltas = bool(streaming and preview_terminal())
             run_task = asyncio.create_task(
                 live.turn(session.agent.run(
                     task=prompt,
@@ -352,6 +381,8 @@ async def chat_loop(args) -> int:
     except KeyboardInterrupt:
         print(file=human)
     finally:
+        active = False
+        renderer.discard_assistant()
         await session.close()
 
         async def finish() -> None:

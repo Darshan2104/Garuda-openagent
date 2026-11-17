@@ -52,12 +52,22 @@ class ArmedAskModel(ScriptModel):
         super().__init__([], model_name="script/chat-check")
         self._armed = False
         self._calls = 0
+        self._delegating = False
 
-    def arm(self) -> None:
+    def arm(self, task="") -> None:
         self._armed = True
+        self._delegating = "delegate-child-preview" in task
 
     async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
         self._calls += 1
+        if self._delegating:
+            if self._armed:
+                self._armed = False
+                return ModelResponse(content=None, tool_calls=[ToolCall(
+                    "delegate", "invoke_subagent", {"profile": "harbor", "task": "child-preview-task",
+                                                    "handoff": "none"})])
+            return ModelResponse(content=None, tool_calls=[ToolCall(
+                "done", "task_complete", {"summary": "Finished the delegated investigation."})])
         if self._armed:
             self._armed = False
             return ModelResponse(
@@ -74,6 +84,19 @@ class ArmedAskModel(ScriptModel):
         ])
 
     async def stream(self, messages, tools=None, temperature=None, max_tokens=None):
+        if self._delegating and any(m.role == "user" and "child-preview-task" in (m.content or "")
+                                    for m in messages[:3]):
+            from garuda.model.protocol import StreamDelta
+
+            for _ in range(14):
+                yield StreamDelta(content_delta="<b>child</b> streaming ")
+                await asyncio.sleep(0.6)
+            yield StreamDelta(tool_call_delta={
+                "index": 0, "id": "child-done", "name": "task_complete",
+                "arguments": '{"summary": "Finished the delegated investigation."}',
+            })
+            yield StreamDelta(done=True, finish_reason="tool_calls")
+            return
         response = await self.complete(messages, tools, temperature, max_tokens)
         # Delay after real deltas so Chrome can observe the in-flight preview
         # before tool dispatch/completion, without a provider or a UI stub.
@@ -103,6 +126,7 @@ async def main() -> None:
         session.config.max_turns = 4
         session.config.enable_verifier = False
         session.config.enable_acceptance_contract = False
+        session.config.subagents = [*(session.config.subagents or []), "harbor"]
         return session
 
     session_module.AgentSession.create = classmethod(create_with_script)
@@ -154,7 +178,7 @@ async def main() -> None:
     async def armed_turn(chat_id, task):
         chat = ctx.live.chats.get(chat_id)
         if chat is not None and hasattr(chat.session.model, "arm"):
-            chat.session.model.arm()
+            chat.session.model.arm(task)
         return await original_turn(chat_id, task)
 
     ctx.live.chat_turn = armed_turn

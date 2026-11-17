@@ -12,7 +12,7 @@ retains its initial scope and sequencing.
 | [#363: shared spend](https://github.com/Darshan2104/Garuda-openagent/issues/363) | [#408](https://github.com/Darshan2104/Garuda-openagent/pull/408) added native tree admission; later changes added failed-call usage, resume inheritance and consult sharing | [#453](https://github.com/Darshan2104/Garuda-openagent/pull/453) makes collection attempts inherit the active root gate, preventing dispatch after root exhaustion and charging worker usage to the same total |
 | [#370: investigation context](https://github.com/Darshan2104/Garuda-openagent/issues/370) | [#417](https://github.com/Darshan2104/Garuda-openagent/pull/417) added typed read-only investigation reports; [#435](https://github.com/Darshan2104/Garuda-openagent/pull/435) added context-only forks with fresh identity/admission and stale inherited evidence | [#451](https://github.com/Darshan2104/Garuda-openagent/pull/451) adds read-only fork preview through the execution preparation owner, explicitly leaving admission unchecked |
 | [#384: editing workers](https://github.com/Darshan2104/Garuda-openagent/issues/384) | [#434](https://github.com/Darshan2104/Garuda-openagent/pull/434) added sequential local workers with independent repositories/ownership and checked integration; [#447](https://github.com/Darshan2104/Garuda-openagent/pull/447) added conservative inventory/retirement/recovery | Bounded local programmatic fan-out now uses `LocalEditingWorkers` (limits 1–8) and `run_editing_workers`, with exclusive serialized integration. Model-driven fan-out and non-local backends remain open; approval prompts are not serialized |
-| [#389: live native output](https://github.com/Darshan2104/Garuda-openagent/issues/389) | [#432](https://github.com/Darshan2104/Garuda-openagent/pull/432) added shared loop accumulation; [#444](https://github.com/Darshan2104/Garuda-openagent/pull/444) wired terminal runs; [#448](https://github.com/Darshan2104/Garuda-openagent/pull/448) wired SDK callbacks | [#452](https://github.com/Darshan2104/Garuda-openagent/pull/452) wires dashboard chat previews without persisting deltas or duplicating completed output |
+| [#389: live native output](https://github.com/Darshan2104/Garuda-openagent/issues/389) | [#432](https://github.com/Darshan2104/Garuda-openagent/pull/432) added shared loop accumulation; [#444](https://github.com/Darshan2104/Garuda-openagent/pull/444) wired terminal runs; [#448](https://github.com/Darshan2104/Garuda-openagent/pull/448) wired SDK callbacks | #472 adds bounded labelled terminal subagent lines and collapsible dashboard child previews; consult and collection remain excluded |
 
 ## Remaining acceptance work
 
@@ -58,11 +58,12 @@ their complete acceptance criteria and exact merged revisions are verified.
   environment services does not prove all descendant cleanup. Keep uncertain
   repositories, leases and capacity quarantined. Live Docker integration checks
   require separate evidence.
-- **Streaming:** native terminal runs and interactive chat show parent previews.
-  Child deltas are SDK-only opt-in (`subagent_deltas=True`), labelled by source,
-  agent and depth; terminal and dashboard ignore them. Auxiliary (intentionally),
-  consult and collection calls remain outside this forwarding path. Interrupted
-  streams keep reported partial usage as a lower bound. No latency or quality
+- **Streaming:** native terminal runs and interactive chat show bounded labelled
+  subagent previews alongside the parent; dashboard chat has collapsible child
+  tails. `--no-stream` disables both terminal previews. SDK child deltas remain
+  opt-in (`subagent_deltas=True`). Consult and auxiliary collection calls remain
+  outside this forwarding path to preserve withholding and accounting boundaries.
+  Interrupted streams keep reported partial usage as a lower bound. No latency or quality
   improvement is inferred from tool overlap or fixture speed.
 
 ## Validation owners

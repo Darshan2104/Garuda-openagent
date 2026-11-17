@@ -1017,15 +1017,140 @@ async def test_read_only_chats_share_the_workspace(chatting, monkeypatch):
     assert a.status == 201 and b.status == 201
 
 
-def test_chat_ignores_labelled_deltas_while_busy(tmp_path):
-    from garuda.model.streaming import LiveDelta
-
-    chat = LiveChat(
+def preview_chat(tmp_path):
+    return LiveChat(
         chat_id="parent", session=_FakeSession(), env=object(), env_handle=None,
         workspace=tmp_path, permission_mode="smart", model="test", agent="build", busy=True,
     )
-    chat.on_model_delta(LiveDelta("text", "child working", source="child", agent="harbor", depth=1))
-    assert chat.preview() is None
+
+
+def test_chat_child_previews_are_labelled_bounded_and_separate(tmp_path):
+    from garuda.model.streaming import LiveDelta
+
+    chat = preview_chat(tmp_path)
     chat.on_model_delta(LiveDelta("text", "parent working"))
-    chat.on_model_delta(LiveDelta("discard", source="child", agent="harbor", depth=1))
+    for i in range(6):
+        chat.on_model_delta(LiveDelta("text", "x" * 2000, source=str(i), agent="a" * 100, depth=2))
+    items = chat.child_previews()["items"]
+    assert [i["source"] for i in items] == ["2", "3", "4", "5"]
+    assert all(i["text"] == "x" * 1000 and i["agent"] == "a" * 64 and i["depth"] == 2 for i in items)
+    chat.on_model_delta(LiveDelta("discard", source="3"))
+    chat.on_model_delta(LiveDelta("reasoning", "private", source="6"))
+    assert [i["source"] for i in chat.child_previews()["items"]] == ["2", "4", "5"]
     assert chat.preview()["text"] == "parent working"
+    assert chat.as_dict()["child_previews"] == chat.child_previews()
+
+
+@pytest.mark.parametrize("ending", ["model_response", "model_call_failed", "session_end",
+                                  "parent", "finish", "reset", "idle"])
+def test_child_previews_clear_on_child_end_parent_event_and_settlement(tmp_path, ending):
+    from garuda.core.events import EventStore, EventType
+    from garuda.model.streaming import LiveDelta
+
+    chat = preview_chat(tmp_path)
+    chat.session.events.add_observer(chat.observe_event)
+    child = EventStore(session_id="child")
+    child.inherit_observers(chat.session.events)
+    chat.job_id = "job"
+    chat.on_model_delta(LiveDelta("text", "working", source="child", agent="harbor", depth=1))
+    assert chat.child_previews()
+    if ending == "parent":
+        chat.session.events.append(EventType.TOOL_RESULT, {})
+    elif ending == "finish":
+        chat.finish_turn("job")
+    elif ending == "reset":
+        chat.reset_preview()
+    elif ending == "idle":
+        chat.busy = False
+    else:
+        child.append(EventType(ending), {})
+    assert chat.child_previews() is None
+    if ending != "idle":
+        assert not chat._child_previews
+
+
+def test_child_previews_anchor_to_parent_cursor(tmp_path):
+    from garuda.core.events import EventType
+    from garuda.model.streaming import LiveDelta
+
+    chat = preview_chat(tmp_path)
+    delta = LiveDelta("text", "before", source="child", agent="harbor", depth=1)
+    chat.on_model_delta(delta)
+    chat.session.events.append(EventType.BUDGET, {})
+    assert chat.child_previews() is None
+    chat.on_model_delta(LiveDelta("text", "after", source="child", agent="harbor", depth=1))
+    assert chat.child_previews() == {
+        "after": chat.session.events.get_all()[-1]["timestamp"],
+        "items": [{"source": "child", "agent": "harbor", "depth": 1, "text": "after"}],
+    }
+
+
+@pytest.mark.parametrize("ending", ["complete", "stop", "cancel"])
+async def test_dashboard_streams_child_preview_through_route(live, ctx, monkeypatch, ending):
+    from garuda.agents.loader import load_profile
+    from garuda.core.loop import DefaultAgent
+    from garuda.interfaces.session import AgentSession
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.tools import default_tools
+    from garuda.types import AgentConfig, ToolCall
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Delegating(ScriptModel):
+        async def stream(self, *args, **kwargs):
+            async for delta in super().stream(*args, **kwargs):
+                yield delta
+                if delta.content_delta and "CHILD" in delta.content_delta:
+                    entered.set()
+                    await release.wait()
+
+    summary = {"summary": "Finished the delegated investigation."}
+    model = Delegating([
+        ModelResponse(content=None, tool_calls=[ToolCall("delegate", "invoke_subagent", {
+            "profile": "harbor", "task": "investigate", "handoff": "none"})]),
+        ModelResponse(content="CHILD-LIVE" * 3, tool_calls=[ToolCall("child", "task_complete", summary)]),
+        ModelResponse(content=None, tool_calls=[ToolCall("probe", "task_complete", summary)]),
+        ModelResponse(content="Parent answer.", tool_calls=[]),
+    ])
+    session = AgentSession(profile=load_profile("build"), config=AgentConfig(
+        enable_verifier=False, bootstrap_environment=False, max_turns=3,
+        enable_three_step_summary=False,
+    ), model=model, permissions=PermissionEngine(), tools=default_tools(), agent=DefaultAgent())
+
+    async def create(**kwargs):
+        return session
+
+    monkeypatch.setattr(AgentSession, "create", create)
+    response = await call(ctx, "/api/chat", method="POST", body={})
+    assert response.status == 201, payload_of(response)
+    opened = payload_of(response)
+    path = f"/api/chat/{opened['chat_id']}"
+    submitted = payload_of(await call(ctx, path + "/turn", method="POST", body={"task": "delegate"}))
+    job = live.jobs.get(submitted["job_id"])
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        info = payload_of(await call(ctx, path))
+        [item] = info["child_previews"]["items"]
+        assert item == {"source": item["source"], "agent": "harbor", "depth": 1, "text": "CHILD-LIVE"}
+        assert info["preview"] is None
+        assert "CHILD-LIVE" not in json.dumps(session.events.get_all())
+        if ending == "complete":
+            release.set()
+            await job._task
+        else:
+            route = path + "/stop" if ending == "stop" else f"/api/jobs/{job.id}/cancel"
+            stopped = await call(ctx, route, method="POST", body={})
+            assert stopped.status == 200
+            assert payload_of(await call(ctx, path))["child_previews"] is None
+            with pytest.raises(asyncio.CancelledError):
+                await job._task
+        await asyncio.sleep(0)
+        assert payload_of(await call(ctx, path))["child_previews"] is None
+        assert "CHILD-LIVE" not in json.dumps(session.events.get_all())
+    finally:
+        release.set()
+        if not job._task.done():
+            job._task.cancel()
+        await asyncio.gather(job._task, return_exceptions=True)
+        await live.aclose()

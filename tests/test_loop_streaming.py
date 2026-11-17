@@ -721,3 +721,54 @@ async def test_nested_child_fallback_discards_only_the_innermost_source(tmp_path
     assert "".join(d.text for d in relay) == "Relay finished."
     assert {d.depth for d in relay} == {1}
     assert {d.source for d in relay}.isdisjoint({discard.source, None})
+
+
+@pytest.mark.parametrize("kind", ["collection", "consult"])
+async def test_consult_and_collection_children_never_forward_deltas(tmp_path, monkeypatch, kind):
+    from garuda.core.sessions import SessionStore
+    from garuda.model.config import CollectionPolicy
+    from garuda.types import Role
+
+    seen = []
+    config = AgentConfig(stream_subagent_deltas=True, enable_verifier=False,
+                         bootstrap_environment=False, enable_three_step_summary=False)
+    events = EventStore(persist_path=tmp_path / "events.jsonl")
+    kwargs = {}
+    if kind == "collection":
+        child = ScriptModel([_subagent_call("submit_collection", summary="No facts needed.",
+                            findings=[], evidence=[], unknowns=["No evidence available."], buffer_ids=[])])
+        parent = ScriptModel([
+            _subagent_call("delegate_collection", objective="inspect", questions=["what is here?"], handoff="none"),
+            _final(),
+        ])
+        kwargs = {"collection_model": child, "collection_policy": CollectionPolicy(enabled=True)}
+    else:
+        import subprocess
+
+        import garuda.model.factory as factory
+        from garuda.consult.service import ConsultService
+        from tests.test_consult import make_resolved
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        (workspace / "notes.txt").write_text("evidence")
+        store = SessionStore(tmp_path / "sessions")
+        store.begin(events.session_id, task="inspect", model="m1", agent="build", workspace=str(workspace))
+        store.update_meta(events.session_id, {"role": {"name": "coder", "runtime_id": "native", "kind": "native"}})
+        child = ScriptModel([_subagent_call("task_complete", summary="Inspect the notes before editing.")])
+        monkeypatch.setitem(factory._registry, "litellm", lambda *a, **kw: child)
+        config.consult_service = ConsultService(store, make_resolved())
+        config.consult_targets = ["reviewer"]
+        parent = ScriptModel([_subagent_call("consult", target="reviewer", question="What should I inspect?"), _final()])
+    result = await DefaultAgent().run(
+        task="inspect", model=parent, env=LocalEnvironment(workspace if kind == "consult" else tmp_path), config=config,
+        events=events, tools=default_tools(), model_delta_consumer=seen.append, **kwargs,
+    )
+    assert result.success
+    assert any(d.kind == "text" and d.source is None for d in seen)
+    assert not any(d.source is not None for d in seen)
+    assert any(m.role == Role.TOOL for m in result.messages)
+    # Prove the auxiliary provider actually ran, rather than passing because
+    # admission rejected it before forwarding could be exercised.
+    assert child._responses == [], [m.content for m in result.messages if m.role == Role.TOOL]

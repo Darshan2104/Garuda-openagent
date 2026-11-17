@@ -42,6 +42,11 @@ NOT_STREAMED = "not_streamed"
 _ERROR_CHARS = 300
 
 
+# Call boundaries shared by transient terminal and dashboard child previews.
+CHILD_CALL_END = frozenset({"model_response", "model_call_failed", "session_end"})
+PARENT_CLEARS_CHILDREN = CHILD_CALL_END | {"tool_call", "tool_result", "user_message"}
+
+
 @dataclass(frozen=True)
 class LiveDelta:
     """What a delta consumer receives during one model call.
