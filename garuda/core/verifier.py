@@ -217,6 +217,7 @@ class VerificationResult:
     permission_denied: bool = False
     has_command_evidence: bool = False
     authoritative_grader_verdict: bool | None = None
+    commands_unexamined: bool = False
 
 
 @dataclass
@@ -402,6 +403,7 @@ class CompletionVerifier:
                     f"is unavailable ({type(exc).__name__})."
                 ),
                 workspace={"attribution": "unavailable", "error": type(exc).__name__},
+                commands_unexamined=True,
             )
         result = await self._verify(
             task, summary, verification_commands, env, config, permissions,
@@ -438,12 +440,14 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: provide a non-empty summary in task_complete.",
+                commands_unexamined=True,
             )
         if not checklist["summary_length"]:
             return VerificationResult(
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: summary is too short. Explain what was done and how it was verified.",
+                commands_unexamined=True,
             )
 
         # A resubmission that drops the check it just failed is the cheapest way
