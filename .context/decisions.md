@@ -14,9 +14,10 @@ defaults. Null reminder sections also load as absent under strict validation.
 
 ## 2026-11-18 — ACP stdio output uses cancellable pipe writes (#507)
 
-ACP stdio bounds queued output and the wait for queue space. The stdout
-descriptor uses nonblocking writes and an event-loop readiness wait. At EOF
-the drain deadline cancels that wait without leaving a blocked writer thread.
+ACP stdio bounds queued output and the wait for queue space. A queue timeout
+cancels the writer and bypasses protocol error delivery on the stalled channel.
+At EOF, pending prompts and output drain share one cleanup deadline.
+Nonblocking stdout writes let cancellation settle the readiness wait.
 
 ## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
 

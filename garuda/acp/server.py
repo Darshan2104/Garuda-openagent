@@ -51,6 +51,10 @@ CLEANUP_TIMEOUT = 5.0
 MakeRuntime = Callable[[str], Awaitable[Any]]
 
 
+class _OutputUnavailable(OSError):
+    """Output cannot accept further protocol frames."""
+
+
 class AcpServer:
     """One stdio ACP server. `send` sinks framed replies and notifications."""
 
@@ -136,6 +140,8 @@ class AcpServer:
             return
         try:
             await handler(call_id, params)
+        except _OutputUnavailable:
+            raise
         except (AcpError, RuntimeProtocolError) as exc:
             if call_id is not None:
                 await self._fail(call_id, str(exc))
@@ -366,10 +372,16 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
     outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_REPLIES)
 
     async def _send(frame: bytes) -> None:
-        if writer.done():
-            raise BrokenPipeError("ACP output writer stopped")
-        async with asyncio.timeout(CLEANUP_TIMEOUT):
-            await outbox.put(frame)
+        if writer.done() or writer.cancelling():
+            raise _OutputUnavailable("ACP output writer stopped")
+        try:
+            async with asyncio.timeout(CLEANUP_TIMEOUT):
+                await outbox.put(frame)
+        except TimeoutError as exc:
+            # The output deadline has already expired. Cancel the pipe wait
+            # now so neither error delivery nor teardown can restart it.
+            writer.cancel()
+            raise _OutputUnavailable("ACP output queue stalled") from exc
 
     async def _writer() -> None:
         while True:
@@ -426,26 +438,34 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
     except OSError:
         exit_code = 1
     finally:
-        if pending:
-            _done, waiting = await asyncio.wait(pending, timeout=CLEANUP_TIMEOUT)
-            for task in waiting:
-                task.cancel()
-            await asyncio.gather(*waiting, return_exceptions=True)
+        deadline = loop.time() + CLEANUP_TIMEOUT
+        waiting = set(pending)
+        if waiting and not (writer.done() or writer.cancelling()):
+            _done, waiting = await asyncio.wait(waiting, timeout=max(0, deadline - loop.time()))
+        for task in waiting:
+            task.cancel()
         # EOF may arrive immediately after a batch, while replies are queued.
-        drain = asyncio.create_task(outbox.join())
-        try:
-            done, _ = await asyncio.wait(
-                (drain, writer), timeout=CLEANUP_TIMEOUT, return_when=asyncio.FIRST_COMPLETED,
-            )
-            if drain not in done:
-                exit_code = exit_code or 1
-        finally:
-            drain.cancel()
-            await asyncio.gather(drain, return_exceptions=True)
+        if writer.cancelling():
+            exit_code = exit_code or 1
+        elif not writer.done():
+            drain = asyncio.create_task(outbox.join())
+            try:
+                done, _ = await asyncio.wait(
+                    (drain, writer), timeout=max(0, deadline - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if drain not in done:
+                    exit_code = exit_code or 1
+            finally:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
         writer.cancel()
         writer_result, = await asyncio.gather(writer, return_exceptions=True)
         if isinstance(writer_result, Exception):
             exit_code = exit_code or 1
+        # A cancelled prompt may still need runtime cleanup. Settle the
+        # writer before waiting for it so cleanup cannot extend the pipe wait.
+        await asyncio.gather(*waiting, return_exceptions=True)
         for session in list(server._sessions.values()):
             try:
                 await asyncio.wait_for(session.close(), CLEANUP_TIMEOUT)

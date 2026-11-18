@@ -558,6 +558,36 @@ async def test_stdio_eof_drain_deadline_cancels_pending_pipe_io(monkeypatch):
         os.close(read_fd)
 
 
+async def test_stdio_stalled_output_settles_without_sending_an_error_reply(monkeypatch):
+    from garuda.acp.server import serve_stdio
+
+    frames = b"".join(encode_frame({
+        "jsonrpc": "2.0", "id": call_id, "method": "initialize",
+        "params": {"protocolVersion": ACP_VERSION},
+    }) for call_id in range(1, 4))
+    writer_settled = asyncio.Event()
+    error_replies = []
+
+    async def stalled_write(output, fd, frame):
+        try:
+            await asyncio.Future()
+        finally:
+            writer_settled.set()
+
+    async def record_error(self, call_id, message):
+        error_replies.append((call_id, message))
+
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(frames)})())
+    monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": io.BytesIO()})())
+    monkeypatch.setattr("garuda.acp.server._write_stdout", stalled_write)
+    monkeypatch.setattr("garuda.acp.server.CLEANUP_TIMEOUT", 0.1)
+    monkeypatch.setattr("garuda.acp.server.MAX_QUEUED_REPLIES", 1)
+    monkeypatch.setattr(AcpServer, "_fail", record_error)
+    assert await asyncio.wait_for(serve_stdio(make_echo_runtime), 2) == 1
+    assert writer_settled.is_set()
+    assert error_replies == []
+
+
 async def test_stdio_refuses_oversized_unterminated_frame_before_eof():
     from garuda.acp.protocol import MAX_FRAME_BYTES
 
