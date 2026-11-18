@@ -207,14 +207,20 @@ async def test_stdio_drains_replies_to_large_batch_before_eof_exit():
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    call_ids = list(range(1, 66))
     batch = encode_frame({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": ACP_VERSION, "clientInfo": {"pad": "x" * 100_000}},
-    }) + encode_frame({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    }) + b"".join(
+        encode_frame({"jsonrpc": "2.0", "id": call_id, "method": "session/new", "params": {}})
+        for call_id in call_ids[1:]
+    )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(batch), 10)
         assert process.returncode == 0, stderr
-        assert [decode_frame(line + b"\n")[0]["id"] for line in stdout.splitlines()] == [1, 2]
+        replies = [decode_frame(line + b"\n")[0] for line in stdout.splitlines()]
+        assert [reply["id"] for reply in replies] == call_ids
+        assert all("sessionId" in reply["result"] for reply in replies[1:])
     finally:
         if process.returncode is None:
             process.kill()
@@ -526,6 +532,30 @@ async def test_stdio_eof_does_not_wait_for_dead_writer(monkeypatch):
     code = await asyncio.wait_for(serve_stdio(make_echo_runtime), 10)
     assert code == 1
     assert time.monotonic() - started < 1, "a dead writer cannot drain its remaining queue"
+
+
+async def test_stdio_eof_drain_deadline_cancels_pending_pipe_io(monkeypatch):
+    from garuda.acp.server import serve_stdio
+
+    frame = encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                          "params": {"protocolVersion": ACP_VERSION}})
+    read_fd, write_fd = os.pipe()
+    try:
+        os.set_blocking(write_fd, False)
+        with pytest.raises(BlockingIOError):
+            while True:
+                os.write(write_fd, b" " * 1024)
+        os.set_blocking(write_fd, True)
+
+        with os.fdopen(write_fd, "wb", closefd=False) as pipe:
+            monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(frame)})())
+            monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": pipe})())
+            monkeypatch.setattr("garuda.acp.server.CLEANUP_TIMEOUT", 0.1)
+            assert await asyncio.wait_for(serve_stdio(make_echo_runtime), 2) == 1
+            assert os.get_blocking(write_fd)
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
 
 
 async def test_stdio_refuses_oversized_unterminated_frame_before_eof():

@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 #: Ceiling on concurrent prompt tasks. Past it the reader waits for one to
 #: finish instead of growing the set without bound.
 MAX_INFLIGHT_TASKS = 64
+MAX_QUEUED_REPLIES = 32
 CLEANUP_TIMEOUT = 5.0
 
 MakeRuntime = Callable[[str], Awaitable[Any]]
@@ -334,7 +335,26 @@ def _to_update(event: Any) -> dict[str, Any] | None:
 
 
 async def serve_stdio(make_runtime: MakeRuntime) -> int:
-    """Run the framing loop over real stdin/stdout. Returns a process exit code.
+    """Run the ACP server with interruptible writes to the stdout descriptor."""
+    output = sys.stdout.buffer
+    try:
+        fd = output.fileno()
+    except (AttributeError, OSError):
+        # In-memory stream doubles have no selectable file descriptor.
+        return await _serve_stdio(make_runtime, output, None)
+    try:
+        was_blocking = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+    except OSError:
+        return 1
+    try:
+        return await _serve_stdio(make_runtime, output, fd)
+    finally:
+        os.set_blocking(fd, was_blocking)
+
+
+async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None) -> int:
+    """Run the framing loop. Returns a process exit code.
 
     Prompts dispatch as bounded background tasks so a cancel or approval
     arriving mid-turn is handled instead of waiting behind the blocked
@@ -343,16 +363,19 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
     without leaking internals; transport errors end it nonzero (1).
     """
     loop = asyncio.get_running_loop()
-    outbox: asyncio.Queue[bytes] = asyncio.Queue()
+    outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_REPLIES)
 
     async def _send(frame: bytes) -> None:
-        outbox.put_nowait(frame)
+        if writer.done():
+            raise BrokenPipeError("ACP output writer stopped")
+        async with asyncio.timeout(CLEANUP_TIMEOUT):
+            await outbox.put(frame)
 
     async def _writer() -> None:
         while True:
             frame = await outbox.get()
             try:
-                await loop.run_in_executor(None, _write_stdout, frame)
+                await _write_stdout(output, output_fd, frame)
             finally:
                 outbox.task_done()
 
@@ -408,8 +431,7 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
             for task in waiting:
                 task.cancel()
             await asyncio.gather(*waiting, return_exceptions=True)
-        # EOF may arrive immediately after a batch: dispatch has queued replies
-        # that the executor-backed writer has not flushed yet.
+        # EOF may arrive immediately after a batch, while replies are queued.
         drain = asyncio.create_task(outbox.join())
         try:
             done, _ = await asyncio.wait(
@@ -432,9 +454,27 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
     return exit_code
 
 
-def _write_stdout(frame: bytes) -> None:
-    sys.stdout.buffer.write(frame)
-    sys.stdout.buffer.flush()
+async def _write_stdout(output, fd: int | None, frame: bytes) -> None:
+    if fd is None:
+        output.write(frame)
+        output.flush()
+        return
+    loop = asyncio.get_running_loop()
+    remaining = memoryview(frame)
+    while remaining:
+        try:
+            written = os.write(fd, remaining)
+        except BlockingIOError:
+            ready = asyncio.Event()
+            loop.add_writer(fd, ready.set)
+            try:
+                await ready.wait()
+            finally:
+                loop.remove_writer(fd)
+        else:
+            if written == 0:
+                raise BrokenPipeError("ACP stdout stopped accepting bytes")
+            remaining = remaining[written:]
 
 
 async def make_echo_runtime(session_id: str) -> Any:

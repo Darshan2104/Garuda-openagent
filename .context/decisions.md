@@ -12,6 +12,12 @@ Explicit non-null, non-mapping routing sections and zero/false/empty-sequence
 global documents now refuse in the shared parsers rather than silently becoming
 defaults. Null reminder sections also load as absent under strict validation.
 
+## 2026-11-18 — ACP stdio output uses cancellable pipe writes (#507)
+
+ACP stdio bounds queued output and the wait for queue space. The stdout
+descriptor uses nonblocking writes and an event-loop readiness wait. At EOF
+the drain deadline cancels that wait without leaving a blocked writer thread.
+
 ## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
 
 Inbound HTTP authenticates headers before body reads and refuses ambiguous
