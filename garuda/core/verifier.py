@@ -3,7 +3,7 @@ import inspect
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from garuda.core import evidence
@@ -215,6 +215,8 @@ class VerificationResult:
     workspace: dict = field(default_factory=dict)
     # Policy refusals never judge the commands, including ones not yet run.
     permission_denied: bool = False
+    has_command_evidence: bool = False
+    authoritative_grader_verdict: bool | None = None
 
 
 @dataclass
@@ -523,20 +525,25 @@ class CompletionVerifier:
                     feedback="Completion rejected: answer_check hook failed.",
                 )
             if verdict is not None:
+                authoritative = self._has_authoritative_grader(config)
                 # An advisory hook's approval is not honoured: it declared that it
                 # can only reject, so an `approved=True` from it is a bug in the
                 # hook, and letting it through would skip the judge on the strength
                 # of a check that never claimed to be sufficient. Downgraded to
                 # "no opinion" rather than raising — the run should not die because
                 # a plugged-in checker overstated itself.
-                if verdict.approved and not self._has_authoritative_grader(config):
+                if verdict.approved and not authoritative:
                     logger.warning(
                         "answer_check declared authoritative=False but returned an approval; "
                         "treating it as no opinion and continuing to the verdict."
                     )
                 else:
-                    verdict.evidence = verdict.evidence or observed
-                    return verdict
+                    return replace(
+                        verdict,
+                        evidence=verdict.evidence or observed,
+                        authoritative_grader_verdict=verdict.approved if authoritative else None,
+                        has_command_evidence=bool(observed),
+                    )
 
         if model is not None:
             verdict = await self._llm_verdict(
@@ -550,12 +557,15 @@ class CompletionVerifier:
                 observed=observed,
             )
             verdict.evidence = observed
+            verdict.has_command_evidence = bool(observed)
             return verdict
 
         # No judge model wired. The deterministic gate above has already required
         # discriminating evidence and seen it pass, so approving here rests on
         # observed exit codes rather than on the agent's own account.
-        return VerificationResult(approved=True, checklist=checklist, evidence=observed)
+        return VerificationResult(
+            approved=True, checklist=checklist, evidence=observed, has_command_evidence=bool(observed),
+        )
 
     # -- running the agent's verification commands -----------------------------
 

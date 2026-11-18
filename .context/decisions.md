@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-18 — Session verification follows the grader verdict (#502)
+
+Native completion records the verdict the authoritative grader supplied.
+Session state requires an affirmative verdict to attribute verification to that
+grader. Configuration and abstention alone leave verification unavailable.
+
 ## 2026-11-18 — Stability checks require a permitted, completed repeat (#501)
 
 The completion verifier screens every repeat through the permission engine.

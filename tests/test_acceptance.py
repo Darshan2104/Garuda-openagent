@@ -115,7 +115,7 @@ def test_a_permission_refused_session_keeps_its_outcome(ws):
 
 
 def test_an_authoritative_grader_verdict_stands_without_checks(ws):
-    gate = {"verifier": True, "authoritative_grader": True, "self_check": "passed"}
+    gate = {"verifier": True, "authoritative_grader_verdict": True, "self_check": "passed"}
     store, sid = _session(ws, gate=gate)
     assert store.load_meta(sid)["state"]["verification"] == {"status": "passed",
                                                              "authority": "user-config"}

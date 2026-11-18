@@ -106,11 +106,11 @@ def finished(*, success: bool, completion_gate: dict | None = None,
     """The terminal state of a run that ended normally.
 
     ``completion_gate`` is the run's ``metadata["completion_gate"]``: whether
-    the native gate ran, and whether an authoritative grader stood behind it.
+    the native gate ran, and the authoritative grader's verdict if it issued one.
     """
     gate = completion_gate or {}
     derived_verification: dict[str, Any] = {"status": "unavailable"}
-    if success and gate.get("authoritative_grader"):
+    if success and gate.get("authoritative_grader_verdict") is True:
         derived_verification = {"status": "passed", "authority": "user-config"}
     # The flow's owned acceptance phase can end after implementation succeeds.
     # Its explicit verdict is the final fact, including a failed check; callers

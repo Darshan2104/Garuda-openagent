@@ -129,15 +129,22 @@ def test_a_gate_without_a_reported_self_check_is_not_judged(success, gate):
     assert ss.finished(success=success, completion_gate=gate)["self_check"] is None
 
 
-async def test_an_authoritative_grader_verifies(tmp_path):
+@pytest.mark.parametrize("approved", [True, None])
+async def test_an_authoritative_grader_must_actually_approve_to_verify(tmp_path, approved):
     def grader(env):
-        return VerificationResult(approved=True)
+        if approved is None:
+            return None
+        return VerificationResult(approved=approved, evidence=[{"finding": "graded artifact"}])
 
     result = await _run(tmp_path, AgentConfig(max_turns=3, enable_verifier=True, answer_check=grader))
     assert result.success
     state = ss.finished(success=result.success, completion_gate=result.metadata["completion_gate"])
 
-    assert state["verification"] == {"status": "passed", "authority": "user-config"}
+    expected = {"status": "unavailable"} if approved is None else {
+        "status": "passed", "authority": "user-config",
+    }
+    assert state["verification"] == expected
+    assert state["self_check"]["status"] == "no_evidence"
 
 
 def test_finished_preserves_explicit_failed_verdict_without_changing_outcome():
