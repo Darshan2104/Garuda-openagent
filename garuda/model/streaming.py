@@ -246,10 +246,9 @@ async def stream_complete(
         if not acc.done:
             raise IncompleteStreamError("stream ended without a terminal chunk")
     except asyncio.CancelledError as exc:
-        attempts = acc.interrupted_attempts()
+        attempts = getattr(exc, "attempt_usage", None) or acc.interrupted_attempts()
         if attempts:
-            exc.attempt_usage = attempts
-            exc.usage = sum_usage(attempts)
+            attach_usage(exc, attempts)
         exc.live = live_metadata(STREAMED, consumer_error=forward.error)
         raise
     except ContextOverflowError as exc:
@@ -265,15 +264,19 @@ async def stream_complete(
         logger.warning("Streaming failed mid-response; retrying without streaming", exc_info=True)
         stream_error = _describe(exc)
         failed = acc.failed_attempts(exc)
-        if forward.shown:
-            await forward.send(LiveDelta("discard"))
+        fallback_started = False
         try:
+            if forward.shown:
+                await forward.send(LiveDelta("discard"))
+            fallback_started = True
             response = await model.complete(messages, **kwargs)
         except asyncio.CancelledError as exc:
-            exc.attempt_usage = failed + [
-                {"usage": {}, "outcome": "interrupted", "rejected": False}
-            ]
-            exc.usage = sum_usage(exc.attempt_usage)
+            fallback_attempts = getattr(exc, "attempt_usage", None)
+            if fallback_attempts is None:
+                fallback_attempts = (
+                    [{**usage_attempt({}, "interrupted"), "rejected": False}] if fallback_started else []
+                )
+            attach_usage(exc, failed + fallback_attempts)
             exc.live = live_metadata(FALLBACK, stream_error, forward.error)
             raise
         except Exception as fallback_exc:

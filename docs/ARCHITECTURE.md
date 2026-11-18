@@ -289,8 +289,10 @@ fastest way to learn the system.
    `unreported_failed_attempts` survives checkpoints and resume. Unknown cost
    and estimated-token calls count once per call, without duplicating the
    whole-call failure estimate.
-   For interruptions with reported usage, the reservation is a floor on the sum
-   of reported tokens and missing-attempt estimates, never an additional charge.
+   A trailing interrupted active attempt charges the larger of its reported tokens
+   and its own reservation, on top of earlier attempts' reported tokens and
+   missing-attempt estimates. An increase over the active attempt's reported tokens
+   counts as estimated. The whole-call reservation floor still applies after this sum.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops
    based on reported spend. Legacy missing snapshots retain unknown prior spend.
    `core/read_model.py` projects persisted spend limits, scope, settled/reserved
@@ -334,7 +336,8 @@ fastest way to learn the system.
    nothing assembled or replayed. Reported partial usage survives cancellation,
    including during fallback, as `model_call_failed` with `outcome: interrupted`
    and live coverage metadata; the spend gate charges it as a lower bound with
-   unknown cost and no less than the estimate. The `model_response` event records `live_coverage`
+   unknown cost, charging the interrupted active attempt at least its own reservation
+   on top of earlier attempts. The `model_response` event records `live_coverage`
    (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
    call outcome. Native `garuda run` attaches the consumer through the shared
    runner when stdout is a TTY, unless `--no-stream`, `--quiet`, `--json` or
