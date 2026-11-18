@@ -91,7 +91,10 @@ limit; enumeration/hash errors and oversized trees refuse trust. Launch trees
 exclude `.git` entries, Git's resolved separate administrative directories,
 `__pycache__`, `.pyc` and `.pyo`. Explicit Git metadata operands and aliases
 are marked unpinned. An unresolved checkout pointer refuses launch-file binding.
-Grants whose fingerprint previously included Git metadata require review once.
+A resolved Git or common directory inside the project other than the root `.git`
+remains excluded and marks code unpinned, with its relative path as a reason:
+that directory could also contain imported project code. Binding version 4
+requires earlier grants to be reviewed once.
 Project Python servers launch with `PYTHONDONTWRITEBYTECODE=1` and a
 `PYTHONPYCACHEPREFIX` in an owner-only Garuda cache outside the repository, so
 planted repository bytecode is not selected.

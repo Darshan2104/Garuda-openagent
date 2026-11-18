@@ -508,7 +508,14 @@ def test_root_mcp_grant_survives_staging_but_binds_source(home, repo, git_dir):
     _init_mcp_checkout(repo, git_dir)
     _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
     server = _untrusted(repo)[0]
-    assert trust.grant(server, repo).code_pinned
+    key = trust.grant(server, repo)
+    if git_dir == ".git":
+        assert key.code_pinned
+    else:
+        assert not key.code_pinned
+        assert key.unpinned_reasons == (
+            "checkout Git directory inside project is excluded from binding: repo-admin",
+        )
     subprocess.run(["git", "-C", str(repo), "add", "server.py"], check=True)
     assert trust.is_trusted(server, repo)
     script.write_text("value = 2\n")
@@ -518,6 +525,23 @@ def test_root_mcp_grant_survives_staging_but_binds_source(home, repo, git_dir):
 def _init_mcp_checkout(repo, git_dir):
     args = [] if git_dir == ".git" else ["--separate-git-dir", str(repo / git_dir)]
     subprocess.run(["git", "init", "-q", *args, str(repo)], check=True)
+
+
+def test_mcp_import_from_in_project_git_directory_is_unpinned(home, repo):
+    _init_mcp_checkout(repo, "lib")
+    (repo / "server.py").write_text("import lib.evil\n")
+    helper = repo / "lib/evil.py"
+    helper.write_text("value = 1\n")
+    _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
+    server = _untrusted(repo)[0]
+
+    key = trust.trust_key(server, repo)
+    assert not key.code_pinned
+    assert key.unpinned_reasons == (
+        "checkout Git directory inside project is excluded from binding: lib",
+    )
+    helper.write_text("value = 2\n")
+    assert trust.trust_key(server, repo) == key
 
 
 @pytest.mark.parametrize("git_dir", [".git", "repo-admin"])
@@ -645,14 +669,17 @@ def test_review_unbindable_server_does_not_skip_later_grants(home, repo, capsys,
     assert [s.name for s in _untrusted(repo)] == ["bad"]
 
 
-def test_review_old_binding_grant_explains_required_review(home, repo, caplog):
+@pytest.mark.parametrize("binding_version", [None, 3])
+def test_review_old_binding_grant_explains_required_review(home, repo, caplog, binding_version):
     _write_mcp(repo / ".agent/mcp.json", {"tool": {"url": "https://example.com/mcp"}})
     server = _untrusted(repo)[0]
     trust.grant(server, repo)
     store = trust.trust_store_path()
     data = json.loads(store.read_text())
-    data["grants"][0].pop("binding_version", None)
-    data["grants"][0]["digest"] = "pre-update-digest"
+    if binding_version is None:
+        data["grants"][0].pop("binding_version", None)
+    else:
+        data["grants"][0]["binding_version"] = binding_version
     store.write_text(json.dumps(data))
     assert not trust.is_trusted(server, repo)
     assert "trust needs review after the binding update" in caplog.text.lower()

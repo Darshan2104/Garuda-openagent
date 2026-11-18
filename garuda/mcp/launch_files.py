@@ -160,6 +160,10 @@ def discover_launch_files(
     """
     git_directories = _git_metadata_directories(workspace) if any(tokens) else ()
     found = LaunchFiles(workspace, git_directories)
+    for directory in git_directories:
+        if directory.is_relative_to(workspace) and directory != workspace / ".git":
+            relative = directory.relative_to(workspace)
+            found.mark_unpinned(f"checkout Git directory inside project is excluded from binding: {relative}")
     walked: set[Path] = set()
     for variable in sorted(environment or {}):
         if variable in _CODE_ENV or variable.startswith("DYLD_"):

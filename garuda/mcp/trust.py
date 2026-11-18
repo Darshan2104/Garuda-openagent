@@ -49,7 +49,7 @@ from garuda.mcp.launch_files import LaunchBindingError, LaunchFiles, discover_la
 logger = logging.getLogger(__name__)
 
 STORE_VERSION = 1
-BINDING_VERSION = 3
+BINDING_VERSION = 4
 _MAX_SCRIPT_BYTES = 16 * 1024 * 1024
 _MAX_STORE_BYTES = 4 * 1024 * 1024
 UNTRUSTED_CODE = "agent.untrusted_project_code"
