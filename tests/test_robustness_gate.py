@@ -162,12 +162,13 @@ def test_a_python_oneliner_that_can_fail_still_counts(command):
 # --- the gate --------------------------------------------------------------
 
 
-async def _verify(commands, env=None, gate=None, config=None):
+async def _verify(commands, env=None, gate=None, config=None, permissions=None):
     return await CompletionVerifier().verify_with_commands(
         task="Write /app/out.txt containing the answer.",
         summary="I wrote the answer to /app/out.txt and checked it.",
         verification_commands=commands,
         env=env or _Env(),
+        permissions=permissions,
         # require_discriminating_evidence is named explicitly: it is the gate these
         # cases are about, and the default posture (`interactive`) has it off.
         config=config
@@ -277,6 +278,34 @@ async def test_stable_verification_passes():
     config = AgentConfig(enable_llm_verifier=False, require_stable_verification=True)
     result = await _verify(["./run_pipeline.sh"], config=config)
     assert result.approved is True
+
+
+@pytest.mark.parametrize("repeat_allowed", [True, False])
+async def test_stability_requires_an_authorized_repeat_that_finishes(repeat_allowed):
+    command = "./run_pipeline.sh"
+
+    def outcome(attempt):
+        if attempt == 2:
+            raise TimeoutError
+        return 0
+
+    class Policy:
+        checks = 0
+
+        async def evaluate_tool_call(self, tool_name, arguments):
+            assert tool_name == "bash" and arguments == {"command": command}
+            self.checks += 1
+            return self.checks == 1 or repeat_allowed, None
+
+    env, policy = _Env(results={command: outcome}), Policy()
+    result = await _verify(
+        [command], env=env, permissions=policy,
+        config=AgentConfig(enable_llm_verifier=False, require_stable_verification=True),
+    )
+    assert policy.checks == 2
+    assert len(env.ran) == (2 if repeat_allowed else 1)
+    assert not result.approved and not result.checklist["verification_stable"]
+    assert ("TimeoutError" if repeat_allowed else "denied by permission") in result.feedback
 
 
 async def test_stability_recheck_skips_weak_commands():

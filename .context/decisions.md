@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-18 — Stability checks require a permitted, completed repeat (#501)
+
+The completion verifier screens every repeat through the permission engine.
+A denied or unavailable repeat rejects the completion's stability claim.
+A dead workspace continues to abort the run at the workspace boundary.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 The built-in read-only planning profile intersects its toolkit with the caller's
