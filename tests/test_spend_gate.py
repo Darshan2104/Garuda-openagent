@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -627,6 +628,54 @@ async def test_cancelling_a_provider_retry_retains_all_reported_cost(tmp_path, m
     assert gate.settled_cost_usd == (0.024 if streaming else 0.012)
     assert gate.reserved_calls == 0
     assert gate.interrupted_calls == gate.cost_unknown_calls == 1
+
+
+async def test_cancelling_a_live_consumer_before_usage_keeps_reported_retry_cost(tmp_path, monkeypatch):
+    import litellm
+
+    from garuda.model.litellm_model import LitellmModel
+
+    consumer_started = asyncio.Event()
+    attempts = 0
+
+    async def chunks():
+        yield SimpleNamespace(choices=[
+            SimpleNamespace(delta=SimpleNamespace(content="First fragment"), finish_reason=None),
+        ])
+
+    async def provider(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            error = litellm.InternalServerError(message="fixture", model="gpt-4o-mini", llm_provider="openai")
+            error.usage = {"total_tokens": 25, "cost_usd": 0.012}
+            raise error
+        return chunks()
+
+    async def consume(delta):
+        if delta.kind == "text":
+            consumer_started.set()
+            await asyncio.Future()
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr("garuda.model.litellm_model._retry_after_seconds", lambda _: 0)
+    gate, events = SpendGate(max_tokens=10_000), EventStore()
+    task = asyncio.create_task(DefaultAgent().run(
+        task="inspect the workspace", model=LitellmModel("openai/gpt-4o-mini", max_retries=2),
+        env=LocalEnvironment(tmp_path), tools=default_tools(), events=events,
+        config=AgentConfig(enable_verifier=False, max_tokens=50, spend_gate=gate),
+        model_delta_consumer=consume,
+    ))
+    try:
+        await asyncio.wait_for(consumer_started.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert gate.settled_cost_usd == 0.012 and gate.reserved_calls == 0
+    [failed] = [event["payload"] for event in events.get_all() if event["type"] == "model_call_failed"]
+    assert [attempt["outcome"] for attempt in failed["attempt_usage"]] == ["failed", "interrupted"]
 
 
 @pytest.mark.parametrize("error,status_code,rejected", [

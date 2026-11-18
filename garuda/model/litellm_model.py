@@ -662,12 +662,15 @@ class LitellmModel:
         received_anything = False
         try:
             async for chunk in response_stream:
+                # Publish earlier attempts before yielding content. A consumer
+                # can be cancelled while handling the first text fragment.
+                first_chunk_after_retry = not received_anything and bool(attempts)
                 received_anything = True
                 # Usage chunks are cumulative snapshots of this attempt, not deltas.
                 reported = _extract_usage(chunk)
                 usage.update(reported)
                 current = attempts + [usage_attempt(usage, "success")]
-                if reported:
+                if reported or first_chunk_after_retry:
                     yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
                 for delta in _stream_deltas_from_chunk(chunk):
                     terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES

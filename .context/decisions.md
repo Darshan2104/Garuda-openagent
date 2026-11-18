@@ -3109,8 +3109,9 @@ in the same instant can never mark it ready.
 
 The native transport carries earlier attempts through cancellation. Only a
 dispatched request gains an interrupted attempt at the LiteLLM boundary.
-Streaming fallback combines its prior stream attempts with the fallback's
-attempts before settling the run-tree reservation.
+The first streamed chunk carries any known retry records before live text
+delivery. Streaming fallback combines its prior stream attempts with the
+fallback's attempts before settling the run-tree reservation.
 
 ## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
 
