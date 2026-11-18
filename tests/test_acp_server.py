@@ -227,6 +227,40 @@ async def test_stdio_drains_replies_to_large_batch_before_eof_exit():
         await process.wait()
 
 
+async def test_stdio_eof_allows_session_start_beyond_output_deadline():
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", """
+import asyncio
+from garuda.acp import server
+
+server.CLEANUP_TIMEOUT = 0.1
+
+async def make_runtime(session_id):
+    await asyncio.sleep(0.3)
+    return await server.make_echo_runtime(session_id)
+
+raise SystemExit(asyncio.run(server.serve_stdio(make_runtime)))
+""",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    batch = encode_frame({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": ACP_VERSION},
+    }) + encode_frame({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(batch), 10)
+        assert process.returncode == 0, stderr
+        replies = [decode_frame(line + b"\n")[0] for line in stdout.splitlines()]
+        assert [reply["id"] for reply in replies] == [1, 2]
+        assert replies[0]["result"]["protocolVersion"] == ACP_VERSION
+        assert replies[1]["result"]["sessionId"].startswith("garuda-")
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+
+
 async def test_stdio_slow_reader_keeps_all_replies_while_input_is_open():
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-c",

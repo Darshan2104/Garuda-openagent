@@ -183,8 +183,10 @@ The output queue holds up to 32 frames and applies backpressure without a
 timeout while stdin remains open. Input reads continue during an ordered
 dispatch, buffering at most the frame bound plus one read chunk, so EOF can be
 observed while output is blocked. Only after input EOF (or teardown begins) do
-queue waits, the prompt grace period and output drain share one cleanup
-deadline. Its expiry stops the writer and marks output as failed. Nonblocking
+output queue waits, the prompt grace period and output drain share one cleanup
+deadline. The deadline bounds output waits after EOF, not an in-flight ordered
+handler such as session creation or runtime startup. Expiry during an output
+wait stops the writer and marks output as failed. Nonblocking
 writes let the server stop an unfinished drain at that deadline. A terminal
 writer failure wakes the nonblocking input loop
 and starts session teardown even if the client keeps stdin open.

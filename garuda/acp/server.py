@@ -489,7 +489,11 @@ async def _serve_stdio(
             # dispatch waits. Do not dispatch another message to free space.
             if not eof and read is None and len(buffer) <= MAX_FRAME_BYTES:
                 read = asyncio.create_task(_read_stdin(input_stream, input_fd))
-            await _wait_for_work({task for task in (read, dispatch) if task is not None})
+            await asyncio.wait(
+                {writer, *(task for task in (read, dispatch) if task is not None)},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            _require_output()
             if read is not None and read.done():
                 chunk = read.result()
                 read = None
