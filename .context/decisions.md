@@ -6,7 +6,8 @@ The built-in read-only planning profile intersects its toolkit with the caller's
 admitted tool instances and keeps the caller's effect ceiling. The planner
 admits read-only effects, the built-in Bash tool under its inspection policy,
 and the built-in terminal tool. Its delegated permission engine inherits the
-run's policy and approval broker.
+run's policy and approval broker. Its tool context carries the caller's
+per-tool limits.
 
 ## 2026-11-17 — Diagnose malformed global settings before harness probes (#497)
 

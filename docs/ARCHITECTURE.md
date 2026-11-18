@@ -249,7 +249,8 @@ fastest way to learn the system.
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
    asks for it. Its read-only planner selects from the caller's admitted tool
-   instances and enforces the caller's permission and tool-effect ceilings.
+   instances and enforces the caller's permissions, tool-effect ceiling,
+   and per-tool limits.
    `core/spend.py::SpendGate` shares a token/dollar budget across the native run
    tree. With a token cap, `model/accounting.py::admit_call` counts the complete
    request and obtains the model's output bounds. Admission clamps the output

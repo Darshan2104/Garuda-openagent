@@ -10,7 +10,7 @@ from garuda.model.script_model import ScriptModel
 from garuda.tools import tools_for_names
 from garuda.tools.files import ReadFileTool
 from garuda.tools.protocol import ToolEffect
-from garuda.types import AgentConfig, Role, ToolCall, ToolResult
+from garuda.types import AgentConfig, ExecResult, Role, ToolCall, ToolResult
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -143,6 +143,44 @@ async def test_planner_uses_a_run_scoped_override_only_when_read_only(tmp_path, 
         assert not read["is_error"] and read["content"] == "scoped reader"
     else:
         assert read["is_error"] and read["content"] == "Unknown tool: read_file"
+
+
+async def test_rigorous_planner_preserves_configured_bash_limits(tmp_path):
+    class InspectEnvironment(LocalEnvironment):
+        def __init__(self, root):
+            super().__init__(root)
+            self.inspection_timeouts: list[float | None] = []
+
+        async def execute(self, command, timeout=None, cwd=None):
+            if command == "pwd":
+                self.inspection_timeouts.append(timeout)
+                return ExecResult(stdout="x" * 1024, stderr="", exit_code=0, duration_ms=1)
+            return await super().execute(command, timeout=timeout, cwd=cwd)
+
+    def inspect(phase):
+        return ModelResponse(content=None, tool_calls=[
+            ToolCall(id=phase, name="bash", arguments={"command": "pwd"}),
+        ])
+
+    env = InspectEnvironment(tmp_path)
+    result = await RigorousAgent().run(
+        task="Inspect the fixture", env=env, tools=tools_for_names(["bash"]),
+        model=ScriptModel([
+            inspect("plan"), ModelResponse(content="Plan", tool_calls=[]),
+            inspect("build"), ModelResponse(content="Done", tool_calls=[]),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]),
+        config=AgentConfig(
+            enable_verifier=False, tool_options={"bash": {"timeout_sec": 2, "max_output_bytes": 96}},
+        ),
+    )
+    assert result.success
+    assert env.inspection_timeouts == [2, 2]
+    outputs = [
+        row["payload"]["content"] for row in result.metadata["events"] if row["type"] == "tool_result"
+    ]
+    assert len(outputs) == 2
+    assert all("cut at 96 bytes by tools.options.bash.max_output_bytes" in output for output in outputs)
 
 
 async def test_persistent_rejection_fails_after_max_rounds(tmp_path):

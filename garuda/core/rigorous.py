@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 
 from garuda.agents.loader import load_profile
 from garuda.core.events import EventStore, EventType
@@ -141,6 +142,7 @@ class RigorousAgent:
             plan_config.max_run_tokens = config.max_run_tokens
             plan_config.max_run_cost_usd = config.max_run_cost_usd
             plan_config.spend_gate = gate
+            plan_config.tool_options.update(deepcopy(config.tool_options or {}))
             parent_tools = _filter_tools(tools, config.allowed_tools) if config.allowed_tools else tools
             plan_names = set(plan_profile.tools or ()) - set(config.removed_tools or ())
             # Only the built-in Bash implementation has the planner's screened
