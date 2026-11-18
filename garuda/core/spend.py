@@ -32,6 +32,8 @@ provenance. Calls that were never sent cannot reliably be distinguished, so this
 can overcharge. Usage the exception carries is charged like any other report.
 For interruptions, reported usage is a lower bound: charge at least the
 reservation estimate, retain known dollars and always count the cost as unknown.
+A trailing interrupted active attempt is charged at least its own reservation
+on top of known earlier attempts; any increase over its reported tokens is estimated.
 For calls with reported usage or a successful completion, tokens are summed per
 attempt. Each attempt without usage, except a definite failed rejection, adds the
 largest reported prompt size in that call, or its reservation estimate if unavailable,
@@ -276,8 +278,10 @@ class SpendGate:
         ``attempt_tokens`` preserves per-attempt token totals. Unreported non-rejected
         attempts add ``estimated_attempt_tokens`` and unknown cost once per call,
         except when the whole-call failure branch already charges its estimate.
-        For an interrupted call with usage, this per-attempt total is floored at
-        the reservation estimate rather than adding another estimate. Known dollars
+        Model accounting charges an interrupted active attempt at least its own
+        reservation on top of known earlier attempts. For an interrupted call with
+        usage, this per-attempt total is also floored at the reservation estimate
+        rather than adding another estimate. Known dollars
         are retained, but the call always has unknown cost and interrupted provenance.
         """
         tokens = usage_tokens(usage)

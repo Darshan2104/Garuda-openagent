@@ -3,7 +3,7 @@ import inspect
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from garuda.core import evidence
@@ -207,6 +207,7 @@ class VerificationResult:
     approved: bool
     checklist: dict[str, bool] = field(default_factory=dict)
     feedback: str | None = None
+    commands_unexamined: bool = field(default=False, kw_only=True)
     # Observed output of each verification command, so the judge reasons about
     # what the workspace actually printed rather than the agent's account of it.
     evidence: list[dict] = field(default_factory=list)
@@ -215,6 +216,8 @@ class VerificationResult:
     workspace: dict = field(default_factory=dict)
     # Policy refusals never judge the commands, including ones not yet run.
     permission_denied: bool = False
+    has_command_evidence: bool = False
+    authoritative_grader_verdict: bool | None = None
 
 
 @dataclass
@@ -400,6 +403,7 @@ class CompletionVerifier:
                     f"is unavailable ({type(exc).__name__})."
                 ),
                 workspace={"attribution": "unavailable", "error": type(exc).__name__},
+                commands_unexamined=True,
             )
         result = await self._verify(
             task, summary, verification_commands, env, config, permissions,
@@ -436,12 +440,14 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: provide a non-empty summary in task_complete.",
+                commands_unexamined=True,
             )
         if not checklist["summary_length"]:
             return VerificationResult(
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: summary is too short. Explain what was done and how it was verified.",
+                commands_unexamined=True,
             )
 
         # A resubmission that drops the check it just failed is the cheapest way
@@ -533,22 +539,28 @@ class CompletionVerifier:
                     approved=False,
                     checklist=checklist,
                     feedback="Completion rejected: answer_check hook failed.",
+                    commands_unexamined=True,
                 )
             if verdict is not None:
+                authoritative = self._has_authoritative_grader(config)
                 # An advisory hook's approval is not honoured: it declared that it
                 # can only reject, so an `approved=True` from it is a bug in the
                 # hook, and letting it through would skip the judge on the strength
                 # of a check that never claimed to be sufficient. Downgraded to
                 # "no opinion" rather than raising — the run should not die because
                 # a plugged-in checker overstated itself.
-                if verdict.approved and not self._has_authoritative_grader(config):
+                if verdict.approved and not authoritative:
                     logger.warning(
                         "answer_check declared authoritative=False but returned an approval; "
                         "treating it as no opinion and continuing to the verdict."
                     )
                 else:
-                    verdict.evidence = verdict.evidence or observed
-                    return verdict
+                    return replace(
+                        verdict,
+                        evidence=verdict.evidence or observed,
+                        authoritative_grader_verdict=verdict.approved if authoritative else None,
+                        has_command_evidence=bool(observed),
+                    )
 
         if model is not None:
             verdict = await self._llm_verdict(
@@ -562,12 +574,15 @@ class CompletionVerifier:
                 observed=observed,
             )
             verdict.evidence = observed
+            verdict.has_command_evidence = bool(observed)
             return verdict
 
         # No judge model wired. The deterministic gate above has already required
         # discriminating evidence and seen it pass, so approving here rests on
         # observed exit codes rather than on the agent's own account.
-        return VerificationResult(approved=True, checklist=checklist, evidence=observed)
+        return VerificationResult(
+            approved=True, checklist=checklist, evidence=observed, has_command_evidence=bool(observed),
+        )
 
     # -- running the agent's verification commands -----------------------------
 
@@ -925,6 +940,7 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: the verifier could not be reached to confirm the work.",
+                commands_unexamined=True,
             )
 
         # Prefer a structured JSON verdict; fall back to an APPROVED/REJECTED prefix.
@@ -953,4 +969,5 @@ class CompletionVerifier:
                 "Completion rejected: verifier verdict was unclear. Re-state the outcome and how "
                 "it was verified, then call task_complete again."
             ),
+            commands_unexamined=True,
         )

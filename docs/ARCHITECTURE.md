@@ -255,7 +255,9 @@ fastest way to learn the system.
    (setup and carried state), `steering.py` (what the harness tells the model
    between turns), `tool_runner.py` (executing calls), `completion.py` (the gate).
    `core/rigorous.py` wraps the whole thing with plan/execute/critic when the mode
-   asks for it.
+   asks for it. The packaged read-only planner selects from the caller's
+   admitted tool instances and enforces the caller's permissions, tool-effect
+   ceiling, and per-tool limits.
    `core/spend.py::SpendGate` shares a token/dollar budget across the native run
    tree. With a token cap, `model/accounting.py::admit_call` counts the complete
    request and obtains the model's output bounds. Admission clamps the output
@@ -294,8 +296,10 @@ fastest way to learn the system.
    `unreported_failed_attempts` survives checkpoints and resume. Unknown cost
    and estimated-token calls count once per call, without duplicating the
    whole-call failure estimate.
-   For interruptions with reported usage, the reservation is a floor on the sum
-   of reported tokens and missing-attempt estimates, never an additional charge.
+   A trailing interrupted active attempt charges the larger of its reported tokens
+   and its own reservation, on top of earlier attempts' reported tokens and
+   missing-attempt estimates. An increase over the active attempt's reported tokens
+   counts as estimated. The whole-call reservation floor still applies after this sum.
    Dollar-only admission refuses that unknown cost; dollar caps remain stops
    based on reported spend. Legacy missing snapshots retain unknown prior spend.
    `core/read_model.py` projects persisted spend limits, scope, settled/reserved
@@ -339,7 +343,8 @@ fastest way to learn the system.
    nothing assembled or replayed. Reported partial usage survives cancellation,
    including during fallback, as `model_call_failed` with `outcome: interrupted`
    and live coverage metadata; the spend gate charges it as a lower bound with
-   unknown cost and no less than the estimate. The `model_response` event records `live_coverage`
+   unknown cost, charging the interrupted active attempt at least its own reservation
+   on top of earlier attempts. The `model_response` event records `live_coverage`
    (`streamed`, `fallback`, `not_streamed`) and `stream_error` apart from the
    call outcome. Native `garuda run` attaches the consumer through the shared
    runner when stdout is a TTY, unless `--no-stream`, `--quiet`, `--json` or
@@ -1071,6 +1076,12 @@ fastest way to learn the system.
    rejection returns to the loop with what was not shown. The judge excludes
    fork-inherited messages from conversation evidence; historical checks never
    verify the new candidate. Commands run by the gate observe the current environment.
+   Refusals that never judge the commands use `record_unexamined_rejection`:
+   unresolved acceptance criteria, invalid summaries, unavailable workspace baselines,
+   policy denials, raised `answer_check` hooks, and unreachable or unparseable LLM
+   verdicts. These still reject and count the attempt, but permit the same commands
+   on a later attempt, even when they already ran. Failed checks and explicit judge
+   `REJECTED` verdicts record the command set and require new evidence.
 8. **Record** — `core/events.py` appends an event log; `core/sessions.py`
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.

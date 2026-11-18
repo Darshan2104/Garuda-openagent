@@ -227,9 +227,10 @@ def _gate_only(request: Request, ctx: DashboardContext) -> Response | None:
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    #: Thread-per-connection with a ceiling: a hostile local process opening 10k
-    #: sockets gets 503s rather than a fork bomb.
-    _slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+    def __init__(self, address, handler, bind_and_activate=True):
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        super().__init__(address, handler, bind_and_activate=bind_and_activate)
 
     def process_request(self, request, client_address):  # type: ignore[override]
         if not self._slots.acquire(blocking=False):
@@ -238,18 +239,19 @@ class _Server(ThreadingHTTPServer):
                 request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
             except OSError:
                 pass
-            self.shutdown_request(request)
-            return
-        super().process_request(request, client_address)
-
-    def shutdown_request(self, request):  # type: ignore[override]
-        try:
             super().shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):  # type: ignore[override]
+        try:
+            super().process_request_thread(request, client_address)
         finally:
-            try:
-                self._slots.release()
-            except ValueError:  # pragma: no cover - released more than acquired
-                pass
+            self._slots.release()
 
 
 def bind(ctx: DashboardContext, port: int) -> tuple[_Server, int]:
