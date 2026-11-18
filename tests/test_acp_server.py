@@ -588,6 +588,57 @@ async def test_stdio_stalled_output_settles_without_sending_an_error_reply(monke
     assert error_replies == []
 
 
+async def test_stdio_closes_prompt_session_when_output_fails_with_open_input(monkeypatch):
+    from garuda.acp.server import serve_stdio
+    from garuda.runtime.fake import FakeRuntime
+
+    session_id = asyncio.get_running_loop().create_future()
+    session_closed = asyncio.Event()
+
+    class Runtime(FakeRuntime):
+        async def close(self):
+            await super().close()
+            session_closed.set()
+
+    class ReplySink:
+        def write(self, data):
+            message, _ = decode_frame(data)
+            if message.get("id") == 2:
+                session_id.set_result(message["result"]["sessionId"])
+            elif message.get("id") != 1:
+                raise BrokenPipeError("Output closed during the fixture prompt")
+
+        def flush(self):
+            pass
+
+    async def make_runtime(_):
+        return Runtime()
+
+    def request(call_id, method, params):
+        return encode_frame({"jsonrpc": "2.0", "id": call_id, "method": method, "params": params})
+
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb") as source:
+        monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": source})())
+        monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": ReplySink()})())
+        task = asyncio.create_task(serve_stdio(make_runtime))
+        try:
+            os.write(write_fd, request(1, "initialize", {"protocolVersion": ACP_VERSION}))
+            os.write(write_fd, request(2, "session/new", {}))
+            active_session = await asyncio.wait_for(session_id, 3)
+            os.write(write_fd, request(3, "session/prompt", {
+                "sessionId": active_session, "prompt": [{"type": "text", "text": "hello"}],
+            }))
+            assert await asyncio.wait_for(task, 3) == 1
+            assert session_closed.is_set()
+            assert os.get_blocking(source.fileno())
+        finally:
+            os.close(write_fd)
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_stdio_refuses_oversized_unterminated_frame_before_eof():
     from garuda.acp.protocol import MAX_FRAME_BYTES
 
@@ -613,25 +664,26 @@ async def test_stdio_refuses_oversized_unterminated_frame_before_eof():
 
 
 async def test_stdio_waits_for_consumed_fragment_before_reading_remainder(monkeypatch):
-    from garuda.acp.server import serve_stdio
+    from garuda.acp import server as acp_server
 
     read_fd, write_fd = os.pipe()
     consumed = asyncio.Event()
-    loop = asyncio.get_running_loop()
     output = io.BytesIO()
+    read_stdin = acp_server._read_stdin
 
-    class ObservedPipe(io.BufferedReader):
-        def read1(self, size=-1):
-            chunk = super().read1(size)
-            loop.call_soon_threadsafe(consumed.set)
-            return chunk
+    async def observe_read(source, fd):
+        chunk = await read_stdin(source, fd)
+        if chunk:
+            consumed.set()
+        return chunk
 
-    pipe = ObservedPipe(io.FileIO(read_fd, "rb", closefd=True))
+    pipe = os.fdopen(read_fd, "rb")
+    monkeypatch.setattr(acp_server, "_read_stdin", observe_read)
     monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": pipe})())
     monkeypatch.setattr(sys, "stdout", type("Output", (), {"buffer": output})())
     frame = encode_frame({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                           "params": {"protocolVersion": ACP_VERSION}})
-    task = asyncio.create_task(serve_stdio(make_echo_runtime))
+    task = asyncio.create_task(acp_server.serve_stdio(make_echo_runtime))
     try:
         os.write(write_fd, frame[:20])
         # This acknowledgement comes from the real pipe read, so two writes

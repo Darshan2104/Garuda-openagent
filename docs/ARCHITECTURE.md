@@ -181,8 +181,9 @@ bound, ignores blank lines and refuses unfinished records at EOF. The package
 exports `AcpServer` lazily so module execution does not preload its entry point.
 The output queue holds up to 32 frames. A queue timeout stops the writer and
 marks output as failed. At EOF, the prompt grace period and the output drain
-share one deadline. Nonblocking stdout writes let the server stop an unfinished
-drain at that deadline.
+share one deadline. Nonblocking writes let the server stop an unfinished drain
+at that deadline. A terminal writer failure wakes the nonblocking input loop
+and starts session teardown even if the client keeps stdin open.
 Dashboard tail and SSE readers share bounded window scanning: complete event
 lines over 4 MiB are skipped at a newline, counted in the tail's `malformed` field
 and SSE `skipped` events (`data: {"malformed": count}`). Torn final lines retain

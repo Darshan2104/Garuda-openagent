@@ -18,6 +18,8 @@ ACP stdio bounds queued output and the wait for queue space. A queue timeout
 cancels the writer and bypasses protocol error delivery on the stalled channel.
 At EOF, pending prompts and output drain share one cleanup deadline.
 Nonblocking stdout writes let cancellation settle the readiness wait.
+The connection owner observes the writer alongside its nonblocking input
+read, so a terminal output failure starts session teardown without stdin EOF.
 
 ## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
 

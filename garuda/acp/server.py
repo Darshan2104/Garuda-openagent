@@ -27,6 +27,7 @@ import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Any
 
 from garuda.acp.protocol import (
@@ -340,26 +341,35 @@ def _to_update(event: Any) -> dict[str, Any] | None:
     return None
 
 
-async def serve_stdio(make_runtime: MakeRuntime) -> int:
-    """Run the ACP server with interruptible writes to the stdout descriptor."""
-    output = sys.stdout.buffer
+@contextmanager
+def _nonblocking_descriptor(stream):
     try:
-        fd = output.fileno()
+        fd = stream.fileno()
     except (AttributeError, OSError):
         # In-memory stream doubles have no selectable file descriptor.
-        return await _serve_stdio(make_runtime, output, None)
+        yield None
+        return
+    was_blocking = os.get_blocking(fd)
+    os.set_blocking(fd, False)
     try:
-        was_blocking = os.get_blocking(fd)
-        os.set_blocking(fd, False)
-    except OSError:
-        return 1
-    try:
-        return await _serve_stdio(make_runtime, output, fd)
+        yield fd
     finally:
         os.set_blocking(fd, was_blocking)
 
 
-async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None) -> int:
+async def serve_stdio(make_runtime: MakeRuntime) -> int:
+    """Run the ACP server with interruptible stdin and stdout."""
+    input_stream, output = sys.stdin.buffer, sys.stdout.buffer
+    try:
+        with _nonblocking_descriptor(input_stream) as input_fd, _nonblocking_descriptor(output) as output_fd:
+            return await _serve_stdio(make_runtime, input_stream, input_fd, output, output_fd)
+    except OSError:
+        return 1
+
+
+async def _serve_stdio(
+    make_runtime: MakeRuntime, input_stream, input_fd: int | None, output, output_fd: int | None,
+) -> int:
     """Run the framing loop. Returns a process exit code.
 
     Prompts dispatch as bounded background tasks so a cancel or approval
@@ -371,9 +381,12 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
     loop = asyncio.get_running_loop()
     outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_REPLIES)
 
-    async def _send(frame: bytes) -> None:
+    def _require_output() -> None:
         if writer.done() or writer.cancelling():
             raise _OutputUnavailable("ACP output writer stopped")
+
+    async def _send(frame: bytes) -> None:
+        _require_output()
         try:
             async with asyncio.timeout(CLEANUP_TIMEOUT):
                 await outbox.put(frame)
@@ -395,6 +408,10 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
     writer = asyncio.ensure_future(_writer())
     pending: set[asyncio.Task[None]] = set()
 
+    async def _wait_for_work(tasks: set[asyncio.Task]) -> None:
+        await asyncio.wait({writer, *tasks}, return_when=asyncio.FIRST_COMPLETED)
+        _require_output()
+
     def _reap(task: asyncio.Task[None]) -> None:
         pending.discard(task)
         if not task.cancelled():
@@ -403,9 +420,10 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
                 logger.warning("ACP server prompt task failed", exc_info=exc)
 
     async def _dispatch(message: dict[str, Any]) -> None:
+        _require_output()
         if message.get("method") == "session/prompt":
             while len(pending) >= MAX_INFLIGHT_TASKS:
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await _wait_for_work(pending)
             task = asyncio.ensure_future(server.handle(message))
             pending.add(task)
             task.add_done_callback(_reap)
@@ -416,7 +434,14 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
     exit_code = 0
     try:
         while True:
-            chunk = await loop.run_in_executor(None, sys.stdin.buffer.read1, 65536)
+            read = asyncio.create_task(_read_stdin(input_stream, input_fd))
+            try:
+                await _wait_for_work({read})
+                chunk = read.result()
+            finally:
+                if not read.done():
+                    read.cancel()
+                await asyncio.gather(read, return_exceptions=True)
             if not chunk:
                 break
             buffer += chunk
@@ -472,6 +497,22 @@ async def _serve_stdio(make_runtime: MakeRuntime, output, output_fd: int | None)
             except Exception:
                 pass
     return exit_code
+
+
+async def _read_stdin(input_stream, fd: int | None) -> bytes:
+    if fd is None:
+        return input_stream.read1(65536)
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            return os.read(fd, 65536)
+        except BlockingIOError:
+            ready = asyncio.Event()
+            loop.add_reader(fd, ready.set)
+            try:
+                await ready.wait()
+            finally:
+                loop.remove_reader(fd)
 
 
 async def _write_stdout(output, fd: int | None, frame: bytes) -> None:
