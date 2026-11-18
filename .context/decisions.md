@@ -1674,6 +1674,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - The nominal mode order is used only to report the delegated posture, never to
   authorize a call.
 
+## 2026-11-18 — MCP launch-tree binding excludes Git bookkeeping (#505)
+
+Walked launch trees exclude Git metadata entries, including linked worktree
+pointers. Direct operands and aliases into that metadata are visibly unpinned.
+A fingerprint that previously included Git metadata requires re-approval.
+
 ## 2026-10-02 — Project authority: profile ceiling and MCP trust (issue #143)
 
 - A profile whose file is inside the workspace is project content. Its

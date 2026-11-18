@@ -100,6 +100,12 @@ def _bytecode(path: Path) -> bool:
     return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
 
 
+def is_git_metadata(path: Path, root: Path) -> bool:
+    return path.is_relative_to(root) and any(
+        part.casefold() == ".git" for part in path.relative_to(root).parts
+    )
+
+
 def discover_launch_files(
     tokens: list[str], workspace: Path, environment: dict[str, str] | None = None,
 ) -> LaunchFiles:
@@ -131,13 +137,20 @@ def discover_launch_files(
             if required or code_like:
                 found.mark_unpinned(f"code/path operand outside project: {value}")
             return
+        if is_git_metadata(candidate, workspace):
+            found.mark_unpinned(f"code/path operand references excluded Git metadata: {value}")
+            return
         if candidate.is_file() or candidate.is_symlink():
+            resolved = candidate.resolve()
+            if is_git_metadata(resolved, workspace):
+                found.mark_unpinned(f"code/path operand references excluded Git metadata: {value}")
+                return
             if _bytecode(candidate):
                 found.unsafe_bytecode.append(candidate)
                 found.mark_unpinned(f"direct bytecode operand is not pinned: {value}")
                 return
             found.paths.append(candidate)
-            if not (candidate.is_file() and _within(candidate.resolve(), workspace)):
+            if not (candidate.is_file() and _within(resolved, workspace)):
                 found.mark_unpinned(f"code/path operand leaves project: {value}")
             elif bind_tree:
                 add_tree(candidate.parent)
@@ -154,6 +167,10 @@ def discover_launch_files(
         for directory, dirs, files in os.walk(base, followlinks=True, onerror=_walk_error):
             path = Path(directory)
             resolved = path.resolve(strict=True)
+            if is_git_metadata(resolved, workspace):
+                found.mark_unpinned(f"launch tree references excluded Git metadata: {path.relative_to(workspace)}")
+                dirs.clear()
+                continue
             found.paths.append(path)
             count += 1
             if count > _MAX_PACKAGE_FILES:
@@ -166,8 +183,12 @@ def discover_launch_files(
                 dirs.clear()
                 continue
             visited.add(resolved)
-            dirs[:] = sorted(name for name in dirs if not _bytecode(path / name))
+            dirs[:] = sorted(
+                name for name in dirs if name.casefold() != ".git" and not _bytecode(path / name)
+            )
             for name in sorted(files):
+                if name.casefold() == ".git":
+                    continue
                 if _bytecode(path / name):
                     if not (path / name).with_suffix(".py").is_file():
                         found.unsafe_bytecode.append(path / name)
