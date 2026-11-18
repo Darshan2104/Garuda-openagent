@@ -11,7 +11,7 @@ from garuda.core.loop import DefaultAgent
 from garuda.core.modes import apply_mode_preset, describe_config, is_rigorous
 from garuda.core.permissions import DelegatedPermissionEngine, PermissionEngine
 from garuda.core.run_state import _filter_tools
-from garuda.core.spend import SpendLimitExceeded, gate_for
+from garuda.core.spend import SpendLimitExceeded, describe_refusal, gate_for
 from garuda.core.termination import TerminalStrategy
 from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model import accounting
@@ -239,9 +239,8 @@ class RigorousAgent:
                         task, plan_result.final_message, exec_result, model, env
                     )
                 except SpendLimitExceeded as exc:
-                    what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
                     exec_result.success = False
-                    exec_result.final_message = f"Run-tree spend budget {what}: {exc}"
+                    exec_result.final_message = describe_refusal(exc)
                     exec_result.metadata["spend_limit"] = exc.cause
                     self._end_on_spend(events, emit_session_events, exec_result)
                     return exec_result

@@ -408,7 +408,10 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   reservation without charge. A dollar-only cap refuses further calls while
   any such cost is unknown: one unknown-outcome failure is enough. Use
   `--max-run-tokens` to bound continued work. If a
-  reservation cannot be checkpointed, the call is refused before sending.
+  reservation cannot be checkpointed, the call is refused before sending with
+  `Run stopped fail-closed: run-tree spend could not be recorded (<detail>)`.
+  This reports a recording failure rather than an exhausted budget; the result
+  retains `spend_limit: checkpoint` and the session-end reason is `spend_limit`.
 - A transient failure retried successfully still costs tokens. For example,
   an unreported 500 followed by a success reporting 20 prompt and 4 output
   tokens charges 44 tokens: 24 reported plus 20 for the failed request. Each

@@ -28,7 +28,7 @@ from garuda.core.events import EventStore, EventType
 from garuda.core.metrics import stopwatch
 from garuda.core.permissions import PermissionEngine, permission_workspace
 from garuda.core.run_state import RunState, prepare_run, reserved_output_tokens
-from garuda.core.spend import SpendLimitExceeded
+from garuda.core.spend import SpendLimitExceeded, describe_refusal
 from garuda.core.steering import (
     CONTEXT_WARNING_FRACTION,
     CONTEXT_WARNING_NUDGE,
@@ -347,8 +347,7 @@ class DefaultAgent:
                 "success": False, "reason": "spend_limit", "spend_cause": exc.cause,
                 "error": str(exc),
             })
-        what = "cannot be enforced" if exc.cause == "cost_unknown" else "exhausted"
-        result = state.bare_result(False, f"Run-tree spend budget {what}: {exc}", turns)
+        result = state.bare_result(False, describe_refusal(exc), turns)
         result.metadata["spend_limit"] = exc.cause
         return result
 
