@@ -90,6 +90,7 @@ class CompletionGate:
     failure: str | None = None
     failure_message: str = ""
     self_check_status: str | None = None
+    authoritative_grader_verdict: bool | None = None
 
     def _defer(self, content: str) -> None:
         """Queue a USER-role message to append *after* the call's tool result.
@@ -167,12 +168,15 @@ class CompletionGate:
             "attempt": self.gate.rejections + 1,
             "turn": turn,
         }
+        self.authoritative_grader_verdict = result.authoritative_grader_verdict
+        if result.authoritative_grader_verdict is not None:
+            payload["authoritative_grader_verdict"] = result.authoritative_grader_verdict
         if result.workspace:
             # Separate key: `evidence` stays a list of command outputs, which
             # the judge prompt and the dashboard render as such.
             payload["workspace_delta"] = result.workspace
         if result.approved and self.config.enable_verifier:
-            self.self_check_status = "passed" if result.evidence else "no_evidence"
+            self.self_check_status = "passed" if result.has_command_evidence else "no_evidence"
             payload["self_check"] = self.self_check_status
         elif self.config.enable_verifier:
             self.self_check_status = "failed"
