@@ -1,12 +1,68 @@
 """HTTP header refusals must happen without consuming untrusted bodies."""
 
 import io
+import threading
 
 import pytest
 
 from garuda.core.sessions import SessionStore
-from garuda.interfaces.web.http import _Handler
+from garuda.interfaces.web.http import _Handler, _Server
 from garuda.interfaces.web.routes import DashboardContext
+
+
+def test_dashboard_admits_connections_only_while_it_owns_capacity(monkeypatch):
+    monkeypatch.setattr("garuda.interfaces.web.http.MAX_CONNECTIONS", 1)
+    release = threading.Event()
+
+    class Connection:
+        def __init__(self):
+            self.entered = threading.Event()
+            self.response = b""
+
+        def sendall(self, data):
+            self.response += data
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    def handler(request, address, server):
+        request.entered.set()
+        release.wait(3)
+
+    def fail_to_start(thread):
+        raise RuntimeError("fixture thread could not start")
+
+    with (
+        _Server(("127.0.0.1", 0), handler, bind_and_activate=False) as first,
+        _Server(("127.0.0.1", 0), handler, bind_and_activate=False) as second,
+    ):
+        with monkeypatch.context() as failure:
+            failure.setattr(threading.Thread, "start", fail_to_start)
+            with pytest.raises(RuntimeError, match="fixture thread could not start"):
+                first.process_request(Connection(), None)
+        first.daemon_threads = False
+        second.daemon_threads = False
+        try:
+            active = Connection()
+            first.process_request(active, None)
+            assert active.entered.wait(1)
+            for _ in range(2):
+                refused = Connection()
+                first.process_request(refused, None)
+                assert refused.response.startswith(b"HTTP/1.1 503")
+
+            independent = Connection()
+            second.process_request(independent, None)
+            assert independent.entered.wait(1)
+        finally:
+            release.set()
+        first._threads.join()
+        next_client = Connection()
+        first.process_request(next_client, None)
+        assert next_client.entered.wait(1)
 
 
 class HttpConnection:

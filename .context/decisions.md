@@ -1,5 +1,15 @@
 # Durable decisions
 
+## 2026-11-18 — Rigorous planning inherits run authority (#500)
+
+Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only
+planner selects from the caller's admitted tool instances and keeps the caller's
+effect ceiling. The planner
+admits read-only effects, the built-in Bash tool under its inspection policy,
+and the built-in terminal tool. Its delegated permission engine inherits the
+run's policy and approval broker. Its tool context carries the caller's
+per-tool limits.
+
 ## 2026-11-17 — Diagnose malformed global settings before harness probes (#497)
 
 Doctor reads the same strict global settings loader as runtime catalog preparation
@@ -1850,6 +1860,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   is published last and the journal becomes a receipt. An interrupted run
   resumes from the journal; a finished one is a no-op.
 
+## 2026-11-18 — Session verification follows the grader verdict (#502)
+
+Native completion records the verdict the authoritative grader supplied.
+Session state requires an affirmative verdict to attribute verification to that
+grader. Configuration and abstention alone leave verification unavailable.
+
 ## 2026-10-02 — Session state is four independent fields (issue #157, B.2)
 
 - Session metadata gains a versioned `state`: `process` (starting, live,
@@ -3105,6 +3121,20 @@ stops is stopped before its verdict is published, so a handshake that finishes
 in the same instant can never mark it ready.
 
 
+## 2026-11-18 — Model cancellation retains earlier billed attempts (#503)
+
+The native transport carries earlier attempts through cancellation. Only a
+dispatched request gains an interrupted attempt at the LiteLLM boundary.
+The first streamed chunk carries any known retry records before live text
+delivery. Streaming fallback combines its prior stream attempts with the
+fallback's attempts before settling the run-tree reservation.
+Settlement charges a trailing interrupted active attempt the larger of its
+reported tokens and its own reservation, in addition to earlier attempts'
+reported tokens and missing-attempt estimates. The reservation increase counts
+as estimated usage even when prior usage already exceeds one reservation.
+Known dollars remain charged and final cost remains unknown. The existing
+whole-call reservation floor still applies after per-attempt settlement.
+
 ## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
 
 - Model responses and original raised exception types carry `attempt_usage` and
@@ -3995,3 +4025,15 @@ Binding version 3 invalidates earlier MCP grants without changing the shared
 store format or project garuda.yaml grants. Stored older grants explain that
 "trust needs review after the binding update". The trust command reports each
 unbindable server, continues to later entries, and returns an error if any fail.
+
+## 2026-11-18: Unexamined completion refusals permit command reuse (#504, #513)
+
+Completion refusals for unresolved acceptance criteria, empty or too-short
+summaries, unavailable workspace baselines, policy denials, raised `answer_check`
+hooks, and unreachable (after retry) or unparseable LLM verdicts use
+`record_unexamined_rejection`. Each refusal still fails closed, increments the
+rejection count and retains feedback, but does not file its command set as
+rejected evidence. Hook and judge failures leave the commands unexamined even
+when execution already succeeded; a later attempt may reuse the same commands.
+Actual failed checks and explicit judge `REJECTED` verdicts remain judged
+rejections and require new evidence on resubmission.

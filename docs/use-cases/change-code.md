@@ -417,6 +417,11 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   remains unknown, so a dollar-only cap stops further calls; include
   `--max-run-tokens` to continue within a token budget. This is a lower bound:
   unreported output from a failed stream is not counted.
+- Cancelling an active retry charges at least that attempt's own reservation
+  on top of known earlier usage. For example, 3,400 tokens reported before a
+  retry with a 4,773-token reservation charges 8,173 tokens when that retry is
+  cancelled without usage. The reservation increase counts as estimated usage;
+  known dollars remain recorded and the final cost stays unknown.
 
 Inspect the selected limits and recorded spend with `garuda sessions show <id>`
 (or `--json` for the structured `spend` block). For example, after a resumed run
@@ -558,8 +563,9 @@ and results use the existing terminal renderer.
 Cancel a streaming turn with Ctrl-C: its preview closes and no partial response
 or tool call is dispatched. Any usage already reported stays in the ledger as
 `model_call_failed` with `outcome: interrupted`. With a spend gate enabled, those
-tokens are a lower bound charged at no less than the reservation estimate;
-reported dollars are retained and the final cost remains unknown. Cancellation
+tokens are a lower bound: the interrupted active attempt charges at least its
+own reservation on top of known earlier attempts. Reported dollars are retained
+and the final cost remains unknown. Cancellation
 never replays the turn, including when it interrupts an ordinary fallback call.
 
 `--no-stream` keeps ordinary completed output in either command. On `run`,

@@ -71,7 +71,7 @@ def sum_usage(attempts: list[dict]) -> dict:
     return total
 
 
-def attach_usage(error: Exception, attempts: list[dict]) -> None:
+def attach_usage(error: BaseException, attempts: list[dict]) -> None:
     """Retain the original exception type and its complete logical-call usage."""
     error.attempt_usage = attempts
     error.usage = sum_usage(attempts)

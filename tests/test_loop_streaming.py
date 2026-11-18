@@ -430,8 +430,8 @@ async def test_cancelled_fallback_keeps_failed_stream_usage(tmp_path: Path):
     assert _of(events.get_all(), "model_response") == []
     assert _of(events.get_all(), "tool_call") == []
     gate = config.spend_gate
-    # #462's unreported fallback estimate is included before applying the floor.
-    assert gate.settled_tokens == max(41 + 40, estimate)
+    # The interrupted fallback keeps its own reservation on top of stream usage.
+    assert gate.settled_tokens == 41 + estimate
     assert gate.settled_cost_usd == 0.002
     assert gate.interrupted_calls == gate.cost_unknown_calls == gate.estimated_token_calls == 1
     assert gate.unreported_failed_attempts == 1
