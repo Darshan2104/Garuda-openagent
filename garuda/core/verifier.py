@@ -537,6 +537,7 @@ class CompletionVerifier:
                     approved=False,
                     checklist=checklist,
                     feedback="Completion rejected: answer_check hook failed.",
+                    commands_unexamined=True,
                 )
             if verdict is not None:
                 # An advisory hook's approval is not honoured: it declared that it
@@ -929,6 +930,7 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: the verifier could not be reached to confirm the work.",
+                commands_unexamined=True,
             )
 
         # Prefer a structured JSON verdict; fall back to an APPROVED/REJECTED prefix.
@@ -957,4 +959,5 @@ class CompletionVerifier:
                 "Completion rejected: verifier verdict was unclear. Re-state the outcome and how "
                 "it was verified, then call task_complete again."
             ),
+            commands_unexamined=True,
         )
