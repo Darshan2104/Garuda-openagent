@@ -1684,6 +1684,19 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - The nominal mode order is used only to report the delegated posture, never to
   authorize a call.
 
+## 2026-11-18 — MCP launch-tree binding excludes Git bookkeeping (#505)
+
+A launch tree excludes `.git` entries and the Git administrative directories
+resolved from a checkout pointer. Ambiguous pointers refuse trust. Direct operands
+and aliases into that metadata are visibly unpinned. Resolved Git and common
+directories inside the workspace other than its root `.git` remain excluded,
+but mark code unpinned with the reason "checkout Git directory inside project is
+excluded from binding: <relative path>" because they may also hold imported code.
+Staging remains stable; edits to covered source still invalidate the grant.
+Binding version 4 requires all earlier MCP grants to be reviewed once, including
+version 3 grants that excluded Git metadata without this warning. The shared
+store format and project `garuda.yaml` grants are unchanged.
+
 ## 2026-10-02 — Project authority: profile ceiling and MCP trust (issue #143)
 
 - A profile whose file is inside the workspace is project content. Its
